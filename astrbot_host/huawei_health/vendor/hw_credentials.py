@@ -12,8 +12,10 @@ disabled" and continue offering cookie/manual login.
 from __future__ import annotations
 
 import ctypes
+import csv
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -58,6 +60,23 @@ def harden_file_permissions(path: str) -> None:
         pass
 
 
+def _current_user_sid() -> str:
+    try:
+        result = subprocess.run(
+            ["whoami", "/user", "/fo", "csv", "/nh"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return ""
+    for row in csv.reader((result.stdout or "").splitlines()):
+        if len(row) == 2 and re.fullmatch(r"S-\d-\d+(?:-\d+)+", row[1].strip()):
+            return row[1].strip()
+    return ""
+
+
 def harden_dir_permissions(dir_path: str) -> str:
     """Best-effort: stop the plugin data dir from inheriting broad ACLs.
 
@@ -80,17 +99,26 @@ def harden_dir_permissions(dir_path: str) -> str:
             return ""
         except OSError as exc:
             return "chmod 失败：%s" % exc
-    user = os.environ.get("USERNAME") or ""
-    if not user:
-        return "读不到 USERNAME，跳过 ACL 收紧"
+    sid = _current_user_sid()
+    if not sid:
+        return "无法取得当前进程用户 SID，跳过 ACL 收紧"
     try:
-        proc = subprocess.run(
+        grant = subprocess.run(
             [
-                "icacls", dir_path, "/inheritance:r",
-                "/grant:r", user + ":(OI)(CI)F",
-                "SYSTEM:(OI)(CI)F",
-                "Administrators:(OI)(CI)F",
+                "icacls", dir_path, "/grant:r",
+                "*" + sid + ":(OI)(CI)F",
+                "*S-1-5-18:(OI)(CI)F",
+                "*S-1-5-32-544:(OI)(CI)F",
             ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+        if grant.returncode != 0:
+            return "icacls 授权返回码 %d，未移除继承权限" % grant.returncode
+        inheritance = subprocess.run(
+            ["icacls", dir_path, "/inheritance:r"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=10,
@@ -98,8 +126,8 @@ def harden_dir_permissions(dir_path: str) -> str:
         )
     except Exception as exc:
         return "icacls 无法执行：%s" % exc
-    if proc.returncode != 0:
-        return "icacls 返回码 %d（账户名与 SID 可能对不上）" % proc.returncode
+    if inheritance.returncode != 0:
+        return "icacls 移除继承权限返回码 %d" % inheritance.returncode
     return ""
 
 

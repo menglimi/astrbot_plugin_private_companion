@@ -279,8 +279,17 @@ class ExpressionLearningOutput:
     signals: tuple[StyleSignal, ...]
 
 
-def parse_output(raw: object, *, allowed_evidence: set[str] | frozenset[str], default_channels=None) -> ExpressionLearningOutput:
-    """Validate a model-authored candidate; never persists or activates the result."""
+def parse_output(raw: object, *, allowed_evidence: set[str] | frozenset[str], default_channels=None,
+                 limit: int = MAX_SIGNALS_PER_RUN) -> ExpressionLearningOutput:
+    """Validate a model-authored candidate; never persists or activates the result.
+
+    ``limit`` is the candidate count the dispatched request actually declared
+    through ``schema(limit)``. It narrows the per-run maximum but never raises
+    it: an answer that stays under the product maximum yet over the narrowed ask
+    broke the contract its own run sent, so it is refused instead of accepted
+    beyond what was paid for, while a caller asking for more than the maximum
+    still gets the maximum.
+    """
     if type(raw) is str:
         try:
             raw = json.loads(raw)
@@ -289,8 +298,9 @@ def parse_output(raw: object, *, allowed_evidence: set[str] | frozenset[str], de
     if not isinstance(raw, Mapping) or set(raw) != {"summary", "signals"}:
         raise ValueError("invalid_shape")
     summary, signals = raw["summary"], raw["signals"]
+    ceiling = MAX_SIGNALS_PER_RUN if type(limit) is not int else min(limit, MAX_SIGNALS_PER_RUN)
     if (type(summary) is not str or len(summary) > MAX_SUMMARY_CHARS
-            or not isinstance(signals, list) or len(signals) > MAX_SIGNALS_PER_RUN):
+            or not isinstance(signals, list) or len(signals) > ceiling):
         raise ValueError("invalid_shape")
     accepted = []
     for item in signals:
