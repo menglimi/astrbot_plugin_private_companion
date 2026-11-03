@@ -37,8 +37,10 @@ from companion_v2.storage.schema import (
     MIGRATION_V64_TO_V65_FINGERPRINT, MIGRATION_V64_TO_V65_ID, SCHEMA_VERSION_V65,
     MIGRATION_V65_TO_V66_FINGERPRINT, MIGRATION_V65_TO_V66_ID, SCHEMA_VERSION_V66,
     MIGRATION_V66_TO_V67_FINGERPRINT, MIGRATION_V66_TO_V67_ID, SCHEMA_VERSION_V67,
+    MIGRATION_V67_TO_V68_FINGERPRINT, MIGRATION_V67_TO_V68_ID, SCHEMA_VERSION_V68,
+    migration_count,
 )
-from tests.execution_support import remove_v21, remove_v22, remove_v31, remove_v32, remove_v33, remove_v34, remove_v35, remove_v36, remove_v52, remove_v53, remove_v55, remove_v57, remove_v58, remove_v59, remove_v60, remove_v61, remove_v62, remove_v63, remove_v64, remove_v65, remove_v66, remove_v67
+from tests.execution_support import remove_v21, remove_v22, remove_v31, remove_v32, remove_v33, remove_v34, remove_v35, remove_v36, remove_v52, remove_v53, remove_v55, remove_v57, remove_v58, remove_v59, remove_v60, remove_v61, remove_v62, remove_v63, remove_v64, remove_v65, remove_v66, remove_v67, remove_v68
 
 
 class StorageMigrationTests(unittest.TestCase):
@@ -524,6 +526,56 @@ class StorageMigrationTests(unittest.TestCase):
         reopened = self.open_runtime()
         self.assertEqual(reopened.read_one(
             "SELECT count(*) AS n FROM laya_decision_events", ())["n"], 2)
+
+    def test_v67_upgrade_adds_proactive_contact_and_delivery_lookup_indexes(self):
+        self.open_runtime().close()
+        with closing(sqlite3.connect(self.database)) as connection:
+            remove_v68(connection)
+            connection.execute("UPDATE runtime_metadata SET value = ? WHERE key = 'schema_version'",
+                               (SCHEMA_VERSION_V67,))
+            connection.commit()
+
+        upgraded = self.open_runtime()
+        migration = upgraded.read_one("SELECT * FROM schema_migrations WHERE migration_id = ?",
+                                      (MIGRATION_V67_TO_V68_ID,))
+        self.assertEqual((migration["from_version"], migration["to_version"], migration["fingerprint"]),
+                         (SCHEMA_VERSION_V67, SCHEMA_VERSION_V68, MIGRATION_V67_TO_V68_FINGERPRINT))
+        names = {row["name"] for row in upgraded.read_all(
+            "SELECT name FROM sqlite_master WHERE type = 'index'", ())}
+        self.assertTrue({"proactive_contacts_origin_recent_idx",
+                         "background_deliveries_source_ref_idx"}.issubset(names))
+        # The plan is what the migration is for: the rhythm lookup must seek the
+        # window's newest contact instead of scanning every stored record_json.
+        # SQLite may name either the index or a covering variant, so the assertion
+        # only rejects the full scan the index exists to remove.
+        plan = " | ".join(row["detail"] for row in upgraded.read_all(
+            """EXPLAIN QUERY PLAN SELECT c.contact_id, c.created_at, c.record_json,
+                (SELECT MAX(d.delivered_at) FROM background_deliveries d
+                 WHERE d.owner = 'proactive.contact' AND d.state = 'delivered'
+                   AND json_extract(d.request_json, '$.source_ref') = c.contact_id) AS delivered_at
+            FROM proactive_contacts c
+            WHERE c.origin_key = ? ORDER BY c.created_at DESC, c.contact_id DESC LIMIT 1""",
+            ("context-key",)))
+        self.assertNotIn("SCAN c", plan)
+        self.assertIn("proactive_contacts_origin_recent_idx", plan)
+
+    def test_v68_upgrade_is_idempotent_on_repeated_open(self):
+        self.open_runtime().close()
+        with closing(sqlite3.connect(self.database)) as connection:
+            remove_v68(connection)
+            connection.execute("UPDATE runtime_metadata SET value = ? WHERE key = 'schema_version'",
+                               (SCHEMA_VERSION_V67,))
+            connection.commit()
+        records = []
+        for _ in range(2):
+            upgraded = self.open_runtime()
+            self.assertEqual(upgraded.read_one(
+                "SELECT value FROM runtime_metadata WHERE key = 'schema_version'", ())["value"], SCHEMA_VERSION_V68)
+            records.append(tuple(tuple(row) for row in upgraded.read_all(
+                "SELECT * FROM schema_migrations ORDER BY migration_id", ())))
+            upgraded.close()
+        self.assertEqual(records[0], records[1])
+        self.assertEqual(len(records[0]), migration_count())
 
     def test_v52_upgrade_adds_response_diagnostics_and_rolls_back_on_failure(self):
         runtime = self.open_runtime()
