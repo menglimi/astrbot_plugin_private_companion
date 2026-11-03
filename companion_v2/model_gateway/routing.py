@@ -14,7 +14,7 @@ from companion_v2.execution.runner import TaskRun
 
 from .models import LocalProvider, MAX_MODEL_OUTPUT_TOKENS, ModelEnvelope, ModelTaskProfile
 from .refusal import parse_refusal_terms
-from .replacement_rules import checked_rules, match_route, validate_targets
+from .replacement_rules import checked_rules, match_route, output_capabilities, validate_targets
 
 
 CONSUMER = "model_gateway"
@@ -69,7 +69,7 @@ class ModelRouter:
             if profile.default_fallback and profile.default_fallback not in self.providers:
                 raise ValueError("model task fallback must select a loaded provider")
             validate_targets(checked_rules(profile.replacement_rules), self.providers,
-                             capabilities=profile.capabilities, max_output_tokens=profile.max_output_tokens)
+                             capabilities=profile.capabilities)
 
     def provider_default(self, context, profile, snapshot=None):
         """Read the host's current conversation route before sealing a model plan."""
@@ -101,10 +101,32 @@ class ModelRouter:
         self.generation = self.configuration.start_consumer(CONSUMER, expected_generation=expected_generation)
         return self.generation
 
+    @staticmethod
+    def _output_ceiling(profile, snapshot, values, providers):
+        """Return the effective output ceiling and the basis it was chosen on.
+
+        A value the user saved at any configuration layer is the user's
+        contract: it is returned untouched here and refused later when it does
+        not fit a provider the request can reach. Only a registry default (no
+        configuration row at all) is a product-level budget, so only a default
+        is clamped down to the strictest reachable provider.
+        """
+        declared = values["max_output_tokens"]
+        if snapshot.fields[profile.group + ".max_output_tokens"].source is not None:
+            return declared, "explicit"
+        capacity = min(output_capabilities(values, providers), default=MAX_MODEL_OUTPUT_TOKENS)
+        ceiling = min(declared, MAX_MODEL_OUTPUT_TOKENS, capacity)
+        return ceiling, "registry_default_clamped" if ceiling < declared else "registry_default"
+
+    def _validate_route_targets(self, profile, values, *, max_output_tokens=None):
+        try:
+            validate_targets(checked_rules(values["replacement_rules"]), self.providers,
+                             capabilities=profile.capabilities, max_output_tokens=max_output_tokens)
+        except ValueError as error:
+            raise TaskError("model_route_invalid", str(error)) from error
+
     def _route_selection(self, profile, values, context, request, at):
         rules = checked_rules(values["replacement_rules"])
-        validate_targets(rules, self.providers, capabilities=profile.capabilities,
-                         max_output_tokens=values["max_output_tokens"])
         texts = [material.payload for material in request.context.materials
                  if material.source is not None and material.source.scope == context.scope
                  and (material.purpose == "current_source" and material.source == request.event.source
@@ -132,9 +154,13 @@ class ModelRouter:
             group_id=profile.group, observed_at=at))
         snapshot = self.apply_provider_default(profile, snapshot, self.provider_default(context, profile, snapshot))
         values = {name.rsplit(".", 1)[1]: item.value for name, item in snapshot.fields.items()}
+        self._validate_route_targets(profile, values)
         match, providers, _ = self._route_selection(profile, values, context, request, at)
+        ceiling, basis = self._output_ceiling(profile, snapshot, values, self.providers)
+        if basis == "explicit":
+            self._validate_route_targets(profile, values, max_output_tokens=ceiling)
         if any(not set(profile.capabilities).issubset(provider.capabilities)
-               or values["max_output_tokens"] > provider.maximum_output_tokens for provider in providers):
+               or ceiling > provider.maximum_output_tokens for provider in providers):
             raise TaskError("model_capability_mismatch", "selected provider cannot fulfill this task profile")
         primary = providers[0]
         return (primary.binding.provider, match.model if match and match.model else primary.model,
@@ -162,11 +188,16 @@ class ModelRouter:
         evaluated_at = run.supervisor.now()
         try:
             if provider_id is None:
+                self._validate_route_targets(profile, values)
                 match, selected, in_scope = self._route_selection(profile, values, context, request, evaluated_at)
+                ceiling, basis = self._output_ceiling(profile, routed_snapshot, values, self.providers)
+                if basis == "explicit":
+                    self._validate_route_targets(profile, values, max_output_tokens=ceiling)
             else:
                 if provider_id not in self.providers:
                     raise TaskError("model_provider_unavailable", "the selected review provider has no local adapter")
                 match, selected, in_scope = None, (self.providers[provider_id],), False
+                ceiling, basis = self._output_ceiling(profile, routed_snapshot, values, self.providers)
         except TaskError:
             # TaskError is itself a ValueError, but its stable code is the
             # product diagnostic we need to preserve (for example, an
@@ -175,6 +206,7 @@ class ModelRouter:
             raise
         except ValueError as error:
             raise TaskError("model_route_invalid", str(error)) from error
+        values["max_output_tokens"] = ceiling
         for provider in selected:
             if not set(profile.capabilities).issubset(provider.capabilities):
                 raise TaskError("model_capability_mismatch", "provider lacks required model task capabilities")
@@ -204,6 +236,7 @@ class ModelRouter:
             "task_prompt_hash": digest(values["prompt"]),
             "request_hash": digest(request),
             "max_output_tokens": values["max_output_tokens"],
+            "max_output_tokens_basis": basis,
             "timeout_seconds": values["timeout_seconds"],
             "replacement_scope": values["replacement_scope"],
             "transport": selected[0].transport,
