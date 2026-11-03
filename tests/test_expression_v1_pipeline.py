@@ -63,8 +63,14 @@ def wire_materials(payload, purpose):
 
 
 class ExpressionFixture:
-    def expression_profiles(self):
-        self.profiles += (expression_learning_profile("primary", max_output_tokens=100),
+    def expression_profiles(self, *, learning_tokens=100):
+        """Register the expression profiles; ``learning_tokens`` is its output ceiling.
+
+        The reply-sized learning default fits one candidate; a suite that needs a
+        larger ask (a degraded retry, a trimmed window) declares the ceiling the
+        production task profile would carry instead.
+        """
+        self.profiles += (expression_learning_profile("primary", max_output_tokens=learning_tokens),
                           expression_review_profile("primary", max_output_tokens=100),
                           expression_review_profile("primary", max_output_tokens=100, contact=True))
         self.registry = FieldRegistry(version="expression-pipeline.v1", fields=configuration_fields(self.profiles))
