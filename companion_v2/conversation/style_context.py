@@ -144,11 +144,7 @@ class ConversationExpressionStyleContext:
         # A group also owns the synthetic identity scope its V1 import wrote
         # under; these two windows are read directly, so an ordinary group turn
         # never loads the rules of another window.
-        own = {scope_key}
-        if context.scope.kind is ScopeKind.GROUP:
-            identity = group_identity_key(context.scope)
-            if identity is not None:
-                own.add(identity)
+        own = self._own_scope_keys(context)
         own_keys = tuple(sorted(own))
         family = None
         if context.scope.kind is ScopeKind.GROUP:
@@ -358,6 +354,29 @@ class ConversationExpressionStyleContext:
             "proposal": row["proposal"], "applicability": applicability}, ensure_ascii=False, sort_keys=True,
             separators=(",", ":"), allow_nan=False)
 
+    @staticmethod
+    def _own_scope_keys(context):
+        """Scope digests that need no conversation-table read to recognise."""
+        own = {digest(context.scope)}
+        identity = group_identity_key(context.scope)
+        if identity is not None:
+            own.add(identity)
+        return own
+
+    def _feedback_scope_keys(self, context, foreign):
+        """The family a delivered rule belongs to, resolved only when needed.
+
+        The current window and the V1 identity scope are family without a
+        query, so a group whose rule came from the legacy import reads no
+        conversation table on delivery; only a rule kept in a window this
+        conversation used earlier has to resolve the family, and then the same
+        family injection and review read decides it.
+        """
+        own = self._own_scope_keys(context)
+        if foreign <= own:
+            return tuple(sorted(own))
+        return self._family(context)
+
     def confirm_delivery(self, connection, *, batch_id, context, delivered_at):
         owner_key = digest(self.catalog.role_owner(context))
         scope_key = digest(context.scope)
@@ -366,8 +385,13 @@ class ConversationExpressionStyleContext:
             style_rotation.record(self.runtime, owner_key=owner, scope_key=scope,
                                   signal_ids=signal_ids, at=at, connection=active_connection)
 
+        # Feedback follows the same scope family injection reads: a rule kept in
+        # an earlier window of this group or participant has to hear that the
+        # delivered reply was disliked, while another relationship's rules stay
+        # out of this conversation's feedback window.
         style_feedback.confirm_delivery(connection, batch_id=batch_id, owner_key=owner_key,
-            scope_key=scope_key, delivered_at=delivered_at, rotation_record=record)
+            scope_key=scope_key, delivered_at=delivered_at, rotation_record=record,
+            family_scopes=lambda foreign: self._feedback_scope_keys(context, foreign))
 
     def consume_feedback(self, connection, *, context, text, received_at):
         return style_feedback.consume_feedback(connection,
