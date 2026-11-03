@@ -67,7 +67,7 @@ test("narrow decision navigation scrolls tabs without covering the status", () =
 
 test("the perception overview stays on perception while decision settings remain target-aware", () => {
   const app = fs.readFileSync(path.join(pageRoot, "app.js"), "utf8");
-  assert.match(app, /CompanionDecisionPage\?\.mount\(decisionHost,\{groupSettingsMarkup:renderDecisionOriginal\(\)\}\)/);
+  assert.match(app, /CompanionDecisionPage\?\.mount\(decisionHost,\{groupSettingsMarkup:renderDecisionOriginal\(\),harassmentApi:/);
   assert.match(app, /function renderDecisionOriginal\(\)\{[\s\S]*?pageNeedsTarget\('群聊参与'\)/);
   assert.match(app, /function renderDecisionOriginal\(\)[\s\S]*?configEditors\('groupParticipationConfigWorkspace',\['group_participation'\],'群聊参与'\)/);
   assert.match(app, /const endpoint=role\.reply_api\+'\/participation'/);
@@ -121,14 +121,20 @@ test("memory view tabs support keyboard navigation", () => {
   assert.match(app, /ArrowRight.*tabs\.length-1/s);
 });
 
-test("private access modules cover each field once", () => {
+test("private access editors separate known users from unbound accounts", () => {
   const configSource = fs.readFileSync(path.join(pageRoot, "config-editor.js"), "utf8");
   const window = {};
   vm.runInNewContext(configSource, {window});
-  const spec = window.CompanionConfigEditors.spec.private_access;
-  const fields = Array.from(spec.sections).flatMap(section => Array.from(section.fields));
-
-  assert.deepEqual(fields, Array.from(spec.order));
-  assert.deepEqual(Array.from(spec.sections, section => section.title),
-    ["新用户默认权限", "无权限回复", "陌生号处理"]);
+  const role = window.CompanionConfigEditors.spec.private_access;
+  const installation = window.CompanionConfigEditors.spec.private_access_installation;
+  for (const spec of [role, installation]) {
+    const fields = Array.from(spec.sections).flatMap(section => Array.from(section.fields));
+    assert.deepEqual(fields, Array.from(spec.order));
+  }
+  assert.deepEqual(Array.from(role.sections, section => section.title),
+    ["新用户默认权限", "无权限回复"]);
+  assert.deepEqual(Array.from(installation.sections, section => section.title), ["陌生号处理"]);
+  assert.match(installation.note, /插件安装全局生效/);
+  assert.equal(window.CompanionConfigEditors.endpointFor(null, "", ["private_access_installation"]),
+    "/astrbot_plugin_private_companion/config");
 });

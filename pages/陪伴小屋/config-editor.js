@@ -591,34 +591,52 @@ window.CompanionConfigEditors = (() => {
         "cross_window_peer_minutes", "cross_window_peer_reply_minutes"],
     },
     private_access: {
-      title: "私聊用户权限",
-      note: "每个私聊用户的对话与主动权限是按人设置的，在「关系与权限」里逐人开关；这里只定「没人决定过的新用户从哪开始」，以及没有对话权限时回哪一句。",
+      title: "新用户默认权限",
+      note: "按当前角色生效。已绑定用户的对话与主动权限仍可逐人调整；这里设置新用户默认权限和已绑定用户被拒时的回复。陌生号在单独的全局设置中处理。",
       labels: {
         dialogue_default: "新用户默认可对话",
         proactive_default: "新用户默认可被主动联系",
-        denied_reply: "没有对话权限时回的话",
+        denied_reply: "已绑定用户无权限时回的话",
         notice_cooldown_seconds: "同一人多久内只回一次",
-        stranger_notice_enabled: "也婉拒陌生号",
-        stranger_notice_daily_cap: "陌生号每天最多回几条",
       },
       helps: {
         dialogue_default: "关闭后，新出现的私聊用户不会得到回复，只会收到下面那句话。",
         proactive_default: "默认关闭：角色不会主动找刚认识的人说话，直到你在关系页为他打开。",
-        denied_reply: "留空表示完全安静（不回话）。只有设置向导的本地草稿轮不会真的发出。",
+        denied_reply: "留空表示不发送拒绝回复；陌生号使用全局设置中的文案。",
         notice_cooldown_seconds: "默认 6 小时。填 0 表示对方每发一条就回一次。",
-        stranger_notice_enabled: "陌生号指没有绑定、也不在任何目标里的账号：默认只回这一句，不建立任何身份、不写记忆。",
-        stranger_notice_daily_cap: "每天总量上限，防止被反复打扰；填 0 表示一个陌生号都不回。",
       },
       choices: {},
       order: ["dialogue_default", "proactive_default", "denied_reply",
-        "notice_cooldown_seconds", "stranger_notice_enabled", "stranger_notice_daily_cap"],
+        "notice_cooldown_seconds"],
       sections: [
         {id: "defaults", title: "新用户默认权限",
          fields: ["dialogue_default", "proactive_default"]},
         {id: "denied", title: "无权限回复",
          fields: ["denied_reply", "notice_cooldown_seconds"]},
+      ],
+    },
+    private_access_installation: {
+      title: "陌生号处理",
+      note: "插件安装全局生效，适用于没有绑定、也不在任何目标里的私聊账号。已绑定用户仍使用所属角色的权限设置。",
+      labels: {
+        stranger_notice_enabled: "婉拒陌生号",
+        stranger_notice_daily_cap: "每天最多回复陌生号几条",
+        denied_reply: "陌生号收到的回复",
+        notice_cooldown_seconds: "同一陌生号多久内只回一次",
+      },
+      helps: {
+        stranger_notice_enabled: "关闭后不向陌生号发送拒绝回复。",
+        stranger_notice_daily_cap: "安装内所有陌生号共用每日上限；填 0 表示不回复。",
+        denied_reply: "留空表示不发送拒绝回复。",
+        notice_cooldown_seconds: "填 0 表示每次都可回复，仍受每日总量限制。",
+      },
+      choices: {},
+      order: ["stranger_notice_enabled", "stranger_notice_daily_cap",
+        "denied_reply", "notice_cooldown_seconds"],
+      sections: [
         {id: "strangers", title: "陌生号处理",
-         fields: ["stranger_notice_enabled", "stranger_notice_daily_cap"]},
+         fields: ["stranger_notice_enabled", "stranger_notice_daily_cap",
+           "denied_reply", "notice_cooldown_seconds"]},
       ],
     },
     "expression.learning": {
@@ -1771,7 +1789,8 @@ window.CompanionConfigEditors = (() => {
    * 工作区也全都不会挂上。用户看到的就是「这些页面完全无法使用」。
    * 读不到就返回 null，由调用方渲染等待态，而不是把整页一起带走。 */
   function endpointFor(product, override = "", kinds = []) {
-    const installationKinds = new Set(["proactive.contact", "reaction", "budget"]);
+    const installationKinds = new Set(["proactive.contact", "reaction", "budget",
+      "private_access_installation"]);
     if (Array.isArray(kinds) && kinds.some(kind => installationKinds.has(kind))) {
       return kinds.every(kind => installationKinds.has(kind)) ? PREFIX + "config" : null;
     }

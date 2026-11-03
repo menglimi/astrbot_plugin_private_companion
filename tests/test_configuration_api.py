@@ -103,12 +103,13 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
             status = (await call(handlers[first]))["data"]["sections"]
             installation_route = "/astrbot_plugin_private_companion/config"
             installation_status = (await call(handlers[installation_route]))["data"]["sections"]
-            self.assertEqual(set(installation_status), {"budget", "proactive.contact", "reaction"})
+            self.assertEqual(set(installation_status), {"budget", "proactive.contact", "reaction",
+                                                       "private_access_installation"})
             self.assertTrue({"budget", "proactive.contact", "reaction"}.isdisjoint(status))
             status.update(installation_status)
             expected_sections = {"budget", "busy_gate", "group_participation", "image_review",
                                  "knowledge", "library", "life", "person", "photo.reference",
-                                 "private_access", "quota", "reaction", "recall",
+                                 "private_access", "private_access_installation", "quota", "reaction", "recall",
                                  "content.authoring",
                                  "expression.learning", "role.growth.skills",
                                  # qzone 是真实配置分区（companion_v2/qzone/configuration.py:18
@@ -140,6 +141,8 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status["image_review"]["scope"], "role")
             self.assertEqual(status["busy_gate"]["scope"], "role")
             self.assertEqual(status["reaction"]["scope"], "installation")
+            self.assertEqual(status["private_access"]["scope"], "role")
+            self.assertEqual(status["private_access_installation"]["scope"], "installation")
             # 原文回溯和屏幕材料保留私有窗口范围。
             for name in ("recall", "screen"):
                 self.assertEqual(status[name]["scope"], "window", name)
@@ -203,6 +206,50 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sorted(restricted["data"]["sections"]), ["quota"])
             self.assertEqual((await call(handlers[first], query={"sections": "nope"}))["data"]["code"],
                              "configuration_request_invalid")
+        finally:
+            self.controller.unregister_routes()
+
+    async def test_stranger_settings_save_to_installation_while_known_users_keep_role_settings(self):
+        from astrbot_host.stranger_notice import StrangerNotice
+
+        handlers, first, _ = await self.routes()
+        installation_route = "/astrbot_plugin_private_companion/config"
+        try:
+            role = (await call(handlers[first], query={"sections": "private_access"}))[
+                "data"]["sections"]["private_access"]
+            global_settings = (await call(handlers[installation_route],
+                query={"sections": "private_access_installation"}))["data"]["sections"]["private_access_installation"]
+            self.assertEqual(set(role["settings"]), {"dialogue_default", "proactive_default",
+                                                     "denied_reply", "notice_cooldown_seconds"})
+            self.assertEqual(set(global_settings["settings"]), {"stranger_notice_enabled",
+                "stranger_notice_daily_cap", "denied_reply", "notice_cooldown_seconds"})
+            self.assertEqual(set(role["fields"]), set(role["settings"]))
+            self.assertEqual(set(global_settings["provenance"]), set(global_settings["settings"]))
+
+            saved = await call(handlers[installation_route + "/configure"], {
+                "section": "private_access_installation", "operation_key": "stranger-installation",
+                "edit_token": global_settings["edit_token"],
+                "changes": {"stranger_notice_enabled": False, "stranger_notice_daily_cap": 9,
+                            "denied_reply": "陌生号请先联系管理员", "notice_cooldown_seconds": 0},
+            })
+            self.assertEqual(saved["status"], "ok", saved)
+            self.assertEqual(StrangerNotice(self.controller).defaults()["stranger_notice"], False)
+            self.assertEqual(StrangerNotice(self.controller).defaults()["denied_reply"], "陌生号请先联系管理员")
+            self.assertEqual(StrangerNotice(self.controller).defaults()["stranger_daily_cap"], 9)
+
+            denied = await call(handlers[first + "/configure"], {
+                "section": "private_access", "operation_key": "invalid-role-stranger",
+                "edit_token": role["edit_token"], "changes": {"stranger_notice_enabled": True},
+            })
+            self.assertEqual(denied["data"]["code"], "private_access_configuration_invalid")
+            refreshed = (await call(handlers[first], query={"sections": "private_access"}))[
+                "data"]["sections"]["private_access"]
+            role_saved = await call(handlers[first + "/configure"], {
+                "section": "private_access", "operation_key": "known-user-refusal",
+                "edit_token": refreshed["edit_token"], "changes": {"denied_reply": "已绑定用户暂不能回复"},
+            })
+            self.assertEqual(role_saved["status"], "ok", role_saved)
+            self.assertEqual(StrangerNotice(self.controller).defaults()["denied_reply"], "陌生号请先联系管理员")
         finally:
             self.controller.unregister_routes()
 
