@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
 import sqlite3
 import sys
-from threading import RLock, local
+from threading import Lock, RLock, local
 import time
 from typing import Iterator
 
@@ -251,11 +252,39 @@ LEGACY_PLUGIN_DIRECTORY_NAMES = frozenset(
 logger = logging.getLogger(__name__)
 
 
+@dataclass(slots=True)
+class _SlowOperationLogState:
+    """One rate-limit window for a single (operation, caller) key.
+
+    ``emitted_at`` is when this window's WARNING line was written. ``suppressed``
+    counts slow events folded into this window and never logged; ``max_elapsed_ms``
+    is the worst duration among those same events. A zero ``max_elapsed_ms`` is
+    the invariant that no line was swallowed yet, because every duration here is
+    positive (it already cleared SLOW_OPERATION_SECONDS).
+    """
+
+    emitted_at: float
+    suppressed: int = 0
+    max_elapsed_ms: int = 0
+
+
 class StorageRuntime:
     """Own the V2 database connection; repositories never open their own connection."""
 
     DATABASE_FILENAME = "companion-v2.sqlite3"
     SLOW_OPERATION_SECONDS = 1.0
+    # Same window as the two rate-limited diagnostics this repository already
+    # trusts: ProactiveScheduler._write_diagnostic(minimum_interval=60) and
+    # report_slow_native_lookup (NATIVE_LOOKUP_SLOW_LOG_INTERVAL_SECONDS = 60).
+    # One minute keeps a hot slow query to one line per minute per call site
+    # while still surfacing it inside the tick the operator is already watching.
+    SLOW_OPERATION_LOG_INTERVAL_SECONDS = 60.0
+    # Keys are (operation, caller) pairs and callers come from shipped source: a
+    # measured 1610 transaction/read_one/read_all/read_snapshot call sites in this
+    # tree today. The cap therefore sits above the normal bound so it can only
+    # bite on call sites added by extensions; past it the oldest window is
+    # dropped, which at worst costs one extra warning line for that key.
+    SLOW_OPERATION_LOG_MAX_KEYS = 2048
 
     def __init__(self, *, data_root: Path, installation_id: str) -> None:
         if not installation_id or installation_id != installation_id.strip():
@@ -267,6 +296,14 @@ class StorageRuntime:
         self._lock = RLock()
         self._read_snapshot_diagnostics = local()
         self._savepoint_sequence = 0
+        self._slow_operation_log_state: dict[tuple[str, str], _SlowOperationLogState] = {}
+        # A plain Lock, not the connection RLock: _report_slow_operation runs
+        # after the connection lock is released, so the two never nest and this
+        # lock can never be held while a caller waits on SQLite.
+        self._slow_operation_log_lock = Lock()
+        # Test seam: the rate limit reads monotonic time, and a test must be able
+        # to advance it without patching the shared time module.
+        self._slow_operation_clock = time.monotonic
         self._write_depth = 0
 
     @classmethod
@@ -287,6 +324,50 @@ class StorageRuntime:
     def installation_id(self) -> str:
         return self._installation_id
 
+    def _admit_slow_operation_log(self, key: tuple[str, str], elapsed_ms: int) -> tuple[bool, int, int]:
+        """Decide whether one slow event earns a WARNING line.
+
+        Returns ``(emit, suppressed, max_elapsed_ms)``. Outside a window the
+        first slow event is emitted immediately, so a brand-new regression is
+        never hidden. Inside the window events only bump the window counters.
+        The first event after the window is emitted and carries the count of
+        lines swallowed in that window plus the worst duration among them; that
+        event starts a fresh window and is deliberately NOT counted as
+        suppressed, because its own elapsed_ms is already in the line.
+
+        ``suppressed == 0`` therefore means "nothing hidden", which lets the
+        caller keep the original single-line format whenever the rate limit did
+        not actually drop anything.
+
+        The caller runs after the connection lock is released, but several
+        threads can reach it at once, so every state transition happens under
+        ``_slow_operation_log_lock``. ``+=`` on a dict value is not atomic, and
+        two threads must never both believe they own the same window.
+        """
+
+        now = self._slow_operation_clock()
+        with self._slow_operation_log_lock:
+            state = self._slow_operation_log_state.get(key)
+            if state is None:
+                if len(self._slow_operation_log_state) >= self.SLOW_OPERATION_LOG_MAX_KEYS:
+                    oldest = min(
+                        self._slow_operation_log_state,
+                        key=lambda existing: self._slow_operation_log_state[existing].emitted_at,
+                    )
+                    del self._slow_operation_log_state[oldest]
+                self._slow_operation_log_state[key] = _SlowOperationLogState(emitted_at=now)
+                return True, 0, 0
+            if now - state.emitted_at < self.SLOW_OPERATION_LOG_INTERVAL_SECONDS:
+                state.suppressed += 1
+                if elapsed_ms > state.max_elapsed_ms:
+                    state.max_elapsed_ms = elapsed_ms
+                return False, 0, 0
+            suppressed, max_elapsed_ms = state.suppressed, state.max_elapsed_ms
+            state.emitted_at = now
+            state.suppressed = 0
+            state.max_elapsed_ms = 0
+            return True, suppressed, max_elapsed_ms
+
     def _report_slow_operation(self, operation: str, started: float, lock_acquired: float,
                                finished: float, *, details: str = "") -> None:
         elapsed_ms = round((finished - started) * 1000)
@@ -298,11 +379,36 @@ class StorageRuntime:
         if caller is None:
             caller = sys._getframe(1)
         caller_name = f"{Path(caller.f_code.co_filename).name}:{caller.f_lineno}"
+        # Key choice: (operation, caller). The caller is a file name plus a line
+        # number, so a release that shifts lines starts new keys and lets the old
+        # ones age out; a stale key can only ever absorb its own repeats, never
+        # another call site's, because the (operation, caller) pair is the whole
+        # identity. Keeping the line number is what makes two different queries
+        # in one file rate-limit apart, which a file-only key would merge into a
+        # single stream and lose. The key space is therefore bounded by the
+        # shipped call-site count (1610 today) and capped hard by
+        # SLOW_OPERATION_LOG_MAX_KEYS.
+        emit, suppressed, max_elapsed_ms = self._admit_slow_operation_log(
+            (operation, caller_name), elapsed_ms,
+        )
+        if not emit:
+            return
         detail_suffix = " " + details if details else ""
+        if not suppressed:
+            logger.warning(
+                "V2 SQLite slow operation=%s elapsed_ms=%d lock_wait_ms=%d held_ms=%d caller=%s%s",
+                operation, elapsed_ms, round((lock_acquired - started) * 1000),
+                round((finished - lock_acquired) * 1000), caller_name, detail_suffix,
+            )
+            return
+        # Only the window summary appends fields, and they go after details so
+        # every pre-existing field keeps its position and meaning.
         logger.warning(
-            "V2 SQLite slow operation=%s elapsed_ms=%d lock_wait_ms=%d held_ms=%d caller=%s%s",
+            "V2 SQLite slow operation=%s elapsed_ms=%d lock_wait_ms=%d held_ms=%d caller=%s%s"
+            " suppressed=%d max_elapsed_ms=%d",
             operation, elapsed_ms, round((lock_acquired - started) * 1000),
             round((finished - lock_acquired) * 1000), caller_name, detail_suffix,
+            suppressed, max_elapsed_ms,
         )
 
     def close(self) -> None:

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -369,3 +370,204 @@ class StorageRuntimeTests(unittest.TestCase):
             with self.assertRaises(StoragePathError):
                 StorageRuntime.open(data_root=public / "installations" / "installation-a" / "runtime",
                                     installation_id=INSTALLATION_ID)
+
+
+class SlowOperationLogRateLimitTests(unittest.TestCase):
+    """Rate limiting for StorageRuntime._report_slow_operation.
+
+    These cases never call ``open()``: the behaviour under test only reads the
+    limiter's own state plus SLOW_OPERATION_SECONDS, and bootstrapping all schema
+    migrations would add seconds per case without touching a line here. The clock
+    is injected through ``_slow_operation_clock`` so a window can be advanced
+    deterministically instead of by sleeping.
+    """
+
+    def setUp(self) -> None:
+        self._temporary = TemporaryDirectory(prefix="companion-v2-slowlog-")
+        self._clock = [1000.0]
+
+    def tearDown(self) -> None:
+        self._temporary.cleanup()
+
+    def _runtime(self, *, interval: float = 60.0) -> StorageRuntime:
+        runtime = StorageRuntime(data_root=Path(self._temporary.name) / "v2-data",
+                                 installation_id=INSTALLATION_ID)
+        runtime.SLOW_OPERATION_SECONDS = 0
+        runtime.SLOW_OPERATION_LOG_INTERVAL_SECONDS = interval
+        runtime._slow_operation_clock = lambda: self._clock[0]
+        return runtime
+
+    def _record_slow(self, runtime: StorageRuntime, operation: str, elapsed_ms: int) -> None:
+        """Emit one slow event from a single stable call site.
+
+        _report_slow_operation keys its rate limit on ``file:line`` of the first
+        frame outside runtime.py/contextlib.py, so a call written inline in a test
+        would give every invocation its own line number and therefore its own
+        window. Routing events through this one line reproduces the real shape:
+        the same query, repeated from the same place in the code.
+        """
+        runtime._report_slow_operation(operation, 0.0, 0.0, elapsed_ms / 1000)
+
+    def _record_slow_variant(self, runtime: StorageRuntime, operation: str, elapsed_ms: int) -> None:
+        """A second, deliberately distinct call site for the same operation."""
+        runtime._report_slow_operation(operation, 0.0, 0.0, elapsed_ms / 1000)
+
+    def test_first_line_keeps_original_format_and_later_ones_stay_silent(self) -> None:
+        runtime = self._runtime()
+        with self.assertLogs("companion_v2.storage.runtime", level="WARNING") as captured:
+            for _ in range(5):
+                self._record_slow(runtime, "read_one", 2)
+                self._clock[0] += 1.0
+        self.assertEqual(len(captured.output), 1, captured.output)
+        first = captured.output[0]
+        # Nothing was dropped yet, so the line is the old format exactly: no new
+        # field appears until the rate limit has actually suppressed something.
+        self.assertIn("V2 SQLite slow operation=read_one elapsed_ms=2 lock_wait_ms=0 held_ms=2 ", first)
+        self.assertIn("caller=test_storage_runtime.py:", first)
+        self.assertNotIn("suppressed=", first)
+        self.assertNotIn("max_elapsed_ms=", first)
+
+    def test_expired_window_reports_suppressed_count_and_max_elapsed(self) -> None:
+        runtime = self._runtime()
+        self._record_slow(runtime, "read_all", 4)  # opens the first window and logs once
+        for step, elapsed in ((1.0, 10), (2.0, 30), (3.0, 7)):
+            self._clock[0] += step
+            self._record_slow(runtime, "read_all", elapsed)
+        # Still inside the 60 s window: the event above is swallowed silently.
+        with self.assertNoLogs("companion_v2.storage.runtime", level="WARNING"):
+            self._clock[0] += 1.0
+            self._record_slow(runtime, "read_all", 11)
+        # Cross the window: the next event reports what the window swallowed.
+        self._clock[0] += 60.0
+        with self.assertLogs("companion_v2.storage.runtime", level="WARNING") as captured:
+            self._record_slow(runtime, "read_all", 12)
+        self.assertEqual(len(captured.output), 1, captured.output)
+        summary = captured.output[0]
+        self.assertIn("operation=read_all", summary)
+        self.assertIn("elapsed_ms=12", summary)
+        self.assertIn("lock_wait_ms=0", summary)
+        self.assertIn("held_ms=12", summary)
+        self.assertIn("caller=test_storage_runtime.py:", summary)
+        # Four events were swallowed; 30 ms was the worst of them.
+        self.assertIn("suppressed=4", summary)
+        self.assertIn("max_elapsed_ms=30", summary)
+        # Every original field keeps its position; the new ones are appended last.
+        self.assertLess(summary.index("caller="), summary.index("suppressed="))
+        self.assertLess(summary.index("suppressed="), summary.index("max_elapsed_ms="))
+
+        # The summary opened a fresh window: counters must not carry over.
+        self._clock[0] += 1.0
+        with self.assertNoLogs("companion_v2.storage.runtime", level="WARNING"):
+            self._record_slow(runtime, "read_all", 11)
+
+    def test_keys_are_independent_per_operation_and_caller(self) -> None:
+        runtime = self._runtime()
+        with self.assertLogs("companion_v2.storage.runtime", level="WARNING") as captured:
+            self._record_slow(runtime, "read_one", 2)              # (read_one, call site A)
+            self._record_slow(runtime, "read_one", 3)              # swallowed
+            self._record_slow_variant(runtime, "read_one", 2)      # (read_one, call site B)
+            self._record_slow_variant(runtime, "read_one", 3)      # swallowed separately
+            self._record_slow(runtime, "read_out_of_snapshot", 2)  # call site A, other operation
+            self._record_slow(runtime, "read_out_of_snapshot", 3)  # swallowed separately
+        self.assertEqual(len(captured.output), 3, captured.output)
+        keys = sorted(runtime._slow_operation_log_state)
+        self.assertEqual([operation for operation, _ in keys],
+                         ["read_one", "read_one", "read_out_of_snapshot"])
+        # Two distinct call sites are involved: the shared helper and the variant.
+        self.assertEqual(len({caller for _, caller in keys}), 2)
+        self.assertEqual(len({caller for operation, caller in keys if operation == "read_one"}), 2)
+        # Each key swallowed exactly its own repeat, never another key's.
+        self.assertEqual(sorted(state.suppressed
+                                for state in runtime._slow_operation_log_state.values()), [1, 1, 1])
+
+    def test_state_is_capped_but_never_loses_a_first_line(self) -> None:
+        runtime = self._runtime()
+        runtime.SLOW_OPERATION_LOG_MAX_KEYS = 8
+        with self.assertLogs("companion_v2.storage.runtime", level="WARNING") as captured:
+            for index in range(50):
+                self._clock[0] += 0.001
+                # Distinct keys via distinct operation names, all inside one
+                # window so none of them expires naturally.
+                runtime._report_slow_operation(f"op_{index}", 0.0, 0.0, 0.002)
+        self.assertLessEqual(len(runtime._slow_operation_log_state), 8)
+        # Eviction may cost a key one extra line later; it must never swallow the
+        # first line that the cap exists to protect.
+        self.assertEqual(len(captured.output), 50)
+
+    def test_concurrent_callers_share_one_window_without_losing_counts(self) -> None:
+        runtime = self._runtime()
+        workers = 8
+        per_worker = 200
+        # Spread the threads over many windows so both the "first event" branch and
+        # the "bump the counters" branch are exercised concurrently. Every window
+        # must still account for exactly one unsuppressed event.
+        windows = 20
+
+        def hammer() -> None:
+            for index in range(per_worker):
+                self._record_slow(runtime, f"op_{index % windows}", 5)
+
+        with self.assertLogs("companion_v2.storage.runtime", level="WARNING") as captured:
+            threads = [threading.Thread(target=hammer) for _ in range(workers)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        total = workers * per_worker
+        # One line per window for the very first event, everything else swallowed,
+        # and no event may be lost by a non-atomic ``+=`` on the shared counter.
+        self.assertEqual(len(captured.output), windows, len(captured.output))
+        self.assertEqual(sum(state.suppressed for state in runtime._slow_operation_log_state.values()),
+                         total - windows)
+
+    def test_every_state_access_happens_while_the_rate_limit_lock_is_held(self) -> None:
+        runtime = self._runtime()
+        observed: list[bool] = []
+        runtime_state = runtime._slow_operation_log_state
+        runtime_lock = runtime._slow_operation_log_lock
+
+        class GuardedState(dict):
+            """Fails if the limiter touches its state outside the critical section."""
+
+            def get(self, key, default=None):
+                observed.append(runtime_lock.locked())
+                return super().get(key, default)
+
+            def __setitem__(self, key, value):
+                observed.append(runtime_lock.locked())
+                return super().__setitem__(key, value)
+
+            def __delitem__(self, key):
+                observed.append(runtime_lock.locked())
+                return super().__delitem__(key)
+
+            def __len__(self):
+                observed.append(runtime_lock.locked())
+                return super().__len__()
+
+        guarded = GuardedState(runtime_state)
+        runtime._slow_operation_log_state = guarded
+
+        self._record_slow(runtime, "read_one", 2)   # new key: __len__, __setitem__
+        self._record_slow(runtime, "read_one", 3)   # existing key: get + counter bump
+        self._record_slow(runtime, "read_two", 2)   # another new key
+        self._record_slow(runtime, "read_two", 3)
+
+        self.assertTrue(observed, "the limiter never touched its state")
+        self.assertTrue(all(observed), "state was read or written outside the lock")
+
+    def test_checkpoint_warning_path_is_unchanged(self) -> None:
+        with TemporaryDirectory(prefix="companion-v2-storage-") as temporary:
+            runtime = StorageRuntime.open(data_root=Path(temporary) / "v2-data", installation_id=INSTALLATION_ID)
+            try:
+                # checkpoint_passive keeps its own single-line WAL warning and does
+                # not route through the limiter. Whatever the schema bootstrap
+                # recorded is irrelevant; the checkpoint itself must add no key and
+                # emit no warning.
+                runtime._slow_operation_log_state.clear()
+                with self.assertNoLogs("companion_v2.storage.runtime", level="WARNING"):
+                    result = runtime.checkpoint_passive()
+                self.assertEqual(len(result), 3)
+                self.assertEqual(runtime._slow_operation_log_state, {})
+            finally:
+                runtime.close()
