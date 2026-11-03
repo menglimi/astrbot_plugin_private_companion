@@ -200,3 +200,336 @@ test("旧作用域规则只作为可展开诊断，不冒充读取失败", async
   assert.doesNotMatch(root.innerHTML, /lh-inline-status is-error/);
   page.unmount();
 });
+
+/* ---------------------------------------------------------------------------
+ * 分页保活回归：写操作 / 跨模块刷新通知 / 追加去重 / 全部来源不可读的措辞。
+ * ------------------------------------------------------------------------- */
+
+const SIGNAL_RULE = (id, overrides = {}) => ({signal_id: id, run_id: "run-" + id, dimension: "diction",
+  source_kind: "conversation_input", observation: "观察 " + id, proposal: "说法 " + id, state: "adopted",
+  created_at: "2026-10-08T10:00:00+00:00", actions: ["retire"], injections: 0, can_revise: false,
+  expression: {kind: "style", situation: "日常", pattern: "说法 " + id, avoid: ""},
+  evidence: [], view_token: "token-" + id, confidence: 0.5, applicability: null, ...overrides});
+
+/* 每页 2 条、after_id 是上一页最后一条 signal_id 的假后端；retired 集合里的规则从结果里消失。 */
+function pagedSignals(ids = ["signal-1", "signal-2", "signal-3", "signal-4", "signal-5", "signal-6"]) {
+  const retired = new Set();
+  const calls = [];
+  const live = () => ids.filter(id => !retired.has(id));
+  const pageAt = cursor => {
+    const list = live();
+    const index = cursor ? list.findIndex(id => id === cursor) : -1;
+    const start = index + 1;
+    const items = list.slice(start, start + 2).map(id => SIGNAL_RULE(id));
+    const next = start + items.length < list.length ? items[items.length - 1].signal_id : null;
+    return {items, next_cursor: next, counts: {adopted: list.length},
+      capacity: {active: list.length, limit: 480}};
+  };
+  const bridge = {
+    apiGet: async (route, query = {}) => {
+      calls.push({route, query});
+      if (Array.isArray(query.state) || Array.isArray(query.after_id)) throw new Error("repeated query");
+      return {status: "ok", data: pageAt(query.after_id || "")};
+    },
+    apiPost: async () => ({status: "ok", data: {}}),
+  };
+  return {bridge, calls, retired, live};
+}
+
+function signalsHarness(backend, rootOverride = null) {
+  const listeners = new Map();
+  const windowListeners = new Map();
+  const root = rootOverride || {isConnected: true, innerHTML: "",
+    addEventListener(name, callback) {listeners.set(name, callback);},
+    removeEventListener(name) {listeners.delete(name);},
+    querySelector: () => null, querySelectorAll: () => []};
+  const window = {CompanionProduct: {bridgeNow: () => backend.bridge, unwrap: value => value},
+    lucide: {createIcons() {}},
+    addEventListener(name, callback) {windowListeners.set(name, callback);},
+    removeEventListener(name) {windowListeners.delete(name);}};
+  const context = vm.createContext({window, setTimeout, clearTimeout, TextEncoder, JSON, Date, Math,
+    Number, Object, Array, String, URLSearchParams, Set, Map});
+  vm.runInContext(source, context);
+  const page = context.window.CompanionExpressionSignalsPage;
+  const emit = (selector, dataset) => listeners.get("click")?.({target: {closest: probe =>
+    probe === selector ? {dataset} : null}});
+  return {page, root, emit,
+    /* 输入事件按真实路径派发（不直接调页面内部函数）。 */
+    input: target => listeners.get("input")?.({target}),
+    change: target => listeners.get("change")?.({target}),
+    dispatch: (name, detail) => windowListeners.get(name)?.({detail})};
+}
+
+/* 分享面板需要的那一点 DOM：`innerHTML` 写入时按标记重建按钮桩，`disabled` 取自
+   标记里是否带该属性；之后页面就地同步的 `button.disabled = …` 直接反映在桩上。
+   这样用例读的是「渲染出的属性 + 就地同步」，不是页面的内部状态。 */
+function shareDom() {
+  const listeners = new Map();
+  const stubs = new Map();
+  const SELECTORS = ["[data-share-preview]", "[data-share-apply]", "[data-share-export]"];
+  const root = {
+    isConnected: true,
+    _html: "",
+    get innerHTML() {return this._html;},
+    set innerHTML(value) {
+      this._html = value;
+      SELECTORS.forEach(selector => {
+        const attribute = selector.slice(1, -1);
+        const tag = value.match(new RegExp(`<button[^>]*\\b${attribute}\\b[^>]*>`));
+        stubs.set(selector, tag ? {disabled: /\sdisabled(?=[\s=>])/.test(tag[0])} : null);
+      });
+    },
+    addEventListener(name, callback) {listeners.set(name, callback);},
+    removeEventListener(name) {listeners.delete(name);},
+    querySelector: selector => stubs.get(selector) || null,
+    querySelectorAll: () => [],
+  };
+  return {
+    root,
+    button: selector => root.querySelector(selector),
+    /* 真浏览器不会给 disabled 的按钮派发 click —— 已知 disabled 的桩同样拒绝，避免用例假绿。 */
+    click: selector => {
+      const element = root.querySelector(selector);
+      if (element && element.disabled) return false;
+      listeners.get("click")?.({target: {closest: probe => probe === selector ? {dataset: {}} : null}});
+      return true;
+    },
+    input: value => listeners.get("input")?.({target: {value,
+      closest: probe => probe === "[data-share-import-json]" ? {value} : null}}),
+  };
+}
+
+const singleSource = [{key: "source-a", scopeKey: "scope-a", label: "私聊来源",
+  replyApi: `/${HOST}/targets/profile-a/roles/role-a/reply`}];
+
+const settleSignals = async page => {
+  for (let attempt = 0; attempt < 200 && page.state.busy; attempt += 1) await flush();
+};
+
+test("规则库停用一条规则后不会把已加载的页丢回第一页", async () => {
+  const backend = pagedSignals();
+  const {page, root, emit} = signalsHarness(backend);
+  page.mount(root, {sources: singleSource});
+  await settleSignals(page);
+  assert.equal(page.state.items.length, 2);
+
+  emit("[data-signal-more]");
+  await settleSignals(page);
+  emit("[data-signal-more]");
+  await settleSignals(page);
+  assert.equal(page.state.items.length, 6, "加载更多两次后应已加载 6 条");
+
+  const target = page.state.items.find(item => item.signal_id === "signal-1");
+  emit("[data-signal-action]", {id: target._key, signalAction: "retire"});
+  emit("[data-signal-confirm]", {id: target._key, signalConfirm: "yes"});
+  backend.retired.add("signal-1");
+  await settleSignals(page);
+
+  assert.deepEqual(page.state.items.map(item => item.signal_id).sort(),
+    ["signal-2", "signal-3", "signal-4", "signal-5", "signal-6"],
+    "停用一条规则后已加载的页必须保留，只少了被停用的那条");
+  page.unmount();
+});
+
+test("规则库收到其他工作区的更新通知后不会把列表打回第一页", async () => {
+  const backend = pagedSignals();
+  const {page, root, emit, dispatch} = signalsHarness(backend);
+  page.mount(root, {sources: singleSource});
+  await settleSignals(page);
+  emit("[data-signal-more]");
+  await settleSignals(page);
+  emit("[data-signal-more]");
+  await settleSignals(page);
+  assert.equal(page.state.items.length, 6);
+
+  const before = backend.calls.length;
+  dispatch("companion-expression-updated", {scopeKey: "scope-a"});
+  await settleSignals(page);
+  const refreshed = backend.calls.slice(before);
+
+  assert.equal(page.state.items.length, 6, "跨工作区通知触发的刷新不得丢已加载的页");
+  assert.ok(refreshed.some(call => call.query.after_id),
+    "刷新应重读已加载的页（带 after_id），而不是只重读第一页");
+  page.unmount();
+});
+
+test("规则库加载更多不会在页内堆叠重复行", async () => {
+  const backend = pagedSignals(["signal-1", "signal-2", "signal-3"]);
+  /* 让首页的 next_cursor 指回已加载的第一行，模拟后端窗口漂移：
+     追加回来的那一页会重新包含 signal-1 / signal-2，不按 key 去重就会在页内堆出重复行。 */
+  const original = backend.bridge.apiGet;
+  backend.bridge.apiGet = async (route, query = {}) => {
+    const value = await original(route, query);
+    if (!query.after_id) value.data.next_cursor = "signal-1";
+    return value;
+  };
+  const {page, root, emit} = signalsHarness(backend);
+  page.mount(root, {sources: singleSource});
+  await settleSignals(page);
+  const rows = () => page._internals.rows()["source-a"].adopted;
+  assert.equal(rows().items.length, 2, "首页两条");
+
+  emit("[data-signal-more]");
+  await settleSignals(page);
+  assert.equal(rows().items.map(item => String(item.signal_id)).sort().join(","),
+    "signal-1,signal-2,signal-3", "追加回来的页与已加载行重叠时，页内按 key 去重");
+  assert.equal(page.state.items.length, 3);
+  page.unmount();
+});
+test("全部来源都还没有可读取记录时不再声称「已显示其他来源」", async () => {
+  const unavailable = () => ({status: "ok", data: {items: [], counts: {}, next_cursor: null,
+    unavailable_reason: "role_binding_missing"}});
+  const backend = {bridge: {apiGet: async () => unavailable(), apiPost: async () => ({status: "ok", data: {}})}};
+  const {page, root} = signalsHarness(backend);
+  page.mount(root, {sources: [
+    {key: "source-a", scopeKey: "scope-a", label: "来源甲",
+      replyApi: `/${HOST}/targets/profile-a/roles/role-a/reply`},
+    {key: "source-b", scopeKey: "scope-b", label: "来源乙",
+      replyApi: `/${HOST}/targets/profile-b/roles/role-b/reply`},
+  ]});
+  await settleSignals(page);
+
+  assert.equal(page.state.notice, "全部来源都还没有可读取的表达学习记录。");
+  assert.doesNotMatch(root.innerHTML, /已显示其他来源/);
+  assert.doesNotMatch(root.innerHTML, /role_binding_missing(?![^<]*")/, "内部错误码不应出现在可见文本里");
+  assert.match(root.innerHTML, /这个来源还没有绑定角色/);
+  page.unmount();
+});
+
+test("规则库首次读取失败后重新读取会重试第 1 页", async () => {
+  const backend = pagedSignals();
+  const original = backend.bridge.apiGet;
+  let failing = true;
+  backend.bridge.apiGet = async (route, query = {}) => {
+    if (failing) return {status: "error", data: {code: "bridge_timeout"}};
+    return original(route, query);
+  };
+  const {page, root, emit} = signalsHarness(backend);
+  page.mount(root, {sources: singleSource});
+  await settleSignals(page);
+  assert.equal(page.state.items.length, 0);
+
+  failing = false;
+  emit("[data-signal-refresh]");
+  await settleSignals(page);
+  assert.equal(page.state.items.length, 2, "首次失败后重新读取应重试第 1 页");
+  page.unmount();
+});
+
+test("粘贴分享包后「预览导入」立即可用，清空回到灰色，提交只发一次", async () => {
+  const SHARE_PACK = JSON.stringify({schema: "private-companion-expression-pack", version: 1,
+    rule_groups: [{rules: [{kind: "style", label: "短称呼", pattern: "使用简短称呼"}]}]});
+  const posts = [];
+  const bridge = {
+    apiGet: async () => ({status: "ok", data: {items: [], counts: {adopted: 0},
+      capacity: {active: 0, limit: 480}, next_cursor: null}}),
+    apiPost: async (route, body) => {
+      posts.push({route, body});
+      if (route.endsWith("/style/import/preview")) return {status: "ok", data: {title: "测试分享",
+        importable_rule_count: 1, duplicate_rule_count: 0, capacity_blocked_count: 0, rejected_count: 0,
+        preview_token: "a".repeat(64),
+        candidates: [{dimension: "diction", observation: "短称呼", proposal: "使用简短称呼"}]}};
+      if (route.endsWith("/style/import/apply")) return {status: "ok", data: {imported_count: 1, replayed: false}};
+      return {status: "ok", data: {}};
+    },
+  };
+  const dom = shareDom();
+  const {page} = signalsHarness({bridge}, dom.root);
+  page.mount(dom.root, {sources: singleSource});
+  await settleSignals(page);
+
+  dom.click("[data-share-toggle]");
+  assert.equal(dom.button("[data-share-preview]").disabled, true, "刚打开分享面板时「预览导入」应是灰色");
+
+  /* 粘贴（真实路径：input 事件 + 读渲染出的 disabled 属性） */
+  dom.input(SHARE_PACK);
+  assert.equal(dom.button("[data-share-preview]").disabled, false, "粘贴合法分享包后「预览导入」应立即可点");
+  assert.equal(dom.button("[data-share-apply]").disabled, true, "还没预览时不能提交");
+
+  /* 清空回灰 */
+  dom.input("   ");
+  assert.equal(dom.button("[data-share-preview]").disabled, true, "清空后「预览导入」应回到灰色");
+
+  /* 再粘贴 → 真点一次 → 只发一次预览请求 */
+  dom.input(SHARE_PACK);
+  assert.equal(dom.click("[data-share-preview]"), true, "按钮可点时应能派发点击");
+  for (let index = 0; index < 120 && dom.button("[data-share-apply]").disabled !== false; index++) {
+    await flush();
+  }
+  assert.equal(posts.filter(call => call.route.endsWith("/style/import/preview")).length, 1,
+    "点一次「预览导入」只应发一次预览请求");
+  assert.equal(dom.button("[data-share-apply]").disabled, false, "预览成功后「加入待审队列」应可用");
+
+  /* 提交一次，之后不应再发第二次 */
+  assert.equal(dom.click("[data-share-apply]"), true);
+  for (let index = 0; index < 120 && dom.button("[data-share-apply]").disabled !== true; index++) {
+    await flush();
+  }
+  assert.equal(posts.filter(call => call.route.endsWith("/style/import/apply")).length, 1,
+    "点一次「加入待审队列」只应发一次提交请求");
+  assert.equal(dom.button("[data-share-apply]").disabled, true, "提交后按钮应回到不可点");
+  assert.equal(dom.click("[data-share-apply]"), false, "不可点时不应派发第二次提交");
+  assert.equal(posts.filter(call => call.route.endsWith("/style/import/apply")).length, 1);
+  page.unmount();
+});
+
+/* 同一条规则被同一角色的两个窗口同时列出：全部来源只显示一张卡，但筛到任一来源都要能看到它。 */
+test("同一条规则被两个来源同时列出时，筛到第二个来源仍能看到它", async () => {
+  const bridge = {
+    apiGet: async route => {
+      const own = route.includes("profile-a") ? "signal-a" : "signal-b";
+      return {status: "ok", data: {items: [SIGNAL_RULE("signal-shared"), SIGNAL_RULE(own)],
+        counts: {adopted: 2}, capacity: {active: 2, limit: 480}, next_cursor: null}};
+    },
+    apiPost: async () => ({status: "ok", data: {}}),
+  };
+  const {page, root, change} = signalsHarness({bridge});
+  page.mount(root, {sources: [
+    {key: "source-a", scopeKey: "scope-a", label: "来源甲",
+      replyApi: `/${HOST}/targets/profile-a/roles/role-a/reply`},
+    {key: "source-b", scopeKey: "scope-b", label: "来源乙",
+      replyApi: `/${HOST}/targets/profile-b/roles/role-b/reply`},
+  ]});
+  await settleSignals(page);
+  const cards = () => (root.innerHTML.match(/data-signal-action="retire"/g) || []).length;
+  assert.equal(cards(), 3, "全部来源时同一条规则只显示一张卡");
+
+  change({closest: probe => probe === "[data-rule-source-filter]" ? {value: "source-b"} : null});
+  assert.equal(cards(), 2, "筛到来源乙时，共享规则与来源乙自己的规则都应显示");
+  assert.match(root.innerHTML, /说法 signal-shared/);
+  assert.doesNotMatch(root.innerHTML, /当前筛选下没有表达规则/);
+  page.unmount();
+});
+
+/* 刷新时链中某一页失败：已显示的后页不能被永久踢出刷新范围。 */
+test("刷新中途某页失败后，已加载的后页仍会继续刷新", async () => {
+  const backend = pagedSignals();
+  const original = backend.bridge.apiGet;
+  let failingCursor = null;
+  backend.bridge.apiGet = async (route, query = {}) => {
+    if (query.after_id && query.after_id === failingCursor) throw {code: "bridge_timeout"};
+    return original(route, query);
+  };
+  const {page, root, emit} = signalsHarness(backend);
+  page.mount(root, {sources: singleSource});
+  await settleSignals(page);
+  emit("[data-signal-more]");
+  await settleSignals(page);
+  emit("[data-signal-more]");
+  await settleSignals(page);
+  assert.equal(page.state.items.length, 6, "先加载三页");
+
+  failingCursor = "signal-2";
+  emit("[data-signal-refresh]");
+  await settleSignals(page);
+  assert.ok(backend.calls.some(call => call.query.after_id === "signal-2"), "第二页确实失败过");
+
+  failingCursor = null;
+  const mark = backend.calls.length;
+  emit("[data-signal-refresh]");
+  await settleSignals(page);
+  const cursors = backend.calls.slice(mark).map(call => call.query.after_id || "").sort();
+  assert.deepEqual(cursors, ["", "signal-2", "signal-4"],
+    "失败过的页与它后面的页都要继续刷新，不能只留在成功前缀上");
+  page.unmount();
+});
