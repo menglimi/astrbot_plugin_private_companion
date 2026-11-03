@@ -199,11 +199,88 @@ class ToolCall:
         object.__setattr__(self, "arguments_json", canonical)
 
 
+# Tool schemas reach several clients (Google GenAI, OpenAI compatible, Anthropic)
+# and they do not accept the same JSON Schema. Google GenAI types ``enum`` as
+# ``list[str]``, so a JSON-Schema-legal integer enum fails inside the client while
+# the request is still being built: nothing is sent, every provider on that chain
+# fails the same way, and the whole conversation class stops answering. Keep the
+# constraint in a form every client can carry, and let the business layer own the
+# exact rule (``agenda.models.Schedule`` still rejects ``fold`` outside 0/1).
+_CHILD_MAP_KEYWORDS = ("properties", "patternProperties", "definitions", "$defs")
+_CHILD_NODE_KEYWORDS = ("items", "not", "additionalProperties")
+_CHILD_LIST_KEYWORDS = ("anyOf", "oneOf", "allOf", "prefixItems")
+
+
+def portable_tool_schema(schema):
+    """Return a copy of one tool JSON Schema that every provider client can build."""
+
+    if isinstance(schema, list):
+        return [portable_tool_schema(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    # Start from every other keyword unchanged and replace the nested positions
+    # we recurse into; a keyword we do not recurse into keeps its declared value.
+    result = {key: value for key, value in schema.items() if key != "enum"}
+    for key in _CHILD_MAP_KEYWORDS:
+        children = schema.get(key)
+        if isinstance(children, dict):
+            result[key] = {name: portable_tool_schema(child) for name, child in children.items()}
+    for key in _CHILD_LIST_KEYWORDS:
+        children = schema.get(key)
+        if isinstance(children, list):
+            result[key] = [portable_tool_schema(child) for child in children]
+    for key in _CHILD_NODE_KEYWORDS:
+        child = schema.get(key)
+        if isinstance(child, dict):
+            result[key] = portable_tool_schema(child)
+        elif isinstance(child, list):
+            result[key] = [portable_tool_schema(item) for item in child]
+    result.update(_portable_enum(schema))
+    return result
+
+
+def _portable_enum(schema):
+    """Keep a nonempty ``enum`` only when every value is a string."""
+    values = schema.get("enum")
+    if isinstance(values, list) and values and all(isinstance(value, str) for value in values):
+        return {"enum": list(values)}
+    if not isinstance(values, list) or not values:
+        return {}
+    # The values cannot travel as an enum, so state them where every client
+    # forwards them; the tool description is prompt material either way.
+    note = "可选值：" + "、".join(encode(value) for value in values)
+    description = schema.get("description")
+    if isinstance(description, str) and description.strip():
+        description = description.rstrip()
+        return {"description": description + ("" if description.endswith(("。", ".")) else "。") + note}
+    return {"description": note}
+
+
+def portable_tool_schema_text(parameters_json):
+    """Normalize one stored tool schema; leave text this function cannot parse alone."""
+    if not isinstance(parameters_json, str):
+        return parameters_json
+    try:
+        schema = json.loads(parameters_json)
+    except ValueError:
+        return parameters_json
+    if not isinstance(schema, dict):
+        return parameters_json
+    return encode(portable_tool_schema(schema))
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     action: str
     description: str
     parameters_json: str
+
+    def __post_init__(self):
+        # One gate for every declared tool: whatever module writes the schema,
+        # the stored declaration is the one the providers receive.
+        normalized = portable_tool_schema_text(self.parameters_json)
+        if normalized != self.parameters_json:
+            object.__setattr__(self, "parameters_json", normalized)
 
 
 @dataclass(frozen=True)

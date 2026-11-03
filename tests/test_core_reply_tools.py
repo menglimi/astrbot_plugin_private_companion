@@ -18,6 +18,11 @@ from astrbot.core.pipeline.process_stage.follow_up import _ACTIVE_AGENT_RUNNERS
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest
 from mcp.types import CallToolResult
 
+try:  # google-genai 由宿主提供；缺依赖时该用例跳过而不是假装通过。
+    from google.genai import types as genai_types
+except ImportError:  # pragma: no cover - the real host installs it
+    genai_types = None
+
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA, prepare_core_reply_event
 from astrbot_host.core_reply_tools import (CoreReplyToolSession, close_core_reply_tools, group_tool_manifest,
                                            inject_core_reply_tools, native_tool_name)
@@ -34,15 +39,19 @@ from tests.test_management_access import SCOPE
 from tests.test_semantic_integration import picture
 
 
+# 私聊目录才有 agenda 工具，也只有它们的历史 schema 会让 Gemini 请求构造期失败。
+PRIVATE_AGENDA_ACTIONS = ("memo.create", "memo.read", "memo.list", "memo.edit", "memo.complete", "memo.pin",
+                          "memo.unpin", "reminder.create", "reminder.read", "reminder.list", "reminder.cancel",
+                          "reminder.reschedule", "operation.lookup")
+
+
 class CoreReplyToolsTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
         self.app = NS(runtime=self.runtime, tasks=self.tasks, messages=self.messages, tools=self.tools,
                       agenda=AgendaService(self.runtime), require_running=lambda: require(self.tasks.check_generation()))
         self.addAsyncCleanup(close_core_reply_tools, self.app)
-        for action in ("memo.create", "memo.read", "memo.list", "memo.edit", "memo.complete", "memo.pin",
-                       "memo.unpin", "reminder.create", "reminder.read", "reminder.list", "reminder.cancel",
-                       "reminder.reschedule", "operation.lookup"):
+        for action in PRIVATE_AGENDA_ACTIONS:
             self.grant(self.important, SCOPE, action)
         self.authorized = 0
         self.authorize_result = Outcome.success(True)
@@ -390,6 +399,67 @@ class WideCoreReplyToolCatalogTests(ExternalFixture, unittest.IsolatedAsyncioTes
         self.assertEqual(self.extension_calls[0].context, self.context)
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) n FROM conversation_batches", ())["n"], 0)
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) n FROM model_calls", ())["n"], 0)
+
+
+class PrivateCatalogProviderSchemaTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
+    """The private catalog is the only place agenda declarations reach providers."""
+
+    def setUp(self):
+        super().setUp()
+        self.app = NS(runtime=self.runtime, tasks=self.tasks, messages=self.messages, tools=self.tools,
+                      agenda=AgendaService(self.runtime),
+                      require_running=lambda: require(self.tasks.check_generation()))
+        self.addAsyncCleanup(close_core_reply_tools, self.app)
+        for action in PRIVATE_AGENDA_ACTIONS:
+            self.grant(self.important, SCOPE, action)
+        self.event, self.request = self.prepare()
+
+    def prepare(self):
+        event = FakeEvent()
+
+        async def authorize(_prepared):
+            return Outcome.success(True)
+
+        prepare_core_reply_event(event, {"context": self.context, "event_id": "schema-portability"},
+                                 authorize=authorize)
+        request = NS(func_tool=None, system_prompt="original persona")
+        inject_core_reply_tools(event, request, application=self.app)
+        return event, request
+
+    def declarations(self):
+        return self.request.func_tool.google_schema()["function_declarations"]
+
+    def assert_portable(self, node, where):
+        if isinstance(node, dict):
+            values = node.get("enum")
+            if values is not None:
+                self.assertIsInstance(values, list, where)
+                self.assertTrue(values, where)
+                self.assertTrue(all(isinstance(value, str) for value in values),
+                                f"{where}: every provider client needs a list[str] enum, got {values!r}")
+            for child in node.values():
+                self.assert_portable(child, where)
+        elif isinstance(node, list):
+            for child in node:
+                self.assert_portable(child, where)
+
+    @unittest.skipUnless(genai_types is not None, "google-genai 由宿主提供，未安装时跳过 provider 构造契约")
+    def test_private_catalog_declarations_construct_in_the_google_genai_client(self):
+        declarations = self.declarations()
+        names = {declaration["name"] for declaration in declarations}
+        # 修复前正是这两个声明携带 schedule.fold 的整数 enum。
+        self.assertTrue({"companion_v2_memo_create", "companion_v2_reminder_reschedule"} <= names, names)
+        # gemini_source builds exactly this object before sending, so a schema a
+        # provider client cannot construct fails the turn before any request.
+        genai_types.Tool(function_declarations=declarations)
+
+    def test_private_catalog_declarations_only_carry_string_enums(self):
+        for declaration in self.declarations():
+            self.assert_portable(declaration.get("parameters") or {}, declaration["name"])
+
+    def test_every_stored_tool_schema_is_portable(self):
+        for spec in self.tools.catalog:
+            self.assert_portable(json.loads(spec.parameters_json), spec.action)
 
 
 if __name__ == "__main__":

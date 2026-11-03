@@ -259,6 +259,24 @@ class AgendaToolSchemaTests(unittest.TestCase):
         self.assertEqual(set(schema["anyOf"][0]["required"]), {"schedule", "message"})
         self.assertEqual(set(schema["anyOf"][1]["required"]), {"memo_id", "expected_memo_revision"})
 
+    def test_schedule_fold_stays_a_bounded_integer_instead_of_an_enum(self):
+        from companion_v2.conversation.tool_loop import specification
+
+        schedule = json.loads(specification(
+            "reminder.create", *TOOL_FIELDS["reminder.create"]).parameters_json)["properties"]["schedule"]
+
+        fold = schedule["properties"]["fold"]
+        # 整数 enum 会让 Gemini 在本地构造请求时失败；边界与说明承担同样的约束。
+        self.assertEqual(fold["type"], "integer")
+        self.assertNotIn("enum", fold)
+        self.assertEqual((fold["minimum"], fold["maximum"]), (0, 1))
+        self.assertIn("0", fold["description"])
+        self.assertIn("1", fold["description"])
+        # 字符串 enum 本来就是每个 provider 都能构造的，修复不能把它们一起删掉。
+        self.assertEqual(schedule["properties"]["frequency"]["enum"],
+                         ["once", "daily", "weekly", "monthly", "yearly"])
+        self.assertEqual(schedule["properties"]["gap_policy"]["enum"], ["reject", "shift_forward"])
+
     def test_reminder_instruction_forbids_memo_substitution(self):
         from companion_v2.conversation.tool_loop import TOOL_INSTRUCTION
 

@@ -22,7 +22,7 @@ from companion_v2.conversation.native_tool_media import native_image_data
 from companion_v2.execution.models import TaskContext, TaskError, digest, encode, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import OperationRef, ScopeKind, VersionRef
-from companion_v2.model_gateway.models import ToolSpec
+from companion_v2.model_gateway.models import ToolSpec, portable_tool_schema
 
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA
 from .core_reply_tool_execution import executor_for, supports_native_external
@@ -180,7 +180,11 @@ class CoreReplyFunctionTool(FunctionTool):
         description, parameters = core_image_tool_contract(offered.spec.action, offered.spec.description,
                                                           json.loads(offered.spec.parameters_json),
                                                           reference_limit=reference_limit)
-        super().__init__(name=native_tool_name(offered.spec.action), description=description, parameters=parameters)
+        # Final gate for this request's declarations: the image contract above
+        # rewrites parameters, and only what is handed to AstrBot reaches a
+        # provider client.
+        super().__init__(name=native_tool_name(offered.spec.action), description=description,
+                         parameters=portable_tool_schema(parameters))
         self._session, self._action = session, offered.spec.action
 
     async def call(self, context, **kwargs):
