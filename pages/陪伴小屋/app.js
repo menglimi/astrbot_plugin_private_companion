@@ -4030,6 +4030,18 @@ function renderPersonaPage(){
   const workspace=personaRecreationMode==='questionnaire'?product.workspace('persona'):product.workspace('designer',personaRecreationMode);
   return `<nav class="section-chips" aria-label="人格处理">${modes.map(([id,label])=>`<button type="button" class="section-chip${personaRecreationMode===id?' is-active':''}" data-persona-recreation="${id}" aria-pressed="${personaRecreationMode===id}">${label}</button>`).join('')}</nav>${workspace}`;
 }
+document.addEventListener('companion:persona-mode-change',event=>{
+  const mode=event.detail?.mode;
+  if(!['create','optimize'].includes(mode))return;
+  personaRecreationMode=mode;
+  // A restored draft already lives in the iframe. Update the entry without
+  // remounting it and interrupting the restore operation.
+  document.querySelectorAll('[data-persona-recreation]').forEach(button=>{
+    const active=button.dataset.personaRecreation===mode;
+    button.classList.toggle('is-active',active);
+    button.setAttribute('aria-pressed',String(active));
+  });
+});
 function renderHostWorkspace(){return product.workspace("host");}
 function renderAppearancePageOriginal(){
   return `<div class="settings-heading"><div><h2>外观与设置</h2></div>${chip('仅影响拓展页','lavender')}</div><section class="panel content-panel appearance-card"><div data-appearance-inline>${appearancePanel()}</div></section>`;
