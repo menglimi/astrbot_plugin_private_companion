@@ -73,13 +73,17 @@ class ReplyManagement:
                 batches = self.app.runtime.read_all(batch_select + """
                     json_extract(b.context_json, '$.role_binding.scope.installation_id') = ?
                     AND json_extract(b.context_json, '$.role_binding.scope.platform') = ?
+                    AND json_extract(b.context_json, '$.role_binding.scope.kind') = ?
                     AND json_extract(b.context_json, '$.role_binding.scope.native_scope_id') = ?
                     AND json_extract(b.context_json, '$.role_binding.scope.bot_id') = ?
                     AND json_extract(b.context_json, '$.role_binding.scope.account_id') = ?
+                    AND json_extract(b.context_json, '$.role_binding.scope.conversation_id') = ?
+                    AND json_extract(b.context_json, '$.role_binding.scope.session_id') = ?
                     AND json_extract(b.context_json, '$.role_binding.role.subject_id') = ?
                     ORDER BY b.created_at DESC, b.rowid DESC LIMIT ?""",
-                    (scope.installation_id, scope.platform, scope.native_scope_id, scope.bot_id,
-                     scope.account_id, self.target.role.subject_id, recent_limit))
+                    (scope.installation_id, scope.platform, scope.kind.value, scope.native_scope_id,
+                     scope.bot_id, scope.account_id, scope.conversation_id, scope.session_id,
+                     self.target.role.subject_id, recent_limit))
             else:
                 batches = ()
             recent = []

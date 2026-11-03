@@ -188,6 +188,34 @@ class GroupReplyHostAPITests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.request())["data"]["settings"]["group_air_guard_max_bot_replies"], 5)
         self.assertEqual((await self.request(query="session_id=201_300"))["data"]["settings"]["group_air_guard_max_bot_replies"], 7)
 
+    async def test_reply_diagnostics_show_only_the_selected_group_session(self):
+        await self.start_host()
+        shared = await self.receive_group()
+        first_member = await self.receive_group(unique=True, sender="201")
+        second_member = await self.receive_group(unique=True, sender="202")
+        # Every native session in one group keeps its own diagnostic window.
+        shared_status = (await self.request())["data"]
+        self.assertEqual([item["batch_id"] for item in shared_status["recent"]], [shared])
+        first_status = (await self.request(query="session_id=201_300"))["data"]
+        self.assertEqual([item["batch_id"] for item in first_status["recent"]], [first_member])
+        second_status = (await self.request(query="session_id=202_300"))["data"]
+        self.assertEqual([item["batch_id"] for item in second_status["recent"]], [second_member])
+        self.assertEqual((await self.request(target="group-b"))["data"]["recent"], [])
+
+    async def test_missing_group_account_reports_an_actionable_error(self):
+        await self.start_host()
+        selected = self.controller.settings.target("group-a")
+        bridge = self.controller.session.bridge.groups
+        bridge.accounts.pop((selected.platform_id, selected.account_id))
+        status = await self.request()
+        self.assertEqual(status["status"], "error", status)
+        self.assertEqual(status["data"]["code"], "host_account_unavailable")
+        self.assertIn("账号", status["reason"])
+        style = await self.request("/style", query="state=adopted&limit=50")
+        self.assertEqual(style["status"], "error", style)
+        self.assertEqual(style["data"]["code"], "host_account_unavailable")
+        self.assertIn("账号", style["reason"])
+
     async def test_interjection_preferences_are_saved_to_the_current_group_window(self):
         await self.start_host()
         initial = await self.request("/participation")
