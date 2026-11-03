@@ -477,8 +477,8 @@ class GroupExpressionFamilyTests(GroupFixture, unittest.IsolatedAsyncioTestCase)
         second = await self.turn()
         self.assertNotEqual(digest(first.scope), digest(second.scope))
         limit = read_settings(app.runtime, second).active_signal_limit
-        pack = build_pack([{"dimension": "diction", "observation": "新窗口更短地接话",
-                            "proposal": "先接住再补一句"}], title="导入容量")
+        pack = build_pack([{"dimension": "diction", "observation": "旧版群规则",
+                            "proposal": PROPOSAL}], title="导入容量")
         manager = ExpressionStyleManagement(app)
 
         preview = manager.preview_import(operator=self.operator(app), context=second,

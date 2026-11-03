@@ -33,7 +33,7 @@ from . import rule_support
 from .configuration import read_settings
 from .learning import DIMENSIONS, candidate_signature, form_identity, normalize_applicability
 from .sharing import MAX_IMPORT_SIGNALS, build_pack, normalize_pack
-from .window_scope import active_rule_count, rule_reason, rule_scope_counts
+from .window_scope import active_rule_count, row_usable, rule_reason, rule_scope_counts
 
 
 SHARE_PACK_SOURCE = "shared_pack"
@@ -472,10 +472,13 @@ class ExpressionStyleManagement:
         active_count = active_rule_count(self.runtime, context, owner_key, keys,
                                          samples=self.samples, at=at)
         limit = read_settings(self.runtime, context).active_signal_limit
-        rows = self.runtime.read_all(f"""SELECT signal_id, dimension, observation, proposal,
-                applicability_json, state FROM expression_style_signals
-            WHERE owner_key = ? AND scope_key IN ({placeholders})
-              AND state IN ('pending', 'adopted')""", (owner_key, *keys))
+        rows = [row for row in self.runtime.read_all(f"""SELECT s.signal_id, s.dimension,
+                s.observation, s.proposal, s.applicability_json, s.state,
+                s.scope_key, s.evidence_json, r.sample_json
+            FROM expression_style_signals s JOIN expression_style_runs r ON r.run_id = s.run_id
+            WHERE s.owner_key = ? AND s.scope_key IN ({placeholders})
+              AND s.state IN ('pending', 'adopted')""", (owner_key, *keys))
+            if row_usable(context, row, samples=self.samples, at=at)]
         existing, known_forms = set(), set()
         for row in rows:
             applicability = normalize_applicability(json.loads(row["applicability_json"]))
