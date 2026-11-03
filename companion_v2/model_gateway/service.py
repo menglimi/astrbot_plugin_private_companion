@@ -225,6 +225,24 @@ class LocalModelGateway:
             return False, ceiling
         return True, ceiling
 
+    def output_ceiling(self, run: TaskRun, request: PromptRequest) -> int:
+        """Read-only: the output ceiling this request would be dispatched with.
+
+        ``open_session`` resolves the route once and freezes the resulting
+        ceiling into the plan envelope, so that number is what a caller may size
+        its own ask from: it is the value this window saved for the task, and a
+        provider that cannot emit it refuses the plan instead of being asked for
+        it. The registered profile default is only what an installation that
+        never saved one inherits, so it must not stand in for this value.
+
+        ``_task_role_request`` and ``resolve`` are exactly what ``open_session``
+        runs before it records anything, so the request judged here is the one
+        that would be sent, and the peek costs no ``model_requests`` row, no
+        adopted plan and no budget hold.
+        """
+        plan = self.router.resolve(run, self._task_role_request(run, request))
+        return plan.envelope.max_output_tokens
+
     def open_session(self, run: TaskRun, request: PromptRequest, *, tools: tuple[ToolSpec, ...] = (),
                      tool_filters: tuple[dict, ...] = (), independent_providers=None):
         """Open the one model session and decide this round's effective tools.

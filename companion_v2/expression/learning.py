@@ -41,14 +41,16 @@ MAX_PROPOSAL_CHARS = 1200
 # observation, a proposal, an applicability map and a concrete expression form.
 # Measured answers (2026-10-30): summary plus three short candidates and their
 # JSON envelope occupied 1098-1318 output tokens, i.e. 300-370 tokens per
-# candidate. The ceiling such a request executes under is
-# ``model.role.expression.learn.max_output_tokens``, which defaults to the
-# reply-sized ceiling of the same window, and a thinking model spends part of it
-# on its own reasoning before it writes one visible character (Gemini 3 counts
-# thinking inside max_output_tokens). Asking for the product maximum regardless
-# of that ceiling is how one run ended with a 123-character body while ~1968
-# tokens of its ceiling never became visible text, so the count is derived here
-# instead of fixed.
+# candidate. The ceiling such a request executes under is the one its resolved
+# route carries — the value the window saved for
+# ``model.role.expression.learn.max_output_tokens``, which routing refuses when a
+# selected provider cannot emit it. The registered profile default is only what an
+# installation that never saved one inherits, so it is not that ceiling and must
+# not be substituted for it. A thinking model spends part of the ceiling on its
+# own reasoning before it writes one visible character (Gemini 3 counts thinking
+# inside max_output_tokens). Asking for the product maximum regardless of that
+# ceiling is how one run ended with a 123-character body while ~1968 tokens of its
+# ceiling never became visible text, so the count is derived here instead of fixed.
 LEARNING_SIGNAL_TOKENS = 400
 LEARNING_SUMMARY_TOKENS = 150
 LEARNING_ANSWER_SHARE = (2, 3)
