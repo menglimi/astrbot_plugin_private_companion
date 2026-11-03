@@ -116,6 +116,18 @@ class MultiPrivateBridge(NativePrivateBridge):
         self.groups = MultiGroupBridge(*args, group_targets=settings.group_targets, authority=authority,
                                        settings=settings, **group_options)
 
+    def sync_settings(self, settings):
+        """Replace this bridge's routing snapshot with the confirmed mapping.
+
+        Confirming the first core window adds a precise private target while the
+        bridge keeps the wildcard snapshot it was assembled with. Without this,
+        ``target_for_scope`` returns the old target and the admission check fails
+        with ``host_target_mismatch`` until the plugin is reloaded.
+        """
+        self.settings = settings
+        self.targets = {target.route_key: target for target in settings.targets}
+        self.groups.sync_settings(settings)
+
     def target_for_scope(self, scope):
         if scope.kind is ScopeKind.GROUP:
             return self.groups.target_for_scope(scope)
@@ -286,6 +298,10 @@ class MultiGroupBridge(NativeGroupBridge):
         self.authority, self.settings = authority, settings
         super().__init__(*args, **kwargs)
 
+    def sync_settings(self, settings):
+        """让运行中的桥接看到刚确认的群目标，而不必重载插件。"""
+        self.settings = settings
+
     def target_for_route(self, platform_id, account_id, group_id):
         return (super().target_for_route(platform_id, account_id, group_id)
                 or self.settings.group_target(platform_id, account_id, group_id))
@@ -406,6 +422,12 @@ class CoreReplyOutcome(Outcome):
 
 
 class MultiHostSession:
+    def sync_settings(self, settings):
+        """Adopt a mapping confirmed while this session is already running."""
+        self.settings = settings
+        self.authority.settings = settings
+        self.bridge.sync_settings(settings)
+
     def __init__(self, runtime, native_context, *, settings, personas, authority, native_types,
                  provider_fingerprint, runtime_instance_id, now, native_tool_port=None, news_port=None,
                  solar_term_port=None, qzone_transport=None, balance_port=None, weather_ports=None,
