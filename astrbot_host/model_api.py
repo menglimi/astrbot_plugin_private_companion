@@ -657,7 +657,7 @@ class ModelWebAPI:
 
     def _laya_service(self):
         """Use the same global configuration as every live conversation."""
-        from .laya_client import LayaDecisionClient
+        from .laya_client import laya_client_factory
         root = Path(getattr(self.controller, "data_root", Path.cwd())).resolve()
         session = getattr(self.controller, "session", None) or getattr(self.controller, "last_session", None)
         application = getattr(session, "application", None)
@@ -665,7 +665,8 @@ class ModelWebAPI:
         runtime = getattr(application, "runtime", None) or getattr(self.controller, "runtime", None)
         origin_key = getattr(target, "key", None)
         return LayaDecisionService(LayaSettingsStore(root),
-                                   runtime=runtime, origin_key=origin_key, client_factory=LayaDecisionClient)
+                                   runtime=runtime, origin_key=origin_key,
+                                   client_factory=laya_client_factory(getattr(self.controller, "context", None)))
 
     def _search_settings_store(self):
         return SearchSettingsStore(Path(getattr(self.controller, "data_root", Path.cwd())))

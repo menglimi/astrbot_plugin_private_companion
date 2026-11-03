@@ -69,7 +69,7 @@ class ModelRouter:
             if profile.default_fallback and profile.default_fallback not in self.providers:
                 raise ValueError("model task fallback must select a loaded provider")
             validate_targets(checked_rules(profile.replacement_rules), self.providers,
-                             capabilities=profile.capabilities)
+                             capabilities=profile.capabilities, task_kind=profile.kind)
 
     def provider_default(self, context, profile, snapshot=None):
         """Read the host's current conversation route before sealing a model plan."""
@@ -122,7 +122,8 @@ class ModelRouter:
     def _validate_route_targets(self, profile, values, *, max_output_tokens=None):
         try:
             validate_targets(checked_rules(values["replacement_rules"]), self.providers,
-                             capabilities=profile.capabilities, max_output_tokens=max_output_tokens)
+                             capabilities=profile.capabilities, max_output_tokens=max_output_tokens,
+                             task_kind=profile.kind)
         except ValueError as error:
             raise TaskError("model_route_invalid", str(error)) from error
 
@@ -144,6 +145,22 @@ class ModelRouter:
             raise TaskError("model_provider_unavailable", "configured provider has no local adapter")
         return match, selected, in_scope
 
+    def cache_identity(self, context, kind, *, at):
+        """Invalidate semantic verdicts when task configuration or adapters change."""
+        profile = self.profiles.get(kind)
+        if profile is None:
+            return None
+        target = ConfigTarget(context.scope.installation_id, ConfigLayer.WINDOW,
+                              context.role_binding.role, context.scope)
+        snapshot = require(self.configuration.read(context.actor, target=target,
+            group_id=profile.group, observed_at=at))
+        snapshot = self.apply_provider_default(profile, snapshot, self.provider_default(context, profile, snapshot))
+        values = {name.rsplit(".", 1)[1]: item.value for name, item in snapshot.fields.items()}
+        identifiers = {values["provider"], values["fallback"]}
+        identifiers.update(rule.provider_id for rule in checked_rules(values["replacement_rules"]))
+        bindings = [self.providers[key].binding if key in self.providers else key for key in sorted(identifiers)]
+        return digest([snapshot.resolution_token, values, bindings])
+
     def selected_route(self, context, kind, request, *, at):
         """Resolve the configured primary model and provider chain without dispatch."""
         profile = self.profiles.get(kind)
@@ -160,7 +177,7 @@ class ModelRouter:
         ceiling, basis = self._output_ceiling(profile, snapshot, values, self.providers)
         if basis == "explicit":
             self._validate_route_targets(profile, values, max_output_tokens=ceiling)
-        if any(not set(profile.capabilities).issubset(provider.capabilities)
+        if any(not provider.supports_task(profile.kind) or not set(profile.capabilities).issubset(provider.capabilities)
                or ceiling > provider.maximum_output_tokens for provider in providers):
             raise TaskError("model_capability_mismatch", "selected provider cannot fulfill this task profile")
         primary = providers[0]
@@ -209,6 +226,8 @@ class ModelRouter:
             raise TaskError("model_route_invalid", str(error)) from error
         values["max_output_tokens"] = ceiling
         for provider in selected:
+            if not provider.supports_task(profile.kind):
+                raise TaskError("model_capability_mismatch", "the provider does not support this task")
             if not set(profile.capabilities).issubset(provider.capabilities):
                 raise TaskError("model_capability_mismatch", "provider lacks required model task capabilities")
             if request.native_video_input and "video" not in provider.capabilities:

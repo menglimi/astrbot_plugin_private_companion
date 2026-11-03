@@ -147,7 +147,7 @@ def checked_rules(raw: str) -> tuple[RouteRule, ...]:
     return result.rules
 
 
-def validate_targets(rules, providers, *, capabilities, max_output_tokens=None):
+def validate_targets(rules, providers, *, capabilities, max_output_tokens=None, task_kind=None):
     """Check every declared route target against the loaded providers.
 
     ``max_output_tokens=None`` compares no ceiling: a registry default is
@@ -158,6 +158,8 @@ def validate_targets(rules, providers, *, capabilities, max_output_tokens=None):
         provider = providers.get(rule.provider_id)
         if provider is None:
             raise ValueError("route target has no registered V2 provider")
+        if task_kind is not None and not provider.supports_task(task_kind):
+            raise ValueError("route target does not support this task")
         if not set(capabilities).issubset(provider.capabilities):
             raise ValueError("route target lacks required task capabilities")
         if max_output_tokens is not None and max_output_tokens > provider.maximum_output_tokens:

@@ -32,6 +32,8 @@ _SAFE_FAILURE_REASONS = {
     "laya_response_invalid": "Laya 返回格式无效。",
     "laya_response_too_large": "Laya 响应超过允许大小。",
     "laya_contract_invalid": "Laya 返回了插件合同之外的分类。",
+    "astrbot_decision_unavailable": "当前 AstrBot 未提供官方判断接口。",
+    "astrbot_decision_failed": "AstrBot 判断调用失败，请查看宿主日志。",
 }
 
 
@@ -122,13 +124,13 @@ def _apply_followup_confidence_gate(decision: LayaDecision, facts: dict, thresho
 
 
 def _ledger_mode(mode):
-    """The decision ledger predates Workers AI; that backend shares the remote row.
+    """New remote backends share the existing remote row and record their backend.
 
     ``laya_decision_events.mode`` carries a CHECK constraint for the three
-    original backends, so a call from the Workers AI transport would otherwise
+    original backends, so a call from an additional transport would otherwise
     lose its whole ledger row instead of being recorded.
     """
-    return "remote" if mode == "workers_ai" else mode
+    return "remote" if mode in {"workers_ai", "astrbot"} else mode
 
 
 class LayaDecisionService:
@@ -169,6 +171,9 @@ class LayaDecisionService:
 
     def status(self) -> dict:
         status = self.store.read()
+        provider_status = getattr(self.client_factory, "provider_status", None)
+        if callable(provider_status):
+            status.update(provider_status())
         runtime_status = getattr(self.client_factory, "runtime_status", None)
         if status["mode"] == "local" and callable(runtime_status):
             status.update(runtime_status(local_model_path=status["local_model_path"]))
@@ -178,15 +183,17 @@ class LayaDecisionService:
         return self.store.update(revision, changes)
 
     def _client(self, values: dict) -> LayaDecisionClient:
-        if values["mode"] != "local" and not values["endpoint"].strip():
+        if values["mode"] not in {"local", "astrbot"} and not values["endpoint"].strip():
             raise LayaClientError("laya_endpoint_missing", "远程或 Jev 模式需要填写判断服务地址")
         if self.client_factory is None:
             raise LayaClientError("laya_client_unavailable", "Laya 执行适配器暂不可用，本轮继续普通回复流程")
+        options = {"astrbot_provider_id": values["astrbot_provider_id"]} if values["mode"] == "astrbot" else {}
         return self.client_factory(mode=values["mode"], endpoint=values["endpoint"],
                                    local_model_path=values["local_model_path"],
                                    api_key=values["api_key"], timeout_seconds=values["timeout_seconds"],
                                    request_format=values.get("request_format", "native"),
-                                   model=(values.get("remote_model", "").strip() or "multilingual"))
+                                   model=(values.get("remote_model", "").strip() or MODE_MODELS[values["mode"]]),
+                                   **options)
 
     async def test(self) -> dict:
         values = self.store.raw()
@@ -205,7 +212,8 @@ class LayaDecisionService:
         self._record(test_values, "ok", round((perf_counter() - started) * 1000), decision=decision,
                      trace=getattr(client, "last_trace", None))
         return {"status": "ok", "mode": values["mode"],
-                "default_model": values["remote_model"] or MODE_MODELS[values["mode"]],
+                "default_model": (values["astrbot_provider_id"] or "astrbot-default") if values["mode"] == "astrbot"
+                    else values["remote_model"] or MODE_MODELS[values["mode"]],
                 "decision": decision}
 
     async def decide(self, facts: dict) -> dict:
@@ -324,6 +332,9 @@ class LayaDecisionService:
             safe_reason = _safe_log_reason(reason_code, reason) if reason_code else None
             trace = trace if isinstance(trace, dict) else {}
             processing = dict(trace.get("processing") or {})
+            processing["backend"] = values["mode"]
+            if values["mode"] == "astrbot":
+                processing["provider_id"] = values["astrbot_provider_id"]
             processing.update({"status": status, "reason_code": reason_code})
             if safe_reason:
                 processing["reason"] = safe_reason

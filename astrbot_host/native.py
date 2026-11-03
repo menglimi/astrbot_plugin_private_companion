@@ -268,6 +268,7 @@ def remember_session_settings(umo, services):
 
 
 def installed_native_types() -> NativeAdapterTypes:
+    from .decision_provider import assemble_decision_providers
     return NativeAdapterTypes(
         ASTRBOT_VERSION,
         AstrMessageEvent,
@@ -293,6 +294,7 @@ def installed_native_types() -> NativeAdapterTypes:
         file_loader=load_native_file,
         video_provider_type=ProviderGoogleGenAI,
         video_provider_factory=_native_video_provider,
+        decision_provider_factory=assemble_decision_providers,
         # AstrBot's native Google GenAI provider also speaks text; the V2 text
         # adapter translates its OpenAI-shaped payload onto generate_content.
         text_provider_types=(ProviderGoogleGenAI,),

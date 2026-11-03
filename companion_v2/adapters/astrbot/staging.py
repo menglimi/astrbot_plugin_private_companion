@@ -95,6 +95,7 @@ class NativeAdapterTypes:
     persona_snapshot_lookup: object | None = None
     persona_selection_lookup: object | None = None
     text_provider_types: tuple[type, ...] = ()
+    decision_provider_factory: object | None = None
 
     @property
     def provider_types(self):

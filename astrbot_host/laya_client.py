@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import json
@@ -41,6 +42,14 @@ WORKERS_AI_PATH = "/ai/run"
 
 
 from companion_v2.decision.client import LayaClientError
+
+
+def laya_client_factory(context):
+    from .decision_provider import decision_status
+    factory = partial(LayaDecisionClient, context=context)
+    factory.runtime_status = LayaDecisionClient.runtime_status
+    factory.provider_status = lambda: decision_status(context)
+    return factory
 
 
 def _endpoint(value: str, target: str = SYSTEMONE_PATH) -> str:
@@ -524,16 +533,19 @@ class LayaDecisionClient:
 
     def __init__(self, *, mode: str = "local", endpoint: str = "", api_key: str = "",
                  timeout_seconds: int = 8, local_model_path: str = "",
-                 request_format: str = "native", model: str = DEFAULT_MODEL):
-        if mode not in {"local", "remote"}:
-            raise LayaClientError("laya_mode_invalid", "Laya 接入方式必须是 local 或 remote")
+                 request_format: str = "native", model: str = "",
+                 context=None, astrbot_provider_id: str = ""):
+        if mode not in MODE_MODELS:
+            raise LayaClientError("laya_mode_invalid", "不支持的 Laya 接入方式")
+        self.context, self.astrbot_provider_id = context, astrbot_provider_id
+        if mode == "astrbot":
+            model = "astrbot-default" if not astrbot_provider_id else astrbot_provider_id
         if request_format not in {"native", "cloudflare"}:
             raise LayaClientError("laya_request_format_invalid", "Laya 请求格式必须是 native 或 cloudflare")
-        if type(model) is not str or not model.strip() or len(model) > 256:
+        if type(model) is not str or len(model) > 256:
             raise LayaClientError("laya_model_invalid", "Laya 远程模型名无效")
         self.mode = mode
         self.request_format = request_format
-        self.model = model.strip() if mode == "remote" else DEFAULT_MODEL
         self.local_model_path = local_model_path
         self.model = str(model or "").strip() or MODE_MODELS[mode]
         self.endpoint, self.transport = "", None
@@ -687,13 +699,26 @@ class LayaDecisionClient:
         }, enabled_fields=enabled_fields)
 
     def _parse_body(self, raw: str) -> dict:
+        if self.mode in {"jev", "workers_ai"}:
+            return self.transport.document(raw)
         document = _parse_document(raw)
-        if self.request_format == "cloudflare":
+        if self.mode != "astrbot" and self.request_format == "cloudflare":
             return _cloudflare_result(document)
         return document
 
     async def _post(self, model_state: str, questions: dict) -> str:
-        if self.request_format == "cloudflare":
+        if self.mode == "astrbot":
+            from .decision_provider import ask
+            try:
+                answers = await asyncio.wait_for(ask(self.context, questions, model_state,
+                    provider_id=self.astrbot_provider_id), timeout=self.timeout_seconds)
+            except asyncio.TimeoutError as error:
+                raise LayaClientError("laya_inference_timeout", "AstrBot 判断调用超时") from error
+            return json.dumps({"answers": answers, "provider_id": self.astrbot_provider_id,
+                               "usage_availability": "unavailable"}, ensure_ascii=False)
+        if self.mode in {"jev", "workers_ai"}:
+            payload = self.transport.payload(model_state, questions)
+        elif self.request_format == "cloudflare":
             # Cloudflare Workers AI wraps the model payload under ``input``.
             payload = {"model": self.model,
                        "input": {"state": model_state, "questions": questions}}

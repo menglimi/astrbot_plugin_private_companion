@@ -21,7 +21,7 @@ DEFAULT_DECISION_FIELDS = {name: True for name in CONFIGURABLE_DECISION_FIELDS}
 
 # The model each backend pins when the operator leaves `remote_model` empty.
 # Local and SystemOne use Laya's own checkpoints; a Jev gateway serves `jev-latest`.
-MODE_MODELS = {"local": "multilingual", "remote": "multilingual", "jev": "jev-latest",
+MODE_MODELS = {"local": "multilingual", "remote": "multilingual", "jev": "jev-latest", "astrbot": "",
                # Cloudflare's own decision model draws on the daily Workers AI
                # neuron allowance; third-party models such as typesafe/jev are
                # billed separately and need an override here.
@@ -31,6 +31,7 @@ MODE_MODELS = {"local": "multilingual", "remote": "multilingual", "jev": "jev-la
 DEFAULTS = {
     "enabled": False,
     "mode": "local",
+    "astrbot_provider_id": "",
     # native: Laya SystemOne flat body. cloudflare: Workers AI envelope with
     # the state/questions nested under input.
     "request_format": "native",
@@ -198,12 +199,12 @@ class LayaSettingsStore:
     def _validate(values: dict) -> None:
         if type(values["enabled"]) is not bool:
             raise LayaSettingsError("laya_config_invalid", "enabled 必须是布尔值")
-        if values["mode"] not in {"local", "remote"}:
-            raise LayaSettingsError("laya_config_invalid", "mode 必须是 local 或 remote")
+        if values["mode"] not in MODE_MODELS:
+            raise LayaSettingsError("laya_config_invalid", "不支持的判断接入方式")
         if values.get("request_format", "native") not in {"native", "cloudflare"}:
             raise LayaSettingsError("laya_config_invalid", "request_format 必须是 native 或 cloudflare")
-        for key in ("endpoint", "api_key", "local_model_path", "remote_model"):
-            limit = 256 if key == "remote_model" else 4096
+        for key in ("endpoint", "api_key", "local_model_path", "remote_model", "astrbot_provider_id"):
+            limit = 256 if key in {"remote_model", "astrbot_provider_id"} else 4096
             if type(values[key]) is not str or len(values[key]) > limit:
                 raise LayaSettingsError("laya_config_invalid", f"{key} 配置无效")
         if type(values["timeout_seconds"]) is not int or isinstance(values["timeout_seconds"], bool) or not 1 <= values["timeout_seconds"] <= 120:
@@ -226,12 +227,14 @@ class LayaSettingsStore:
             "configuration_scope": "global",
             "enabled": values["enabled"],
             "mode": values["mode"],
+            "astrbot_provider_id": values["astrbot_provider_id"],
             "request_format": values.get("request_format", "native"),
             "remote_model": values.get("remote_model", ""),
             "local_model_path": values["local_model_path"],
             "endpoint": values["endpoint"],
             "remote_model": values["remote_model"],
-            "default_model": values["remote_model"] or MODE_MODELS[values["mode"]],
+            "default_model": (values["astrbot_provider_id"] or "astrbot-default") if values["mode"] == "astrbot"
+                else values["remote_model"] or MODE_MODELS[values["mode"]],
             "api_key_set": bool(values["api_key"]),
             "timeout_seconds": values["timeout_seconds"],
             "followup_confidence_threshold": values["followup_confidence_threshold"],

@@ -383,6 +383,9 @@ class LocalModelGateway:
 
         contract_fallback_used = False
         for provider_position, provider in providers:
+            if self.ledger.policy.enabled and not provider.supports_hard_budget:
+                raise TaskError("model_budget_unavailable",
+                                "this provider cannot verify usage under a hard model budget")
             provider_envelope = replace(envelope,
                 model_override=envelope.model_override if provider_position == 0 else "",
                 provider_capabilities=provider.capabilities)

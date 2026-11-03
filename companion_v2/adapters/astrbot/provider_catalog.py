@@ -229,4 +229,11 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
                            provider_id, _unavailable_detail(error))
             continue
         adapters.append(adapter)
+    decision_factory = getattr(native_types, "decision_provider_factory", None)
+    if callable(decision_factory):
+        registered = {primary_id, *(adapter.binding.provider for adapter in adapters)}
+        for adapter in decision_factory(context):
+            if adapter.binding.provider not in registered:
+                adapters.append(adapter)
+                registered.add(adapter.binding.provider)
     return tuple(adapters)

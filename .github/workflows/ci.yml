@@ -33,7 +33,9 @@ jobs:
         with:
           node-version: '22'
       - name: Install contract test dependencies
-        run: python -m pip install PyYAML regex Pillow httpx aiohttp 'cryptography>=42'
+        run: python -m pip install PyYAML regex Pillow httpx aiohttp 'cryptography>=42' pytest
+      - name: Check official decision provider and proactive review contracts
+        run: python -X utf8 -m pytest -q tests/test_astrbot_decision_provider.py tests/test_proactive_appointments_and_judge.py
       - name: Check generated page and migration contracts
         run: |
           python -X utf8 tools/sync_framework_page.py --check

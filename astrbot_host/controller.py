@@ -542,10 +542,11 @@ class AstrBotStagingController:
                                                                          deepseek_provider_resolver=search_provider_resolver)),
                                                   reaction_role_count=1)
         from companion_v2.decision import LayaDecisionService, LayaSettingsStore
-        from .laya_client import LayaDecisionClient
+        from .laya_client import laya_client_factory
         def laya_for_context(context):
             return LayaDecisionService(LayaSettingsStore(self.data_root),
-                runtime=self.session.application.runtime, origin_key=context.key, client_factory=LayaDecisionClient)
+                runtime=self.session.application.runtime, origin_key=context.key,
+                client_factory=laya_client_factory(self.context))
 
         self.session.application.attach_laya_decision(laya_for_context)
         return self.session

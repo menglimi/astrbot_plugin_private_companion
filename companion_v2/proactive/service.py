@@ -1451,6 +1451,7 @@ class ProactiveContacts:
         if not values["enable_llm_proactive_persona_judge"]:
             return None, None
         signature = signature_for(job.intent.purpose, body, review_context={
+            "model_route": self.gateway.router.cache_identity(job.context, JUDGE_KIND, at=at),
             "role_instruction": job.role_instruction, "preference_token": job.preference_token,
             "sources": job.intent.thought.evidence.sources, "source_hashes": job.source_hashes,
             "thought": job.intent.thought.summary,

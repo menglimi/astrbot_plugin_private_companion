@@ -571,6 +571,9 @@ class ModelManagement:
                     "providers": [{"id": provider.binding.provider, "capabilities": list(provider.capabilities),
                                    "max_output_tokens": provider.maximum_output_tokens,
                                    "supports_model_override": provider.supports_model_override,
+                                   "task_kinds": list(provider.task_kinds),
+                                   "transport": provider.transport,
+                                   "supports_hard_budget": provider.supports_hard_budget,
                                    "model": provider.model}
                                    for provider in self.app.router.providers.values()],
                     "host_state": self.app.state}
@@ -819,6 +822,8 @@ class ModelManagement:
             provider = self.app.router.providers.get(provider_id)
             if provider is None:
                 raise TaskError("model_provider_unavailable", "the provider has no registered V2 adapter")
+            if not provider.supports_task(profile.kind):
+                raise TaskError("model_capability_mismatch", "the provider does not support this task")
             if not set(profile.capabilities).issubset(provider.capabilities):
                 raise TaskError("model_capability_mismatch", "the provider lacks task capabilities")
             if limit_explicit and values["max_output_tokens"] > provider.maximum_output_tokens:
@@ -832,7 +837,7 @@ class ModelManagement:
                                 " by provider " + provider_id)
         try:
             validate_targets(checked_rules(values["replacement_rules"]), self.app.router.providers,
-                             capabilities=profile.capabilities,
+                             capabilities=profile.capabilities, task_kind=profile.kind,
                              max_output_tokens=values["max_output_tokens"] if limit_explicit else None)
         except ValueError as error:
             raise TaskError("model_route_invalid", str(error)) from error

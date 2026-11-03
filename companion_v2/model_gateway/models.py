@@ -481,8 +481,15 @@ class LocalProvider:
     # 允许空串而不是必填：本地测试适配器和部分第三方传输没有"模型"这个概念，
     # 让它们编一个名字出来，比让它们留空更糟。
     model: str = ""
+    task_kinds: tuple[str, ...] = ()
+    supports_hard_budget: bool = True
 
     def __post_init__(self):
+        if type(self.supports_hard_budget) is not bool:
+            raise ValueError("hard budget support must be explicit")
+        for kind in self.task_kinds:
+            _opaque(kind, field="provider task kind")
+        object.__setattr__(self, "task_kinds", tuple(self.task_kinds))
         if type(self.default_streaming) is not bool:
             raise ValueError("provider stream default must be explicit")
         _opaque(self.transport, field="model transport")
@@ -505,6 +512,9 @@ class LocalProvider:
         object.__setattr__(self, "capabilities", tuple(self.capabilities))
         if type(self.supports_model_override) is not bool:
             raise ValueError("model override support must be explicit")
+
+    def supports_task(self, kind):
+        return not self.task_kinds or kind in self.task_kinds
 
 
 @dataclass(frozen=True)

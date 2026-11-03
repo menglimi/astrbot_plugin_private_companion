@@ -1725,6 +1725,55 @@ test('Laya page exposes official local install, first-run download, and SystemOn
   page.unmount();
 });
 
+test('official decision providers are selectable only for proactive review', async () => {
+  const h = harness(), node = h.root(), data = status();
+  data.tasks.push(editable('proactive.judge', 'primary', ['text'], 'background'));
+  data.providers.push({id: 'decision/test', model: 'test-model', capabilities: ['text', 'decision'],
+    task_kinds: ['proactive.judge'], transport: 'astrbot_decision', max_output_tokens: 8192});
+  h.page.mount(node);
+  h.requests[0].resolve(data);
+  await flush();
+  node.click('[data-model-open]', {modelOpen: 'memory.reflect'});
+  const select = kind => node.innerHTML.match(new RegExp(`<select data-model-field="provider" data-model-kind="${kind}"[^>]*>([\\s\\S]*?)</select>`))?.[1];
+  assert.ok(select('memory.reflect'));
+  assert.doesNotMatch(select('memory.reflect'), /decision\/test/);
+  node.click('[data-model-open]', {modelOpen: 'proactive.judge'});
+  assert.match(select('proactive.judge'), /decision\/test.*AstrBot 判断/);
+  h.page.unmount();
+});
+
+test('Laya official selector saves a provider ID and preserves existing remote settings', async () => {
+  const {page, requests, root} = harness(), node = root();
+  const data = {enabled: true, mode: 'remote', endpoint: 'https://example.test/v1', remote_model: 'saved-model',
+    api_key_set: true, timeout_seconds: 20, revision: 'initial', astrbot_provider_id: '',
+    astrbot_available: true, astrbot_providers: [{id: 'decision/test', model: 'test-model'}]};
+  page.mount(node);
+  requests[0].resolve(status());
+  await flush();
+  node.click('[data-model-tab]', {modelTab: 'laya'});
+  requests.find(r => r.route === 'model/laya').resolve(data);
+  requests.find(r => r.route === 'model/laya/logs').resolve({events: []});
+  await flush();
+  assert.equal(page.isDirty(), false);
+  node.change('[data-laya-field]', {layaField: 'mode', value: 'astrbot'});
+  assert.match(node.innerHTML, /AstrBot 官方判断接口/);
+  assert.match(node.innerHTML, /跟随 AstrBot 默认/);
+  assert.doesNotMatch(node.innerHTML, /data-laya-field="api_key"/);
+  assert.doesNotMatch(node.innerHTML, /data-laya-field="endpoint"/);
+  node.change('[data-laya-field]', {layaField: 'astrbot_provider_id', value: 'decision/test'});
+  node.click('[data-laya-save]');
+  const saved = requests.find(r => r.route === 'model/laya/save');
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.values.changes)), {mode: 'astrbot', astrbot_provider_id: 'decision/test'});
+  saved.resolve({...data, ...saved.values.changes, revision: 'saved'});
+  await flush();
+  assert.equal(page.isDirty(), false);
+  assert.match(node.innerHTML, /value="decision\/test" selected/);
+  node.change('[data-laya-field]', {layaField: 'mode', value: 'remote'});
+  assert.match(node.innerHTML, /value="https:\/\/example.test\/v1"/);
+  assert.match(node.innerHTML, /value="saved-model"/);
+  page.unmount();
+});
+
 test('Laya page offers a Jev judgment backend with its own address, key and model name', async () => {
   const {page, requests, root} = harness();
   const node = root();
