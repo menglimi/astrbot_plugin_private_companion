@@ -4,6 +4,11 @@ New learning runs use authorized inbound text from the exact private
 relationship or group. The older confirmed-reply sample path remains readable
 so existing rules can still be reviewed and their evidence rechecked.
 
+The samples a learned rule cites are durable evidence: a later ``/reset`` ends
+the temporary conversation context but never revokes them, so rechecking a
+stored rule reads its governed source and only labels the reset (see
+``evidence_reset_at``). Fresh learning samples stay inside the current window.
+
 Samples are form only. They are never republished as facts about the role or
 about anyone else, and the prompt contract forbids inferring identity,
 personality, mood, health, relationships or stable preference from them.
@@ -175,7 +180,7 @@ class ExpressionSampleCatalog:
         rows.sort(key=lambda row: (json.loads(row["event_json"])["received_at"], row["input_sequence"]), reverse=True)
         return tuple(rows[:limit])
 
-    def _input_text(self, row, context, at):
+    def _input_text(self, row, context, at, *, durable=False):
         from companion_v2.conversation.messages import event_from_document
 
         try:
@@ -196,7 +201,10 @@ class ExpressionSampleCatalog:
             from companion_v2.conversation.native_observations import validate_observation
             from companion_v2.conversation.reset import source_current
             validate_observation(self.runtime, row["native_observation"], original, event.source)
-            if not source_current(self.runtime, event.source):
+            # A reset only ends the temporary context: fresh learning samples
+            # must belong to the current window, while a stored rule's evidence
+            # rechecks its governed source below (state, expiry, hash, recall).
+            if not durable and not source_current(self.runtime, event.source):
                 raise TaskError("conversation_context_reset", "the native sample precedes this window's reset")
         record = messages._read_source(event.source, original, event.capability, at)
         if record.content_hash != event.input_hash:
@@ -313,11 +321,30 @@ class ExpressionSampleCatalog:
 
     def resolve_handles(self, handles, opened_at, closed_at, context, at, *, source_kind=REPLY_SAMPLE_SOURCE):
         """Recheck a named set of sample handles inside one closed window."""
-        self.describe_handles(handles, opened_at, closed_at, context, at, source_kind=source_kind)
+        self.describe_handles(handles, opened_at, closed_at, context, at, source_kind=source_kind,
+                              durable=True)
         return True
 
-    def describe_handles(self, handles, opened_at, closed_at, context, at, *, source_kind=REPLY_SAMPLE_SOURCE):
-        """Return named samples only after rechecking their original source."""
+    def evidence_reset_at(self, context, closed_at):
+        """The window reset this stored evidence predates, for a review label.
+
+        Evidence a learned rule cites is durable, so a reset neither hides nor
+        invalidates it; when the whole sample window closed before the window's
+        current boundary the review page can still say the evidence is
+        historical. ``None`` means no reset applies to this evidence.
+        """
+        from companion_v2.conversation.reset import durable_reset_at
+        moment = durable_reset_at(self.runtime, context.scope)
+        return moment if moment is not None and stamp(closed_at) < moment else None
+
+    def describe_handles(self, handles, opened_at, closed_at, context, at, *,
+                         source_kind=REPLY_SAMPLE_SOURCE, durable=False):
+        """Return named samples only after rechecking their original source.
+
+        ``durable`` says the handles are evidence already stored for a rule or
+        fact: a window reset dates it but never revokes it. A fresh learning
+        batch keeps the default and stays inside the current window.
+        """
         scope_kind = self._authorize(context, at)
         requested = tuple(handles)
         known = set(requested)
@@ -338,7 +365,7 @@ class ExpressionSampleCatalog:
                         known.discard(sample.handle)
                 for row in self._input_rows(context, opened_at, closed_at, limit=512):
                     try:
-                        event, text = self._input_text(row, context, at)
+                        event, text = self._input_text(row, context, at, durable=durable)
                     except TaskError:
                         continue
                     handle = self.input_handle(event)
