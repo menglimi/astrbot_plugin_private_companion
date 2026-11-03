@@ -54,17 +54,13 @@ def window_rotated(context, scope_key, source_kind):
 
     This is a lifecycle event, not unreadable evidence: the rule and its stored
     window are intact, the current turn simply belongs to another window. A group
-    dialogue rule is only reread from its own window, while a private
-    participant's dialogue rules re-authorize across their windows; a private
-    self-contained rule stays in the window that imported it.
+    dialogue rule is only reread from its own window. Private self-contained
+    rules follow the participant through rotations, while private dialogue rules
+    re-authorize their original source in the new window.
     """
     if source_kind is None or scope_key == digest(context.scope):
         return False
-    if context.scope.kind is ScopeKind.GROUP:
-        return source_kind not in NAMED_SOURCES
-    if context.scope.kind is ScopeKind.PRIVATE:
-        return source_kind in NAMED_SOURCES
-    return False
+    return context.scope.kind is ScopeKind.GROUP and source_kind not in NAMED_SOURCES
 
 
 def rule_reason(context, scope_key, window, handles, *, samples=None, at=None):
