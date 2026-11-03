@@ -3800,7 +3800,7 @@ function renderIdentityPageOriginal(){
     [
     ['关系网','统一查看私聊成员、群成员与群内互动。熟人卡在人物资料中维护；成员线索只辅助识别发言者。',`${networkSettings}${renderIdentity()}`,
      'identity-network'],
-    ['访问规则','管理新私聊成员的默认权限；逐人权限可在成员详情中调整。',`${configEditors('privateAccessWorkspace',['private_access'],'私聊默认权限')}${configEditors('relayConfigWorkspace',['relay'],'跨窗口递话')}`,
+    ['访问规则','管理新私聊成员的默认权限；逐人权限可在成员详情中调整。',`${configEditors('privateAccessWorkspace',['private_access'],'私聊默认权限')}${configEditors('strangerAccessWorkspace',['private_access_installation'],'陌生号处理','', '/astrbot_plugin_private_companion/config',true)}${configEditors('relayConfigWorkspace',['relay'],'跨窗口递话')}`,
      'identity-access'],
     ['关系与情感','它对你和对别人的理解，以及它自己的感觉。待确认的先过你这一关才生效。',product.workspace('relationships'),
      'identity-feelings'],
@@ -3950,6 +3950,7 @@ function renderConfigEditors(){
   if($('#personConfigWorkspace'))configEditorMounts.push(mountConfigEditor('personConfigWorkspace',['person']));
   /* 兼容旧的访问规则深链接仍保留挂载；正式入口由用户页标题按钮打开弹窗。 */
   if($('#privateAccessWorkspace'))configEditorMounts.push(mountConfigEditor('privateAccessWorkspace',['private_access']));
+  if($('#strangerAccessWorkspace'))configEditorMounts.push(mountConfigEditor('strangerAccessWorkspace',['private_access_installation']));
   /* 跨窗口递话是窗口级设置：谁能通过本窗口让 bot 带话给白名单私聊。
      与私聊默认权限同页，缺挂载点会让这组字段在页面上完全点不到。 */
   if($('#relayConfigWorkspace'))configEditorMounts.push(mountConfigEditor('relayConfigWorkspace',['relay']));
@@ -4184,7 +4185,8 @@ function renderIdentityGroupsPage(){
 function renderIdentityAccessPage(){
   return pageSections('访问规则','管理新私聊成员的默认权限；逐人权限仍在用户页面的成员详情中调整。',[
     ['私聊默认权限','新用户进入目录时使用的默认准入规则。',configEditors('privateAccessWorkspace',['private_access'],'私聊默认权限'),'identity-access'],
-  ],[['identity-access','shield-check','私聊默认权限']]);
+    ['陌生号处理','没有绑定的账号使用插件安装全局设置。',configEditors('strangerAccessWorkspace',['private_access_installation'],'陌生号处理','', '/astrbot_plugin_private_companion/config',true),'identity-strangers'],
+  ],[['identity-access','shield-check','私聊默认权限'],['identity-strangers','user-x','陌生号处理']]);
 }
 function renderIdentityFeelingsPage(){
   const workspace=product.workspace('relationships');
@@ -4193,6 +4195,7 @@ function renderIdentityFeelingsPage(){
 const identitySettingsSpecs={
   person:{title:'用户默认资料',intro:'新用户会从这里继承默认资料；已经登记的用户仍以用户详情里的资料为准。',id:'identityPersonSettingsWorkspace',kinds:['person']},
   'private-access':{title:'私聊用户权限',intro:'这里只设置新私聊用户的默认准入。已有用户的单独权限仍在用户详情中调整。',id:'identityPrivateAccessSettingsWorkspace',kinds:['private_access']},
+  'stranger-access':{title:'陌生号处理',intro:'这组设置对插件安装内所有未绑定的私聊账号生效。',id:'identityStrangerAccessSettingsWorkspace',kinds:['private_access_installation'],endpoint:'/astrbot_plugin_private_companion/config'},
   'group-clues':{title:'群成员线索',intro:'为群聊提供已登记成员的线索，辅助理解发言来源，不自动确认身份或授予权限。',id:'identityMemberClueSettingsWorkspace',kinds:['knowledge'],views:{knowledge:{sectionIds:['members'],title:'群聊成员线索',note:'按账号读取群成员的人物描述、相处边界与重要印象；群范围资料只用于对应群。'}}},
 };
 function identitySettingsTarget(kind,field='',section=''){
@@ -4203,7 +4206,7 @@ function openIdentitySettings(kind){
   const spec=identitySettingsSpecs[kind];
   if(!spec)return false;
   const views=spec.views||{};
-  const opened=openDetailDialog(spec.title,`<div class="identity-settings-dialog"><p>${escapeHTML(spec.intro)}</p>${configEditors(spec.id,spec.kinds,spec.title,'', '',false)}</div>`);
+  const opened=openDetailDialog(spec.title,`<div class="identity-settings-dialog"><p>${escapeHTML(spec.intro)}</p>${configEditors(spec.id,spec.kinds,spec.title,'',spec.endpoint||'',Boolean(spec.endpoint))}</div>`);
   const dialog=$('#detailDialog');
   if(!opened||!dialog)return false;
   dialog.classList.add('detail-dialog-settings');
@@ -4410,6 +4413,7 @@ function manageHeadingActions(){
   if(manageTab==='identity-people'){
     actions.push(button(I('user-round-pen')+'<span>用户默认资料</span>','data-identity-settings="person" aria-haspopup="dialog"','small'));
     actions.push(button(I('shield-check')+'<span>私聊用户权限</span>','data-identity-settings="private-access" aria-haspopup="dialog"','small'));
+    actions.push(button(I('user-x')+'<span>陌生号处理</span>','data-identity-settings="stranger-access" aria-haspopup="dialog"','small'));
   }
   if(manageTab==='identity-groups')actions.push(button(I('users-round')+'<span>群成员线索</span>','data-identity-settings="group-clues" aria-haspopup="dialog"','small'));
   actions.push(button(I('house')+'<span>回到小屋</span>','data-go="life"','small'));
@@ -4648,7 +4652,7 @@ const configSearchLocations={
   reaction:{next:'manage',tab:'expression',expressionModule:'expression-reaction',root:'#reactionConfigWorkspace'},
   busy_gate:{next:'manage',tab:'contact',contactView:'gates',root:'#replyGateConfigWorkspace'},budget:{next:'manage',tab:'models',root:'#budgetConfigWorkspace'},
   recall:{next:'manage',tab:'perception',root:'#recallConfigWorkspace'},screen:{next:'manage',tab:'perception',root:'#screenConfigWorkspace'},
-  person:{next:'manage',tab:'identity-people',identitySettings:'person',root:'#personConfigWorkspace'},private_access:{next:'manage',tab:'identity-people',identitySettings:'private-access',root:'#privateAccessWorkspace'},
+  person:{next:'manage',tab:'identity-people',identitySettings:'person',root:'#personConfigWorkspace'},private_access:{next:'manage',tab:'identity-people',identitySettings:'private-access',root:'#privateAccessWorkspace'},private_access_installation:{next:'manage',tab:'identity-people',identitySettings:'stranger-access',root:'#identityStrangerAccessSettingsWorkspace'},
   relay:{next:'manage',tab:'identity-people',identitySettings:'private-access',root:'#relayConfigWorkspace'},
   role_growth:{next:'manage',tab:'identity-people',identitySettings:'person'},
   'role.growth.skills':{next:'manage',tab:'learning',subtab:'strategy',root:'#growthConfigWorkspace'},

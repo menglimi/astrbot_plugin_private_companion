@@ -49,7 +49,8 @@ from .huawei_health.api import HuaweiHealthWebAPI
 
 logger = logging.getLogger(__name__)
 
-INSTALLATION_CONFIGURATION_SECTIONS = ("proactive.contact", "reaction", "budget")
+INSTALLATION_CONFIGURATION_SECTIONS = ("proactive.contact", "reaction", "budget",
+                                       "private_access_installation")
 TARGET_CONFIGURATION_SECTIONS = tuple(name for name in SECTIONS
     if name not in INSTALLATION_CONFIGURATION_SECTIONS)
 

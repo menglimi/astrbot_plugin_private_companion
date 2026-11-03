@@ -139,6 +139,8 @@ window.CompanionSetup = (() => {
       editors: ["role_profile", "relationship_profile", "knowledge", "private_access"],
       views: {role_profile: {presentation: "journal"}, relationship_profile: {presentation: "journal"},
         knowledge: {sectionIds: ["import", "inject"], presentation: "journal", navigationLimit: 0}}},
+    {id: "strangers", label: "陌生号处理", note: "没有绑定的私聊账号使用插件安装全局设置。",
+      editors: ["private_access_installation"]},
     {id: "life", label: "日程与作息", note: "角色日程直接在这里维护；日记例程与睡眠作息按人格资料保存。",
       mount: "state", editors: ["life"],
       views: {life: {sectionIds: ["routine", "sleep"], title: "日记例程与睡眠作息", note: "作息跟随当前人格；日程配置也对该角色的所有私聊生效。"}}},
