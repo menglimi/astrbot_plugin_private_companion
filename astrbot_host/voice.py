@@ -89,11 +89,13 @@ class _MimoVoiceCloneAdapter:
         return self.model_name
 
     def _event_user_id(self):
-        return str(getattr(self.scope, "session_id", "") or "").strip()
+        scope = self.scope
+        return str(getattr(scope, "session_id", "") or "").strip()
 
     def _event_session_id(self):
-        kind = "GroupMessage" if getattr(getattr(self.scope, "kind", None), "value", "") == "group" else "FriendMessage"
-        return f"{getattr(self.scope, 'platform', '')}:{kind}:{getattr(self.scope, 'session_id', '')}"
+        scope = self.scope
+        kind = "GroupMessage" if getattr(getattr(scope, "kind", None), "value", "") == "group" else "FriendMessage"
+        return f"{getattr(scope, 'platform', '')}:{kind}:{getattr(scope, 'session_id', '')}"
 
     @staticmethod
     def _supported_kwargs(method, values):
@@ -369,7 +371,7 @@ class NativeVoiceReply:
                 provider = _provider_with_overrides(provider, model_override, voice_override)
             audio = await self._synthesize(provider, text, timeout_seconds)
             if audio is None:
-                # V2 normally uses AstrBot's TTS provider. The V1 MiMo Voice
+                # V2 normally uses AstrBot's TTS provider.  The V1 MiMo Voice
                 # Clone integration was a tool bridge, not a provider; keep it
                 # as an explicit fallback when no host provider can synthesize.
                 mimo = _find_mimo_voice_clone(self.context, scope)

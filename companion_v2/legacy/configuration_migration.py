@@ -16,6 +16,11 @@ from companion_v2.configuration.registry import (
     LegacyProbabilityUnit,
     ValueKind,
 )
+from companion_v2.conversation.segmentation import (
+    LEGACY_DEFAULT_SPLIT_WORDS,
+    LEGACY_REMOVED_SPLIT_WORDS,
+    LEGACY_SPLIT_WORD_POOL,
+)
 from companion_v2.legacy.catalog import V1_SUPPORTED_VERSION
 
 
@@ -575,6 +580,9 @@ def _contract_value(rule: dict, value: object):
             raise ValueError("旧值不是列表")
         if rule["target"] == "segmentation.split_words":
             value = list(dict.fromkeys(value))
+            if (set(LEGACY_DEFAULT_SPLIT_WORDS) <= set(value)
+                    and set(value) <= LEGACY_SPLIT_WORD_POOL):
+                value = [word for word in value if word not in LEGACY_REMOVED_SPLIT_WORDS]
         converted = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     else:
         target_type = contract["type"]

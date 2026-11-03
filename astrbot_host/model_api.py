@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from astrbot.api.web import request
 from companion_v2.configuration.models import ConfigLayer
+from companion_v2.conversation.media.models import MAX_REFERENCE_IMAGES
 from companion_v2.conversation.reply_management import ReplyManagement
 from companion_v2.decision import LayaDecisionService, LayaSettingsStore
 from companion_v2.decision.client import LayaClientError
@@ -358,7 +359,8 @@ IMAGE_PROVIDER_GROUP = {
             "quality": {"kind": "select", "group": "sampling", "label": "质量",
                         "choices": ["standard", "hd"], "default": "standard"},
             "max_reference_images": {"kind": "integer", "group": "sampling",
-                                     "label": "最多参考图张数", "default": 1, "min": 0, "max": 8},
+                                     "label": "最多参考图张数", "default": MAX_REFERENCE_IMAGES,
+                                     "min": 0, "max": MAX_REFERENCE_IMAGES},
         },
     },
 }

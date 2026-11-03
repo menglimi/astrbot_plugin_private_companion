@@ -117,6 +117,22 @@ def state_profile(provider, *, max_output_tokens=1024, timeout_seconds=STATE_PRO
                             max_output_tokens=max_output_tokens, timeout_seconds=timeout_seconds)
 
 
+def state_output_budget(configured, providers):
+    """Keep reasoning models from spending the whole state budget on thoughts.
+
+    The state JSON itself is small, but reasoning tokens count against the same
+    output ceiling.  Use 8192 when the selected providers can emit it; never
+    claim more than the smallest provider ceiling (fallbacks included).
+    """
+    if type(configured) is not int or configured < 1:
+        return configured
+    ceilings = [provider.maximum_output_tokens for provider in providers
+                if isinstance(getattr(provider, "maximum_output_tokens", None), int)]
+    if not ceilings:
+        return configured
+    return min(max(configured, 8192), min(ceilings))
+
+
 def _expression_preferences(settings):
     preferences = {}
     if settings.get("energy_enabled", True):

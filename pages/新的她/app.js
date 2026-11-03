@@ -1,5 +1,6 @@
 "use strict";
 (() => {
+  if (window.parent !== window) document.documentElement.classList.add("is-embedded");
   const $ = id => document.getElementById(id);
   const STAGES = ["positioning", "personality", "voice", "background", "review"];
   const LABELS = {optimize: "拟人优化", create: "创建人格"};
@@ -8,6 +9,7 @@
     core_access_required: "当前账号没有管理本安装的权限。",
     persona_designer_invalid: "设计内容过长或格式不完整，请检查后重试。",
     persona_designer_unavailable: "新的她暂时不可用，当前编辑内容仍保留，可以稍后重试。",
+    persona_designer_model_rejected: "模型没有接受这次设计请求；可以换一个文本模型，或缩短人设/对话后重试。",
     persona_designer_model_missing: "所选文本模型尚未加载，请重新选择模型。",
     persona_designer_source_required: "先输入人设，或从“选择人设”载入一份。",
     persona_designer_draft_required: "先生成或填写一份人设稿，再进行情景试演。",
@@ -79,7 +81,10 @@
     $("choose-persona").disabled ||= anyBusy || !!root.pendingSave;
     ["generate-draft", "tryout"].forEach(id => $(id).disabled = !loaded || anyBusy || working || !modelAvailable);
     $("tryout").disabled ||= !d.draft.trim();
-    ["save-draft", "save-version"].forEach(id => $(id).disabled = !loaded || !!root.pendingSave || anyBusy || working);
+    $("generate-draft").textContent = d.draft.trim() ? "重新整理成稿" : "整理成稿";
+    const hasContent = d.messages.length > 0
+      || ["source_text", "confirmed", "draft", "lorebook", "input"].some(key => String(d[key] || "").trim());
+    $("save-draft").disabled = !loaded || !!root.pendingSave || anyBusy || working || !hasContent;
     $("retry-save").hidden = !root.retrySave;
     $("retry-save").disabled = !!root.pendingSave || anyBusy || working;
     $("compare").disabled = root.activeMode !== "optimize" || !d.source_text;
@@ -287,10 +292,12 @@
   }
   async function copyText(id) {
     const input = $(id);
-    try { await navigator.clipboard.writeText(input.value); notice("已复制，可以到 AstrBot 中自行填入。"); }
+    const done = id === "lorebook" ? "已复制背景，可以到 AstrBot 的世界知识中粘贴。"
+      : "已复制正文，去 AstrBot「人格设置」粘贴即可；这里不会直接改线上人格。";
+    try { await navigator.clipboard.writeText(input.value); notice(done); }
     catch {
       input.focus(); input.select();
-      try { if (!document.execCommand("copy")) throw new Error(); notice("已复制。"); }
+      try { if (!document.execCommand("copy")) throw new Error(); notice(done); }
       catch { notice("已选中文本，请使用系统的复制操作。"); }
     }
   }
@@ -363,7 +370,7 @@
   $("confirm-persona-switch").addEventListener("click", () => loadPersona(pendingPersonaId));
   $("switch-persona-dialog").addEventListener("close", () => { pendingPersonaId = ""; });
   $("refresh-options").addEventListener("click", loadOptions); $("refresh-personas").addEventListener("click", loadOptions);
-  ["save-draft", "save-version"].forEach(id => $(id).addEventListener("click", openSave));
+  ["save-draft"].forEach(id => $(id).addEventListener("click", openSave));
   $("retry-save").addEventListener("click", () => saveSnapshot(root.retrySave));
   $("save-form").addEventListener("submit", event => {
     event.preventDefault(); const title = $("draft-title").value.trim(); if (!title) return;

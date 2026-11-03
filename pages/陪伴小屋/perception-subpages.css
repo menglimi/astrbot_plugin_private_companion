@@ -1,4 +1,6 @@
 .perception-config-workspace{display:grid;gap:var(--sp-3);min-width:0}
+.perception-config-workspace[hidden],#perceptionConfigWorkspace[hidden],.perception-config-panels[hidden]{display:none!important}
+.perception-config-page[hidden]{display:none!important}
 .perception-config-nav{position:sticky;top:var(--sp-2);z-index:5;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:2px;padding:3px;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);box-shadow:var(--t-shadow)}
 .perception-config-nav button{display:flex;align-items:center;justify-content:center;gap:var(--sp-2);min-width:0;min-height:42px;padding:var(--sp-2) var(--sp-3);border:0;border-radius:var(--r-xs);background:transparent;color:var(--t-text-soft);font:inherit;font-size:var(--fs-body);cursor:pointer;transition:background .16s ease,color .16s ease}
 .perception-config-nav button svg{width:16px;height:16px;flex:none}

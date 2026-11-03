@@ -139,6 +139,13 @@ class ModelRouteMaterialTests(unittest.TestCase):
         self.assertEqual(image_edit_reference_limit(port), 1)
         self.assertNotIn("max_reference_images", image_route_snapshot(port))
 
+    def test_missing_endpoint_reference_limit_defaults_to_sixteen(self):
+        port = NativePort()
+        settings = port.image_extension_api().output_configuration()["settings"]
+        settings["endpoints"][0].pop("max_reference_images", None)
+
+        self.assertEqual(image_edit_reference_limit(port), 16)
+
     def test_edit_reference_limit_reads_through_a_composite_tool_port(self):
         port = NativePort()
 

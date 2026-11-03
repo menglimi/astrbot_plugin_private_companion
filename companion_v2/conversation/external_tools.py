@@ -311,7 +311,9 @@ class ExternalToolExecutor:
     def _admit(self, descriptor, context, at):
         action = descriptor.tool.action
         privacy = action in PRIVACY_ACTIONS
-        core = is_core(self.runtime, context.actor.subject) if privacy else False
+        actor = getattr(context, "actor", None)
+        core_admin = actor is not None and is_core(self.runtime, actor.subject)
+        core = core_admin if privacy else False
         # 隐私能力不再按会话范围拦截：群聊和私聊使用同一份授权判定。
         if (context.scope.kind is ScopeKind.GROUP and action not in GROUP_IMAGE_ACTIONS
                 and not privacy):
@@ -321,9 +323,12 @@ class ExternalToolExecutor:
             require(self.tasks.authorize_context(context, action="conversation.reply", observed_at=at))
             return require(provider.admit(context, at))
         # 核心管理员默认可用：不再要求该会话的 extension.tool.invoke 授权。
-        if not core:
-            require(self.tasks.authorize_context(context, action="extension.tool.invoke", observed_at=at))
         package = descriptor.package
+        # 房间能力对核心管理员只是一个开关：模块已装配即视为可用，不再要求
+        # 写入角色能力行或逐能力授权；是否开放由扩展自身的启用/暂停决定。
+        room_switch = core_admin and package.extension_id == "together"
+        if not core and not room_switch:
+            require(self.tasks.authorize_context(context, action="extension.tool.invoke", observed_at=at))
         installed = require(self.capabilities.installation(extension_id=package.extension_id))
         if (installed.package_id, installed.package_version, installed.artifact_hash) != (
                 package.package_id, package.package_version, package.artifact_hash):
@@ -332,9 +337,10 @@ class ExternalToolExecutor:
                           package_id=package.package_id, package_version=package.package_version))
         if catalog != package:
             raise TaskError("external_package_changed", "tool differs from the trusted package catalog")
-        require(self.capabilities.require_role_enabled(extension_id=package.extension_id,
-                role=context.role_binding.role, bot_id=context.scope.bot_id))
-        if core:
+        if not room_switch:
+            require(self.capabilities.require_role_enabled(extension_id=package.extension_id,
+                    role=context.role_binding.role, bot_id=context.scope.bot_id))
+        if core or room_switch:
             return package
         return require(self.capabilities.authorize(extension_id=package.extension_id,
                        capability_id=current.binding.capability, subject=context.actor.subject, scope=context.scope))

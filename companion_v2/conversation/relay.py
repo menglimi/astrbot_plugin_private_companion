@@ -71,6 +71,11 @@ def plan_relay(request: RelayRequest, settings, *, actor_is_core: bool,
         enabled=settings.get("enabled") is True,
         require_confirm=settings.get("require_confirm") is not False,
         max_chars=_text_setting(settings.get("max_text_chars"), DEFAULT_MAX_CHARS),
+        member_relay_enabled=settings.get("member_relay_enabled") is not False,
+        member_relay_max_chars=_text_setting(
+            settings.get("member_relay_max_text_chars"), DEFAULT_MAX_CHARS),
+        member_relay_allowed_senders=targets("member_relay_allowed_senders"),
+        actor_id=actor_id,
     )
     audit = {
         "kind": "conversation.relay",

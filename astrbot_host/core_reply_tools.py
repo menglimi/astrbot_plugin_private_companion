@@ -39,7 +39,7 @@ GROUP_READ_ACTIONS = frozenset({"group.memory.query", "group.memory.legacy.query
 # Stable window-level manifests.  The order is part of the cached tool prefix:
 # append new actions at the end and bump TOOL_MANIFEST_VERSION when the schema
 # changes, never splice a tool in because one message looks special.
-TOOL_MANIFEST_VERSION = "2026-10-29.1"
+TOOL_MANIFEST_VERSION = "2026-10-31.2"
 LEAN_GROUP_TOOL_ORDER = ("group.participation.choose", "group.memory.query",
                          "group.memory.remember", "acquaintance.recall",
                          "reaction.search", "slang.search")
@@ -219,10 +219,9 @@ class CoreReplyToolSession:
         tools = app.tools
         offered = []
         if context.scope.kind is ScopeKind.PRIVATE:
-            if _field(self.prepared, "native_source_future") is not None:
-                for spec in tools.catalog:
-                    if spec.action == "source.read":
-                        offered.append(_OfferedTool(spec, "source"))
+            for spec in tools.catalog:
+                if spec.action == "source.read":
+                    offered.append(_OfferedTool(spec, "source"))
             if getattr(tools, "diagnostics", None) is not None:
                 for spec in tools.catalog:
                     if spec.action.startswith("diagnostics."):
@@ -291,12 +290,10 @@ class CoreReplyToolSession:
             native_tools = tuple(spec for spec in external.catalog_for(context) if supports_native_external(spec.action))
             offered.extend(_OfferedTool(spec, "external") for spec in native_tools)
             authoring = getattr(tools, "authoring", None)
-            if authoring is not None and _field(self.prepared, "native_input") is not None and _field(
-                    self.prepared, "native_source_future") is not None:
+            if authoring is not None:
                 offered.extend(_OfferedTool(spec, "authoring") for spec in authoring.catalog_for(
                     context, (spec.action for spec in native_tools)))
-        if _field(self.prepared, "native_source_future") is not None:
-            offered.append(_OfferedTool(EVIDENCE_SPEC, "evidence"))
+        offered.append(_OfferedTool(EVIDENCE_SPEC, "evidence"))
         if self.context.scope.kind is ScopeKind.GROUP and self.group_tool_profile in ("lean", "standard"):
             return group_tool_manifest(offered, self.group_tool_profile)
         return tuple(offered)
@@ -435,8 +432,19 @@ class CoreReplyToolSession:
                 result = await self.evidence()
             elif offered.owner == "external":
                 if action in ("image.edit", "image.mask_edit"):
-                    from .core_reply_media import prepare_native_input_images
-                    await prepare_native_input_images(self, wrapper)
+                    # An explicit empty inbound selection means this edit only
+                    # uses saved reference_ids. Capturing every current/quoted
+                    # image first can fail on an unrelated local quoted file
+                    # (host_image_location_invalid) before the reference edit
+                    # ever starts.
+                    only_saved_references = (
+                        action == "image.edit"
+                        and arguments.get("reference_indices") == []
+                        and bool(arguments.get("reference_ids"))
+                    )
+                    if not only_saved_references:
+                        from .core_reply_media import prepare_native_input_images
+                        await prepare_native_input_images(self, wrapper)
                 if action in ("reality.camera.observe", "content.work.create", "content.work.save_candidate"):
                     await self.wait_source()
                 result = await executor_for(self.application).execute(

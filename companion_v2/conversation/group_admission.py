@@ -26,6 +26,25 @@ REASONS = {"mention": "明确 @ 机器人", "native_wakeup": "命中宿主唤醒
            "repeat": "本群复读达到配置阈值", "interjection": "命中已开启的自主插话线索",
            "cold_group": "命中配置的冷群接话策略", "role_choice": "原人格自主判断参与",
            "behavior": "与本角色学到的群聊互动习惯相关"}
+# Images may wake a group on their own only from the midpoint upward. Below it
+# the same setting means "images are extra context for a turn that already has a
+# textual reason", so 0.2 cannot behave exactly like 1.0.
+IMAGE_WAKEUP_MIN_WEIGHT = 0.5
+
+
+def image_wakeup_candidate(wakeup, *, has_image, text):
+    """Whether an image alone is a group participation reason.
+
+    Readable text always decides candidacy on its own; an image then stays a
+    context hint instead of becoming a second reason to speak. Only a message
+    whose visible text is empty (stickers, bare photos) may be admitted by the
+    image path, and only when the configured weight reaches the midpoint.
+    """
+    if not wakeup["group_wakeup_image_enabled"] or not has_image:
+        return False
+    if clean_group_text(text):
+        return False
+    return wakeup["group_wakeup_image_weight"] >= IMAGE_WAKEUP_MIN_WEIGHT
 
 
 class GroupReplyAdmission:
@@ -133,9 +152,7 @@ class GroupReplyAdmission:
             return continuation["candidate_reason"]
         if not wakeup["group_wakeup_enabled"]:
             return ""
-        if (wakeup["group_wakeup_image_enabled"] and has_image
-                and self._sample(context, "image_interest", wakeup["group_wakeup_image_weight"],
-                                 event_id, at, compact)):
+        if image_wakeup_candidate(wakeup, has_image=has_image, text=text):
             return "image_interest"
         if not compact or not any(char.isalnum() for char in compact):
             return ""

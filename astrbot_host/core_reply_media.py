@@ -19,7 +19,7 @@ from companion_v2.foundation.refs import ScopeKind, SourceRef, VersionRef
 from companion_v2.sources.governance import bind
 from companion_v2.sources.models import SourceRecord
 
-from .media import load_native_image
+from .media import load_native_image, public_url
 
 
 QUOTED_IMAGE_OWNER = "conversation.native_quoted_attachments"
@@ -44,7 +44,18 @@ class _QuotedImages:
 
     @property
     def needs_lookup(self):
-        return not self.images or self.sender_id is None
+        return not self.images or self.sender_id is None or self.needs_resolved_images
+
+    @property
+    def needs_resolved_images(self):
+        for image in self.images:
+            if image.locator.startswith("base64://"):
+                continue
+            try:
+                public_url(image.locator)
+            except TaskError:
+                return True
+        return False
 
 
 def direct_image_locators(locators):
@@ -96,6 +107,7 @@ async def _quoted_images(quote, context, check):
 
 async def _resolve_quoted_images(quote, context, check):
     sender, sent_at, images = quote.sender_id, quote.sent_at, quote.images
+    resolve_from_original = not images or quote.needs_resolved_images
     if quote.needs_lookup:
         await check()
         if OneBotClient._resolve_call_action(quote.event) != quote.client._call_action:
@@ -134,9 +146,10 @@ async def _resolve_quoted_images(quote, context, check):
         references = OneBotPayloadParser().parse_get_msg_payload(raw)["image_refs"]
         if len(references) > MAX_INPUT_IMAGES:
             raise TaskError("host_image_limit", "quoted images exceed the image intake budget")
-        if not images:
+        if resolve_from_original:
             references = await ImageResolver(quote.event, quote.client).resolve_for_llm(references)
-            images = tuple(NativeImageLocator(index, value) for index, value in enumerate(references))
+            images = tuple(NativeImageLocator(index, value, host_resolved=True)
+                           for index, value in enumerate(references))
         sent_at = raw.get("time") if type(raw.get("time")) is int and raw["time"] > 0 else sent_at
     _quote_sender(context, sender)
     return images, {"origin": "quoted_message", "original_message_id": quote.message_id,

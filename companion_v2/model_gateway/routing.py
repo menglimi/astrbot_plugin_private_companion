@@ -77,7 +77,8 @@ class ModelRouter:
             return None
         if snapshot is not None:
             primary = snapshot.fields[profile.group + ".provider"]
-            if primary.source is not None:
+            fallback = snapshot.fields[profile.group + ".fallback"]
+            if primary.source is not None and (fallback.source is not None or profile.default_fallback):
                 return None
         provider_id = self.default_provider_resolver(context, profile)
         if provider_id is not None and provider_id not in self.providers:

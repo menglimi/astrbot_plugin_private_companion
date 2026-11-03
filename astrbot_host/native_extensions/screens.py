@@ -4,6 +4,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import logging
 
+from companion_v2.capabilities.privacy import is_core
 from companion_v2.conversation.external_tools import ExternalToolResponse
 from companion_v2.conversation.native_tool_sources import native_turn
 from companion_v2.execution.models import TaskError, digest, encode, require
@@ -39,8 +40,15 @@ class ScreenAdopter:
             AssetRef(asset_id, "screen", scope, VersionRef(asset_id, 1), "pending"))
 
     def preflight(self, invocation):
-        if invocation.context.scope.kind is not ScopeKind.PRIVATE:
-            raise TaskError("screen_scope_denied", "screen capture requires the original private conversation")
+        context = invocation.context
+        if context.scope.kind is not ScopeKind.PRIVATE:
+            if (context.scope.kind is not ScopeKind.GROUP
+                    or not is_core(self.application.runtime, context.actor.subject)):
+                raise TaskError("screen_scope_denied", "screen capture requires the original private conversation")
+            # Core administrators already bypass per-window screen consent in
+            # the privacy policy; keep the capture observation-only and audited.
+            logger.info("[CompanionV2] 核心管理员群聊屏幕采集已授权 actor=%s group=%s",
+                        context.actor.subject.subject_id, context.scope.native_scope_id)
         reference = self.reference(invocation, self.registry.now())
         return reference, require(self.screens.admit_capture(reference,
             role=invocation.context.role_binding.role, resolved=invocation.context.actor,

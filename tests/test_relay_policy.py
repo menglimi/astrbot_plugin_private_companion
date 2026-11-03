@@ -3,7 +3,8 @@
 import unittest
 
 from companion_v2.conversation.relay_policy import (
-    ALLOWED, DENIED_DISABLED, DENIED_GROUP, DENIED_SELF, DENIED_TARGET,
+    ALLOWED, DENIED_DISABLED, DENIED_GROUP, DENIED_MEMBER_DISABLED,
+    DENIED_MEMBER_SENDER, DENIED_SELF, DENIED_TARGET,
     DENIED_TEXT_EMPTY, DENIED_TEXT_TOO_LONG, RelayRequest, decide)
 
 
@@ -61,12 +62,28 @@ class MemberRelayTests(unittest.TestCase):
 class RelayBoundaryTests(unittest.TestCase):
     """两类用户共用的边界。"""
 
-    def test_disabled_window_rejects_everyone(self):
-        for core in (True, False):
-            decision = decide(ask("2002"), actor_is_core=core, core_target_id="1001",
-                              allowed_targets=("2002",), enabled=False)
-            self.assertFalse(decision.allowed)
-            self.assertEqual(decision.code, DENIED_DISABLED)
+    def test_disabling_outbound_relay_does_not_block_relay_to_the_core_admin(self):
+        core = decide(ask("2002"), actor_is_core=True, core_target_id="1001",
+                      allowed_targets=("2002",), enabled=False)
+        self.assertFalse(core.allowed)
+        self.assertEqual(core.code, DENIED_DISABLED)
+        member = decide(ask("1001", source_id="5005"), actor_is_core=False,
+                        core_target_id="1001", enabled=False)
+        self.assertTrue(member.allowed)
+
+    def test_member_relay_has_its_own_switch_sender_list_and_length_limit(self):
+        disabled = decide(ask("1001", source_id="5005"), actor_is_core=False,
+                          core_target_id="1001", member_relay_enabled=False)
+        self.assertFalse(disabled.allowed)
+        self.assertEqual(disabled.code, DENIED_MEMBER_DISABLED)
+        blocked = decide(ask("1001", source_id="5005"), actor_is_core=False,
+                         core_target_id="1001", actor_id="5005",
+                         member_relay_allowed_senders=("6006",))
+        self.assertFalse(blocked.allowed)
+        self.assertEqual(blocked.code, DENIED_MEMBER_SENDER)
+        too_long = decide(ask("1001", "长" * 21, source_id="5005"), actor_is_core=False,
+                          core_target_id="1001", member_relay_max_chars=20)
+        self.assertEqual(too_long.code, DENIED_TEXT_TOO_LONG)
 
     def test_group_destination_requires_its_own_whitelist(self):
         allowed = decide(ask("5005", kind="group"), actor_is_core=True,

@@ -94,8 +94,8 @@ class GroupParticipationHintTests(unittest.TestCase):
         self.assertNotIn("图片中与你明确兴趣", self.hints(settings=settings, native=True))
 
     def test_image_only_messages_get_a_default_restraint_hint_unless_disabled(self):
-        """抽中候选不等于必须接话：默认提示只在开启时追加。"""
-        settings = {"group_wakeup_image_enabled": True, "group_wakeup_image_weight": 0.35}
+        """权重低的图片不该被当成必答信号：默认提示只在开启时追加。"""
+        settings = {"group_wakeup_image_enabled": True, "group_wakeup_image_weight": 0.2}
         image_only = self.hints(settings=settings, images=(object(),))
         self.assertIn("图片唤醒默认克制", image_only)
         self.assertIn("不构成接话理由", image_only)

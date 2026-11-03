@@ -1,5 +1,6 @@
 """Review the existing installation before asking an upgrading user to bind again."""
 
+from collections import Counter
 from copy import deepcopy
 
 from companion_v2.execution.models import TaskError, digest
@@ -70,13 +71,20 @@ class UpgradeSetup:
         # Bind the review token to the exact source, native inventory and current
         # destination. A changed account/provider is reviewed again, never guessed.
         token = digest([fingerprint, accounts, candidate])
+        persona_bots = Counter(str(row.get("bot_id") or "") for row in personas
+                               if isinstance(row, dict) and row.get("bot_id"))
+        multi_persona_warning = (
+            "检测到同一个 Bot 绑定了多个人格（例如私聊与群聊各一个）。升级前建议先在 AstrBot 侧"
+            "合并为单一人格：多个人格映射到分别命名的角色时，同一角色的资料与设置容易被拆成多份，"
+            "事后归并很麻烦。" if any(count > 1 for count in persona_bots.values()) else "")
         return {"present": True, "configured": False, "can_prepare": ready,
                 "plan_token": token, "source_sha256": fingerprint,
                 "source_path": str(path), "v1_root": str(legacy_root),
                 "accounts": section.get("accounts", []), "targets": targets,
                 "groups": section.get("group_targets", []), "personas": personas,
                 "core_persona_id": mapping.changes.get("target.persona_id"),
-                "provider_id": provider_id, "issues": issues}, candidate
+                "provider_id": provider_id, "issues": issues,
+                "multi_persona_warning": multi_persona_warning}, candidate
 
     async def prepare(self, token):
         document, candidate = await self.plan()

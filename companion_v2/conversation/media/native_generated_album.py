@@ -1,29 +1,112 @@
 """Album projection of images accepted through AstrBot's native tool ledger."""
 
 import json
+import sqlite3
 
-from companion_v2.execution.models import TaskError
+from companion_v2.execution.models import TaskError, encode
+from companion_v2.conversation.media.models import CapturedImage, ImageDescriptor
 from companion_v2.conversation.messages import source_from_document
 from companion_v2.conversation.native_tool_results import PREFIX, operation_row
-from companion_v2.conversation.native_tool_media import read_native_images
 
 
-def images(owner, row, context, at):
-    external = owner.messages.tools.external
-    result, material = external.snapshot(row, context, at)
-    if result["state"] != "succeeded" or material is None:
+def _active(owner, table, *, id_value, lineage_value, revision_value,
+            id_column, lineage_column, revision_column):
+    row = owner.messages.runtime.read_one(
+        f"SELECT state FROM {table} WHERE {id_column}=? AND {lineage_column}=? AND {revision_column}=?",
+        (id_value, lineage_value, revision_value))
+    return row is not None and row["state"] == "active"
+
+
+def _payload_images(owner, row):
+    """Read the stored original, not the provider invocation that produced it.
+
+    The album must survive a provider upgrade: the image bytes and their
+    source/asset receipts do not change when the native image package version
+    changes.  The current operator was already authorized by the album manager;
+    this read only rechecks that the stored source and asset are still active.
+    """
+    raw = row.get("result_source_json") if isinstance(row, dict) else None
+    if not raw:
         return ()
-    from companion_v2.conversation.external_tools import _SourceAccess
-    descriptor = external._descriptor(row)
-    return read_native_images(owner.messages, context, material.source, row["action"], row.get("images", []),
-        capability=descriptor.binding.capability, authorizer=_SourceAccess(external, descriptor, context), at=at)
+    try:
+        parent = source_from_document(json.loads(raw))
+    except (TypeError, ValueError, KeyError):
+        return ()
+    if not _active(owner, "sources", id_value=parent.source_id,
+                   lineage_value=parent.version.lineage_id, revision_value=parent.version.revision,
+                   id_column="source_id", lineage_column="lineage_id", revision_column="source_revision"):
+        return ()
+    images = []
+    for document in row.get("images") or ():
+        try:
+            descriptor = ImageDescriptor(**document)
+        except TypeError:
+            continue
+        record = owner.messages.runtime.read_one(
+            """SELECT * FROM conversation_image_payloads
+               WHERE parent_id=? AND parent_lineage=? AND parent_revision=? AND position=?""",
+            (parent.source_id, parent.version.lineage_id, parent.version.revision, descriptor.position))
+        if (record is None or record["descriptor_json"] != encode(descriptor)
+                or not _active(owner, "sources", id_value=record["source_id"],
+                               lineage_value=record["source_lineage"], revision_value=record["source_revision"],
+                               id_column="source_id", lineage_column="lineage_id",
+                               revision_column="source_revision")
+                or not _active(owner, "assets", id_value=record["asset_id"],
+                               lineage_value=record["asset_lineage"], revision_value=record["asset_revision"],
+                               id_column="asset_id", lineage_column="lineage_id",
+                               revision_column="asset_revision")):
+            continue
+        images.append(CapturedImage(descriptor, record["content"]))
+    return tuple(images)
+
+
+def _origin_keys(owner, context):
+    """同一角色的旧 origin key 也算图库内容。
+
+    ``context.key`` 把身份绑定和角色绑定 revision 都算进去：保存一次角色档案、
+    重新确认映射或换一轮会话都会得到新的 key。图库跟随角色，私聊/群聊窗口
+    只作为分类，不再用当前窗口过滤历史图。
+    """
+    scope = context.role_binding.scope
+    role = context.role_binding.role
+    rows = ()
+    try:
+        rows = owner.runtime.read_all(
+            "SELECT DISTINCT context_key, context_json FROM conversation_native_turns", ())
+    except sqlite3.OperationalError:
+        # Older fixtures/databases may not have the native-turn ledger yet.
+        # The current key is still a valid album projection in that case.
+        rows = ()
+    keys = []
+    for row in rows:
+        try:
+            data = json.loads(row["context_json"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        binding = data.get("role_binding") or {}
+        candidate_role = binding.get("role") or {}
+        candidate_scope = binding.get("scope") or {}
+        if candidate_role.get("subject_id") != role.subject_id:
+            continue
+        if (candidate_scope.get("platform"), candidate_scope.get("account_id"),
+                candidate_scope.get("bot_id")) != (scope.platform, scope.account_id, scope.bot_id):
+            continue
+        key = row["context_key"]
+        if key and key not in keys:
+            keys.append(key)
+    if context.key not in keys:
+        keys.append(context.key)
+    return tuple(keys)
 
 
 def _selection(owner, context):
     from .generated import IMAGE_ACTIONS
+    keys = _origin_keys(owner, context)
+    placeholders = ",".join("?" for _ in keys)
     return ("""FROM runtime_metadata m JOIN execution_tasks t ON t.task_id = json_extract(m.value, '$.task_id')
-        WHERE substr(m.key, 1, ?) = ? AND json_extract(m.value, '$.origin_key') = ?
-        AND json_extract(m.value, '$.action') IN (?,?,?)""", (len(PREFIX), PREFIX, context.key, *sorted(IMAGE_ACTIONS)))
+        WHERE substr(m.key, 1, ?) = ? AND json_extract(m.value, '$.origin_key') IN (""" + placeholders + """)
+        AND json_extract(m.value, '$.action') IN (?,?,?)""",
+            (len(PREFIX), PREFIX, *keys, *sorted(IMAGE_ACTIONS)))
 
 
 def page(owner, context, at, *, before=None, limit=24):
@@ -38,9 +121,8 @@ def page(owner, context, at, *, before=None, limit=24):
     items = []
     for selected in rows:
         row = operation_row(owner.runtime, selected["invocation_id"])
-        try:
-            captured = images(owner, row, context, at)
-        except TaskError:
+        captured = _payload_images(owner, row)
+        if not captured:
             continue
         parent = source_from_document(json.loads(row["result_source_json"]))
         for image in captured:
@@ -57,9 +139,10 @@ def page(owner, context, at, *, before=None, limit=24):
 def image(owner, context, at, invocation_id, position):
     from .generated import GeneratedAlbumImage, IMAGE_ACTIONS
     row = operation_row(owner.runtime, invocation_id)
-    if row is None or row["origin_key"] != context.key or row["action"] not in IMAGE_ACTIONS:
+    if row is None or row["origin_key"] not in _origin_keys(owner, context) \
+            or row["action"] not in IMAGE_ACTIONS:
         raise TaskError("generated_image_missing", "the native album image is unavailable")
-    for captured in images(owner, row, context, at):
+    for captured in _payload_images(owner, row):
         if captured.descriptor.position == position:
             parent = source_from_document(json.loads(row["result_source_json"]))
             return GeneratedAlbumImage("generated-image:" + invocation_id + ":" + str(position),

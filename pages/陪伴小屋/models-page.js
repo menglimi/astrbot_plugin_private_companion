@@ -16,11 +16,11 @@ window.CompanionModelsPage = (() => {
       ["conversation.context_image_caption", "图片摘要", "为已授权的历史图片提取可见内容"],
       ["conversation.image_narration", "当前图片转述", "为本轮已授权图片生成简短文字描述"],
       ["conversation.video_narration", "原生视频转述", "将原视频交给支持视频输入的模型直接理解"]]],
-    ["感知", [["screen.interpretation", "屏幕解读", "分析本次已授权截图，需要支持图片的模型"],
-      ["screen.peek", "屏幕速览", "为已授权屏幕画面生成简短摘要"],
-      ["image_review", "图片审核", "检查群聊成图的可见内容"],
-      ["conversation.image_review", "图片审核", "检查群聊成图的可见内容"]]],
-    ["主动与记忆", [["proactive.compose", "主动联系", "有真实契机时组织联系内容"],
+    ["感知", [["screen.interpretation", "屏幕解读", "分析已授权截图与摄像头单帧，需要支持图片的模型"],
+      ["conversation.image_review", "图片审核", "检查群聊成图的可见内容"],
+      ["reality.text", "现实提醒文案", "现实提醒、唤醒回执和短回复的文字生成"]]],
+    ["主动与记忆", [["proactive.plan", "主动联系规划", "双阶段模式下判断时机并整理新回合切口"],
+      ["proactive.compose", "主动联系写作", "按所选方式生成主动消息正文"],
       ["proactive.judge", "主动联系复核", "复核主动消息是否符合当前人格与来源"],
       ["memory.reflect", "记忆整理", "从已授权素材整理认识"]]],
     ["生活与成长", [["calendar.plan", "日程规划", "基于已有目标规划下一步"], ["role.state.maintain", "角色状态", "维护角色的连续生活状态"], ["role.reading.consume", "阅读理解", "阅读实际提供的原文"], ["role.growth.progress", "成长进展", "根据已完成确认提出进展"]]],
@@ -198,6 +198,12 @@ window.CompanionModelsPage = (() => {
   function patchFor(task, draft) { const changes = {}, reset = [];
     for (const name of taskFields(task)) { const field = task.fields[name]; if (draft.inherited[name]) { if (field.explicit) reset.push(name); }
       else if (!field.explicit || draft.values[name] !== field.value) changes[name] = draft.values[name]; }
+    // A fallback identical to the primary provider is not a fallback.  Keeping
+    // it explicit makes every later edit fail the page's duplicate check and
+    // the host's model_fallback_duplicate guard; normalize it to "no fallback".
+    const primary = draft.inherited.provider ? task.fields.provider.inherited_value : draft.values.provider;
+    const fallback = draft.inherited.fallback ? task.fields.fallback.inherited_value : draft.values.fallback;
+    if (!draft.inherited.fallback && fallback && fallback === primary) changes.fallback = "";
     return { changes, reset }; }
   const dirty = (task, draft) => { const p = patchFor(task, draft); return Object.keys(p.changes).length > 0 || p.reset.length > 0; };
   const sameField = (a, b) => JSON.stringify([a?.value, !!a?.explicit, a?.inherited_value, a?.source, a?.inherited_source])
@@ -1057,14 +1063,16 @@ window.CompanionModelsPage = (() => {
     ["segment_mode", "判断分段倾向", "单条、自然分段或保持内容完整"],
     ["tool_need", "判断能力需求", "只提供能力提示，不负责授权或发起工具"],
   ];
-  const layaDraftFrom = data => ({enabled: !!data.enabled, mode: data.mode || "local", endpoint: data.endpoint || "",
-    local_model_path: data.local_model_path || "", remote_model: data.remote_model || "",
+  const layaDraftFrom = data => ({enabled: !!data.enabled, mode: data.mode || "local",
+    request_format: data.request_format || "native", remote_model: data.remote_model || "",
+    endpoint: data.endpoint || "", local_model_path: data.local_model_path || "",
     api_key: "", timeout_seconds: Number(data.timeout_seconds) || 20,
     followup_confidence_threshold: Math.max(0, Math.min(100, Number(data.followup_confidence_threshold) || 0)),
     decision_fields: Object.fromEntries(LAYA_DECISION_FIELDS.map(([key]) => [key, data.decision_fields?.[key] !== false]))});
   const layaChanges = l => { const changes = {};
-    ["enabled", "mode", "endpoint", "timeout_seconds", "local_model_path", "remote_model", "followup_confidence_threshold"].forEach(key => {
-      const current = key === "local_model_path" || key === "remote_model" ? l.data[key] || ""
+    ["enabled", "mode", "request_format", "remote_model", "endpoint", "timeout_seconds", "local_model_path", "followup_confidence_threshold"].forEach(key => {
+      const current = key === "request_format" ? l.data[key] || "native"
+        : key === "remote_model" || key === "local_model_path" ? l.data[key] || ""
         : key === "followup_confidence_threshold" ? Math.max(0, Math.min(100, Number(l.data[key]) || 0))
         : l.data[key];
       if (l.draft[key] !== current) changes[key] = l.draft[key]; });
@@ -1214,7 +1222,8 @@ window.CompanionModelsPage = (() => {
         ${gpuUnavailable ? `<div class="model-alert"><b>本地 Laya 当前不可用：</b>当前 AstrBot Python 使用的是 CPU 版 PyTorch${torchText ? `（${esc(torchText)}）` : ""}。Laya 本地模式需要 CUDA；请安装与驱动匹配的 CUDA 版 PyTorch 后重启 AstrBot，或在上方把接入方式切到「远程 HTTP 服务」或「Jev 判断服务」。
           <div class="model-editor-actions"><button type="button" class="button small" data-laya-copy="torch_install_command">复制 CUDA PyTorch 安装命令</button></div>
           ${l.data.torch_install_command ? `<code class="model-laya-cmd">${esc(l.data.torch_install_command)}</code><small>命令默认使用 cu128；请按显卡驱动把 cu128 换成 cu126 等兼容版本。安装会替换当前 CPU 版 torch，但不会改动已安装的 laya。</small>` : ""}</div>` : ""}
-        <div class="model-laya-fields">${layaField(l, "enabled", "启用 Laya", "关闭时调用会跳过", "bool")}${layaSelect(l, "mode", "接入方式", "选择 AstrBot 本地 Python、官方 SystemOne 服务、Jev 判断服务或 Cloudflare Workers AI", [["local", "本地 Python 包"], ["remote", "远程 HTTP 服务"], ["jev", "Jev 判断服务"], ["workers_ai", "Cloudflare Workers AI"]])}${mode === "remote" ? layaField(l, "endpoint", "SystemOne 服务地址", "可填服务根地址、/v1 或完整 /v1/systemone") : ""}${mode === "jev" ? layaField(l, "endpoint", "判断服务地址", "可填服务根地址、/v1 或完整 /v1/chat/completions；走 OpenAI 兼容接口") : ""}${mode === "workers_ai" ? layaField(l, "endpoint", "Workers AI 地址", "填 accounts/<ACCOUNT_ID>/ai/run，或只填 accounts/<ACCOUNT_ID>；模型写在请求体里") : ""}${mode !== "local" ? layaField(l, "api_key", "API Key", l.data.api_key_set ? "已配置；留空保留现有密钥" : "按服务端要求填写；留空表示不鉴权", "password") : ""}${mode !== "local" ? layaField(l, "remote_model", "判断模型名", mode === "jev" ? "留空使用 jev-latest；网关上的模型名可在此覆盖" : mode === "workers_ai" ? "留空使用 @cf/cloudflare/clef（吃每日免费神经元额度）；更快可用 @cf/cloudflare/clef-flash，第三方模型如 typesafe/jev-1.14.0 需单独付费" : "留空使用官方 multilingual；仅自建服务改名时才需要填写") : ""}${layaField(l, "timeout_seconds", "调用超时（秒）", "用于本地推理或远程连接，不参与语义判断", "number")}${layaPercentField(l, "followup_confidence_threshold", "连续接话置信阈值", "0 关闭；仅约束非点名续接。Laya 行动概率低于此值时改为旁听，建议从 40–55% 起按日志校准")}</div>
+        <div class="model-laya-fields">${layaField(l, "enabled", "启用 Laya", "关闭时调用会跳过", "bool")}${layaSelect(l, "mode", "接入方式", "选择 AstrBot 本地 Python、官方 SystemOne 服务、Jev 判断服务或 Cloudflare Workers AI", [["local", "本地 Python 包"], ["remote", "远程 HTTP 服务"], ["jev", "Jev 判断服务"], ["workers_ai", "Cloudflare Workers AI"]])}${mode === "remote" ? layaSelect(l, "request_format", "接口格式", "官方 SystemOne 平铺，或 Cloudflare Workers AI 的 input 包装", [["native", "Laya 官方 SystemOne"], ["cloudflare", "Cloudflare Workers AI"]]) : ""}${mode === "remote" ? layaField(l, "endpoint", "SystemOne 服务地址", (l.draft.request_format || l.data.request_format) === "cloudflare" ? "填到 /ai/run；请求会包 input，返回的 result 会自动拆开" : "可填服务根地址、/v1 或完整 /v1/systemone") : ""}${mode === "jev" ? layaField(l, "endpoint", "判断服务地址", "可填服务根地址、/v1 或完整 /v1/chat/completions；走 OpenAI 兼容接口") : ""}${mode === "workers_ai" ? layaField(l, "endpoint", "Workers AI 地址", "填 accounts/<ACCOUNT_ID>/ai/run，或只填 accounts/<ACCOUNT_ID>；模型写在请求体里") : ""}${mode !== "local" ? layaField(l, "api_key", "API Key", l.data.api_key_set ? "已配置；留空保留现有密钥" : "按服务端要求填写；留空表示不鉴权", "password") : ""}${mode !== "local" ? layaField(l, "remote_model", "判断模型名", mode === "jev" ? "留空使用 jev-latest；网关上的模型名可在此覆盖" : mode === "workers_ai" ? "留空使用 @cf/cloudflare/clef（吃每日免费神经元额度）；更快可用 @cf/cloudflare/clef-flash，第三方模型如 typesafe/jev-1.14.0 需单独付费" : "留空使用官方 multilingual；仅自建服务改名时才需要填写") : ""}${layaField(l, "timeout_seconds", "调用超时（秒）", "用于本地推理或远程连接，不参与语义判断", "number")}${layaPercentField(l, "followup_confidence_threshold", "连续接话置信阈值", "0 关闭；仅约束非点名续接。Laya 行动概率低于此值时改为旁听，建议从 40–55% 起按日志校准")}</div>
+${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cloudflare" ? '<p class="model-note">Cloudflare Workers AI：服务地址填到 <code>/ai/run</code>；请求体会自动包成 <code>{"model": "...", "input": {"state": "...", "questions": {...}}}</code>，HTTP 200 的 <code>result</code> 会自动拆开。模型名按 Workers AI 的模型标识填写。</p>' : ""}
         ${mode === "local" ? `<div class="model-laya-fields">${layaField(l, "local_model_path", "本地检查点目录", "可选择微调模型；留空使用官方多语言模型。所有会话共用此选择。")}</div>` : ""}
         <section class="model-laya-decisions" aria-label="决策分类配置"><div><strong>决策分类</strong><span>仅启用的分类会发送给 Laya；关闭的分类沿用宿主配置。</span></div><div class="model-laya-decision-grid">${LAYA_DECISION_FIELDS.map(([key, label, hint]) => `<label class="model-laya-option"><span><strong>${label}</strong><small>${hint}</small></span><span class="model-switch"><input type="checkbox" data-laya-decision="${key}" ${l.draft.decision_fields[key] ? "checked" : ""} ${l.loading || l.busy ? "disabled" : ""}><i></i></span></label>`).join("")}</div></section>
         <div class="model-editor-actions"><button type="button" class="button primary" data-laya-save ${!dirty || l.busy || l.loading || l.stale ? "disabled" : ""}>保存 Laya 配置</button><button type="button" class="button" data-laya-test ${l.busy || l.loading || gpuUnavailable ? "disabled" : ""}>${mode === "local" && installed && !l.data.model_cache_ready ? "下载并验证模型" : "测试 Laya 调用"}</button></div>
@@ -1324,7 +1333,7 @@ window.CompanionModelsPage = (() => {
     for (const endpoint of value.endpoints) {
       endpoint.quality ??= "";
       endpoint.response_format ??= "";
-      endpoint.max_reference_images ??= 1;
+      endpoint.max_reference_images ??= 16;
       endpoint.size_label ??= `${endpoint.width || 1024}x${endpoint.height || 1024}`;
     }
     value.comfyui = value.comfyui && typeof value.comfyui === "object" ? value.comfyui : {};
@@ -1632,7 +1641,7 @@ window.CompanionModelsPage = (() => {
       const testDisabled = disabled || imageConfigDirty(i) || !config.enabled || !item.enabled ||
         ["bailian", "modelscope", "gemini"].includes(imageEffectivePlatform(item));
       const connectionFields = imageEndpointConnectionFields(i, item, base, disabled);
-      const modelFields = `${imageConfigField("模型 ID", `${base}.model`, item.model, "text", 'maxlength="240" placeholder="服务商提供的模型 ID"', "")}${imageConfigField("尺寸标签", `${base}.size_label`, item.size_label || `${item.width}x${item.height}`, "text", 'maxlength="64" placeholder="如 1024x1024、1K、auto"', "服务商接受标签时保留原值；宽高用于通用协议")}${imageConfigField("宽度", `${base}.width`, item.width, "number", 'min="64" max="8192" step="64"', "像素")}${imageConfigField("高度", `${base}.height`, item.height, "number", 'min="64" max="8192" step="64"', "像素")}${item.platform === "minimax" ? "" : `<label class="model-img-field"><span>图片质量</span><select data-img-config-field="${base}.quality"${disabled ? " disabled" : ""}>${[["", "服务端默认（不发送）"], ["auto", "自动"], ["low", "低"], ["medium", "中"], ["high", "高"], ["standard", "标准（dall-e 专用）"], ["hd", "高清（dall-e 专用）"]].map(([value, label]) => `<option value="${value}"${item.quality === value ? " selected" : ""}>${label}</option>`).join("")}</select><small>${esc(imageQualityHelp(item))}</small>${imageLegacyQualityNote(item)}</label><label class="model-img-field"><span>返回格式</span><select data-img-config-field="${base}.response_format"${disabled ? " disabled" : ""}>${[["", "按服务端默认（推荐）"], ["b64_json", "b64_json（旧式 dall-e 兼容）"]].map(([value, label]) => `<option value="${value}"${item.response_format === value ? " selected" : ""}>${label}</option>`).join("")}</select><small>${esc(imageResponseFormatHelp(item))}</small></label>${imageConfigField("最多参考图", `${base}.max_reference_images`, item.max_reference_images, "number", 'min="0" max="8" step="1"', "设为 0 时此模型仅用于文生图")}`}<label class="model-img-field model-img-inline"><span>启用模型</span><input type="checkbox" data-img-config-field="${base}.enabled"${item.enabled ? " checked" : ""}${disabled ? " disabled" : ""}></label>`;
+      const modelFields = `${imageConfigField("模型 ID", `${base}.model`, item.model, "text", 'maxlength="240" placeholder="服务商提供的模型 ID"', "")}${imageConfigField("尺寸标签", `${base}.size_label`, item.size_label || `${item.width}x${item.height}`, "text", 'maxlength="64" placeholder="如 1024x1024、1K、auto"', "服务商接受标签时保留原值；宽高用于通用协议")}${imageConfigField("宽度", `${base}.width`, item.width, "number", 'min="64" max="8192" step="64"', "像素")}${imageConfigField("高度", `${base}.height`, item.height, "number", 'min="64" max="8192" step="64"', "像素")}${item.platform === "minimax" ? "" : `<label class="model-img-field"><span>图片质量</span><select data-img-config-field="${base}.quality"${disabled ? " disabled" : ""}>${[["", "服务端默认（不发送）"], ["auto", "自动"], ["low", "低"], ["medium", "中"], ["high", "高"], ["standard", "标准（dall-e 专用）"], ["hd", "高清（dall-e 专用）"]].map(([value, label]) => `<option value="${value}"${item.quality === value ? " selected" : ""}>${label}</option>`).join("")}</select><small>${esc(imageQualityHelp(item))}</small>${imageLegacyQualityNote(item)}</label><label class="model-img-field"><span>返回格式</span><select data-img-config-field="${base}.response_format"${disabled ? " disabled" : ""}>${[["", "按服务端默认（推荐）"], ["b64_json", "b64_json（旧式 dall-e 兼容）"]].map(([value, label]) => `<option value="${value}"${item.response_format === value ? " selected" : ""}>${label}</option>`).join("")}</select><small>${esc(imageResponseFormatHelp(item))}</small></label>${imageConfigField("最多参考图", `${base}.max_reference_images`, item.max_reference_images, "number", 'min="0" max="16" step="1"', "0 = 仅文生图；GPT Image 最多 16 张，按服务商实际上限填写")}`}<label class="model-img-field model-img-inline"><span>启用模型</span><input type="checkbox" data-img-config-field="${base}.enabled"${item.enabled ? " checked" : ""}${disabled ? " disabled" : ""}></label>`;
       const tone = IMAGE_ROUTE_TONES[index % IMAGE_ROUTE_TONES.length];
       const support = imageRouteAvailable(config, ref, imageCurrentOperation(i));
       return `<article class="model-img-route" data-img-route-card="${esc(ref)}" style="--route-tone:${tone}"><header><span class="model-img-priority">${index + 1}</span><div class="model-img-route-title"><span class="model-img-route-name-wrap" title="点击修改模型显示名称；留空时显示模型 ID"><input type="text" class="model-img-route-name" data-img-config-field="${base}.name" value="${esc(item.name || "")}" maxlength="240" placeholder="${esc(imageEndpointLabel(item, "自定义名称"))}" aria-label="自定义模型名称"${disabled ? " disabled" : ""}><i data-lucide="pencil" aria-hidden="true"></i></span><div class="model-img-route-meta"><span class="model-img-route-id" title="${esc(item.model || "")}">${esc(item.model || "未设置模型 ID")}</span><span class="model-img-route-kind">${esc(IMAGE_PLATFORMS[item.platform] || "自动识别")}</span><span class="model-img-route-host" title="${esc(item.base_url || "")}">${esc(imageRouteHost(item.base_url))}</span></div></div><span class="model-img-route-support ${imageRouteSupportTone(support)}">${esc(support)}</span>${controls}</header>
@@ -1931,7 +1940,7 @@ window.CompanionModelsPage = (() => {
         ${items || '<p class="model-empty">没有匹配的任务。</p>'}</section>`; }).join("");
     const legend = (s.status?.providers || []).map(p => `<span><i style="background:${pillColor(p.id)}"></i><em>${esc(p.id)}</em></span>`).join("");
     return `<div class="model-subpane"><div class="model-kpis">${fnKpis(s)}</div>${sitFilters(s)}
-      <div class="model-mlgd legend">${legend}</div>
+      <details class="model-mlgd-box"><summary><span>模型提供方图例</span><small>${(s.status?.providers || []).length} 个 · 点击展开</small></summary><div class="model-mlgd legend">${legend}</div></details>
       <div class="model-rgrid">${list}</div>${testBar(s)}</div>`; }
   const probeLabel = result => result.status === "ok" ? `连接成功 · ${result.latency_ms} ms`
     : result.status === "testing" ? "测试中…" : errors[result.code] || "结果未知";

@@ -38,11 +38,14 @@ class ContactBudget:
                 FROM model_calls c
                 JOIN model_requests r ON r.task_id = c.task_id
                 JOIN execution_tasks t ON t.task_id = c.task_id
-                WHERE t.kind = 'proactive.compose'
+                WHERE (t.kind = 'proactive.plan' OR (t.kind = 'proactive.compose'
+                    AND NOT EXISTS (SELECT 1 FROM execution_tasks p WHERE p.task_id = t.task_id || '-plan')))
                     AND {task_filter}{where}"""
             row = self.runtime.read_one(call_query, (cutoff, *task_values, *values))
             pending_query = f"""SELECT COUNT(*) FROM execution_tasks t
-                WHERE t.kind = 'proactive.compose' AND t.state IN ({_ACTIVE_TASK_STATES})
+                WHERE (t.kind = 'proactive.plan' OR (t.kind = 'proactive.compose'
+                    AND NOT EXISTS (SELECT 1 FROM execution_tasks p WHERE p.task_id = t.task_id || '-plan')))
+                    AND t.state IN ({_ACTIVE_TASK_STATES})
                     AND {task_filter}{where}
                     AND NOT EXISTS (SELECT 1 FROM model_calls c WHERE c.task_id = t.task_id
                         AND c.state IN ('reserved', 'dispatched', 'generated', 'unknown', 'discarded'))"""
@@ -163,7 +166,7 @@ class ContactBudget:
             FROM model_calls c
             JOIN model_requests r ON r.task_id = c.task_id
             JOIN execution_tasks t ON t.task_id = c.task_id
-            WHERE t.kind IN ('proactive.compose', 'proactive.judge')
+            WHERE t.kind IN ('proactive.plan', 'proactive.compose', 'proactive.judge')
                 AND COALESCE(c.started_at, c.finished_at, r.created_at) >= ? AND """
 
         row = self.runtime.read_one(base + "t.origin_key = ?",

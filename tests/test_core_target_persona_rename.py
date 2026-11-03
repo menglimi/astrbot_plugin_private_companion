@@ -1,42 +1,52 @@
+"""A renamed persona must not deadlock the confirmed core-admin window."""
+
 import unittest
 from types import SimpleNamespace
 
 from astrbot_host.multi_controller import AstrBotMultiController
 
 
-def target(bot_id="bot-a", persona="new-name"):
-    return SimpleNamespace(platform_id="aiocqhttp", account_id="bot-a", participant_id="1001",
-                           target_id="t1", bot_id=bot_id, persona_id=persona, role_id="role")
+def persona(name, role="role"):
+    return SimpleNamespace(bot_id="bot-a", persona_id=name, role_id=role)
 
 
-def binding(persona="old-name"):
-    return SimpleNamespace(platform_id="aiocqhttp", account_id="bot-a", participant_id="1001",
-                           persona_id=persona)
+def target():
+    return SimpleNamespace(platform_id="qq", account_id="100", participant_id="200",
+                           bot_id="bot-a", target_id="qq:100:200")
 
 
-def resolve(personas):
-    fake = SimpleNamespace(settings=SimpleNamespace(targets=[target()], personas=personas))
-    return AstrBotMultiController._core_target(fake, binding())
+class CoreTargetPersonaTests(unittest.TestCase):
+    def controller(self, personas):
+        controller = object.__new__(AstrBotMultiController)
+        controller.settings = SimpleNamespace(personas=tuple(personas), targets=(target(),))
+        return controller
 
+    def binding(self, name):
+        return SimpleNamespace(platform_id="qq", account_id="100", participant_id="200",
+                               persona_id=name)
 
-class CoreTargetPersonaRenameTests(unittest.TestCase):
-    def test_single_persona_window_survives_an_upstream_rename(self):
-        match = resolve([SimpleNamespace(bot_id="bot-a", persona_id="new-name", role_id="role")])
-        self.assertIsNotNone(match)
-        self.assertEqual(match.participant_id, "1001")
+    def test_old_persona_name_still_resolves_through_the_roles_unique_mapping(self):
+        controller = self.controller([persona("liloth", role="莉莉丝")])
+        self.assertIs(controller._core_target(self.binding("莉莉丝")), controller.settings.targets[0])
 
-    def test_exact_name_still_wins_without_fallback(self):
-        match = resolve([SimpleNamespace(bot_id="bot-a", persona_id="old-name", role_id="other")])
-        self.assertIsNotNone(match)
+    def test_single_persona_for_the_bot_resolves_even_without_the_old_name(self):
+        controller = self.controller([persona("liloth", role="new-role")])
+        self.assertIs(controller._core_target(self.binding("莉莉丝")), controller.settings.targets[0])
 
-    def test_ambiguous_multi_persona_window_still_refuses(self):
-        match = resolve([SimpleNamespace(bot_id="bot-a", persona_id="new-name", role_id="role"),
-                         SimpleNamespace(bot_id="bot-a", persona_id="another", role_id="role2")])
-        self.assertIsNone(match)
+    def test_default_placeholder_keeps_the_renamed_persona_ambiguous(self):
+        controller = self.controller([persona("[%None]", role="default"),
+                                      persona("liloth", role="new-role")])
+        self.assertIsNone(controller._core_target(self.binding("莉莉丝")))
 
-    def test_persona_of_another_bot_is_not_accepted(self):
-        match = resolve([SimpleNamespace(bot_id="bot-b", persona_id="new-name", role_id="role")])
-        self.assertIsNone(match)
+    def test_multiple_personas_stay_rejected_instead_of_guessed(self):
+        controller = self.controller([persona("first", role="one"),
+                                      persona("second", role="two")])
+        self.assertIsNone(controller._core_target(self.binding("莉莉丝")))
+
+    def test_exact_name_wins_even_when_other_personas_exist(self):
+        controller = self.controller([persona("莉莉丝", role="one"),
+                                      persona("second", role="two")])
+        self.assertIs(controller._core_target(self.binding("莉莉丝")), controller.settings.targets[0])
 
 
 if __name__ == "__main__":

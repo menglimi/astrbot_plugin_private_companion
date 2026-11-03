@@ -197,6 +197,16 @@ class PersonaWorkshopFixture(unittest.IsolatedAsyncioTestCase):
                    NS(username=username, query=Query(), body=reader)):
             return await self.routes[PREFIX + "/style-rules"]()
 
+    async def post_path(self, path, body, *, username="admin"):
+        payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+
+        async def reader():
+            return payload
+
+        with patch("astrbot_host.persona_workshop_api.request",
+                   NS(username=username, query=Query(), body=reader)):
+            return await self.routes[path]()
+
     async def state(self, **query):
         response = await self.get(query=query)
         self.assertEqual(response["status"], "ok", response)
@@ -245,10 +255,40 @@ class ReadOriginalTests(PersonaWorkshopFixture):
         await self.initialize()
         paths = sorted(path for path in self.routes if path == PREFIX or path.startswith(PREFIX + "/"))
         self.assertEqual(paths, [PREFIX, PREFIX + "/command", PREFIX + "/profile-draft",
+                                 PREFIX + "/profile-export", PREFIX + "/profile-import/apply",
+                                 PREFIX + "/profile-import/preview",
                                  PREFIX + "/profile-migration-apply", PREFIX + "/profile-migration-plan",
                                  PREFIX + "/standardize", PREFIX + "/style-rules", PREFIX + "/tryouts"])
         self.assertEqual(COMMANDS, {"save": {"text", "note", "expected_current"},
                                     "restore": {"version_id", "note", "expected_current"}})
+
+    async def test_role_profile_export_and_import_are_field_level(self):
+        await self.initialize()
+        exported = await self.get(PREFIX + "/profile-export")
+        self.assertEqual(exported["status"], "ok", exported)
+        document = exported["data"]
+        self.assertEqual(document["format"], "companion.role-profile")
+        self.assertEqual(document["version"], 1)
+        self.assertIn("name", document["fields"])
+        self.assertNotIn("avatar_data_url", document["fields"])
+
+        imported = json.loads(json.dumps(document))
+        imported["fields"]["name"] = "星缘"
+        preview = await self.post_path(PREFIX + "/profile-import/preview", {"document": imported})
+        self.assertEqual(preview["status"], "ok", preview)
+        rows = {row["field"]: row for row in preview["data"]["fields"]}
+        self.assertEqual(rows["name"]["current"], "")
+        self.assertEqual(rows["name"]["imported"], "星缘")
+        self.assertTrue(rows["name"]["default_selected"])
+
+        applied = await self.post_path(PREFIX + "/profile-import/apply",
+                                       {"document": imported, "fields": ["name"]})
+        self.assertEqual(applied["status"], "ok", applied)
+        self.assertEqual(applied["data"]["updated"], 1)
+        target = role_profile_target_for(self.controller.session.profile.target)
+        snapshot = RoleProfileConfigurationOwner(self.controller.runtime).read(
+            target, role_profile_fields())
+        self.assertEqual(snapshot.fields[ROLE_PROFILE_GROUP + ".name"].value, "星缘")
 
     async def test_an_absent_persona_is_a_state_the_page_can_explain(self):
         await self.initialize()

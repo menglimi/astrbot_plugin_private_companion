@@ -137,9 +137,7 @@ test("总览为空时说明学习链路的三个入口",async()=>{
       :route.endsWith("/expression")?expression({learning:{state:"insufficient_samples",
         available:1,required:2,rules_per_turn:2}})
       :route==="semantic"?{settings:{learning_interval_seconds:21600}}
-      :{items:[],
-        access:{settings:{read_enabled:true,proposals_enabled:false},
-          effective:{read_enabled:{allowed:true},proposals_enabled:{allowed:false,reason:"authorization_missing"}}}};
+      :{items:[]};
     return {status:"ok",data};
   }},{semantic:{global:true}});
   page.mount();

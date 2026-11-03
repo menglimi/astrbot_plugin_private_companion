@@ -21,7 +21,7 @@ from companion_v2.identity_policy.models import AuthorizationTier, GrantState
 from companion_v2.identity_policy.personas import ConversationRoute
 from companion_v2.role_work.growth import GrowthKind, GrowthState, RoleGrowthRecord
 from companion_v2.role_work.state.maintenance import (PROMPT as STATE_MAINTENANCE_PROMPT,
-    STATE_INTERVENTION_INSTRUCTION, state_profile)
+    STATE_INTERVENTION_INSTRUCTION, state_output_budget, state_profile)
 from companion_v2.role_work.state.management import StateManagement
 from companion_v2.role_work.state.service import FIELDS
 from companion_v2.sources.models import SourceRecord
@@ -32,6 +32,19 @@ from tests.test_role_tool_loop import answered, call, requested
 
 def state_data(**changes):
     return {name: [] if name == "conditions" else None for name in FIELDS} | changes
+
+
+class StateOutputBudgetTests(unittest.TestCase):
+    @staticmethod
+    def provider(ceiling):
+        return type("Provider", (), {"maximum_output_tokens": ceiling})()
+
+    def test_reasoning_models_get_state_headroom_but_never_exceed_provider(self):
+        self.assertEqual(state_output_budget(2048, [self.provider(65536)]), 8192)
+        self.assertEqual(state_output_budget(2048, [self.provider(4096)]), 4096)
+        self.assertEqual(state_output_budget(2048, [self.provider(2048)]), 2048)
+        self.assertEqual(state_output_budget(2048, [self.provider(2048), self.provider(1024)]), 1024)
+        self.assertEqual(state_output_budget(100, [self.provider(65536)]), 8192)
 
 
 def calendar_data(**changes):

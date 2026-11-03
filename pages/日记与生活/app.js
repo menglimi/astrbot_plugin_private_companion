@@ -81,10 +81,19 @@
       pending.delete(signature);
       if (action === "configure") dirty = false;
       $("editor").close();
+      const retryOf = action === "diary" ? String(args.retry_of || "") : "";
+      if (retryOf && result.state === "unknown") blockedRetries.add(retryOf);
       notice(result.state === "failed" || result.state === "unknown" ? "本次书写未完成，详情已保留在执行记录。" : "操作已完成。", ["failed", "unknown"].includes(result.state));
       await load(true);
     } catch (error) {
-      notice(error.message, true);
+      const retryOf = action === "diary" ? String(args.retry_of || "") : "";
+      if (retryOf && error.code === "journal_trigger_unresolved") {
+        blockedRetries.add(retryOf);
+        renderReceipts();
+        notice(errors.journal_trigger_unresolved, true);
+      } else {
+        notice(error.message, true);
+      }
       if ($("editor").open) { $("dialog-error").textContent = error.message; $("dialog-error").hidden = false; }
     } finally { controls(false); }
   }
@@ -141,6 +150,7 @@
       }
     }
   }
+  const blockedRetries = new Set();
   function renderReceipts() {
     const list = $("receipt-list"); list.replaceChildren();
     const receipts = [...new Map(state.receipts.map(r => [r.operation_id || r.key, r])).values()].reverse();

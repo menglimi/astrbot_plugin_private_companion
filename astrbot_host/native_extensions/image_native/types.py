@@ -11,6 +11,12 @@ from typing import Any, Callable, Mapping
 from PIL import Image, ImageChops
 
 
+# The provider port stays independent of V2 core types; this mirrors
+# ``companion_v2.conversation.media.models.MAX_REFERENCE_IMAGES`` and both are
+# asserted equal by the protocol tests.
+MAX_REFERENCE_IMAGES = 16
+
+
 class NativeImageError(ValueError):
     """A failed image attempt plus what is safe to do with it.
 
@@ -177,7 +183,7 @@ class ImageInvocation:
         references = tuple(self.reference_ids)
         if any(not isinstance(value, str) or not value for value in references) or len(set(references)) != len(references):
             raise NativeImageError("invalid_reference_ids")
-        if self.operation == "edit" and len(references) > 8:
+        if self.operation == "edit" and len(references) > MAX_REFERENCE_IMAGES:
             raise NativeImageError("edit_reference_limit")
         if self.operation == "mask_edit" and len(references) not in (0, 2):
             raise NativeImageError("mask_edit_requires_source_and_mask")
