@@ -17,6 +17,7 @@ __pycache__/
 /build/
 /RELEASE_FILES.json
 /docs/PROMPTS_INVENTORY_20261018.xlsx
+/docs/design-preview/
 /pages/陪伴小屋/shell-preview*.html
 /pages/陪伴小屋/theme-preview.html
 /pages/陪伴小屋/v2-surface-preview.html
@@ -24,6 +25,16 @@ __pycache__/
 
 # AstrBot host runtime data must never be packaged with this plugin.
 /data/
+/plugin_data/
+/AGENTS.md
+cmd_config.json
+astrbot_plugin_*_config.json
+.env
+.env.*
+*.db
+*.sqlite
+*.sqlite3
+*.log
 
 # Local release verification snapshots are not plugin source.
 /verification/

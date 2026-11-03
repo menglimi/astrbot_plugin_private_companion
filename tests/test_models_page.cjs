@@ -622,7 +622,7 @@ test('switching to the voice tab lazily loads, saves, and plays a synthesized sa
   const voice = {languages: [{k: 'zh', n: '中文', bind: ''}, {k: 'ja', n: '日语', bind: ''}, {k: 'en', n: '英语', bind: ''}],
     channels: [{k: 'private', n: '私聊', bindings: {zh: '', ja: '', en: ''}},
       {k: 'group', n: '群聊', bindings: {zh: '', ja: '', en: ''}}],
-    providers: [{id: 'tts-live', model: 's2.1-pro-free', voice: '高木さん'}], timeout_seconds: 30,
+    providers: [{id: 'tts-live', model: 's2.1-pro-free', voice: '示例音色甲'}], timeout_seconds: 30,
     voice_enabled: true, edit_token: TOKEN};
   get.resolve(voice);
   await flush();

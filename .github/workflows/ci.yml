@@ -29,6 +29,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Check tracked privacy boundary
+        run: python -X utf8 -m tools.check_tracked_privacy
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
