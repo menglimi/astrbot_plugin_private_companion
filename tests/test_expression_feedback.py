@@ -7,7 +7,7 @@ import unittest
 from companion_v2.execution.models import digest, stamp
 from companion_v2.conversation.style_context import ConversationExpressionStyleContext
 from companion_v2.expression import feedback, style_rotation
-from companion_v2.foundation.refs import RoleOwnerRef
+from companion_v2.foundation.refs import RoleOwnerRef, ScopeKind, ScopeRef
 from companion_v2.storage.runtime import StorageRuntime
 from tests.test_management_access import INSTALLATION, ROLE, SCOPE
 
@@ -28,18 +28,20 @@ class ExpressionFeedbackTests(unittest.TestCase):
         catalog = SimpleNamespace(runtime=self.runtime, role_owner=lambda _context: owner)
         self.style_context = ConversationExpressionStyleContext(catalog)
         self.signal_id = "expression-run:feedback:signal:0"
+        self.write_rule(self.scope_key, run_id="expression-run:feedback", signal_id=self.signal_id)
+
+    def write_rule(self, scope_key, *, run_id, signal_id):
         with self.runtime.transaction() as connection:
             connection.execute("""INSERT INTO expression_style_runs
                 (run_id, owner_key, scope_key, sample_json, material_hash, summary, state, created_at, decided_at)
                 VALUES (?, ?, ?, '{}', 'sample-hash', '表达测试', 'pending', ?, NULL)""",
-                ("expression-run:feedback", self.owner_key, self.scope_key, stamp(NOW)))
+                (run_id, self.owner_key, scope_key, stamp(NOW)))
             connection.execute("""INSERT INTO expression_style_signals
                 (signal_id, run_id, owner_key, scope_key, dimension, observation, proposal, confidence,
                  evidence_json, state, created_at, decided_at, decided_by, decision_key, ordinal)
                 VALUES (?, ?, ?, ?, 'diction', '晚间问候时使用轻松短句', '用轻松短句问候', 0.8,
                         '[]', 'adopted', ?, ?, 'operator', 'adopted', 0)""",
-                (self.signal_id, "expression-run:feedback", self.owner_key, self.scope_key,
-                 stamp(NOW), stamp(NOW)))
+                (signal_id, run_id, self.owner_key, scope_key, stamp(NOW), stamp(NOW)))
 
     def record(self, connection, owner, scope, signal_ids, at):
         style_rotation.record(self.runtime, owner_key=owner, scope_key=scope,
@@ -99,6 +101,106 @@ class ExpressionFeedbackTests(unittest.TestCase):
         self.deliver("reply-scoped", NOW)
         self.assertEqual(self.consume("别这么说", NOW + timedelta(seconds=1), scope_key="other-scope"), {})
         self.assertEqual(feedback.usage(self.runtime, self.owner_key, self.scope_key), {})
+
+    def test_a_rule_outside_the_conversation_family_never_takes_its_feedback(self):
+        # Another participant's rule is a different relationship; a delivery
+        # receipt that names it anyway must not turn this conversation's
+        # complaint into its review history.
+        other = ScopeRef(INSTALLATION, "onebot", ScopeKind.PRIVATE, "native-b", "bot-a", "login-a",
+                         "conversation-b", "session-b")
+        other_key = digest(other)
+        other_signal = "expression-run:feedback:signal:foreign"
+        self.write_rule(other_key, run_id="expression-run:feedback-foreign", signal_id=other_signal)
+
+        feedback.stage_injection(self.runtime, batch_id="reply-family", owner_key=self.owner_key,
+            scope_key=self.scope_key, signal_ids=(self.signal_id, other_signal), at=NOW)
+        with self.runtime.transaction() as connection:
+            feedback.confirm_delivery(connection, batch_id="reply-family", owner_key=self.owner_key,
+                scope_key=self.scope_key, family_scopes=lambda foreign: (self.scope_key,),
+                delivered_at=NOW + timedelta(seconds=1), rotation_record=self.record)
+        consumed = self.consume("别这么说", NOW + timedelta(seconds=2))
+        self.assertEqual((consumed["signal"], consumed["updated_rules"], consumed["demoted_rules"]),
+                         ("negative", 1, 0))
+        self.assertEqual(feedback.usage(self.runtime, self.owner_key, other_key), {})
+        self.assertEqual(self.runtime.read_one(
+            "SELECT state FROM expression_style_signals WHERE signal_id = ?", (other_signal,))["state"],
+            "adopted")
+        self.assertEqual(feedback.usage(self.runtime, self.owner_key, self.scope_key)
+                         [self.signal_id]["negative_count"], 1)
+
+    def test_a_batch_inside_one_window_reads_no_conversation_family(self):
+        # Injection already paid the family read for this turn; an ordinary
+        # delivery of rules learned in the answered window must not scan the
+        # conversation tables again.
+        resolved = []
+
+        def family_scopes(foreign):
+            resolved.append(foreign)
+            return (self.scope_key,)
+
+        feedback.stage_injection(self.runtime, batch_id="reply-local", owner_key=self.owner_key,
+            scope_key=self.scope_key, signal_ids=(self.signal_id,), at=NOW)
+        with self.runtime.transaction() as connection:
+            feedback.confirm_delivery(connection, batch_id="reply-local", owner_key=self.owner_key,
+                scope_key=self.scope_key, family_scopes=family_scopes,
+                delivered_at=NOW + timedelta(seconds=1), rotation_record=self.record)
+        self.assertEqual(resolved, [])
+        self.assertEqual(self.consume("别这么说", NOW + timedelta(seconds=2))["updated_rules"], 1)
+
+    def test_a_family_read_failure_keeps_the_delivery_receipt_and_rotation(self):
+        # The receipt is written in the caller's transaction together with the
+        # rotation record, so a family read that escaped would roll back a
+        # delivered reply's accounting. The failure is contained inside the
+        # receipt instead: the answered window's rule is still taken, the
+        # rotation record written next to it survives, and a rule from another
+        # conversation stays out of this feedback window (fail-closed).
+        local_signal = "expression-run:feedback:signal:local"
+        foreign_scope = digest(ScopeRef(INSTALLATION, "onebot", ScopeKind.PRIVATE, "native-b",
+                                        "bot-a", "login-a", "conversation-b", "session-b"))
+        foreign_signal = "expression-run:feedback:signal:foreign"
+        self.write_rule(self.scope_key, run_id="expression-run:feedback-local", signal_id=local_signal)
+        self.write_rule(foreign_scope, run_id="expression-run:feedback-foreign",
+                        signal_id=foreign_signal)
+
+        calls = []
+
+        def broken_family(foreign):
+            calls.append(foreign)
+            raise RuntimeError("conversation table unavailable during delivery")
+
+        at = NOW + timedelta(minutes=1)
+        feedback.stage_injection(self.runtime, batch_id="reply-broken-family", owner_key=self.owner_key,
+            scope_key=self.scope_key, signal_ids=(local_signal, foreign_signal), at=at)
+        with self.runtime.transaction() as connection:
+            with self.assertLogs("companion_v2.expression.feedback", level="WARNING") as captured:
+                feedback.confirm_delivery(connection, batch_id="reply-broken-family",
+                    owner_key=self.owner_key, scope_key=self.scope_key,
+                    family_scopes=broken_family, delivered_at=at, rotation_record=self.record)
+
+        # The callback really ran and the failure reached the log as its type.
+        self.assertEqual(calls, [{foreign_scope}])
+        self.assertTrue(any("RuntimeError" in line and "family unavailable" in line
+                            for line in captured.output), captured.output)
+        # The rotation record of the same transaction survived, under each
+        # rule's own scope.
+        self.assertEqual(style_rotation.usage(self.runtime, self.owner_key,
+                         self.scope_key)[local_signal][0], 1)
+        self.assertEqual(style_rotation.usage(self.runtime, self.owner_key,
+                         foreign_scope)[foreign_signal][0], 1)
+        # Only the answered window's rule entered the feedback window ...
+        consumed = self.consume("别这么说", at + timedelta(seconds=1))
+        self.assertEqual((consumed["signal"], consumed["updated_rules"], consumed["demoted_rules"]),
+                         ("negative", 1, 0))
+        self.assertEqual(set(feedback.usage(self.runtime, self.owner_key, self.scope_key)),
+                         {local_signal})
+        self.assertEqual(feedback.usage(self.runtime, self.owner_key, self.scope_key)
+                         [local_signal]["negative_count"], 1)
+        # ... so the other conversation's rule neither hears this feedback nor
+        # leaves its admitted state.
+        self.assertEqual(feedback.usage(self.runtime, self.owner_key, foreign_scope), {})
+        self.assertEqual(self.runtime.read_one(
+            "SELECT state FROM expression_style_signals WHERE signal_id = ?", (foreign_signal,))["state"],
+            "adopted")
 
     def test_classifier_requires_a_direct_expression_reference(self):
         self.assertEqual(feedback.classify("这个语气很自然，我喜欢"), "positive")
