@@ -5,6 +5,13 @@ always reversible: ``retire`` pauses an adopted rule while keeping its history
 and ``restore`` can bring it back after the original evidence is checked
 again. Rejecting is available even when the sampled writing has since been
 withdrawn, so an operator is never left with an undecidable row.
+
+``unavailable_reason`` only reports that the original evidence can no longer
+be read (withdrawn, revoked or expired). The rule itself is kept: its form,
+observation, proposal and applicability stay listed, because an unreadable
+source never unlearns what the operator already reviewed. A window reset is
+not unreadability; stored evidence survives it and is only labelled with the
+reset moment (``evidence_reset_at``).
 """
 
 from __future__ import annotations
@@ -207,8 +214,10 @@ class ExpressionStyleManagement:
             raise TaskError("expression_sample_changed", "sample approval was revoked")
         try:
             sample_context = self._evidence_context(window, context)
+            # The rule's own evidence is durable: a later /reset dates it but
+            # never revokes it, so adopting, restoring or editing still works.
             return self.samples.describe_handles(handles, opened_at, closed_at, sample_context, at,
-                source_kind=window.get("source_kind", "confirmed_reply"))
+                source_kind=window.get("source_kind", "confirmed_reply"), durable=True)
         except TaskError as error:
             raise TaskError("expression_sample_changed", str(error)) from None
 
@@ -271,37 +280,45 @@ class ExpressionStyleManagement:
                 unavailable, evidence = None, []
                 applicability = None
                 source_kind = "confirmed_reply"
+                reset_at = None
                 if state in ("pending", "adopted", "retired", "rejected"):
                     try:
                         applicability = normalize_applicability(json.loads(row["applicability_json"]))
-                        run, window, handles = self._run(row, owner, context)
-                        source_kind = window.get("source_kind", "confirmed_reply")
-                        opened_at, closed_at = self._window(window, at)
-                        if source_kind == "legacy_expression":
-                            from .legacy_import import evidence as legacy_evidence
-                            evidence = legacy_evidence(window, handles)
-                        elif source_kind != SHARE_PACK_SOURCE:
-                            if source_kind == "conversation_input" and not self.samples.reviews.allows_handles(context, handles):
-                                raise TaskError("expression_sample_changed", "sample approval was revoked")
-                            sample_context = self._evidence_context(window, context)
-                            evidence = self.samples.describe_handles(handles, opened_at, closed_at,
-                                sample_context, at, source_kind=source_kind)
-                            if source_kind == "conversation_input":
-                                for extra in rule_support.observations(self.runtime, row["signal_id"]):
-                                    try:
-                                        extra_window, extra_handles = extra["window"], extra["handles"]
-                                        extra_start, extra_end = self._window(extra_window, at)
-                                        extra_context = self._evidence_context(extra_window, context)
-                                        if self.samples.reviews.allows_handles(extra_context, extra_handles):
-                                            evidence.extend(self.samples.describe_handles(extra_handles,
-                                                extra_start, extra_end, extra_context, at,
-                                                source_kind="conversation_input"))
-                                    except (TaskError, KeyError, TypeError, ValueError):
-                                        continue
-                    except TaskError as error:
-                        unavailable = error.code
                     except (TypeError, ValueError):
                         unavailable = "expression_applicability_invalid"
+                    if unavailable is None:
+                        try:
+                            run, window, handles = self._run(row, owner, context)
+                            source_kind = window.get("source_kind", "confirmed_reply")
+                            opened_at, closed_at = self._window(window, at)
+                            if source_kind == "legacy_expression":
+                                from .legacy_import import evidence as legacy_evidence
+                                evidence = legacy_evidence(window, handles)
+                            elif source_kind != SHARE_PACK_SOURCE:
+                                if source_kind == "conversation_input" and not self.samples.reviews.allows_handles(context, handles):
+                                    raise TaskError("expression_sample_changed", "sample approval was revoked")
+                                sample_context = self._evidence_context(window, context)
+                                evidence = self.samples.describe_handles(handles, opened_at, closed_at,
+                                    sample_context, at, source_kind=source_kind, durable=True)
+                                reset_at = self.samples.evidence_reset_at(sample_context, closed_at)
+                                if source_kind == "conversation_input":
+                                    for extra in rule_support.observations(self.runtime, row["signal_id"]):
+                                        try:
+                                            extra_window, extra_handles = extra["window"], extra["handles"]
+                                            extra_start, extra_end = self._window(extra_window, at)
+                                            extra_context = self._evidence_context(extra_window, context)
+                                            if self.samples.reviews.allows_handles(extra_context, extra_handles):
+                                                evidence.extend(self.samples.describe_handles(extra_handles,
+                                                    extra_start, extra_end, extra_context, at,
+                                                    source_kind="conversation_input", durable=True))
+                                        except (TaskError, KeyError, TypeError, ValueError):
+                                            continue
+                        except TaskError as error:
+                            unavailable = error.code
+                        except (TypeError, ValueError):
+                            # Damaged stored evidence is unreadable evidence; it
+                            # is not a problem with the rule's applicability.
+                            unavailable = "expression_sample_changed"
                 if state == "pending":
                     actions = ["reject"] if unavailable is not None else ["adopt", "reject"]
                 elif state == "adopted":
@@ -321,10 +338,14 @@ class ExpressionStyleManagement:
                 items.append({"signal_id": row["signal_id"], "run_id": row["run_id"],
                     "dimension": row["dimension"], "source_kind": source_kind,
                     "applicability": applicability,
-                    "expression": detail["form"] if detail and unavailable is None else None,
-                    "observation": row["observation"] if unavailable is None else None,
-                    "proposal": row["proposal"] if unavailable is None else None,
+                    # An unreadable source never removes the rule itself: only
+                    # the evidence it can no longer recheck is withheld, so the
+                    # reviewed form stays visible and actionable.
+                    "expression": detail["form"] if detail else None,
+                    "observation": row["observation"],
+                    "proposal": row["proposal"],
                     "evidence": evidence if unavailable is None else [],
+                    "evidence_reset_at": reset_at if unavailable is None else None,
                     "confidence": row["confidence"], "state": row["state"],
                     "created_at": row["created_at"], "decided_at": row["decided_at"],
                     "injections": injections,
@@ -336,6 +357,9 @@ class ExpressionStyleManagement:
                     "review_reason": feedback.get("review_reason"),
                     "source_title": run["summary"] if unavailable is None and source_kind in (SHARE_PACK_SOURCE, "legacy_expression") else None,
                     "unavailable_reason": unavailable, "actions": actions,
+                    # Editing, restoring and reconsidering all recheck the
+                    # original evidence, so they stay closed while it cannot be
+                    # read; retiring never needed it.
                     "can_revise": unavailable is None,
                     "view_token": self._token(operator, context, row, policy_revision)})
             return {"items": items, "state": state,

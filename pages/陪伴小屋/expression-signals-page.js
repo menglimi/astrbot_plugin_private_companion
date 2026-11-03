@@ -23,7 +23,7 @@ window.CompanionExpressionSignalsPage = (() => {
     expression_capacity_reached: "规则库已满，可先停用暂时不用的规则。",
     expression_duplicate_rule: "已有相同情境与说法的规则，请先合并或停用其中一条。",
     expression_view_stale: "规则已有变化，请重新读取后再操作。",
-    expression_sample_changed: "依据已变化，规则暂不能恢复。",
+    expression_sample_changed: "依据原文已不可读取，无法完成这个操作。",
     expression_signal_unavailable: "表达规则已不在原数据来源内。",
     expression_decided: "规则状态已经改变，请重新读取。",
     expression_pack_invalid: "分享包格式无效或版本不受支持。",
@@ -351,6 +351,20 @@ window.CompanionExpressionSignalsPage = (() => {
     if (!evidence.length || item.unavailable_reason) return "";
     return `<details class="lh-signal-evidence"><summary>依据 · ${evidence.length} 条</summary><ol>${evidence.slice(0, 8).map(entry => `<li>${e(entry)}</li>`).join("")}</ol></details>`;
   }
+  /* 依据原文真的不可读取时（撤回、来源失效、过期），规则本身仍在：不隐藏正文，
+     按状态说明还能做什么，也不承诺之后能恢复。 */
+  function unavailableNote(item) {
+    if (item.state === "adopted") return "依据原文不可读取，不影响这条规则继续生效，仍可停用。";
+    if (item.state === "pending") return "依据原文不可读取，这条候选只能拒绝。";
+    if (item.state === "retired") return "依据原文不可读取，无法恢复启用。";
+    return "依据原文不可读取。";
+  }
+  /* 上下文重置只结束临时对话；更早记录的依据依然可读，只标注它早于重置。 */
+  function renderResetNote(item) {
+    const moment = item.evidence_reset_at;
+    if (typeof moment !== "string" || !Number.isFinite(Date.parse(moment))) return "";
+    return `<p class="lh-signal-evidence-note">依据早于 ${e(formatTime(moment))} 的上下文重置，原消息仍可读取。</p>`;
+  }
   function renderApplicability(app) {
     if (!app || typeof app !== "object") return "";
     const list = (value, labels) => Array.isArray(value) && value.length
@@ -375,8 +389,8 @@ window.CompanionExpressionSignalsPage = (() => {
       <span>停用这条规则？</span><button type="button" data-signal-confirm="yes" data-id="${e(item._key)}">确认</button>
       <button type="button" data-signal-confirm="no">取消</button></div>` : "";
     const form = item.expression;
-    const title = unavailable ? "依据已失效" : (form?.pattern || item.proposal || item.observation || "表达规则");
-    const body = unavailable ? "" : (form?.situation || item.observation || "");
+    const title = form?.pattern || item.proposal || item.observation || "表达规则";
+    const body = form?.situation || item.observation || "";
     const exportChoice = adopted ? `<label class="lh-signal-export-choice"><input type="checkbox" data-signal-export="${e(item._key)}"${selectedExportIds.has(item._key) ? " checked" : ""} ${transferBusy ? "disabled" : ""}><span>导出</span></label>` : "";
     const source = item.source_kind === "legacy_expression" ? "学习记录" : item.source_kind === "shared_pack" ? "分享包"
       : item.source_kind === "conversation_input" ? "对话表达" : "角色表达";
@@ -395,11 +409,11 @@ window.CompanionExpressionSignalsPage = (() => {
         <span class="lh-signal-source">${source}</span><span class="lh-signal-scope">记录来源 · ${e(sourceLabel(item._source))}</span>
         <span class="lh-signal-state">${pending ? "待审" : adopted ? "已启用" : item.state === "rejected" ? "已拒绝" : "已停用"}</span>${form ? `<span class="lh-signal-kind">${form.kind === "grammar" ? "语法句式" : "情境表达"}</span>` : ""}</div><div class="lh-signal-card-tools">${exportChoice}<span class="lh-signal-uses">${e(item.injections || 0)} 次引用</span></div></header>
       <h3>${e(title)}</h3>${body ? `<p class="lh-signal-observation">${e(body)}</p>` : ""}
-      ${form && !unavailable ? `<dl class="lh-signal-usage"><dt>怎么用</dt><dd>${e(item.proposal)}</dd>${form.avoid ? `<dt>何时不用</dt><dd>${e(form.avoid)}</dd>` : ""}</dl>` : ""}
-      ${!unavailable ? renderApplicability(item.applicability) : ""}
+      ${form ? `<dl class="lh-signal-usage"><dt>怎么用</dt><dd>${e(item.proposal)}</dd>${form.avoid ? `<dt>何时不用</dt><dd>${e(form.avoid)}</dd>` : ""}</dl>` : ""}
+      ${renderApplicability(item.applicability)}
       ${item.source_kind === "shared_pack" ? `<p class="lh-signal-import-origin">分享包 · ${e(item.source_title || "导入规则")}</p>` : ""}
       ${feedback}
-      ${unavailable ? `<p class="lh-signal-unavailable">依据已失效，暂不可恢复</p>` : renderEvidence(item)}
+      ${unavailable ? `<p class="lh-signal-unavailable">${e(unavailableNote(item))}</p>` : `${renderEvidence(item)}${renderResetNote(item)}`}
       <footer class="lh-signal-card-foot"><div><span>${item.last_injected_at ? `最近注入 ${e(formatTime(item.last_injected_at))}` : "尚未注入"}</span>
         ${item.decided_at ? `<span>决定于 ${e(formatTime(item.decided_at))}</span>` : ""}</div><div class="lh-signal-actions">${item.can_revise ? `<button type="button" class="lh-command" data-signal-edit="${e(item._key)}">编辑</button>` : ""}${action}</div></footer>${confirm}</article>`;
   }
