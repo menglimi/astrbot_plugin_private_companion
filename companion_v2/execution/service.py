@@ -228,6 +228,13 @@ class TaskSupervisor:
                                                    observed_at=observed_at, allow_private_owner=True))
 
     @outcome
+    def check_context_binding(self, context: TaskContext, *, observed_at: datetime):
+        """Validate a stored route and role without borrowing its participant's grants."""
+        with self.runtime.read_snapshot():
+            self._context(context, observed_at)
+            return True
+
+    @outcome
     def authorize_context(self, context: TaskContext, *, action: str, observed_at: datetime):
         """Shared current private scope checks for task-owning local services."""
         with self.runtime.read_snapshot():
