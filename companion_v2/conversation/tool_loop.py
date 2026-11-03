@@ -36,13 +36,50 @@ TOOL_INSTRUCTION = """日常聊天可直接回复，确有需要再选本轮工�
 按实际回执描述结果：unknown/started 不表示成功，也不表示未执行；不要更换调用编号重做未知操作，重用编号时保持原参数。多轮结果按发生顺序理解，早期观察和回执不等于对象现状。本地便签、提醒登记与平台发送各有结果，互不代替。
 未完话头只记录用户明确约定稍后继续、等待具体结果或要求以后回头聊的内容；普通闲聊、猜测、已结束话题不记录。创建前用 memo.list 查重，有同一话头就编辑原件。符合未完话头时 purpose=open_loop，其他备忘 purpose=note。默认 30 天到期；明确一次性日期可保留至日期后一周，最长 180 天。
 只在当前相关对话中自然承接话头。用户说明已解决、取消或不想继续时，用 memo.complete 结束原件；到期或已结束的不再提起。用户明确要求删除某条话头或记录时，先用 memo.list 找到同一原件，再带 memo_id 与原 revision 调用 memo.delete；删除是逻辑删除，回执里的 deleted 状态才是依据，没拿到成功回执不得说已删除。
-用户明确要求未来某时提醒、叫醒或通知时，必须调用 reminder.create，不得用 memo.create 代替。schedule 必须是对象，anchor 写带 UTC 偏移的 ISO-8601 时间，timezone_name 写 IANA 时区（默认 Asia/Shanghai），frequency 通常为 once；message 写具体提醒内容。只有回执明确为 active/local_registered 时才说已设置。"""
+用户明确要求在未来某个时间提醒、叫醒或通知时，必须把相对时间换算成带时区的绝对时间并调用 reminder.create（schedule.anchor + timezone_name + message），不能用 memo.create 顶替；只有收到 active/local_registered 之类的明确回执才能说已经设好。提醒工具报参数错误时按错误修正一次，仍失败就说明没设成，不得静默改成只记便签。"""
 GAME_PLAY_INSTRUCTION = (
     "把游戏当作两人共享的桌边时光，不要连续播报规则和分数；关键操作后用简短的角色反应接住对方，再自然留出下一轮。"
     "规则是扶手，不是聊天中心：轻松局可以通过掷法、碰杯沿、手势等操作悄悄影响结果，动作里留一点可察觉的细节。"
     "看对方反应再承认、装作无意或收手，不要把它说成一条醒目的特殊规则；有工具依据的变化必须反映在对局状态里。"
     "玩家要求公平时按普通操作执行。"
 )
+
+# 议程工具的参数字段说明。空 schema（{}）会让模型只能靠猜来构造对象/时间，
+# reminder.create 曾因此永远拿不到合法 schedule，最后静默退化成 memo.create。
+_SCHEDULE_SCHEMA = {
+    "type": "object",
+    "description": "绝对触发时间。anchor 用带 UTC 偏移的 ISO-8601，timezone_name 用 IANA 名称。",
+    "properties": {
+        "anchor": {"type": "string",
+                   "description": "带 UTC 偏移的 ISO-8601，例如 2026-11-03T07:55:00+08:00"},
+        "timezone_name": {"type": "string", "description": "IANA 时区，例如 Asia/Shanghai"},
+        "frequency": {"type": "string", "enum": ["once", "daily", "weekly", "monthly", "yearly"]},
+        "interval": {"type": "integer", "minimum": 1},
+        "count": {"type": "integer", "minimum": 1},
+        "fold": {"type": "integer", "enum": [0, 1]},
+        "gap_policy": {"type": "string", "enum": ["reject", "shift_forward"]},
+    },
+    "required": ["anchor", "timezone_name"],
+    "additionalProperties": False,
+}
+
+_FIELD_SCHEMAS = {
+    "title": {"type": "string", "maxLength": 200, "description": "便签标题"},
+    "body": {"type": "string", "description": "便签正文"},
+    "changes": {"type": "object", "description": "要修改的字段与目标值"},
+    "search": {"type": "string", "description": "按关键词过滤"},
+    "after": {"type": "string", "description": "上一页返回的游标"},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+    "state": {"type": "string", "description": "按状态过滤，例如 active"},
+    "message": {"type": "string", "description": "提醒内容，一句用户可见的话"},
+    "reminder_id": {"type": "string"},
+    "memo_id": {"type": "string"},
+    "expected_revision": {"type": "integer", "minimum": 1},
+    "expected_memo_revision": {"type": "integer", "minimum": 1},
+    "handle": {"type": "string"},
+    "after_id": {"type": "string", "description": "上一页返回的提醒游标"},
+    "schedule": _SCHEDULE_SCHEMA,
+}
 
 
 @dataclass(frozen=True)
@@ -80,26 +117,21 @@ def _schedule_schema():
 
 
 def specification(action, required, optional=(), description="Use the original role's authorized local agenda."):
-    properties = {key: {} for key in sorted(set(required) | set(optional))}
-    if action == "memo.create":
+    properties = {key: dict(_FIELD_SCHEMAS.get(key, {})) for key in sorted(set(required) | set(optional))}
+    if action in ("memo.create", "memo.list"):
         properties["purpose"] = {"type": "string", "enum": ["note", "open_loop"]}
-    elif action == "memo.list":
-        properties["purpose"] = {"type": "string", "enum": ["note", "open_loop"]}
+    elif action == "reminder.create":
+        properties["schedule"] = dict(_SCHEDULE_SCHEMA)
+        properties["message"] = dict(_FIELD_SCHEMAS["message"])
+        properties["memo_id"] = {"type": "string", "description": "已存在便签的 id；与 schedule/message 二选一，关联后按便签自身的时间触发"}
+        properties["expected_memo_revision"] = {"type": "integer", "minimum": 1, "description": "关联便签时的版本号"}
     schema = {
         "type": "object", "properties": properties,
         "required": sorted(required), "additionalProperties": False,
     }
-    if action in {"memo.create", "reminder.create", "reminder.reschedule"}:
-        properties["schedule"] = _schedule_schema()
     if action == "reminder.create":
-        properties["message"] = {"type": "string", "minLength": 1,
-                                 "description": "What to remind the user about."}
-        properties["memo_id"] = {"type": "string",
-                                 "description": "Only when linking an existing active memo with its own schedule."}
-        properties["expected_memo_revision"] = {"type": "integer", "minimum": 1}
-        # A fresh reminder needs schedule+message; a memo-linked reminder needs
-        # the memo pair and inherits the memo's schedule.  Keep both legal while
-        # making the required shape visible to the model.
+        # 两种合法用法：直接给时间提醒，或关联一条已经有时间的便签。
+        # 不把 required 写死成其中一种，否则另一种调用会被 schema 直接拒绝。
         schema["anyOf"] = [
             {"required": ["schedule", "message"]},
             {"required": ["memo_id", "expected_memo_revision"]},

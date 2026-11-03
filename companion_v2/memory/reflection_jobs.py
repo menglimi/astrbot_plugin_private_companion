@@ -12,6 +12,15 @@ from .management import MemoryManagement
 from .models import owner_key, timestamp
 
 
+# This owner's retry policy: refusals that left nothing running and may simply
+# clear on their own. Only `advance()` picks `queued` rows back up, so a blocked
+# row never retries. Deliberately not the same list as
+# `execution.runner.CAPACITY_REFUSALS`: that one decides what the runner keeps
+# queued, this one decides what this job tries again.
+RETRYABLE = ("memory_index_busy", "memory_index_unavailable", "task_queue_full",
+             "memory_task_worker_not_stopped", "task_lane_full", "task_concurrency_limited")
+
+
 def describe_job(row):
     return {key: row[key] for key in ("job_id", "batch_id", "state", "next_at", "result_code", "created_at", "updated_at")}
 
@@ -114,7 +123,7 @@ class MemoryReflectionJobs:
                     code = "memory_reflection_uncertain" if current["state"] == "running" else "memory_reflection_failed"
             else:
                 code = result.failure.code
-                if code in ("memory_index_busy", "memory_index_unavailable", "task_queue_full", "memory_task_worker_not_stopped"):
+                if code in RETRYABLE:
                     state, delay = "queued", 5
         except TaskError as error:
             code = error.code

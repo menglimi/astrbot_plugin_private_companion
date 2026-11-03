@@ -15,6 +15,15 @@ once it committed. An attempt that never committed — a failed model round, a
 stopped worker, a crash — owns its samples only under a lease of one declared
 budget plus its finish margin; past it the batch is retried under the next
 attempt epoch instead of staying skipped until new samples arrive.
+
+Expression rules belong to a scope *family*, not to one conversation window:
+AstrBot rotates ``conversation_id``/``session_id`` regularly, and the review page,
+the capacity gate and injection already count one participant (private) or one
+group and role (group) across those rotations. The budget, the reference rules a
+run may deduplicate against and the per-window "already active" total are read
+through the same family, so a rotated window neither restarts at zero rules nor
+learns a rule its owner already holds. Another participant, another group or
+another role never joins that family.
 """
 
 from __future__ import annotations
@@ -27,6 +36,7 @@ from logging import getLogger
 
 from companion_v2.conversation.foreground import (BackgroundPromptTrigger, PromptMaterial, PromptRequest,
     SealedForegroundContext)
+from companion_v2.conversation.scope_family import scope_family_keys
 from companion_v2.execution.models import (Lane, ProviderBinding, SideEffect, TERMINAL, TaskContext,
     TaskDefinition, TaskError, TaskRegistration, TaskResult, TaskSpec, digest, encode, require, stamp)
 from companion_v2.execution.runner import ExactTaskRunner
@@ -159,6 +169,15 @@ def parse_output(raw, *, allowed_evidence, default_channels=None):
 # attempt is abandoned and the batch is retried under the next epoch.
 LEARN_LEASE_SECONDS = LEARN_BUDGET_SECONDS + LEARN_MARGIN_SECONDS
 
+# Resolving a scope family reads ``conversation_native_turns`` and
+# ``conversation_batches`` (at most ``scope_family.MAX_FAMILY_WINDOWS`` rows each).
+# The capacity gate is asked once per scanned window and once per page read, so a
+# short cache makes one resolution serve a whole pass while a newly rotated window
+# still joins its family within this many seconds. The cache holds only window keys
+# and their digests, never conversation text, and stays bounded.
+FAMILY_CACHE_SECONDS = 60
+MAX_FAMILY_CACHE_ENTRIES = 256
+
 
 class ExpressionStyleService:
     page_size = 16
@@ -168,6 +187,7 @@ class ExpressionStyleService:
         self.operations = OperationRepository(runtime)
         self.window_hours = window_hours
         self.pending, self.committed, self.workers, self.results = {}, set(), {}, {}
+        self._family_cache = {}
         self.next_checks = {}
         self._next_discovery_at = None
         self.cursor = 0
@@ -198,10 +218,35 @@ class ExpressionStyleService:
         return context.key if context.scope.kind is ScopeKind.PRIVATE else (
             "group-expression:" + digest([self.samples.role_owner(context), context.scope]))
 
-    def _active_signal_count(self, context):
-        row = self.runtime.read_one("""SELECT COUNT(*) AS count FROM expression_style_signals
-            WHERE owner_key = ? AND scope_key = ? AND state IN ('pending', 'adopted')""",
-            (digest(self.samples.role_owner(context)), digest(context.scope)))
+    def _family_keys(self, context):
+        """Scope digests whose expression rules share this window's budget.
+
+        Reuses ``conversation.scope_family`` so learning counts exactly what the
+        review page, the capacity gate and injection count: one participant's
+        windows (private) or one group and role's windows (group), including the
+        synthetic V1 group identity scope. Another participant, group, Bot
+        account or role never enters the family, so no one else's rules are read
+        or counted here. The short cache keeps one scan from resolving the same
+        window's family for every gate it passes.
+        """
+        now = self.tasks.now()
+        cached = self._family_cache.get(context.key)
+        if cached is not None and now - cached[0] < timedelta(seconds=FAMILY_CACHE_SECONDS):
+            return cached[1]
+        keys = scope_family_keys(self.runtime, context)
+        if len(self._family_cache) >= MAX_FAMILY_CACHE_ENTRIES:
+            self._family_cache.clear()
+        self._family_cache[context.key] = (now, keys)
+        return keys
+
+    def _active_signal_count(self, context, family_keys=None):
+        """Rules this window's owner already holds across its whole family."""
+        keys = tuple(self._family_keys(context) if family_keys is None else family_keys)
+        placeholders = ",".join("?" for _ in keys)
+        row = self.runtime.read_one(f"""SELECT COUNT(*) AS count FROM expression_style_signals
+            WHERE owner_key = ? AND scope_key IN ({placeholders})
+              AND state IN ('pending', 'adopted')""",
+            (digest(self.samples.role_owner(context)), *keys))
         return int(row["count"]) if row is not None else 0
 
     def _note_skipped(self, identifier, job, receipt, *, epoch, at):
@@ -492,7 +537,8 @@ class ExpressionStyleService:
                 and not source_subject_allowed_for_context(self.runtime, context)):
             self.results[self._work_key(context)] = {"state": "source_not_selected"}
             return None
-        if self._active_signal_count(context) >= policy.active_signal_limit:
+        family_keys = self._family_keys(context)
+        if self._active_signal_count(context, family_keys=family_keys) >= policy.active_signal_limit:
             self.results[self._work_key(context)] = {"state": "capacity_reached", "limit": policy.active_signal_limit}
             return None
         progress = self._progress(context)
@@ -518,11 +564,12 @@ class ExpressionStyleService:
             self.results[self._work_key(context)] = {"state": "waiting_for_sample_review" if policy.sample_review_enabled else "insufficient_samples",
                                         "available": len(samples.samples), "required": minimum}
             return None
-        owner_key, scope_key = digest(self.samples.role_owner(context)), digest(context.scope)
-        existing_rows = self.runtime.read_all("""SELECT signal_id, dimension, observation, proposal, applicability_json, state
-            FROM expression_style_signals WHERE owner_key = ? AND scope_key = ?
+        owner_key = digest(self.samples.role_owner(context))
+        placeholders = ",".join("?" for _ in family_keys)
+        existing_rows = self.runtime.read_all(f"""SELECT signal_id, dimension, observation, proposal, applicability_json, state
+            FROM expression_style_signals WHERE owner_key = ? AND scope_key IN ({placeholders})
               ORDER BY created_at DESC, signal_id LIMIT ?""",
-            (owner_key, scope_key, RULE_READ_LIMIT))
+            (owner_key, *family_keys, RULE_READ_LIMIT))
         existing_rules = tuple({"signal_id": row["signal_id"],
                                 "dimension": row["dimension"], "observation": row["observation"][:800],
                                 "proposal": row["proposal"][:1200],
@@ -534,7 +581,7 @@ class ExpressionStyleService:
                 "samples": samples, "material_hash": samples.material_hash,
                 "catalogue": self.samples.catalogue(samples), "sample_context_key": context.key,
                 "sample_document": sample_document(samples), "existing_rules": existing_rules,
-                "latest_sequence": latest_sequence}
+                "family_keys": family_keys, "latest_sequence": latest_sequence}
 
     @outcome
     def validate(self, spec, at):
@@ -722,15 +769,23 @@ class ExpressionStyleService:
                 run.validate()
                 run.begin_effect()
                 owner_key = digest(self.samples.role_owner(context))
-                active_count = connection.execute("""SELECT COUNT(*) FROM expression_style_signals
-                    WHERE owner_key = ? AND scope_key = ? AND state IN ('pending', 'adopted')""",
-                    (owner_key, digest(context.scope))).fetchone()[0]
+                # The budget and the deduplication priors belong to the family the
+                # rules are read and counted under, not to this one window: a rotated
+                # conversation would otherwise repeat a rule its owner already holds
+                # and spend the remaining family budget on it.
+                family_keys = tuple(job.get("family_keys") or self._family_keys(context))
+                placeholders = ",".join("?" for _ in family_keys)
+                active_count = connection.execute(f"""SELECT COUNT(*) FROM expression_style_signals
+                    WHERE owner_key = ? AND scope_key IN ({placeholders})
+                      AND state IN ('pending', 'adopted')""",
+                    (owner_key, *family_keys)).fetchone()[0]
                 remaining = max(0, self._policy(context, self.tasks.now()).active_signal_limit - active_count)
-                existing_rows = connection.execute("""SELECT s.signal_id, s.dimension, s.observation, s.proposal,
+                existing_rows = connection.execute(f"""SELECT s.signal_id, s.dimension, s.observation, s.proposal,
                         s.applicability_json, s.evidence_json, s.state, r.sample_json
                     FROM expression_style_signals s JOIN expression_style_runs r ON r.run_id = s.run_id
-                    WHERE s.owner_key = ? AND s.scope_key = ? ORDER BY s.created_at DESC""",
-                    (owner_key, digest(context.scope))).fetchall()
+                    WHERE s.owner_key = ? AND s.scope_key IN ({placeholders})
+                    ORDER BY s.created_at DESC""",
+                    (owner_key, *family_keys)).fetchall()
                 signatures = {learning.candidate_signature(row["dimension"], row["observation"], row["proposal"],
                     learning.normalize_applicability(json.loads(row["applicability_json"])),
                     rule_details.form_for(self.runtime, row))
@@ -1002,6 +1057,10 @@ class ExpressionStyleService:
             "trim_reason": state.get("trim_reason"),
             "active": self._active_signal_count(context),
             "limit": policy.active_signal_limit,
+            # The configured ceiling on rules injected per turn; the overview
+            # page shows it next to the adopted count, and no local window
+            # setting carries it.
+            "rules_per_turn": policy.rules_per_turn,
             "last_run_at": stamp(closed_at) if closed_at is not None else None,
             "due": due,
             "worker": running,

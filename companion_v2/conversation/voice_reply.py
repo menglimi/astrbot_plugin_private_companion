@@ -11,7 +11,7 @@ from companion_v2.execution.models import digest, stamp
 from companion_v2.foundation.refs import ScopeKind
 from .voice_markup import (
     VOICE_PROTOCOL_GT, VOICE_PROTOCOL_LT, VOICE_TAG_NAME_PATTERN, canonical_voice_tag,
-    slice_speech, visible_speech,
+    slice_speech, strip_performance_controls, visible_speech,
 )
 
 
@@ -88,7 +88,7 @@ def strip_voice_markup(text):
     """Remove internal voice wrappers while keeping their authored text visible."""
     if type(text) is not str:
         return text
-    return _strip_stray_voice_tags(_TAG.sub(_visible_voice_match, text))
+    return strip_performance_controls(_strip_stray_voice_tags(_TAG.sub(_visible_voice_match, text)))
 
 
 def _matching_voice_tags(match):
@@ -211,7 +211,9 @@ class VoiceReplyPolicy:
     def instruction(self):
         if not self.uses_model_tags:
             return ""
-        prompt = "只有实际要朗读的原文放在 <pc_tts> 与 </pc_tts> 之间；标签内不放分段标记、代码、链接或图片说明。"
+        prompt = ("标签内就是要朗读、给用户看的那句话：标签外不再复述同一句，只写另说的内容。"
+                  "停顿、呼吸等表演指令只用方括号，如 [pause]，不要写成 <pause>。"
+                  "只有实际要朗读的原文放在 <pc_tts> 与 </pc_tts> 之间；标签内不放分段标记、代码、链接或图片说明。")
         if self.conversion_scope == "partial":
             prompt = "按本轮语境选取适合口述的自然短句放进语音标签，其余内容保留为文字；无需让语音覆盖整条回复。" + prompt
         elif self.trigger_mode == "request":
@@ -291,51 +293,400 @@ def capability_instruction(policy):
             "没有成功投递结果前，不要声称已经发送语音。")
 
 
+# One statement written twice: the wrapper's words and the body copy of them.
+# The wrapper is the speaker's full statement, so it is the copy that stays; its
+# span still covers exactly the words it voices.
+_TAIL_LETTER = re.compile(r"[^\W\d_]")
+# A word character carries meaning: a letter, a digit or a CJK character.
+_WORD_CHARACTER = re.compile(r"[\w\u4e00-\u9fff]")
+# Han characters are words by themselves, so a clause that adds them says more.
+_HAN = re.compile(r"[\u4e00-\u9fff]")
+# A tail attached to the copy with no space and no Han character decorates the
+# ending it follows only while it stays this short: ``mua~`` decorates, a run of
+# letters is wording.
+_ATTACHED_TAIL = 4
+# Punctuation that closes a statement. A statement ends at one of these, and the
+# mark itself is spoken rather than written, so it takes no part in comparing a
+# statement with a copy of it.
+_SENTENCE_END = frozenset("。！？!?")
+# Punctuation inside a statement: a trailing off, a pause, a list separator. A
+# copy may punctuate the middle of the same statement differently (``A…B。``
+# spoken, ``A…B，mua~`` written), so these marks are dropped from the wording
+# without ending the statement they stand in.
+_CLAUSE_MARK = frozenset("…~〜～，,、；;：:·・♪♫♬")
+
+
+class _VisibleText:
+    """The displayed reply under construction, and where the next text starts."""
+
+    def __init__(self):
+        self.parts, self.length = [], 0
+
+    def add(self, text):
+        self.parts.append(text)
+        self.length += len(text)
+        return self.length
+
+
+def _body_text(text):
+    """Show body text: delivery marks go, performance marks stay as written.
+
+    A pause mark and a bracketed direction are delivery, so they are read out but
+    never displayed; ``voice_markup`` owns which brackets those are. Paired
+    performance marks such as ``<soft>`` are left exactly as written, because
+    prose may mention them and only the wrapper decides whether one is delivery.
+    """
+    return _strip_stray_voice_tags(strip_performance_controls(text))
+
+
+def _wording(text):
+    """The words a listener hears, each with its end position in ``text`` itself.
+
+    Delivery takes no part in what is said, so directions, pause marks and
+    spacing are skipped. Positions are source positions, because callers cut the
+    authored text with them and a cut must never land inside a mark. The marks
+    are located once in the source and then skipped, which keeps the scan linear
+    and stops a word character from being found inside a mark's own text.
+    """
+    marks = _control_spans(text)
+    words, ends = [], []
+    cursor = 0
+    while cursor < len(text):
+        span = _span_at(marks, cursor)
+        if span is not None:
+            cursor = span
+            continue
+        char = text[cursor]
+        cursor += 1
+        if char.isspace():
+            continue
+        words.append(char)
+        ends.append(cursor)
+    return "".join(words), ends
+
+
+def _control_spans(text):
+    """Report where the delivery marks in ``text`` begin and end.
+
+    A mark is found by removing it with the same functions the display side uses
+    and seeing which characters disappeared, so both agree on what a mark is
+    without sharing private state. Whitespace alone is never a mark.
+    """
+    kept = visible_speech(strip_performance_controls(_strip_stray_voice_tags(text)))
+    spans, cursor = [], 0
+    for char in kept:
+        if char.isspace():
+            continue
+        found = text.find(char, cursor)
+        if found > cursor:
+            spans.append((cursor, found))
+        cursor = found + 1
+    if cursor < len(text):
+        spans.append((cursor, len(text)))
+    return tuple((start, end) for start, end in spans
+                 if any(not char.isspace() for char in text[start:end]))
+
+
+def _span_at(spans, cursor):
+    """Report where the mark starting at ``cursor`` ends, or ``None``."""
+    for start, end in spans:
+        if start == cursor:
+            return end
+    return None
+
+
+def _statement_words(words):
+    """Split wording into statements, keeping only what a listener hears.
+
+    A closing mark ends a statement; a mark inside one is dropped without ending
+    it. Punctuation therefore never decides whether two statements are the same
+    one, which is what lets a copy punctuated differently be recognised.
+    """
+    statements, current = [], []
+    for char in words:
+        if char in _SENTENCE_END:
+            if current:
+                statements.append("".join(current))
+                current = []
+        elif char not in _CLAUSE_MARK:
+            current.append(char)
+    if current:
+        statements.append("".join(current))
+    return tuple(statements)
+
+
+def _copy_length(speech, following):
+    """Report how much of ``following`` restates the wrapper, ``0`` for none.
+
+    The clause has to open with the wrapper's own wording; punctuation is not
+    compared, because a copy may punctuate the same statement differently
+    (``A…B。`` spoken, ``A…B，mua~`` written). What follows that wording decides
+    whether the clause is one statement said twice or one statement plus new
+    speech, and two boundaries make that decidable without any word list:
+
+    * A sentence end in what follows means the copy is over. Only punctuation
+      may then remain -- ``晚安。`` restated as ``晚安！！`` -- because anything
+      else is a further statement ``晚安！！明天见。`` written after it, which is
+      new speech the reader was owed.
+    * With no sentence end, the clause either runs straight on or is a separate
+      word. A space before it is what English uses between words, so ``走吧 he``
+      adds a word and is kept, while ``A…B，mua~`` attaches a short Latin tail
+      with no space -- an interjection decorating the ending it follows, which a
+      Han tail never is (``别笑我，噗嗤`` says something new).
+    """
+    inside = _statement_words(_wording(speech)[0])
+    if not inside:
+        return 0
+    outer = _statement_words(_wording(following)[0])
+    # The clause has to open with the wrapper's wording. A tail attached to it
+    # stays in the same statement (``ABmua``), so the first statement is compared
+    # as a prefix rather than for equality.
+    if len(outer) < len(inside) or not _opens_with(outer, inside):
+        return 0
+    speech_end = _wording(speech)[0].rstrip(" ")[-1:] or ""
+    return len(following) if _decorates(following, "".join(inside), speech_end) else 0
+
+
+def _opens_with(outer, inside):
+    """Report whether the clause opens with the wrapper's statements.
+
+    The wrapper's last statement may carry the tail that follows it, so that one
+    is compared as a prefix while the statements before it must match exactly.
+    """
+    if len(outer) < len(inside):
+        return False
+    if outer[:len(inside) - 1] != inside[:-1]:
+        return False
+    return outer[len(inside) - 1].startswith(inside[-1])
+
+
+def _decorates(following, insided, speech_end):
+    """Report whether everything after the copy in ``following`` is decoration.
+
+    A copy may carry a tail only when the tail decorates the ending it follows.
+    Three boundaries make that decidable without any word list:
+
+    * A closing mark after the copy means the statement is over: only
+      punctuation may then remain (``晚安！！``), because anything else is a
+      further statement and therefore new speech (``晚安！！明天见。``).
+    * With no closing mark, the tail has to attach to the copy with no space: a
+      space is how a language separates words, so ``走吧 he`` adds one and is
+      kept even though ``he`` is short.
+    * An attached tail decorates only an ending the wrapper already finished.
+      ``A…B。`` is complete, so ``mua~`` after it is decoration; ``A…`` is not, so
+      ``B…`` is the rest of the sentence and dropping it would lose content.
+    """
+    rest = following[_after_copy(following, insided):]
+    if not rest:
+        return True
+    if any(char in _SENTENCE_END for char in rest):
+        return not _meaning_of(rest)
+    tail = rest.lstrip()
+    if len(tail) != len(rest):
+        # A space opens a new word: a clause saying something else.
+        return False
+    body = _meaning_of(tail)
+    if _HAN.search(body) or not speech_end in _SENTENCE_END:
+        # Han characters are words on their own, and a wrapper that trails off
+        # has not finished its statement, so nothing after it is decoration.
+        return False
+    return bool(body) and len(body) <= _ATTACHED_TAIL
+
+
+def _meaning_of(text):
+    """Report the text with spacing, closing marks and decoration removed."""
+    return "".join(char for char in text
+                   if not char.isspace() and char not in _SENTENCE_END
+                   and char not in _CLAUSE_MARK)
+
+
+def _after_copy(following, insided):
+    """Report where the wrapper's wording ends inside ``following``, or ``0``.
+
+    The copy is located by matching the wrapper's wording character by character
+    and letting punctuation pass by, because a copy may punctuate the same
+    wording differently. The answer is a source position, so the caller can cut
+    ``following`` without leaving a fragment of either the copy or a mark.
+    """
+    spoken, ends = _wording(following)
+    matched = 0
+    for index, char in enumerate(spoken):
+        if char in _SENTENCE_END or char in _CLAUSE_MARK or char.isspace():
+            continue
+        if matched >= len(insided):
+            return ends[index - 1]
+        if char != insided[matched]:
+            return 0
+        matched += 1
+    return ends[len(spoken) - 1] if matched >= len(insided) and insided else 0
+
+
+def _opening_length(speech, following, remaining):
+    """Report how much of a longer clause repeats the wrapper before saying more.
+
+    The clause quotes the wrapper and then continues in its own words, the usual
+    shape of a partial voice reply. The wrapper's statement has to be what the
+    rest of the body keeps saying, so a different sentence that merely starts the
+    same way is not a copy. The answer is a source position in ``following`` and
+    is moved back off any mark, so the clause is never cut inside one.
+    """
+    inside, _ = _wording(speech)
+    outer, ends = _wording(following)
+    if not inside or not outer.startswith(inside) or len(outer) <= len(inside):
+        return 0
+    spoken, _ = _wording(remaining)
+    if not spoken.startswith(inside):
+        return 0
+    return _before_mark(following, ends[len(inside) - 1])
+
+
+def _before_mark(text, position):
+    """Move ``position`` so no mark is left cut in half.
+
+    A cut inside a mark, or right before one, leaves a fragment such as
+    ``</soft>`` on screen. The cut is therefore moved to the mark's start when it
+    lands inside a mark, and past the mark when the mark begins exactly where the
+    cut does. A paired mark spanning the cut moves the cut ahead of its opening
+    tag, so the pair is dropped or kept together and never split.
+    """
+    for start, end in _paired_marks(text):
+        if start < position < end:
+            return start
+    for start, end in _control_spans(text):
+        if start < position < end:
+            return start
+        if start == position:
+            return end
+    return position
+
+
+def _paired_marks(text):
+    """Report the ranges of paired marks in ``text``, opening tag through closing."""
+    ranges, open_at = [], {}
+    for start, end in _control_spans(text):
+        mark = text[start:end]
+        name = _mark_name(mark)
+        if not name:
+            continue
+        if mark.lstrip("<＜").lstrip().startswith("/"):
+            opened = open_at.pop(name, None)
+            if opened is not None:
+                ranges.append((opened, end))
+        else:
+            open_at.setdefault(name, start)
+    return tuple(ranges)
+
+
+def _mark_name(mark):
+    """Report the tag a mark names, or ``""`` when it is not an angle tag."""
+    name = re.match(r"(?:<|＜|&lt;)\s*(/?)\s*([A-Za-z]+)", mark)
+    return name[2].lower() if name else ""
+
+
+def _has_paired_mark(text):
+    """Report whether a span of body text carries a paired mark of its own."""
+    return bool(_paired_marks(text))
+
+
+def _restatement(speech, following, remaining):
+    """Report the prefix of ``following`` that repeats the wrapper before it.
+
+    ``0`` means the clause is new speech and is displayed whole. Otherwise the
+    answer is the length of the copy, and only that copy is dropped; the clause's
+    own words always stay, because a statement shown twice is a presentation flaw
+    while a statement removed is lost content.
+
+    A clause carrying a paired mark of its own is never merged. Removing the copy
+    would have to remove that mark with it, and a body mark exists only in the
+    clause -- the wrapper has none -- so dropping it would silently delete
+    something the reader can see. Cutting around it instead would split the pair
+    and leave ``</soft>`` on screen. Keeping the clause whole is the only outcome
+    that loses nothing, so an occasional repeat is preferred to either.
+    """
+    if _has_paired_mark(following):
+        return 0
+    return _copy_length(speech, following) or _opening_length(speech, following, remaining)
+
+
 def separate_spoken(text, policy):
-    """Return visible text and (offset, speech) pairs before segmentation."""
+    """Return visible text and (offset, speech) pairs before segmentation.
+
+    The reply is assembled once, left to right, so each span carries the offset
+    the returned text really has when its wrapper is reached; nothing is
+    re-derived afterwards, so offsets cannot drift. A wrapper is displayed without
+    its directions unless a translation follows it, in which case the translation
+    is the visible body and the wrapper only carries the speech that is spoken. A
+    clause restating the wrapper it follows is displayed once.
+
+    Boundary tokens are part of the reply and stay in the visible text: they are
+    what splits it later. Only the comparison that decides a restatement ignores
+    them, because a copy is the same statement whether or not a boundary follows.
+    """
     if policy is None or not policy.uses_model_tags:
         return strip_voice_markup(text), ()
     translate = policy.language != "zh" and policy.foreign_text_mode == "translation"
     matches = tuple(match for match in _TAG.finditer(text) if _matching_voice_tags(match))
-    visible, spoken, cursor = [], [], 0
+    visible, spoken, cursor = _VisibleText(), [], 0
     for index, match in enumerate(matches):
-        visible.append(text[cursor:match.start()])
+        visible.add(_body_text(text[cursor:match.start()]))
         speech = match.group("speech").strip()
         if speech:
-            spoken.append((len(_strip_stray_voice_tags("".join(visible))), speech))
-        following = text[match.end():matches[index + 1].start() if index + 1 < len(matches) else len(text)]
-        translated = translate and _has_chinese_translation(following)
-        if not translated:
-            visible.append(visible_speech(match.group("speech")))
-        cursor = match.end()
-    visible.append(text[cursor:])
-    return _strip_stray_voice_tags("".join(visible)), tuple(spoken)
+            spoken.append((visible.length, speech))
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        following = text[match.end():end]
+        if translate and _has_chinese_translation(following):
+            visible.add(_body_text(following))
+        else:
+            visible.add(visible_speech(match.group("speech")))
+            # A statement said again right after its wrapper is shown once; the
+            # wrapper is the copy kept because it is the one being voiced.
+            repeated = _restatement(speech, following, text[match.end():])
+            visible.add(_body_text(following[repeated:]))
+        cursor = end
+    visible.add(_body_text(text[cursor:]))
+    return "".join(visible.parts), tuple(spoken)
 
 
-def speech_candidates(text, parts, spans, policy):
-    """Map authored speech to the original segments before presentation cleanup."""
+def _part_offsets(visible, parts):
+    """Where each part of ``parts`` starts, measured inside ``visible``.
+
+    ``parts`` is ``visible`` cut up: every character of the reply is in exactly
+    one part, and only a boundary line's newline sits between two of them. Reading
+    the parts against the reply in order therefore recovers each range exactly,
+    which keeps spans (measured on ``visible``) on the same coordinates.
+    """
+    starts, cursor = [], 0
+    for part in parts:
+        starts.append(cursor)
+        for char in part:
+            if char.isspace():
+                continue
+            found = visible.find(char, cursor)
+            cursor = found + 1 if found >= 0 else cursor
+    return tuple(starts)
+
+
+def speech_candidates(visible, parts, spans, policy):
+    """Map authored speech to the visible segments that carry it.
+
+    ``spans`` are measured on ``visible`` and ``parts`` are that same text cut
+    up, so one coordinate system covers both: a span belongs to the part whose
+    range in ``visible`` contains its offset.
+    """
     if not policy.uses_model_tags:
-        candidates = tuple(part.strip() for part in parts)
-    else:
-        buckets = [[] for _ in parts]
-        boundaries = []
-        total = 0
-        for part in parts:
-            total += len(part)
-            boundaries.append(total)
-        for offset, speech in spans:
-            prefix, _ = controlled_parts(text[:offset])
-            position = min(sum(map(len, prefix)), total)
-            index = next((i for i, end in enumerate(boundaries) if position < end), len(parts) - 1)
-            buckets[index].append(speech)
-        candidates = tuple("\n".join(bucket) for bucket in buckets)
-    return candidates
+        return tuple(part.strip() for part in parts)
+    starts = _part_offsets(visible, parts)
+    buckets = [[] for _ in parts]
+    for offset, speech in spans:
+        index = max((i for i, start in enumerate(starts) if start <= offset), default=0)
+        buckets[min(index, len(parts) - 1)].append(speech)
+    return tuple("\n".join(bucket) for bucket in buckets)
 
 
-def speech_decisions(text, parts, spans, policy, *, candidates=None):
+def speech_decisions(visible, parts, spans, policy, *, candidates=None):
     """Retain why a final segment was skipped, after any blank parts were removed."""
     if candidates is None:
-        candidates = speech_candidates(text, parts, spans, policy)
+        candidates = speech_candidates(visible, parts, spans, policy)
     if len(candidates) != len(parts):
         raise ValueError("speech candidates must match their visible segments")
     selected = {"whole": range(len(parts)), "each": range(len(parts)),
@@ -355,8 +706,8 @@ def speech_decisions(text, parts, spans, policy, *, candidates=None):
     return tuple(decisions)
 
 
-def planned_speech(text, parts, spans, policy):
-    return tuple(speech for speech, _ in speech_decisions(text, parts, spans, policy))
+def planned_speech(visible, parts, spans, policy):
+    return tuple(speech for speech, _ in speech_decisions(visible, parts, spans, policy))
 
 
 def eligible(policy, *, input_text, kind, batch_id, primary_mention=False):

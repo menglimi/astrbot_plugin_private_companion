@@ -161,15 +161,18 @@
       if (item.code) card.append(node("p", errors[item.code] || "本次书写未完成，请核对模型与执行权限后重试。", "muted"));
       list.append(card);
     });
-    const failed = receipts.map((item, index) => ({item, index})).filter(({item}) =>
-      item.state === "failed" && item.operation_id && !blockedRetries.has(item.operation_id));
+    // 只有“已结论的失败”才能重试；unknown/处理中/已受理的那条不能再次提交，
+    // 否则同一天会多出第二条书写。retryable=false 由后端按操作状态给出。
+    const failed = receipts.map((item, index) => ({item, index}))
+      .filter(({item}) => item.state === "failed" && item.operation_id && item.retryable !== false);
+    const unresolved = state.journal_unresolved === true;
     for (const id of ["retry-id", "dream-retry"]) {
       const select = $(id), previous = select.value;
-      select.replaceChildren(new Option(id === "dream-retry" ? "首次记录" : failed.length ? "选择失败的书写" : "暂无已确定失败的书写", ""),
+      select.replaceChildren(new Option(id === "dream-retry" ? "首次记录" : unresolved ? "有一次书写结果未确定，暂不能重试" : failed.length ? "选择失败的书写" : "暂无已确定失败的书写", ""),
         ...failed.map(({item, index}) => new Option(`书写记录 ${index + 1} · 失败`, item.operation_id || item.key)));
       select.value = failed.some(({item}) => (item.operation_id || item.key) === previous) ? previous : "";
     }
-    $("retry-form").hidden = failed.length === 0;
+    $("retry-form").hidden = unresolved || failed.length === 0;
   }
   function renderSleepPlan() {
     const plan = state.sleep_schedule;

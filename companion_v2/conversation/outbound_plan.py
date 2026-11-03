@@ -66,10 +66,19 @@ def sealed_inputs(runtime, batch_id):
 
 
 def _native_number(value):
-    """Only a platform account id may be quoted or addressed."""
-    if type(value) is not str or not value.isascii() or not value.isdecimal():
+    """Only a platform message number or account id may be quoted or addressed.
+
+    OneBot v11 ids are signed integers. Some implementations (SnowLuma among
+    them) legitimately hand out negative message ids, so a leading ``-`` is part
+    of the id rather than a malformed value; dropping it made 引用触发消息 look
+    disabled on those hosts.
+    """
+    if type(value) is not str or not value.isascii():
         return ""
-    if not 1 <= len(value) <= 20 or value.startswith("0"):
+    digits = value[1:] if value.startswith("-") else value
+    if not digits.isdecimal():
+        return ""
+    if not 1 <= len(digits) <= 20 or digits.startswith("0"):
         return ""
     return value
 

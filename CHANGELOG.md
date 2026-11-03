@@ -1,31 +1,23 @@
 # 更新日志
 
-## 7.1.0 - 2026-11-02
-本次发布重点是生图链路：入站图片在 fake-IP DNS 下不再被全部拒收；用户指向本轮附图时会同时使用附图与已存身份参考；单次参考图上限从 8 提升到 16（与 GPT Image 的 16 张输入上限一致）。
+## 未发布
 
-- 修复同一条 QQ 消息被平台重复投递时触发两次模型回复的问题：私聊准入按 `message_id` 做 120 秒去重，重复投递只记录一次未回复原因，不再开启第二个模型轮次。
-- 核心管理员可在群聊中调用 `screen.capture` 观察一次桌面：仅限核心管理员，只用于本轮理解，不自动把截图发群；显式撤回的屏幕授权仍会阻止采集。
-- 生图参考图上限从 8 提升到 16（与 GPT Image 模型输入上限一致）：新端点、缺省字段和 V1 参考图开关迁移默认 16，已保存端点保留原值；单条消息的入站图片上限仍为 8，单轮总字节预算不变。
-- 修复透明代理 fake-IP DNS 环境下所有入站图片被判为 `host_image_location_invalid`、改图工具拿不到用户附图的问题：解析器仅对域名解析出的 `198.18.0.0/15` fake-IP 段放行，字面地址、回环、内网、链路本地、CGNAT 和云元数据地址仍全部拒绝。
-- 调整生图参考提示词：用户指向本轮附图（“这个/这张/照这个”）时，不再固定 `reference_indices=[]`，而是同时使用本轮附图的 `reference_indices` 与已存素材的 `reference_ids`；只有一张参考图额度时才改用附图并在 prompt 中描述角色固定外貌。
-- 修复角色状态维护使用 DeepSeek Pro 等推理模型时无法自动更新的问题：推理 token 也计入输出上限，旧的 2048 预算会被思考过程吃满，最终 JSON 被截断为 `model_output_truncated`。状态任务现在按所选 Provider 的能力抬到最多 8192 输出预算，并受主/备用 Provider 中最小上限约束，避免推理模型截断，也不会超过不支持长输出的 Provider。
-- 配置页搜索优化：输入改为 90ms 防抖，配置项索引增加 1.5 秒缓存，避免每次按键重建全量索引；结果命中词高亮，当前所在配置页签的条目获得优先排序，中文输入法组合输入期间不再触发中间结果刷新。
-- V2 语音合成新增 MiMo Voice Clone 工具桥回退：仍优先使用 AstrBot TTS Provider；当宿主没有可用 Provider 或合成失败时，自动发现已注册的 `mimo_tts_speak` 工具并通过其插件公开的 `synthesize_text` / `text_to_speech` 合成，音频路径只允许读取 AstrBot 临时目录或数据目录。
-- 模型适配不再只接受 OpenAI/Gemini/内部 `_query` 表面：新增公开 `text_chat` 兼容传输，任何只暴露 AstrBot 公共文本接口的 Provider（如插件提供的 MiMo/中转类模型）也能被 V2 选中并执行一次性任务；兼容传输不伪装成支持 V2 工具循环，会明确从能力集中去掉 `tools`。同时保留原 OpenAI/Gemini/Anthropic 路径。
-- 优化手机陪伴终端：接通后申请屏幕 Wake Lock，切后台暂停摄像头心跳并在恢复时续租；增加 `pagehide` 媒体/连接清理，减少锁屏或杀进程后摄像头、麦克风和 socket 残留；断线后显示「重新连接」按钮，并在网络恢复/页面回到前台时重置重连次数；摄像头帧间隔按网络类型、省流量模式和通话状态自适应，降低移动数据与耗电。
-- 修复旧「一起房间」配置迁移时，`speech.stt_provider_id` 等提供方 ID 因当前宿主尚未加载该实例而被直接丢弃、导致新版房间显示“未接通语音识别”的问题：迁移现在保留原选择并标记 `provider_unavailable_preserved`，房间会明确提示“选中的提供商不可用”，用户可核对或重新选择。
-- 修复模型配置页把「备用模型提供方」显式设成与主模型相同后，任何字段都提示“字段校验未通过”、任务无法保存的问题：保存补丁会把重复备用模型归一化为“不使用备用模型”，不再被 `model_fallback_duplicate` 拦截。
-- 修复长工具调用结束后，AstrBot 生命周期钩子用不同 event 包装对象调用 `finish()`，导致旧私聊 follow-up 窗口未被清理、后续新消息被并入已结束 turn 而静默丢失的问题：`finish()` 在对象身份匹配失败时按 `unified_msg_origin` / session 兜底清理；`fold()` 也增加 idle 超时兜底。
-- 修复同一私聊对象因旧会话、`unopened-*` 占位和当前会话在 `conversation_routes` 留下多行，关系网成员页读取窗口权限/成员配置时报 `acquaintance_route_required`、且无窗口选择入口的问题：读取侧按（平台、Bot、账号、私聊对象、角色）收敛，优先最新且非 `unopened-*` 的登记行，写路径使用同一选择。
-- 修复启用但尚未完成配置时，AstrBot 的 `on_llm_request` 提前返回、没有执行 `repair_tool_call_history`，导致工具调用密集会话出现 `tool_calls must be followed by tool messages` 400 的问题：历史修复现在位于状态判断之前，对所有经过该钩子的请求生效。
-- 修复 GPT-6 / GPT-5 / o 系列模型仍发送 `max_tokens` 导致 OpenAI 400 的问题：Chat Completions 自动改用 `max_completion_tokens`，Responses API 使用 `max_output_tokens`，其他模型保持原有配置。
-- 修复 SnowLuma 等 OneBot 实现的负数 `message_id` 被 `_native_number` 拒绝、引用触发消息完全失效的问题：引用路径改用可接受有符号整数的 `_native_message_id`，账号/提及仍只接受正整数。
-- 修复日记重试进入 `unknown` / `journal_trigger_unresolved` 后，前端仍把原 `failed` 记录留在可重试下拉框的问题：失败重试一旦进入未知状态或收到 `journal_trigger_unresolved`，该记录会从重试列表移除并显示明确原因。
-- 修复 Anthropic/Claude 等原生协议把 OpenAI 的 `response_format` 透传给 `messages.create()` 导致 `TypeError`、状态维护显示 `provider_request_failed` 的问题：OpenAI 兼容协议继续使用 `response_format`，Anthropic 改为强制 `emit_json` 工具（`tool_choice` 指定工具）并从工具参数解析结构化结果；其他原生协议由任务提示词要求 JSON 并兼容围栏解析。协议在请求前明确拒绝 `response_format` 时仍会无生成风险地降级重试一次。
-- 角色档案支持 JSON 导出与导入：导出覆盖文字档案与世界蓝图，默认不含头像和控制项；导入先按字段对比当前值与文件值，逐项勾选后只写入选中字段，并保留 revision 冲突校验。
-- 修复感知页隐藏后「本轮上下文材料」摘要条仍可能残留在其他页面顶部的问题：为 `.perception-config-workspace` / `.perception-config-panels` 补齐 `[hidden]` 的 `display:none!important`，并更新静态资源版本号，避免旧缓存继续复现。
-- 私聊工具清单改为窗口级固定：`source.read`、`authoring.*` 和 `turn.evidence` 不再因为本轮是否带来源而临时增删，工具 schema 与顺序在同一窗口内保持稳定，减少前缀缓存失效；权限仍由各工具执行层校验。
-- Laya 远程接入新增 `request_format=cloudflare` 与自定义远程模型名：请求体按 Workers AI 规范包成 `{"model": ..., "input": {"state": ..., "questions": {...}}}`，并自动拆开 HTTP 200 的 `result` 包装；模型页可在远程模式下选择「Cloudflare Workers AI」并填写 `typesafe/jev-1.14.0` 一类型号。
+- 修复 NapCat 的 `set_diy_online_status` / `set_online_status` 返回纯字符串成功回执（如 `set status success`）时被误判为 `presence_action_rejected` 的问题；兼容 NapCat 的字符串成功回执，其他接口和失败分支保持不变。
+- 核心回复的提示词组装移到工作线程：私聊消息不再因为 `proactive_inspirations` 的依赖遍历在主线程读库而阻塞事件循环（曾出现 30–36s 事件循环停顿、群聊/私聊一起排队）。
+- 修复提醒工具的参数字段只有空 schema 的问题：`reminder.create` 现在声明 `schedule`（anchor/timezone_name/frequency）与 `message` 的类型和说明，并允许“关联已有便签”的第二种用法；工具说明同时要求用户明确要求未来提醒时必须调用 `reminder.create`，不得静默退化成 `memo.create`。
+- 修复日记重试在“结果未知”后仍显示为可重试的问题：书写回执新增 `retryable`（只有已结论的失败为真），页面只列出可重试的失败；当天只要有一次书写处于 unknown/处理中/已受理，就隐藏重试入口并说明原因。
+- 人格入口合并为「人格处理」，分为「规范人格（原人格问卷）」「创建人格」「拟人优化」三个分区；后两者沿用同一共创页，由入口直接带上对应模式，不再需要在页内二次切换。
+
+## 7.0.13 - 2026-11-01
+
+- 修复角色在插件启动后才完成映射时，页面清单已下发 `config_api`、但对应 `/targets/.../roles/.../config` 路由尚未注册的问题：读取 `page/targets` 时会检查清单中的路由并自动刷新一次注册，角色档案不再报“未找到该路由”；工作台也把这一类错误翻译成可操作提示。
+- 全局搜索优化：配置索引按打开会话缓存，字段文本只归一化一次；输入改为 60ms 防抖，Enter 先冲刷待渲染结果；结果中的命中词高亮；新增 Home / End / PageUp / PageDown 键盘操作。
+- 主动联系不再发送“接自己上一句”的消息：最近一条已送达的是角色自己的回复、用户之后没有新输入时，若主动正文以 `哦？/那/所以/照这么/接着` 等承接词开头，整条跳过并记录 `continuation_after_silence`；提示词与人格复核同步要求独立开口，旧梗只有出现新观察或新信息时才可再提。
+- 合并社区修复 PR：每日复盘状态在重启后不再显示“还没运行过”；表达学习的窗口归属不再被 `policy_revision` 漂移误判、旧版群规则按群归属读取与注入、学习失败不再锁死同一批素材、无会话来源的样本接口返回空页、表达学习材料超预算时裁剪参考规则、修复重复 `status` 定义；世界知识整库引用公平覆盖、来源复选整库/逐篇互斥；和风天气支持境外地名、固定中文返回、保存数据源后同步模型工具；官方预警覆盖判定、升级漏报、轮询误报、真实标题与中文级别；Provider 输出上限与预留越界诊断；未闭合语音标签不再外发；天气变化素材改取观测自身的 provider；恢复官方预警与诊断路由用例。
+- 新增 Laya `workers_ai` 接入方式，支持 Cloudflare Workers AI 的 `ai/run` 入口、`input` 包装层与 `{success,result}` 外壳，原有 local/remote/jev 行为不变。
+- 语音合成新增 MiMo Voice Clone 工具桥回退：仍优先使用 AstrBot TTS Provider；宿主没有可用 Provider 或合成失败时，自动发现已注册的 `mimo_tts_speak` 工具，并通过其公开的 `synthesize_text` / `text_to_speech` 合成；音频路径只允许读取 AstrBot 临时目录或数据目录。
+- 修复语音回合的可见正文复读与表演指令泄漏：模型把同一句同时写进 `<pc_tts>` 与标签外时只显示一份，判定只依据句末标点、空格和「内侧是否已收尾」三条结构边界，没有词表也没有相似度阈值，标签外独有的字句一律保留；`<pause>`、`<breath>`、`<sigh>` 等停顿家族与方括号 cue 同权剥除，标签外出现的同类标记不再随正文外发（`<soft>`/`<whisper>` 等成对语气标记在标签外仍原样显示）。`separate_spoken` 改为一次增量装配，span 偏移按构造与可见正文自洽，`speech_candidates` 改用同一可见坐标系，不再拿源文本偏移换算。
+- 语音回合的生成指令前置了「标签内就是用户看到的那句，标签外不再复述同一句」与「停顿、呼吸类指令只用方括号」两条约束；Drama 3 表演指令说明补充同样的方括号要求。
 
 - 一起房间不再要求核心管理员逐项授权：核心管理员只受扩展“启用/暂停”这个开关控制，不再依赖角色能力行与用户级能力授权，手机陪伴终端不会再卡在 `mobile_together_not_authorized`。
 - 修复 AstrBot 把 Provider 的 `max_context_tokens` 从 0（自动）补成具体数值后，陪伴插件误判为 `host_provider_changed`、导致主动联系被拦下的问题。配置漂移比较现在把“自动（0）”与“已补全的具体值”视为等价，并把补全值记进快照；补全值之后再次变化仍会拒绝。

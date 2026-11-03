@@ -255,5 +255,32 @@ class GroupExpressionFamilyTests(GroupFixture, unittest.IsolatedAsyncioTestCase)
                          sorted([LEGACY_SIGNAL, SHARED_SIGNAL]))
 
 
+    async def test_a_rotated_group_window_counts_the_family_budget(self):
+        await self.start_host()
+        first = await self.turn()
+        app = self.controller.session.application
+        service = app.expression_style
+        limit = service._policy(first, app.tasks.now()).active_signal_limit
+        # Rules the group already holds under its V1 identity scope: the synthetic
+        # scope no conversation window ever occupies, but the same group and role.
+        window, handles = shared_window(app.tasks.now().isoformat())
+        self.write_rules(app, scope=group_identity_scope(first.scope),
+                         role=first.role_binding.role, prefix="family-budget",
+                         count=limit, window=window, evidence=handles)
+        self.assertEqual(service._active_signal_count(first), limit,
+                         "the synthetic V1 identity scope belongs to the group family")
+
+        # AstrBot rotates the group session's conversation id.
+        self.native.conversations["qq-main:GroupMessage:300"] = "conversation-rotated"
+        second = await self.turn()
+        self.assertNotEqual(digest(first.scope), digest(second.scope))
+        self.assertEqual(service._active_signal_count(second), limit,
+                         "a rotated group window must count the family's rules")
+        service.next_checks.clear()
+        self.assertFalse(service._scan(second, "", app.tasks.now()))
+        self.assertEqual(service.results[service._work_key(second)]["state"], "capacity_reached",
+                         "a full family budget must gate the rotated group window too")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -172,7 +172,13 @@ class RoleLifeManagement:
                     and operation.operation.idempotency_key == row["operation_id"] + ":" + self.context.key):
                 receipt = self.app.journal_triggers._receipt(self.context, operation)
                 receipts.append({"key": row["operation_id"], "state": receipt.state,
-                    "code": receipt.failure_code, "operation_id": row["operation_id"]})
+                    "code": receipt.failure_code, "operation_id": row["operation_id"],
+                    "retryable": receipt.retryable})
+        # 只要还有一次书写没有结论（unknown/处理中/已受理），就不该再让人从页面
+        # 选“失败的书写”重试：那会把同一天的第二次提交送进同一条链。
+        journal_unresolved = any(
+            item.get("retryable") is not None and item.get("state") in ("unknown", "uncertain", "accepted")
+            for item in receipts)
         daily = self.app.journal_schedule._schedules.get(self.life.schedule_id)
         sleep_schedule = self.app.life_runtime.sleep_schedule_status(self.life, config)
         return {"role_id": self.owner.persona_id, "participant": self.context.scope.native_scope_id,
@@ -185,7 +191,8 @@ class RoleLifeManagement:
             "next_activity": cursor, "journals": journals,
             "next_date": codec.context(json.loads(rows[-1]["context_json"])).key.local_date
                 if len({codec.context(json.loads(r["context_json"])).key.local_date for r in rows}) == 50 else None,
-            "receipts": receipts[-60:], "running": list(self.life._workers)}
+            "receipts": receipts[-60:], "running": list(self.life._workers),
+            "journal_unresolved": journal_unresolved}
 
     def sleep_status(self, operator, *, access=None):
         """Small shared-schedule projection for role-state management views."""

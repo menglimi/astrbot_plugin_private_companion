@@ -12,6 +12,7 @@ MODEL_OPTIONS = [
 DRAMA_DIRECTION = (
     "本轮朗读引擎支持 Drama 3 表演指令。只在 <pc_tts> 内根据角色此刻的情绪和对话，"
     "自然地添加少量方括号指令，例如 [温柔地，像贴近对方说话]、[轻笑]、[pause]；"
+    "停顿、呼吸这类整句指令只写方括号，不要写成 <pause> 或 <breath>；"
     "指令可用中文或朗读语种，不必每句话都加，也不要把动作描写当成要念的台词。"
     "局部语气可用成对的 <whisper>、<emphasis>、<soft>、<fast>、<slow>、<stress>、<forceful> "
     "包住对应词句，例如 <pc_tts>[轻声安慰]没关系，<soft>慢慢来。</soft></pc_tts>。"

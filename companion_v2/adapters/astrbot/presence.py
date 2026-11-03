@@ -39,6 +39,12 @@ class OneBotPresencePort:
             value = await api.call_action(action, self_id=scope.account_id, **parameters)
             if value is None or isinstance(value, dict) and value.get("retcode", 0) == 0 and value.get("status", "ok") in ("ok", "async"):
                 return {"state": "accepted"}
+            # NapCat's OneBot implementation may acknowledge status actions with
+            # a plain success string instead of an empty/dict payload.
+            if isinstance(value, str) and value.strip().lower() in {
+                    "set status success", "set online status success",
+                    "set input status success", "success", "ok"}:
+                return {"state": "accepted"}
             return {"state": "failed", "code": "presence_action_rejected"}
         except Exception:
             return {"state": "unknown", "code": "presence_ack_unknown"}

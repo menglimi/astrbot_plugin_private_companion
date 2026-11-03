@@ -15,7 +15,7 @@ from astrbot_host.management_identity import dashboard_operator
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.execution.models import TaskContext
 from companion_v2.expression.configuration import (GROUP, ExpressionConfigurationOwner,
-                                                   configuration_fields)
+                                                   configuration_fields, read_settings)
 from tests.group_host_support import GroupFixture
 from tests.multi_host_support import MultiFixture, multi_config
 from tests.staging_bootstrap_support import wait_for_batch
@@ -45,6 +45,25 @@ class ExpressionLearningScheduleTests(MultiFixture, unittest.IsolatedAsyncioTest
         self.assertIsInstance(status["worker"], bool)
         self.assertEqual(status["limit"], 60)
         self.assertIsInstance(status["state"], str)
+        # The overview page renders this as the per-turn injection count. It has
+        # to be the effective policy value; the local window switches never
+        # carry it, which is why the KPI used to stay at "—" forever.
+        self.assertIsInstance(status["rules_per_turn"], int)
+        self.assertEqual(status["rules_per_turn"], read_settings(app.runtime, context).rules_per_turn)
+
+    async def test_status_reports_the_configured_rules_per_turn(self):
+        self.controller = self.make_controller(multi_config(delivery_mode="onebot_private"))
+        app = await self.start_host()
+        context, _ = await self.accepted(text="我不喝咖啡")
+        owner, fields = ExpressionConfigurationOwner(app.runtime), configuration_fields()
+        target = ConfigTarget(app.runtime.installation_id, ConfigLayer.INSTALLATION)
+        snapshot = owner.read(target, fields)
+        owner.write(target, fields, changes={GROUP + ".rules_per_turn": 5}, reset=(),
+                    expected_revision=snapshot.revision, observed_at=app.tasks.now())
+
+        status = app.expression_style.status(context)
+        self.assertEqual(status["rules_per_turn"], 5)
+        self.assertEqual(status["rules_per_turn"], read_settings(app.runtime, context).rules_per_turn)
 
     async def test_a_window_rebound_after_a_policy_revision_change_still_learns(self):
         """A stale stored snapshot must not look like a changed role.
