@@ -379,6 +379,37 @@ class AstrBotMultiController:
         self.refresh_settings()
         if self.settings_error is not None:
             raise TaskError(self.settings_error.code, str(self.settings_error))
+        self._sync_confirmed_binding()
+
+    def _sync_confirmed_binding(self):
+        """Make a just-confirmed core window effective without a plugin reload.
+
+        ``confirm_binding`` saves the new target and refreshes the controller's
+        settings, but the running session, its private bridge and the pinned
+        manifest were assembled from the old mapping. Re-pin the manifest (so a
+        later restart does not report ``host_binding_changed``) and hand the new
+        settings to the live bridge.
+        """
+        from dataclasses import asdict
+        from .multi_authority import MANIFEST
+
+        session = getattr(self, "session", None)
+        if session is None or getattr(getattr(session, "application", None), "state", "") != "running":
+            return
+        settings = self.settings
+        current = self.authority.require_manifest() if self.authority is not None else None
+        if current is not None:
+            updated = {key: value for key, value in current.items()
+                       if key not in {"fingerprint", "binding_contract", "settings_fingerprint", "personas"}}
+            updated.update(binding_contract=settings.binding_contract,
+                           settings_fingerprint=settings.fingerprint,
+                           personas=[asdict(persona) for persona in settings.personas])
+            updated["fingerprint"] = digest(updated)
+            with self.runtime.transaction():
+                self.authority.initialize(updated, reviewed=True,
+                                          allow_legacy_staging=self._adopting_legacy_profile)
+        session.sync_settings(settings)
+        logger.info("[CompanionV2] 已把确认的核心管理员窗口同步到运行中的会话")
 
     def handles_binding(self, event):
         from .recalls import is_notice_event
