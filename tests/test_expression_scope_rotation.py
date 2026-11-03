@@ -24,6 +24,7 @@ from companion_v2.execution.models import (ResolvedIdentity, TaskContext, TaskEr
 from companion_v2.expression import configuration as configuration_module
 from companion_v2.expression import rule_details
 from companion_v2.expression.style_management import ExpressionStyleManagement
+from companion_v2.expression.window_scope import rule_scope_counts
 from companion_v2.foundation.refs import (AudienceRef, RoleOwnerRef, ScopeKind, ScopeRef,
                                           SubjectKind, SubjectRef)
 from companion_v2.identity_policy.models import AuthenticatedHostPrincipal, RoleBinding
@@ -603,6 +604,14 @@ class PrivateSelfContainedFamilyTests(unittest.TestCase):
                     if item.purpose == "expression_style_rule"}
         self.assertEqual(injected[SHARED_SIGNAL], "adopted_shared_expression")
         self.assertEqual(injected[LEGACY_SIGNAL], "adopted_legacy_expression")
+
+    def test_rotated_private_rules_count_the_same_set_that_reply_injects(self):
+        _, injected = self.references(self.rotated, policy=reply_policy())
+        counts, rotated = rule_scope_counts(self.runtime, self.rotated,
+            digest(self.owner(self.rotated)), scope_family_keys(self.runtime, self.rotated),
+            samples=self.catalog, at=AT)
+        self.assertEqual(counts.get("adopted"), len(injected))
+        self.assertEqual(rotated, 0)
 
     def test_a_current_window_rule_never_resolves_the_family(self):
         """An ordinary private turn reads its own window, not the family.
