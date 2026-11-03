@@ -347,3 +347,19 @@
 .lh-rule-editor footer{justify-content:flex-end}
 .lh-rule-editor :is(input,select,textarea,button):focus-visible{outline:2px solid var(--t-accent);outline-offset:3px}
 @media(max-width:600px){.lh-rule-editor-grid,.lh-rule-editor-conditions{grid-template-columns:minmax(0,1fr)}.lh-rule-editor header{align-items:flex-start;flex-direction:column}.lh-signal-selects label,.lh-signal-selects select{width:100%;max-width:100%}.lh-signal-selects label{align-items:flex-start;flex-direction:column}.lh-signal-state-filters{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* 学习与反思总览：八个入口一行排开；空培育轨道不占一整片空白 */
+.learning-hub-nav{grid-template-columns:repeat(8,minmax(0,1fr))}
+@media(max-width:1100px){.learning-hub-nav{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(max-width:620px){.learning-hub-nav{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.lh-kpi{text-decoration:none;color:inherit;cursor:pointer;transition:border-color .16s ease,background .16s ease}
+.lh-kpi:hover{border-color:var(--t-line-firm);background:var(--t-surface)}
+.lh-kpi:focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
+.lh-overview-track.is-empty{gap:var(--sp-2)}
+.lh-track-empty{display:grid;justify-items:start;gap:6px;padding:var(--sp-4);border:1px dashed var(--t-line-firm);border-radius:var(--r-sm);background:var(--t-surface-soft)}
+.lh-track-empty strong{color:var(--t-text-strong);font-size:var(--fs-body)}
+.lh-track-empty p{margin:0;max-width:72ch;color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.6}
+.lh-track-actions{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin-top:4px}
+.lh-track-actions a{padding:7px 11px;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-accent-ink);font-size:var(--fs-tiny);text-decoration:none}
+.lh-track-actions a:first-child{border-color:var(--t-accent);background:var(--t-accent-quiet)}
+.lh-track-actions a:hover{border-color:var(--t-accent)}

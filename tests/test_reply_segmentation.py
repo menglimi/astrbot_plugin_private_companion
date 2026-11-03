@@ -151,6 +151,17 @@ class ReplySegmentationTests(unittest.TestCase):
         self.assertEqual(replace(policy, min_segment_chars=10).parts(source), (source,))
         self.assertEqual(replace(policy, min_segment_chars=1).parts("1,000.50"), ("1,000.50",))
 
+    def test_english_abbreviations_and_domains_do_not_become_a_separate_segment(self):
+        policy = SegmentationPolicy(split_words=json.dumps(["。", "？", "！", "?", ".", "!"], ensure_ascii=False),
+                                    min_segment_chars=1, max_segments=6)
+        source = "例如 e.g. 这个例子，域名是 example.com，版本是 U.S. 版，都没问题。"
+        parts = policy.parts(source)
+        self.assertEqual("".join(parts), source)
+        self.assertTrue(all(part.strip() not in ("e.g.", "example.com", "U.S.") for part in parts), parts)
+        self.assertIn("e.g.", "".join(parts))
+        self.assertIn("example.com", "".join(parts))
+        self.assertIn("U.S.", "".join(parts))
+
     def test_explicit_boundary_before_and_after_markdown_without_blank_lines(self):
         for block in ("```python\nprint('x。')\n```", "> 引用。\n> 后续。", "- 第一项\n- 第二项"):
             source = f"开头\n{MARKER}\n{block}\n{MARKER}\n结尾"
@@ -172,12 +183,29 @@ class ReplySegmentationTests(unittest.TestCase):
     def test_default_split_words_do_not_split_inside_a_quote(self):
         from companion_v2.conversation.segmentation import DEFAULT_SPLIT_WORDS
         self.assertNotIn("“", DEFAULT_SPLIT_WORDS)
+        self.assertNotIn(".", DEFAULT_SPLIT_WORDS)
+        self.assertNotIn("）", DEFAULT_SPLIT_WORDS)
+        self.assertNotIn(" ", DEFAULT_SPLIT_WORDS)
         source = "不过你之前那句“生日结束也就意味着什么”，话才说一半呢。"
         parts = self.policy.parts(source)
         self.assertEqual("".join(parts), source)
         quoted = next(part for part in parts if "生日结束" in part)
         self.assertIn("那句“", quoted, parts)
         self.assertIn("什么”", quoted, parts)
+
+    def test_legacy_default_word_list_migrates_but_custom_dots_are_kept(self):
+        from companion_v2.conversation.segmentation import (
+            DEFAULT_SPLIT_WORDS, LEGACY_DEFAULT_SPLIT_WORDS,
+        )
+        legacy = SegmentationPolicy(split_words=json.dumps(LEGACY_DEFAULT_SPLIT_WORDS, ensure_ascii=False))
+        self.assertEqual(tuple(json.loads(legacy.split_words)), DEFAULT_SPLIT_WORDS)
+        variant = SegmentationPolicy(split_words=json.dumps(
+            [*LEGACY_DEFAULT_SPLIT_WORDS, "，", "\n", " "], ensure_ascii=False))
+        self.assertNotIn(".", json.loads(variant.split_words))
+        self.assertNotIn("）", json.loads(variant.split_words))
+        self.assertNotIn(" ", json.loads(variant.split_words))
+        custom = SegmentationPolicy(split_words=json.dumps(["。", ".", "）", "!!"], ensure_ascii=False))
+        self.assertEqual(json.loads(custom.split_words), ["。", ".", "）", "!!"])
 
     def test_prompt_uses_v1_placeholder_and_policy_validates_types(self):
         policy = replace(self.policy, prompt="只在需要时用 {{ split_marker }}。")

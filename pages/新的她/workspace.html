@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -6,13 +6,13 @@
   <title>新的她 · 人格再造</title>
   <link rel="stylesheet" href="style.css">
   <script src="/api/plugin/page/bridge-sdk.js" defer></script>
-  <script src="app.js?v=persona-recreation-20261101" defer></script>
+  <script src="app.js?v=persona-actions-20261103" defer></script>
 </head>
 <body>
   <main class="designer">
     <header class="workbench-head">
       <div class="heading"><span class="mark" aria-hidden="true">她</span><div><h1>新的她</h1><p class="muted">一起推敲她的性格、来历，以及说话的方式。</p></div></div>
-      <div class="actions"><button id="choose-model" class="button" type="button">选择模型</button><button id="open-drafts" class="button" type="button">已存草稿</button><button id="retry-save" class="button" type="button" hidden>确认上次保存</button><button id="save-draft" class="button primary" type="button">保存草稿</button></div>
+      <div class="actions"><button id="choose-model" class="button small" type="button">选择模型</button><button id="open-drafts" class="button small" type="button">已存草稿</button><button id="retry-save" class="button small" type="button" hidden>确认上次保存</button><button id="save-draft" class="button small" type="button">保存草稿</button></div>
     </header>
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
     <div class="mode-row">
@@ -42,10 +42,10 @@
       <section class="draft-column" aria-label="设定与人设稿">
         <details class="card confirmed-panel" open><summary>已确认的设定 <small>可编辑</small></summary><div class="card-body"><label class="sr-only" for="confirmed">已确认的设定</label><textarea id="confirmed" rows="5" maxlength="16000" placeholder="聊清楚的设定会汇集在这里，你也可以直接修改。"></textarea></div></details>
         <section class="card manuscript">
-          <div class="section-heading"><h2>人设稿</h2><button id="generate-draft" class="button small" type="button">整理成稿</button></div>
+          <div class="section-heading"><div><h2>人设稿</h2><small class="draft-hint">先聊清楚方向，再整理成稿；也可以直接手写。</small></div><button id="generate-draft" class="button small" type="button">整理成稿</button></div>
           <label class="sr-only" for="draft-text">可编辑的人设正文</label><textarea id="draft-text" rows="17" maxlength="65536" placeholder="确认方向后，点击“整理成稿”。也可以在这里手动写下初稿。"></textarea>
-          <div class="draft-foot"><small id="draft-count" class="muted">0 字</small><div class="actions"><button id="compare" class="button small" type="button">对照原文</button><button id="tryout" class="button small" type="button">情景试演</button><button id="copy-draft" class="button small" type="button">复制正文</button><button id="save-version" class="button small" type="button">保存这一版</button></div></div>
-          <p class="footnote">保存后可继续编辑或复制，到 AstrBot 人格设置中自行填入。</p>
+          <div class="draft-foot"><small id="draft-count" class="muted">0 字</small><div class="actions"><button id="compare" class="button small" type="button">对照原文</button><button id="tryout" class="button small" type="button">情景试演</button><button id="copy-draft" class="button small primary" type="button">复制正文</button></div></div>
+          <p class="footnote">复制后到 AstrBot 的「人格设置」粘贴；这里保存的是草稿，不会直接改线上人格。</p>
         </section>
         <details class="card lorebook-panel"><summary>单独保留的背景 <small>可选</small></summary><div class="card-body"><p class="muted">较长的世界观与故事放在这里，方便另存为世界知识。</p><label class="sr-only" for="lorebook">单独保留的背景条目</label><textarea id="lorebook" rows="5" maxlength="20000"></textarea><button id="copy-lorebook" class="button small" type="button">复制背景</button></div></details>
       </section>
@@ -61,3 +61,5 @@
   </main>
 </body>
 </html>
+
+
