@@ -10,7 +10,7 @@ from astrbot.api.web import PluginRequest, bind_request_context
 from starlette.requests import Request
 from astrbot_host.state_api import PREFIX
 from astrbot_host.management_identity import dashboard_operator
-from companion_v2.identity_policy.models import AuthorizationTier
+from companion_v2.identity_policy.models import AuthorizationTier, GrantState
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.proactive.external_materials import WeatherSnapshot
 from companion_v2.role_work.state.configuration import GROUP, role_target_for
@@ -41,6 +41,33 @@ class StateAPITests(unittest.IsolatedAsyncioTestCase):
             "headers":[], "query_string":b""}, receive=receive)
         with bind_request_context(PluginRequest(native, username=username)):
             return await self.routes[path]()
+
+    async def test_admin_can_read_state_after_participant_reply_is_revoked(self):
+        session = await self.initialize()
+        identity = session.application.tasks.identity
+        grants = [grant for grant in identity.snapshot().grants
+                  if grant.capability == "conversation.reply" and grant.subject == self.target.actor.subject
+                  and grant.scope == self.target.scope and grant.state is GrantState.ACTIVE]
+        self.assertTrue(grants)
+        for grant in grants:
+            identity.revoke_grant(grant.grant_id, revoked_at=NOW,
+                                  expected_revision=identity.revision)
+        self.assertEqual(session.application.tasks.check_context_access(
+            self.target, action="conversation.reply", observed_at=NOW).failure.code,
+            "authorization_revoked")
+        status = await self.request()
+        self.assertEqual(status["status"], "ok", status)
+        self.assertIn("calendar", status["data"])
+        self.assertIn("state", status["data"])
+        state = status["data"]["state"]
+        write = await self.request(data=dict(action="state.write", operation_key="revoked-participant-write",
+            view_token=state["view_token"], expected_revision=state["revision"], data=state_data()))
+        self.assertEqual(write["data"]["code"], "authorization_revoked", write)
+        self.assertEqual(session.application.tasks.check_context_access(
+            self.target, action="conversation.reply", observed_at=NOW).failure.code,
+            "authorization_revoked")
+        self.assertEqual((await self.request(username=None))["data"]["code"],
+                         "dashboard_identity_required")
 
     async def test_weather_reads_only_the_configured_role_location_and_reports_live_snapshot(self):
         session = await self.initialize()
