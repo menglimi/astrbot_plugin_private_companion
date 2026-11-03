@@ -7,8 +7,9 @@ import json
 import unittest
 from unittest.mock import patch
 
-from companion_v2.execution.models import encode, stamp
+from companion_v2.execution.models import ClaimResult, Lane, TaskClaim, TaskResult, TaskSpec, digest, encode, stamp
 from companion_v2.execution.models import TaskError
+from companion_v2.foundation.outcome import Outcome
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.memory.reflection import reflection_profile
 from companion_v2.memory.reflection_management import ReflectionManagement
@@ -204,6 +205,36 @@ class MemoryReflectionJobsTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.settle(app, job["job_id"]))["state"], "complete")
         self.assertEqual(len(self.called), calls)
 
+    async def test_kind_concurrency_refusal_also_re_queues_the_repair(self):
+        host, context, prepared = await self.setup_reflection()
+        app, batch = host.application, prepared["batch_id"]
+        job = self.enqueue(app, context, batch).unwrap()
+        calls, original = len(self.called), app.tasks.claim_task
+
+        def limited(ctx, task_id):
+            # The kind's own concurrency seat is taken, not the lane itself.
+            if task_id.startswith("memory-extract-task-"):
+                return Outcome.success(ClaimResult(None, "task_concurrency_limited"))
+            return original(ctx, task_id)
+
+        with patch.object(app.tasks, "claim_task", side_effect=limited):
+            app.memory_schedule.continuations.advance(1)
+            worker = next(iter(app.memory_schedule.continuations.workers.values()))[1]
+            await worker
+            value = self.job(app, job["job_id"])
+            self.assertEqual((value["state"], value["result_code"]), ("queued", "task_concurrency_limited"))
+            self.assertEqual(value["next_at"], stamp(self.clock.now() + timedelta(seconds=5)))
+            self.assertEqual(len(self.called), calls)
+            self.assertFalse(app.memory_schedule.continuations.active_handles)
+            task_id = app.runtime.read_one("SELECT task_id FROM memory_reflections WHERE batch_id = ?", (batch,))["task_id"]
+            self.assertEqual(self.execution_row(app, task_id), ("created", 0))
+        self.assertEqual((await self.settle(app, job["job_id"]))["state"], "complete")
+        self.assertEqual(len(self.called), calls + 1)
+
+    def execution_row(self, app, task_id):
+        row = app.runtime.read_one("SELECT state, attempt_no FROM execution_tasks WHERE task_id = ?", (task_id,))
+        return row["state"], row["attempt_no"]
+
     async def test_cache_busy_waits_without_holding_a_slot_and_then_finishes(self):
         app, context = await self.cold()
         batch = self.prepare(app, context)["batch_id"]
@@ -219,6 +250,73 @@ class MemoryReflectionJobsTests(HostFixture, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(self.called), calls)
             self.assertFalse(app.memory_schedule.continuations.active_handles)
         self.assertEqual((await self.settle(app, job["job_id"]))["state"], "complete")
+
+    async def test_saturated_background_lane_re_queues_instead_of_blocking_the_repair(self):
+        """A really full background lane must not retire the reflection reservation."""
+        host, context, _ = await self.setup_reflection(prepare=False)
+        app = host.application
+        # Two batches over disjoint windows: the holder captures the older event,
+        # the repaired one the newer, so neither consumes the other's evidence.
+        older = host.receive(self.event("older")).unwrap()
+        self.advance(app)
+        await self.done(app, older)
+        self.clock.advance(timedelta(hours=3))
+        newer = host.receive(self.event("newer", text="我最近还是只喝白水")).unwrap()
+        self.advance(app)
+        await self.done(app, newer)
+        holder_batch = app.memory_reflection.prepare(context, request_id="lane-holder",
+            start=self.clock.now() - timedelta(hours=4), end=self.clock.now() - timedelta(hours=2, minutes=30),
+            role_instruction="原角色人格提示").unwrap()["batch_id"]
+        batch = app.memory_reflection.prepare(context, request_id="daily",
+            start=self.clock.now() - timedelta(minutes=30), end=self.clock.now(),
+            role_instruction="原角色人格提示").unwrap()["batch_id"]
+        job = self.enqueue(app, context, batch).unwrap()
+        # Really occupy the only background slot: no claim patching anywhere.
+        holder = await self.occupy_lane(app, context, holder_batch)
+        calls = len(self.called)
+        # Both batches are already `prepared`; the job's single attempt meets the
+        # full lane, so nothing is dispatched and the reservation must survive.
+        app.memory_schedule.continuations.advance(1)
+        worker = next(iter(app.memory_schedule.continuations.workers.values()))[1]
+        await worker
+        self.assertFalse(app.memory_schedule.continuations.active_handles)
+        self.assertEqual(self.row(app, batch)["state"], "prepared")
+        task_id = self.row(app, batch)["task_id"]
+        self.assertIsNotNone(task_id)
+        task = app.runtime.read_one("SELECT state, attempt_no FROM execution_tasks WHERE task_id = ?", (task_id,))
+        self.assertEqual((task["state"], task["attempt_no"]), ("created", 0))
+        value = self.job(app, job["job_id"])
+        self.assertEqual((value["state"], value["result_code"]), ("queued", "task_lane_full"))
+        self.assertFalse(app.memory_schedule.continuations.active_handles)
+        self.assertEqual(len(self.called), calls)  # the refused attempt dispatched nothing
+        self.assertIsNone(json.loads(self.row(app, batch)["receipts_json"]).get("repair_batch"))
+        # Releasing the real slot lets the next due wake re-enter the same job.
+        app.tasks.stop(holder, reason="cancelled").unwrap()
+        final = await self.settle(app, job["job_id"])
+        self.assertEqual(final["state"], "complete", final)
+        self.assertEqual(self.row(app, batch)["state"], "complete")
+
+    async def occupy_lane(self, app, context, holder_batch):
+        """Hold the single background slot with a real begun attempt that never finishes."""
+        reflection = app.memory_reflection
+        for _ in range(30):
+            row = self.row(app, holder_batch)
+            if row["state"] != "selecting":
+                break
+            reflection.selection.advance(context, row)
+        self.assertEqual(self.row(app, holder_batch)["state"], "prepared")
+        # Submit the batch's own task the way `run` does, then begin it and leave
+        # the attempt running: the slot is really held by the supervisor.
+        now = reflection.tasks.now()
+        task_id = "memory-extract-task-" + digest(holder_batch)
+        with reflection.runtime.transaction() as connection:
+            connection.execute("UPDATE memory_reflections SET task_id = ? WHERE batch_id = ?", (task_id, holder_batch))
+        reflection.tasks.submit(TaskSpec(task_id, context, "memory.reflect", holder_batch, holder_batch,
+                                         now, now + timedelta(minutes=5))).unwrap()
+        claim = reflection.tasks.claim_task(context, task_id).unwrap().claim
+        self.assertIsNotNone(claim)
+        reflection.tasks.begin(claim).unwrap()
+        return claim
 
     async def test_auto_repair_child_survives_multiple_selection_steps(self):
         app, context = await self.cold()

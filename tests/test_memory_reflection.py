@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
-from companion_v2.execution.models import encode
+from companion_v2.execution.models import TaskSpec, digest, encode
+from companion_v2.execution.runner import RunResult
 from companion_v2.identity_policy.models import AuthorizationTier
 from companion_v2.memory.management import MemoryManagement
 from companion_v2.memory.models import AtomRef, owner_key
@@ -276,6 +277,37 @@ class MemoryReflectionTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["state"], "complete")
         self.assertEqual(len(self.called), count)
         self.assertEqual(len(self.runtime.read_all("SELECT * FROM memory_atoms", ())), 1)
+
+    async def test_unadmitted_attempt_reports_the_refusal_and_never_continues_the_batch(self):
+        """A retained capacity refusal is not a result: the batch must not move."""
+        host, context, prepared = await self.setup_reflection()
+        app, batch_id = host.application, prepared["batch_id"]
+        reflection = app.memory_reflection
+        calls = len(self.called)
+        now = reflection.tasks.now()
+        task_id = "memory-extract-task-" + digest(batch_id)
+        with app.runtime.transaction() as connection:
+            connection.execute("UPDATE memory_reflections SET task_id = ? WHERE batch_id = ?", (task_id, batch_id))
+        reflection.tasks.submit(TaskSpec(task_id, context, KIND, batch_id, batch_id,
+                                         now, now + timedelta(minutes=5))).unwrap()
+        queued = reflection.tasks.read(context, task_id).unwrap()
+        self.assertEqual((queued.state, queued.attempt_no), ("created", 0))
+        retained = RunResult(queued, "task_lane_full", refused="task_lane_full")
+        with patch.object(reflection, "_after_run") as after, \
+                patch.object(reflection.runner, "run", return_value=Outcome.success(retained)):
+            outcome = await reflection.run(context, batch_id)
+            after.assert_not_called()
+        self.assertEqual(outcome.failure.code, "task_lane_full")
+        self.assertEqual(len(self.called), calls)
+        batch_row = app.runtime.read_one("SELECT state, receipts_json FROM memory_reflections WHERE batch_id = ?", (batch_id,))
+        self.assertEqual(batch_row["state"], "prepared")
+        self.assertIsNone(json.loads(batch_row["receipts_json"]).get("repair_batch"))
+        self.assertEqual(self.tasks_ledger(app, task_id), ("created", 0))
+
+    @staticmethod
+    def tasks_ledger(app, task_id):
+        row = app.runtime.read_one("SELECT state, attempt_no FROM execution_tasks WHERE task_id = ?", (task_id,))
+        return row["state"], row["attempt_no"]
 
     async def test_daily_reflection_can_accept_a_pending_proposal_without_duplicating_it(self):
         host, context, _ = await self.setup_reflection(prepare=False)

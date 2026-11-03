@@ -14,6 +14,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -58,6 +59,21 @@ def harden_file_permissions(path: str) -> None:
         pass
 
 
+def _current_user_sid() -> str:
+    """Return the current process user's SID, never a bare account name."""
+    if os.name != "nt":
+        return ""
+    try:
+        completed = subprocess.run(
+            ["whoami", "/user", "/fo", "csv", "/nh"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except Exception:
+        return ""
+    match = re.search(r"S-1-[0-9]+(?:-[0-9]+)+", completed.stdout or "")
+    return match.group(0) if match else ""
+
+
 def harden_dir_permissions(dir_path: str) -> str:
     """Best-effort: stop the plugin data dir from inheriting broad ACLs.
 
@@ -80,17 +96,20 @@ def harden_dir_permissions(dir_path: str) -> str:
             return ""
         except OSError as exc:
             return "chmod 失败：%s" % exc
-    user = os.environ.get("USERNAME") or ""
-    if not user:
-        return "读不到 USERNAME，跳过 ACL 收紧"
+    sid = _current_user_sid()
+    if not sid:
+        return "读不到当前用户 SID，跳过 ACL 收紧"
+    # Grant the current SID (not a short account name) and well-known SIDs
+    # first, while inherited ACEs are still present. If this step fails the
+    # directory is left untouched; only a successful grant removes inheritance.
+    grants = [
+        "*" + sid + ":(OI)(CI)F",
+        "*S-1-5-18:(OI)(CI)F",
+        "*S-1-5-32-544:(OI)(CI)F",
+    ]
     try:
         proc = subprocess.run(
-            [
-                "icacls", dir_path, "/inheritance:r",
-                "/grant:r", user + ":(OI)(CI)F",
-                "SYSTEM:(OI)(CI)F",
-                "Administrators:(OI)(CI)F",
-            ],
+            ["icacls", dir_path, "/grant:r", *grants],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=10,
@@ -99,7 +118,19 @@ def harden_dir_permissions(dir_path: str) -> str:
     except Exception as exc:
         return "icacls 无法执行：%s" % exc
     if proc.returncode != 0:
-        return "icacls 返回码 %d（账户名与 SID 可能对不上）" % proc.returncode
+        return "icacls 授权失败（返回码 %d）" % proc.returncode
+    try:
+        removed = subprocess.run(
+            ["icacls", dir_path, "/inheritance:r"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+    except Exception as exc:
+        return "icacls 移除继承失败：%s" % exc
+    if removed.returncode != 0:
+        return "icacls 移除继承返回码 %d" % removed.returncode
     return ""
 
 

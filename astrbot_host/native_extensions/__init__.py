@@ -467,6 +467,10 @@ class NativeExtensionRegistry(AstrBotToolPort):
             preferences = effective_settings(self.runtime, invocation.context)
             prompts = apply_prompts(request["arguments"], action, preferences)
             request["image_prompt"] = {"positive":prompts["prompt"], "negative":prompts["negative_prompt"]}
+            nai_prompts = apply_prompts(request["arguments"], action,
+                                       {**preferences, "style": "custom", "style_prompt": ""})
+            request["nai_prompt"] = {"positive": nai_prompts["prompt"],
+                                    "negative": request["arguments"].get("negative_prompt", "")}
         if invocation.descriptor.tool.action == TOGETHER_CREATE_ACTION:
             if self.persona_guard is None:
                 raise TaskError("native_persona_guard_missing", "room creation requires a verified host persona")

@@ -512,11 +512,17 @@ class ModelSession:
                 reasons.append("instruction")
         if reasons:
             self._context_mismatch(*reasons)
+        image_instruction_refresh = False
         if (request.images != original.images or request.reply_images != original.reply_images):
             if media_refresh is None or not media_refresh(original, request):
                 self._context_mismatch("images")
             if request.images and any("image" not in provider.capabilities for provider in self.plan.providers):
                 raise TaskError("model_capability_mismatch", "generated images require image-capable continuation providers")
+            from companion_v2.conversation.media.generated import INSTRUCTION as GENERATED_INSTRUCTION
+            # The image owner verified the originals above. Only its exact
+            # additive attribution text may accompany them without another owner.
+            image_instruction_refresh = (
+                request.instruction == original.instruction + "\n" + GENERATED_INSTRUCTION)
         if not isinstance(history, tuple) or len(history) < len(self.history) or tuple(item.call for item in history[len(self.history):]) != self.pending:
             raise TaskError("model_tool_results_missing", "every requested tool needs its ordered original result")
         changed = []
@@ -524,7 +530,7 @@ class ModelSession:
             changed.append("context.materials")
         if history[:len(self.history)] != self.history:
             changed.append("tool_history")
-        if request.instruction != original.instruction and not style_instruction_removed:
+        if request.instruction != original.instruction and not style_instruction_removed and not image_instruction_refresh:
             changed.append("instruction")
         if changed and (owner_refresh is None or not owner_refresh(original, request, self.history, history)):
             self._context_mismatch(*changed)

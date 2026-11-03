@@ -558,3 +558,127 @@ test('learning semantic layout uses theme tokens and collapses cleanly on narrow
   assert.match(block, /var\(--t-focus\)/);
   assert.doesNotMatch(block, /#[0-9a-f]{3,8}\b/i);
 });
+
+test('a write command keeps the already loaded catalog pages', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node, {view: 'expression'});
+  const listPage = (items, nextAfter) => ({...settingsCatalog(), items, next_after: nextAfter});
+  const first = {id: 'reaction-1', kind: 'reaction', revision: 1, enabled: true,
+    payload: {name: '第一条素材'}};
+  const second = {id: 'reaction-2', kind: 'reaction', revision: 1, enabled: true,
+    payload: {name: '第二条素材'}};
+  requests[0].resolve(listPage([first], 'reaction-1'));
+  await flush();
+  assert.match(node.innerHTML, /第一条素材/);
+
+  node.click('[data-semantic]', {semantic: 'more'});
+  assert.equal(requests[1].values.after, 'reaction-1');
+  requests[1].resolve(listPage([second], null));
+  await flush();
+  assert.match(node.innerHTML, /第二条素材/);
+
+  /* 「重建当前索引」是写操作：成功后页面会重读，不得丢掉已加载的第二页。 */
+  node.click('[data-semantic]', {semantic: 'reindex'});
+  assert.equal(requests[2].method, 'POST');
+  requests[2].resolve({state: 'scheduled'});
+  await flush();
+  assert.equal(requests[3].method, 'GET');
+  assert.equal(requests[3].values.after, undefined, '刷新先重读第一页');
+  requests[3].resolve(listPage([first], 'reaction-1'));
+  await flush();
+  assert.equal(requests.length, 5, '刷新必须继续重读已加载的第二页');
+  assert.equal(requests[4].values.after, 'reaction-1');
+  requests[4].resolve(listPage([second], null));
+  await flush();
+  assert.match(node.innerHTML, /第一条素材/);
+  assert.match(node.innerHTML, /第二条素材/);
+  page.unmount();
+});
+
+test('a failed refresh keeps the catalog rows already on screen', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node, {view: 'expression'});
+  const listPage = (items, nextAfter) => ({...settingsCatalog(), items, next_after: nextAfter});
+  const kept = {id: 'reaction-1', kind: 'reaction', revision: 1, enabled: true,
+    payload: {name: '已显示的素材'}};
+  requests[0].resolve(listPage([kept], null));
+  await flush();
+  assert.match(node.innerHTML, /已显示的素材/);
+
+  node.click('[data-semantic]', {semantic: 'reindex'});
+  requests[1].resolve({state: 'scheduled'});
+  await flush();
+  requests[2].reject(new Error('read failed'));
+  await flush();
+  assert.match(node.innerHTML, /已显示的素材/, '刷新失败时已显示的素材不得消失');
+  page.unmount();
+});
+
+/* 一个类型读失败、另一个正常：必须提示，且读到的那个照常显示。 */
+test('one catalog kind failing keeps the other kind and reports it', async () => {
+  const {page, requests, root} = harness(true);
+  const node = root();
+  page.mount(node, {view: 'learning'});
+  assert.deepEqual(requests.map(request => request.values.kind), ['slang', 'reaction']);
+  requests[0].resolve(catalog('slang', '群黑话一条'));
+  requests[1].reject(Object.assign(new Error('semantic_model_failed'), {code: 'semantic_model_failed'}));
+  await flush();
+  assert.match(node.innerHTML, /群黑话一条/, '读到的那个类型照常显示');
+  assert.match(node.innerHTML, /部分素材读取失败/, '有类型读失败就必须提示，不能静默');
+  assert.match(node.innerHTML, /语义模型调用失败/, '提示里保留具体原因');
+  page.unmount();
+});
+
+/* 刷新时一个类型失败：已显示的内容要保留，同时给出提示。 */
+test('a partially failed refresh keeps what is already on screen', async () => {
+  const {page, requests, root} = harness(true);
+  const node = root();
+  page.mount(node, {view: 'learning'});
+  const slangPage = {...catalog('slang', '群黑话一条'), items: [{id: 'slang-1', kind: 'slang', revision: 1,
+    enabled: true, payload: {term: '群黑话一条', meaning: '已有含义'}}]};
+  const reactionPage = {...catalog('reaction', '表情一条'), items: [{id: 'reaction-1', kind: 'reaction',
+    revision: 1, enabled: true, payload: {name: '表情一条'}}]};
+  requests[0].resolve(slangPage);
+  requests[1].resolve(reactionPage);
+  await flush();
+  assert.match(node.innerHTML, /群黑话一条/);
+  assert.match(node.innerHTML, /表情一条/);
+
+  node.click('[data-semantic]', {semantic: 'reindex'});
+  requests[2].resolve({state: 'scheduled'});
+  await flush();
+  assert.equal(requests[3].values.kind, 'slang', '刷新从已加载的类型开始');
+  requests[3].reject(new Error('temporary failure'));
+  assert.equal(requests[4].values.kind, 'reaction');
+  requests[4].resolve(reactionPage);
+  await flush();
+  assert.match(node.innerHTML, /群黑话一条/, '读失败的类型仍保留已显示内容');
+  assert.match(node.innerHTML, /部分素材读取失败/, '部分失败也要提示');
+  page.unmount();
+});
+
+/* 删除是唯一需要「墓碑」的操作：刷新若把旧数据又返回来，不能把它带回列表。 */
+test('a deleted asset is not resurrected by the following refresh', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node, {view: 'expression'});
+  const kept = {id: 'reaction-1', kind: 'reaction', revision: 1, enabled: true,
+    payload: {name: '待删除素材'}};
+  requests[0].resolve({...settingsCatalog(), items: [kept], next_after: null});
+  await flush();
+  node.click('[data-semantic-open]', {semanticOpen: 'reaction-1'});
+  requests[1].resolve({item: {...kept, revision: 2}});
+  await flush();
+  await node.click('[data-semantic]', {semantic: 'delete'});
+  assert.equal(requests[2].values.action, 'delete');
+  requests[2].resolve({deleted: true});
+  await flush();
+  assert.equal(requests[3].method, 'GET');
+  /* 服务端缓存/竞态仍把已删除的那条返回来 */
+  requests[3].resolve({...settingsCatalog(), items: [kept], next_after: null});
+  await flush();
+  assert.doesNotMatch(node.innerHTML, /待删除素材/, '已删除的素材不得被刷新合并回来');
+  page.unmount();
+});

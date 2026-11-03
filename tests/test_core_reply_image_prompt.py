@@ -72,6 +72,30 @@ class CoreReplyImagePromptTests(unittest.IsolatedAsyncioTestCase):
         settings.assert_not_called()
         self.references.prompt_material.assert_not_called()
 
+    def test_nai_prompt_mode_follows_the_selected_plugin_instead_of_companion_preferences(self):
+        self.application.native_tool_port = NS(image_extension_api=lambda: NS(
+            output_configuration=lambda: {"settings": {
+                "enabled": True, "operation_routes": {"generate": ["nai"], "edit": []}},
+                "nai": {"available": True, "prompt_format": "nai"}}))
+        values = {**DEFAULTS, "prompt_format": "natural", "style": "realistic"}
+        with patch("astrbot_host.core_reply_image_prompt.effective_settings", return_value=values), \
+                patch("astrbot_host.model_route_material._image_configuration", create=True,
+                      return_value=self.application.native_tool_port.image_extension_api().output_configuration()):
+            offered, preferences = core_image_tools(self.session, self.offered)
+        self.inject(offered=offered, values=preferences)
+        self.assertIn("英文 NAI 标签", self.request.system_prompt)
+        self.assertIn("不要自行追加写实照片风格", self.request.system_prompt)
+        self.assertIn("发型发色、瞳色", self.request.system_prompt)
+        self.assertEqual(values["prompt_format"], "natural")
+
+    def test_missing_nai_configuration_reader_preserves_existing_image_tools(self):
+        values = {**DEFAULTS, "prompt_format": "natural"}
+        with patch("astrbot_host.core_reply_image_prompt.effective_settings", return_value=values), \
+                patch("astrbot_host.model_route_material._image_configuration", None, create=True):
+            offered, preferences = core_image_tools(self.session, self.offered)
+        self.assertEqual(offered, self.offered)
+        self.assertEqual(preferences, values)
+
     def test_group_switch_and_core_only_permission_hide_image_tools_at_request_time(self):
         group_context = NS(scope=NS(kind=ScopeKind.GROUP, platform="qq-main"),
                            actor=NS(subject=NS(kind=SubjectKind.HUMAN, subject_id="standard")))

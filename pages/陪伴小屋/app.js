@@ -60,6 +60,7 @@ let route='life', lifeTab='home', manageTab='host', selfPane='profile', libraryF
 let navigationIntent=0;
 let outputTabId='visual';
 let selfProfileSection='identity';
+let personaRecreationMode='questionnaire';
 let maintenancePane='';
 let dataPane='storage';
 let tokenTaskSettingsJump=0;
@@ -249,7 +250,7 @@ function navigationDestination(next,tab='',subtab=''){
         :tab==='data'?(['storage','backup','migration'].includes(subtab)?subtab:'storage')
         :tab==='memory'?(['records','settings'].includes(subtab)?subtab:'')
         :tab==='perception'?(['environment','models','news','screen','balance','recall','injection'].includes(subtab)?subtab:'')
-        :tab==='governance'&&['profile','relationship','questionnaire','humanize','knowledge'].includes(subtab)?subtab:'profile';
+        :tab==='governance'&&['profile','relationship','questionnaire','knowledge'].includes(subtab)?subtab:'profile';
   }else{next='life';tab='home';subtab='archive';}
   return {next,tab,subtab};
 }
@@ -3751,43 +3752,6 @@ function selectSelfProfileSection(section){
     if(active)button.setAttribute('aria-current','location');else button.removeAttribute('aria-current');
   });
 }
-function humanizeMissingSections(){
-  const labels=Object.fromEntries(SELF_PROFILE_SECTIONS.map(([id,,label])=>[id,label]));
-  return [...document.querySelectorAll('.section-chips [data-self-focus]')]
-    .filter(el=>el.dataset.complete!=='true')
-    .map(el=>labels[el.dataset.selfFocus]).filter(Boolean);
-}
-function renderHumanizeResults(){
-  const host=document.getElementById('humanizeResults');
-  if(!host)return;
-  const missing=humanizeMissingSections();
-  const suggestions=[];
-  suggestions.push(missing.length
-    ? `角色档案还有 ${missing.length} 个章节没有补全：${missing.join('、')}。先补最能影响称呼、语气和边界的身份、口吻、性格。`
-    : '角色档案的主要章节已经齐全，可以重点检查表达习惯是否真的像 TA。');
-  suggestions.push('检查“表达学习范围”是否覆盖了你希望 TA 学习的私聊与群聊来源；来源太窄会显得不像本人。');
-  suggestions.push('检查“分段回复”和“语音朗读”：一句话被拆成多条、语气断开，都会明显降低拟人感。');
-  suggestions.push('检查“主动联系 / 群聊边界”：在不合适的时机插话或重复接话，比话少更伤拟人感。');
-  suggestions.push('检查“角色状态与日程”是否和聊天内容一致；状态长期不更新会让 TA 显得没有生活。');
-  host.innerHTML=`<div class="humanize-summary"><strong>检查结果</strong><span>${missing.length?`${missing.length} 项待补`:'档案完整'}</span></div>
-    <ol class="humanize-list">${suggestions.map(item=>`<li>${escapeHTML(item)}</li>`).join('')}</ol>
-    <p class="humanize-note">这是本地检查，不会改写角色，也不会调用模型；需要模型生成优化稿时，再进入“表达”或“学习与反思”。</p>`;
-}
-function renderHumanizePage(){
-  return `<div class="humanize-page">
-    <section class="self-organizer humanize-intro" aria-label="拟人优化">
-      <div class="self-organizer-head"><h3>拟人优化</h3><p>从档案、表达和边界三个方向检查“哪里不像一个真实的人”。</p></div>
-      <div class="self-organizer-actions">
-        ${button(I('scan-search')+'<span>开始检查</span>','data-humanize-check="1"','small primary')}
-        ${button(I('user-round-pen')+'<span>补全角色档案</span>','data-humanize-profile="1"','small')}
-        ${button(I('message-square-more')+'<span>调整表达</span>','data-humanize-expression="1"','small')}
-      </div>
-    </section>
-    <div id="humanizeResults" class="humanize-results" aria-live="polite">
-      <p class="humanize-empty">点击“开始检查”，基于当前角色档案生成可执行的优化建议。</p>
-    </div>
-  </div>`;
-}
 /* 自我页：紧凑角色卡（完成度环 + 速览贴纸）→ 四个工作区 → 档案章节词条条 +
    人格整理补充输入。容器 id 与挂载链保持不变（roleProfileConfigWorkspace 等），
    视觉与交互规范见 docs/page-designs/self-page-20261007/。 */
@@ -3805,8 +3769,7 @@ function renderGovernanceOriginal(){
   const tabs=[
     ['profile','user-round-pen','角色档案'],
     ['relationship','heart-handshake','相处资料'],
-    ['questionnaire','notebook-pen','创建人格'],
-    ['humanize','sparkles','拟人优化'],
+    ['questionnaire','notebook-pen','人格处理'],
     ['knowledge','book-open-text','世界知识']];
   const liveLabel=role?'已识别当前角色':connectionLabel;
   return `<div class="self-page${selfPane==='questionnaire'?' is-questionnaire-focus':''}">
@@ -3847,7 +3810,6 @@ function renderGovernanceOriginal(){
         ${relationshipEditor}
       </section>
       <section class="deck-panel self-workspace-panel" id="self-panel-questionnaire" role="tabpanel" aria-labelledby="self-tab-questionnaire"${selfPane==='questionnaire'?'':' hidden'}>${renderPersonaPage()}</section>
-      <section class="deck-panel self-workspace-panel" id="self-panel-humanize" role="tabpanel" aria-labelledby="self-tab-humanize"${selfPane==='humanize'?'':' hidden'}>${renderHumanizePage()}</section>
       <section class="deck-panel self-workspace-panel" id="self-panel-knowledge" role="tabpanel" aria-labelledby="self-tab-knowledge"${selfPane==='knowledge'?'':' hidden'}>
         <div class="self-knowledge-heading"><div><span>世界 / 来源</span><h3>世界知识与来源</h3></div></div>
         ${configEditors('knowledgeConfigWorkspace',['knowledge'],'世界知识与来源')}
@@ -4087,7 +4049,11 @@ function renderConfigEditors(){
   }
 }
 document.addEventListener('companion:role-profile-updated',()=>roleProfileConfigMount?.read?.());
-function renderPersonaPage(){return product.workspace("persona");}
+function renderPersonaPage(){
+  const modes=[['questionnaire','规范人格'],['create','创建人格'],['optimize','拟人优化']];
+  const workspace=personaRecreationMode==='questionnaire'?product.workspace('persona'):product.workspace('designer',personaRecreationMode);
+  return `<nav class="section-chips" aria-label="人格处理">${modes.map(([id,label])=>`<button type="button" class="section-chip${personaRecreationMode===id?' is-active':''}" data-persona-recreation="${id}" aria-pressed="${personaRecreationMode===id}">${label}</button>`).join('')}</nav>${workspace}`;
+}
 function renderHostWorkspace(){return product.workspace("host");}
 function renderAppearancePageOriginal(){
   return `<div class="settings-heading"><div><h2>外观与设置</h2></div>${chip('仅影响拓展页','lavender')}</div><section class="panel content-panel appearance-card"><div data-appearance-inline>${appearancePanel()}</div></section>`;
@@ -4161,8 +4127,8 @@ const allFunctionsGroups=[
       ['表达学习','expression'],['行为模仿','behavior'],['语义目录','semantic'],['每日复盘','reflection']]],
   ]],
   ['角色与产出',[
-    ['governance','user-round','自我','角色档案、创建人格、拟人优化与世界知识',[
-      ['角色档案','profile'],['相处资料','relationship'],['创建人格','questionnaire'],['拟人优化','humanize'],['世界知识','knowledge']]],
+    ['governance','user-round','自我','角色档案、人格处理与世界知识',[
+      ['角色档案','profile'],['相处资料','relationship'],['人格处理','questionnaire'],['世界知识','knowledge']]],
     ['output','shapes','产出','图像生成、作品、素材与创作'],
   ]],
   ['数据与维护',[
@@ -4946,7 +4912,7 @@ const searchIndex=[
   ['生活观察','日记、梦境、生活轨迹、状态与交互影响','scan-eye','home-section','observation'],['家具与能力','基础生活与拓展家具，启用状态和连接','armchair','home-section','furniture'],
   ['首页与小屋','生活总览、观察与家具能力','house','life','home'],['日记与生活','日记、睡眠、阅读与作息配置','notebook-pen','life','diary'],['关系网','只查看用户与群聊之间的连接关系','network','manage','identity'],['用户','用户目录、逐人资料与私聊默认权限','users-round','manage','identity-people'],['群聊','群聊目录、群内成员与成员线索','messages-square','manage','identity-groups'],['共同经历','记录、原话、来源与记忆策略','orbit','manage','memory'],['作品与相册','原稿、照片与收藏','images','home-section','furniture'],['一起活动','共读、棋桌与通话','coffee','home-section','furniture'],['能力目录','可选拓展当前能不能用','blocks','home-section','furniture'],
   ['感知','环境、消息与媒体来源','scan-eye','manage','perception'],['决策','本轮上下文与群聊参与判断','brain','manage','decision'],['行动','生活行为与社交发布','play','manage','action'],['产出','图像生成与创作作品','shapes','manage','output'],['表达','文本、语音、表情与投递','message-square-more','manage','expression'],['自我','世界知识、角色设定与自身档案','user-round','manage','governance'],
-  ['开始使用','首次连接、选择对象与决定是否发送','rocket','manage','setup'],['创建人格','结构化整理角色设定并保存多个版本','notebook-pen','manage','persona'],['外观与设置','主题、密度、圆角、字号与动效','palette','manage','appearance'],['主动联系','主动契机、联系节奏与免打扰','heart-handshake','manage','contact'],['事实与经历','事实、原话与群词义','orbit','manage','memory'],['模型与连接','公共模型与任务路由','sliders-horizontal','manage','models'],['运行诊断','运行状态与排障','settings-2','manage','maintenance'],['便签','下次去书店，找一本植物随笔','sticky-note',null,'notes'],['窗边的一页','照片与相关经历','image',null,'photo-window'],['创作书架','Content 能力状态','library-big',null,'cap-content'],['现实触及','Reality 设备与授权','radio','manage','perception'],
+  ['开始使用','首次连接、选择对象与决定是否发送','rocket','manage','setup'],['人格处理','规范人格、创建人格与拟人优化','notebook-pen','manage','persona'],['外观与设置','主题、密度、圆角、字号与动效','palette','manage','appearance'],['主动联系','主动契机、联系节奏与免打扰','heart-handshake','manage','contact'],['事实与经历','事实、原话与群词义','orbit','manage','memory'],['模型与连接','公共模型与任务路由','sliders-horizontal','manage','models'],['运行诊断','运行状态与排障','settings-2','manage','maintenance'],['便签','下次去书店，找一本植物随笔','sticky-note',null,'notes'],['窗边的一页','照片与相关经历','image',null,'photo-window'],['创作书架','Content 能力状态','library-big',null,'cap-content'],['现实触及','Reality 设备与授权','radio','manage','perception'],
 ];
 const configSearchLocations={
   quota:{next:'manage',tab:'output',root:'#imageControlWorkspace'},image_review:{next:'manage',tab:'output',root:'#imageControlWorkspace'},
@@ -5376,21 +5342,22 @@ document.addEventListener('click',event=>{
     }
     if(scrollToPageAnchor(hash)){event.preventDefault();return;}
   }
+  if(el.dataset.personaRecreation){
+    if(!['questionnaire','create','optimize'].includes(el.dataset.personaRecreation))return;
+    personaRecreationMode=el.dataset.personaRecreation;
+    paintPanel();
+    product.mountWorkspace();
+    requestAnimationFrame(()=>document.querySelector('[data-persona-recreation="'+personaRecreationMode+'"]')?.focus({preventScroll:true}));
+    return;
+  }
   if(el.dataset.selfPane){
     const pane=el.dataset.selfPane;
-    if(!['profile','relationship','questionnaire','humanize','knowledge'].includes(pane))return;
+    if(!['profile','relationship','questionnaire','knowledge'].includes(pane))return;
     if(route==='manage'&&manageTab==='governance'&&selfPane===pane){el.focus({preventScroll:true});return;}
     navigate('manage','governance',pane);
     requestAnimationFrame(()=>document.getElementById('self-tab-'+pane)?.focus({preventScroll:true}));
     return;
   }
-  if(el.hasAttribute('data-humanize-check')){renderHumanizeResults();return;}
-  if(el.hasAttribute('data-humanize-profile')){
-    navigate('manage','governance','profile');
-    requestAnimationFrame(()=>selectSelfProfileSection('identity'));
-    return;
-  }
-  if(el.hasAttribute('data-humanize-expression')){navigate('manage','expression','text');return;}
   if(el.dataset.selfFocus){
     const section=el.dataset.selfFocus;
     if(!SELF_PROFILE_SECTIONS.some(([id])=>id===section))return;

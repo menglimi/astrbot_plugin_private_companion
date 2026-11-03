@@ -253,7 +253,7 @@ class ReadOriginalTests(PersonaWorkshopFixture):
 
     async def test_role_profile_migration_has_a_separate_review_and_apply_pair(self):
         await self.initialize()
-        paths = sorted(path for path in self.routes if path.startswith(PREFIX))
+        paths = sorted(path for path in self.routes if path == PREFIX or path.startswith(PREFIX + "/"))
         self.assertEqual(paths, [PREFIX, PREFIX + "/command", PREFIX + "/profile-draft",
                                  PREFIX + "/profile-export", PREFIX + "/profile-import/apply",
                                  PREFIX + "/profile-import/preview",

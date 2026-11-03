@@ -176,7 +176,20 @@ class StagingWebAPI:
                 self.unregister()
             raise
 
+        try:
+            from .optional_persona_designer import register_optional_designer
+            register_optional_designer(self, register)
+        except Exception as error:
+            logger.warning("[CompanionV2] 新的她未加载 error_type=%s", type(error).__name__)
+
     def unregister(self) -> None:
+        designer = getattr(self, "_persona_designer", None)
+        if designer is not None:
+            try:
+                designer.close()
+            except Exception:
+                logger.warning("[CompanionV2] 新的她清理未完成")
+            self._persona_designer = None
         registered = getattr(self.controller.context, "registered_web_apis", None)
         if not isinstance(registered, list):
             return

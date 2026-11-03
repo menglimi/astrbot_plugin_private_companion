@@ -23,15 +23,27 @@ from .service import TaskSupervisor
 
 logger = getLogger(__name__)
 
+# Refusals that name physical capacity, not a property of the row: the queue
+# simply could not hand this attempt a slot *yet*. Every other refusal code
+# describes the row itself (`task_not_queued`, `task_not_due`, ...) and means
+# the reservation is unusable for this owner. A runner that keeps capacity
+# refusals opts in with ``retain_refusals=True``; see ``_unrun``.
+CAPACITY_REFUSALS = frozenset({"task_lane_full", "task_concurrency_limited"})
+
 
 @dataclass(frozen=True)
 class RunResult:
     """What one run attempt produced.
 
-    ``task`` is the authoritative record afterwards. ``refused`` names a transient
-    queue refusal, where nothing ran and nothing changed. ``failure_code`` is the
-    stable code when the attempt produced no owner result, and ``retry_at`` marks
-    the subset that a fresh owner task may attempt again later.
+    ``task`` is the authoritative record afterwards. ``failure_code`` is the
+    stable code when the attempt produced no owner result, and ``retry_at``
+    marks the subset that a fresh owner task may attempt again later.
+
+    ``refused`` names the queue refusal that stopped this attempt. Neither is
+    set when a claim was produced, so the common case is ``task`` alone. A
+    runner that retains capacity refusals reports ``task`` *and* ``refused``
+    together: nothing ran, the row is still queued exactly as submitted, and
+    the owner must decide whether to retry it by ID.
     """
 
     task: TaskRecord | None
@@ -220,14 +232,18 @@ class LocalTaskRunner(_TaskRunner):
 class ExactTaskRunner(_TaskRunner):
     """Run one submitted child; share cancellation/fencing semantics with queue workers."""
 
-    def __init__(self, supervisor, kinds: frozenset[str], handler, *, check_interval=0.05, stop_grace=0.1, waiting=None):
+    def __init__(self, supervisor, kinds: frozenset[str], handler, *, check_interval=0.05, stop_grace=0.1,
+                 waiting=None, retain_refusals=False):
         super().__init__(supervisor, {kind: handler for kind in kinds},
                          check_interval=check_interval, stop_grace=stop_grace)
         if waiting is not None and waiting.supervisor is not supervisor:
             raise ValueError("waiting must use the original task supervisor")
+        if type(retain_refusals) is not bool:
+            raise ValueError("retained refusals must be an explicit boolean choice")
         if waiting is not None:
             waiting.register(kinds)
         self.waiting, self._waiting = waiting, {}
+        self.retain_refusals = retain_refusals
 
     @property
     def active_handles(self):
@@ -258,19 +274,33 @@ class ExactTaskRunner(_TaskRunner):
     def _unrun(self, context, task_id: str, attempt: RunResult) -> Outcome[RunResult]:
         """Report an exact task this invocation did not execute.
 
-        The owner's prepared inputs die with the invocation that submitted them,
-        so a still-queued reservation can never be served later. Retire it with
-        its real cause instead of a generic shutdown label, and never report
-        unexecuted work as an owner result.
+        By default the owner's prepared inputs die with the invocation that
+        submitted them, so a still-queued reservation can never be served later.
+        Retire it with its real cause instead of a generic shutdown label, and
+        never report unexecuted work as an owner result.
+
+        ``retain_refusals`` opts an owner into keeping the reservation when the
+        queue names a capacity shortage (``CAPACITY_REFUSALS``). That is only
+        sound for an owner that has a policy for converging the row by ID after
+        this invocation gives up: it re-reads the row, retries it, and retires it
+        once it is no longer worth waiting for. Owners without such a policy keep
+        the default and must not inherit a queued row they never look at again.
+        The refusal is always named in the result, so a retaining owner can tell
+        "kept, try again later" from "kept, give up now".
         """
         current = self.supervisor.read(context, task_id)
         if current.failure:
             return current
         task = current.unwrap()
+        code = attempt.refused or "task_not_admitted"
+        if self.retain_refusals and attempt.refused in CAPACITY_REFUSALS and task.state in QUEUED:
+            # Capacity shortfall: the row is still exactly what the owner submitted.
+            logger.info("[CompanionV2] 后台任务暂未获准入 task=%s kind=%s code=%s state=%s",
+                        task_id, task.spec.kind, code, task.state)
+            return Outcome.success(RunResult(task, code, refused=code))
         if task.state not in QUEUED:
             # Settled before this invocation could begin: the row is authoritative.
             return Outcome.success(RunResult(task, task.reason))
-        code = attempt.refused or "task_not_admitted"
         logger.info("[CompanionV2] 后台任务未获准入 task=%s kind=%s code=%s", task_id, task.spec.kind, code)
         retired = self.supervisor.discard_queued(task_id, reason="owner_unavailable", code=code)
         if retired.failure:

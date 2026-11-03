@@ -207,78 +207,81 @@ class ExpressionStyleManagement:
                         FROM expression_style_signals WHERE owner_key = ? AND scope_key = ? GROUP BY state""",
                         (owner_key, scope_key)):
                     counts[item["state"]] = counts.get(item["state"], 0) + item["count"]
-            for row in rows[:limit]:
-                unavailable, evidence = None, []
-                applicability = None
-                source_kind = "confirmed_reply"
-                if state in ("pending", "adopted", "retired", "rejected"):
-                    try:
-                        applicability = normalize_applicability(json.loads(row["applicability_json"]))
-                        run, window, handles = self._run(row, owner, context)
-                        source_kind = window.get("source_kind", "confirmed_reply")
-                        opened_at, closed_at = self._window(window, at)
-                        if source_kind == "legacy_expression":
-                            from .legacy_import import evidence as legacy_evidence
-                            evidence = legacy_evidence(window, handles)
-                        elif source_kind != SHARE_PACK_SOURCE:
-                            if source_kind == "conversation_input" and not self.samples.reviews.allows_handles(context, handles):
-                                raise TaskError("expression_sample_changed", "sample approval was revoked")
-                            sample_context = self._evidence_context(window, context)
-                            evidence = self.samples.describe_handles(handles, opened_at, closed_at,
-                                sample_context, at, source_kind=source_kind)
-                            if source_kind == "conversation_input":
-                                for extra in rule_support.observations(self.runtime, row["signal_id"]):
-                                    try:
-                                        extra_window, extra_handles = extra["window"], extra["handles"]
-                                        extra_start, extra_end = self._window(extra_window, at)
-                                        extra_context = self._evidence_context(extra_window, context)
-                                        if self.samples.reviews.allows_handles(extra_context, extra_handles):
-                                            evidence.extend(self.samples.describe_handles(extra_handles,
-                                                extra_start, extra_end, extra_context, at,
-                                                source_kind="conversation_input"))
-                                    except (TaskError, KeyError, TypeError, ValueError):
-                                        continue
-                    except TaskError as error:
-                        unavailable = error.code
-                    except (TypeError, ValueError):
-                        unavailable = "expression_applicability_invalid"
-                if state == "pending":
-                    actions = ["reject"] if unavailable is not None else ["adopt", "reject"]
-                elif state == "adopted":
-                    # A rule can always be paused, even if the source has
-                    # since become unavailable. The pause itself does not
-                    # depend on re-reading the old evidence.
-                    actions = ["retire"]
-                elif state == "retired":
-                    actions = [] if unavailable is not None else ["restore"]
-                else:
-                    actions = [] if unavailable is not None else ["reconsider"]
-                injections, last = usage_map.get(row["signal_id"], (0, None))
-                feedback = feedback_map.get(row["signal_id"], {})
-                detail = rule_details.read(self.runtime, row["signal_id"])
-                legacy = rule_details.legacy_counts(detail)
-                injections += legacy["use_count"]
-                items.append({"signal_id": row["signal_id"], "run_id": row["run_id"],
-                    "dimension": row["dimension"], "source_kind": source_kind,
-                    "applicability": applicability,
-                    "expression": detail["form"] if detail and unavailable is None else None,
-                    "observation": row["observation"] if unavailable is None else None,
-                    "proposal": row["proposal"] if unavailable is None else None,
-                    "evidence": evidence if unavailable is None else [],
-                    "confidence": row["confidence"], "state": row["state"],
-                    "created_at": row["created_at"], "decided_at": row["decided_at"],
-                    "injections": injections,
-                    "last_injected_at": last.isoformat() if last is not None else None,
-                    "positive_feedback": feedback.get("positive_count", 0) + legacy.get("positive_feedback", 0),
-                    "negative_feedback": feedback.get("negative_count", 0) + legacy.get("negative_feedback", 0),
-                    "last_feedback": feedback.get("last_feedback"),
-                    "last_feedback_at": feedback.get("last_feedback_at"),
-                    "review_reason": feedback.get("review_reason"),
-                    "source_title": run["summary"] if unavailable is None and source_kind in (SHARE_PACK_SOURCE, "legacy_expression") else None,
-                    "unavailable_reason": unavailable, "actions": actions,
-                    "can_revise": unavailable is None,
-                    "view_token": self._token(operator, context, row, policy_revision)})
-            return {"items": items, "state": state,
+        # Keep evidence/DAG rendering outside the storage read snapshot; those
+        # helpers take their own short read locks and must not extend the global
+        # snapshot lock across a whole review page.
+        for row in rows[:limit]:
+            unavailable, evidence = None, []
+            applicability = None
+            source_kind = "confirmed_reply"
+            if state in ("pending", "adopted", "retired", "rejected"):
+                try:
+                    applicability = normalize_applicability(json.loads(row["applicability_json"]))
+                    run, window, handles = self._run(row, owner, context)
+                    source_kind = window.get("source_kind", "confirmed_reply")
+                    opened_at, closed_at = self._window(window, at)
+                    if source_kind == "legacy_expression":
+                        from .legacy_import import evidence as legacy_evidence
+                        evidence = legacy_evidence(window, handles)
+                    elif source_kind != SHARE_PACK_SOURCE:
+                        if source_kind == "conversation_input" and not self.samples.reviews.allows_handles(context, handles):
+                            raise TaskError("expression_sample_changed", "sample approval was revoked")
+                        sample_context = self._evidence_context(window, context)
+                        evidence = self.samples.describe_handles(handles, opened_at, closed_at,
+                            sample_context, at, source_kind=source_kind)
+                        if source_kind == "conversation_input":
+                            for extra in rule_support.observations(self.runtime, row["signal_id"]):
+                                try:
+                                    extra_window, extra_handles = extra["window"], extra["handles"]
+                                    extra_start, extra_end = self._window(extra_window, at)
+                                    extra_context = self._evidence_context(extra_window, context)
+                                    if self.samples.reviews.allows_handles(extra_context, extra_handles):
+                                        evidence.extend(self.samples.describe_handles(extra_handles,
+                                            extra_start, extra_end, extra_context, at,
+                                            source_kind="conversation_input"))
+                                except (TaskError, KeyError, TypeError, ValueError):
+                                    continue
+                except TaskError as error:
+                    unavailable = error.code
+                except (TypeError, ValueError):
+                    unavailable = "expression_applicability_invalid"
+            if state == "pending":
+                actions = ["reject"] if unavailable is not None else ["adopt", "reject"]
+            elif state == "adopted":
+                # A rule can always be paused, even if the source has
+                # since become unavailable. The pause itself does not
+                # depend on re-reading the old evidence.
+                actions = ["retire"]
+            elif state == "retired":
+                actions = [] if unavailable is not None else ["restore"]
+            else:
+                actions = [] if unavailable is not None else ["reconsider"]
+            injections, last = usage_map.get(row["signal_id"], (0, None))
+            feedback = feedback_map.get(row["signal_id"], {})
+            detail = rule_details.read(self.runtime, row["signal_id"])
+            legacy = rule_details.legacy_counts(detail)
+            injections += legacy["use_count"]
+            items.append({"signal_id": row["signal_id"], "run_id": row["run_id"],
+                "dimension": row["dimension"], "source_kind": source_kind,
+                "applicability": applicability,
+                "expression": detail["form"] if detail and unavailable is None else None,
+                "observation": row["observation"] if unavailable is None else None,
+                "proposal": row["proposal"] if unavailable is None else None,
+                "evidence": evidence if unavailable is None else [],
+                "confidence": row["confidence"], "state": row["state"],
+                "created_at": row["created_at"], "decided_at": row["decided_at"],
+                "injections": injections,
+                "last_injected_at": last.isoformat() if last is not None else None,
+                "positive_feedback": feedback.get("positive_count", 0) + legacy.get("positive_feedback", 0),
+                "negative_feedback": feedback.get("negative_count", 0) + legacy.get("negative_feedback", 0),
+                "last_feedback": feedback.get("last_feedback"),
+                "last_feedback_at": feedback.get("last_feedback_at"),
+                "review_reason": feedback.get("review_reason"),
+                "source_title": run["summary"] if unavailable is None and source_kind in (SHARE_PACK_SOURCE, "legacy_expression") else None,
+                "unavailable_reason": unavailable, "actions": actions,
+                "can_revise": unavailable is None,
+                "view_token": self._token(operator, context, row, policy_revision)})
+        return {"items": items, "state": state,
                 "next_cursor": rows[limit - 1]["signal_id"] if len(rows) > limit else None,
                 "context_key": context.key, "role_id": owner.persona_id, "capacity": capacity, "counts": counts}
 
