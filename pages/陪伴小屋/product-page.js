@@ -935,7 +935,7 @@ window.CompanionProduct = (() => {
     if(!["host","life","relationships","identity","persona"].includes(name)) return "";
     const title = name === "identity"
       ? ({network:"关系网",people:"用户",groups:"群聊"}[tab] || "关系管理")
-      : {host:"账号与会话",life:"日记与生活",relationships:"人物与关系",persona:"人格问卷"}[name];
+      : {host:"账号与会话",life:"日记与生活",relationships:"人物与关系",persona:"创建人格"}[name];
     const available = name === "host" ? bridgeReady : !loading && !!catalog;
     if(!available) {
       /* 不用 I()：那是 app.js 里的顶层 const，product-page.js 是独立 IIFE，
@@ -1071,7 +1071,7 @@ window.CompanionProduct = (() => {
     return pending;
   }
   function startWorkspace(owner, context) {
-    const title={host:"账号与会话",life:"日记与生活",relationships:"人物与关系",identity:"关系管理",persona:"人格问卷"}[context.kind]||"工作区";
+    const title={host:"账号与会话",life:"日记与生活",relationships:"人物与关系",identity:"关系管理",persona:"创建人格"}[context.kind]||"工作区";
     setWorkspaceLoadState(owner,"loading",`正在打开${title}…`);
     clearTimeout(context.loadTimer);
     context.loadTimer=setTimeout(()=>{
