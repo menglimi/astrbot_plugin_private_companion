@@ -29,8 +29,11 @@ class PrivateDomainAccess:
                 or context.audience.recipients != (context.actor.subject,)):
             raise TaskError("private_domain_audience", "select one current private participant")
         # A manager is an independent operator, never substituted for the data's subject.
-        require(self.tasks.check_context_access(context,
-            action=action if operator is None else "conversation.reply", observed_at=at))
+        if operator is not None and action in ("role.state.read", "calendar.read"):
+            require(self.tasks.check_context_binding(context, observed_at=at))
+        else:
+            require(self.tasks.check_context_access(context,
+                action=action if operator is None else "conversation.reply", observed_at=at))
         if operator is None:
             require(self.tasks.identity.authorize(context.actor, scope=context.scope, capability=action, observed_at=at))
         if operator is not None:
