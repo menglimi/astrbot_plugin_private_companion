@@ -23,7 +23,7 @@ window.CompanionExpressionSignalsPage = (() => {
     expression_capacity_reached: "规则库已满，可先停用暂时不用的规则。",
     expression_duplicate_rule: "已有相同情境与说法的规则，请先合并或停用其中一条。",
     expression_view_stale: "规则已有变化，请重新读取后再操作。",
-expression_sample_changed: "依据原文已不可读取，无法完成这个操作。",
+    expression_sample_changed: "依据原文已不可读取，无法完成这个操作。",
     expression_rule_review_revoked: "样本审批已撤回或驳回，规则不再注入。",
     expression_rule_window_rotated: "该会话窗口已轮换，之后不再注入；停用后无法恢复。",
     expression_signal_unavailable: "表达规则已不在原数据来源内。",
@@ -169,7 +169,7 @@ expression_sample_changed: "依据原文已不可读取，无法完成这个操�
   }
   function rebuildItems() {
     const seen = new Set();
-/* 跨来源按 signal_id 去重：同一条规则可能被同一角色的多个窗口同时列出，并排两张
+    /* 跨来源按 signal_id 去重：同一条规则可能被同一角色的多个窗口同时列出，并排两张
        一模一样的卡（各带一个可用按钮）只会让人以为规则重复了。
        但只对「全部来源」生效——筛到某个来源时必须保留该来源自己的那一份，
        否则幸存的总是来源顺序里的第一张，筛第二个来源会看到空列表。 */
@@ -187,7 +187,7 @@ expression_sample_changed: "依据原文已不可读取，无法完成这个操�
     });
   }
   function hasMore() { return Object.values(pages).some(page => Object.values(page).some(value => value.cursor && !value.done)); }
-/* 同一条规则可能被两个来源重复列出；按 signal_id 去重后再相加，
+  /* 同一条规则可能被两个来源重复列出；按 signal_id 去重后再相加，
      和卡片按规则身份展示的口径一致。 */
   function rotatedRuleCount() {
     const idsBySource = new Map();
@@ -275,7 +275,7 @@ expression_sample_changed: "依据原文已不可读取，无法完成这个操�
     const request = ++readTicket;
     const requestedFilter = filter;
     const requestedStateFilter = stateFilter;
-const anchor = reset ? null : rememberScroll();
+    const anchor = reset ? null : rememberScroll();
     if (reset) {
       pages = pageState(); items = []; capacity = null; capacityBySource = {}; rotatedBySource = {};
       rotatedRules = 0; countsBySource = {}; confirming = null; notice = ""; error = false;
@@ -319,7 +319,7 @@ const anchor = reset ? null : rememberScroll();
       if (page?.capacity && Number.isInteger(page.capacity.active) && Number.isInteger(page.capacity.limit)) {
         capacityBySource[source.key] = page.capacity;
       }
-if (Number.isInteger(page.rotated_rules)) {
+      if (Number.isInteger(page?.rotated_rules)) {
         rotatedBySource[source.key] = page.rotated_rules;
       }
       if (Number.isInteger(page.legacy_orphan_count) && page.legacy_orphan_count > 0) {
@@ -345,7 +345,7 @@ if (Number.isInteger(page.rotated_rules)) {
     });
     const capacities=Object.values(capacityBySource);
     capacity=capacities.length?capacities.reduce((total,value)=>({active:total.active+value.active,limit:total.limit+value.limit}),{active:0,limit:0}):null;
-rebuildItems();
+    rebuildItems();
     rotatedRules = rotatedRuleCount();
     busy = false;
     readIssues = (reset || mode === "refresh") ? discovered : readIssues.concat(discovered.filter(issue =>
@@ -458,7 +458,7 @@ rebuildItems();
       <span>停用这条规则？</span><button type="button" data-signal-confirm="yes" data-id="${e(item._key)}">确认</button>
       <button type="button" data-signal-confirm="no">取消</button></div>` : "";
     const form = item.expression;
-const title = form?.pattern || item.proposal || item.observation || (unavailable ? "依据已失效" : "表达规则");
+    const title = form?.pattern || item.proposal || item.observation || (unavailable ? "依据已失效" : "表达规则");
     const body = form?.situation || item.observation || "";
     const stateText = pending ? "待审" : adopted ? "已启用" : item.state === "rejected" ? "已拒绝" : "已停用";
     const exportChoice = adopted && !rotated ? `<label class="lh-signal-export-choice"><input type="checkbox" data-signal-export="${e(item._key)}"${selectedExportIds.has(item._key) ? " checked" : ""} ${transferBusy ? "disabled" : ""}><span>导出</span></label>` : "";
@@ -483,7 +483,7 @@ const title = form?.pattern || item.proposal || item.observation || (unavailable
       ${renderApplicability(item.applicability)}
       ${item.source_kind === "shared_pack" ? `<p class="lh-signal-import-origin">分享包 · ${e(item.source_title || "导入规则")}</p>` : ""}
       ${feedback}
-${rotated ? `<p class="lh-signal-unavailable">${e(rotatedNote(item))}</p>` : unavailable ? `<p class="lh-signal-unavailable">${e(unavailableNote(item))}</p>` : `${blockedNote}${renderEvidence(item)}${renderResetNote(item)}`}
+      ${rotated ? `<p class="lh-signal-unavailable">${e(rotatedNote(item))}</p>` : unavailable ? `<p class="lh-signal-unavailable">${e(unavailableNote(item))}</p>` : `${blockedNote}${renderEvidence(item)}${renderResetNote(item)}`}
       <footer class="lh-signal-card-foot"><div><span>${item.last_injected_at ? `最近注入 ${e(formatTime(item.last_injected_at))}` : "尚未注入"}</span>
         ${item.decided_at ? `<span>决定于 ${e(formatTime(item.decided_at))}</span>` : ""}</div><div class="lh-signal-actions">${item.can_revise ? `<button type="button" class="lh-command" data-signal-edit="${e(item._key)}">编辑</button>` : ""}${action}</div></footer>${confirm}</article>`;
   }
@@ -820,7 +820,7 @@ ${rotated ? `<p class="lh-signal-unavailable">${e(rotatedNote(item))}</p>` : una
     window.addEventListener?.("companion-expression-updated", onUpdated); const current = ++mountTicket;
     if (sources.length) void read(current); else { notice = "没有可读取的表达规则来源。"; error = true; render(); }
   }
-function unmount() { mountTicket++; readTicket++; root?.removeEventListener("click", onClick); root?.removeEventListener("change", onChange); root?.removeEventListener("input", onInput); window.removeEventListener?.("companion-expression-updated", onUpdated); root = null; apiBase = ""; scopeKey = ""; sources=[];items = []; pages = {}; capacity = null;capacityBySource={};rotatedBySource={};rotatedRules=0; readIssues=[]; busy = false; writing = false; transferBusy = false; confirming = null; pendingUpdate = false; }
+  function unmount() { mountTicket++; readTicket++; root?.removeEventListener("click", onClick); root?.removeEventListener("change", onChange); root?.removeEventListener("input", onInput); window.removeEventListener?.("companion-expression-updated", onUpdated); root = null; apiBase = ""; scopeKey = ""; sources=[];items = []; pages = {}; capacity = null;capacityBySource={};rotatedBySource={};rotatedRules=0; readIssues=[]; busy = false; writing = false; transferBusy = false; confirming = null; pendingUpdate = false; }
   /* 测试专用：页内行状态的只读快照（items 只留 key 字段），不要拿它回写页面状态。 */
   function snapshotPages() {
     return Object.fromEntries(Object.entries(pages).map(([sourceKey, byState]) => [sourceKey,

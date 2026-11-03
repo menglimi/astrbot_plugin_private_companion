@@ -399,7 +399,7 @@ class ExpressionStyleManagement:
                     "last_feedback": feedback.get("last_feedback"),
                     "last_feedback_at": feedback.get("last_feedback_at"),
                     "review_reason": feedback.get("review_reason"),
-"source_title": run["summary"] if visible and source_kind in (SHARE_PACK_SOURCE, "legacy_expression") else None,
+                    "source_title": run["summary"] if visible and source_kind in (SHARE_PACK_SOURCE, "legacy_expression") else None,
                     "unavailable_reason": unavailable, "injectable": injectable, "actions": actions,
                     # Editing, restoring and reconsidering all recheck the
                     # original evidence, so they stay closed while it cannot be
