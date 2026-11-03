@@ -265,6 +265,25 @@ class GeneratePayloadTests(HTTPBackedTest):
         self.assertEqual(form.field_names(), ["model", "prompt", "n", "size", "image"])
         self.assertEqual(self.http.call("POST")["url"], "https://api.example.test/v1/images/edits")
 
+    async def test_dual_reference_upload_order_and_roles_reach_the_provider_prompt(self):
+        self.http.reply("POST", lambda url, kwargs: b64_reply())
+        references = [
+            ReferenceImage("pose-ref", b"pose-reference", "pose-source", "1" * 64, "pose"),
+            ReferenceImage("identity-ref", b"identity-reference", "identity-source", "2" * 64, "identity"),
+        ]
+
+        await self.execute(endpoint(max_reference_images=2), operation="edit", references=references)
+
+        form = self.posted_form()
+        self.assertEqual(form.field_names(), ["model", "prompt", "n", "size", "image[]", "image[]"])
+        prompt = form.fields[1]["value"]
+        self.assertIn("image 1 = pose", prompt)
+        self.assertIn("image 2 = identity", prompt)
+        self.assertLess(prompt.index("image 1 = pose"), prompt.index("image 2 = identity"))
+        self.assertTrue(prompt.endswith("User request:\nA blue cup on a white table."))
+        self.assertEqual([field["value"] for field in form.fields if field["name"] == "image[]"],
+                         [b"pose-reference", b"identity-reference"])
+
     async def test_edit_multipart_honours_the_legacy_opt_in(self):
         self.http.reply("POST", lambda url, kwargs: b64_reply())
 

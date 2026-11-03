@@ -225,6 +225,8 @@ class CoreReplyImagePromptTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("本轮用户随消息附了 1 张图", note)
         self.assertIn("reference_indices 选中对应序号", note)
         self.assertIn("不要用 reference_indices=[] 把本轮附图排除", note)
+        self.assertIn("必须实际上传该图并赋予 pose", note)
+        self.assertIn("图一姿势、图二身份", note)
         # The per-turn attachment count must not enter the cached system prefix.
         self.assertNotIn("本轮用户随消息附了 1 张图", self.request.system_prompt)
 
@@ -235,6 +237,14 @@ class CoreReplyImagePromptTests(unittest.IsolatedAsyncioTestCase):
         }
         self.inject()
         self.assertNotIn("当前参考材料有可用的 identity 身份参考", self.request.system_prompt)
+
+    def test_tool_prompt_schema_requires_actual_pose_image_and_ordered_roles(self):
+        _description, parameters = core_image_tool_contract("image.edit", "", {
+            "properties": {"prompt": {"description": "画面要求"}}}, reference_limit=2)
+        description = parameters["properties"]["prompt"]["description"]
+        self.assertIn("图一、图二", description)
+        self.assertIn("实际选择该图并赋予 pose", description)
+        self.assertIn("不能只转述姿势后省略图片", description)
 
     def test_active_reference_limit_is_explained_in_prompt_and_request_tool_schema(self):
         settings = {

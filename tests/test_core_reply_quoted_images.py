@@ -2,10 +2,12 @@
 
 import base64
 from dataclasses import replace
+import hashlib
 import io
 import json
 from types import SimpleNamespace as NS
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from tests import test_core_reply_images as image_support
 from astrbot.core.message.components import Image, Plain, Reply
@@ -26,6 +28,14 @@ from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind
 from companion_v2.identity_policy.group_audience import group_audience
 from companion_v2.identity_policy.personas import ConversationRoute
+from companion_v2.references.configuration import (
+    GROUP as REFERENCE_GROUP, ReferenceConfigurationOwner, configuration_fields, target_for,
+)
+from companion_v2.references.models import (
+    ContentDigest, ReferenceAsset, ReferenceKind, ReferenceRole, ReferenceSource,
+)
+from companion_v2.references.repositories import ReferenceAssetRepository
+from companion_v2.references.service import owner_key
 from tests.native_image_support import NativeImageFixture
 from tests.test_astrbot_core_reply import FakeEvent
 from tests.test_conversation_images import image_bytes
@@ -147,6 +157,106 @@ class CoreReplyQuotedImageTests(NativeImageFixture, HostFixture, unittest.Isolat
         self.assertEqual(calls, [("get_msg", {"message_id": "group-quote"})])
         self.assertEqual(self.image_backend.calls[0][1][0].data, source)
         self.assert_no_reply_work(event)
+
+    async def test_host_resolved_quote_cache_path_reaches_image_backend(self):
+        source = image_bytes("green")
+        cached = self.root / "quoted-image-cache.png"
+        cached.write_bytes(source)
+
+        async def dispatch(action, **parameters):
+            return {"data": self.raw("cached-quote", SCOPE.native_scope_id, source)}
+
+        event, request = self.bind("cached-quote-edit", [
+            Reply(id="cached-quote", sender_id=SCOPE.native_scope_id)], dispatch=dispatch)
+        with patch("astrbot_host.core_reply_media.ImageResolver.resolve_for_llm",
+                   AsyncMock(return_value=[str(cached)])) as resolve:
+            received = await self.call(event, request, "image.edit", {
+                "prompt": "模仿图一姿势", "reference_indices": [0], "reference_roles": ["pose"]}, "cached-quote-edit")
+
+        self.result(received, "blue")
+        resolve.assert_awaited_once()
+        self.assertEqual(self.image_backend.calls[0][1][0].data, source)
+        self.assertEqual(self.image_backend.calls[0][1][0].role, "pose")
+        self.assert_no_reply_work(event)
+
+    async def test_embedded_local_quote_uses_the_verified_original_image(self):
+        original = image_bytes("green")
+        untrusted = self.root / "embedded-quote.png"
+        untrusted.write_bytes(image_bytes("red"))
+        calls = []
+
+        async def dispatch(action, **parameters):
+            calls.append((action, parameters))
+            return {"data": self.raw("local-quote", SCOPE.native_scope_id, original)}
+
+        event, request = self.bind("local-quote-edit", [Reply(id="local-quote",
+            sender_id=SCOPE.native_scope_id, chain=[Image.fromFileSystem(untrusted)])], dispatch=dispatch)
+        prepared = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["prepared"]
+        observed = await capture_native_input_images(self.app, prepared, frozen_image_locators(event),
+            authorize=lambda: None)
+        self.assertIsNone(observed)
+        self.assertEqual(calls, [])
+        received = await self.call(event, request, "image.edit", {
+            "prompt": "模仿图一姿势", "reference_indices": [0], "reference_roles": ["pose"]}, "local-quote-edit")
+
+        self.result(received, "blue")
+        self.assertEqual(calls, [("get_msg", {"message_id": "local-quote"})])
+        self.assertEqual(self.image_backend.calls[0][1][0].data, original)
+        self.assertEqual(self.image_backend.calls[0][1][0].role, "pose")
+
+    async def test_verified_quote_file_uri_reaches_image_backend(self):
+        original = image_bytes("green")
+        cached = self.root / "verified-quote.png"
+        cached.write_bytes(original)
+
+        async def dispatch(action, **parameters):
+            raw = self.raw("file-quote", SCOPE.native_scope_id, original)
+            raw["message"][0]["data"]["file"] = cached.as_uri()
+            return {"data": raw}
+
+        event, request = self.bind("file-quote-edit", [Reply(id="file-quote",
+            sender_id=SCOPE.native_scope_id, chain=[Image.fromFileSystem(cached)])], dispatch=dispatch)
+        received = await self.call(event, request, "image.edit", {
+            "prompt": "模仿图一姿势", "reference_indices": [0], "reference_roles": ["pose"]}, "file-quote-edit")
+
+        self.result(received, "blue")
+        self.assertEqual(self.image_backend.calls[0][1][0].data, original)
+
+    async def test_quoted_pose_and_saved_identity_reach_backend_in_order(self):
+        pose = image_bytes("green")
+        identity = image_bytes("purple")
+        cached = self.root / "quoted-pose.png"
+        cached.write_bytes(pose)
+        ReferenceConfigurationOwner(self.app.runtime).write(
+            target_for(self.context), configuration_fields(),
+            changes={REFERENCE_GROUP + ".enabled": True}, reset=(),
+            expected_revision=0, observed_at=self.clock.now())
+        asset = ReferenceAsset(
+            "saved-identity", ReferenceKind.REFERENCE_IMAGE, ReferenceRole.IDENTITY,
+            ContentDigest(hashlib.sha256(identity).hexdigest()), len(identity), "image/png",
+            "role-reference:test:saved-identity", ReferenceSource.OPERATOR,
+            created_at=self.clock.now())
+        ReferenceAssetRepository(self.app.runtime).put(
+            owner_key(self.context), asset, created_at=self.clock.now(), payload=identity)
+
+        async def dispatch(action, **parameters):
+            raw = self.raw("pose-quote", SCOPE.native_scope_id, pose)
+            raw["message"][0]["data"]["file"] = cached.as_uri()
+            return {"data": raw}
+
+        event, request = self.bind("pose-and-identity", [
+            Reply(id="pose-quote", sender_id=SCOPE.native_scope_id,
+                  chain=[Image.fromFileSystem(cached)])], dispatch=dispatch)
+        received = await self.call(event, request, "image.edit", {
+            "prompt": "按图一姿势和图二身份生成", "reference_indices": [0],
+            "reference_ids": ["saved-identity"], "reference_roles": ["pose", "identity"],
+        }, "pose-identity-edit")
+
+        self.result(received, "blue")
+        invocation, references = self.image_backend.calls[0]
+        self.assertEqual([item.data for item in references], [pose, identity])
+        self.assertEqual([item.role for item in references], ["pose", "identity"])
+        self.assertEqual(invocation.reference_ids, tuple(item.reference_id for item in references))
 
     async def test_private_bot_quote_requires_the_exact_peer_history(self):
         calls = []

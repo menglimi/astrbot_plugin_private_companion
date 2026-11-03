@@ -33,7 +33,7 @@ from companion_v2.execution.service import outcome
 from companion_v2.expression.configuration import read_settings as expression_settings
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import OperationRef, VersionRef, normalize_utc
-from companion_v2.model_gateway.models import ModelTaskProfile, is_released
+from companion_v2.model_gateway.models import ModelCompletion, ModelTaskProfile, is_released
 from companion_v2.relationships.private_access import REVOCABLE_ABSENCE_CODES
 from companion_v2.role_work.state import humanized
 from companion_v2.sources.repositories import SourceRepository
@@ -52,10 +52,12 @@ from .planner import ProactivePlanner
 from .preferences import ProactivePreferences
 from .prompts import (contact_output, history_round_groups, news_presentation_instruction,
                       prompt_sections, request_for)
+from .staged_prompts import plan_output, plan_request_for, write_output, write_request_for
 from .official_alert_events import SOURCE_OWNER as OFFICIAL_ALERT_SOURCE_OWNER, attribution_suffix
 
 
 CONTACT_KIND = "proactive.compose"
+PLAN_KIND = "proactive.plan"
 JUDGE_TIMEOUT_SECONDS = 90
 _SEGMENTATION_DEFAULTS = asdict(SegmentationPolicy())
 _SEGMENTATION_KEYS = frozenset(_SEGMENTATION_DEFAULTS)
@@ -88,8 +90,14 @@ def role_state_for_prompt(summary, purpose):
 
 def contact_profile(provider, *, max_output_tokens=1024):
     return ModelTaskProfile(CONTACT_KIND, Lane.BACKGROUND, provider,
-        "保持原人格；基于真实来源决定是否主动联系，允许没有合适内容时不发送。",
+        "保持原人格；按本轮生成方式和真实来源组织主动联系。",
         max_output_tokens=max_output_tokens, prompt_sections=prompt_sections())
+
+
+def plan_profile(provider, *, max_output_tokens=1024):
+    return ModelTaskProfile(PLAN_KIND, Lane.BACKGROUND, provider,
+        "只规划主动联系的时机与新回合切口，不写用户可见正文。",
+        max_output_tokens=max_output_tokens)
 
 
 def _push_scope(kind):
@@ -137,12 +145,15 @@ class ProactiveContacts:
         self.role_state = self.life_context = None
         self.expression_context = self.expression_review = None
         self.persona_judge = PersonaJudge(self.runtime)
-        self._pending, self._invocations = {}, set()
+        self._pending, self._plan_results, self._invocations = {}, {}, set()
         self._closed = False
-        self.gateway = self.runner = self.generation = self.judge_runner = None
+        self.gateway = self.runner = self.plan_runner = self.generation = self.judge_runner = None
         self.registrations = (TaskRegistration(TaskDefinition(CONTACT_KIND, GROUP, GROUP, Lane.BACKGROUND,
             side_effect=SideEffect.LOCAL, binding=ProviderBinding(GROUP, "local", "1", "contact-worker-1"),
             timeout_seconds=180, max_attempts=1, concurrency=2), self.validate),
+            TaskRegistration(TaskDefinition(PLAN_KIND, GROUP, GROUP, Lane.BACKGROUND,
+                side_effect=SideEffect.NONE, timeout_seconds=90, max_attempts=1, concurrency=2),
+                self.validate_plan),
             TaskRegistration(TaskDefinition(JUDGE_KIND, GROUP, GROUP, Lane.BACKGROUND,
                 side_effect=SideEffect.LOCAL, binding=ProviderBinding(GROUP, "local", "1", "contact-judge-1"),
                 timeout_seconds=JUDGE_TIMEOUT_SECONDS, max_attempts=1, concurrency=2), self.validate_judge))
@@ -154,6 +165,7 @@ class ProactiveContacts:
         self.require_running, self.notify = require_running, notify
         self.preferences = ProactivePreferences(self.configuration, self.tasks)
         self.runner = ExactTaskRunner(self.tasks, frozenset({CONTACT_KIND}), self._generate)
+        self.plan_runner = ExactTaskRunner(self.tasks, frozenset({PLAN_KIND}), self._plan_generate)
         self.judge_runner = ExactTaskRunner(self.tasks, frozenset({JUDGE_KIND}), self._judge_generate)
 
     def attach_semantics(self, semantics):
@@ -627,6 +639,10 @@ class ProactiveContacts:
             require(self.tasks.authorize_context(context, action=GROUP, observed_at=self.tasks.now()))
             initial_preferences = require(self.preferences.read(context, observed_at=self.tasks.now()))
             self._adopt(context, initial_preferences)
+            two_stage = initial_preferences.values["generation_mode"] == "two_stage"
+            plan_task_id = task_id + "-plan" if two_stage else None
+            if two_stage and PLAN_KIND not in self.gateway.router.profiles:
+                raise TaskError("model_task_unregistered", "two-stage contact requires its planning model profile")
             invocation = None
             registered = False
             try:
@@ -640,6 +656,9 @@ class ProactiveContacts:
                         if task.spec.kind != CONTACT_KIND or task.spec.request_ref != request_hash:
                             raise TaskError("contact_request_conflict", "opportunity cannot change its original inputs or authority")
                         return Outcome.success(RunResult(task))
+                    if plan_task_id is not None and self.runtime.read_one(
+                            "SELECT 1 FROM execution_tasks WHERE task_id = ?", (plan_task_id,)):
+                        raise TaskError("contact_request_retired", "original planning attempt cannot be replayed")
                     if self.runtime.read_one("SELECT 1 FROM proactive_contacts WHERE task_id = ?", (task_id,)):
                         raise TaskError("contact_request_retired", "original contact remains archived and cannot be regenerated")
                     at = self.tasks.now()
@@ -717,18 +736,39 @@ class ProactiveContacts:
                                   deadline_at=task_deadline)
                     if not administrator_test:
                         job = replace(job, expression_style=self._capture_expression(context, at))
-                    self._pending[task_id] = job
+                    self._pending[plan_task_id or task_id] = job
                     invocation = asyncio.current_task()
                     self._invocations.add(invocation)
                     registered = True
-                    require(self.tasks.submit(TaskSpec(task_id, context, CONTACT_KIND, request_hash, task_id,
+                    require(self.tasks.submit(TaskSpec(plan_task_id or task_id, context,
+                        PLAN_KIND if two_stage else CONTACT_KIND, request_hash, task_id,
                         opportunity.opened_at, task_deadline)))
             except BaseException:
                 if registered:
                     self._pending.pop(task_id, None)
+                    if plan_task_id is not None:
+                        self._pending.pop(plan_task_id, None)
                     self._invocations.discard(invocation)
                 raise
             try:
+                if plan_task_id is not None:
+                    plan_attempt = require(await self.plan_runner.run(context, plan_task_id))
+                    if plan_attempt.stop_code:
+                        return Outcome.failed(plan_attempt.stop_code, "contact planning did not complete")
+                    result_data = self._plan_results.pop(plan_task_id, None)
+                    if result_data is None:
+                        return Outcome.failed("contact_plan_unavailable", "completed planning brief is unavailable")
+                    planned_job = replace(self._pending[plan_task_id], plan=result_data["brief"],
+                        plan_call_id=result_data["call_id"], plan_usage_known=result_data["usage_known"])
+                    with self.runtime.transaction():
+                        self._policy(context, planned_job.intent.purpose, self.tasks.now(),
+                                     token=planned_job.preference_token,
+                                     administrator_test=administrator_test)
+                        self._records(context, planned_job.intent.thought.evidence.sources, self.tasks.now(),
+                                      hashes=planned_job.source_hashes)
+                        self._pending[task_id] = planned_job
+                        require(self.tasks.submit(TaskSpec(task_id, context, CONTACT_KIND, request_hash, task_id,
+                            opportunity.opened_at, task_deadline)))
                 result = await self.runner.run(context, task_id)
                 if administrator_test and result.is_success and result.unwrap().failure_code:
                     return Outcome.failed(result.unwrap().failure_code,
@@ -739,6 +779,9 @@ class ProactiveContacts:
                 return result
             finally:
                 self._pending.pop(task_id, None)
+                if plan_task_id is not None:
+                    self._pending.pop(plan_task_id, None)
+                    self._plan_results.pop(plan_task_id, None)
                 self._invocations.discard(invocation)
         except (TaskError, ConfigurationError) as error:
             return Outcome.failed(error.code, str(error))
@@ -791,6 +834,23 @@ class ProactiveContacts:
                          diagnostic_role_instruction=job.role_instruction)
         return True
 
+    @outcome
+    def validate_plan(self, spec, at):
+        self.require_running()
+        job = self._pending.get(spec.task_id)
+        if (job is None or spec.kind != PLAN_KIND or spec.idempotency_key + "-plan" != spec.task_id
+                or job.request_hash != spec.request_ref or job.context != spec.context
+                or spec.not_before != job.intent.thought.opportunity.opened_at
+                or spec.deadline_at != (job.deadline_at or job.intent.thought.opportunity.expires_at)):
+            raise TaskError("contact_plan_unavailable", "original planning inputs are no longer held")
+        self._policy(job.context, job.intent.purpose, at, token=job.preference_token,
+                     administrator_test=job.administrator_test)
+        self._records(job.context, job.intent.thought.evidence.sources, at, hashes=job.source_hashes)
+        self._continuity(job.context, job.history, job.interaction, job.automatic_origin, at,
+                         diagnostic_origin=job.diagnostic_origin,
+                         diagnostic_role_instruction=job.role_instruction)
+        return True
+
     def _contact_request_fits(self, run, request):
         """Preflight the selected provider without inserting a model request.
 
@@ -812,6 +872,54 @@ class ProactiveContacts:
             logger.debug("[CompanionV2] 主动联系提示超过模型档案 task=%s",
                          run.task.task_id, exc_info=True)
             return False
+
+    async def _plan_generate(self, run):
+        job = self._pending[run.task.task_id]
+        at = self.tasks.now()
+        preferences = self._policy(job.context, job.intent.purpose, at, token=job.preference_token,
+                                   administrator_test=job.administrator_test)
+        records = self._records(job.context, job.intent.thought.evidence.sources, at, hashes=job.source_hashes)
+        history = (self.history.read(job.history, job.context, at, action=GROUP, round_metadata=True)
+                   if job.history is not None else ())
+        dialogue = ()
+        if not job.administrator_test and self.history is not None:
+            snapshot = self.history.conversation.capture(job.context, at,
+                limit=min(4, preferences.values["generation_history_limit"]),
+                max_chars=min(2048, preferences.values["history_max_chars"]))
+            dialogue = self.history.conversation.read(snapshot, job.context, at, round_metadata=True)
+        last_reply = None
+        if not job.administrator_test and self.history is not None and preferences.values["dedup_last_message_enabled"]:
+            last_reply = self.history.latest_reply(job.context, at,
+                within_minutes=preferences.values["dedup_last_message_window_minutes"], action=GROUP)
+        memory = () if job.administrator_test else self._memory_materials(job, records)
+        base = request_for(job, records, preferences, history, last_reply=last_reply,
+            dialogue=dialogue, memory=memory,
+            rhythm_snapshot=None if job.administrator_test else self.budget.rhythm_snapshot(job.context, preferences, at),
+            role_state=None if job.administrator_test else role_state_for_prompt(
+                self._role_state_summary(job.context, at), job.intent.purpose))
+        request = plan_request_for(base, job, records)
+        if not self._contact_request_fits(run, request):
+            base = request_for(job, records, preferences, (), last_reply=None, dialogue=(), memory=())
+            request = plan_request_for(base, job, records)
+            if not self._contact_request_fits(run, request):
+                raise TaskError("contact_model_profile_exceeded", "contact planning prompt exceeds the selected model")
+        completion = None
+        try:
+            completion = await self.gateway.generate(run, request)
+            if completion.draft is None:
+                raise TaskError("contact_plan_invalid", "planning model returned no brief")
+            try:
+                brief = plan_output(completion.draft.text)
+            except (TypeError, ValueError) as error:
+                raise TaskError("contact_plan_invalid", "planning model returned an invalid brief") from error
+            run.validate()
+            self._plan_results[run.task.task_id] = {"brief": brief, "call_id": completion.call_id,
+                                                    "usage_known": completion.usage_known}
+            return TaskResult("succeeded", result_ref=completion.call_id)
+        except BaseException:
+            if completion is not None:
+                self.gateway.ledger.discard(completion.call_id)
+            raise
 
     async def _generate(self, run):
         job = self._pending[run.task.task_id]
@@ -916,7 +1024,11 @@ class ProactiveContacts:
                  or source_origin is not None and "news_event" in source_origin else "") if text)
             if extra_instruction:
                 request = replace(request, instruction=request.instruction + "\n" + extra_instruction)
-            if not self._contact_request_fits(run, request):
+            if job.plan is not None and job.plan["decision"] == "send":
+                request = write_request_for(request, job, records, preferences,
+                    reactions_available=reactions_available, voice_available=voice_available,
+                    poke_available=poke_available, extra_instruction=extra_instruction)
+            if (job.plan is None or job.plan["decision"] == "send") and not self._contact_request_fits(run, request):
                 # Optional memory and history are the first things a smaller
                 # context model must lose; the current event, source evidence
                 # and the role instruction remain authoritative.
@@ -928,6 +1040,10 @@ class ProactiveContacts:
                     role_state=None, recent_life=None)
                 if extra_instruction:
                     compact = replace(compact, instruction=compact.instruction + "\n" + extra_instruction)
+                if job.plan is not None:
+                    compact = write_request_for(compact, job, records, preferences,
+                        reactions_available=reactions_available, voice_available=voice_available,
+                        poke_available=poke_available, extra_instruction=extra_instruction)
                 if not self._contact_request_fits(run, compact):
                     raise TaskError(
                         "contact_model_profile_exceeded",
@@ -935,20 +1051,28 @@ class ProactiveContacts:
                 logger.warning("[CompanionV2] 主动联系上下文超过模型档案，已省略可选记忆/历史 task=%s",
                                run.task.task_id)
                 request = compact
-            completion = await self.gateway.generate(run, request)
-            if completion.draft is None:
-                raise ValueError("contact generation requires a final decision")
+            if job.plan is not None and job.plan["decision"] == "skip":
+                completion = ModelCompletion(job.plan_call_id, None, job.plan_usage_known)
+                decision_data = {"decision": "skip", "text": "",
+                    "decision_confidence": job.plan["decision_confidence"],
+                    "skip_reason": job.plan["skip_reason"]}
+            else:
+                completion = await self.gateway.generate(run, request)
+                if completion.draft is None:
+                    raise ValueError("contact generation requires a final decision or body")
+                decision_data = (write_output(completion.draft.text, job.plan["decision_confidence"])
+                    if job.plan is not None else json.loads(completion.draft.text))
             alert_records = ([record for record in records if record.reference.owner == OFFICIAL_ALERT_SOURCE_OWNER]
                              if source_origin is not None and "official_alert_event" in source_origin else [])
             if source_origin is not None and "official_alert_event" in source_origin and len(alert_records) != 1:
                 raise TaskError("contact_official_alert_invalid", "official alert attribution source is unavailable")
             alert_material = json.loads(alert_records[0].payload) if alert_records else None
-            body, reaction_intent = contact_output(completion.draft.text, official_alert=alert_material)
+            body, reaction_intent = contact_output(json.dumps(decision_data, ensure_ascii=False),
+                                                    official_alert=alert_material)
             if body is not None and job.diagnostic_image_intent is not None:
                 reaction_intent = job.diagnostic_image_intent
             if body is not None:
                 body = strip_voice_markup(strip_internal_expression_protocol(body))
-            decision_data = json.loads(completion.draft.text)
             model_skip_reason = decision_data.get("skip_reason") if decision_data["decision"] == "skip" else None
             decision_confidence = float(decision_data.get("decision_confidence", 1.0))
             confidence_skip = body is not None and decision_confidence < preferences.values["silence_min_confidence"]
@@ -1079,6 +1203,10 @@ class ProactiveContacts:
                 "thought_id": job.intent.thought.thought_id, "feasible_count": job.feasible_count,
                 "thought_summary": job.intent.thought.summary,
                 "weight_used": job.weight_used, "call_id": completion.call_id,
+                "generation_mode": "two_stage" if job.plan is not None else "single",
+                "plan_task_id": run.task.task_id + "-plan" if job.plan is not None else None,
+                "plan_call_id": job.plan_call_id,
+                "plan": job.plan,
                 "history": job.history, "interaction": job.interaction, "automatic_origin": job.automatic_origin,
                 "dialogue_history": job.dialogue_history,
                 "diagnostic_origin": job.diagnostic_origin,
@@ -1758,11 +1886,15 @@ class ProactiveContacts:
             else:
                 delivery_state = "cancelled"
             model_task_ids = [task_id]
+            plan_task_id = data.get("plan_task_id")
+            if isinstance(plan_task_id, str) and plan_task_id:
+                model_task_ids.append(plan_task_id)
             judge_task_id = judge.get("task_id")
             if isinstance(judge_task_id, str) and judge_task_id and judge_task_id not in model_task_ids:
                 model_task_ids.append(judge_task_id)
             placeholders = ",".join("?" for _ in model_task_ids)
-            model_rows = self.runtime.read_all(f"""SELECT state, actual_tokens, actual_cost,
+            model_rows = self.runtime.read_all(f"""SELECT task_id, state, actual_tokens, actual_cost,
+                    input_tokens, cached_input_tokens, cache_creation_tokens, output_tokens,
                     reserved_tokens, reserved_cost, latency_ms, receipt_ref FROM model_calls
                 WHERE task_id IN ({placeholders})""", tuple(model_task_ids))
             provider_calls = sum(row["state"] in ("dispatched", "generated", "unknown", "discarded")
@@ -1782,12 +1914,35 @@ class ProactiveContacts:
                 "held_tokens": sum(row["reserved_tokens"] for row in outstanding),
                 "held_cost_microusd": sum(row["reserved_cost"] for row in outstanding),
                 "avg_latency_ms": round(sum(latency_values) / len(latency_values)) if latency_values else None}
+            stage_task_ids = {"plan": plan_task_id, "write": task_id, "judge": judge_task_id}
+            stage_usage = {}
+            for stage, stage_task_id in stage_task_ids.items():
+                rows = [row for row in model_rows if stage_task_id and row["task_id"] == stage_task_id]
+                if not rows:
+                    continue
+                stage_usage[stage] = {
+                    "provider_calls": sum(row["state"] in ("dispatched", "generated", "unknown", "discarded")
+                                          for row in rows),
+                    "tokens": sum(row["actual_tokens"] or 0 for row in rows),
+                    "cost_microusd": (sum(row["actual_cost"] or 0 for row in rows)
+                                      if any(row["actual_cost"] is not None for row in rows) else None),
+                    "input_tokens": (sum(row["input_tokens"] or 0 for row in rows)
+                                     if any(row["input_tokens"] is not None for row in rows) else None),
+                    "cached_input_tokens": (sum(row["cached_input_tokens"] or 0 for row in rows)
+                                            if any(row["cached_input_tokens"] is not None for row in rows) else None),
+                    "cache_creation_tokens": (sum(row["cache_creation_tokens"] or 0 for row in rows)
+                                             if any(row["cache_creation_tokens"] is not None for row in rows) else None),
+                    "output_tokens": (sum(row["output_tokens"] or 0 for row in rows)
+                                      if any(row["output_tokens"] is not None for row in rows) else None)}
+            model_metrics["stages"] = stage_usage
             delivery_metrics = {"expected_parts": expected_parts, "created_parts": len(deliveries),
                 "delivered_parts": sum(state == "delivered" for state in states),
                 "pending_parts": sum(state == "pending" for state in states),
                 "unresolved_parts": sum(state in ("dispatched", "accepted", "unknown") for state in states),
                 "failed_parts": sum(state in ("failed", "cancelled", "expired", "dead_letter") for state in states)}
             return {"task_id": task_id, "revision": task.revision, "generation": task.state,
+                "generation_mode": data.get("generation_mode", "single"),
+                "plan_decision": (data.get("plan") or {}).get("decision"),
                 "skipped": data.get("decision") == "skip", "skip_reason": skip_reason,
                 "model_skip_reason": data.get("model_skip_reason"), "dedup_reason": data.get("dedup_reason"),
                 "presentation_reason": data.get("presentation_reason"),
@@ -1841,6 +1996,8 @@ class ProactiveContacts:
         self.cancel_running()
         if self.runner is not None:
             await self.runner.close()
+        if self.plan_runner is not None:
+            await self.plan_runner.close()
         if self.judge_runner is not None:
             await self.judge_runner.close()
         if self._invocations:

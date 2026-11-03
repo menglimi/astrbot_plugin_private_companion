@@ -320,6 +320,9 @@ class HostPersona:
 class NativeImageLocator:
     position: int
     locator: str
+    # Set only after the trusted host ImageResolver resolves a quoted image.
+    # Ordinary network message components never gain local-path read authority.
+    host_resolved: bool = False
 
 
 @dataclass(frozen=True)

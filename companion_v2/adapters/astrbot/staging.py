@@ -37,7 +37,7 @@ from companion_v2.model_gateway.budget import BudgetSoftPolicy
 from companion_v2.model_gateway.models import BudgetPolicy, MAX_MODEL_OUTPUT_TOKENS, ModelTaskProfile
 from companion_v2.model_gateway.output_defaults import with_thinking_margins
 from companion_v2.role_work.journal.writing import writing_profiles
-from companion_v2.proactive.service import contact_profile, persona_judge_profile
+from companion_v2.proactive.service import contact_profile, persona_judge_profile, plan_profile
 from companion_v2.role_work.reader import reading_profile
 from companion_v2.model_gateway.routing import configuration_fields
 from companion_v2.memory.reflection import reflection_profile
@@ -60,7 +60,7 @@ from .application import AstrBotCompanionHost
 from .tools import CompositeAstrBotToolPort
 from .native import HostAccount, HostPersona, NativePrivateBridge, check_version, persona_instruction, route_id
 from .provider import AstrBotTextProvider, REPLY_TASK_CAPABILITIES, UsageTariff, provider_fingerprint
-from .provider_catalog import TextProviderSettings, assemble_providers, loaded_routing
+from .provider_catalog import TextProviderSettings, assemble_providers, attach_native_video, loaded_routing
 from .staging_config import DELIVERY_CAPABILITY, DELIVERY_GRANT_ID
 from .staging_delivery import delivery_grants, require_delivery_access
 
@@ -285,6 +285,10 @@ class AstrBotStagingSession:
         if self.model.native is not native:
             raise TaskError("host_provider_changed", "native provider changed during staging assembly")
         self.model._current()
+        self.model = attach_native_video(context, bridge=self.bridge, native_types=native_types,
+            text=self.model, settings=TextProviderSettings(profile.provider_id, profile.tariff,
+                max(profile.max_output_tokens, 8192), profile.maximum_input_estimate,
+                profile.output_parameter, profile.streaming))
         self.models = (self.model,) + assemble_providers(context, bridge=self.bridge, native_types=native_types,
             primary_id=profile.provider_id, additional=additional_providers,
             defaults=TextProviderSettings(profile.provider_id, profile.tariff, max(profile.max_output_tokens, 8192),
@@ -305,6 +309,7 @@ class AstrBotStagingSession:
         profiles = (self.model_profile, poke_reply_profile(profile.provider_id,
                     max_output_tokens=min(128, profile.max_output_tokens)),
                     contact_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
+                    plan_profile(profile.provider_id, max_output_tokens=min(1024, profile.max_output_tokens)),
                     persona_judge_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
                     reflection_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
                     state_profile(profile.provider_id, max_output_tokens=state_output_budget(profile.max_output_tokens, self.models)),

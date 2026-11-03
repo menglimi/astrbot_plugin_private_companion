@@ -5,6 +5,7 @@ import base64
 import hashlib
 import io
 import ipaddress
+from pathlib import Path
 from urllib.parse import urljoin
 import warnings
 
@@ -134,6 +135,18 @@ def inspect_image(content, position):
         raise TaskError("host_image_invalid", "image bytes could not be verified") from None
 
 
+def _read_host_resolved_image(value):
+    """Read only an absolute local file returned by the trusted quote resolver."""
+    path = Path(value)
+    if not path.is_absolute() or value.startswith(("\\\\", "//")) or not path.is_file():
+        raise TaskError("host_image_location_invalid", "resolved image cache must be a local absolute file")
+    with path.open("rb") as stream:
+        content = stream.read(MAX_IMAGE_BYTES + 1)
+    if len(content) > MAX_IMAGE_BYTES:
+        raise TaskError("host_image_limit", "image exceeds the intake byte budget")
+    return content
+
+
 async def load_native_image(locator):
     if not isinstance(locator, NativeImageLocator):
         raise TaskError("host_image_location_invalid", "image intake needs a frozen host component")
@@ -144,6 +157,8 @@ async def load_native_image(locator):
             if len(encoded) > (MAX_IMAGE_BYTES + 2) // 3 * 4:
                 raise TaskError("host_image_limit", "image exceeds the intake byte budget")
             content = base64.b64decode(encoded, validate=True)
+        elif locator.host_resolved is True and Path(value).is_absolute():
+            content = await asyncio.to_thread(_read_host_resolved_image, value)
         else:
             # Do not interpret a network message's file/path field as local disk authority.
             content = await fetch_image(value)

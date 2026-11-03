@@ -12,7 +12,8 @@ from companion_v2.model_gateway.replacement_rules import checked_rules
 def conversation_provider_resolver(native_context):
     """Follow AstrBot's per-session model for replies and proactive dialogue."""
     def resolve(context, profile):
-        if profile.kind not in ("conversation.reply", "conversation.poke_reply", "proactive.compose"):
+        if profile.kind not in ("conversation.reply", "conversation.poke_reply",
+                                "proactive.plan", "proactive.compose"):
             return None
         scope = context.scope
         message_type = {ScopeKind.PRIVATE: "FriendMessage", ScopeKind.GROUP: "GroupMessage"}.get(scope.kind)

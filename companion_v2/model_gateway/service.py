@@ -32,7 +32,7 @@ PROACTIVE_PROMPT_SNAPSHOT_LIMIT = 10
 # Conversation and image safety review keep their own captured instructions.
 TASK_ROLE_REFERENCE_KINDS = frozenset({
     "conversation.poke_reply",
-    "proactive.compose", "proactive.judge",
+    "proactive.plan", "proactive.compose", "proactive.judge",
     "role.journal.diary", "role.journal.dream", "role.journal.derive", "role.journal.select",
     "role.self_review", "role.growth.progress",
     "role.expression.learn", "role.expression.review", "role.expression.contact_review",

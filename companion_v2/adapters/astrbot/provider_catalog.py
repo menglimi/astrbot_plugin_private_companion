@@ -53,6 +53,52 @@ class TextProviderSettings:
             raise ValueError("model provider streaming switch is invalid")
 
 
+class TextVideoProvider:
+    """Keep AstrBot's text transport while sending original video through GenAI."""
+
+    def __init__(self, text, video):
+        self.text, self.video = text, video
+        if text.provider_id != video.provider_id or text.native is not video.native:
+            raise TaskError("host_provider_changed", "text and video adapters refer to different providers")
+
+    def __getattr__(self, name):
+        return getattr(self.text, name)
+
+    def _current(self):
+        self.text._current()
+        self.video._current()
+        if self.text.native is not self.video.native:
+            raise TaskError("host_provider_changed", "text and video adapters refer to different providers")
+
+    def local_provider(self):
+        provider = self.text.local_provider()
+        if "video" not in self.video.local_provider().capabilities:
+            raise ValueError("native video adapter does not declare video input")
+        capabilities = provider.capabilities + (("video",) if "video" not in provider.capabilities else ())
+        return replace(provider, capabilities=capabilities, reserve=self.reserve,
+                       generate=self.generate, transport="astrbot_gemini_text_video")
+
+    def reserve(self, envelope):
+        adapter = self.video if envelope.original.native_video_input else self.text
+        return adapter.reserve(envelope)
+
+    async def generate(self, envelope):
+        adapter = self.video if envelope.original.native_video_input else self.text
+        return await adapter.generate(envelope)
+
+    async def probe(self):
+        return await self.video.probe()
+
+
+def attach_native_video(context, *, bridge, native_types, text, settings):
+    """Expose native video for a verified dual-surface provider."""
+    video_type = getattr(native_types, "video_provider_type", None)
+    if video_type is None or not isinstance(text.native, video_type):
+        return text
+    video = native_types.video_provider_factory(context, bridge, native_types, text.native, settings)
+    return TextVideoProvider(text, video)
+
+
 def _provider_id(native):
     meta = native.meta() if callable(getattr(native, "meta", None)) else None
     return str(getattr(meta, "id", "") or getattr(native, "id", "")
@@ -135,8 +181,8 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
     candidates = []
     seen = set()
     for native in inventory:
-        # This catalog builds fallback text adapters; a provider registered for
-        # both surfaces (such as native Gemini) belongs to the text lane here.
+        # Dual-surface providers keep the text adapter and add a native video
+        # transport for requests carrying the original video bytes.
         if _text_provider(native_types, native):
             adapter_kind = "text"
         elif native_types.video_provider_type is not None and isinstance(native, native_types.video_provider_type):
@@ -171,6 +217,8 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
                     tariff=settings.tariff, maximum_output_tokens=settings.maximum_output_tokens,
                     maximum_input_estimate=settings.maximum_input_estimate, output_parameter=settings.output_parameter,
                     streaming=settings.streaming)
+                adapter = attach_native_video(context, bridge=bridge, native_types=native_types,
+                                              text=adapter, settings=settings)
             if adapter.native is not native:
                 raise TaskError("host_provider_changed", "AstrBot provider changed during model assembly")
             adapter._current()
