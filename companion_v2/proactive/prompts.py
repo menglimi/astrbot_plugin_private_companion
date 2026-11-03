@@ -30,6 +30,25 @@ from .prompt_templates import (EXPRESSION_INSTRUCTION, LENGTH_INSTRUCTION, NEWS_
                                NEWS_SHARING_INSTRUCTION, effective_template)
 
 
+def local_time_fields(at, timezone_name):
+    """Project one instant into the configured zone, in the shared prompt vocabulary.
+
+    Compose and judge both publish a contact's own local time, so the projection
+    exists once: a second copy would drift, and a drift here reads to the user as
+    a wrong weekday or a greeting for the wrong part of the day.
+    """
+    local_now = at.astimezone(ZoneInfo(timezone_name))
+    return {
+        "local_now": local_now.isoformat(), "local_date": local_now.date().isoformat(),
+        "local_time": local_now.strftime("%H:%M"),
+        "minutes_until_midnight": 1440 - (local_now.hour * 60 + local_now.minute),
+        "weekday": WEEKDAYS[local_now.weekday()],
+        "is_weekend": local_now.weekday() >= 5,
+        "period": period_label(local_now.hour),
+        "timezone": local_now.tzinfo.key,
+    }
+
+
 def history_round_groups(items):
     groups = {}
     for index, item in enumerate(items):
@@ -159,6 +178,7 @@ INSTRUCTION = """这是宿主提供的一次主动联系机会，不是用户刚
 角色状态用于让语气与当前生活贴合，可以成为一点自然的分享，不必每次都汇报状态。相同数值或小幅变化不逐条播报；可以从人格兴趣或当前材料里带来另一个具体感想，没有合适内容时再留白。状态涉及身体感受时，只表达角色自己的感受，不转而检查、训诫或纠正对方。
 主动分享更像随手让人看见一点生活，而不是先报备进度。“我正在吃饭”“我在上课”“我刚到家”不是禁句，但除非关系或语境需要，少把它当成唯一开场；更自然的是带出一个具体画面、手里的小物件、刚注意到的一个细节、半句感想，或一个轻巧的猜测/邀请，让对方有得接。也可以直接说自己在做什么，只要后面有具体内容、情绪或邀请，不像工作汇报。分享多少背景由内容和关系决定，不必刻意藏；也不必每条都设问或换句式，按人格和当时的感觉来。这些是表达偏好，不是逐条检查的硬规则；自然、像本人比套模板重要。
 具体到对方的饮食、作息、健康习惯等判断，必须有 recent_private_dialogue、记忆或来源材料直接支持；人格中的「关心健康/监督饮食」本身不是证据，不能据此写「你又/总是/老是……」或虚构对方刚刚、经常如此。
+period 只说明一天中的时段，不说明对方此刻在上班、下班、通勤还是在休息。凡要写对方正在做什么，先核对近期对话、记忆或来源材料；材料显示夜班或跨夜班次时，period=早上 应理解为快下班，而不是去上班。角色自己先前发出的主动消息只是当时那样表达，不能反过来当作对方此刻处境或习惯的证据。材料不足以判断对方此刻在做什么时，改用不依赖对方状态的表述。
 仅输出一个 JSON 对象。text 只写用户可见正文，不写任务说明、来源编号、权重、检查过程或结构化情绪元数据；pc_reaction_expression、pc_tts 等只在本轮明确启用时使用。
 decision 为 send 或 skip；decision_confidence 为 0 到 1，表示对该选择合适程度的把握。send 时 text 非空且省略 skip_reason；skip 时 text 为空，skip_reason 选 insufficient_context、no_natural_opening、purpose_mismatch、repetitive、respect_user_boundary 或 other，只给类别，不带隐私细节。
 示例：{"decision":"send","text":"想说的正文","decision_confidence":0.82}；或 {"decision":"skip","text":"","decision_confidence":0.91,"skip_reason":"no_natural_opening"}。
@@ -371,7 +391,6 @@ def request_for(job, records, preferences, history=(), *, last_reply=None, reply
     sent_window = preferences.values["dedup_weather_window_minutes" if weather else "dedup_sent_window_minutes"]
     dedup_active = not administrator_test and preferences.dedup_applies(job.intent.purpose, job.automatic_origin)
     sent_cutoff = preferences.observed_at - timedelta(minutes=sent_window) if sent_window else None
-    local_now = preferences.observed_at.astimezone(ZoneInfo(preferences.values["quiet_timezone"]))
     # A model cannot turn 2026-10-18 into "星期日" reliably, and a wrong
     # weekday reads to the user as the clock being wrong. Publish the labels
     # instead of the arithmetic: the reply path already ships weekday/period.
@@ -380,13 +399,7 @@ def request_for(job, records, preferences, history=(), *, last_reply=None, reply
         "preference_note": preferences.values["note"],
         "opportunity_opened_at": thought.opportunity.opened_at.isoformat(),
         "now": preferences.observed_at.isoformat(),
-        "local_now": local_now.isoformat(), "local_date": local_now.date().isoformat(),
-        "local_time": local_now.strftime("%H:%M"),
-        "minutes_until_midnight": 1440 - (local_now.hour * 60 + local_now.minute),
-        "weekday": WEEKDAYS[local_now.weekday()],
-        "is_weekend": local_now.weekday() >= 5,
-        "period": period_label(local_now.hour),
-        "timezone": local_now.tzinfo.key,
+        **local_time_fields(preferences.observed_at, preferences.values["quiet_timezone"]),
     }
     recent_timing = _recent_timing(dialogue, history, last_reply, preferences.observed_at)
     if recent_timing:
