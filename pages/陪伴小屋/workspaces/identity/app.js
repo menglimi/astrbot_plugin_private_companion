@@ -35,8 +35,15 @@
     person_nickname_revision_conflict: "成员资料刚刚被更新，正在读回最新版本。",
     person_nickname_operation_conflict: "这次称呼操作键已用于另一项修改，请重新保存。",
     person_nickname_operation_unresolved: "上一次称呼修改尚未完成，请刷新核对后重试。",
+    stranger_target_request_invalid: "这次添加缺少有效账号信息，请刷新页面后重试。",
+    stranger_target_unavailable: "收到方不可用：无法核对这个账号的当前配置，记录已保留。",
+    legacy_plan_stale: "配置刚被其他操作更新，页面已重新读取；请再确认一次。",
+    host_account_unavailable: "收到方当前未连接，无法应用配置；请在 AstrBot 中恢复该账号连接后重试。",
+    host_persona_unavailable: "该收到方缺少可用人格，请先在账号与会话中补齐映射。",
+    account_config_persistence_unavailable: "配置没有保存：宿主没有可用的插件配置写入器，请检查插件运行状态后重试。",
   };
   let bridge, data = null, filter = "stable", selected = null, selectedGroupId = "", activeView = "network", noticeView = "";
+  let strangerItems = [], strangerSubmitting = "";
   let graphScope = "all", searchTerm = "", graphExpandedCluster = "", requestSequence = 0, hideIdleUsers = true, groupStatusFilter = "all";
   let memberChangeSequence = 0;
 
@@ -1411,40 +1418,211 @@
     if (background && previous && (!selected || displayPersonKey(selected) !== previous)) renderDetail();
   }
 
+  const STRANGER_STATE_LABELS = {added: "已添加", covered: "已覆盖", unavailable: "收到方不可用"};
+  const STRANGER_OUTCOMES = {
+    stranger_notice_sent: "已回婉拒",
+    stranger_notice_disabled: "未回（婉拒已关闭）",
+    stranger_notice_cooldown: "未回（冷却中）",
+    stranger_notice_daily_cap: "未回（超每日上限）",
+    stranger_notice_delivery_unavailable: "未回（通道不可用）",
+    stranger_notice_send_failed: "未回（发送失败）",
+  };
+  const STRANGER_STARTUP_LABELS = {
+    host_provider_required: "宿主还没有可用的模型服务",
+    host_provider_unavailable: "宿主配置的模型服务当前不可用",
+  };
+  const strangerRouteKey = (item) => JSON.stringify([item.platform_id || "", item.login || "", item.peer || ""]);
+
   function strangerRow(item) {
+    const route = strangerRouteKey(item);
     const row = document.createElement("li");
-    row.className = "stranger-row";
+    const state = STRANGER_STATE_LABELS[item.target_state];
+    row.className = "stranger-row" + (item.target_state === "unavailable" ? " is-unavailable" : "");
+    row.dataset.route = route;
+    const identity = document.createElement("div");
+    identity.className = "stranger-identity";
     const who = document.createElement("strong");
     who.textContent = `账号 ${item.peer || "未知"} · 收到方 ${item.login || "未知"}`;
-    const outcomes = {
-      stranger_notice_sent: "已回婉拒",
-      stranger_notice_disabled: "未回（婉拒已关闭）",
-      stranger_notice_cooldown: "未回（冷却中）",
-      stranger_notice_daily_cap: "未回（超每日上限）",
-      stranger_notice_delivery_unavailable: "未回（通道不可用）",
-      stranger_notice_send_failed: "未回（发送失败）",
-    };
     const meta = document.createElement("small");
     const seen = item.last_seen_at ? new Date(item.last_seen_at).toLocaleString() : "未知";
-    meta.textContent = `${outcomes[item.last_outcome] || "未回"} · 共 ${Number(item.attempts) || 0} 次 · 最近 ${seen}`;
-    row.append(who, meta);
+    meta.textContent = `平台 ${item.platform_id || "未知"} · ${STRANGER_OUTCOMES[item.last_outcome] || "未回"}`
+      + ` · 共 ${Number(item.attempts) || 0} 次 · 最近 ${seen}`;
+    identity.append(who, meta);
+    const action = document.createElement("div");
+    action.className = "stranger-action";
+    if (state) {
+      const chip = document.createElement("span");
+      chip.className = "stranger-state";
+      chip.textContent = state;
+      action.append(chip);
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary";
+    button.dataset.action = "allow-stranger";
+    button.dataset.route = route;
+    button.disabled = Boolean(state) || Boolean(strangerSubmitting);
+    button.textContent = strangerSubmitting === route ? "正在添加…" : "允许此账号私聊";
+    if (item.target_state === "unavailable") button.title = "这个收到方当前不可用：账号未配置或未连接，暂时无法添加。";
+    button.addEventListener("click", () => confirmStrangerTarget(item));
+    action.append(button);
+    row.append(identity, action);
     return row;
   }
+
+  function renderStrangers() {
+    const list = $("stranger-list");
+    if (list) list.replaceChildren(...strangerItems.map(strangerRow));
+  }
+
+  function strangerFailure(error) {
+    const code = typeof error?.code === "string" ? error.code : "";
+    const reason = [error?.reason, error?.message].find((item) => typeof item === "string" && item) || "";
+    if (errors[code]) return new Error(errors[code]);
+    if (reason && !/^(请求未完成|未收到执行结果)/.test(reason)) {
+      return new Error(`${reason.replace(/[。.!?]+$/, "")}。正在重新读取当前状态。`);
+    }
+    return new Error("没有收到添加操作的明确回执，当前状态可能已变化；正在重新读取。");
+  }
+
+  async function confirmStrangerTarget(item) {
+    if (!bridge || strangerSubmitting) return;
+    /* 工作区在 sandbox 里，能盖住插件视口的模态层只有宿主开得出来；
+       宿主声明了确认能力就走它，没声明/没答复时保留下面的内联确认框。 */
+    if (typeof bridge.confirm === "function") {
+      const confirmed = await bridge.confirm({
+        title: "允许此账号私聊",
+        message: "仅添加该账号到此收到方，权限沿用现有设置。",
+        details: [{title: "本次范围", fields: [
+          `发信账号：${item.peer || "未知"}`,
+          `收到方：${item.login || "未知"}`,
+          `平台：${item.platform_id || "未知"}`,
+        ]}],
+        confirmText: "确认添加",
+        cancelText: "取消",
+      });
+      if (confirmed === true) { void submitStrangerTarget(item); return; }
+      if (confirmed === false) return;
+    }
+    const dialog = document.createElement("dialog");
+    dialog.className = "stranger-dialog";
+    dialog.setAttribute("aria-labelledby", "stranger-dialog-title");
+    const title = document.createElement("h2");
+    title.id = "stranger-dialog-title";
+    title.textContent = "允许此账号私聊";
+    const facts = document.createElement("dl");
+    facts.className = "stranger-dialog-facts";
+    for (const [label, value] of [["发信账号", item.peer], ["收到方", item.login], ["平台", item.platform_id]]) {
+      const term = document.createElement("dt");
+      term.textContent = label;
+      const detail = document.createElement("dd");
+      detail.textContent = value || "未知";
+      facts.append(term, detail);
+    }
+    const message = document.createElement("p");
+    message.className = "stranger-dialog-note";
+    message.textContent = "仅添加该账号到此收到方，权限沿用现有设置。";
+    const actions = document.createElement("div");
+    actions.className = "stranger-dialog-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "secondary";
+    cancel.textContent = "取消";
+    const accept = document.createElement("button");
+    accept.type = "button";
+    accept.className = "secondary";
+    accept.textContent = "确认添加";
+    actions.append(cancel, accept);
+    dialog.append(title, facts, message, actions);
+    let closed = false;
+    const close = (submit) => {
+      if (closed) return;
+      closed = true;
+      dialog.close();
+      dialog.remove();
+      if (submit) void submitStrangerTarget(item);
+    };
+    cancel.addEventListener("click", () => close(false));
+    accept.addEventListener("click", () => close(true));
+    dialog.addEventListener("cancel", (event) => { event.preventDefault(); close(false); });
+    dialog.addEventListener("click", (event) => { if (event.target === dialog) close(false); });
+    document.body.append(dialog);
+    try {
+      dialog.showModal();
+      cancel.focus({preventScroll: true});
+    } catch {
+      close(false);
+    }
+  }
+
+  async function submitStrangerTarget(item) {
+    if (!bridge || strangerSubmitting) return;
+    const route = strangerRouteKey(item);
+    strangerSubmitting = route;
+    renderStrangers();
+    try {
+      const result = unwrap(await bridge.apiPost("acquaintance/stranger-target",
+        {platform_id: item.platform_id, login: item.login, peer: item.peer}, {timeoutMs: 60000}));
+      const state = result?.state;
+      const late = [];
+      if (result?.requires_initialize) late.push("宿主需要初始化");
+      if (result?.startup_error) {
+        const label = STRANGER_STARTUP_LABELS[result.startup_error];
+        late.push(label ? `启动失败：${label}（${result.startup_error}）`
+          : `启动失败：${result.startup_error}`);
+      }
+      let message;
+      if (state === "covered") {
+        message = "已覆盖：此收到方已有「任意私聊」目标，该账号沿用它的权限；没有新增目标。";
+      } else if (state === "unavailable") {
+        message = "收到方不可用：这个账号未配置或当前连接已断开，无法添加；记录会保留在列表里。";
+      } else {
+        message = "已添加，权限沿用现有设置";
+      }
+      if (late.length) message += `；配置已保存，但${late.join("，")}。可在「账号与会话」重新保存并启动。`;
+      if (state === "added" || state === "covered" || state === "unavailable") {
+        // The receipt is already the saved fact. Host restarts make the following
+        // list read fail, so the row must not fall back to its pre-submit state.
+        strangerItems = strangerItems.map((entry) => (strangerRouteKey(entry) === route
+          ? {...entry, target_state: state, target_id: result.target_id || entry.target_id}
+          : entry));
+        renderStrangers();
+      }
+      notice(message, Boolean(late.length));
+    } catch (error) {
+      notice(strangerFailure(error).message, true);
+    } finally {
+      strangerSubmitting = "";
+      await loadStrangers();
+    }
+  }
+
   /* 被拒私聊不在目录里（没有身份/路由），但管理员需要看到“谁在敲门”。
-     只读、有界，账号与时间而已，不在页面里提供授予入口。 */
+     只读、有界：账号与时间而已，不会建身份或签发权限；添加动作只为这条记录
+     的收到方追加一个具体私聊目标，权限沿用现有设置。 */
   async function loadStrangers() {
     const section = $("stranger-contacts");
     if (!section || !bridge) return;
+    const status = $("stranger-status");
     try {
       const payload = unwrap(await bridge.apiGet("acquaintance/strangers", {}));
-      const items = Array.isArray(payload?.items) ? payload.items : [];
-      const list = $("stranger-list");
-      if (list) list.replaceChildren(...items.map(strangerRow));
+      strangerItems = Array.isArray(payload?.items) ? payload.items : [];
+      renderStrangers();
       const count = $("stranger-count");
-      if (count) count.textContent = `${items.length} 人`;
-      section.hidden = !items.length;
+      if (count) count.textContent = `${strangerItems.length} 人`;
+      if (status) status.hidden = true;
+      section.hidden = !strangerItems.length;
     } catch {
-      section.hidden = true;
+      // A failed read must not erase what the page already showed: keep the last
+      // successful copy, put the rows back to that state, and say it is stale.
+      renderStrangers();
+      if (status) {
+        status.textContent = strangerItems.length
+          ? `没有读到最新记录，下面显示上一次读取到的 ${strangerItems.length} 条结果；稍后刷新可恢复。`
+          : "没有读到最新记录，稍后刷新可重试。";
+        status.hidden = false;
+      }
+      section.hidden = !strangerItems.length;
     }
   }
   async function supplementDirectory(sequence, edits) {

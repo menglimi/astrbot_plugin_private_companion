@@ -1,7 +1,7 @@
 /* Opaque-origin compatible bridge for bundled workspaces. */
 "use strict";
 (() => {
-  const pending=new Map();let count=0,context=null,readyResolve;
+  const pending=new Map(),pendingConfirms=new Map();let count=0,context=null,readyResolve;
   const DEFAULT_REQUEST_TIMEOUT_MS=18000,MAX_REQUEST_TIMEOUT_MS=300000;
   const ready=new Promise(resolve=>{readyResolve=resolve;});
   const send=payload=>parent.postMessage({channel:"companion-workspace",...payload},"*");
@@ -49,6 +49,10 @@
     if(message.kind==="navigate-failed"){
       document.dispatchEvent(new CustomEvent("companion-navigate-failed",{detail:message}));return;
     }
+    if(message.kind==="confirm-result"&&pendingConfirms.has(message.requestId)){
+      const item=pendingConfirms.get(message.requestId);pendingConfirms.delete(message.requestId);
+      item.resolve(message.code?null:message.confirmed===true);return;
+    }
     if(message.kind!=="response"||!pending.has(message.requestId))return;
     const item=pending.get(message.requestId);pending.delete(message.requestId);clearTimeout(item.timer);
     if(message.ok)item.resolve(message.data);else item.reject(Object.assign(new Error(message.error),
@@ -64,7 +68,16 @@
       new Error("未收到执行结果，请核对后重试本次操作。"),{code:"bridge_timeout",confirmed:false}));},timeoutMs+1000);
     pending.set(requestId,{resolve,reject,timer});send({kind:"request",requestId,method,path,body,timeoutMs});
   });}
+  /* 宿主代开的确认：context 没声明 confirm 就回 null，调用方退回自己的内联框。
+     人的确认不设超时：等多久由点按钮的人决定，不能半途放弃再叠一个框。 */
+  function hostConfirm(request){return new Promise(resolve=>{
+    if(!context||context.confirm!==true){resolve(null);return;}
+    const requestId="confirm-"+(++count);
+    pendingConfirms.set(requestId,{resolve});
+    send({kind:"confirm",requestId,request});
+  });}
   window.AstrBotPluginPage={ready:()=>ready,getContext:()=>context,
+    confirm:request=>hostConfirm(request),
     apiGet:(path,body,options)=>request("GET",path,body,options),
     apiPost:(path,body,options)=>request("POST",path,body,options)};
   document.addEventListener("DOMContentLoaded",async()=>{

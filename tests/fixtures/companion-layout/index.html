@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>陪伴小屋 · 嵌套工作区布局夹具</title>
+  <style>
+    /* 外层只负责提供“插件页视口”。真实控制台把陪伴小屋放在一个固定高度的
+       容器里，这里用 765px 的 iframe 复现：小屋页面的视口就是 765，而不是
+       浏览器窗口高度。 */
+    html, body { margin: 0; height: 100%; background: #f4f6fa; }
+    #plugin { display: block; width: 100%; height: 765px; border: 0; background: #fff; }
+  </style>
+</head>
+<body>
+  <iframe id="plugin" title="陪伴小屋（合成宿主）" src="/index.html?fixture=1#manage/identity/people"></iframe>
+  <script src="/__fixture/harness.js"></script>
+</body>
+</html>
