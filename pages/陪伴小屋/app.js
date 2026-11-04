@@ -5078,9 +5078,19 @@ function textSearchScore(value,term,weights){
   if(text.includes(term))return weights[2];
   return 0;
 }
-function settingSearchScore(entry,terms,query,location){
-  const texts=entry.texts||{};
-  const aliases=Array.isArray(entry.aliases)?entry.aliases:[];
+/* 索引里的配置项是 {entry,location,texts} 包装对象，预归一化文本挂在包装对象上；
+   打分函数历史上还被直接传过原始条目（原始条目没有 texts）。两种形状都要能打分：
+   先取包装对象的 entry/texts，包装对象缺 texts 时就地从条目归一化一份。 */
+function settingSearchScore(result,terms,query,location){
+  const entry=result?.entry||result||{};
+  const texts=result?.texts||entry.texts||{
+    label:normalizeSearchText(entry.label),
+    field:normalizeSearchText(entry.field),
+    sectionTitle:normalizeSearchText(entry.sectionTitle),
+    groupTitle:normalizeSearchText(entry.groupTitle),
+    help:normalizeSearchText(entry.help),
+    aliases:(Array.isArray(entry.aliases)?entry.aliases:[]).map(normalizeSearchText),
+  };
   const fields=[
     [texts.label,[120,94,72]],
     [texts.field,[84,68,50]],
@@ -5119,7 +5129,7 @@ function rankedSearchResults(query){
   const pages=searchIndex.map((data,order)=>({kind:'page',data,score:pageSearchScore(data,terms,normalized),order}))
     .filter(result=>result.score>0);
   const settings=searchableConfigEntries().map((result,order)=>({...result,
-    score:settingSearchScore(result.entry,terms,normalized,result.location),order})).filter(result=>result.score>0);
+    score:settingSearchScore(result,terms,normalized,result.location),order})).filter(result=>result.score>0);
   return [...pages,...settings].sort((left,right)=>right.score-left.score
     ||(left.kind===right.kind?left.order-right.order:left.kind==='setting'?-1:1));
 }
