@@ -22,6 +22,12 @@ window.CompanionDecisionPage = (() => {
   /* 当前窗口的作用域（private / group）。由挂载方给出；空串表示还没读到，
      按「不知道」处理，只显示不分作用域的页签。 */
   let scopeKind = "";
+  /* 群聊参与的两个挂载点各自上报自己那一段，必须分开存：角色层上报的是整组
+     28 个字段（含按角色层解析的插话三键），本群窗口只上报 5 个插话键。塞进
+     同一个槽，后到的角色层上报就会把本群覆盖值打回角色层默认。 */
+  let roleStatus = null;
+  let windowStatus = null;
+  const reportedStatus = mount => mount === "window" ? windowStatus : roleStatus;
   const harassment = {endpoint: "", data: null, draft: null, loading: false, busy: false,
     notice: "", bad: false, missing: false, tab: "detect", manual: {scope: "", user: "", hours: 24},
     exported: ""};
@@ -58,33 +64,92 @@ window.CompanionDecisionPage = (() => {
     return parsed === null ? "—" : `${parsed}${suffix}`;
   };
   const setting = () => replyStatus?.settings || {};
-  const participation = () => {
-    const editor = root?.querySelector?.("#groupParticipationConfigWorkspace")?.companionConfigEditor;
-    const groupEditor = root?.querySelector?.("#groupInterjectionConfigWorkspace")?.companionConfigEditor;
-    const defaults = editor?.state?.draft || editor?.state?.base || editor?.state?.status?.settings || {};
-    const local = groupEditor?.state?.draft || groupEditor?.state?.base || groupEditor?.state?.status?.settings || {};
-    return {...defaults, ...local};
+  /* 群聊参与的分区挂在两处挂载点，各自上报自己那一段：角色层默认
+     （#groupParticipationConfigWorkspace，整组 28 个字段）与本群窗口
+     （#groupInterjectionConfigWorkspace，只有 5 个插话键）。两处拿到的都是
+     适配层对象（config-editor.js 的返回），它的 state 里只有 instances；
+     真正的 status/draft/base 在内核实例上。所以取值走两条路：挂载点上的
+     onStatus 上行回调，还没到就回落到实例数组上的草稿。 */
+  const participationEditors = () => ({
+    role: root?.querySelector?.("#groupParticipationConfigWorkspace")?.companionConfigEditor || null,
+    window: root?.querySelector?.("#groupInterjectionConfigWorkspace")?.companionConfigEditor || null,
+  });
+  const instanceState = editor => {
+    const list = Array.isArray(editor?.state?.instances) ? editor.state.instances : [];
+    for (const instance of list) {
+      if (instance?.state && typeof instance.state === "object") return instance.state;
+    }
+    return null;
   };
+  const instanceSettings = state => {
+    const value = state?.draft || state?.base || state?.status?.settings;
+    return value && typeof value === "object" ? value : null;
+  };
+  /* 一个挂载点的读取状态。ready 只在**这个来源确实读到过配置**时成立；读取
+     失败（内核把实例标成 denied 并清空 draft/base）单独成态——「读不到」与
+     「读到的是关闭」是两件不同的事实，合成一句就会把前者说成后者。 */
+  const participationSource = mount => {
+    const reported = reportedStatus(mount);
+    const state = instanceState(participationEditors()[mount]);
+    const settings = instanceSettings(state)
+      || (reported?.settings && typeof reported.settings === "object" ? reported.settings : null);
+    if (state?.denied === true) return {phase: "failed", settings};
+    if (settings) return {phase: "ready", settings};
+    if (state) return {phase: "loading", settings: null};
+    return {phase: reported ? "ready" : "empty", settings};
+  };
+  /* 合并顺序：角色层默认在前，本群窗口在后覆盖同名键。
+     本群挂载点上报的 5 个插话键就是这一群解析后的有效值（本群没改过时等于
+     角色层），所以窗口层必须压住角色层，这正是「角色默认 + 本群细调」的语义；
+     反过来合并会让本群细调被角色层的下一次刷新打回默认。其余 23 个字段只有
+     角色层提供，不受合并顺序影响。
+     只并入已读到的来源：读失败的那一侧留下的旧草稿不能当成当前值参与合并。 */
+  const participationLayer = mount => {
+    const source = participationSource(mount);
+    return source.phase === "ready" && source.settings ? source.settings : null;
+  };
+  const participation = () => ({
+    ...participationLayer("role"),
+    ...participationLayer("window"),
+  });
   const stat = (label, value, note, tone = "") => `
     <article class="decision-stat${tone ? ` is-${tone}` : ""}">
       <span>${label}</span><strong>${value}</strong><small>${note}</small>
     </article>`;
+  const pending = () => '<span aria-busy="true">正在读取…</span>';
+  /* 一张卡只对**它自己的来源**负责：来源没读到配置时，值写「—」、说明写这个
+     来源的状态，绝不写「该能力未开启」——那是把「读不到」说成「没开」。 */
+  const card = (label, mount, value, note) => {
+    const source = participationSource(mount);
+    if (source.phase === "ready") return stat(label, value, note);
+    if (source.phase === "failed") {
+      return stat(label, "—",
+        `读取失败 <button type="button" class="button small" data-participation-retry="${mount}">重新读取</button>`);
+    }
+    return stat(label, "—", source.phase === "loading" ? pending() : "未选择群聊");
+  };
+  /* 顶栏那一行同样按来源说真话：来源没读到就不写成「关闭」。 */
+  const sourceFlag = (mount, settings, key) => {
+    const phase = participationSource(mount).phase;
+    if (phase === "ready") return flag(settings, key);
+    return phase === "loading" ? "读取中" : phase === "failed" ? "读取失败" : "—";
+  };
   const signal = (label, value) => `<span class="decision-signal"><b>${label}</b><span>${value}</span></span>`;
   const badge = (label, active) => `<span class="decision-state${active ? " is-on" : ""}">${label} · ${active ? "开启" : "关闭"}</span>`;
 
   function overviewMarkup() {
     const s = setting();
     const g = participation();
-    const replyReady = ready(s), groupReady = ready(g);
+    const replyReady = ready(s), roleReady = participationSource("role").phase === "ready";
     const records = Array.isArray(replyStatus?.participation_recent) ? replyStatus.participation_recent : null;
     const limit = replyStatus?.participation_limit ?? s.group_wakeup_log_limit;
     const guardFields = ["enable_group_injection_guard", "enable_group_privacy_guard", "enable_group_reality_promise_guard"];
     const activeGuards = replyReady ? guardFields.filter(key => on(s, key)).length : null;
     const atmosphereFields = ["enable_group_mood_detection", "enable_group_roleplay_strength",
       "enable_group_moments", "enable_group_moment_portrait"];
-    const atmosphereCount = groupReady
+    const atmosphereCount = roleReady
       ? on(g, "enable_group_social_context") ? atmosphereFields.filter(key => on(g, key)).length : 0 : null;
-    const topicStatus = groupReady
+    const topicStatus = roleReady
       ? `${flag(g, "enable_group_topic_threads")}${on(g, "enable_group_topic_threads")
         ? ` · 最多保留 ${shown(g.group_topic_thread_max)} 条` : ""}` : "—";
     const directCount = replyReady ? count(s.group_wakeup_direct_words) : null;
@@ -97,7 +162,7 @@ window.CompanionDecisionPage = (() => {
         ${stat("参与疲劳上限", shown(s.group_wakeup_fatigue_limit, " 点"),
           `每 ${shown(s.group_wakeup_fatigue_decay_minutes)} 分钟恢复 1 点`)}
         ${stat("内容护栏", activeGuards === null ? "— / 3" : `${activeGuards} / 3 开`,
-          activeGuards === null ? "读取配置后显示" : "注入 · 隐私 · 现实承诺", activeGuards === 3 ? "ok" : "")}
+          activeGuards === null ? pending() : "注入 · 隐私 · 现实承诺", activeGuards === 3 ? "ok" : "")}
         ${stat("回应冷却", shown(s.group_wakeup_cooldown_seconds, " 秒"), "两次兴趣参与之间的最短间隔")}
         ${stat("判定记录上限", shown(limit, " 条"), records ? `当前保留 ${records.length} 条` : "只记录判定结果与原因")}
       </div>
@@ -115,7 +180,7 @@ window.CompanionDecisionPage = (() => {
             <span class="decision-step-number">3</span><span class="decision-step-copy"><b>沉默与安全</b><small>撤回、收尾、空气护栏与内容边界</small><em>撤回沉默 ${flag(s, "recall_silence_enabled")} · 收尾 ${flag(s, "private_closing_guard_enabled")} · 空气护栏 ${flag(s, "group_air_guard_enabled")}</em></span>${icon("arrow-right")}
           </button>
           <button type="button" class="decision-chain-step" data-decision-open="group">
-            <span class="decision-step-number">4</span><span class="decision-step-copy"><b>群聊参与</b><small>氛围与话题线供当前回复参考，插话或跟读另行判定</small><em>氛围参考 ${atmosphereCount === null ? "—" : `${atmosphereCount} / 4`} · 话题线 ${groupReady ? flag(g, "enable_group_topic_threads") : "—"} · 跟读 ${flag(g, "enable_group_repeat_follow")}</em></span>
+            <span class="decision-step-number">4</span><span class="decision-step-copy"><b>群聊参与</b><small>氛围与话题线供当前回复参考，插话或跟读另行判定</small><em>氛围参考 ${atmosphereCount === null ? "—" : `${atmosphereCount} / 4`} · 话题线 ${sourceFlag("role", g, "enable_group_topic_threads")} · 跟读 ${sourceFlag("role", g, "enable_group_repeat_follow")}</em></span>
           </button>
         </div>
       </section>
@@ -133,7 +198,7 @@ window.CompanionDecisionPage = (() => {
               ${signal("上下文关联", listCount(s, "group_wakeup_context_words"))}
               ${signal("兴趣关键词", interestCount === null ? "—" : `${interestCount} 个`)}
               ${signal("图片相关性", flag(s, "group_wakeup_image_enabled"))}
-              ${signal("氛围参考", flag(g, "enable_group_social_context"))}
+              ${signal("氛围参考", sourceFlag("role", g, "enable_group_social_context"))}
             </div></div>
           </div>
         </section>
@@ -159,7 +224,7 @@ window.CompanionDecisionPage = (() => {
     if (view === "guard") return guardMarkup();
     const s = setting();
     const g = participation();
-    const replyReady = ready(s), groupReady = ready(g);
+    const replyReady = ready(s);
     if (view === "overview") return overviewMarkup();
     if (view === "response") {
       return `<div class="decision-stats decision-stats-four">
@@ -172,7 +237,7 @@ window.CompanionDecisionPage = (() => {
     if (view === "tempo") {
       return `<div class="decision-stats decision-stats-three">
         ${stat("冷群重启", flag(s, "group_wakeup_cold_group_enabled"),
-          on(s, "group_wakeup_cold_group_enabled") ? `静默 ${shown(s.group_wakeup_cold_group_idle_minutes)} 分钟后评估` : replyReady ? "只作为判断材料" : "读取配置后显示")}
+          on(s, "group_wakeup_cold_group_enabled") ? `静默 ${shown(s.group_wakeup_cold_group_idle_minutes)} 分钟后评估` : replyReady ? "只作为判断材料" : pending())}
         ${stat("参与疲劳上限", shown(s.group_wakeup_fatigue_limit, " 点"), `每 ${shown(s.group_wakeup_fatigue_decay_minutes)} 分钟恢复 1 点`)}
         ${stat("回应冷却", shown(s.group_wakeup_cooldown_seconds, " 秒"), "兴趣话题参与的最短间隔")}
       </div>`;
@@ -184,22 +249,29 @@ window.CompanionDecisionPage = (() => {
         ${stat("沉默策略", `${flag(s, "recall_silence_enabled")} · ${flag(s, "private_closing_guard_enabled")}`,
           "撤回沉默 · 私聊收尾沉默")}
         ${stat("内容护栏", guards === null ? "— / 3" : `${guards} / 3 开`,
-          guards === null ? "读取配置后显示" : "注入 · 隐私 · 现实承诺", guards === 3 ? "ok" : "")}
+          guards === null ? pending() : "注入 · 隐私 · 现实承诺", guards === 3 ? "ok" : "")}
         ${stat("空气护栏窗口", shown(s.group_air_guard_window_seconds, " 秒"), "窗口内统计角色自己的发言")}
         ${stat("回复快照", "回合开始定格", "拦截只调整措辞，不改变人格与授权")}
       </div>`;
     }
     const atmosphere = ["enable_group_mood_detection", "enable_group_roleplay_strength",
       "enable_group_moments", "enable_group_moment_portrait"].filter(key => on(g, key)).length;
+    /* 四张卡各自的来源（与配置分区声明一致）：话题线、氛围、复读来自角色层
+       默认挂载点；主动插话整段挂在本群窗口挂载点（那里只上报 5 个插话键）。 */
     return `<div class="decision-stats decision-stats-four">
-      ${stat("群聊话题线", flag(g, "enable_group_topic_threads"),
-        groupReady ? `最多保留 ${shown(g.group_topic_thread_max)} 条 · 90 分钟无更新后失效` : "读取配置后显示")}
-      ${stat("氛围参考", groupReady ? `${on(g, "enable_group_social_context") ? atmosphere : 0} / 4 开` : "— / 4",
-        groupReady ? "氛围、扮演、名场面与人物线索" : "读取配置后显示")}
-      ${stat("主动插话", flag(g, "enable_group_interjection"),
-        groupReady ? `间隔 ${shown(g.group_interject_min_interval_minutes)} 分钟 · 每日上限 ${shown(g.group_interject_max_daily)} 次` : "读取配置后显示")}
-      ${stat("复读跟读", flag(g, "enable_group_repeat_follow"),
-        `阈值 ${shown(g.group_repeat_trigger_threshold)} 人次 · 概率 ${shown(g.group_repeat_follow_probability)}`)}
+      ${card("群聊话题线", "role", flag(g, "enable_group_topic_threads"),
+        on(g, "enable_group_topic_threads")
+          ? `最多保留 ${shown(g.group_topic_thread_max)} 条 · 90 分钟无更新后失效` : "该能力未开启")}
+      ${card("氛围参考", "role", on(g, "enable_group_social_context") ? `${atmosphere} / 4 开` : "0 / 4 开",
+        on(g, "enable_group_social_context") ? "氛围、扮演、名场面与人物线索" : "该能力未开启")}
+      ${card("主动插话", "window", flag(g, "enable_group_interjection"),
+        on(g, "enable_group_interjection")
+          ? `间隔 ${shown(g.group_interject_min_interval_minutes)} 分钟 · 每日上限 ${shown(g.group_interject_max_daily)} 次`
+          : "该能力未开启")}
+      ${card("复读跟读", "role", flag(g, "enable_group_repeat_follow"),
+        on(g, "enable_group_repeat_follow")
+          ? `阈值 ${shown(g.group_repeat_trigger_threshold)} 人次 · 概率 ${shown(g.group_repeat_follow_probability)}`
+          : "该能力未开启")}
     </div>`;
   }
 
@@ -220,7 +292,7 @@ window.CompanionDecisionPage = (() => {
         safety: `沉默 · ${flag(s, "recall_silence_enabled")} · 护栏 ${replyReady ? ["enable_group_injection_guard", "enable_group_privacy_guard", "enable_group_reality_promise_guard"].filter(key => on(s, key)).length + " / 3" : "读取中"}`,
         guard: !harassmentApplies() ? "只对私聊窗口生效"
           : harassment.data ? `已拦截 ${harassment.data.entries.length} 人 · ${harassment.data.settings.enabled ? "已开启" : "未开启"}` : "读取中",
-        group: `复读跟读 · ${flag(g, "enable_group_repeat_follow")}`,
+        group: `复读跟读 · ${sourceFlag("role", g, "enable_group_repeat_follow")}`,
       };
       current.textContent = states[activeView] || states.overview;
     }
@@ -260,6 +332,17 @@ window.CompanionDecisionPage = (() => {
   }
 
   function onClick(event) {
+    const retry = event.target?.closest?.("[data-participation-retry]");
+    if (retry) {
+      /* 只重读这一张卡的来源：读失败的那一处才需要重新发起，另一处不该被连带
+         清空重绘。没有点名来源时两处都读，避免旧页面元素上没有这个属性。 */
+      const editors = participationEditors();
+      const mount = retry.dataset?.participationRetry;
+      if (mount === "role" || mount === "window") editors[mount]?.read?.();
+      else for (const editor of Object.values(editors)) editor?.read?.();
+      renderPanels();
+      return;
+    }
     const button = event.target?.closest?.("[data-decision-tab], [data-decision-open]");
     if (!button) return;
     const view = button.dataset.decisionTab || button.dataset.decisionOpen;
@@ -638,7 +721,17 @@ window.CompanionDecisionPage = (() => {
     renderPanels();
   }
 
-  function updateParticipationStatus() {
+  /* 两处挂载点各自上报，按挂载点分开存，永不写同一个槽：角色层一次刷新/保存
+     就会重报整组 28 个字段，写在同一个槽里必然把本群窗口的覆盖值打回默认。
+     来源既可由调用方点名，也能从上报表上认出来（角色层 scope=role、本群
+     scope=window）。同一个挂载点重复上报时合并，跨挂载点绝不合并。 */
+  function updateParticipationStatus(status, mount) {
+    if (!status || typeof status !== "object") return;
+    const target = mount === "window" || (mount !== "role" && status.scope === "window")
+      ? "window" : "role";
+    const settings = status.settings && typeof status.settings === "object" ? status.settings : null;
+    const merged = {...reportedStatus(target), settings: {...(reportedStatus(target)?.settings || {}), ...settings}};
+    if (target === "window") windowStatus = merged; else roleStatus = merged;
     renderPanels();
   }
 
@@ -660,6 +753,8 @@ window.CompanionDecisionPage = (() => {
     harassment.notice = "";
     harassment.missing = false;
     replyStatus = null;
+    roleStatus = null;
+    windowStatus = null;
   }
 
   return {mount, unmount, setView, updateReplyStatus, updateParticipationStatus};
