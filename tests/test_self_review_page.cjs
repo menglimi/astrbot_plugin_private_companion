@@ -70,6 +70,8 @@ function harness() {
     page: window.CompanionSelfReviewPage, element, requests,
     reply: (request, payload) => request.resolve({status: 'ok', data: payload}),
     fail: (request, code) => request.resolve({status: 'error', message: code, data: {code}}),
+    /* 请求本身没有走完：桥接直接拒绝，没有任何错误码可读。 */
+    drop: request => request.reject(new Error('network')),
     settle,
   };
 }
@@ -109,7 +111,8 @@ async function drive(h, answer) {
     for (const request of pending) {
       answered.add(request);
       const payload = answer(request);
-      if (payload && payload.__error) h.fail(request, payload.__error);
+      if (payload && payload.__drop) h.drop(request);
+      else if (payload && payload.__error) h.fail(request, payload.__error);
       else h.reply(request, payload ?? {});
     }
     await h.settle();
@@ -274,4 +277,51 @@ test('已停止注入的建议恢复可读后，不会同时出现在生效与�
   assert.equal(cards(h), 2, '恢复可读后只能有一张 i-1 的卡，不能两处各渲染一次');
   assert.doesNotMatch(h.element.innerHTML, /已停止注入/, '恢复后不再挂在「已停止注入」里');
   assert.equal((h.element.innerHTML.match(/i-1 的观察/g) || []).length, 1);
+});
+
+/* ───────────────────── 读态（失败 / 空 / 未知码） ───────────────────── */
+
+/* 这一页曾经把「后端 500」讲成「当前状态未能确认」，因为它只看错误码：
+   请求本身没走完时没有码，于是落进兜底文案，和「后端明确拒绝」混为一谈。 */
+test('请求没有走完：说「读取失败」，不说「当前状态未能确认」', async () => {
+  const h = harness();
+  await mount(h, () => ({__drop: true}));
+  assert.equal(h.page.state.data.phase, 'failed');
+  assert.match(h.element.innerHTML, /读取失败/);
+  assert.doesNotMatch(h.element.innerHTML, /当前状态未能确认/);
+});
+
+test('整页读不到：不出现「0 条」，也不说「暂无生效中的指导」', async () => {
+  const h = harness();
+  await mount(h, () => ({__error: 'self_review_evidence_unavailable'}));
+  const html = h.element.innerHTML;
+  assert.equal(h.page.state.data.phase, 'failed');
+  assert.doesNotMatch(html, /0 条/, '失败态不能把「没读到」写成「0 条」');
+  assert.doesNotMatch(html, /暂无生效中的指导/, '失败态不能说成「没有指导」');
+  assert.doesNotMatch(html, /sr-kpis/, '失败态不渲染 KPI');
+  assert.match(html, /原始依据已不可读取/, '要说清后端拒绝的原因');
+  assert.match(html, /class="button small" type="button" data-review-refresh[^>]*>重新读取</,
+    '失败态要给出一次重试');
+});
+
+test('后端返回未收录的错误码：有专属文案，不落到笼统兜底', async () => {
+  const h = harness();
+  await mount(h, () => ({__error: 'self_review_unmapped_probe'}));
+  const html = h.element.innerHTML;
+  assert.match(html, /未收录/);
+  assert.match(html, /self_review_unmapped_probe/, '要带上后端给出的码，便于核对');
+  assert.doesNotMatch(html, /当前状态未能确认/);
+});
+
+test('读取成功但一条都没有：仍然说「暂无复盘记录」，并显示最近一次复盘状态', async () => {
+  const h = harness();
+  await mount(h, () => page([], null,
+    {status: {state: 'failed', code: 'self_review_output_invalid'}}));
+  const html = h.element.innerHTML;
+  assert.equal(h.page.state.data.phase, 'ready');
+  assert.match(html, /暂无复盘记录/);
+  assert.doesNotMatch(html, /读取失败|当前状态未能确认/);
+  assert.match(html, /最近一次复盘状态/);
+  assert.match(html, /上次失败/, '后端注入的最近一次状态要被渲染出来');
+  assert.match(html, /self_review_output_invalid/);
 });

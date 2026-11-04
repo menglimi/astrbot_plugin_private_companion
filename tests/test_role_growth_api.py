@@ -1,10 +1,12 @@
 """Authenticated host requests exercise growth management without model or platform IO."""
 
 from dataclasses import replace
+from datetime import timedelta
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import Mock
 from urllib.parse import quote
 
 # Redirect SDK import-time data into the existing host fixture's temporary root.
@@ -14,7 +16,7 @@ from starlette.requests import Request
 
 from astrbot_host.growth_api import PREFIX
 from astrbot_host.management_identity import dashboard_operator
-from companion_v2.execution.models import digest, encode, stamp
+from companion_v2.execution.models import TaskError, digest, encode, stamp
 from companion_v2.identity_policy.models import AuthorizationTier
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.role_work.growth.progress import receipt_fingerprint
@@ -251,3 +253,35 @@ class GrowthManagementHostTests(unittest.IsolatedAsyncioTestCase):
         valid_shape = {key:value for key, value in malformed.items() if key != "scope"}
         self.assertEqual((await self.request(suffix="/self-review", data=valid_shape))["data"]["code"],
                          "self_review_item_unavailable")
+
+    async def test_self_review_list_reports_a_row_whose_evidence_reset_instead_of_failing(self):
+        session = await self.initialize()
+        app = session.application
+        owner = app.role_growth_context.reader.owner(self.target)
+        created = NOW - timedelta(hours=1)
+        window = {"opened_at": (created - timedelta(hours=1)).isoformat(),
+                  "closed_at": created.isoformat(), "handles": ["h-1"], "kinds": ["conversation"]}
+        run_id = "self-review:" + digest([self.target.key, "reset-window"])
+        with app.runtime.transaction() as connection:
+            connection.execute("INSERT INTO role_self_review_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, digest(owner), digest(self.target.scope), json.dumps(window),
+                 "material-reset", "summary reset", "decided", stamp(created), stamp(created)))
+            connection.execute("INSERT INTO role_self_review_items VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id + ":item:0", run_id, digest(owner), digest(self.target.scope), "keep",
+                 "observation reset", "next action", 0.8, json.dumps(["h-1"]),
+                 stamp(NOW + timedelta(hours=12)), "accepted", stamp(created),
+                 None, None, None, 0))
+        # The cited observation was reset away, so describing the evidence raises a
+        # TaskError.  The route has to answer with that row degraded — a 500 here is
+        # what made the dashboard report "当前状态未能确认" for the whole page.
+        evidence = app.role_self_review_evidence
+        evidence.describe_handles = Mock(side_effect=TaskError(
+            "conversation_context_reset", "native history precedes this window's reset"))
+        for query in ("state=active", "state=decided"):
+            response = await self.request(suffix="/self-review", query=query)
+            self.assertEqual(response["status"], "ok", response)
+        item = (await self.request(suffix="/self-review", query="state=active"))["data"]["items"][0]
+        self.assertEqual(item["unavailable_reason"], "self_review_evidence_changed")
+        self.assertIsNone(item["observation"])
+        self.assertIsNone(item["next_action"])
