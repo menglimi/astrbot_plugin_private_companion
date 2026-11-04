@@ -16,9 +16,18 @@ from companion_v2.identity_policy.models import AuthenticatedHostPrincipal, Reso
 
 
 class TaskError(ValueError):
-    def __init__(self, code: str, reason: str):
+    """A failure whose stable ``code`` is the product diagnostic.
+
+    ``details`` carries the few measured numbers that explain a refusal to the
+    operator (for example which output ceiling was adopted and which one the
+    provider declares). It is diagnostic context only: the code stays the
+    contract, the reason stays opaque, and nothing decides on these numbers.
+    """
+
+    def __init__(self, code: str, reason: str, *, details: dict | None = None):
         super().__init__(reason)
         self.code = code
+        self.details = details or {}
 
 
 class TaskDeferred(TaskError):

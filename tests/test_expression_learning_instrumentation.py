@@ -21,9 +21,11 @@ import json
 import unittest
 from unittest.mock import patch
 
+from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.execution.models import TaskError, digest, stamp
 from companion_v2.expression.style_management import ExpressionStyleManagement
+from companion_v2.expression.style_service import KIND, LEARN_LEASE_SECONDS
 from companion_v2.model_gateway.models import Amount, CapturedModelOutput, ProviderResponse
 from companion_v2.model_gateway.routing import configuration_fields
 from companion_v2.storage.models import OperationState
@@ -118,6 +120,26 @@ class LearningInstrumentationTests(ExpressionFixture, HostFixture, unittest.Isol
             signals = [{**RULE, "evidence_handles": handles, **change} for change in changes]
             return answered(json.dumps({"summary": summary, "signals": signals}, ensure_ascii=False))
         return answer
+
+    def save_task_ceiling(self, app, context, value):
+        """Save this window's own output ceiling for the learning task."""
+        profile = app.router.profiles[KIND]
+        target = ConfigTarget(context.scope.installation_id, ConfigLayer.WINDOW,
+                              context.role_binding.role, context.scope)
+        snapshot = app.configuration.read(self.core, target=target, group_id=profile.group,
+                                          observed_at=self.clock.now()).unwrap()
+        return app.configuration.patch(self.core, target=target, group_id=profile.group,
+            expected_edit_token=snapshot.edit_token,
+            changes={profile.group + ".max_output_tokens": value},
+            operation=self.operation(target.authorization_scope, owner="configuration"),
+            observed_at=self.clock.now()).unwrap()
+
+    def metadata(self, app, prefix):
+        return app.runtime.read_all("SELECT value FROM runtime_metadata WHERE key LIKE ?",
+                                    (prefix + "%",))
+
+    def instruction_for(self, app, context):
+        return app.state_maintenance.bindings[context.key][1]
 
     def seed_active_rules(self, app, context, count):
         """Store ``count`` pending rules so only the rest of the budget can fit.
@@ -359,6 +381,104 @@ class LearningInstrumentationTests(ExpressionFixture, HostFixture, unittest.Isol
         self.assertEqual((last["state"], last["code"]), ("failed", "model_estimation_failed"))
         self.assertEqual(set(last), {"state", "task_id", "code"})
         self.assertFalse(self.stored_signals(app))
+
+    async def test_a_ceiling_above_the_provider_is_refused_at_preflight_with_both_numbers(self):
+        """A saved ceiling the provider cannot pay for is a configuration fact.
+
+        The route refuses the plan before anything is sent, so the round never
+        entered assembly's own raise points by growing too long: reporting it as
+        ``assemble`` sent the operator looking for an over-long prompt. The line
+        has to name the phase that really refused it and both sides of the
+        comparison, and the phase it did enter still has to be measured.
+        """
+        app, context = await self.prepare()
+        self.save_task_ceiling(app, context, 8192)
+        with self.assertLogs(LOGGER, level="INFO") as logs:
+            last = await self.learn(app, context)
+
+        self.assertEqual((last["state"], last["code"]), ("failed", "model_output_limit"), last)
+        self.assertEqual(self.model_calls(app), (),
+                         "a refused plan must not spend a model call")
+
+        [line] = lines_with(logs, "表达学习本轮未提交")
+        failure = fields(line)
+        self.assertEqual(failure["stage"], "preflight", "the refusal is a route comparison")
+        self.assertEqual(failure["retry"], "no", "the next attempt would be refused identically")
+        self.assertEqual(failure["reason"], "cannot_change")
+        self.assertEqual(failure["wait"], "none")
+        # The phase this round did enter is measured even though it raised;
+        # ``unavailable`` is reserved for the phases it never entered.
+        self.assertNotEqual(failure["elapsed_assemble_ms"], "unavailable")
+        self.assertGreaterEqual(int(failure["elapsed_assemble_ms"]), 0)
+        for name in ("elapsed_wait_ms", "elapsed_parse_ms", "elapsed_commit_ms"):
+            self.assertEqual(failure[name], "unavailable", name)
+
+        [refusal] = lines_with(logs, "表达学习上限配置与模型能力不匹配")
+        numbers = fields(refusal)
+        self.assertEqual(numbers["stage"], "preflight")
+        self.assertEqual(numbers["code"], "model_output_limit")
+        self.assertEqual(numbers["saved_max_output_tokens"], "8192")
+        self.assertEqual(numbers["provider_max_output_tokens"], "1600",
+                         "the provider capability this route declares")
+        self.assertEqual(numbers["adopted_max_output_tokens"], "8192")
+        self.assertEqual(numbers["adopted_basis"], "explicit",
+                         "the operator saved this value, so editing it is the fix")
+
+    async def test_a_refused_batch_is_not_retried_by_the_next_scan(self):
+        """The scheduler must not spend the next epoch on a comparison that failed."""
+        app, context = await self.prepare()
+        self.save_task_ceiling(app, context, 8192)
+        service = app.expression_style
+        work_key = service._work_key(context)
+        first = await self.learn(app, context)
+        self.assertEqual(first["code"], "model_output_limit", first)
+        self.assertEqual(self.metadata(app, "role.expression.learn.lease.v1:"), (),
+                         "no retry epoch may be opened for a deterministic refusal")
+        self.assertEqual(len(self.metadata(app, "role.expression.learn.stop.v1:")), 1,
+                         "the refusal is remembered for this material signature")
+
+        # Past the lease *and* past the window's rescan interval, so the scan is
+        # really allowed to look at this window again.
+        self.clock.advance(timedelta(hours=2))
+        with self.assertLogs(LOGGER, level="INFO") as logs:
+            started = service._scan(context, self.instruction_for(app, context), self.clock.now())
+            self.assertTrue(started, "the scan still reports the recorded refusal")
+            await self.until(lambda: (service.results.get(work_key) or {}).get("retry") == "no")
+
+        report = service.results[work_key]
+        self.assertEqual((report["state"], report["code"]), ("failed", "model_output_limit"))
+        self.assertEqual(self.model_calls(app), (), "a stopped signature spends no model call")
+        self.assertEqual(self.metadata(app, "role.expression.learn.lease.v1:"), (),
+                         "the retry epoch was never advanced")
+        [skip] = lines_with(logs, "表达学习跳过同一批确定性失败素材")
+        skipped = fields(skip)
+        self.assertEqual(skipped["code"], "model_output_limit")
+        self.assertEqual(skipped["retry"], "no")
+        self.assertEqual(skipped["reason"], "cannot_change")
+
+    async def test_an_explicit_retry_clears_the_recorded_refusal(self):
+        """Editing the value then asking for the batch must not stay refused."""
+        app, context = await self.prepare()
+        self.save_task_ceiling(app, context, 8192)
+        first = await self.learn(app, context)
+        self.assertEqual(first["code"], "model_output_limit", first)
+
+        # The operator lowered the saved ceiling and clicked "learn now". The
+        # previous result still says "failed", so this test waits for the batch to
+        # really run instead of for a state that is already true.
+        self.save_task_ceiling(app, context, 1600)
+        self.clock.advance(timedelta(seconds=LEARN_LEASE_SECONDS * 4))
+        service = app.expression_style
+        with self.assertLogs(LOGGER, level="INFO") as logs:
+            ExpressionStyleManagement(app).learn(operator=self.core, context=context).unwrap()
+            await self.until(lambda: len(self.model_calls(app)) == 1)
+            await self.until(lambda: (service.results.get(service._work_key(context)) or {})
+                             .get("state") == "succeeded")
+        retried = service.results[service._work_key(context)]
+
+        self.assertEqual((retried["state"], retried["code"]), ("succeeded", "owner_result"), retried)
+        self.assertEqual(len(lines_with(logs, "表达学习按手动请求清除确定性失败记录")), 1)
+        self.assertEqual(self.metadata(app, "role.expression.learn.stop.v1:"), ())
 
 
 if __name__ == "__main__":

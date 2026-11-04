@@ -663,6 +663,33 @@ class ProactiveContactTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runtime.read_one("SELECT state FROM model_calls", ())[0], "discarded")
         self.assertEqual(self.sent, [])
 
+    async def test_an_answer_that_is_not_json_is_skipped_instead_of_failing_the_task(self):
+        """One prose answer must not become ``unhandled_exception``.
+
+        The JSON decode had no guard, so a model that answered prose raised a
+        ValueError the supervisor could only report as an unhandled task failure —
+        the same word it uses for a crash, with no hint about the answer. The round
+        now records a skip and the log names the malformed answer without quoting
+        it.
+        """
+        app = await self.enabled()
+        async def prose(_envelope):
+            return answered("这句不是 JSON，只是一句随手写的话。")
+        self.model_behavior = prose
+        with self.assertLogs("companion_v2.proactive.service", level="WARNING") as logs:
+            task = (await self.contact(app)).unwrap().task
+
+        self.assertEqual(task.state, "succeeded", "a malformed answer is not a task failure")
+        self.assertEqual(self.sent, [])
+        [warning] = [record.getMessage() for record in logs.records
+                     if "不是合法 JSON" in record.getMessage()]
+        self.assertIn("raw_chars=", warning)
+        self.assertNotIn("随手写的话", warning, "the model body must never reach the log")
+        document = json.loads(self.runtime.read_one(
+            "SELECT record_json FROM proactive_contacts", ())["record_json"])
+        self.assertEqual(document["decision"], "skip")
+        self.assertEqual(document["model_skip_reason"], "other")
+
     async def test_shutdown_waits_for_stubborn_model_and_discards_late_output(self):
         entered, release = asyncio.Event(), asyncio.Event()
         self.addCleanup(release.set)

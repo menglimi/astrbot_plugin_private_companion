@@ -183,6 +183,10 @@ class ModelRouter:
         provider_default = self.provider_default(context, profile, snapshot) if provider_id is None else None
         routed_snapshot = self.apply_provider_default(profile, snapshot, provider_default)
         values = {name.rsplit(".", 1)[1]: item.value for name, item in routed_snapshot.fields.items()}
+        # The saved value, before ``values`` is overwritten with the ceiling this
+        # route adopted: a refusal has to name both sides of the comparison, and
+        # only this one is what the operator can edit.
+        saved_max_output_tokens = values["max_output_tokens"]
         fallback_field = routed_snapshot.fields[profile.group + ".fallback"]
         if provider_id is None and values["fallback"] and values["fallback"] == values["provider"] and fallback_field.explicit:
             raise TaskError("model_fallback_duplicate", "fallback must select a different provider")
@@ -218,7 +222,20 @@ class ModelRouter:
             if request.audios and "audio" not in provider.capabilities:
                 raise TaskError("model_capability_mismatch", "the original voice requires an audio-capable provider")
             if values["max_output_tokens"] > provider.maximum_output_tokens:
-                raise TaskError("model_output_limit", "configured output exceeds provider capability")
+                # A ceiling the route cannot pay for is refused here, before any
+                # request leaves the process: nothing about the prompt is wrong,
+                # so the operator needs the three numbers that produced the
+                # refusal — the saved value, the ceiling this route adopted and
+                # the capability the provider declares — plus which basis was
+                # used. Without them the code reads as "the prompt was too
+                # long", which points the operator at the opposite fix.
+                raise TaskError("model_output_limit", "configured output exceeds provider capability",
+                                details={"stage": "preflight",
+                                         "saved_max_output_tokens": saved_max_output_tokens,
+                                         "adopted_max_output_tokens": ceiling,
+                                         "adopted_basis": basis,
+                                         "provider_id": provider.binding.provider,
+                                         "provider_max_output_tokens": provider.maximum_output_tokens})
         audit = {
             "profile": {"kind": profile.kind, "version": profile.version, "lane": profile.lane.value},
             "configuration_token": snapshot.resolution_token,

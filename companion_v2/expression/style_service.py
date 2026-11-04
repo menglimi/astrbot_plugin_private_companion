@@ -270,6 +270,79 @@ def retry_wait_seconds(epoch):
     return LEARN_LEASE_SECONDS * (2 ** max(epoch, 0))
 
 
+# The failures a retry cannot change. Each one compares something this
+# installation saved — an output ceiling, a provider declaration, an input bound —
+# with what the route can actually do, so the same batch is refused again on every
+# scan until an operator edits the value. Retrying them only idles the batch for
+# 210, 420 and 840 seconds and keeps the slot busy for an answer that cannot come.
+# Everything else keeps the existing backoff: a provider hiccup, a round cut at
+# the ceiling or a body the model mangled is a failure the same prompt may survive
+# on its next attempt, so it is treated as transient.
+DETERMINISTIC_FAILURES = frozenset({
+    "model_output_limit", "model_capability_mismatch", "model_route_invalid",
+    "model_task_unregistered", "model_provider_unavailable",
+    "expression_model_profile_exceeded", "host_model_limit_input", "host_model_limit_output",
+})
+# Where a material signature that was refused deterministically is remembered, so
+# the scheduler does not spend the next epoch's model call on the same comparison.
+# The manual "learn now" path clears it: an operator who just changed the value
+# must be able to try again without waiting for a new sample set.
+STOP_PREFIX = "role.expression.learn.stop.v1:"
+
+# The duration each phase is reported under. The model phase reports ``wait_ms``
+# because what it measures is the wait for the provider, not the stage's name.
+STAGE_TIMINGS = {"assemble": "assemble_ms", "model": "wait_ms",
+                 "parse": "parse_ms", "commit": "commit_ms"}
+
+
+def enter_stage(job, name):
+    """Open a phase: name it and zero its stopwatch at the same moment.
+
+    The stopwatch used to be assigned where a phase ended, so every failure
+    raised inside a phase reported that phase as ``unavailable`` — the one round
+    whose cost matters most said nothing at all. Zeroing on entry makes the entry
+    itself the fact being recorded.
+    """
+    job["stage"] = name
+    job.setdefault("phase_clock", {})[name] = perf_counter()
+
+
+def leave_stage(job, name):
+    """Close a phase with the duration it really took, however it ended."""
+    began = (job.get("phase_clock") or {}).pop(name, None)
+    if began is not None:
+        job["timings"][STAGE_TIMINGS[name]] = _milliseconds(began)
+
+
+def leave_open_stages(job):
+    """Close every phase this round entered and has not closed yet.
+
+    A round that raises inside a phase is exactly the one whose time budget an
+    operator needs, so the duration is written on the way out. ``unavailable``
+    then means one thing only: this round never reached that phase.
+    """
+    for name in tuple(job.get("phase_clock") or {}):
+        leave_stage(job, name)
+
+
+def note_diagnosis(job, error):
+    """Keep the diagnostic a refusing component recorded, if it recorded one.
+
+    ``model_output_limit`` is raised while routing, before anything is sent: the
+    saved output ceiling is above the ceiling the selected provider declares.
+    That is a configuration comparison, not an over-long prompt, so the refusal
+    carries its own phase and the numbers behind it instead of leaving the
+    operator to infer them from an ``assemble`` label.
+    """
+    details = getattr(error, "details", None)
+    if not isinstance(details, dict) or not details:
+        return
+    stage = details.get("stage")
+    if type(stage) is str and stage:
+        job["stage"] = stage
+    job["diagnosis"] = dict(details)
+
+
 # Resolving a scope family reads ``conversation_native_turns`` and
 # ``conversation_batches`` (at most ``scope_family.MAX_FAMILY_WINDOWS`` rows each).
 # The capacity gate is asked once per scanned window and once per page read, so a
@@ -402,17 +475,31 @@ class ExpressionStyleService:
                        getattr(receipt, "updated_at", None), str(job.get("material_hash") or "")[:12],
                        getattr(job.get("policy"), "learning_mode", "unknown"), epoch, MAX_RETRY_EPOCHS)
 
+    def _note_stopped(self, identifier, job, epoch, code):
+        """Say why this signature is skipped without a model call.
+
+        The earlier round already recorded which saved value refused it; this line
+        is what tells the next scan apart from a transient failure that is merely
+        waiting out its lease.
+        """
+        logger.info("[CompanionV2] 表达学习跳过同一批确定性失败素材 task=%s material=%s mode=%s "
+                    "epoch=%s code=%s retry=no reason=cannot_change",
+                    identifier, str(job.get("material_hash") or "")[:12],
+                    getattr(job.get("policy"), "learning_mode", "unknown"), epoch, code)
+
     def _note_uncommitted(self, identifier, job, epoch, result, *, retry="after_lease"):
         """Say that this round spent its model call without committing the batch.
 
         ``run`` stores the same code it logs, so the page and the log agree: the
         supervisor's ``worker_error`` is replaced by the owner's own failure code
         when there is one. ``retry`` names what happens to the batch next — the
-        next epoch after its lease, or immediately for a known, side-effect-free
-        round such as an output-ceiling truncation. The last admitted epoch says
-        ``exhausted`` because there is no next attempt. ``stage`` and the partial
-        phase timings come from the observation ``generate`` left in the job, so a
-        round that never reached its commit still says how far it got.
+        next epoch after its lease, immediately for a known, side-effect-free
+        round such as an output-ceiling truncation, or ``no`` for a failure the
+        next attempt cannot change. The last admitted epoch says ``exhausted``
+        because there is no next attempt. ``stage`` and the partial phase timings
+        come from the observation ``generate`` left in the job, so a round that
+        never reached its commit still says how far it got — and how long the
+        phase it did reach really took.
         """
         state = getattr(result.task, "state", None)
         if state == "succeeded":
@@ -426,16 +513,56 @@ class ExpressionStyleService:
             value = timings.get(name)
             return "unavailable" if value is None else str(value)
 
+        code = result.failure_code or getattr(result.task, "reason", None)
+        # ``retry=no`` is only honest with the reason it is not retried: the
+        # failure compares a saved value with what the route can do, so every
+        # attempt is refused by the same comparison. The wait is ``none`` because
+        # nothing is scheduled for this batch — the window only returns to its
+        # own rescan interval.
         logger.warning("[CompanionV2] 表达学习本轮未提交 task=%s material=%s mode=%s state=%s "
-                       "code=%s stage=%s committed=no retry=%s epoch=%s wait=%ss truncated=%s elapsed_assemble_ms=%s "
+                       "code=%s stage=%s committed=no retry=%s reason=%s epoch=%s wait=%s truncated=%s "
+                       "elapsed_assemble_ms=%s "
                        "elapsed_wait_ms=%s elapsed_parse_ms=%s elapsed_commit_ms=%s", identifier,
                        str(observation.get("material_hash") or "")[:12], observation["policy"].learning_mode,
-                       state, result.failure_code or getattr(result.task, "reason", None),
+                       state, code,
                        observation.get("stage") or "assemble",
                        "exhausted" if epoch >= MAX_RETRY_EPOCHS else retry,
-                       epoch, retry_wait_seconds(epoch),
+                       self._retry_reason(code, retry, epoch),
+                       epoch, "none" if retry == "no" else str(retry_wait_seconds(epoch)) + "s",
                        "yes" if observation.get("truncated") else "no", timing("assemble_ms"),
                        timing("wait_ms"), timing("parse_ms"), timing("commit_ms"))
+        self._note_refusal(observation, code)
+
+    @staticmethod
+    def _retry_reason(code, retry, epoch):
+        """The one word that explains what the next attempt is for."""
+        if epoch >= MAX_RETRY_EPOCHS:
+            return "retry_exhausted"
+        if retry == "no":
+            return "cannot_change"
+        if retry == "now":
+            return "known_round"
+        return "lease_expired"
+
+    def _note_refusal(self, observation, code):
+        """Say which saved value refused this round, when the refusal named it.
+
+        A route that refuses a plan because the saved output ceiling is above what
+        the selected provider declares is not a prompt that grew too long; without
+        these numbers the operator has to guess which of the two ends to edit.
+        """
+        diagnosis = observation.get("diagnosis")
+        if not isinstance(diagnosis, dict) or not diagnosis:
+            return
+        logger.warning("[CompanionV2] 表达学习上限配置与模型能力不匹配 stage=%s code=%s "
+                       "saved_max_output_tokens=%s provider_max_output_tokens=%s "
+                       "adopted_max_output_tokens=%s adopted_basis=%s provider=%s",
+                       observation.get("stage") or "", code,
+                       diagnosis.get("saved_max_output_tokens", "unknown"),
+                       diagnosis.get("provider_max_output_tokens", "unknown"),
+                       diagnosis.get("adopted_max_output_tokens", "unknown"),
+                       diagnosis.get("adopted_basis", "unknown"),
+                       diagnosis.get("provider_id", "unknown"))
 
     def _note_truncated_retry(self, identifier, job, epoch, limit, retry_limit):
         """Say that a cut-off round is retried now, with fewer candidates.
@@ -517,6 +644,51 @@ class ExpressionStyleService:
                 (self._lease_key(request_key), encode({"epoch": epoch, "issued_at": stamp(at)})))
 
     @staticmethod
+    def _stop_key(request_key):
+        """Where a signature a retry cannot change is remembered."""
+        return STOP_PREFIX + request_key
+
+    def _write_stop(self, request_key, code):
+        """Remember that this exact material signature was refused for good.
+
+        The refusal compares a saved value with what the route can do, so the
+        scheduler would spend the next epoch's model call to be told the same
+        thing again. New samples are a different request key, and the manual
+        "learn now" path clears the row, so an operator who just edited the
+        value does not have to wait for new material. Writing it is best effort:
+        an audit note must never replace the failure it describes.
+        """
+        try:
+            with self.runtime.transaction() as connection:
+                connection.execute("""INSERT INTO runtime_metadata(key, value) VALUES (?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                    (self._stop_key(request_key), encode({"code": code})))
+        except Exception as error:
+            logger.warning("[CompanionV2] 表达学习确定性失败记录未能写入 code=%s error_type=%s",
+                           code, type(error).__name__)
+
+    def _stopped_code(self, request_key):
+        """The deterministic refusal recorded for this signature, or ``None``."""
+        row = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?",
+                                    (self._stop_key(request_key),))
+        if row is None:
+            return None
+        try:
+            value = json.loads(row["value"])
+            if type(value) is not dict or set(value) != {"code"} or type(value["code"]) is not str:
+                raise ValueError
+        except (TypeError, ValueError):
+            logger.warning("[CompanionV2] 表达学习确定性失败记录无法读取，按可重试处理 request=%s",
+                           request_key[:12])
+            return None
+        return value["code"]
+
+    def _clear_stop(self, request_key):
+        """Forget the refusal so one explicit attempt may run this batch again."""
+        with self.runtime.transaction() as connection:
+            connection.execute("DELETE FROM runtime_metadata WHERE key = ?", (self._stop_key(request_key),))
+
+    @staticmethod
     def _lease_expired(receipt, at, epoch=0):
         """Whether an accepted receipt is older than the wait its epoch declares.
 
@@ -567,7 +739,10 @@ class ExpressionStyleService:
         is not retried automatically any more and the window says
         ``retry_exhausted``, because four failed rounds of one sample set will
         not go differently on the next scan. A different sample set is a
-        different request key, so it starts again at epoch zero.
+        different request key, so it starts again at epoch zero. A signature that
+        was refused by a saved value rather than by chance is remembered under
+        ``STOP_PREFIX`` and reported without opening another epoch: that refusal
+        cannot change until the value or the samples do.
         """
         epoch = self._lease_epoch(request_key)
         identifier = self._attempt_identifier(context, request_key, epoch)
@@ -575,6 +750,15 @@ class ExpressionStyleService:
         if receipt.is_success and self._owns_batch(receipt.value, identifier, at, epoch):
             self._note_skipped(identifier, job, receipt.value, epoch=epoch, at=at)
             return epoch, identifier, {"state": "already_attempted", "task_id": identifier}
+        # A recorded deterministic refusal is final for this material signature:
+        # the saved value and the route capability it was compared with have not
+        # changed, so the next epoch would spend a model call to be refused by the
+        # same comparison. The manual "learn now" path clears the record first.
+        stopped = self._stopped_code(request_key)
+        if stopped is not None:
+            self._note_stopped(identifier, job, epoch, stopped)
+            return epoch, identifier, {"state": "failed", "code": stopped,
+                                       "task_id": identifier, "epoch": epoch, "retry": "no"}
         if receipt.is_success:
             if epoch >= MAX_RETRY_EPOCHS:
                 self._note_retry_exhausted(identifier, job, receipt.value, epoch)
@@ -849,7 +1033,7 @@ class ExpressionStyleService:
                 return self.results[work_key]
             if skipped is not None:
                 self.results[work_key] = skipped
-                if skipped.get("state") == "retry_exhausted":
+                if skipped.get("state") == "retry_exhausted" or skipped.get("retry") == "no":
                     # No attempt of this signature is left, so the window goes back
                     # to its own rescan interval: the stop must not become a poll
                     # every few seconds. A different sample set is still reported
@@ -886,6 +1070,8 @@ class ExpressionStyleService:
             except BaseException:
                 self.pending.pop(identifier, None)
                 raise
+        degraded = None
+        stopped = None
         try:
             result = require(await self.runner.run(context, identifier))
             report = {"state": result.task.state, "task_id": identifier, "code": result.task.reason}
@@ -895,14 +1081,21 @@ class ExpressionStyleService:
             # before the cleanup below, which drops this attempt's pending job.
             observation = self.pending.get(identifier) or {}
             degraded = self._degraded_ask(identifier, job, result, observation)
+            # A failure the next attempt cannot change is not retried: retrying it
+            # only idled the batch for 210, 420 and finally 840 seconds before the
+            # same saved value refused it again. ``retry=no`` names that decision
+            # and ``cannot_change`` says why.
+            stopped = result.failure_code if result.failure_code in DETERMINISTIC_FAILURES else None
             self._note_uncommitted(identifier, job, epoch, result,
-                                   retry="now" if degraded is not None else "after_lease")
+                                   retry="no" if stopped else ("now" if degraded is not None else "after_lease"))
             if result.failure_code:
                 # ``task.reason`` is the supervisor's stop reason (``worker_error``),
                 # which hides the cause the owner produced. A round cut at its own
                 # budget is ``model_timeout``, and that is what the last result has
                 # to say: the material batch is not retried after it.
                 report["code"] = result.failure_code
+            if stopped:
+                self._write_stop(request_key, stopped)
             if observation.get("trimmed_rules"):
                 report["trimmed_rules"] = observation["trimmed_rules"]
                 report["trim_reason"] = observation.get("trim_reason")
@@ -923,7 +1116,15 @@ class ExpressionStyleService:
                 if entry.get("group_claim") and degraded is None:
                     self._release_group_batch(context, entry.get("group_claim_operation") or identifier)
                 since = entry.get("attempted_at") or self.tasks.now()
-                self.next_checks[context.key] = since + timedelta(seconds=retry_wait_seconds(epoch))
+                if stopped:
+                    # A refusal a retry cannot change is not scheduled as a retry
+                    # at all: the batch goes back to the window's own rescan
+                    # interval so a new sample set — the only thing that can end
+                    # the refusal besides an operator edit — is picked up then.
+                    self.next_checks[context.key] = since + timedelta(
+                        minutes=self._scan_interval_minutes(job["policy"], context))
+                else:
+                    self.next_checks[context.key] = since + timedelta(seconds=retry_wait_seconds(epoch))
             self.committed.discard(identifier)
         if degraded is not None:
             # A cut-off round is a known outcome: the gateway refused the body and
@@ -1095,57 +1296,66 @@ class ExpressionStyleService:
         job = self.pending[run.task.task_id]
         # One word for everything before the model round: ``run``'s own early
         # failures and this attempt's guard/validate/assembly all report
-        # ``stage=assemble``, so the same failure is not spelled two ways.
-        job["stage"] = "assemble"
+        # ``stage=assemble``, so the same failure is not spelled two ways. The
+        # phase is opened, not just named, so its duration is written even when
+        # assembly is where this round raises.
         job["timings"] = timings = {}
+        enter_stage(job, "assemble")
         started = perf_counter()
         context = job["context"]
-        await self.guard(context, job["instruction"])
-        run.validate()
-        mode = job["policy"].learning_mode
-        rules = job["existing_rules"]
-        # 本轮实际执行的路由上限（#456 的降载重试会把更小的 ask 预先放进 job）。
-        limit = job.get("learn_limit")
-        if limit is None:
-            limit = learning.signal_limit(mode, self._ask_ceiling(run, job, rules))
-        job["learn_limit"] = limit
-        rules = job["existing_rules"]
-        # Size the ask from the ceiling this run really executes under, not from
-        # the registered profile default, so a thinking model keeps the rest of
-        # *that* number for its own reasoning and a smaller route is never
-        # over-asked.
-        request = self._request(job, rules, limit)
-        # The material is fixed before the first request, but whether it fits is
-        # only known from the route. Trim the reference rules instead of letting
-        # the reservation fail the whole batch, and record why the run sent fewer
-        # than it read. The samples are never trimmed: they are the evidence.
-        for attempt in range(MAX_TRIM_ROUNDS + 1):
-            fits, ceiling = self._request_fits(run, request)
-            if fits:
-                break
-            if attempt == MAX_TRIM_ROUNDS or len(rules) <= MIN_EXISTING_RULES:
-                logger.warning("[CompanionV2] 表达学习材料超出模型档案 task=%s rules=%d ceiling=%s",
-                               run.task.task_id, len(rules), ceiling)
-                raise TaskError("expression_model_profile_exceeded",
-                                "the expression learning prompt exceeds the selected model input or output profile")
-            rules = trim_reference_rules(rules)
-            job["trimmed_rules"] = len(job["existing_rules"]) - len(rules)
-            job["trim_reason"] = "model_input_budget"
-            job["input_ceiling"] = ceiling
+        try:
+            await self.guard(context, job["instruction"])
+            run.validate()
+            mode = job["policy"].learning_mode
+            rules = job["existing_rules"]
+            # 本轮实际执行的路由上限（#456 的降载重试会把更小的 ask 预先放进 job）。
+            limit = job.get("learn_limit")
+            if limit is None:
+                limit = learning.signal_limit(mode, self._ask_ceiling(run, job, rules))
+            job["learn_limit"] = limit
+            rules = job["existing_rules"]
+            # Size the ask from the ceiling this run really executes under, not from
+            # the registered profile default, so a thinking model keeps the rest of
+            # *that* number for its own reasoning and a smaller route is never
+            # over-asked.
             request = self._request(job, rules, limit)
-        if job.get("trimmed_rules"):
-            logger.info("[CompanionV2] 表达学习材料超出模型档案，已按预算裁剪参考规则 "
-                        "task=%s rules=%d trimmed=%d ceiling=%s",
-                        run.task.task_id, len(rules), job["trimmed_rules"], job["input_ceiling"])
-        timings["assemble_ms"] = _milliseconds(started)
+            # The material is fixed before the first request, but whether it fits is
+            # only known from the route. Trim the reference rules instead of letting
+            # the reservation fail the whole batch, and record why the run sent fewer
+            # than it read. The samples are never trimmed: they are the evidence.
+            for attempt in range(MAX_TRIM_ROUNDS + 1):
+                fits, ceiling = self._request_fits(run, request)
+                if fits:
+                    break
+                if attempt == MAX_TRIM_ROUNDS or len(rules) <= MIN_EXISTING_RULES:
+                    logger.warning("[CompanionV2] 表达学习材料超出模型档案 task=%s rules=%d ceiling=%s",
+                                   run.task.task_id, len(rules), ceiling)
+                    raise TaskError("expression_model_profile_exceeded",
+                                    "the expression learning prompt exceeds the selected model input or output profile")
+                rules = trim_reference_rules(rules)
+                job["trimmed_rules"] = len(job["existing_rules"]) - len(rules)
+                job["trim_reason"] = "model_input_budget"
+                job["input_ceiling"] = ceiling
+                request = self._request(job, rules, limit)
+            if job.get("trimmed_rules"):
+                logger.info("[CompanionV2] 表达学习材料超出模型档案，已按预算裁剪参考规则 "
+                            "task=%s rules=%d trimmed=%d ceiling=%s",
+                            run.task.task_id, len(rules), job["trimmed_rules"], job["input_ceiling"])
+        except BaseException as error:
+            # The refusal carries its own phase when it is a configuration
+            # comparison rather than a prompt that grew too long; either way the
+            # phase this round did enter is closed with its real duration.
+            note_diagnosis(job, error)
+            leave_open_stages(job)
+            raise
+        leave_stage(job, "assemble")
         material = next((item.payload for item in request.context.materials
                          if item.purpose == "role_expression_samples"), "")
         self._note_prepared(run.task.task_id, job, rules=rules, limit=limit,
                             input_estimate=input_estimate_tokens(
                                 request.role_instruction, request.instruction, material),
                             input_ceiling=ceiling)
-        job["stage"] = "model"
-        waiting = perf_counter()
+        enter_stage(job, "model")
         try:
             # The owner keeps the gateway's ceiling-raise retry off for this task:
             # one truncation degrade of its own is the only retry it wants (#456).
@@ -1154,26 +1364,25 @@ class ExpressionStyleService:
             # Observation only: the gateway error keeps propagating unchanged.
             # The wait is measured on the same clock as the success path, because
             # a failing round is exactly the one whose time budget matters.
-            timings["wait_ms"] = _milliseconds(waiting)
             job["truncated"] = getattr(error, "code", None) == "model_output_truncated"
+            note_diagnosis(job, error)
+            leave_open_stages(job)
             raise
-        timings["wait_ms"] = _milliseconds(waiting)
+        leave_stage(job, "model")
         self._note_model_returned(run.task.task_id, job, completion, timings["wait_ms"])
-        job["stage"] = "parse"
+        enter_stage(job, "parse")
         try:
             if completion.draft is None:
                 raise TaskError("expression_output_invalid", "style learning needs a complete response")
-            parsing = perf_counter()
             output = parse_output(completion.draft.text,
                 allowed_evidence=sample_handles(job["samples"]),
                 default_channels=(context.scope.kind.value,), limit=limit)
-            timings["parse_ms"] = _milliseconds(parsing)
+            leave_stage(job, "parse")
             await self.guard(context, job["instruction"])
-            job["stage"] = "commit"
+            enter_stage(job, "commit")
             # Counters exist only for the parse log line; the accepted list and
             # every write keep exactly the order and conditions they had.
             counters = {"signature": 0, "form": 0, "capacity": 0, "support": 0}
-            committing = perf_counter()
             with self.runtime.transaction() as connection:
                 run.validate()
                 run.begin_effect()
@@ -1262,7 +1471,7 @@ class ExpressionStyleService:
                     next_state=OperationState.COMPLETED, observed_at=self.tasks.now()))
                 self.committed.add(run.task.task_id)
                 run.record_operation(run.task.task_id)
-            timings["commit_ms"] = _milliseconds(committing)
+            leave_stage(job, "commit")
             self._note_parsed(run.task.task_id, job, len(output.signals), counters)
             self._note_committed(run.task.task_id, job, run_id, usage_known=completion.usage_known,
                                  inserted=len(accepted_signals), timings=timings, started=started)
@@ -1272,7 +1481,12 @@ class ExpressionStyleService:
         except BaseException as error:
             # Same cleanup and propagation as before; only the failure annotation
             # is new so the owner's "not committed" line can name the truncation.
+            # The phase this round raised in is closed here, so its duration is
+            # reported instead of the ``unavailable`` that used to mean both
+            # "never entered" and "entered but never measured".
             job["truncated"] = job.get("truncated") or getattr(error, "code", None) == "model_output_truncated"
+            note_diagnosis(job, error)
+            leave_open_stages(job)
             if run.task.task_id not in self.committed:
                 self.gateway.ledger.discard(completion.call_id)
             raise
@@ -1594,8 +1808,17 @@ class ExpressionStyleService:
         if worker is not None and not worker.done():
             return {"state": "running"}
         at = self.tasks.now()
-        if self.prepare(context, instruction, at) is None:
+        job = self.prepare(context, instruction, at)
+        if job is None:
             return self.results.get(self._work_key(context), {"state": "insufficient_samples"})
+        # The operator asked for this batch explicitly, so a refusal recorded for
+        # it must not outlive the edit they probably just made: the automatic scan
+        # honours the record, an explicit "learn now" is the way out of it.
+        request_key = digest([self._work_key(context), job["material_hash"], job["policy"].learning_mode])
+        if self._stopped_code(request_key) is not None:
+            logger.info("[CompanionV2] 表达学习按手动请求清除确定性失败记录 material=%s mode=%s request=%s",
+                        str(job.get("material_hash") or "")[:12], job["policy"].learning_mode, request_key[:12])
+            self._clear_stop(request_key)
         self.workers[self._work_key(context)] = asyncio.create_task(self.run(context, instruction),
                                                        name="companion:expression-learn")
         self.workers[self._work_key(context)].add_done_callback(lambda done: self.app.notify())
