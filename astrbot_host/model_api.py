@@ -25,6 +25,7 @@ from companion_v2.proactive.search_settings import SearchSettingsError, SearchSe
 
 from .management_identity import dashboard_operator
 from .core_reply_configuration import CORE_MANAGED_FIELDS, project_core_reply_configuration
+from .model_settings import provider_output_limit_rows
 from .memory_diagnostics import process_memory_snapshot
 from .memory_linkage import read_external_memory_summary
 from .maintenance_checks import read_host_checks
@@ -516,7 +517,18 @@ class ModelWebAPI:
             else:
                 result = await asyncio.to_thread(manager.configure, operator, {**data, "layer": layer})
             if action in {"status", "configure"} and result.is_success:
-                result = Outcome.success(project_core_reply_configuration(result.unwrap()))
+                payload = project_core_reply_configuration(result.unwrap())
+                # The reply provider's ceiling is the plugin's own global
+                # 「最大输出 Token」 (with a floor), not something the AstrBot
+                # provider declared. Ship that provenance so the page points the
+                # operator at the setting that actually moves the number.
+                common = getattr(getattr(_session, "settings", None), "common", None)
+                if (common is not None and isinstance(payload, dict)
+                        and isinstance(payload.get("providers"), list)):
+                    payload = {**payload, "providers": provider_output_limit_rows(
+                        payload["providers"], plugin_global=common.max_output_tokens,
+                        primary_id=common.provider_id)}
+                result = Outcome.success(payload)
             if action == "maintenance" and result.is_success:
                 payload = dict(result.unwrap())
                 payload["external_token_sources"] = read_token_sources(self.controller)

@@ -9,6 +9,37 @@ from companion_v2.model_gateway.models import MAX_MODEL_OUTPUT_TOKENS
 from companion_v2.model_gateway.replacement_rules import checked_rules
 
 
+# 结构任务（表达学习、审阅、书写等）一次至少要这么多 token；插件全局
+# 「最大输出 Token」低于它时，插件按这个下限上报 provider 能力，否则这些任务
+# 根本存不下来。管理面据此解释「为什么全局写 2048、界面显示 8192」。
+PROVIDER_OUTPUT_FLOOR = 8192
+
+
+def provider_output_limit_rows(providers, *, plugin_global, primary_id, floor=PROVIDER_OUTPUT_FLOOR):
+    """Tell the management page where a reported provider ceiling came from.
+
+    The reply provider's ceiling is ``max(插件全局「最大输出 Token」, 地板)``,
+    not a capability the AstrBot provider declared: raising the global setting is
+    what actually moves it. Without that fact the unsaved-limit hint can only
+    say "超过所选模型提供方的 N", and the operator goes looking in the provider
+    settings, where the number does not exist. Every other provider keeps
+    ``host_provider`` so its wording is unchanged.
+    """
+    rows = []
+    for row in providers:
+        if not isinstance(row, dict):
+            rows.append(row)
+            continue
+        item = dict(row)
+        from_plugin = bool(primary_id) and item.get("id") == primary_id
+        item["max_output_tokens_basis"] = "plugin_global" if from_plugin else "host_provider"
+        item["plugin_global_max_output_tokens"] = plugin_global
+        if from_plugin and plugin_global < floor:
+            item["floor_applied"] = floor
+        rows.append(item)
+    return rows
+
+
 def conversation_provider_resolver(native_context):
     """Follow AstrBot's per-session model for replies and proactive dialogue."""
     def resolve(context, profile):
