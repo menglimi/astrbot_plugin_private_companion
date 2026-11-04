@@ -524,17 +524,21 @@ class LayaDecisionClient:
 
     def __init__(self, *, mode: str = "local", endpoint: str = "", api_key: str = "",
                  timeout_seconds: int = 8, local_model_path: str = "",
-                 request_format: str = "native", model: str = DEFAULT_MODEL):
-        if mode not in {"local", "remote"}:
-            raise LayaClientError("laya_mode_invalid", "Laya 接入方式必须是 local 或 remote")
+                 request_format: str = "native", model: str = ""):
+        # Same enumeration as the settings store: MODE_MODELS is the single
+        # source of truth. Do not write a literal set of allowed modes here --
+        # a subset silently refuses backends the settings layer accepts.
+        if mode not in MODE_MODELS:
+            raise LayaClientError("laya_mode_invalid", "Laya 接入方式必须是 " + "、".join(MODE_MODELS))
         if request_format not in {"native", "cloudflare"}:
             raise LayaClientError("laya_request_format_invalid", "Laya 请求格式必须是 native 或 cloudflare")
-        if type(model) is not str or not model.strip() or len(model) > 256:
+        if type(model) is not str or len(model) > 256:
             raise LayaClientError("laya_model_invalid", "Laya 远程模型名无效")
         self.mode = mode
         self.request_format = request_format
-        self.model = model.strip() if mode == "remote" else DEFAULT_MODEL
         self.local_model_path = local_model_path
+        # Every backend keeps its own pinned default; an empty field means
+        # "use it", never "use the local checkpoint's name".
         self.model = str(model or "").strip() or MODE_MODELS[mode]
         self.endpoint, self.transport = "", None
         if mode == "remote":
@@ -690,6 +694,11 @@ class LayaDecisionClient:
         document = _parse_document(raw)
         if self.request_format == "cloudflare":
             return _cloudflare_result(document)
+        # Each backend has its own envelope: Jev answers travel in one chat
+        # message, Workers AI nests them under result. A shared flat parse here
+        # would drop every backend except SystemOne.
+        if self.transport is not None:
+            return self.transport.document(raw)
         return document
 
     async def _post(self, model_state: str, questions: dict) -> str:
@@ -697,6 +706,8 @@ class LayaDecisionClient:
             # Cloudflare Workers AI wraps the model payload under ``input``.
             payload = {"model": self.model,
                        "input": {"state": model_state, "questions": questions}}
+        elif self.transport is not None:
+            payload = self.transport.payload(model_state, questions)
         else:
             payload = {"state": model_state, "questions": questions, "model": self.model}
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

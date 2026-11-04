@@ -6,6 +6,7 @@ import logging
 from time import perf_counter
 
 from companion_v2.decision.conversation import decision_advice
+from companion_v2.decision.store import LayaSettingsError
 from companion_v2.execution.models import require, stamp
 from .group_admission import group_trigger_facts
 
@@ -201,6 +202,13 @@ async def prepare_core_reply_decision(event, prepared, *, application, now=None)
         raise
     except Exception as error:
         result = {"status": "failed", "reason": getattr(error, "code", type(error).__name__)}
+        # LayaSettingsError keeps the actionable cause in `reason` (for example
+        # "mode 必须是 ..."); logging only the code turns a configuration
+        # mistake into an opaque failure code. The detail never carries user
+        # text, so it is safe next to the code.
+        detail = getattr(error, "reason", "") if isinstance(error, LayaSettingsError) else ""
+        if detail:
+            result["reason_detail"] = detail
     active, instruction = decision_advice(result)
     result = {**result, "applied_decision": active, "suppress_reply": active.get("action") in ("wait", "silent")}
     record_application = getattr(service, "record_application", None)
@@ -211,7 +219,9 @@ async def prepare_core_reply_decision(event, prepared, *, application, now=None)
     if instruction:
         prepared["prompt_instruction"] = (prepared.get("prompt_instruction", "") + "\n\n" + instruction).strip()
     logger.log(logging.WARNING if result["status"] == "failed" else logging.INFO,
-        "[CompanionV2] Laya 核心接话判断 event_ref=%s turn_id=%s channel=%s status=%s action=%s reason=%s elapsed_ms=%s",
+        "[CompanionV2] Laya 核心接话判断 event_ref=%s turn_id=%s channel=%s status=%s action=%s reason=%s "
+        "reason_detail=%s elapsed_ms=%s",
         prepared.get("event_ref"), prepared.get("turn_id"), prepared.get("channel"), result["status"],
-        active.get("action", "not_applied"), result.get("reason", "semantic_classification"), result["elapsed_ms"])
+        active.get("action", "not_applied"), result.get("reason", "semantic_classification"),
+        result.get("reason_detail") or "-", result["elapsed_ms"])
     return result

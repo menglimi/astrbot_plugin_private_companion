@@ -18,7 +18,7 @@ from astrbot_host.laya_client import LayaDecisionClient
 from companion_v2.decision.contract import CONFIGURABLE_DECISION_FIELDS
 from companion_v2.decision.prompt import DECISION_QUESTIONS, decision_questions
 from companion_v2.decision.service import LayaDecisionService
-from companion_v2.decision.store import LayaSettingsStore
+from companion_v2.decision.store import LayaSettingsStore, LayaSettingsError
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.model_gateway.core_observations import observations_for_role
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA
@@ -205,6 +205,28 @@ class CoreReplyDecisionTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prepared["laya_decision"]["status"], "failed")
         row = self.app.runtime.read_one("SELECT * FROM laya_decision_events WHERE batch_id = ?", (prepared["turn_id"],))
         self.assertEqual(row["status"], "failed")
+
+    async def test_settings_rejection_logs_the_real_reason_beside_its_code(self):
+        """A refused configuration must say which value was wrong, not only its code."""
+        reason = "mode 必须是 local、remote、jev、workers_ai"
+
+        class Rejected:
+            def set_trace(self, **_kwargs):
+                pass
+
+            async def decide(self, _facts):
+                raise LayaSettingsError("laya_config_invalid", reason)
+
+        self.app.attach_laya_decision(lambda _context: Rejected())
+        event = self.incoming("settings-rejected", "有没有好玩的插件？")
+        with self.assertLogs(ENTRY.prepare_core_reply_decision.__globals__["logger"], level="WARNING") as captured:
+            prepared = await self.intake(event)
+        output = "\n".join(captured.output)
+        self.assertIn("reason=laya_config_invalid", output)
+        self.assertIn("workers_ai", output)
+        self.assertEqual(prepared["laya_decision"]["reason"], "laya_config_invalid")
+        self.assertEqual(prepared["laya_decision"]["reason_detail"], reason)
+        self.assertTrue(event.is_at_or_wake_command)
 
     async def test_group_history_uses_authorized_window_and_current_native_address_facts(self):
         await self.controller.observe_group_early(self.incoming("other-group-history", "别群私密内容", target="group-b"))

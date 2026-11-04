@@ -198,8 +198,12 @@ class LayaSettingsStore:
     def _validate(values: dict) -> None:
         if type(values["enabled"]) is not bool:
             raise LayaSettingsError("laya_config_invalid", "enabled 必须是布尔值")
-        if values["mode"] not in {"local", "remote"}:
-            raise LayaSettingsError("laya_config_invalid", "mode 必须是 local 或 remote")
+        # MODE_MODELS is the one enumeration of selectable backends; validating
+        # against a hand-written subset here silently rejects every backend it
+        # forgot. Keep this reference instead of listing values again.
+        if values["mode"] not in MODE_MODELS:
+            raise LayaSettingsError("laya_config_invalid",
+                                    "mode 必须是 " + "、".join(MODE_MODELS))
         if values.get("request_format", "native") not in {"native", "cloudflare"}:
             raise LayaSettingsError("laya_config_invalid", "request_format 必须是 native 或 cloudflare")
         for key in ("endpoint", "api_key", "local_model_path", "remote_model"):
