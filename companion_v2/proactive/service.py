@@ -1060,8 +1060,25 @@ class ProactiveContacts:
                 completion = await self.gateway.generate(run, request)
                 if completion.draft is None:
                     raise ValueError("contact generation requires a final decision or body")
-                decision_data = (write_output(completion.draft.text, job.plan["decision_confidence"])
-                    if job.plan is not None else json.loads(completion.draft.text))
+                try:
+                    decision_data = (write_output(completion.draft.text, job.plan["decision_confidence"])
+                        if job.plan is not None else json.loads(completion.draft.text))
+                except json.JSONDecodeError as error:
+                    # A model that answers prose instead of the sealed JSON contract
+                    # used to raise here, which the supervisor could only report as
+                    # ``unhandled_exception`` — the same word for a crash and for one
+                    # malformed answer. The round degrades instead: nothing is sent
+                    # for this opportunity and the reason is on the record. Only an
+                    # unreadable document degrades; a document that parses but breaks
+                    # the contract below still fails, because that is a real defect.
+                    # The body itself never reaches the log, only its size and where
+                    # the parser stopped.
+                    logger.warning("V2 主动联系模型的回答不是合法 JSON，本轮按不发送处理 task=%s plan=%s "
+                                   "raw_chars=%d error_pos=%s error=%s", run.task.task_id,
+                                   job.plan is not None, len(completion.draft.text),
+                                   getattr(error, "pos", None), error)
+                    decision_data = {"decision": "skip", "text": "", "skip_reason": "other",
+                                     "decision_confidence": 0.0}
             alert_records = ([record for record in records if record.reference.owner == OFFICIAL_ALERT_SOURCE_OWNER]
                              if source_origin is not None and "official_alert_event" in source_origin else [])
             if source_origin is not None and "official_alert_event" in source_origin and len(alert_records) != 1:
