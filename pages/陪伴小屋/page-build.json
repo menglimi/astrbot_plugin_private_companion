@@ -11,7 +11,7 @@
   "files": {
     "README.md": "0ef284ac92d44c21301cf0becdbf68ccf0af00ce0ca001cd5ae10e1ec4074796",
     "action-page.css": "2eafa68aa7101e506758b26ec6b57199c3cab170d98e42f9fccb4a47f65cf3a8",
-    "app.js": "89070406efc04ea721245e4fa971791c3b18d7a46333decf36783df6934d4753",
+    "app.js": "0118e6356a201a552b5b7ddc646209ad25f83ca7fa011396cf097317de42aa71",
     "appearance-page.css": "4e184760e3356eaf4cb320dcfb169707d3b0490b90b8b1d6738f6156cbe31ff6",
     "appearance-page.js": "1ddbdd7b92dea2d5dc3a47c1e9cd65663284bbce0be9ce6c6112a4c43fd887e2",
     "assets/LUCIDE-LICENSE.txt": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57",
@@ -53,7 +53,7 @@
     "contact-page.js": "8db06ff4dc62db004607bc343a2dee4a8df9314a1676ede41b2fe1c58003743a",
     "css-sources.json": "ffb6077f9ab675bae3e4ba417f90f98c3c3cb0ab687da6b4d8b0ee92435518f6",
     "decision-page.css": "0e6a8bc7d81de410a368a47884f043fafae53ded4cb4c9b8d195fbb7d317b09a",
-    "decision-page.js": "39f916f97bb27544ea7704fa97c47fdca28f7a5dfdbec9f24940fba57a89e3fb",
+    "decision-page.js": "44c79c9b8b9109eae04ed333ff2b63bc682c561f8c81f07abcb00544946eb7ec",
     "embedded-bridge.js": "b57fe76628782f417afc9eeafb6f0926266fb59ae7cfe87cd212d33b16322aff",
     "entrance.css": "4428853f07a68aa87cc000c374128f7b2f1fbe60b5b2523e9559f434a8efeff3",
     "entrance.js": "1c482db0e24fc404e4e21792316e2945e22ca359d9e7dd7e1e261db68a0918b9",

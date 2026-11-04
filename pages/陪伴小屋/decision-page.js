@@ -1,11 +1,14 @@
 "use strict";
 window.CompanionDecisionPage = (() => {
+  /* 第四项是页签的作用域，省略表示哪个窗口都能看。防骚扰是私聊入站守卫：
+     这组接口只挂在私聊 reply 路由族下，群聊 reply 路由族没有注册它，所以它
+     只在私聊窗口出现——暴露在群聊窗口里只会是一张永远读不到数据的空页。 */
   const views = [
     ["overview", "layout-dashboard", "总览"],
     ["response", "bell", "回应判断"],
     ["tempo", "clock-3", "参与节奏"],
     ["safety", "shield", "沉默与安全"],
-    ["guard", "shield-alert", "防骚扰"],
+    ["guard", "shield-alert", "防骚扰", "private"],
     ["group", "users-round", "群聊参与"],
   ];
   const replyViewSections = {
@@ -16,8 +19,23 @@ window.CompanionDecisionPage = (() => {
   let root = null;
   let activeView = "overview";
   let replyStatus = null;
+  /* 当前窗口的作用域（private / group）。由挂载方给出；空串表示还没读到，
+     按「不知道」处理，只显示不分作用域的页签。 */
+  let scopeKind = "";
   const harassment = {endpoint: "", data: null, draft: null, loading: false, busy: false,
-    notice: "", bad: false, tab: "detect", manual: {scope: "", user: "", hours: 24}, exported: ""};
+    notice: "", bad: false, missing: false, tab: "detect", manual: {scope: "", user: "", hours: 24},
+    exported: ""};
+
+  /* 页签按作用域收口：群聊窗口不出现只面向私聊的页签，也不替它发请求。
+     没读到作用域（空串）时按「不知道」处理，同样不显示——宁可晚一帧出现，
+     也不要在群聊窗口里先摆一张读不到数据的页。 */
+  const scopeViews = () => views.filter(([, , , scope]) => !scope || scope === scopeKind);
+  const viewScoped = id => scopeViews().some(([view]) => view === id);
+  const harassmentApplies = () => scopeKind === "private";
+  /* 宿主匹配不到路由时回的是「未找到该路由」：请求根本没进插件，重试与刷新
+     都会得到同一句话，所以这类失败不再给重试按钮，只说明它为何不适用。 */
+  const routeMissing = error => /未找到该路由|route (?:was )?not found|no matching route/i.test(
+    String(error?.message || error?.code || ""));
 
   const icon = name => `<i data-lucide="${name}" aria-hidden="true"></i>`;
   const number = value => value == null || value === "" ? null
@@ -200,7 +218,8 @@ window.CompanionDecisionPage = (() => {
         response: `总闸 · ${replyReady ? on(s, "group_wakeup_enabled") ? "默认开" : "已关闭" : "读取中"}`,
         tempo: `冷群重启 · ${flag(s, "group_wakeup_cold_group_enabled")}`,
         safety: `沉默 · ${flag(s, "recall_silence_enabled")} · 护栏 ${replyReady ? ["enable_group_injection_guard", "enable_group_privacy_guard", "enable_group_reality_promise_guard"].filter(key => on(s, key)).length + " / 3" : "读取中"}`,
-        guard: harassment.data ? `已拦截 ${harassment.data.entries.length} 人 · ${harassment.data.settings.enabled ? "已开启" : "未开启"}` : "读取中",
+        guard: !harassmentApplies() ? "只对私聊窗口生效"
+          : harassment.data ? `已拦截 ${harassment.data.entries.length} 人 · ${harassment.data.settings.enabled ? "已开启" : "未开启"}` : "读取中",
         group: `复读跟读 · ${flag(g, "enable_group_repeat_follow")}`,
       };
       current.textContent = states[activeView] || states.overview;
@@ -230,7 +249,7 @@ window.CompanionDecisionPage = (() => {
     if (jokeHeading) jokeHeading.hidden = view !== "safety";
     const domainLink = root.querySelector?.("[data-decision-domain-link]");
     if (domainLink) domainLink.hidden = view !== "group";
-    if (view === "guard") void loadHarassment();
+    if (view === "guard" && harassmentApplies()) void loadHarassment();
     window.CompanionReplyPage?.setDecisionView?.(view);
     const groupEditor = root.querySelector?.("#groupParticipationConfigWorkspace")?.companionConfigEditor;
     const groupSections = view === "safety" ? ["joke_guard"]
@@ -250,15 +269,19 @@ window.CompanionDecisionPage = (() => {
   function onKeydown(event) {
     const button = event.target?.closest?.("[data-decision-tab]");
     if (!button) return;
-    const index = views.findIndex(([id]) => id === button.dataset.decisionTab);
-    const next = event.key === "ArrowRight" ? (index + 1) % views.length
-      : event.key === "ArrowLeft" ? (index - 1 + views.length) % views.length
-        : event.key === "Home" ? 0 : event.key === "End" ? views.length - 1 : -1;
+    /* 只在当前作用域真的露出的页签之间移动：跨到没渲染的那一个，
+       焦点会落到 null 上，按键就断了。 */
+    const tabs = scopeViews();
+    if (tabs.length < 2) return;
+    const index = tabs.findIndex(([id]) => id === button.dataset.decisionTab);
+    const next = event.key === "ArrowRight" ? (index + 1) % tabs.length
+      : event.key === "ArrowLeft" ? (index - 1 + tabs.length) % tabs.length
+        : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1;
     if (next < 0) return;
     event.preventDefault();
-    const target = root?.querySelector?.(`[data-decision-tab="${views[next][0]}"]`);
+    const target = root?.querySelector?.(`[data-decision-tab="${tabs[next][0]}"]`);
     target?.focus?.();
-    setView(views[next][0]);
+    setView(tabs[next][0]);
   }
 
   function onGroupInput(event) {
@@ -267,13 +290,17 @@ window.CompanionDecisionPage = (() => {
 
   function render(groupSettingsMarkup = "") {
     if (!root) return;
-    const tabs = views.map(([id, iconName, label]) => `
+    const tabs = scopeViews().map(([id, iconName, label]) => `
       <button type="button" role="tab" class="decision-tab${activeView === id ? " is-active" : ""}"
         id="decision-tab-${id}" aria-controls="decision-panel-${id}" aria-selected="${activeView === id}"
         tabindex="${activeView === id ? "0" : "-1"}" data-decision-tab="${id}">
         ${icon(iconName)}<span>${label}</span></button>`).join("");
-    const panels = views.map(([id]) => `<section id="decision-panel-${id}" class="decision-panel"
-      role="tabpanel" aria-labelledby="decision-tab-${id}" data-decision-panel="${id}"${activeView === id ? "" : " hidden"}></section>`).join("");
+    /* 面板按全部页签渲染，只有没有页签的那一个改用 aria-label：外部入口
+       （搜索设置、上次停留的视图）落到不适用于当前作用域的页时，给一段说明
+       文字，而不是一片空白。 */
+    const panels = views.map(([id, , label]) => `<section id="decision-panel-${id}" class="decision-panel"
+      role="tabpanel" ${viewScoped(id) ? `aria-labelledby="decision-tab-${id}"` : `aria-label="${label}"`}
+      data-decision-panel="${id}"${activeView === id ? "" : " hidden"}></section>`).join("");
     root.innerHTML = `<div class="decision-page" data-active-view="${activeView}">
       <nav class="decision-tabs" aria-label="群聊决策分区">
         <div class="decision-tab-list" role="tablist">${tabs}</div>
@@ -351,11 +378,28 @@ window.CompanionDecisionPage = (() => {
 
   function guardMarkup() {
     const data = harassment.data;
-    if (!harassment.endpoint) return `<div class="decision-empty"><strong>防骚扰不可用</strong><p>当前页面没有拿到设置接口，请刷新后重试。</p></div>`;
-    if (harassment.loading && !data) return `<div class="decision-empty"><strong>正在读取防骚扰设置…</strong></div>`;
+    /* 三态分开写：不适用于当前作用域、正在读、读失败。第一种是说明文字，
+       不发请求也没有按钮；最后一种才给重试，而「未找到该路由」连重试都不给。 */
+    if (!harassmentApplies()) return `<div class="decision-empty" role="status">
+      <strong>防骚扰只对私聊窗口生效</strong>
+      <p>它拦的是进入模型的私聊消息，群聊窗口没有这组设置。切到这个角色的私聊窗口后再调整。</p></div>`;
+    if (!harassment.endpoint) return `<div class="decision-empty" role="status">
+      <strong>没有拿到防骚扰接口</strong>
+      <p>当前窗口的回复路由没有提供这组设置，可以重新载入页面再看。</p></div>`;
+    /* 还没有快照也没有失败记录，就是还没读到：挂载后第一次渲染也走这里，
+       不会先闪一下「读取失败 + 重试」。 */
+    if (!data && !harassment.draft && !harassment.bad) return `<div class="decision-empty" role="status" aria-busy="true">
+      <strong>正在读取防骚扰设置…</strong></div>`;
     const draft = harassment.draft;
-    if (!draft) return `<div class="decision-empty"><strong>暂时无法读取防骚扰设置</strong><p>${guardEscape(harassment.notice || "请稍后重试。")}</p>
+    if (!draft) {
+      /* 路由没注册时请求根本没进插件，重试与刷新都是同一句话，所以不给按钮。 */
+      if (harassment.missing) return `<div class="decision-empty" role="status">
+        <strong>当前插件版本未提供防骚扰接口</strong>
+        <p>这组接口只对私聊窗口提供。若已经处在私聊窗口，说明这个版本还没有防骚扰设置，后续版本会带上。</p></div>`;
+      return `<div class="decision-empty" role="status">
+        <strong>暂时无法读取防骚扰设置</strong><p>${guardEscape(harassment.notice || "请稍后重试。")}</p>
       <button type="button" class="button small" data-guard-retry>重试</button></div>`;
+    }
     const disabled = harassment.busy ? "disabled" : "";
     const tabs = guardTabs.map(([id, label]) => `<button type="button" class="section-chip${harassment.tab === id ? " is-active" : ""}"
       data-guard-tab="${id}" aria-pressed="${harassment.tab === id}">${label}</button>`).join("");
@@ -442,9 +486,16 @@ window.CompanionDecisionPage = (() => {
     if (!bridge) throw new Error("bridge_unavailable");
     const endpoint = harassment.endpoint + path;
     const response = method === "GET" ? await bridge.apiGet(endpoint) : await bridge.apiPost(endpoint, body);
-    const wrapped = ["ok", "error"].includes(response?.status) && response?.data !== undefined ? response
-      : ["ok", "error"].includes(response?.data?.status) && response?.data?.data !== undefined ? response.data : null;
+    /* 失败回执有两层要认。
+     *   1. 信封本身就是失败：{"status":"error","message":…}，带 data 或不带都算。
+     *   2. 外层是 ok、内层才是失败：{"status":"ok","data":{"status":"error",…}}。
+     * 只认第一层的话，第二种会被当成一份快照，页面渲染出一张空表单；
+     * 只认 data 的话，第一种里没有 data 的那种同样会被当成空快照。两层都拦。 */
+    const wrapped = response?.status === "error" ? response
+      : ["ok", "error"].includes(response?.status) && response?.data !== undefined ? response
+        : ["ok", "error"].includes(response?.data?.status) && response?.data?.data !== undefined ? response.data : null;
     if (wrapped?.status === "error") throw Object.assign(new Error(wrapped.message || "request_failed"), {code: wrapped.message});
+    if (wrapped?.data?.status === "error") throw Object.assign(new Error(wrapped.data.message || "request_failed"), {code: wrapped.data.message});
     const value = wrapped ? wrapped.data : response;
     if (!value || typeof value !== "object") throw new Error("invalid_response");
     return value;
@@ -453,19 +504,26 @@ window.CompanionDecisionPage = (() => {
   function guardAdopt(snapshot) {
     harassment.data = snapshot;
     harassment.draft = {...snapshot.settings};
+    harassment.missing = false;
   }
 
   async function loadHarassment() {
     if (!harassment.endpoint || harassment.loading || harassment.busy) return;
     harassment.loading = true;
     harassment.notice = "";
+    harassment.missing = false;
+    /* 重试期间要回到「正在读取」，不能继续挂着上一次的失败文案。 */
+    harassment.bad = false;
     renderPanels();
     try {
       guardAdopt(await guardRequest("GET", ""));
       harassment.bad = false;
     } catch (error) {
       harassment.bad = true;
-      harassment.notice = "读取防骚扰设置失败：" + (error?.message || "未知错误");
+      harassment.missing = routeMissing(error);
+      harassment.notice = harassment.missing
+        ? "该页只对私聊窗口生效，当前插件版本也可能没有提供这组接口。"
+        : "读取防骚扰设置失败：" + (error?.message || "未知错误");
     } finally {
       harassment.loading = false;
       renderPanels();
@@ -568,9 +626,11 @@ window.CompanionDecisionPage = (() => {
       unmount();
       root = node;
     }
+    scopeKind = typeof options.scopeKind === "string" ? options.scopeKind : "";
+    /* 挂载方给的是插件相对路径（页面桥只收这种），这里只管在后面拼子路径。 */
     harassment.endpoint = typeof options.harassmentApi === "string" ? options.harassmentApi : "";
     render(options.groupSettingsMarkup || "");
-    if (harassment.endpoint && !harassment.data) void loadHarassment();
+    if (harassment.endpoint && harassmentApplies() && !harassment.data) void loadHarassment();
   }
 
   function updateReplyStatus(status) {
@@ -593,10 +653,12 @@ window.CompanionDecisionPage = (() => {
       root.removeEventListener?.("change", onGuardInput);
     }
     root = null;
+    scopeKind = "";
     harassment.endpoint = "";
     harassment.data = null;
     harassment.draft = null;
     harassment.notice = "";
+    harassment.missing = false;
     replyStatus = null;
   }
 
