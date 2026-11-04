@@ -279,9 +279,86 @@ def retry_wait_seconds(epoch):
 FAMILY_CACHE_SECONDS = 60
 MAX_FAMILY_CACHE_ENTRIES = 256
 
+# One discovery pass serves every window that is due, not only the first one it
+# meets, but it may start no more workers than the task layer will run at once.
+# That number is the owner's own ``TaskDefinition.concurrency`` (``_service_budget``),
+# not a constant here: a pass that starts more workers than the supervisor admits
+# only queues them behind each other, and a queued attempt keeps the deadline it
+# was submitted with, so the tail of the queue is expired before it starts — after
+# its receipt was already reserved. The window then reports ``expired``, which the
+# page has no wording for, and its samples stay held for the whole lease.
+#
+# A service assembled without its registrations (the attribution suite builds one
+# attribute by attribute) has no declared concurrency; one worker is always
+# admitted, so that is the conservative answer.
+DEFAULT_SCAN_SERVICES = 1
+
+# Starting a worker is not the only cost of a pass. ``prepare`` reads the sample
+# window and the reference rules *synchronously*, before any worker exists, so the
+# number of windows a pass prepares is what actually bounds the time it holds the
+# event loop — a pass over two hundred due windows used to call ``prepare`` two
+# hundred times while starting no worker at all. Looking is a budget of its own,
+# and a wider one than serving: a look is a sample read, a service is a model call,
+# and a pass that stopped looking after one window would end before it reached a
+# window with work as soon as that window was held by its own receipt. A window a
+# pass did not look at is untouched, so its own next check keeps it for the
+# following pass, and every candidate takes its turn in ``_in_turn`` order.
+MAX_SCAN_PREPARES = 32
+
+# A held batch is worth one line in the log, not one per discovery pass. The notes
+# are keyed by the window and the receipt that holds it, so the same window meeting
+# the same receipt on every pass says it once while a rotated window that shares
+# that receipt still says it for itself. They stay bounded: a very long process may
+# repeat the newest ones, never grow without limit.
+MAX_HELD_NOTES = 512
+
+
+class _ScanBudget:
+    """What one discovery pass may spend, counted in one place.
+
+    A pass has two costs, and they are not the same cost. Starting a worker spends
+    a provider call, and the task layer runs only ``services`` of them at once
+    (``_service_budget``); preparing a window spends synchronous work inside the
+    event loop (``MAX_SCAN_PREPARES``), because ``prepare`` reads the sample window
+    and the reference rules before any worker exists. A window that is already
+    learned or still held by another attempt is a look, not a service: it must not
+    take the one worker the pass may start, or the due retry behind it waits
+    another whole pass.
+    """
+
+    __slots__ = ("looks", "served", "services")
+
+    def __init__(self, services):
+        self.looks = self.served = 0
+        self.services = services
+
+    @property
+    def spent(self):
+        """No further window may be looked at in this pass."""
+        return self.looks >= MAX_SCAN_PREPARES or self.served >= self.services
+
+    def note_look(self):
+        """One window prepared: the pass' synchronous cost."""
+        self.looks += 1
+
+    def note_served(self):
+        """One worker started: the pass' provider cost."""
+        self.served += 1
+
 
 class ExpressionStyleService:
     page_size = 16
+    # The bounds of the discovery pass being served, or ``None`` when a single
+    # window is scanned on its own (the family and rotation suites do that). It is
+    # pass state rather than an argument because ``advance`` is the only caller
+    # that serves a pass, while ``_scan`` keeps the signature its other callers
+    # use. Both defaults are class attributes as well: a service rebuilt attribute
+    # by attribute — the scan-attribution suite assembles one that way — never runs
+    # ``__init__``.
+    _scan_budget = None
+    # The look cursor belongs to the service, not to one pass, so the bound in
+    # ``advance`` still hands the next pass the windows this one did not reach.
+    _scan_look = 0
 
     def __init__(self, runtime, *, window_hours=720):
         self.runtime = runtime
@@ -290,6 +367,8 @@ class ExpressionStyleService:
         self.pending, self.committed, self.workers, self.results = {}, set(), {}, {}
         self._family_cache = {}
         self.next_checks = {}
+        self._held_notes = set()
+        self._scan_look = 0
         self._next_discovery_at = None
         self.cursor = 0
         self.closed = False
@@ -1561,31 +1640,145 @@ class ExpressionStyleService:
                     break
         return tuple(candidates)
 
+    def _service_budget(self):
+        """How many workers one discovery pass may start.
+
+        The owner registers one task definition, and its ``concurrency`` is how
+        many attempts the supervisor runs at once. Starting more workers than that
+        only queues them behind each other, and a queued attempt keeps the deadline
+        it was submitted with, so the tail of the queue is expired before it starts
+        — after its receipt was already reserved. The pass therefore serves exactly
+        what the task layer can run and looks at the rest without spending a
+        service. A service assembled without its registrations (the attribution
+        suite builds one attribute by attribute) falls back to one, the conservative
+        answer: one worker is always admitted.
+        """
+        try:
+            concurrency = self.registrations[0].definition.concurrency
+        except (AttributeError, IndexError, KeyError, TypeError):
+            return DEFAULT_SCAN_SERVICES
+        return concurrency if type(concurrency) is int and concurrency >= 1 else DEFAULT_SCAN_SERVICES
+
     def _scan(self, context, instruction, at, work_key=None):
-        """Prepare one due window; returns True when a worker was started.
+        """Serve one due window; returns True when a worker was started.
 
         ``work_key`` is authoritative when the caller already resolved it from
         the discovered candidate: a group window is scanned through its live
         binding, and both spellings must report one place, not two.
+
+        Only a served window reschedules itself. A refusal — at capacity, not due
+        yet, nothing to prepare — is a look, not a service, and it must not push
+        this window's next check out without saying for how long: that would let
+        one window that keeps failing to prepare delay the work the pass was
+        actually looking for. A batch another attempt still holds is the one
+        refusal that reschedules on its own terms, because it knows when it may
+        run again. The same gate is what serves each window at most once per pass,
+        because a started worker moves it a minute ahead of the pass that started
+        it.
+
+        ``_scan_budget`` is the bound of the pass this scan belongs to, and ``None``
+        when one window is scanned on its own, as the family and rotation suites do.
         """
         work_key = self._work_key(context) if work_key is None else work_key
+        budget = self._scan_budget
         if self.next_checks.get(context.key, at) > at:
             return False
-        self.next_checks[context.key] = at + timedelta(seconds=60)
+        if work_key in self.workers and not self.workers[work_key].done():
+            return False
         policy = self._policy(context, at)
-        active_count = self._active_signal_count(context)
-        if active_count >= policy.active_signal_limit:
+        if self._active_signal_count(context) >= policy.active_signal_limit:
             self.results[work_key] = {"state": "capacity_reached", "limit": policy.active_signal_limit}
             return False
         scan_minutes = self._scan_interval_minutes(policy, context)
         if not self.due(context, at, scan_minutes=scan_minutes):
             return False
-        if self.prepare(context, instruction, at) is None:
+        # Every window below this line is prepared, and a prepare is the pass'
+        # only synchronous read: the look is spent here, before the read, so the
+        # pass' bound counts the work it actually does rather than the workers it
+        # happened to start.
+        if budget is not None:
+            budget.note_look()
+        self._scan_look += 1
+        job = self.prepare(context, instruction, at)
+        if job is None:
             return False
+        identifier, receipt, epoch = self._held_batch(context, job, work_key, at)
+        if identifier is not None:
+            # Nothing may spend a model call on these samples yet, so a worker
+            # would only skip — and spend the pass' service on it. The window goes
+            # back to its own rescan interval when the batch is learned, and to the
+            # pass' minute when another attempt merely still holds it, so a batch
+            # whose lease has just run out is looked at again promptly instead of
+            # waiting out a whole scan interval.
+            learned = receipt.state is OperationState.COMPLETED
+            self.results[work_key] = {"state": "already_attempted", "task_id": identifier}
+            self.next_checks[context.key] = at + (timedelta(minutes=scan_minutes) if learned
+                                                 else timedelta(seconds=60))
+            self._note_held_once(context.key, identifier, job, receipt, epoch=epoch, at=at)
+            return False
+        self.next_checks[context.key] = at + timedelta(seconds=60)
         self.workers[work_key] = asyncio.create_task(
             self.run(context, instruction), name="companion:expression-learn")
         self.workers[work_key].add_done_callback(lambda done: self.app.notify())
+        if budget is not None:
+            budget.note_served()
         return True
+
+    def _held_batch(self, context, job, work_key, at):
+        """The receipt that keeps this exact batch from needing a new attempt.
+
+        Same criterion as ``_claim_attempt``, and deliberately the same expression:
+        that claim will not open an attempt while ``_owns_batch`` holds the batch,
+        so a scan that asked a narrower question — only ``completed`` — would
+        prepare and start a worker for every batch that is merely in flight, and
+        those workers can only skip. Eight such windows then took every service of
+        the pass and the due retry behind them was never served. Keeping both
+        decisions on ``_owns_batch`` is what stops the two from drifting apart
+        again; a change to which receipts hold a batch belongs there, not here.
+
+        ``completed`` means the samples are learned, and ``accepted`` inside its
+        lease (or whose task has not stopped) means one model call is still theirs.
+        An unreadable lease is left to the worker, which already reports it to the
+        page.
+        """
+        request_key = digest([work_key, job["material_hash"], job["policy"].learning_mode])
+        try:
+            epoch = self._lease_epoch(request_key)
+        except TaskError as error:
+            if error.code != "expression_lease_invalid":
+                raise
+            return None, None, None
+        identifier = self._attempt_identifier(context, request_key, epoch)
+        receipt = self.operations.get(identifier)
+        if not receipt.is_success or not self._owns_batch(receipt.value, identifier, at, epoch):
+            return None, None, None
+        return identifier, receipt.value, epoch
+
+    def _note_held_once(self, window_key, identifier, job, receipt, *, epoch, at):
+        """Say a batch is held once per window and receipt, not once per pass."""
+        key = (window_key, identifier)
+        if key in self._held_notes:
+            return
+        if len(self._held_notes) >= MAX_HELD_NOTES:
+            self._held_notes.clear()
+        self._held_notes.add(key)
+        self._note_skipped(identifier, job, receipt, epoch=epoch, at=at)
+
+    def _in_turn(self, candidates):
+        """One discovery result in turn order, starting where the last pass stopped.
+
+        A pass looks at a bounded number of windows, so the walk must not always
+        begin at the first candidate: the windows behind the bound would never be
+        looked at while the first ones keep having nothing to prepare and are
+        therefore never gated. ``_scan_look`` counts the looks this service has
+        spent, so starting there hands the following pass the windows this one did
+        not reach and every candidate of a discovery result takes its turn.
+        """
+        candidates = tuple(candidates)
+        if len(candidates) < 2:
+            return candidates
+        start = self._scan_look % len(candidates)
+        return candidates[start:] + candidates[:start]
 
     def start(self, context, instruction):
         if self.closed or KIND not in self.gateway.router.profiles:
@@ -1732,8 +1925,30 @@ class ExpressionStyleService:
         if not bindings and not group_contexts:
             self.next_checks.clear()
             return
+        # A pass serves every window that is due, up to the number of workers the
+        # task layer runs at once, and looks at a bounded number of windows in all.
+        # Stopping at the first window it served is what made one already-learned
+        # window — which is always due, because only a commit moves its checkpoint —
+        # take the whole pass every minute and starve the retry that had just
+        # finished waiting. A held window is a look, not a service, so it cannot
+        # take that one worker either.
+        budget = _ScanBudget(self._service_budget())
+        self._scan_budget = budget
+        try:
+            self._scan_pass(budget, bindings, group_contexts)
+        finally:
+            self._scan_budget = None
+
+    def _scan_pass(self, budget, bindings, group_contexts):
+        """One discovery pass' window walk, bounded by `budget`.
+
+        `advance` owns when a pass may run; this owns what it walks, so the
+        budget is set on the service for exactly the walk that spends it.
+        """
         scanned_private = set()
         for _ in range(min(16, len(bindings))):
+            if budget.spent:
+                break
             context, instruction, _ = bindings[self.cursor % len(bindings)]
             self.cursor += 1
             at = self.tasks.now()
@@ -1753,7 +1968,14 @@ class ExpressionStyleService:
             except TaskError as error:
                 self.results[self._work_key(context)] = {"state": "blocked", "code": error.code}
                 continue
-            for candidate in candidates:
+            for candidate in self._in_turn(candidates):
+                # The cap belongs here, not only on the bindings and the group
+                # loop: one discovery result can hold every window of a role, and
+                # a pass that walks it must still stop at the same bound. The
+                # candidates it did not reach were never looked at, so their own
+                # next check stays untouched and the next pass starts there.
+                if budget.spent:
+                    break
                 if candidate.key in scanned_private:
                     continue
                 scanned_private.add(candidate.key)
@@ -1770,14 +1992,15 @@ class ExpressionStyleService:
                 if not source_instruction:
                     continue
                 try:
-                    if self._scan(candidate, source_instruction, at):
-                        return
+                    self._scan(candidate, source_instruction, at)
                 except TaskError as error:
                     # The failure belongs to the window whose read failed, not to
                     # the binding that happened to seed this discovery pass.
                     self.results[self._work_key(candidate)] = {"state": "blocked", "code": error.code}
         # Group learning is opt-in per group and runs after the private queue.
-        for candidate in group_contexts:
+        for candidate in self._in_turn(group_contexts):
+            if budget.spent:
+                break
             at = self.tasks.now()
             # The group work key belongs to the role and the window, so the
             # discovered candidate and the live binding that replaces it report
@@ -1790,8 +2013,7 @@ class ExpressionStyleService:
                 instruction = self._group_instruction(context, at)
                 if instruction is None:
                     continue
-                if self._scan(context, instruction, at, work_key):
-                    return
+                self._scan(context, instruction, at, work_key)
             except TaskError as error:
                 self.results[work_key] = {"state": "blocked", "code": error.code}
 
