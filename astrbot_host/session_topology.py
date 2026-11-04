@@ -22,6 +22,7 @@ from companion_v2.execution.models import TaskError, digest
 from .identity_derivation import derive_bot_id, derive_role_id, role_display_name
 from .native import SESSION_SETTINGS_LOOKUP_BUDGET_SECONDS, load_session_settings
 from .multi_settings import find_persona_mapping
+from .display_names import event_person_names, platform_label
 
 
 logger = logging.getLogger(__name__)
@@ -431,20 +432,29 @@ class SessionTopology:
         key = digest([platform_id, login, event.unified_msg_origin])
         row = {"unified_msg_origin": event.unified_msg_origin, "account_id": login,
                "conversation_id": cid, "last_seen_at": controller.now().isoformat()}
-        sender = getattr(message, "sender", None)
-        nickname = getattr(sender, "nickname", None)
-        if isinstance(nickname, str) and nickname.strip():
-            row["display_name"] = nickname.strip()[:128]
         if kind == "group":
             group = getattr(message, "group", None)
-            group_name = getattr(group, "group_name", None)
-            if isinstance(group_name, str) and group_name.strip():
-                row["group_name"] = group_name.strip()[:128]
+            group_name = platform_label(getattr(group, "group_name", None), peer)
+            if group_name:
+                row["group_name"] = group_name
+        else:
+            nickname, _ = event_person_names(event)
+            nickname = nickname or platform_label(getattr(getattr(message, "sender", None), "nickname", None), peer)
+            if nickname:
+                row["display_name"] = nickname
         async with self._write_lock:
             await asyncio.to_thread(self._store_observation, key, row)
 
     def _store_observation(self, key, row):
         rows = self._observed()
+        route = session_route(row.get("unified_msg_origin"))
+        if route:
+            field = "group_name" if route[1] == "group" else "display_name"
+            previous_name = platform_label(rows.get(key, {}).get(field), route[2])
+            # A missing field on an older host or a failed name lookup must not
+            # erase the last recognized name. New observations replace ID fallbacks.
+            if not row.get(field) and previous_name:
+                row[field] = previous_name
         rows[key] = row
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".json.tmp")
@@ -510,10 +520,8 @@ class SessionTopology:
             route = session_route(umo)
             if route and route[0] in platforms and (scope_kind is None or route[1] == scope_kind):
                 observed.setdefault(umo, []).append(row)
-                native_row = native.setdefault(umo, {"unified_msg_origin": umo,
+                native.setdefault(umo, {"unified_msg_origin": umo,
                                        "conversation_id": row.get("conversation_id")})
-                if row.get("group_name") and not native_row.get("group_name"):
-                    native_row["group_name"] = row["group_name"]
         mappings = ([vars(row) for row in settings.personas] if settings is not None else
                     self.controller.config.get("multi_host", {}).get("personas", []) if self.controller._multi_host else [])
         slots = asyncio.Semaphore(4)
@@ -598,12 +606,12 @@ class SessionTopology:
             selected = [{"platform_id": platform, "account_id": "", "bot_id": ""}]
 
         result = []
-        observed_name = next((row.get("group_name") or row.get("display_name")
-                              for row in observed.get(umo, [])
-                              if isinstance(row.get("group_name") or row.get("display_name"), str)
-                              and (row.get("group_name") or row.get("display_name")).strip()), "")
         for account in selected:
             account_id = account.get("account_id", "")
+            observed_name = next((name for row in sorted(observed.get(umo, []),
+                key=lambda value: value.get("last_seen_at") or "", reverse=True)
+                if row.get("account_id") == account_id
+                and (name := platform_label(row.get("group_name" if kind == "group" else "display_name"), peer))), "")
             binding = next((row for row in bindings if row.get("account_id") == account_id), None)
             session_key = "session-" + digest([platform, account_id, umo])[:24]
             result.append({**account, "session_key": session_key,
@@ -640,11 +648,6 @@ class SessionTopology:
                 return result
         if not candidates:
             candidates = [{"platform_id": platform, "account_id": "", "bot_id": ""}]
-        observed_name = next((row.get("group_name") or row.get("display_name")
-                              for row in observed.get(umo, [])
-                              if isinstance(row.get("group_name") or row.get("display_name"), str)
-                              and (row.get("group_name") or row.get("display_name")).strip()), "")
-        native_name = item.get("group_name") or item.get("display_name") or observed_name
         cid = await bounded_native_lookup(manager.get_curr_conversation_id(umo), operation="conversation_id")
         if cid != item.get("conversation_id") or cid is None and umo not in observed:
             return result
@@ -657,6 +660,12 @@ class SessionTopology:
                     or any(ord(char) < 32 for char in override)):
                 raise TaskError("host_persona_invalid", "the V2 window persona override is invalid")
         for account in candidates:
+            observed_name = next((name for row in sorted(observed.get(umo, []),
+                key=lambda value: value.get("last_seen_at") or "", reverse=True)
+                if row.get("account_id") == account["account_id"]
+                and (name := platform_label(row.get("group_name" if kind == "group" else "display_name"), peer))), "")
+            native_name = (observed_name or platform_label(item.get("group_name"), peer)
+                           or platform_label(item.get("display_name"), peer))
             matches = [row for row in account_matches if row["account_id"] == account["account_id"]]
             binding = next((row for row in matches if row.get(peer_field) == peer), None)
             binding = binding or next((row for row in matches if row.get(peer_field) == "*"), None)

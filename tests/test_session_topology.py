@@ -175,6 +175,57 @@ class SessionTopologyTests(unittest.IsolatedAsyncioTestCase):
         rows = await self.controller.session_topology.inventory()
         self.assertFalse(any(row.get("unified_msg_origin") == event.unified_msg_origin for row in rows))
 
+    async def test_group_name_upgrade_replaces_id_and_survives_missing_metadata_and_reload(self):
+        from astrbot_host.session_topology import SessionTopology
+        event = self.group_event()
+        event.message_obj.sender.nickname = "发言人的名字"
+        event.message_obj.group = NS(group_name="300")
+        topology = self.controller.session_topology
+        await topology.observe(event)
+        rows = await topology.inventory()
+        row = next(row for row in rows if row.get("unified_msg_origin") == event.unified_msg_origin)
+        self.assertNotIn("group_name", row)
+        # Older releases stored the speaker as display_name on a group session.
+        stored = topology._observed()
+        for value in stored.values():
+            value.update(display_name="发言人的名字", group_name="300")
+        topology.path.write_text(json.dumps(stored), encoding="utf-8")
+        rows = await topology.inventory()
+        row = next(row for row in rows if row.get("unified_msg_origin") == event.unified_msg_origin)
+        self.assertNotIn("display_name", row)
+        event.message_obj.group.group_name = "识别出的群名称"
+        await topology.observe(event)
+        self.controller.session_topology = topology = SessionTopology(self.controller)
+        event.message_obj.group = None
+        await topology.observe(event)
+        rows = await topology.inventory()
+        row = next(row for row in rows if row.get("unified_msg_origin") == event.unified_msg_origin)
+        self.assertEqual(row["display_name"], "识别出的群名称")
+        self.assertEqual(row["group_name"], "识别出的群名称")
+        self.assertNotIn("display_name", next(iter(topology._observed().values())))
+        event.message_obj.group = NS(group_name="改名后的群")
+        await topology.observe(event)
+        rows = await topology.inventory()
+        row = next(row for row in rows if row.get("unified_msg_origin") == event.unified_msg_origin)
+        self.assertEqual(row["display_name"], "改名后的群")
+
+    async def test_observed_group_names_are_account_scoped_even_when_native_reads_fail(self):
+        from astrbot_host.session_topology import SessionTopology
+        self.native.platform.client._wsr_api_clients["101"] = object()
+        umo = "qq-main:GroupMessage:300"
+        observed = {umo: [dict(unified_msg_origin=umo, account_id=account,
+                              conversation_id=self.sessions[umo], group_name=name,
+                              last_seen_at="2026-01-01T00:00:00+00:00")
+                          for account, name in (("100", "账号一群名"), ("101", "账号二群名"))]}
+        topology = self.controller.session_topology
+        with patch.object(topology, "_observed", return_value=dict(enumerate(observed[umo]))):
+            rows = await topology.inventory(scope_kind="group")
+        names = {row["account_id"]: row.get("display_name") for row in rows
+                 if row.get("unified_msg_origin") == umo}
+        self.assertEqual(names, {"100": "账号一群名", "101": "账号二群名"})
+        rows = SessionTopology._partial_windows(umo, topology.accounts(), [], observed)
+        self.assertEqual({row["account_id"]: row["display_name"] for row in rows}, names)
+
     async def test_background_writes_are_serial_off_thread_and_termination_drains_them(self):
         topology = self.controller.session_topology
         entered, release = threading.Event(), threading.Event()

@@ -39,7 +39,7 @@ from companion_v2.agenda.service import AgendaService
 from companion_v2.foundation.refs import OperationRef, VersionRef
 
 from .management_identity import dashboard_operator
-from .display_names import display_names
+from .display_names import display_names, platform_label
 from .multi_settings import MultiHostSettings
 from .settings import HostControlError
 
@@ -181,9 +181,14 @@ def _include_native_groups(groups, sessions):
                  "configured": session.get("managed") is True, "discovered": True,
                  "roles": list(session.get("roles") or []),
                  "member_count": 0, "msg_count": 0}
+        name = platform_label(session.get("group_name"), group_id) or platform_label(session.get("display_name"), group_id)
+        if name:
+            group.update(group_name=name, display_name=name)
         key = _group_route_key(group)
         existing = known.get(key)
         if existing is not None:
+            if name:
+                existing.update(group_name=name, display_name=name)
             existing["discovered"] = True
             existing["configured"] = bool(existing.get("configured") or group["configured"])
             existing["roles"] = list({role["role_id"]: role

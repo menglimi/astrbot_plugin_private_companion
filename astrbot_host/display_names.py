@@ -1,8 +1,9 @@
-"""Read-only, account-scoped OneBot names for Dashboard navigation."""
+"""Platform-observed names and read-only OneBot labels for Dashboard navigation."""
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from time import monotonic
 
 
@@ -22,10 +23,34 @@ def _identifier(value):
     return text if text.isascii() and text.isdigit() and int(text) > 0 else ""
 
 
-def _label(value):
-    """Return a human label, ignoring a bare native numeric id."""
+def platform_label(value, native_id=""):
+    """Ignore an ID fallback, including QQ Official's opaque OpenIDs."""
     text = _name(value)
-    return "" if _identifier(text) else text
+    return "" if text == str(native_id) or not native_id and _identifier(text) else text
+
+
+def event_person_names(event):
+    """Read names for the authenticated sender, never quoted or mentioned users."""
+    message = event.message_obj
+    sender = getattr(message, "sender", None)
+    peer = str(getattr(sender, "user_id", "") or "")
+    if not peer:
+        return "", ""
+    normalized_name = platform_label(getattr(sender, "nickname", None), peer)
+    raw = getattr(message, "raw_message", None)
+    if getattr(getattr(event, "platform_meta", None), "name", "") in {"qq_official", "qq_official_webhook"}:
+        payload = raw if isinstance(raw, Mapping) else getattr(raw, "raw_data", None)
+        author = (payload.get("author") if isinstance(payload, Mapping) else None) or getattr(raw, "author", None)
+        field = "member_openid" if getattr(message, "group_id", None) else "user_openid"
+        author_id = (author.get(field) or author.get("id")) if isinstance(author, Mapping) else (
+            getattr(author, field, None) or getattr(author, "id", None))
+        username = author.get("username") if isinstance(author, Mapping) else getattr(author, "username", None)
+        nickname = platform_label(username, peer) if str(author_id or "") == peer else ""
+        return nickname or normalized_name, ""
+    sender_data = raw.get("sender") if isinstance(raw, Mapping) else None
+    if not isinstance(sender_data, Mapping):
+        return "", ""
+    return platform_label(sender_data.get("nickname"), peer), platform_label(sender_data.get("card"), peer)
 
 
 class PlatformDisplayNames:
@@ -128,9 +153,10 @@ class PlatformDisplayNames:
             # Keep a name already carried by the native session directory when
             # an optional OneBot lookup is unavailable. A bare id is not a
             # label and must not prevent a later group name from being used.
-            fallback = ((_label(row.get("display_name")) or _label(row.get("group_name")))
+            fallback = ((platform_label(row.get("group_name"), native_id)
+                         or platform_label(row.get("display_name"), native_id))
                         if kind == "group" else _name(row.get("display_name")))
-            resolved = _label(name) or fallback
+            resolved = platform_label(name, native_id) or fallback
             row.update(display_name=resolved,
                        account_name=account_name or row.get("account_name") or "")
             if kind == "group":
