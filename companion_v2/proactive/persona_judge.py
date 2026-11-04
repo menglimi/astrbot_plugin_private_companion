@@ -49,6 +49,9 @@ contact_evidence 是本次机会经核验的来源材料，thought 只是候选�
 score 是 0 到 100 的整数，表示你对这个判断的把握与符合程度；理由里不要暴露检查过程。
 角色状态只用于检查语气是否自洽，不要求正文复述状态。生活分享、轻巧关心和自然收尾本身可以成立；若正文主要是连续汇报角色自身状态，结合近期实际已发内容判断是否还有交流价值，而不是见到生活细节就拦下。把普通关心写成对用户的饮食、作息、健康训诫时应 drop。
 涉及用户具体习惯或身体事实的断言（例如「你又/总是/老是……」后接某种饮食、作息或健康习惯）必须有材料直接支持；人格里的关心健康、监督饮食不是证据，无法核对时 drop。
+疑问句同样携带事实预设：「你上班路上吃了没」预设了对方正在通勤，「你又熬夜了吧」预设了对方昨晚没睡。这类预设与陈述句里的断言同等对待：预设涉及对方的作息、位置、工作状态或身体情况时，必须有材料直接支持，否则 drop。
+contact_now 是 UTC 机器时间，只用于核对事件先后。判定时段、星期与「现在是几点」只看 local_now、local_time、period 和 weekday，不要用 contact_now 的钟点自行换算，也不要凭正文语感另编一个钟点。
+period 只说明一天中的时段，不说明对方此刻在上班、下班、通勤或休息。正文若据此假设对方正在做什么，按上面两条要求核对材料；材料只显示夜班或跨夜班次时，period=早上 应当理解为快下班，而不是去上班。
 """
 
 
@@ -86,6 +89,10 @@ def judge_request(job):
     draft = {
         "purpose": PURPOSES[job["purpose"]], "purpose_id": job["purpose"],
         "draft_body": job["body"], "contact_now": job["at"],
+        # Judging "may this leave now" needs the same local vocabulary compose
+        # used. A bare UTC stamp is not that: the judge has to turn a wrong part
+        # of the day into a wrong verdict about a correct body.
+        **job["local"],
         "draft_decision_confidence": job["confidence"],
         "preference_note": job["note"]}
     if job.get("role_state"):
