@@ -5,6 +5,11 @@ The dashboard reads this bucket one page at a time, and it explains "生效中�
 rows: ordering the list by the hashed item id produced an arbitrary subset, so
 once a bucket held more rows than one page the newest guidance could be missing
 from page 1 entirely (and the page still reported "暂无生效中的指导").
+
+Degradation is per row: re-checking a row's evidence can fail long after the
+item was accepted (a native observation is reset away, a stored window no
+longer parses).  Such a row is projected as unavailable and keeps its place;
+it may never turn the page — or the other rows — into a failed read.
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 
-from companion_v2.execution.models import digest, stamp
+from companion_v2.execution.models import TaskError, digest, stamp
 from companion_v2.foundation.refs import (RoleOwnerRef, ScopeKind, ScopeRef, SubjectKind,
                                           SubjectRef)
 from companion_v2.role_work.journal.self_review_management import SelfReviewManagement
@@ -53,6 +58,33 @@ class FakeEvidence:
     def describe_handles(self, handles, opened_at, closed_at, context, at):
         return [{"handle": handle, "kind": "reply", "text": "已送达回复：" + handle}
                 for handle in handles]
+
+
+class SelectiveEvidence:
+    """Withdrawal is per handle: one row can fail while its neighbours stay whole."""
+
+    def __init__(self, broken=()):
+        self.broken = set(broken)
+        self.seen = []
+
+    def describe_handles(self, handles, opened_at, closed_at, context, at):
+        self.seen.append(tuple(handles))
+        if any(handle in self.broken for handle in handles):
+            # What a reset-away native observation raises while the item is rechecked.
+            raise TaskError("conversation_context_reset",
+                            "native history precedes this window's reset")
+        return [{"handle": handle, "kind": "reply", "text": "已送达回复：" + handle}
+                for handle in handles]
+
+
+class BrokenEvidence:
+    """A projection failure that is not a ``TaskError`` at all."""
+
+    def __init__(self, error):
+        self.error = error
+
+    def describe_handles(self, handles, opened_at, closed_at, context, at):
+        raise self.error
 
 
 class SelfReviewListTests(unittest.TestCase):
@@ -105,6 +137,9 @@ class SelfReviewListTests(unittest.TestCase):
                                      limit=limit, after_id=after_id)
         self.assertTrue(result.is_success, result.failure)
         return result.unwrap()
+
+    def use_evidence(self, evidence):
+        self.management.evidence = evidence
 
     def drain(self, *, state="active", limit=7):
         collected, cursor, pages = [], None, 0
@@ -243,6 +278,58 @@ class SelfReviewListTests(unittest.TestCase):
                                               "empty_retry_seconds", "minimum_evidence"})
         self.assertEqual(data["context_key"], CONTEXT.key)
         self.assertEqual(data["role_id"], OWNER.persona_id)
+
+    def test_a_withdrawn_evidence_row_degrades_instead_of_failing_the_page(self):
+        # The cited native observation was reset away, so describing the evidence
+        # raises a TaskError.  Its reason only lives in ``args[0]``: the normalization
+        # used to read a ``.reason`` attribute TaskError does not have, and that
+        # AttributeError escaped this list *and* the route layer, so one withdrawn
+        # evidence turned the whole dashboard into a failed read.
+        self.use_evidence(SelectiveEvidence(broken={"h-reset-0"}))
+        self.insert_run(day=0, items=1, label="reset")
+        for state in ("active", "decided"):
+            self.page(state=state)  # no bucket may fail because one row is broken
+        item = self.page(state="active")["items"][0]
+        self.assertEqual(item["unavailable_reason"], "self_review_evidence_changed")
+        self.assertIsNone(item["observation"])
+        self.assertIsNone(item["next_action"])
+        self.assertEqual(item["evidence"], [])
+        self.assertIsNone(item["summary"])
+
+    def test_one_broken_row_leaves_the_other_rows_complete(self):
+        self.use_evidence(SelectiveEvidence(broken={"h-broken-0"}))
+        broken = self.insert_run(day=0, items=1, label="broken")
+        self.insert_run(day=1, items=1, label="whole-one")
+        self.insert_run(day=2, items=1, label="whole-two")
+        items = self.page(state="active", limit=50)["items"]
+        self.assertEqual(len(items), 3)
+        degraded = [item for item in items if item["unavailable_reason"]]
+        self.assertEqual([item["item_id"] for item in degraded], [broken + ":item:0"])
+        for item in items:
+            if item["unavailable_reason"]:
+                continue
+            self.assertEqual(len(item["evidence"]), 1)
+            self.assertEqual(item["next_action"], "next action")
+            self.assertTrue(item["observation"].startswith("observation "))
+            self.assertTrue(item["summary"].startswith("summary "))
+
+    def test_an_unexpected_projection_failure_never_escapes_the_list(self):
+        self.insert_run(day=0, items=2, label="unexpected")
+        for error in (AttributeError("'TaskError' object has no attribute 'reason'"),
+                      RuntimeError("projection exploded")):
+            with self.subTest(error=type(error).__name__):
+                self.use_evidence(BrokenEvidence(error))
+                with self.assertLogs(
+                        "companion_v2.role_work.journal.self_review_management", level="ERROR"):
+                    result = self.management.list(operator=OPERATOR, context=CONTEXT,
+                                                  state="active", limit=5)
+                self.assertTrue(result.is_success, result.failure)
+                items = result.unwrap()["items"]
+                self.assertEqual(len(items), 2)
+                for item in items:
+                    self.assertEqual(item["unavailable_reason"], "self_review_evidence_changed")
+                    self.assertIsNone(item["observation"])
+                    self.assertIsNone(item["next_action"])
 
 
 if __name__ == "__main__":

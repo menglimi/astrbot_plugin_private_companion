@@ -8,9 +8,16 @@ window.CompanionSelfReviewPage = (() => {
     staging_not_initialized:"角色数据尚未加载，请重新读取。",
     staging_host_terminated:"陪伴服务已停止，请重新读取。",
     relationship_required:"当前角色还没有可用的复盘权限。",
+    growth_management_scope:"当前范围不能管理这个角色的成长记录。",
+    growth_target_changed:"角色或对象已经切换，请重新进入这一页。",
+    source_scope_mismatch:"来源与当前角色不在同一个会话范围，无法继续。",
     self_review_query_invalid:"复盘列表条件无效，请刷新后重试。",
     self_review_command_invalid:"复盘操作未被接受，请刷新后重试。",
+    self_review_item_invalid:"这条复盘记录的条件无效，请刷新后重试。",
     self_review_item_unavailable:"这条复盘记录的来源已不可用。",
+    self_review_evidence_unavailable:"这条复盘记录的原始依据已不可读取。",
+    self_review_source_scope:"复盘依据属于另一个会话范围，不能用于当前角色。",
+    self_review_reply_owner_unavailable:"复盘依据对应的回复已不可读取，请稍后重试。",
     self_review_view_stale:"复盘内容已有变化，请刷新后重新核对。",
     self_review_evidence_changed:"原始依据已变化或撤回，不能继续采纳。",
     self_review_expired:"这条短期建议已过期。",
@@ -22,19 +29,24 @@ window.CompanionSelfReviewPage = (() => {
     bridge_timeout:"未收到服务确认，请刷新核对。",
     invalid_response:"服务返回的数据不完整，请刷新核对。",
   };
+  /* 请求根本没走完与「后端明确拒绝」是两件事：前者没有错误码，不能借用后者的话。 */
+  const UNFINISHED = "读取失败：页面与服务之间的请求没有完成。";
   const CODE = /^[a-z][a-z0-9_]{2,60}$/;
   const KIND = {try_next_time:"下次尝试", keep:"值得保持", ask_user:"需要先询问", no_change:"无需调整"};
+  const REVIEW_STATE = {not_run:"还没运行过", failed:"上次失败", blocked:"来源校验未通过",
+    no_reviewable_window:"暂无可复盘窗口", already_attempted:"该窗口已复盘过",
+    succeeded:"最近一次已产出", completed:"最近一次已产出"};
   const e = value => String(value ?? "").replace(/[&<>"']/g, c =>
     ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;", "'":"&#39;"}[c]));
-  const problem = code => Object.assign(new Error(errors[code] || "当前状态未能确认，请刷新核对。"), {code});
+  const problem = code => Object.assign(new Error(reason(code)), {code});
   const when = value => typeof value === "string" && Number.isFinite(Date.parse(value))
     ? new Date(value).toLocaleString("zh-CN", {hour12:false, month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"})
     : "时间未知";
   let root = null, bridge = null, generation = 0, operation = 0, data = null;
 
   function fresh() {
-    return {sources:[], items:[], stopped:[], policy:null, loading:false, writing:false,
-      confirming:"", notice:"", error:false, sourceErrors:[], expired:0};
+    return {sources:[], items:[], stopped:[], policy:null, status:null, phase:"loading",
+      loading:false, writing:false, confirming:"", notice:"", error:false, sourceErrors:[], expired:0};
   }
   function live(ticket) { return ticket === generation && root?.isConnected; }
   function note(message, error = false) { data.notice = message; data.error = error; }
@@ -86,7 +98,17 @@ window.CompanionSelfReviewPage = (() => {
     if (!value || typeof value !== "object") throw problem("invalid_response");
     return value;
   }
-  function reason(code) { return errors[code] || "当前状态未能确认，请刷新核对。"; }
+  function reason(code) {
+    if (!code) return UNFINISHED;
+    return errors[code] || "服务返回了未收录的状态（" + code + "），请刷新核对。";
+  }
+  /* 后端把这一角色最近一次复盘的结果随列表一起返回（state + 失败码）；页面此前
+     从未消费它，于是「复盘机制在，但最近一次没跑成」这件事一直看不出来。 */
+  function reviewLabel(status) {
+    if (!status || typeof status !== "object" || typeof status.state !== "string" || !status.state) return "—";
+    const label = REVIEW_STATE[status.state] || "状态未收录";
+    return typeof status.code === "string" && status.code ? `${label}（${status.code}）` : label;
+  }
   /* 一条建议的身份是「哪个记录归属 + 哪个 item_id」：同一批数据可能同时出现在
      活动列表与已停止列表里，跨来源的 item_id 也可能撞号。 */
   function itemKey(item) { return `${item?._sourceKey || ""}\u0000${item?.item_id || ""}`; }
@@ -170,27 +192,38 @@ window.CompanionSelfReviewPage = (() => {
     const valid=data.items.filter(item=>!item.unavailable_reason&&item.expires_at&&Date.parse(item.expires_at)>Date.now());
     const policy=data.policy||{};
     const duration=seconds=>Number.isFinite(seconds)?seconds%3600===0?`${seconds/3600} 小时`:seconds%60===0?`${seconds/60} 分钟`:`${seconds} 秒`:"—";
-    const metrics=[["自动应用",data.items.filter(item=>item.automatic&&!item.unavailable_reason).length,"条"],
-      ["生效中",valid.length,"条"],["复盘周期",Number.isFinite(policy.window_hours)?`${policy.window_hours} 小时`:"—",""],
+    /* 读取失败时计数没有可信来源：写 0 等于把「没读到」说成「没有」。 */
+    const count=value=>data.phase==="failed"?"—":value;
+    const metrics=[["自动应用",count(data.items.filter(item=>item.automatic&&!item.unavailable_reason).length),"条"],
+      ["生效中",count(valid.length),"条"],["复盘周期",Number.isFinite(policy.window_hours)?`${policy.window_hours} 小时`:"—",""],
       ["空结果重查",duration(policy.empty_retry_seconds),"后重查"]];
     const mechanisms=[
       ["复盘周期",Number.isFinite(policy.window_hours)?`${policy.window_hours} 小时`:"—"],
       ["证据门槛",Number.isInteger(policy.minimum_evidence)?`至少 ${policy.minimum_evidence} 条`:"—"],
       ["空结果重查",duration(policy.empty_retry_seconds)+" 后重查"],
+      ["最近一次复盘状态",reviewLabel(data.status)],
       ["指导类型","下次尝试 · 保持 · 询问 · 无需调整"],
       ["生效方式","低风险建议自动应用；询问项进入审阅中心"],
     ];
-    const active=valid.length?`<div class="sr-list">${valid.map(card).join("")}</div>`:`<div class="sr-empty">${data.loading?"正在读取…":"暂无生效中的指导"}</div>`;
+    /* 读成功且一条都没有，才叫「暂无复盘记录」；读失败不能借这句话收场。 */
+    const emptyCopy=data.phase==="loading"?"正在读取…"
+      :data.phase==="ready"&&!data.items.length&&!data.stopped.length?"暂无复盘记录":"暂无生效中的指导";
+    const active=valid.length?`<div class="sr-list">${valid.map(card).join("")}</div>`:`<div class="sr-empty">${emptyCopy}</div>`;
     const stopped=data.stopped.length?`<section class="sr-stopped"><h3>已停止注入</h3><div class="sr-list">${data.stopped.map(card).join("")}</div></section>`:"";
-    root.innerHTML=`<div class="sr-toolbar"><span>${data.sources.length} 个记录归属${data.loading?" · 正在读取":""}</span>
-      <button class="lh-refresh" type="button" data-review-refresh aria-label="重新读取" title="重新读取" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></div>
-      ${data.notice?`<p class="sr-status${data.error?" is-error":""}" role="status" aria-live="polite">${e(data.notice)}</p>`:""}
+    /* 读态三分：正在读 / 一条都没读到 / 读到了。整页读不到时，「0 条」与
+       「暂无生效中的指导」都会把失败说成空，所以只报错并给一次重试。 */
+    const blind=data.phase==="failed"&&!data.items.length&&!data.stopped.length;
+    const failed=`<p class="sr-status is-error" role="status" aria-live="polite">${e(data.notice||UNFINISHED)}</p>
+      <div class="sr-more"><button class="button small" type="button" data-review-refresh ${data.loading?"disabled":""}>重新读取</button></div>`;
+    const read=`${data.notice?`<p class="sr-status${data.error?" is-error":""}" role="status" aria-live="polite">${e(data.notice)}</p>`:""}
       ${data.sources.length?`<section class="sr-kpis" aria-label="复盘状态">${metrics.map(([label,value,unit])=>`<article><span>${label}</span><strong>${e(value)}${unit&&typeof value==="number"?` ${unit}`:""}</strong></article>`).join("")}</section>
         <section class="sr-mechanism"><header><h2>复盘运行机制</h2><span>${data.loading?"":"已连接"}</span></header><div>${mechanisms.map(([label,value])=>`<article><strong>${label}</strong><span>${e(value)}</span></article>`).join("")}</div></section>
         <section class="sr-effective"><header><h2>生效中的自我指导</h2><span>${valid.length} 条</span></header>${active}</section>${stopped}`
-        :`<div class="sr-empty">暂无复盘记录</div>`}
-      ${data.error&&!data.sources.length?`<div class="sr-empty">${e(data.notice)}</div>`:""}
-      ${data.sources.some(source=>source.next)?`<div class="sr-more"><button class="button small" type="button" data-review-more ${data.loading?"disabled":""}>加载更多</button></div>`:""}`;
+        :`<div class="sr-empty">${emptyCopy}</div>`}`;
+    root.innerHTML=`<div class="sr-toolbar"><span>${data.sources.length} 个记录归属${data.loading?" · 正在读取":""}</span>
+      <button class="lh-refresh" type="button" data-review-refresh aria-label="重新读取" title="重新读取" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></div>
+      ${blind?failed:read}
+      ${!blind&&data.sources.some(source=>source.next)?`<div class="sr-more"><button class="button small" type="button" data-review-more ${data.loading?"disabled":""}>加载更多</button></div>`:""}`;
     window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
     restoreView(view);
   }
@@ -206,14 +239,15 @@ window.CompanionSelfReviewPage = (() => {
      三种模式都不会让已经显示过的建议凭空消失——除非用户自己裁决了它。 */
   async function load({mode = "reset", force = false} = {}) {
     if (data.loading && !force) return;
-    if (!data.sources.length) { note("暂无可读取的复盘记录。", true); render(); return; }
+    if (!data.sources.length) { data.phase = "failed"; note("暂无可读取的复盘记录。", true); render(); return; }
     const ticket = generation;
     const query = ++loadGeneration;
     const reset = mode === "reset", append = mode === "append";
     const previous = reset ? null : data.items.slice();
     data.loading = true;
     if (reset) {
-      data.items = []; data.stopped=[];data.expired = 0; data.sourceErrors = [];data.policy=null;note("");
+      data.items = []; data.stopped=[];data.expired = 0; data.sourceErrors = [];data.policy=null;
+      data.status=null; data.phase = "loading"; note("");
       data.sources.forEach(source => { source.next = ""; source.pages = 0; });
     }
     render();
@@ -242,7 +276,7 @@ window.CompanionSelfReviewPage = (() => {
         const decided = append?{items:[]}:await api(source,"GET","/self-review",{state:"decided",limit:50});
         /* 「已经读过几页」要累加：append 只读一页，但它把已读页数 +1。 */
         return {source, rows, cursor, pages: append ? loadedBefore + 1 : pages,
-          policy:first?.policy||null, decided};
+          policy:first?.policy||null, status:first?.status||null, decided};
       }));
       if (!live(ticket) || query !== loadGeneration) return;
       results.forEach((settled, index) => {
@@ -252,10 +286,11 @@ window.CompanionSelfReviewPage = (() => {
           return;
         }
         succeeded++;
-        const {rows,cursor,pages,policy,decided}=settled.value;
+        const {rows,cursor,pages,policy,status,decided}=settled.value;
         source.next = cursor;
         source.pages = pages;
         if(!data.policy&&policy)data.policy=policy;
+        if(!data.status&&status)data.status=status;
         if (Number.isInteger(decided.expired_in_page)) expired += decided.expired_in_page;
         for (const item of rows) {
           const enriched = {...item, _sourceKey:source.key, _sourceLabel:source.label};
@@ -286,6 +321,9 @@ window.CompanionSelfReviewPage = (() => {
     data.items = data.items.filter(item => !stoppedKeysNow.has(itemKey(item)));
     data.expired = append ? data.expired + expired : expired;
     data.sourceErrors = failures;
+    /* 只要有任意一个归属真的读到了，这一页就是 ready；整轮读不到才是 failed。
+       空列表只有读成功之后才能说成「暂无复盘记录」。 */
+    if (targets.length) data.phase = succeeded ? "ready" : "failed";
     if (failures.length) note(succeeded
       ? `部分记录归属暂不可读（${failures.length}/${targets.length}）；已显示其余记录。`
       : `复盘记录暂时无法读取：${failures[0]}`, true);
@@ -368,7 +406,7 @@ window.CompanionSelfReviewPage = (() => {
       if (context?.pluginName !== HOST) throw problem("bridge_unavailable");
       await load();
     } catch (failure) {
-      if (live(ticket)) { note(reason(failure.code), true); data.loading = false; render(); }
+      if (live(ticket)) { data.phase = "failed"; note(reason(failure.code), true); data.loading = false; render(); }
     }
   }
   function unmount() {

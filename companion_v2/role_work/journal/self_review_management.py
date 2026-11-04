@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from logging import getLogger
 
 from companion_v2.execution.models import TaskError, digest, stamp
 from companion_v2.execution.service import outcome
 
 from ..growth.management import RoleGrowthManagement
+
+
+logger = getLogger(__name__)
 
 
 # A page cursor names the ``(created_at, item_id)`` of the last row of the page.
@@ -88,7 +92,10 @@ class SelfReviewManagement:
         try:
             descriptions = self.evidence.describe_handles(handles, opened_at, closed_at, context, at)
         except TaskError as error:
-            raise TaskError("self_review_evidence_changed", error.reason) from None
+            # ``TaskError`` keeps its reason in ``args[0]``; it has no ``.reason``
+            # attribute, so reading one turned this degradation into an
+            # ``AttributeError`` that escaped both ``list`` and the route layer.
+            raise TaskError("self_review_evidence_changed", str(error)) from None
         return run, handles, descriptions
 
     def _cursor(self, value):
@@ -153,6 +160,12 @@ class SelfReviewManagement:
                     run_summary = run["summary"]
                 except TaskError as error:
                     unavailable = error.code
+                except Exception:
+                    # A row that cannot be projected is this row's problem, not the
+                    # page's: an unexpected failure here must not turn the whole
+                    # bucket into a failed read that hides every other row.
+                    logger.exception("self-review item projection failed: %s", row["item_id"])
+                    unavailable = "self_review_evidence_changed"
                 if expires_at is not None and expires_at <= stamp(at):
                     expired += 1
                 if row["state"] != "pending":
