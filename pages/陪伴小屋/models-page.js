@@ -127,17 +127,38 @@ window.CompanionModelsPage = (() => {
   /* The routing ceiling of one draft: the strictest output capability among the
      providers this task can be sent to. Replacement-rule targets count too,
      because routing may pick one of them for the same task. */
-  const limitFor = (s, task, draft) => Math.min(MAX_MODEL_OUTPUT_TOKENS, ...[...new Set([
+  const limitProviders = (s, task, draft) => [...new Set([
       effective(task, draft, "provider"), effective(task, draft, "fallback"),
       ...ruleOf(s, task.kind).map(rule => String(rule.provider_id || ""))])]
     .filter(Boolean)
-    .map(id => s.status.providers.find(provider => provider.id === id)?.max_output_tokens || MAX_MODEL_OUTPUT_TOKENS));
+    .map(id => s.status.providers.find(provider => provider.id === id) || null);
+  const providerLimit = provider => provider?.max_output_tokens || MAX_MODEL_OUTPUT_TOKENS;
+  const limitFor = (s, task, draft) => Math.min(MAX_MODEL_OUTPUT_TOKENS,
+    ...limitProviders(s, task, draft).map(providerLimit));
+  /* The provider that actually caps this draft, so the hint can say where the
+     number came from instead of naming every routed provider. */
+  const limitOwner = (s, task, draft) => limitProviders(s, task, draft)
+    .reduce((owner, provider) => !owner || providerLimit(provider) < providerLimit(owner) ? provider : owner, null);
   const limitExcess = (s, task, draft) => { const limit = limitFor(s, task, draft);
     const value = effective(task, draft, "max_output_tokens");
-    return value > limit ? {value, limit} : null; };
+    return value > limit ? {value, limit, owner: limitOwner(s, task, draft)} : null; };
   /* A registry default is clamped by routing at send time, so a task may keep
      following it even when the ceiling is lower. */
   const limitIsDefault = task => (task.fields.max_output_tokens.inherited_source || "default") === "default";
+  /* 回复任务的上限来自插件自己的「最大输出 Token」，不是 Provider 自报的能力：
+     Provider 设置里根本没有这个数字，改那里也调不动它。提示必须指向插件配置，
+     否则用户只会去模型提供方里找一个不存在的上限。旧后端没有 basis 字段时按
+     Provider 处理，保留原有措辞。 */
+  const pluginOutputSetting = "「配置 → 插件 → 我会永远陪着你 → 最大输出 Token」";
+  const limitIsPluginGlobal = excess => excess.owner?.max_output_tokens_basis === "plugin_global";
+  const limitOrigin = excess => limitIsPluginGlobal(excess)
+    ? `插件全局『最大输出 Token』（当前 ${excess.owner.plugin_global_max_output_tokens}）`
+    : `所选模型提供方的 ${excess.limit}`;
+  /* 全局值低于结构任务的下限时，插件按地板值上报；不解释一句，界面上的数字
+     就像凭空冒出来的。 */
+  const limitFloorNote = excess => limitIsPluginGlobal(excess) && excess.owner.floor_applied
+    ? `该任务至少需要 ${excess.owner.floor_applied}，插件按 ${excess.owner.floor_applied} 上报。` : "";
+  const sentence = (...parts) => parts.filter(Boolean).join("");
   /* Only a value the user saved explicitly is clamped to the ceiling. An
      inherited value keeps following its source: pinning it would silently turn
      "follow the default" into a saved number, which is exactly what the larger
@@ -148,21 +169,31 @@ window.CompanionModelsPage = (() => {
     draft.values.max_output_tokens = excess.limit; draft.inherited.max_output_tokens = false;
     return {basis: "adjusted", ...excess}; }
   function limitNotice(task, draft, fit) { const label = taskName(task.kind).label;
-    if (fit.basis === "adjusted") return `${label} 的输出上限已调整为 ${fit.limit}，请核对后保存。`;
-    return limitIsDefault(task)
-      ? `${label}：继承的默认输出上限 ${fit.value} 高于所选模型提供方的 ${fit.limit}，发送时会按 ${fit.limit} 生效。`
-      : `${label}：继承的输出上限 ${fit.value} 超过所选模型提供方的 ${fit.limit}；跟随上级不会被改写，请显式设置上限或改回上级。`; }
+    if (fit.basis === "adjusted")
+      return sentence(`${label} 的输出上限已调整为 ${fit.limit}，请核对后保存。`, limitFloorNote(fit));
+    const from = limitOrigin(fit);
+    return sentence(limitIsDefault(task)
+      ? `${label}：继承的默认输出上限 ${fit.value} 高于${from}，发送时会按 ${fit.limit} 生效。`
+      : `${label}：继承的输出上限 ${fit.value} 超过${from}；跟随上级不会被改写，请显式设置上限或改回上级。`,
+      limitFloorNote(fit)); }
   function limitHint(s, task, draft) { const excess = limitExcess(s, task, draft); if (!excess) return "";
+    const from = limitOrigin(excess), floor = limitFloorNote(excess);
     if (!draft.inherited.max_output_tokens)
-      return `输出上限 ${excess.value} 超过所选模型提供方的 ${excess.limit}，保存会被拒绝。`;
-    return limitIsDefault(task)
-      ? `继承的默认输出上限 ${excess.value} 高于所选模型提供方的 ${excess.limit}，发送时会按 ${excess.limit} 生效。`
-      : `继承的输出上限 ${excess.value} 超过所选模型提供方的 ${excess.limit}，发出时会被拒绝；请显式设置上限或改回上级。`; }
+      return limitIsPluginGlobal(excess)
+        ? sentence(`输出上限 ${excess.value} 超过${from}。`,
+          `请先把${pluginOutputSetting}调高，或把本任务上限调到 ${excess.limit}。`, floor)
+        : `输出上限 ${excess.value} 超过${from}，保存会被拒绝。`;
+    return sentence(limitIsDefault(task)
+      ? `继承的默认输出上限 ${excess.value} 高于${from}，发送时会按 ${excess.limit} 生效。`
+      : `继承的输出上限 ${excess.value} 超过${from}，发出时会被拒绝；请显式设置上限或改回上级。`, floor); }
   function limitProblem(s, task, draft) { const excess = limitExcess(s, task, draft); if (!excess) return "";
+    const from = limitOrigin(excess);
     if (!draft.inherited.max_output_tokens)
-      return `输出上限 ${excess.value} 超过所选模型提供方的 ${excess.limit}，请调低后再保存`;
+      return limitIsPluginGlobal(excess)
+        ? `输出上限 ${excess.value} 超过${from}，请先调高插件全局设置或把本任务上限调到 ${excess.limit}`
+        : `输出上限 ${excess.value} 超过${from}，请调低后再保存`;
     return limitIsDefault(task) ? ""
-      : `继承的输出上限 ${excess.value} 超过所选模型提供方的 ${excess.limit}，请显式设置上限或改回上级`; }
+      : `继承的输出上限 ${excess.value} 超过${from}，请显式设置上限或改回上级`; }
   const storageKey = kind => key + ":" + kind;
   const shown = (s, task) => { const info = taskName(task.kind), custom = taskFields(task).some(name => !s.drafts.get(task.kind).inherited[name]);
     return (!s.providerFilter || s.providerFilter === providerFor(task, s.drafts.get(task.kind)))

@@ -17,7 +17,8 @@ import unittest
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
 
-from astrbot_host.model_settings import parse_routing
+from astrbot_host.model_settings import (PROVIDER_OUTPUT_FLOOR, parse_routing,
+                                         provider_output_limit_rows)
 from astrbot_host.multi_settings import MultiHostSettings
 from companion_v2.adapters.astrbot.provider import UsageTariff
 from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings, assemble_providers
@@ -92,6 +93,31 @@ class ProviderOutputCeilingTests(unittest.TestCase):
         config["model"].pop("max_output_tokens", None)
 
         self.assertEqual(MultiHostSettings.parse(config).common.max_output_tokens, 2048)
+
+    def test_the_reported_reply_ceiling_says_it_came_from_the_plugin_global_setting(self):
+        # 管理面要能区分「插件全局值（含地板）」和「Provider 自报能力」：前者能改，
+        # 后者去 Provider 设置里找也找不到。
+        rows = provider_output_limit_rows(
+            [{"id": "primary", "max_output_tokens": 8192},
+             {"id": "secondary", "max_output_tokens": MAX_MODEL_OUTPUT_TOKENS}],
+            plugin_global=2048, primary_id="primary")
+
+        self.assertEqual(rows[0]["max_output_tokens_basis"], "plugin_global")
+        self.assertEqual(rows[0]["plugin_global_max_output_tokens"], 2048)
+        self.assertEqual(rows[0]["floor_applied"], PROVIDER_OUTPUT_FLOOR)
+        self.assertNotIn("floor_applied", rows[1])
+        self.assertEqual(rows[1]["max_output_tokens_basis"], "host_provider")
+        # 既有字段原样保留，旧页面照旧可读。
+        self.assertEqual([row["max_output_tokens"] for row in rows],
+                         [8192, MAX_MODEL_OUTPUT_TOKENS])
+
+    def test_a_global_setting_at_or_above_the_floor_needs_no_explanation(self):
+        rows = provider_output_limit_rows([{"id": "primary", "max_output_tokens": 65536}],
+            plugin_global=65536, primary_id="primary")
+
+        self.assertEqual(rows[0]["max_output_tokens_basis"], "plugin_global")
+        self.assertEqual(rows[0]["plugin_global_max_output_tokens"], 65536)
+        self.assertNotIn("floor_applied", rows[0])
 
 
 if __name__ == "__main__":

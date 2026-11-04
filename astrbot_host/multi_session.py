@@ -69,7 +69,7 @@ from companion_v2.expression.style_service import expression_learning_profile
 from companion_v2.expression.review import expression_review_profile
 from companion_v2.conversation.relay_settings import configuration_fields as relay_configuration_fields
 from .multi_authority import HOST_ID
-from .model_settings import conversation_provider_resolver
+from .model_settings import PROVIDER_OUTPUT_FLOOR, conversation_provider_resolver
 from .group_settings import GroupTarget
 from .group_admission import group_trigger_facts, mentioned_account_ids
 from .voice import NativeVoiceReply
@@ -465,17 +465,18 @@ class MultiHostSession:
             binding=ProviderBinding("model.text", common.provider_id, native_types.version, provider_fingerprint),
             provider_id=common.provider_id, version=native_types.version, provider_type=native_types.provider_types,
             function_tool_type=native_types.function_tool, tool_set_type=native_types.tool_set,
-            tariff=common.tariff, maximum_output_tokens=max(common.max_output_tokens, 8192),
+            tariff=common.tariff, maximum_output_tokens=max(common.max_output_tokens, PROVIDER_OUTPUT_FLOOR),
             maximum_input_estimate=common.maximum_input_estimate, output_parameter=common.output_parameter,
             streaming=common.streaming)
         self.model._current()
         self.model = attach_native_video(native_context, bridge=self.bridge, native_types=native_types,
             text=self.model, settings=TextProviderSettings(common.provider_id, common.tariff,
-                max(common.max_output_tokens, 8192), common.maximum_input_estimate,
+                max(common.max_output_tokens, PROVIDER_OUTPUT_FLOOR), common.maximum_input_estimate,
                 common.output_parameter, common.streaming))
         self.models = (self.model,) + assemble_providers(native_context, bridge=self.bridge,
             native_types=native_types, primary_id=common.provider_id, additional=common.additional_providers,
-            defaults=TextProviderSettings(common.provider_id, common.tariff, max(common.max_output_tokens, 8192),
+            defaults=TextProviderSettings(common.provider_id, common.tariff,
+                max(common.max_output_tokens, PROVIDER_OUTPUT_FLOOR),
                 common.maximum_input_estimate, common.output_parameter, common.streaming))
         fallback_provider_id, replacement_rules = loaded_routing(common.fallback_provider_id,
             common.replacement_rules, (model.binding.provider for model in self.models))

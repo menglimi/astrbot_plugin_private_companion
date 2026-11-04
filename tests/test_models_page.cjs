@@ -527,6 +527,82 @@ test('the editor ceiling follows replacement-rule targets like routing does', as
   assert.match(node.innerHTML, /发送时会按 1024 生效/);
 });
 
+/* 回复任务的上限是插件全局「最大输出 Token」（加地板）算出来的，不是 Provider
+   自报的能力。提示必须指向真正能改的那一项，否则用户会去模型提供方设置里找一
+   个根本不存在的上限。 */
+test('a plugin-global output ceiling points the hint at the plugin setting', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node);
+  const data = status();
+  data.providers[0] = {id: 'primary', capabilities: ['text'], max_output_tokens: 8192,
+    max_output_tokens_basis: 'plugin_global', plugin_global_max_output_tokens: 8192};
+  data.tasks[1].fields.max_output_tokens = {value: 16384, inherited_value: 16384,
+    source: 'window', inherited_source: 'installation', explicit: true};
+  requests[0].resolve(data);
+  await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
+  const card = node.innerHTML.split('data-fncard="memory.reflect"')[1].split('</article>')[0];
+  assert.match(card, /输出上限 16384 超过插件全局『最大输出 Token』（当前 8192）。/);
+  assert.match(card, /请先把「配置 → 插件 → 我会永远陪着你 → 最大输出 Token」调高，或把本任务上限调到 8192。/);
+  assert.doesNotMatch(card, /所选模型提供方/);
+  assert.doesNotMatch(card, /该任务至少需要/);
+  assert.match(card, /max="8192" step="1" data-model-field="max_output_tokens"/);
+});
+
+test('a host-provider output ceiling keeps the original wording', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node);
+  const data = status();
+  data.providers[1] = {id: 'secondary', capabilities: ['text'], max_output_tokens: 2048,
+    max_output_tokens_basis: 'host_provider', plugin_global_max_output_tokens: 65536};
+  data.tasks[1].fields.provider = {value: 'secondary', inherited_value: 'primary',
+    source: 'window', inherited_source: 'installation', explicit: true};
+  data.tasks[1].fields.max_output_tokens = {value: 8192, inherited_value: 4096,
+    source: 'window', inherited_source: 'installation', explicit: true};
+  requests[0].resolve(data);
+  await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
+  const card = node.innerHTML.split('data-fncard="memory.reflect"')[1].split('</article>')[0];
+  assert.match(card, /输出上限 8192 超过所选模型提供方的 2048，保存会被拒绝。/);
+  assert.doesNotMatch(card, /插件全局/);
+});
+
+/* 全局值低于结构任务的下限时插件按地板上报；不解释一句，界面上的 8192 就像
+   凭空冒出来的。 */
+test('a plugin-global ceiling below the task floor explains the floor', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node);
+  const data = status();
+  data.providers[0] = {id: 'primary', capabilities: ['text'], max_output_tokens: 8192,
+    max_output_tokens_basis: 'plugin_global', plugin_global_max_output_tokens: 2048, floor_applied: 8192};
+  data.tasks[1].fields.max_output_tokens = {value: 16384, inherited_value: 16384,
+    source: 'window', inherited_source: 'installation', explicit: true};
+  requests[0].resolve(data);
+  await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
+  const card = node.innerHTML.split('data-fncard="memory.reflect"')[1].split('</article>')[0];
+  assert.match(card, /插件全局『最大输出 Token』（当前 2048）/);
+  assert.match(card, /该任务至少需要 8192，插件按 8192 上报。/);
+});
+
+test('a limit inside the ceiling shows no hint', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node);
+  const data = status();
+  data.providers[0] = {id: 'primary', capabilities: ['text'], max_output_tokens: 8192,
+    max_output_tokens_basis: 'plugin_global', plugin_global_max_output_tokens: 2048, floor_applied: 8192};
+  requests[0].resolve(data);
+  await flush();
+  node.click('[data-model-sub]', {modelSub: 'cfg'});
+  const card = node.innerHTML.split('data-fncard="memory.reflect"')[1].split('</article>')[0];
+  assert.doesNotMatch(card, /输出上限 4096 超过/);
+  assert.doesNotMatch(card, /插件全局/);
+});
+
 test('typing a prompt keeps the editor mounted until the field changes', async () => {
   const {page, requests, root} = harness();
   const node = root();
