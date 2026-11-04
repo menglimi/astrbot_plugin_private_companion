@@ -587,13 +587,20 @@ test("native companion furniture opens its real workbench or settings surface", 
   assert.deepEqual(destinations, [["content", "books"], ["image", "cap-image"], ["together", "cap-together"],
     ["game", "cap-game"], ["screen", "cap-screen"], ["reality", "cap-reality"], ["live", "cap-live"]]);
 
+  /* 创作书架和其他家具走同一条路：先给真实的装配状态与作品库入口。未装配时
+     直接跳产出页只剩一张静态卡片，用户再也找不到装配按钮。 */
+  h.dialog.classList = {add() {}, remove() {}};
   h.run("showDetail('books')");
-  assert.equal(h.window.location.hash, "#manage/output", "Content's bookshelf entry opens the creation workspace");
-  assert.equal(h.run("outputTabId"), "creation");
+  assert.equal(h.dialog.open, true, "Content's bookshelf entry opens its real assembly state");
+  assert.match(h.dialogContent.innerHTML, /创作书架/);
+  assert.match(h.dialogContent.innerHTML,
+    /data-go="manage" data-manage="output" data-output-target="creation"/,
+    "the shelf entry still points at the creation workspace");
+  h.run("activateOutputTab('creation')");
+  assert.equal(h.run("outputTabId"), "creation", "that entry target is a real output tab");
   assert.equal(h.outputPanel.hidden, false);
   assert.equal(h.outputTab.attributes["aria-selected"], "true");
 
-  h.dialog.classList = {add() {}, remove() {}};
   for (const id of ids) {
     h.run(`showDetail('cap-${id}')`);
     assert.equal(h.dialog.open, true, `${id} opens its capability detail`);
