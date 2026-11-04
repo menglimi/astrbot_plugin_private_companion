@@ -12,6 +12,8 @@ __pycache__/
 *.patch
 *.tmp
 *.bak
+# 感知总览测试的渲染快照（曾经写在仓库根，现改到系统临时目录）
+/dash-debug.html
 /.zcode/
 /.workbuddy/
 /build/
