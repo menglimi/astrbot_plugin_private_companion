@@ -4016,12 +4016,16 @@ function renderConfigEditors(){
     wardrobe:outputConfigView('wardrobe',{rows:{tendency:2,image_prompt:2},onStatus:()=>window.CompanionImageMaterialsPage?.reload?.()}),
   }));
   if($('#groupParticipationConfigWorkspace'))configEditorMounts.push(mountConfigEditor('groupParticipationConfigWorkspace',['group_participation'],{
-    group_participation:{sectionIds:['topics','atmosphere','joke_guard','repeat','history'],navigationLimit:0}
+    group_participation:{sectionIds:['topics','atmosphere','joke_guard','repeat','history'],navigationLimit:0,
+      /* 角色层默认：上报整组 28 个字段。挂载点必须点名——两处共用一个回调，不点名
+         就只能靠猜，而这两份值绝不能进同一个槽（见 decision-page.js 的 participationSource）。 */
+      onStatus:status=>window.CompanionDecisionPage?.updateParticipationStatus?.(status,'role')}
   }));
   if($('#groupInterjectionConfigWorkspace'))configEditorMounts.push(mountConfigEditor('groupInterjectionConfigWorkspace',['group_participation'],{
     group_participation:{sectionIds:['interjection'],title:'本群主动插话',scopeNote:'当前群聊',navigationLimit:0,
       query:null,requestSection:null,resetKey:'reset_to_inherit',
-      onStatus:status=>window.CompanionDecisionPage?.updateParticipationStatus?.(status)}
+      /* 本群窗口：只上报 5 个插话键，按挂载点单存，合并时压住角色层同名键。 */
+      onStatus:status=>window.CompanionDecisionPage?.updateParticipationStatus?.(status,'window')}
   }));
   if($('#behaviorLearningConfigWorkspace'))configEditorMounts.push(mountConfigEditor('behaviorLearningConfigWorkspace',['group_participation'],{
     group_participation:{sectionIds:['behavior'],title:'行为模仿策略',note:'',scopeNote:'角色默认设置',navigationLimit:0}

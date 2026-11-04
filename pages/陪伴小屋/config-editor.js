@@ -1979,6 +1979,11 @@ window.CompanionConfigEditors = (() => {
           .map(instance => instance.refresh()));
       },
       selectSection(id) { for (const instance of instances) instance.selectSection(id); },
+      /* 分段可见性同样由各分区自己的内核实例决定；不转发时页面只会「看起来
+         什么都没发生」——群聊参与页按标签页收窄分段的那条路径就会静默失效。 */
+      setVisibleGroups(ids, preferredId) {
+        for (const instance of instances) instance.setVisibleGroups?.(ids, preferredId);
+      },
       saveField(kind, field, value) {
         const instance = instances.find(item => item.group === kind);
         return instance ? instance.saveField(field, value) : Promise.resolve({state: "unavailable"});
