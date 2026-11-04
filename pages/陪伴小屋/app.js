@@ -924,7 +924,7 @@ function mountPanelWorkspaces(){
     :window.CompanionSelfReviewPage?.unmount());
   const decisionHost=$('#decisionWorkspace');
   guarded('决策页',()=>decisionHost
-    ?window.CompanionDecisionPage?.mount(decisionHost,{groupSettingsMarkup:renderDecisionOriginal(),harassmentApi:(()=>{const role=product.role?.();return typeof role?.reply_api==="string"?role.reply_api+"/harassment":"";})()})
+    ?window.CompanionDecisionPage?.mount(decisionHost,{groupSettingsMarkup:renderDecisionOriginal(),harassmentApi:harassmentEndpoint(),scopeKind:product.target?.()?.scope_kind||""})
     :window.CompanionDecisionPage?.unmount());
   const memoryHost=$('#memoryWorkspace');
   guarded('事实与经历',()=>memoryHost
@@ -4220,6 +4220,23 @@ const allFeaturesState={roleKey:'',loading:false,loaded:false,attempted:false,er
 function pluginRelativePath(path){
   const prefix='/astrbot_plugin_private_companion/';
   return typeof path==='string'&&path.startsWith(prefix)?path.slice(prefix.length):'';
+}
+/* 防骚扰接口只在私聊窗口给。
+ *
+ * 两件事在这里收口，缺一件都会得到「未找到该路由」：
+ *   1. 作用域。防骚扰是私聊入站守卫，这组接口挂在私聊 reply 路由族下；
+ *      群聊 reply 路由族（group_reply_api）只注册了 status/preview/configure
+ *      和表达、参与那几组，从来没有 /harassment。而群聊窗口里
+ *      product.role().reply_api 是用群目标换出来的，拼上 /harassment 之后
+ *      宿主匹配不到路由，请求根本没进插件——重试、刷新都是同一句话。
+ *   2. 路径口径。目录给的是绝对地址（/astrbot_plugin_private_companion/host/…），
+ *      页面桥要的是插件相对路径，宿主会自己补插件名。原样交过去会被拼两次，
+ *      同样是「未找到该路由」。切前缀复用同一处实现，不另抄一份。
+ * 不适合的作用域返回空串，决策页据此按「不适用」呈现：不露页签、不发请求。 */
+function harassmentEndpoint(){
+  if(product.target?.()?.scope_kind!=='private')return '';
+  const route=pluginRelativePath(product.role?.()?.reply_api);
+  return route?route+'/harassment':'';
 }
 function allFeatureFieldSpec(group,field){
   const spec=window.CompanionConfigEditors?.spec?.[group]||{};
