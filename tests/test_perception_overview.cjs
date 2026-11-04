@@ -3,6 +3,7 @@
 const {test} = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const vm = require("node:vm");
 
@@ -147,7 +148,9 @@ test("overview shows the requested context, live routes, authorized devices and 
     "huawei-health/status",
     "reply/recalls",
   ]);
-  require("fs").writeFileSync("dash-debug.html", page.root.innerHTML);
+  /* 渲染快照只用于本地排查，落到系统临时目录：仓库根不再留下未跟踪的
+     测试产物，名字仍叫 dash-debug.html（.gitignore 也挡着这个旧位置）。 */
+  fs.writeFileSync(path.join(os.tmpdir(), "dash-debug.html"), page.root.innerHTML);
   assert.match(page.root.innerHTML, /用户配置区域/);
   assert.match(page.root.innerHTML, /晴 · 22°C/);
   assert.match(page.root.innerHTML, /大风蓝色预警/);
