@@ -2,7 +2,7 @@
 
 2026-10-10 起普通私聊与获准群聊由 AstrBot 核心生成和发送。插件日志中的「核心回复准入检查」「交由 AstrBot 核心回复管线」「核心回复阶段结束」对应 V2 接入点；模型和工具细节查 AstrBot 核心日志。小屋治理页按本轮真实核心请求、工具阶段和发送返回提供统计，未观测字段保持未知；`send_returned` 不代表客户端送达。Token、耗时与缓存观察只保存结构元数据，不保存完整请求或回复。
 
-普通核心聊天在唤醒主模型前执行已启用的 Laya 分类。INFO 日志中的 `Laya 核心接话判断` 包含 `event_ref`、`turn_id`、`status`、实际启用的 `action`、跳过/失败原因和 `elapsed_ms`；等待或沉默另有 `Laya 决策跳过主模型`。`非@群核心回复候选` 只是规则筛选，最终群日志的 `reason_source=laya/model/policy` 区分分类模型、主模型选择与规则来源。Laya 关闭、分类全部关闭、引用机器人消息和调用失败都会留下明确状态；调用失败继续原有处理。复读是否参与也先经过已启用的 Laya，放行后沿用固定复读动作，不调用主模型生成复读正文。
+普通核心聊天在唤醒主模型前执行已启用的 Laya 分类。INFO 日志中的 `Laya 核心接话判断` 包含 `event_ref`、`turn_id`、`status`、实际启用的 `action`、跳过/失败原因、失败原因的真实说明和 `elapsed_ms`；`reason_detail` 只在配置被拒绝等可操作失败时给出具体字段与合法取值，没有说明时记 `-`。等待或沉默另有 `Laya 决策跳过主模型`。`非@群核心回复候选` 只是规则筛选，最终群日志的 `reason_source=laya/model/policy` 区分分类模型、主模型选择与规则来源。Laya 关闭、分类全部关闭、引用机器人消息和调用失败都会留下明确状态；调用失败继续原有处理。复读是否参与也先经过已启用的 Laya，放行后沿用固定复读动作，不调用主模型生成复读正文。
 
 私聊在 Laya 判定之外另有确定性的收尾判断：INFO 日志 `私聊收尾判断` 记录 `event_ref`、`turn_id`、`status`、`action`、`reason`、`last_reply_at`、`categories` 和 `elapsed_ms`，不记录消息正文；实际跳过默认模型时另记 `私聊收尾判断跳过主模型`。该判断只使用已授权的原生对话和 `conversation.presentation` 中的三个收尾配置，读取失败时继续普通回复；它不是 Laya 调用，不写入 `laya_decision_events`。跳过后的核心观察沿用 `generation_state=suppressed`，请求和发送计数为零。
 

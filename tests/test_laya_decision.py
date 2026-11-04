@@ -15,7 +15,8 @@ from astrbot_host.laya_client import LayaDecisionClient, _LOCAL_ROUTERS, _decisi
 from companion_v2.decision.contract import DecisionContractError, deterministic_skip_reason, parse_decision
 from companion_v2.decision.prompt import DECISION_QUESTIONS, build_state
 from companion_v2.decision.service import LayaDecisionService
-from companion_v2.decision.store import LayaSettingsStore, LayaSettingsError, role_storage_key
+from companion_v2.decision.store import (MODE_MODELS, LayaSettingsStore, LayaSettingsError,
+                                          role_storage_key)
 
 
 def decision_document():
@@ -1117,3 +1118,70 @@ def test_jev_decisions_are_recorded_in_the_runtime_ledger(tmp_path, monkeypatch)
         assert json.loads(stored["request_json"])["model"] == "jev-latest"
     finally:
         runtime.close()
+
+
+def _mode_endpoint(mode):
+    """The endpoint each backend needs; only `local` runs without one."""
+    if mode == "local":
+        return ""
+    if mode == "workers_ai":
+        return "https://api.cloudflare.com/client/v4/accounts/acc-1/ai/run"
+    return "https://service.test/v1"
+
+
+def _mode_settings(mode):
+    """A minimal configuration that only differs in the backend it selects."""
+    return {"mode": mode, "endpoint": _mode_endpoint(mode)}
+
+
+def test_every_declared_mode_passes_settings_and_client_validation(tmp_path):
+    """MODE_MODELS is the only enumeration; both gates must accept all of it.
+
+    A hand-written subset in either validation silently refused the backends it
+    forgot, so this walks the declared enumeration and fails the moment one of
+    them stops being accepted. Every mode gets a matching endpoint because only
+    `local` runs without one.
+    """
+    assert MODE_MODELS, "the backend enumeration must not be empty"
+    for mode in MODE_MODELS:
+        store = LayaSettingsStore(tmp_path / mode, "target", "role")
+        saved = store.update(store.raw()["revision"], _mode_settings(mode))
+        assert saved["mode"] == mode
+        assert saved["default_model"] == MODE_MODELS[mode]
+        assert store.raw()["mode"] == mode
+        client = LayaDecisionClient(**_mode_settings(mode))
+        assert client.mode == mode
+        assert client.model == MODE_MODELS[mode]
+
+
+def test_undeclared_mode_is_rejected_by_both_gates(tmp_path):
+    """A backend outside MODE_MODELS must still be refused, with its own code."""
+    undeclared = "openai_structured"
+    assert undeclared not in MODE_MODELS
+    store = LayaSettingsStore(tmp_path, "target", "role")
+    with pytest.raises(LayaSettingsError) as error:
+        store.update(store.raw()["revision"], _mode_settings(undeclared))
+    assert error.value.code == "laya_config_invalid"
+    for mode in MODE_MODELS:
+        assert mode in str(error.value.reason)
+    with pytest.raises(LayaClientError) as error:
+        LayaDecisionClient(**_mode_settings(undeclared))
+    assert error.value.code == "laya_mode_invalid"
+
+
+def test_jev_mode_never_falls_back_to_a_local_checkpoint_at_call_time(tmp_path, monkeypatch):
+    """The registry default must reach the wire, not the local checkpoint name."""
+    captured = {}
+    jev_response(monkeypatch, jev_envelope())
+
+    def open_url(request, timeout):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        raise URLError("stop after one captured request")
+
+    monkeypatch.setattr("astrbot_host.laya_client.urlopen", open_url)
+    store = LayaSettingsStore(tmp_path, "target", "role")
+    store.update(store.raw()["revision"], {"enabled": True, **_mode_settings("jev")})
+    service = LayaDecisionService(store, client_factory=LayaDecisionClient)
+    with pytest.raises(LayaClientError):
+        asyncio.run(service.decide({"message_kind": "text", "user_text": "你好"}))
+    assert captured["body"]["model"] == MODE_MODELS["jev"]

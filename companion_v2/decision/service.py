@@ -179,14 +179,19 @@ class LayaDecisionService:
 
     def _client(self, values: dict) -> LayaDecisionClient:
         if values["mode"] != "local" and not values["endpoint"].strip():
-            raise LayaClientError("laya_endpoint_missing", "远程或 Jev 模式需要填写判断服务地址")
+            raise LayaClientError("laya_endpoint_missing",
+                                  "远程、Jev 或 Workers AI 模式需要填写判断服务地址")
         if self.client_factory is None:
             raise LayaClientError("laya_client_unavailable", "Laya 执行适配器暂不可用，本轮继续普通回复流程")
         return self.client_factory(mode=values["mode"], endpoint=values["endpoint"],
                                    local_model_path=values["local_model_path"],
                                    api_key=values["api_key"], timeout_seconds=values["timeout_seconds"],
                                    request_format=values.get("request_format", "native"),
-                                   model=(values.get("remote_model", "").strip() or "multilingual"))
+                                   # An empty operator field must fall back to the backend's
+                                   # own pinned model, which the client resolves from
+                                   # MODE_MODELS; naming one here would override Jev and
+                                   # Workers AI with the local checkpoint's name.
+                                   model=values.get("remote_model", "").strip())
 
     async def test(self) -> dict:
         values = self.store.raw()
