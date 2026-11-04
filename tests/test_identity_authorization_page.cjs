@@ -76,7 +76,11 @@ function element(tag) {
   const node = {
     tagName: String(tag).toUpperCase(), children: [], textContent: "", className: "",
     hidden: false, disabled: false, type: "", dataset: {}, style: { setProperty() {} },
-    isConnected: true,
+    isConnected: true, open: false, focused: false, removed: false,
+    showModal() { this.open = true; },
+    close() { this.open = false; },
+    remove() { this.isConnected = false; this.removed = true; },
+    focus() { this.focused = true; },
     classList: {
       add(...tokens) { node.className = [...new Set([...node.className.split(/\s+/).filter(Boolean), ...tokens])].join(" "); },
       remove(...tokens) { node.className = node.className.split(/\s+/).filter((item) => item && !tokens.includes(item)).join(" "); },
@@ -128,7 +132,7 @@ function element(tag) {
 }
 
 function harness({ persons, groups = [], group_networks = [], group_access, authorizations = {}, memberSettings = {}, post,
-                   refreshPending = false } = {}) {
+                   refreshPending = false, strangers = [] } = {}) {
   const requests = [];
   const byId = new Map();
   const tabs = [element("button"), element("button"), element("button")];
@@ -153,9 +157,11 @@ function harness({ persons, groups = [], group_networks = [], group_access, auth
   byId.get("directory-search").value = "";
   const relationshipApp = element("main");
   relationshipApp.className = "relationship-app";
+  const body = element("body");
   const document = {
     getElementById: (id) => byId.get(id) || null,
     createElement: (tag) => element(tag),
+    body,
     querySelector: (selector) => selector === ".relationship-app" ? relationshipApp : null,
     querySelectorAll: (selector) => selector === ".tab" ? tabs : selector === ".chip" ? chips
       : selector === ".graph-filter" ? graphFilters : selector === ".view-panel" ? panels : [],
@@ -187,9 +193,11 @@ function harness({ persons, groups = [], group_networks = [], group_access, auth
       [authorization + "|" + subject, value])),
   };
   answers[endpoint].directory_refresh_pending = refreshPending;
+  const strangerList = {items: strangers};
+  answers["acquaintance/strangers"] = strangerList;
   const settle = async () => { for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r)); };
   const harness = {
-    requests, document, byId, navigations,
+    requests, document, byId, navigations, body, strangerList,
     element: (id) => byId.get(id),
     settle,
     /* 回答在飞的请求。目录与授权都按路由 + 参数分发，写请求交给用例的 post。
@@ -1529,4 +1537,327 @@ test("原生窗口不冒充私聊用户，已迁入用户与目录计数一致",
   h.document.querySelectorAll(".chip")[2].handlers.click();
   assert.equal(h.element("people-result-count").textContent, "76 人");
   assert.match(flat(h.element("people-grid")), /宿主会话0/);
+});
+
+
+/* ── 从被拒记录添加具体私聊目标 ───────────────────────────────────────
+   这一行的危险在于"点错一条记录就把联系人加到了别的 Bot 上"，所以断言落在
+   确认框里写死的路由、真正发出去的 body，以及刷新后的行状态。 */
+
+const strangersPath = "acquaintance/strangers";
+const strangerTargetPath = "acquaintance/stranger-target";
+
+function refused(peer, changes = {}) {
+  return {platform_id: "qq-main", login: "account-a", peer,
+    first_seen_at: "2026-11-03T10:00:00+00:00", last_seen_at: "2026-11-03T10:05:00+00:00",
+    attempts: 2, last_outcome: "stranger_notice_sent", target_state: "addable", target_id: null, ...changes};
+}
+
+function listRow(h, peer) {
+  return h.element("stranger-list").children.find((row) => flat(row).includes(`账号 ${peer}`)) || null;
+}
+
+function firstButton(node) {
+  const stack = [...(node.children || [])];
+  while (stack.length) {
+    const item = stack.shift();
+    if (item.tagName === "BUTTON") return item;
+    stack.push(...(item.children || []));
+  }
+  return null;
+}
+
+function buttonIn(node, label) {
+  const stack = [...(node.children || [])];
+  while (stack.length) {
+    const item = stack.shift();
+    if (item.tagName === "BUTTON" && item.textContent === label) return item;
+    stack.push(...(item.children || []));
+  }
+  return null;
+}
+
+function openDialog(h) {
+  return h.body.children.find((child) => child.tagName === "DIALOG" && child.isConnected) || null;
+}
+
+async function openRefused(h) {
+  await h.send();
+  await h.send((request) => request.route === strangersPath);
+  return h.element("stranger-list");
+}
+
+test("被拒记录按当前配置显示可添加、已添加、已覆盖与收到方不可用", async () => {
+  const h = harness({persons: [person("subject-1", "已知成员")], strangers: [
+    refused("999"),
+    refused("998", {target_state: "added", target_id: "private-existing"}),
+    refused("997", {target_state: "covered"}),
+    refused("996", {target_state: "unavailable"})]});
+
+  const list = await openRefused(h);
+
+  assert.equal(h.element("stranger-contacts").hidden, false);
+  assert.equal(h.element("stranger-count").textContent, "4 人");
+  assert.match(flat(listRow(h, "999")), /账号 999 · 收到方 account-a/);
+  assert.match(flat(listRow(h, "999")), /平台 qq-main/);
+  assert.equal(firstButton(listRow(h, "999")).disabled, false);
+  for (const [peer, label] of [["998", "已添加"], ["997", "已覆盖"], ["996", "收到方不可用"]]) {
+    const row = listRow(h, peer);
+    assert.match(flat(row), new RegExp(label), peer + " 行应显示 " + label);
+    assert.equal(firstButton(row).disabled, true, label + " 行不应还能再添加");
+  }
+});
+
+test("确认框固定这条记录的账号、收到方与平台，取消不写配置", async () => {
+  const h = harness({strangers: [refused("999")]});
+  await openRefused(h);
+
+  firstButton(listRow(h, "999")).handlers.click();
+  await h.settle();
+
+  const dialog = openDialog(h);
+  assert.ok(dialog, "点「允许此账号私聊」应当打开确认框");
+  const copy = flat(dialog);
+  assert.match(copy, /发信账号 999/);
+  assert.match(copy, /收到方 account-a/);
+  assert.match(copy, /平台 qq-main/);
+  assert.match(copy, /仅添加该账号到此收到方，权限沿用现有设置。/);
+
+  buttonIn(dialog, "取消").handlers.click();
+  await h.settle();
+
+  assert.equal(openDialog(h), null, "取消后确认框应当关闭");
+  assert.equal(h.requests.filter((request) => request.method === "POST").length, 0);
+});
+
+test("确认后只提交所点路由，提交中不再接受第二次添加", async () => {
+  const h = harness({strangers: [refused("999"), refused("998")]});
+  await openRefused(h);
+
+  firstButton(listRow(h, "999")).handlers.click();
+  await h.settle();
+  buttonIn(openDialog(h), "确认添加").handlers.click();
+  await h.settle();
+
+  const posts = h.requests.filter((request) => request.method === "POST" && request.route === strangerTargetPath);
+  assert.equal(posts.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(posts[0].body)),
+    {platform_id: "qq-main", login: "account-a", peer: "999"});
+  assert.equal(posts[0].requestOptions?.timeoutMs, 60000);
+  assert.equal(rowButtonDisabled(h, "999"), true);
+  assert.match(flat(listRow(h, "999")), /正在添加…/);
+  assert.equal(rowButtonDisabled(h, "998"), true, "提交期间其他行的添加也要停住");
+
+  firstButton(listRow(h, "998")).handlers.click();
+  await h.settle();
+  assert.equal(h.requests.filter((request) => request.method === "POST" && request.route === strangerTargetPath).length, 1);
+
+  h.strangerList.items = [refused("999", {target_state: "added", target_id: "private-new"}), refused("998")];
+  posts[0].resolve({status: "ok", data: {state: "added", target_id: "private-new", saved: true,
+    requires_reload: false, requires_initialize: false, started: true, startup_error: null}});
+  await h.settle();
+  await h.send((request) => request.route === strangersPath);
+
+  assert.equal(h.element("notice").textContent, "已添加，权限沿用现有设置");
+  assert.doesNotMatch(h.element("notice").className, /error/);
+  assert.match(flat(listRow(h, "999")), /已添加/);
+  assert.equal(rowButtonDisabled(h, "999"), true);
+  assert.equal(rowButtonDisabled(h, "998"), false, "提交结束后其他行恢复可用");
+});
+
+function rowButtonDisabled(h, peer) {
+  return firstButton(listRow(h, peer)).disabled;
+}
+
+test("已覆盖、收到方不可用与初始化失败各有对应提示", async () => {
+  const covered = harness({strangers: [refused("999")]});
+  await openRefused(covered);
+  firstButton(listRow(covered, "999")).handlers.click();
+  await covered.settle();
+  buttonIn(openDialog(covered), "确认添加").handlers.click();
+  await covered.settle();
+  covered.strangerList.items = [refused("999", {target_state: "covered"})];
+  covered.requests.find((request) => request.route === strangerTargetPath)
+    .resolve({status: "ok", data: {state: "covered", target_id: null, saved: false,
+      requires_reload: false, requires_initialize: false, started: false, startup_error: null}});
+  await covered.settle();
+  await covered.send((request) => request.route === strangersPath);
+  assert.match(covered.element("notice").textContent, /已覆盖/);
+  assert.match(flat(listRow(covered, "999")), /已覆盖/);
+
+  const unavailable = harness({strangers: [refused("999")]});
+  await openRefused(unavailable);
+  firstButton(listRow(unavailable, "999")).handlers.click();
+  await unavailable.settle();
+  buttonIn(openDialog(unavailable), "确认添加").handlers.click();
+  await unavailable.settle();
+  unavailable.strangerList.items = [refused("999", {target_state: "unavailable"})];
+  unavailable.requests.find((request) => request.route === strangerTargetPath)
+    .resolve({status: "ok", data: {state: "unavailable", target_id: null, saved: false,
+      requires_reload: false, requires_initialize: false, started: false, startup_error: null}});
+  await unavailable.settle();
+  await unavailable.send((request) => request.route === strangersPath);
+  const unavailableCopy = unavailable.element("notice").textContent;
+  assert.match(unavailableCopy, /收到方不可用/);
+  assert.match(unavailableCopy, /未配置或当前连接已断开/, "文案要同时覆盖未配置与断线两种收到方");
+  assert.doesNotMatch(unavailableCopy, /不在当前 Bot 账号配置/);
+  assert.doesNotMatch(unavailable.element("notice").className, /error/);
+  assert.equal(rowButtonDisabled(unavailable, "999"), true);
+  assert.match(firstButton(listRow(unavailable, "999")).title, /未配置或未连接/);
+
+  const late = harness({strangers: [refused("999")]});
+  await openRefused(late);
+  firstButton(listRow(late, "999")).handlers.click();
+  await late.settle();
+  buttonIn(openDialog(late), "确认添加").handlers.click();
+  await late.settle();
+  late.strangerList.items = [refused("999", {target_state: "added", target_id: "private-new"})];
+  late.requests.find((request) => request.route === strangerTargetPath)
+    .resolve({status: "ok", data: {state: "added", target_id: "private-new", saved: true,
+      requires_reload: false, requires_initialize: true, started: false,
+      startup_error: "host_provider_required"}});
+  await late.settle();
+  await late.send((request) => request.route === strangersPath);
+  const lateCopy = late.element("notice").textContent;
+  assert.match(lateCopy, /^已添加，权限沿用现有设置/);
+  assert.match(lateCopy, /宿主需要初始化/);
+  assert.match(lateCopy, /host_provider_required/);
+  assert.match(late.element("notice").className, /error/);
+});
+
+test("配置冲突显示可重试原因，并按重新读取的状态恢复操作", async () => {
+  const h = harness({strangers: [refused("999")]});
+  await openRefused(h);
+  const listReads = () => h.requests.filter((request) => request.route === strangersPath).length;
+  const before = listReads();
+
+  firstButton(listRow(h, "999")).handlers.click();
+  await h.settle();
+  buttonIn(openDialog(h), "确认添加").handlers.click();
+  await h.settle();
+  h.strangerList.items = [refused("999", {target_state: "added", target_id: "private-other-admin"})];
+  h.requests.find((request) => request.route === strangerTargetPath)
+    .reject(Object.assign(new Error("插件配置在等待保存期间已变化"), {code: "legacy_plan_stale"}));
+  await h.settle();
+  await h.send((request) => request.route === strangersPath);
+
+  assert.match(h.element("notice").textContent, /配置刚被其他操作更新/);
+  assert.match(h.element("notice").className, /error/);
+  assert.ok(listReads() > before, "失败后应重新读取被拒记录核对实际状态");
+  assert.match(flat(listRow(h, "999")), /已添加/);
+  assert.equal(rowButtonDisabled(h, "999"), true);
+});
+
+test("目标被移除后刷新恢复可添加", async () => {
+  const h = harness({strangers: [refused("999", {target_state: "added", target_id: "private-old"})]});
+  await openRefused(h);
+  assert.equal(rowButtonDisabled(h, "999"), true);
+
+  h.strangerList.items = [refused("999")];
+  h.element("refresh").handlers.click();
+  await h.settle();
+  await h.send();
+  await h.send((request) => request.route === strangersPath);
+
+  assert.equal(rowButtonDisabled(h, "999"), false);
+  assert.doesNotMatch(flat(listRow(h, "999")), /已添加/);
+});
+
+test("写失败后读取也失败时保留上次读到的记录，读取恢复后再更新", async () => {
+  const h = harness({strangers: ["999", "998", "997", "996", "995"].map((peer) => refused(peer))});
+  await openRefused(h);
+  assert.equal(h.element("stranger-list").children.length, 5);
+
+  firstButton(listRow(h, "999")).handlers.click();
+  await h.settle();
+  buttonIn(openDialog(h), "确认添加").handlers.click();
+  await h.settle();
+  const posts = h.requests.filter((request) => request.method === "POST" && request.route === strangerTargetPath);
+  assert.equal(posts.length, 1);
+  posts[0].reject(Object.assign(new Error("未收到执行结果，请核对后重试本次操作。"), {code: "bridge_timeout"}));
+  await h.settle();
+  h.requests.filter((request) => request.method === "GET" && request.route === strangersPath).pop()
+    .reject(Object.assign(new Error("桥没有响应"), {code: "bridge_unavailable"}));
+  await h.settle();
+
+  assert.equal(h.element("stranger-contacts").hidden, false, "读取失败不能把历史记录整块藏掉");
+  assert.equal(h.element("stranger-list").children.length, 5);
+  assert.match(flat(listRow(h, "999")), /账号 999/);
+  assert.equal(h.element("stranger-status").hidden, false);
+  assert.match(flat(h.element("stranger-status")), /上一次读取/);
+  assert.match(h.element("notice").textContent, /没有收到添加操作/);
+  assert.doesNotMatch(flat(listRow(h, "999")), /正在添加/);
+  assert.equal(rowButtonDisabled(h, "999"), false, "提交结束且行仍可添加时按钮恢复");
+  assert.equal(h.requests.filter((request) => request.method === "POST" && request.route === strangerTargetPath).length, 1,
+    "读取失败不会重放写请求");
+
+  h.strangerList.items = [refused("999", {target_state: "added", target_id: "private-new"}),
+    refused("998"), refused("997"), refused("996"), refused("995")];
+  h.element("refresh").handlers.click();
+  await h.send();
+  await h.send((request) => request.route === strangersPath);
+
+  assert.equal(h.element("stranger-status").hidden, true, "读取成功后撤掉失败状态");
+  assert.equal(h.element("stranger-count").textContent, "5 人");
+  assert.match(flat(listRow(h, "999")), /已添加/);
+  assert.equal(rowButtonDisabled(h, "999"), true);
+});
+
+test("保存成功后列表读取失败仍按回执显示已添加，并保留初始化失败提示", async () => {
+  const h = harness({strangers: [refused("999"), refused("998")]});
+  await openRefused(h);
+
+  firstButton(listRow(h, "999")).handlers.click();
+  await h.settle();
+  buttonIn(openDialog(h), "确认添加").handlers.click();
+  await h.settle();
+  const post = h.requests.find((request) => request.method === "POST" && request.route === strangerTargetPath);
+  post.resolve({status: "ok", data: {state: "added", target_id: "private-new", saved: true,
+    requires_reload: false, requires_initialize: true, started: false,
+    startup_error: "host_provider_required"}});
+  await h.settle();
+
+  // 保存后宿主正在重启，目录与列表读取都会被拒；页面只剩这一份回执。
+  for (const request of h.requests) {
+    if (request.method === "GET" && !request.answered) {
+      request.reject(Object.assign(new Error("staging not initialized"), {code: "staging_not_initialized"}));
+    }
+  }
+  await h.settle();
+
+  const copy = flat(listRow(h, "999"));
+  assert.match(copy, /已添加/, "保存回执必须直接落到行上，不能等下一次读取");
+  assert.match(copy, /共 2 次/, "回执更新不能抹掉历史次数");
+  assert.equal(rowButtonDisabled(h, "999"), true);
+  assert.equal(rowButtonDisabled(h, "998"), false, "其它记录保持上次读取的状态");
+  const message = h.element("notice").textContent;
+  assert.match(message, /^已添加，权限沿用现有设置/);
+  assert.match(message, /宿主需要初始化/);
+  assert.match(message, /host_provider_required/);
+  assert.match(h.element("notice").className, /error/);
+  assert.equal(h.requests.filter((request) => request.method === "POST").length, 1);
+});
+
+test("宿主没有宿主确认能力时，页面内联确认框照常取消与提交一次", async () => {
+  const h = harness({strangers: [refused("999")]});
+  await openRefused(h);
+
+  firstButton(listRow(h, "999")).handlers.click();
+  await h.settle();
+  const dialog = openDialog(h);
+  assert.ok(dialog, "拿不到宿主确认层时必须在页面里退回内联确认框");
+  assert.match(flat(dialog), /仅添加该账号到此收到方，权限沿用现有设置/);
+
+  buttonIn(dialog, "取消").handlers.click();
+  await h.settle();
+  assert.equal(openDialog(h), null);
+  assert.equal(h.requests.filter((request) => request.method === "POST"
+    && request.route === strangerTargetPath).length, 0, "取消不写配置");
+
+  firstButton(listRow(h, "999")).handlers.click();
+  await h.settle();
+  buttonIn(openDialog(h), "确认添加").handlers.click();
+  await h.settle();
+  assert.equal(h.requests.filter((request) => request.method === "POST"
+    && request.route === strangerTargetPath).length, 1, "确认只写一次");
 });

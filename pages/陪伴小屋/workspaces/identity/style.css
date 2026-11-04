@@ -981,7 +981,26 @@ select:focus-visible, textarea:focus-visible { outline: 3px solid color-mix(in s
 /* 近期私聊被拒：只读的敲门记录，放在用户目录上方，不进入成员网格。 */
 .stranger-contacts { margin: 0 0 16px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 .stranger-contacts .panel-note { margin: 4px 0 10px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.stranger-contacts .stranger-status { color: var(--danger); }
 .stranger-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 220px; overflow: auto; }
-.stranger-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.stranger-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.stranger-row.is-unavailable { background: color-mix(in srgb, var(--muted) 6%, var(--surface)); }
+.stranger-identity { display: grid; gap: 2px; min-width: 0; }
 .stranger-row strong { font-weight: 600; font-size: 12.5px; }
 .stranger-row small { color: var(--muted); font-size: 11.5px; }
+.stranger-action { display: flex; align-items: center; gap: 8px; flex: none; }
+.stranger-action .secondary { min-height: 30px; padding: 4px 10px; font-size: 12px; }
+.stranger-state { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.stranger-dialog { width: min(380px, calc(100vw - 32px)); padding: 18px 20px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); color: var(--ink); }
+.stranger-dialog::backdrop { background: color-mix(in srgb, var(--ink) 28%, transparent); }
+.stranger-dialog h2 { margin: 0 0 10px; font-size: 15px; }
+.stranger-dialog-facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0 0 10px; font-size: 12.5px; }
+.stranger-dialog-facts dt { color: var(--muted); }
+.stranger-dialog-facts dd { margin: 0; word-break: break-all; }
+.stranger-dialog-note { margin: 0 0 14px; font-size: 12.5px; line-height: 1.6; }
+.stranger-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+@media (max-width: 620px) {
+  .stranger-row { flex-direction: column; align-items: stretch; gap: 6px; }
+  .stranger-action { align-self: flex-end; flex-wrap: wrap; justify-content: flex-end; }
+}

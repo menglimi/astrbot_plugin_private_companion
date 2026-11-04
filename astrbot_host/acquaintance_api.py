@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import asyncio
 import logging
+from copy import deepcopy
 from datetime import datetime, timezone
 from time import perf_counter
 
 from astrbot.api.web import request
 
-from companion_v2.execution.models import TaskContext, TaskError, require
+from companion_v2.adapters.astrbot.native import native_client_connected, route_id
+from companion_v2.execution.models import TaskContext, TaskError, digest, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import AudienceRef, ScopeKind, ScopeRef
 from companion_v2.identity_policy.management import (
@@ -38,6 +40,7 @@ from companion_v2.foundation.refs import OperationRef, VersionRef
 
 from .management_identity import dashboard_operator
 from .display_names import display_names
+from .multi_settings import MultiHostSettings
 from .settings import HostControlError
 
 
@@ -48,6 +51,7 @@ IDENTITY_PATH = PREFIX + "/identity"
 SETTINGS_PATH = PREFIX + "/settings"
 OPEN_LOOPS_PATH = PREFIX + "/open-loops"
 STRANGERS_PATH = PREFIX + "/strangers"
+STRANGER_TARGET_PATH = PREFIX + "/stranger-target"
 MAX_AUTHORIZATION_BODY = 8192
 MAX_STRANGER_ROWS = 100
 logger = logging.getLogger(__name__)
@@ -56,6 +60,96 @@ logger = logging.getLogger(__name__)
 def _group_route_key(group):
     return (group.get("platform_id") or group.get("platform") or "", group.get("bot_id") or "",
             group.get("account_id") or "", str(group.get("group_id") or ""))
+
+
+def _stranger_route(document):
+    """Read one ledger row's routing identity, or None when the row is incomplete."""
+    values = tuple(document.get(key) for key in ("platform_id", "login", "peer"))
+    if any(type(value) is not str or not value for value in values):
+        return None
+    platform_id, login, peer = values
+    try:
+        return platform_id, route_id(login), route_id(peer)
+    except (TypeError, ValueError):
+        return None
+
+
+def _stranger_account(settings, platform_id, login):
+    """The configured receiving account on this exact platform, if any."""
+    return next((item for item in settings.accounts
+                 if item.platform_id == platform_id and item.self_id == login), None)
+
+
+def _stranger_account_available(controller, account):
+    """Whether that account can receive right now, per the host's own check.
+
+    Mirrors ``MultiHostController._probe``: the platform instance must be the
+    configured one and its native client must be connected for this account.
+    """
+    platform = controller.context.get_platform_inst(account.platform_id)
+    try:
+        meta = platform.meta()
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return meta.id == account.platform_id and native_client_connected(platform, account.self_id)
+
+
+def _stranger_target(controller, settings, route):
+    """Resolve one ledger route against the live configuration without writing.
+
+    ``added`` means an exact target already carries this sender, ``covered``
+    means a wildcard target for the same receiving account answers for them.
+    Saved facts win over connectivity, so an offline account keeps reporting
+    what the configuration already grants.
+    """
+    if route is None or settings is None or not hasattr(settings, "all_targets"):
+        return "unavailable", None
+    platform_id, login, peer = route
+    account = _stranger_account(settings, platform_id, login)
+    if account is None:
+        return "unavailable", None
+    exact = next((target for target in settings.targets
+                  if target.route_key == (platform_id, login, peer)), None)
+    if exact is not None:
+        return "added", exact.target_id
+    if any(target.route_key == (platform_id, login, "*") for target in settings.targets):
+        return "covered", None
+    if not _stranger_account_available(controller, account):
+        return "unavailable", None
+    return "addable", None
+
+
+def _stranger_candidate(expected, settings, route):
+    """Copy the current configuration and append exactly one private target."""
+    platform_id, login, peer = route
+    account = _stranger_account(settings, platform_id, login)
+    if account is None:
+        raise TaskError("stranger_target_unavailable", "the receiving Bot account is not configured")
+    target_id = "private-" + digest((platform_id, login, peer))[:20]
+    candidate = deepcopy(expected)
+    section = candidate.setdefault("multi_host", {})
+    targets = section.setdefault("targets", [])
+    targets.append({"target_id": target_id, "platform_id": platform_id,
+                    "account_id": login, "bot_id": account.bot_id, "participant_id": peer})
+    parsed = MultiHostSettings.parse(candidate)
+    added = next((target for target in parsed.targets
+                  if target.route_key == (platform_id, login, peer)), None)
+    if added is None or added.target_id != target_id or added.bot_id != account.bot_id:
+        raise TaskError("stranger_target_unavailable",
+                        "the receiving Bot account could not be bound for this sender")
+    return candidate, target_id
+
+
+def _stranger_receipt(state, target_id, *, saved=False, reload_required=False,
+                      initialize_required=False, started=False, startup_error=None,
+                      conflict=False):
+    """Report one command's outcome without claiming unsaved work as saved."""
+    receipt = {"state": state, "target_id": target_id, "saved": saved,
+               "requires_reload": reload_required, "requires_initialize": initialize_required,
+               "started": started, "startup_error": startup_error}
+    if conflict:
+        receipt["conflict"] = True
+    return receipt
 
 
 def _persona_metadata(settings, bot_id, role_id):
@@ -326,7 +420,9 @@ class AcquaintanceWebAPI:
                 (OPEN_LOOPS_PATH, self.open_loops, ["GET"], "Read one person's open conversation threads"),
                 (OPEN_LOOPS_PATH, self.change_open_loop, ["POST"], "Manage one person's open conversation thread"),
                 (STRANGERS_PATH, self.strangers, ["GET"],
-                 "Read private accounts refused by the stranger boundary")]
+                 "Read private accounts refused by the stranger boundary"),
+                (STRANGER_TARGET_PATH, self.add_stranger_target, ["POST"],
+                 "Allow one refused account as one exact private target of its receiving account")]
 
     def _settings(self):
         settings = self.controller.settings
@@ -558,8 +654,11 @@ class AcquaintanceWebAPI:
     async def strangers(self):
         """Private accounts the stranger boundary has seen, newest first.
 
-        Read-only and bounded: the ledger holds the account and time, never a
-        subject binding, conversation or capability grant.
+        The ledger read stays read-only and bounded: it holds the account and
+        time, never a subject binding, conversation or capability grant. Each
+        row also projects whether the current configuration already carries an
+        exact target or a wildcard for that account, so the page can offer one
+        narrow, fixed-receiver action without keeping a second copy of grants.
         """
         from .stranger_notice import CONTACT_KIND
         from .web_api import outcome_response
@@ -570,6 +669,12 @@ class AcquaintanceWebAPI:
                 rows = controller.runtime.read_all(
                     "SELECT document_json FROM memory_views WHERE kind = ? "
                     "ORDER BY updated_at DESC LIMIT ?", (CONTACT_KIND, MAX_STRANGER_ROWS))
+                try:
+                    settings = self._settings()
+                except (TaskError, HostControlError):
+                    # A broken configuration must not hide the ledger: every row
+                    # then reads ``unavailable`` until the account is restored.
+                    settings = None
                 items = []
                 for row in rows:
                     try:
@@ -578,12 +683,86 @@ class AcquaintanceWebAPI:
                         continue
                     if not isinstance(document, dict):
                         continue
-                    items.append({key: document.get(key) for key in (
+                    item = {key: document.get(key) for key in (
                         "platform_id", "login", "peer", "first_seen_at", "last_seen_at",
-                        "attempts", "last_outcome")})
+                        "attempts", "last_outcome")}
+                    item["target_state"], item["target_id"] = _stranger_target(
+                        controller, settings, _stranger_route(document))
+                    items.append(item)
                 return outcome_response(Outcome.success({"items": items}))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+
+    async def add_stranger_target(self):
+        """Allow one refused account to message the Bot that refused it.
+
+        The candidate is the current configuration plus one exact target: the
+        recorded platform, the receiving account's Bot, and the sender as the
+        participant. Other targets, personas, roles, groups and enablement are
+        copied unchanged and reviewed by ``apply_bindings``.
+        """
+        from .web_api import outcome_response
+        controller = self.controller
+        try:
+            raw = await request.body()
+            if len(raw) > MAX_AUTHORIZATION_BODY or request.query:
+                raise TaskError("stranger_target_request_invalid",
+                                "the target command requires one bounded JSON body")
+            command = json.loads(raw.decode("utf-8"))
+            if type(command) is not dict or set(command) != {"platform_id", "login", "peer"}:
+                raise TaskError("stranger_target_request_invalid",
+                                "the target command requires the record's platform, receiving account and sender")
+            platform_id = command["platform_id"]
+            if type(platform_id) is not str or not platform_id or ":" in platform_id:
+                raise TaskError("stranger_target_request_invalid",
+                                "the platform instance is not a valid route identifier")
+            try:
+                route = platform_id, route_id(command["login"]), route_id(command["peer"])
+            except (TypeError, ValueError):
+                raise TaskError("stranger_target_request_invalid",
+                                "the receiving account and sender must be route identifiers") from None
+            if route[2] == "*":
+                raise TaskError("stranger_target_request_invalid",
+                                "the sender must be one concrete account, not a wildcard")
+            candidate = None
+            async with controller._control_lock:
+                await self._operator()
+                try:
+                    settings = self._settings()
+                except (TaskError, HostControlError):
+                    raise TaskError("stranger_target_unavailable",
+                                    "the plugin configuration cannot be read right now") from None
+                expected = deepcopy(dict(controller.config))
+                state, target_id = _stranger_target(controller, settings, route)
+                if state == "addable":
+                    candidate, target_id = _stranger_candidate(expected, settings, route)
+            if candidate is None:
+                return outcome_response(Outcome.success(_stranger_receipt(state, target_id)))
+            try:
+                result = await controller.apply_bindings(candidate, expected_config=expected)
+            except TaskError as error:
+                if error.code != "legacy_plan_stale":
+                    raise
+                # Another administrator may have saved this very target while
+                # this request was in flight; report the state they produced.
+                async with controller._control_lock:
+                    state, target_id = _stranger_target(controller, self._settings(), route)
+                if state not in ("added", "covered"):
+                    raise
+                return outcome_response(Outcome.success(
+                    _stranger_receipt(state, target_id, conflict=True)))
+            return outcome_response(Outcome.success(_stranger_receipt(
+                "added", target_id, saved=bool(result.get("saved", True)),
+                reload_required=bool(result.get("requires_reload", False)),
+                initialize_required=bool(result.get("requires_initialize", False)),
+                started=bool(result.get("started", False)),
+                startup_error=result.get("startup_error"))))
+        except (TaskError, HostControlError) as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, UnicodeError, RecursionError):
+            return outcome_response(Outcome.failed("stranger_target_request_invalid",
+                                                   "the target command is not valid JSON"))
+
 
     async def authorization(self):
         """Read the real state of every capability one person holds."""

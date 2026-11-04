@@ -1102,6 +1102,7 @@ window.CompanionProduct = (() => {
   function sendWorkspaceContext(owner, context) {
     owner.contentWindow.postMessage({channel:"companion-workspace",kind:"context",
       context:{pluginName:HOST,pageName:context.kind,tab:context.tab,
+        confirm:typeof window.CompanionConfirm==="function",
         display:{role_name:roleLabel(),subject_name:subjectLabel(target()),scope_kind:context.scope_kind,
           target_label:target()?targetLabel(target()):"当前会话"}}},"*");
   }
@@ -1165,6 +1166,20 @@ window.CompanionProduct = (() => {
       send({kind:"appearance",appearance:{...appearance}});return;
     }
     if(message.kind==="resize"){if(Number.isFinite(message.height))owner.style.height=Math.max(620,Math.min(2400,message.height+12))+"px";return;}
+    /* 工作区是 opaque origin 的 sandbox iframe，开不出能盖住插件视口的模态层；
+       确认由宿主这一层代开，工作区只等结论。没有 CompanionConfirm 时回
+       unavailable，工作区据此退回自己的内联确认框。 */
+    if(message.kind==="confirm"){
+      if(typeof window.CompanionConfirm!=="function"){
+        send({kind:"confirm-result",requestId:message.requestId,confirmed:false,code:"host_confirm_unavailable"});
+        return;
+      }
+      let confirmed=false,code=null;
+      try{ confirmed=(await window.CompanionConfirm(message.request))===true; }
+      catch(error){ code=error?.code||"host_confirm_failed"; }
+      send({kind:"confirm-result",requestId:message.requestId,confirmed,code});
+      return;
+    }
     if(message.kind==="designer-mode"){
       if(context.kind!=="designer"||!["create","optimize"].includes(message.mode))return;
       valid();
@@ -1263,7 +1278,7 @@ window.CompanionProduct = (() => {
         mapped="persona-designer"+path.slice("designer".length);
       } else if(context.kind==="identity") {
         const allowed=(method==="GET"&&["acquaintance","acquaintance/authorization","acquaintance/settings","acquaintance/strangers"].includes(path))
-           ||(method==="POST"&&["acquaintance/authorization","acquaintance/settings","acquaintance/identity","acquaintance/admin-name"].includes(path));
+           ||(method==="POST"&&["acquaintance/authorization","acquaintance/settings","acquaintance/identity","acquaintance/admin-name","acquaintance/stranger-target"].includes(path));
         if(!allowed)throw fail("invalid_response");
         mapped=relative(context.api)+path.slice("acquaintance".length);
       } else if(context.kind==="relationships"&&context.scope_kind==="group") {
