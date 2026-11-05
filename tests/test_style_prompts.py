@@ -458,6 +458,18 @@ class PromptGuardTests(unittest.TestCase):
         self.assertIn("若正文主要是连续汇报角色自身状态", JUDGE_INSTRUCTION)
         self.assertIn("必须有材料直接支持", JUDGE_INSTRUCTION)
 
+    def test_chinese_voice_instruction_asks_for_speakable_text(self):
+        from companion_v2.conversation.voice_reply import VoiceReplyPolicy
+        from companion_v2.proactive.prompts import voice_instruction
+
+        zh = voice_instruction(VoiceReplyPolicy(language="zh"), 30)
+        self.assertIn("直接朗读 text", zh)
+        self.assertIn("不要另写 voice_text", zh)
+        self.assertIn("不要写 Markdown", zh)
+        self.assertIn("可口播的中文", zh)
+        ja = voice_instruction(VoiceReplyPolicy(language="ja"), 30)
+        self.assertIn("voice_text 使用自然日语", ja)
+
     def test_generation_prompts_do_not_prime_concrete_food_words(self):
         generation_prompts = CONTACT_INSTRUCTION + DEFAULT_PROMPT + PURPOSE_INSTRUCTIONS["play"] + VOICE_INSTRUCTION
         self.assertNotIn("零食", generation_prompts)

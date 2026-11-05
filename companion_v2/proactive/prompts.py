@@ -267,9 +267,10 @@ VOICE_INSTRUCTION = (
     "本轮出现此提示表示主动语音已启用且冷却允许。写完正文后主动判断声音能否增强陪伴语气，不需要等用户明确要求语音。"
     "轻松问候、简短关心或安慰、玩笑、撒娇、邀请和带情绪的日常分享，如果用声音更自然且不会打扰，倾向在 send JSON 中增加 voice_intent:true；"
     "不要因为示例通常只写文字或用户没有点名语音就省略。"
-    "中文语音直接朗读 text 本身，不需要再写 voice_text；只有本轮配音使用外语时，才提供与正文意思一致的 voice_text，text 始终保存完整可见正文。"
-    "例如：{\"decision\":\"send\",\"text\":\"早呀，今天想听你讲讲近况。\",\"voice_intent\":true,\"voice_text\":\"早呀，今天想听你讲讲近况。\"}。"
-    "语音遵循本轮配置的语种，示例中文不是语种要求。正文很短时完整表达原意；正文较长时选取一个意思完整的片段，不增添新事实，不截成半句话，不写朗读标签。"
+    "中文语音会直接朗读 text，不需要再写 voice_text（写了也不会被使用）；只有本轮配音使用外语时，才同时提供 voice_text。"
+    "准备发语音时，text 本身必须能直接口播：用自然口语和完整句子，标点清楚；不要写 Markdown、编号、列表、链接、表情符号、括号动作、停顿标签或舞台说明，这些会被念出来或打断语流。"
+    "例如：{\"decision\":\"send\",\"text\":\"早呀，今天想听你讲讲近况。\",\"voice_intent\":true}。"
+    "语音遵循本轮配置的语种，示例中文不是语种要求。正文很短时完整表达原意；正文按一句话一个意思写，句子宁短勿绕，但程序不会按字数截断，长句仍会完整朗读。"
     "普通事实通知、较长说明、严肃敏感或更适合安静阅读的内容可以只发文字，也不要让每条主动消息都变成语音。"
     "这只是表达方式，不代表语音已生成、已发送或对方已听到。"
     "外语 voice_text 只能表达正文里已有的意思，不增加正文没有的问题、称呼、饮食或健康提醒；不要用语音补一句正文没有的追问。"
@@ -279,8 +280,13 @@ VOICE_INSTRUCTION = (
 def voice_instruction(policy, maximum):
     language = {"zh": "中文", "ja": "日语", "en": "英语"}.get(
         getattr(policy, "language", "zh"), "中文")
-    instruction = (VOICE_INSTRUCTION + f"本轮 voice_text 使用自然{language}，建议约 {maximum} 字，优先保证语意完整。"
-                   "text 按正常聊天语言完整表达；外语台词只放在 voice_text，不混进正文。程序不会按字数截断台词。")
+    if language == "中文":
+        instruction = (VOICE_INSTRUCTION +
+                       f"本轮语音直接朗读 text，建议约 {maximum} 字；text 写成可口播的中文，保留完整正文，不要另写 voice_text。"
+                       "程序不会按字数截断，句子偏长也会完整朗读。")
+    else:
+        instruction = (VOICE_INSTRUCTION + f"本轮 voice_text 使用自然{language}，建议约 {maximum} 字，优先保证语意完整。"
+                       "text 按正常聊天语言完整表达；外语台词只放在 voice_text，不混进正文。程序不会按字数截断台词。")
     extra = getattr(policy, "extra_prompt", "").strip()
     return instruction + ("\n语音表达偏好：" + extra if extra else "")
 
