@@ -383,7 +383,15 @@ class ProactiveContacts:
             policy = policy or VoiceReplyPolicy(position="after_text")
             # Foreign speech must be authored in the same model call. Never
             # silently route the Chinese display text to a foreign TTS voice.
-            speech = decision.get("voice_text", body if policy.language == "zh" else "")
+            script = decision.get("voice_text")
+            script = script if isinstance(script, str) else ""
+            # 中文朗读与用户看到的正文用同一份内容：模型在 voice_text 里的改写
+            # 经常省略后半句或换一种说法，语音和文字就会对不上。外语配音仍
+            # 使用同一次调用产出的台词，避免把中文交给外语音色。
+            speech = body if policy.language == "zh" else script
+            if (policy.language == "zh" and script.strip()
+                    and re.sub(r"\s+", "", script) != re.sub(r"\s+", "", body)):
+                logger.info("V2 proactive voice 使用可见正文朗读：模型台词与正文不一致")
             speech = re.sub(r"\s+", " ",
                 strip_voice_markup(strip_internal_expression_protocol(speech))).strip()
             if speech and len(speech) <= 2000:

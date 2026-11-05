@@ -175,6 +175,16 @@ class ProactiveVoicePokeTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIn("voice_text 使用自然日语", self.called[0].original.instruction)
         self.assertIn("不会按字数截断", self.called[0].original.instruction)
 
+    async def test_chinese_voice_reads_the_visible_text_even_when_model_rewrites_it(self):
+        app = await self.enabled_actions(voice_action_enabled=True)
+        text = "喂，外卖到底还要多久啊？本小姐都要饿扁了。"
+        self.choose(text=text, speech="喂，外卖到底还要多久啊？", poke=False)
+        task = await self.send_once(app)
+        data = self.record(task.task_id)
+        # 中文朗读必须与用户看到的正文一致：模型改写的短台词会被忽略。
+        self.assertEqual(data["voice"]["speech"], text)
+        self.assertEqual(self.sent[0].text, text)
+
     async def test_missing_foreign_speech_preserves_text_without_chinese_fallback(self):
         app = await self.enabled_actions(voice_action_enabled=True)
         manager = ReplyManagement(app, self.contact_context())
