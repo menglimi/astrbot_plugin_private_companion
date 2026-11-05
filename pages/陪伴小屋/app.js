@@ -1530,6 +1530,9 @@ const directory=[
   {id:'screen',station:'ext-000000000000000000000001',model:'monitor',accent:'#7e91b5',icon:'monitor',name:'屏幕台',text:'屏幕来源与观察范围',detail:'cap-screen',cap:'screen'},
   {id:'reality',station:'ext-000000000000000000000002',model:'pedestal',accent:'#84a091',icon:'radio-tower',name:'现实设备台',text:'真实设备、场所与动作结果',detail:'cap-reality',cap:'reality',color:'green'},
   {id:'live',icon:'mic-vocal',name:'直播与表演',text:'节目、场景与角色呈现',detail:'cap-live',cap:'live'},
+  /* 视频理解由外部插件执行，这里只放一张状态与入口卡：不写 tab（点开走详情而不是切换页签）、
+     不写 group（不是基础家具）、不写 station（插件在房间里没有体素模型）。 */
+  {id:'video-vision',icon:'video',name:'观影机',text:'视频理解插件的安装状态与入口',detail:'cap-video_vision',cap:'video_vision'},
 ];
 const furnitureFilters=[['all','全部'],['base','基础生活'],['extensions','拓展能力'],['attention','待检查']];
 const furnitureNeedsAttention=item=>furnitureUnavailable(item)
@@ -1902,7 +1905,7 @@ const perceptionSources=[
   ['message-square-text','文字与引用','消息正文、引用原话与来源'],
   ['image','图片与动图','保留原图，动图按受限帧数理解'],
   ['audio-lines','语音','读取原始语音并交给支持音频的模型'],
-  ['video','视频','将原视频交给支持原生视频输入的模型理解'],
+  ['video','视频','原生视频交给「基米看得见视频」等外部插件理解；未安装时只提供文件路径'],
   ['messages-square','合并转发','按原消息顺序读取有来源的内容'],
 ];
 const perceptionProviders=[

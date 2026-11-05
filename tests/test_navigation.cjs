@@ -595,7 +595,8 @@ test("native companion furniture opens its real workbench or settings surface", 
 
   const destinations = JSON.parse(h.run("JSON.stringify(directory.filter(item=>item.cap).map(({id,detail})=>[id,detail]))"));
   assert.deepEqual(destinations, [["content", "books"], ["image", "cap-image"], ["together", "cap-together"],
-    ["game", "cap-game"], ["screen", "cap-screen"], ["reality", "cap-reality"], ["live", "cap-live"]]);
+    ["game", "cap-game"], ["screen", "cap-screen"], ["reality", "cap-reality"], ["live", "cap-live"],
+    ["video-vision", "cap-video_vision"]]);
 
   /* 创作书架和其他家具走同一条路：先给真实的装配状态与作品库入口。未装配时
      直接跳产出页只剩一张静态卡片，用户再也找不到装配按钮。 */
@@ -640,27 +641,54 @@ test("furniture directory filters, search and attention counts use the same reco
   const extension = id => h.window.CompanionProduct.extension(id);
   const ids = () => Array.from(h.run("filteredFurniture().map(item=>item.id)"));
   h.run("furnitureFilter='extensions'");
-  assert.deepEqual(ids(), ["content", "image", "together", "game", "screen", "reality", "live"]);
+  assert.deepEqual(ids(),
+    ["content", "image", "together", "game", "screen", "reality", "live", "video-vision"]);
   h.run("furnitureFilter='base'");
   assert.equal(ids().length, 7);
   h.run("furnitureFilter='all';furnitureQuery='生图与相册'");
   assert.deepEqual(ids(), ["image"]);
   h.run("furnitureQuery='';furnitureFilter='attention';state.modules.image='removed'");
-  assert.deepEqual(ids(), [], "native service state owns availability despite an old local furniture flag or missing external plugin");
+  /* 外部提供方没有自报 connected 就留在待检查：这份夹具里没有它的状态记录，
+     所以「观影机」和其余没连上的能力走同一个判据，不额外开后门。 */
+  assert.deepEqual(ids(), ["video-vision"], "native service state owns availability despite an old local furniture flag or missing external plugin");
   Object.assign(extension("together"), {desired_state: "paused", integration_state: "stopped"});
   Object.assign(extension("game"), {desired_state: "discarded", assembled: false, integration_state: "unassembled"});
   Object.assign(extension("screen"), {integration_state: "degraded"});
   Object.assign(extension("live"), {desired_state: "paused", integration_state: "stopped"});
-  assert.deepEqual(ids(), ["together", "game", "screen", "live"]);
+  assert.deepEqual(ids(), ["together", "game", "screen", "live", "video-vision"]);
   assert.equal(h.run("capabilityStatus('image')[0]"), "已装配");
   assert.equal(h.run("capabilityStatus('together')[0]"), "已暂停");
   assert.equal(h.run("capabilityStatus('game')[0]"), "未装配");
   const html = h.run("renderDirectory()");
-  assert.match(html, /data-furniture-filter="attention"[^>]*>待检查<span>4<\/span>/);
-  assert.match(html, /显示 4 \/ 14 件/);
+  assert.match(html, /data-furniture-filter="attention"[^>]*>待检查<span>5<\/span>/);
+  assert.match(html, /显示 5 \/ 15 件/);
   Object.assign(extension("together"), {desired_state: "active", integration_state: "connected"});
-  assert.deepEqual(ids(), ["game", "screen", "live"]);
-  assert.match(h.run("renderDirectory()"), /待检查<span>3<\/span>/);
+  assert.deepEqual(ids(), ["game", "screen", "live", "video-vision"]);
+  assert.match(h.run("renderDirectory()"), /待检查<span>4<\/span>/);
   h.run("furnitureQuery='不存在的家具'");
   assert.match(h.run("renderDirectory()"), /没有符合条件的家具/);
+});
+
+test("the video understanding card opens its external provider detail", () => {
+  /* 这张卡没有 tab，也不属于基础生活：点开必须落到 providerDetail() 的插件资料，
+     而不是「这件事在别处」的兜底弹层。 */
+  const h = harness();
+  h.manifest.providers = [{capability_id: "video_vision", plugin_id: "astrbot_plugin_video_vision",
+    label: "基米看得见视频", version: "1.2.3", installed: true, pages: [],
+    integration_state: "installed", enabled: null, runtime_ready: null}];
+  h.dialog.classList = {add() {}, remove() {}};
+  const card = JSON.parse(h.run("JSON.stringify(directory.find(item=>item.id==='video-vision'))"));
+  assert.equal(card.cap, "video_vision");
+  assert.equal(card.detail, "cap-video_vision");
+  assert.equal(card.tab, undefined, "tab 会让卡片切页签，读不到插件状态");
+  assert.equal(card.group, undefined, "外部提供方不是基础生活家具");
+  /* 行内说明与搜索都消费 text：缺了它会渲染成 undefined，卡片看起来像坏了一半。 */
+  const row = h.run("renderDirectory()");
+  assert.match(row, /观影机[\s\S]{0,200}?视频理解插件的安装状态与入口/);
+  assert.doesNotMatch(row, /undefined/, "卡片被消费的字段必须都有值");
+  h.run("openFurniture('video-vision')");
+  assert.equal(h.dialog.open, true, "the card opens a detail dialog");
+  assert.match(h.dialogContent.innerHTML, /video_vision capability status/,
+    "the dialog comes from providerDetail(), not the 这件事在别处 fallback");
+  assert.deepEqual(h.nativeMounts, [], "an external provider mounts no native settings panel");
 });
