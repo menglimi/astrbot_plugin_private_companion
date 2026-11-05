@@ -1754,7 +1754,7 @@ test('Laya page exposes official local install, first-run download, and SystemOn
   assert.match(node.innerHTML, /下载并验证模型/);
   assert.match(node.innerHTML, /C:\/AstrBot\/python.exe/);
   assert.match(node.innerHTML, /pip install .*laya==0\.4\.0/);
-  assert.doesNotMatch(node.innerHTML, /GGUF|OpenAI 兼容|chat\/completions/);
+  assert.doesNotMatch(node.innerHTML, /网关地址|data-laya-preset/);
   assert.match(node.innerHTML, /判断回复形式/);
   assert.match(node.innerHTML, /判断分段倾向/);
   assert.match(node.innerHTML, /连续接话置信阈值/);
@@ -1801,7 +1801,7 @@ test('Laya page exposes official local install, first-run download, and SystemOn
   page.unmount();
 });
 
-test('Laya page offers a Jev judgment backend with its own address, key and model name', async () => {
+test('Laya page offers an OpenAI-compatible gateway backend with its own address, key and model name', async () => {
   const {page, requests, root} = harness();
   const node = root();
   const layaStatus = overrides => ({enabled: true, mode: 'remote', endpoint: 'https://laya.test/v1',
@@ -1821,15 +1821,21 @@ test('Laya page offers a Jev judgment backend with its own address, key and mode
   requests.find(item => item.method === 'GET' && item.route === 'model/laya').resolve(layaStatus({}));
   requests.find(item => item.method === 'GET' && item.route === 'model/laya/logs').resolve({events: []});
   await flush();
-  assert.match(node.innerHTML, /<option value="jev"[^>]*>Jev 判断服务<\/option>/,
+  assert.match(node.innerHTML, /<option value="jev"[^>]*>OpenAI 兼容网关<\/option>/,
     'the access-mode list offers the gateway backend');
+  assert.doesNotMatch(node.innerHTML, /<option value="jev"[^>]*>Jev 判断服务<\/option>/,
+    'the old judgment-service label is gone');
+  assert.match(node.innerHTML, /仅用于只提供 \/v1\/chat\/completions 的第三方中转/);
+  assert.match(node.innerHTML, /TypeSafe 官方 Jev 请选「远程 HTTP 服务」/);
 
   node.change('[data-laya-field]', {layaField: 'mode', value: 'jev'});
-  assert.match(node.innerHTML, /判断服务地址/);
+  assert.match(node.innerHTML, /网关地址/);
   assert.match(node.innerHTML, /\/v1\/chat\/completions/);
   assert.match(node.innerHTML, /判断模型名/);
   assert.match(node.innerHTML, /留空使用 jev-latest/);
-  assert.match(node.innerHTML, /Jev 判断服务<\/h3>/);
+  assert.match(node.innerHTML, /OpenAI 兼容网关<\/h3>/);
+  assert.match(node.innerHTML, /官方 TypeSafe Jev 不提供/);
+  assert.doesNotMatch(node.innerHTML, /Jev 判断服务/);
   assert.doesNotMatch(node.innerHTML, /pip install .*laya==0\.4\.0/, 'a gateway backend needs no local package');
   assert.doesNotMatch(node.innerHTML, /data-laya-test[^>]*disabled/);
 
@@ -1865,6 +1871,80 @@ test('Laya page offers a Jev judgment backend with its own address, key and mode
     .resolve(layaStatus({mode: 'jev', endpoint: 'https://jev.example.test/v1',
       remote_model: 'jev-1.14.0', default_model: 'jev-1.14.0', revision: 'laya-jev'}));
   requests.filter(item => item.method === 'GET' && item.route === 'model/laya/logs').at(-1).resolve({events: []});
+  await flush();
+  page.unmount();
+});
+
+test('Laya remote mode offers official SystemOne presets that only fill the draft', async () => {
+  const {page, node, requests} = await openLayaPage();
+  assert.match(node.innerHTML, /data-laya-preset="laya"[^>]*>填入 Laya 官方</);
+  assert.match(node.innerHTML, /data-laya-preset="typesafe"[^>]*>填入 TypeSafe Jev 官方</);
+  assert.equal(page.isDirty(), false);
+
+  node.click('[data-laya-preset]', {layaPreset: 'laya'});
+  assert.match(node.innerHTML, /已填入「Laya 官方」的 SystemOne 地址与模型名，请填写 API Key 后保存。/);
+  assert.match(node.innerHTML, /value="http:\/\/127\.0\.0\.1:8000\/v1\/systemone"/);
+  assert.match(node.innerHTML, /value="multilingual"/);
+  assert.equal(page.isDirty(), true);
+  assert.equal(requests.filter(item => item.method === 'POST' && item.route === 'model/laya/save').length, 0,
+    'a preset never saves by itself');
+
+  node.click('[data-laya-preset]', {layaPreset: 'typesafe'});
+  assert.match(node.innerHTML, /已填入「TypeSafe Jev 官方」的 SystemOne 地址与模型名，请填写 API Key 后保存。/);
+  assert.match(node.innerHTML, /value="https:\/\/api\.typesafe\.ai\/v1\/systemone"/);
+  assert.match(node.innerHTML, /value="jev-latest"/);
+
+  node.click('[data-laya-save]');
+  const saveRequest = requests.find(item => item.method === 'POST' && item.route === 'model/laya/save');
+  assert.equal(saveRequest.values.changes.endpoint, 'https://api.typesafe.ai/v1/systemone');
+  assert.equal(saveRequest.values.changes.remote_model, 'jev-latest');
+  assert.equal(saveRequest.values.changes.mode, undefined, 'the preset keeps the remote access mode');
+  saveRequest.resolve(layaRemoteStatus({endpoint: 'https://api.typesafe.ai/v1/systemone',
+    remote_model: 'jev-latest', default_model: 'jev-latest', revision: 'laya-preset'}));
+  await flush();
+  page.unmount();
+});
+
+test('Laya gateway mode warns when the address belongs to SystemOne', async () => {
+  const {page, node} = await openLayaPage();
+  node.change('[data-laya-field]', {layaField: 'mode', value: 'jev'});
+  node.change('[data-laya-field]', {layaField: 'endpoint', value: 'https://api.typesafe.ai/v1/systemone'});
+
+  assert.match(node.innerHTML, /<div class="model-alert">当前接入方式是「OpenAI 兼容网关」/);
+  assert.match(node.innerHTML, /TypeSafe 官方 Jev 请切换到「远程 HTTP 服务」/);
+  assert.doesNotMatch(node.innerHTML, /data-laya-save[^>]*disabled/,
+    'the warning only explains the mismatch; the backend refuses the save');
+  page.unmount();
+});
+
+test('Laya remote mode warns when the address belongs to a chat gateway', async () => {
+  const {page, node} = await openLayaPage();
+  node.change('[data-laya-field]', {layaField: 'endpoint', value: 'https://gateway.test/v1/chat/completions'});
+
+  assert.match(node.innerHTML, /当前接入方式是「远程 HTTP 服务」/);
+  assert.match(node.innerHTML, /或切换到「OpenAI 兼容网关」/);
+  page.unmount();
+});
+
+test('switching Laya out of remote resets a leftover request format', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node);
+  requests[0].resolve(status());
+  await flush();
+  node.click('[data-model-tab]', {modelTab: 'laya'});
+  requests.find(item => item.method === 'GET' && item.route === 'model/laya')
+    .resolve(layaRemoteStatus({request_format: 'cloudflare', endpoint: 'https://laya.test/v1'}));
+  requests.find(item => item.method === 'GET' && item.route === 'model/laya/logs').resolve({events: []});
+  await flush();
+
+  node.change('[data-laya-field]', {layaField: 'mode', value: 'jev'});
+  node.change('[data-laya-field]', {layaField: 'endpoint', value: 'https://gateway.test/v1'});
+  node.click('[data-laya-save]');
+  const saveRequest = requests.find(item => item.method === 'POST' && item.route === 'model/laya/save');
+  assert.equal(saveRequest.values.changes.request_format, 'native');
+  saveRequest.resolve(layaRemoteStatus({mode: 'jev', endpoint: 'https://gateway.test/v1',
+    request_format: 'native', default_model: 'jev-latest', revision: 'laya-format'}));
   await flush();
   page.unmount();
 });

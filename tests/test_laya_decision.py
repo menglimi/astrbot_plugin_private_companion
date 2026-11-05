@@ -966,6 +966,76 @@ def test_jev_endpoint_model_and_mode_are_validated_before_any_request():
     assert error.value.code == "laya_endpoint_invalid"
 
 
+def test_laya_rejects_cross_protocol_endpoint_before_request(monkeypatch):
+    """An address from the other protocol would be appended, not replaced."""
+
+    def no_request(*_args, **_kwargs):
+        raise AssertionError("endpoint validation must not send a request")
+
+    monkeypatch.setattr("astrbot_host.laya_client.urlopen", no_request)
+
+    with pytest.raises(LayaClientError) as error:
+        LayaDecisionClient(mode="remote", endpoint="https://gateway.test/v1/chat/completions")
+    assert error.value.code == "laya_endpoint_invalid"
+    assert "/v1/systemone" in error.value.reason
+    assert "OpenAI 兼容网关" in error.value.reason
+
+    with pytest.raises(LayaClientError) as error:
+        LayaDecisionClient(mode="jev", endpoint="https://api.typesafe.ai/v1/systemone")
+    assert error.value.code == "laya_endpoint_invalid"
+    assert "远程 HTTP 服务" in error.value.reason
+    assert "TypeSafe 官方 Jev" in error.value.reason
+
+
+def test_store_rejects_cross_protocol_endpoint(tmp_path):
+    store = LayaSettingsStore(tmp_path, "target", "role")
+    revision = store.raw()["revision"]
+    cases = (
+        ({"mode": "remote", "endpoint": "https://gateway.test/v1/chat/completions"}, "/v1/systemone"),
+        ({"mode": "jev", "endpoint": "https://api.typesafe.ai/v1/systemone"}, "远程 HTTP 服务"),
+        ({"mode": "workers_ai", "endpoint": "https://example.test/v1/chat/completions"}, "不需要 /v1 后缀"),
+    )
+    for changes, expected in cases:
+        with pytest.raises(LayaSettingsError) as error:
+            store.update(revision, changes)
+        assert error.value.code == "laya_config_invalid"
+        assert expected in error.value.reason
+
+    # An empty address stays a request-time error, as before.
+    assert store.update(revision, {"mode": "remote", "endpoint": ""})["mode"] == "remote"
+
+
+def test_jev_ignores_leftover_cloudflare_request_format(monkeypatch):
+    """The shared request_format must not reroute the gateway transport."""
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, _limit):
+            return json.dumps(jev_envelope(), ensure_ascii=False).encode("utf-8")
+
+    def open_url(request, timeout):
+        captured["url"] = request.full_url
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return Response()
+
+    monkeypatch.setattr("astrbot_host.laya_client.urlopen", open_url)
+    client = LayaDecisionClient(mode="jev", endpoint="https://gateway.test/v1",
+                                request_format="cloudflare")
+    decision = asyncio.run(client.decide({"message_kind": "text", "user_text": "你好"}))
+
+    assert captured["url"] == "https://gateway.test/v1/chat/completions"
+    assert "messages" in captured["body"]
+    assert "input" not in captured["body"]
+    assert decision.document() == decision_document()
+    assert client.last_trace["response"]["value"]["answers"]["action"]["choice"] == "reply"
+
+
 def test_jev_adapter_reports_a_rejected_credential_without_leaking_it(monkeypatch):
     class Rejected:
         def read(self, _limit):
