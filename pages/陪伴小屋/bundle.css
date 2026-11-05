@@ -1115,15 +1115,6 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
 @media(max-width:980px){.persona-mode-grid{grid-template-columns:1fr}.persona-guide{grid-template-columns:1fr}.persona-hub-head{flex-direction:column}.persona-hub-badge{align-self:flex-start}}
 @media(max-width:560px){.persona-hub-head{padding:var(--sp-3)}.persona-hub-title{gap:10px}.persona-hub-mark{flex-basis:38px;width:38px;height:38px}.persona-mode-card{padding:12px}}
 
-/* 功能地图（应用内渲染）：分组卡片网格。 */
-.all-functions-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
-.all-function-card{display:flex;flex-direction:column;border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface)}
-.all-function-card header div{display:grid;gap:2px;min-width:0}
-.all-function-card header strong{font-size:var(--fs-body)}
-.all-function-card header p{margin:0;color:var(--muted);font-size:var(--fs-micro);line-height:1.5}
-.all-function-card .all-function-subs{display:flex;flex-wrap:wrap;gap:6px;padding:var(--sp-3) var(--sp-4) 0}
-.all-function-card-actions{margin-top:auto;display:flex;justify-content:flex-end;padding:var(--sp-3) var(--sp-4) var(--sp-4)}
-
 /* confirmation-dialog.css */
 .confirmation-dialog {
   width: min(460px, calc(100vw - 32px));

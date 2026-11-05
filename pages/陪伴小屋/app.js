@@ -214,10 +214,8 @@ function navigationMarkup(){
   const extras=navItems.map(([next,tab,icon,label])=>[next,tab,icon,label])
     .filter(([next,tab])=>!known.has(`${next}:${tab}`));
   if(extras.length)groups.push(['其他入口',extras]);
-  const assetToken=new URLSearchParams(location.search).get('asset_token')||'';
-  const catalogHref='catalog.html'+(assetToken?`?asset_token=${encodeURIComponent(assetToken)}`:'');
   return groups.map(([group,items])=>`<section class="navigation-group"><h2>${group}</h2>${items.map(navigationButton).join('')}</section>`).join('')
-    +`<section class="navigation-group"><h2>功能地图</h2><a class="navigation-link" href="${escapeHTML(catalogHref)}" title="按功能分类查看全部入口"><i data-lucide="layout-grid"></i><span>全部功能地图</span></a></section>`;
+    +`<section class="navigation-group"><h2>功能地图</h2>${navigationButton(['manage','all','layout-grid','全部功能地图'])}</section>`;
 }
 function navigationDestination(next,tab='',subtab=''){
   if(next==='library'||next==='activities'||next==='manage'&&tab==='capabilities'){
@@ -4181,25 +4179,11 @@ const allFunctionsGroups=[
       ['存储','storage'],['备份','backup'],['迁移','migration']]],
   ]],
 ];
-function allFunctionHref(key){
-  return key.startsWith('life:')?`#life/${key.slice(5)}`:`#manage/${key}`;
-}
 function renderAllFunctionsPage(){
-  /* 功能地图留在小屋内部：catalog.html 是整页导航，宿主给页面的 asset_token 只有
-     60 秒有效期（AstrBot PLUGIN_PAGE_ASSET_TOKEN_TTL_SECONDS），超过后再打开就会
-     只看到 {"status":"error","message":"Token 过期"}。这里改用同一份分组数据在
-     应用内渲染，进入地图不再依赖一次性 token。 */
-  const groups=allFunctionsGroups.map(([title,items])=>{
-    const cards=items.map(([key,icon,label,desc,subs])=>{
-      const href=allFunctionHref(key);
-      const sublinks=(subs||[]).map(([text,slug])=>`<a class="secondary" href="${href}/${slug}">${text}</a>`).join('');
-      return `<article class="all-function-card"><header><i data-lucide="${icon}"></i><div><strong>${label}</strong><p>${desc}</p></div></header>`
-        +(sublinks?`<div class="all-function-subs">${sublinks}</div>`:'')
-        +`<div class="all-function-card-actions"><a class="secondary" href="${href}">打开</a></div></article>`;
-    }).join('');
-    return `<details class="all-function-fold" open><summary class="all-function-fold-head"><span class="all-function-fold-title"><strong>${title}</strong><small>${items.length} 个入口</small></span><span class="all-function-fold-toggle">展开 / 收起</span></summary><div class="all-function-fold-body"><div class="all-functions-grid">${cards}</div></div></details>`;
-  }).join('');
-  return `<div class="all-functions-page"><p class="all-functions-notice">按功能分类查看全部入口；点卡片或分段直接进入对应工作台。</p>${groups}</div>`;
+  /* 全部功能页就是「按 6.7.0 功能开关总表重做」的那一版：分组布尔开关 + 行内修改 +
+     页内保存。不要再跳 catalog.html：整页导航只带页面加载时的 asset_token，
+     而宿主给插件页的 asset token 只有 60 秒有效期，晚一点打开就只剩 Token 过期。 */
+  return renderAllFeatureBoard();
 }
 function filterAllFunctions(value){
   const query=normalizeSearchText(value).trim();
