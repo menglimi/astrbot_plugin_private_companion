@@ -61,7 +61,7 @@ window.CompanionModelsPage = (() => {
     tts_provider_test_unsupported: "该语音服务不支持连接自检，可继续使用测试合成验证。",
     tts_provider_unloaded: "语音服务尚未加载，请先启用并刷新宿主状态。",
     laya_config_conflict: "Laya 配置已变化，请刷新后再保存。", laya_config_invalid: "Laya 配置未通过校验，请核对接入方式。",
-    laya_config_unreadable: "Laya 配置无法读取，请检查插件数据目录。", laya_endpoint_missing: "远程或 Jev 模式需要填写判断服务地址。",
+    laya_config_unreadable: "Laya 配置无法读取，请检查插件数据目录。", laya_endpoint_missing: "远程或 OpenAI 兼容网关模式需要填写服务地址。",
     laya_endpoint_invalid: "Laya 服务地址必须是 HTTP(S) 地址。", laya_model_invalid: "Laya 检查点选择无效。",
     laya_mode_invalid: "Laya 接入方式无效。", laya_package_missing: "当前 AstrBot Python 环境未安装 Laya。",
     laya_initialization_failed: "Laya Router 初始化失败，请检查安装和运行环境。", laya_inference_failed: "Laya 本地推理失败，请查看详细日志。",
@@ -1115,6 +1115,22 @@ window.CompanionModelsPage = (() => {
     if (l.draft.api_key) changes.api_key = l.draft.api_key;
     return changes; };
   const layaDirty = l => !!l.data && !!l.draft && Object.keys(layaChanges(l)).length > 0;
+  const layaEndpointPath = value => String(value || "").trim().split(/[?#]/)[0].replace(/\/+$/, "");
+  /* 两种官方服务都使用 SystemOne；按钮只填草稿，API Key 与保存仍由用户确认。 */
+  const LAYA_PRESETS = {
+    laya: {label: "Laya 官方", endpoint: "http://127.0.0.1:8000/v1/systemone", remote_model: "multilingual"},
+    typesafe: {label: "TypeSafe Jev 官方", endpoint: "https://api.typesafe.ai/v1/systemone", remote_model: "jev-latest"},
+  };
+  function layaApplyPreset(s, name) { const l = s.laya, preset = LAYA_PRESETS[name];
+    if (!preset || !l.draft || l.loading || l.busy) return;
+    l.draft.endpoint = preset.endpoint; l.draft.remote_model = preset.remote_model; l.draft.request_format = "native";
+    l.bad = false; l.notice = `已填入「${preset.label}」的 SystemOne 地址与模型名，请填写 API Key 后保存。`; render(); }
+  function layaProtocolAlert(l, mode) { const path = layaEndpointPath(l.draft?.endpoint);
+    if (mode === "jev" && path.endsWith("/v1/systemone"))
+      return '<div class="model-alert">当前接入方式是「OpenAI 兼容网关」，但地址以 <code>/v1/systemone</code> 结尾。TypeSafe 官方 Jev 请切换到「远程 HTTP 服务」；只有提供 <code>/v1/chat/completions</code> 的第三方中转才使用此方式。</div>';
+    if (mode === "remote" && path.endsWith("/v1/chat/completions"))
+      return '<div class="model-alert">当前接入方式是「远程 HTTP 服务」，但地址以 <code>/v1/chat/completions</code> 结尾。请改为 <code>/v1/systemone</code>，或切换到「OpenAI 兼容网关」；后端会拒绝这种跨协议配置。</div>';
+    return ""; }
   async function layaRefresh(s) { const l = s.laya, ticket = version; if (l.loading) return; l.loading = true; l.notice = "正在读取 Laya 配置…"; render();
     try { const [data, history] = await Promise.all([api("GET", path + "/laya"), api("GET", path + "/laya/logs")]); if (!current(ticket, s)) return;
       if (!layaDirty(l) || l.stale) l.draft = layaDraftFrom(data); l.data = {...data, decision_fields: layaDraftFrom(data).decision_fields}; l.logs = history.events || []; l.loaded = true; l.stale = false; l.bad = false; l.notice = "已读取 Laya 接入状态与近期记录。"; }
@@ -1162,7 +1178,7 @@ window.CompanionModelsPage = (() => {
       l.notice = "本地 Laya 无法测试：当前 AstrBot Python 的 PyTorch 不支持 CUDA。请安装 CUDA 版 PyTorch 并重启，或切换到远程 HTTP 服务。";
       render(); return;
     }
-    const ticket = version; l.busy = true; l.test = {status: "testing"}; l.notice = l.data.mode === "local" ? "正在调用官方 Router；首次测试会自动下载检查点…" : l.data.mode === "jev" ? "正在调用 Jev 判断服务…" : l.data.mode === "workers_ai" ? "正在调用 Cloudflare Workers AI…" : "正在调用官方 SystemOne HTTP 接口…"; render();
+    const ticket = version; l.busy = true; l.test = {status: "testing"}; l.notice = l.data.mode === "local" ? "正在调用官方 Router；首次测试会自动下载检查点…" : l.data.mode === "jev" ? "正在调用 OpenAI 兼容网关…" : l.data.mode === "workers_ai" ? "正在调用 Cloudflare Workers AI…" : "正在调用官方 SystemOne HTTP 接口…"; render();
     try { const result = await api("POST", path + "/laya/test", {}, 600000); if (!current(ticket, s)) return;
       l.test = result; l.notice = "Laya 调用完成；当前模式和检查点已验证。"; l.bad = false; await layaRefreshQuiet(s, ticket); }
     catch (err) { if (!current(ticket, s)) return; l.test = {status: "unknown", code: err.code || err.message, reason: err.reason || ""}; l.bad = true; l.notice = layaErrorText(err, "Laya 连接测试未完成。");
@@ -1276,7 +1292,7 @@ window.CompanionModelsPage = (() => {
   function layaPane(s) { const l = s.laya; if (!l.data) return `<div class="model-card"><p class="model-empty">${esc(l.notice || "正在读取 Laya 配置…")}</p></div>`;
     const dirty = layaDirty(l), installed = l.data.package_installed, mode = l.draft?.mode || l.data.mode;
     const gpuUnavailable = mode === "local" && l.data.local_runtime_state === "gpu_unavailable";
-    const runtimeLabel = gpuUnavailable ? "CUDA 不可用" : mode === "local" ? "本地 Python" : mode === "jev" ? "Jev 判断服务" : mode === "workers_ai" ? "Cloudflare Workers AI" : "远程 HTTP";
+    const runtimeLabel = gpuUnavailable ? "CUDA 不可用" : mode === "local" ? "本地 Python" : mode === "jev" ? "OpenAI 兼容网关" : mode === "workers_ai" ? "Cloudflare Workers AI" : "远程 HTTP";
     const packageKpi = mode === "local" ? installed ? `已安装 ${l.data.package_version || ""}` : "待安装" : "外部服务";
     const modelKpi = mode === "jev" ? l.data.default_model || "jev-latest"
       : mode === "workers_ai" ? l.data.default_model || "未填写"
@@ -1284,12 +1300,14 @@ window.CompanionModelsPage = (() => {
     const torchText = [l.data.torch_version, l.data.cuda_version ? `CUDA ${l.data.cuda_version}` : "无 CUDA"]
       .filter(Boolean).join(" · ");
     return `<div class="model-subpane model-laya-pane">
-      <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">可选能力 · 语义决策</span><h3>Laya 决策模型</h3><p class="model-note">在回复前判断是否接话、等待、沉默及表达形式。配置全局生效；仅群聊候选进入 Laya 判断，私聊始终走 AstrBot 核心回复，另由回复页的私聊收尾判断在纯道别时安静。模型不输出时间、段数等数值；行动概率只用于下方可选的连续接话阈值，执行仍遵循宿主配置和权限。接入方式支持本地 Laya 包、官方 SystemOne 服务、Jev 判断服务与 Cloudflare Workers AI，四者共用同一份决策合同。</p></div><button type="button" class="button small" data-laya-refresh ${l.loading || l.busy ? "disabled" : ""}>刷新</button></div>
+      <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">可选能力 · 语义决策</span><h3>Laya 决策模型</h3><p class="model-note">在回复前判断是否接话、等待、沉默及表达形式。配置全局生效；仅群聊候选进入 Laya 判断，私聊始终走 AstrBot 核心回复，另由回复页的私聊收尾判断在纯道别时安静。模型不输出时间、段数等数值；行动概率只用于下方可选的连续接话阈值，执行仍遵循宿主配置和权限。接入方式支持本地 Laya 包、远程 HTTP 服务、OpenAI 兼容网关与 Cloudflare Workers AI，四者共用同一份决策合同；Laya 与 TypeSafe 官方 Jev 都走 SystemOne。</p></div><button type="button" class="button small" data-laya-refresh ${l.loading || l.busy ? "disabled" : ""}>刷新</button></div>
         <div class="model-kpis">${kpi(!l.data.enabled ? "未启用" : mode === "local" && l.data.local_runtime_state === "warming" ? "正在预热" : "已启用", "运行状态", l.data.enabled ? "g" : "a")}${kpi(packageKpi, mode === "local" ? "Python 包" : "依赖来源")}${kpi(modelKpi, mode === "jev" || mode === "workers_ai" ? "判断模型" : "模型权重")}${kpi(runtimeLabel, "接入方式", gpuUnavailable ? "r" : "")}</div>
-        ${gpuUnavailable ? `<div class="model-alert"><b>本地 Laya 当前不可用：</b>当前 AstrBot Python 使用的是 CPU 版 PyTorch${torchText ? `（${esc(torchText)}）` : ""}。Laya 本地模式需要 CUDA；请安装与驱动匹配的 CUDA 版 PyTorch 后重启 AstrBot，或在上方把接入方式切到「远程 HTTP 服务」或「Jev 判断服务」。
+        ${gpuUnavailable ? `<div class="model-alert"><b>本地 Laya 当前不可用：</b>当前 AstrBot Python 使用的是 CPU 版 PyTorch${torchText ? `（${esc(torchText)}）` : ""}。Laya 本地模式需要 CUDA；请安装与驱动匹配的 CUDA 版 PyTorch 后重启 AstrBot，或在上方把接入方式切到「远程 HTTP 服务」或「OpenAI 兼容网关」。
           <div class="model-editor-actions"><button type="button" class="button small" data-laya-copy="torch_install_command">复制 CUDA PyTorch 安装命令</button></div>
           ${l.data.torch_install_command ? `<code class="model-laya-cmd">${esc(l.data.torch_install_command)}</code><small>命令默认使用 cu128；请按显卡驱动把 cu128 换成 cu126 等兼容版本。安装会替换当前 CPU 版 torch，但不会改动已安装的 laya。</small>` : ""}</div>` : ""}
-        <div class="model-laya-fields">${layaField(l, "enabled", "启用 Laya", "关闭时调用会跳过", "bool")}${layaSelect(l, "mode", "接入方式", "选择 AstrBot 本地 Python、官方 SystemOne 服务、Jev 判断服务或 Cloudflare Workers AI", [["local", "本地 Python 包"], ["remote", "远程 HTTP 服务"], ["jev", "Jev 判断服务"], ["workers_ai", "Cloudflare Workers AI"]])}${mode === "remote" ? layaSelect(l, "request_format", "接口格式", "官方 SystemOne 平铺，或 Cloudflare Workers AI 的 input 包装", [["native", "Laya 官方 SystemOne"], ["cloudflare", "Cloudflare Workers AI"]]) : ""}${mode === "remote" ? layaField(l, "endpoint", "SystemOne 服务地址", (l.draft.request_format || l.data.request_format) === "cloudflare" ? "填到 /ai/run；请求会包 input，返回的 result 会自动拆开" : "可填服务根地址、/v1 或完整 /v1/systemone") : ""}${mode === "jev" ? layaField(l, "endpoint", "判断服务地址", "可填服务根地址、/v1 或完整 /v1/chat/completions；走 OpenAI 兼容接口") : ""}${mode === "workers_ai" ? layaField(l, "endpoint", "Workers AI 地址", "填 accounts/<ACCOUNT_ID>/ai/run，或只填 accounts/<ACCOUNT_ID>；模型写在请求体里") : ""}${mode !== "local" ? layaField(l, "api_key", "API Key", l.data.api_key_set ? "已配置；留空保留现有密钥" : "按服务端要求填写；留空表示不鉴权", "password") : ""}${mode !== "local" ? layaField(l, "remote_model", "判断模型名", mode === "jev" ? "留空使用 jev-latest；网关上的模型名可在此覆盖" : mode === "workers_ai" ? "留空使用 @cf/cloudflare/clef（吃每日免费神经元额度）；更快可用 @cf/cloudflare/clef-flash，第三方模型如 typesafe/jev-1.14.0 需单独付费" : "留空使用官方 multilingual；仅自建服务改名时才需要填写") : ""}${layaField(l, "timeout_seconds", "调用超时（秒）", "用于本地推理或远程连接，不参与语义判断", "number")}${layaPercentField(l, "followup_confidence_threshold", "连续接话置信阈值", "0 关闭；仅约束非点名续接。Laya 行动概率低于此值时改为旁听，建议从 40–55% 起按日志校准")}</div>
+        <div class="model-laya-fields">${layaField(l, "enabled", "启用 Laya", "关闭时调用会跳过", "bool")}${layaSelect(l, "mode", "接入方式", "远程 HTTP 服务走 SystemOne；OpenAI 兼容网关仅用于只提供 /v1/chat/completions 的第三方中转，TypeSafe 官方 Jev 请选「远程 HTTP 服务」", [["local", "本地 Python 包"], ["remote", "远程 HTTP 服务"], ["jev", "OpenAI 兼容网关"], ["workers_ai", "Cloudflare Workers AI"]])}${mode === "remote" ? layaSelect(l, "request_format", "接口格式", "官方 SystemOne 平铺，或 Cloudflare Workers AI 的 input 包装", [["native", "Laya 官方 SystemOne"], ["cloudflare", "Cloudflare Workers AI"]]) : ""}${mode === "remote" ? layaField(l, "endpoint", "SystemOne 服务地址", (l.draft.request_format || l.data.request_format) === "cloudflare" ? "填到 /ai/run；请求会包 input，返回的 result 会自动拆开" : "可填服务根地址、/v1 或完整 /v1/systemone") : ""}${mode === "jev" ? layaField(l, "endpoint", "网关地址", "仅用于只提供 /v1/chat/completions 的第三方中转；可填服务根地址、/v1 或完整路径") : ""}${mode === "workers_ai" ? layaField(l, "endpoint", "Workers AI 地址", "填 accounts/<ACCOUNT_ID>/ai/run，或只填 accounts/<ACCOUNT_ID>；模型写在请求体里") : ""}${mode !== "local" ? layaField(l, "api_key", "API Key", l.data.api_key_set ? "已配置；留空保留现有密钥" : "按服务端要求填写；留空表示不鉴权", "password") : ""}${mode !== "local" ? layaField(l, "remote_model", "判断模型名", mode === "jev" ? "留空使用 jev-latest；网关上的模型名可在此覆盖" : mode === "workers_ai" ? "留空使用 @cf/cloudflare/clef（吃每日免费神经元额度）；更快可用 @cf/cloudflare/clef-flash，第三方模型如 typesafe/jev-1.14.0 需单独付费" : "留空使用官方 multilingual；仅自建服务改名时才需要填写") : ""}${layaField(l, "timeout_seconds", "调用超时（秒）", "用于本地推理或远程连接，不参与语义判断", "number")}${layaPercentField(l, "followup_confidence_threshold", "连续接话置信阈值", "0 关闭；仅约束非点名续接。Laya 行动概率低于此值时改为旁听，建议从 40–55% 起按日志校准")}</div>
+        ${mode === "remote" ? `<div class="model-editor-actions"><button type="button" class="button small" data-laya-preset="laya" ${l.loading || l.busy ? "disabled" : ""}>填入 Laya 官方</button><button type="button" class="button small" data-laya-preset="typesafe" ${l.loading || l.busy ? "disabled" : ""}>填入 TypeSafe Jev 官方</button></div>` : ""}
+        ${layaProtocolAlert(l, mode)}
 ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cloudflare" ? '<p class="model-note">Cloudflare Workers AI：服务地址填到 <code>/ai/run</code>；请求体会自动包成 <code>{"model": "...", "input": {"state": "...", "questions": {...}}}</code>，HTTP 200 的 <code>result</code> 会自动拆开。模型名按 Workers AI 的模型标识填写。</p>' : ""}
         ${mode === "local" ? `<div class="model-laya-fields">${layaField(l, "local_model_path", "本地检查点目录", "可选择微调模型；留空使用官方多语言模型。所有会话共用此选择。")}</div>` : ""}
         <section class="model-laya-decisions" aria-label="决策分类配置"><div><strong>决策分类</strong><span>仅启用的分类会发送给 Laya；关闭的分类沿用宿主配置。</span></div><div class="model-laya-decision-grid">${LAYA_DECISION_FIELDS.map(([key, label, hint]) => `<label class="model-laya-option"><span><strong>${label}</strong><small>${hint}</small></span><span class="model-switch"><input type="checkbox" data-laya-decision="${key}" ${l.draft.decision_fields[key] ? "checked" : ""} ${l.loading || l.busy ? "disabled" : ""}><i></i></span></label>`).join("")}</div></section>
@@ -1299,9 +1317,9 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       ${mode === "workers_ai" ? `<div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">外部判断服务</span><h3>Cloudflare Workers AI</h3></div></div><p class="model-note">Cloudflare Workers AI 把模型判断放在 <code>/ai/run</code>：模型名写在请求体里，<code>state</code> 与 <code>questions</code> 需要嵌进 <code>input</code> 对象，而不是与 <code>model</code> 平级。插件会按这个外壳发送，并把返回的 <code>result</code> 解包成同一份 <code>answers</code> 决策合同；判断失败只影响本轮判断，不会阻塞正常回复。</p>
         <div class="model-state">判断模型：<code>${esc(l.data.default_model || "@cf/cloudflare/clef")}</code> · 请求路径：<code>/ai/run</code> · 请求体：<code>{"model": ..., "input": {"state": ..., "questions": ...}}</code></div>
         <div class="model-state"><code>@cf/cloudflare/clef</code> 与 <code>clef-flash</code> 使用 Workers AI 每日免费神经元额度；<code>typesafe/jev-1.14.0</code> 等第三方模型不共享该额度，额度不足时 Cloudflare 返回 402，原因显示在下方运行记录里。</div>
-      </div>` : ""}${mode === "jev" ? `<div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">外部判断服务</span><h3>Jev 判断服务</h3></div></div><p class="model-note">Jev 是结构化判断模型：不生成文本，也不识别像素，只按 state 与分类问题返回每个分类的概率。插件把这份判断请求包进一次 OpenAI 兼容的 <code>chat/completions</code> 调用，再把 answers 按同一份决策合同解析；判断失败只影响本轮判断，不会阻塞正常回复。这种接入方式不需要本地 Python 包或权重缓存。</p>
+      </div>` : ""}${mode === "jev" ? `<div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">第三方中转</span><h3>OpenAI 兼容网关</h3></div></div><p class="model-note">这种接入方式把判断请求包进一次 OpenAI 兼容的 <code>chat/completions</code> 调用，只适用于只提供该接口的第三方中转：模型按 state 与分类问题返回每个分类的概率，answers 沿用同一份决策合同。官方 TypeSafe Jev 不提供 <code>chat/completions</code>，请使用「远程 HTTP 服务」并填写 <code>/v1/systemone</code> 地址。判断失败只影响本轮判断，不会阻塞正常回复，也不需要本地 Python 包或权重缓存。</p>
         <div class="model-state">判断模型：<code>${esc(l.data.default_model || "jev-latest")}</code> · 请求路径：<code>/v1/chat/completions</code> · 决策合同：<code>state + questions → answers</code></div>
-        <div class="model-state">密钥只保存在插件数据目录的决策配置里，不写入调用日志；失败原因显示在下方运行记录。</div>
+        <div class="model-state">官方 TypeSafe Jev 走 SystemOne，不使用此接入方式。密钥只保存在插件数据目录的决策配置里，不写入调用日志；失败原因显示在下方运行记录。</div>
       </div>` : mode === "workers_ai" ? "" : `<div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">官方依赖与权重缓存</span><h3>安装 Laya Python 包</h3></div></div><p class="model-note">插件发行包不包含 Laya 包或检查点权重。将下方命令复制到 AstrBot 所在环境执行；本地首次推理会由官方 Router 自动从 Hugging Face 下载所选检查点。</p>
         <div class="model-laya-install"><code>${esc(l.data.install_command || "")}</code><button type="button" class="button small" data-laya-copy="install_command" ${l.busy || l.loading ? "disabled" : ""}>复制安装命令</button></div>
         ${mode === "remote" ? `<p class="model-note">远程服务端使用 Laya 官方 SystemOne 接口，地址以 <code>/v1/systemone</code> 结尾；服务端需要单独部署，以下命令使用本机 AstrBot Python 作为示例。</p><div class="model-laya-install"><code>${esc(l.data.remote_install_command || "")}</code><button type="button" class="button small" data-laya-copy="remote_install_command" ${l.busy || l.loading ? "disabled" : ""}>复制服务端安装命令</button></div><div class="model-laya-install"><code>${esc(l.data.remote_start_command || "")}</code><button type="button" class="button small" data-laya-copy="remote_start_command" ${l.busy || l.loading ? "disabled" : ""}>复制服务启动命令</button></div>` : ""}
@@ -1319,10 +1337,14 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     l.draft[key] = key === "followup_confidence_threshold"
       ? Math.max(0, Math.min(100, Number.isFinite(Number(value)) ? Math.round(Number(value)) : 0))
       : value;
+    // request_format only applies to the remote slot; a hidden cloudflare
+    // value would otherwise follow the user into the next mode.
+    if (key === "mode" && value !== "remote") l.draft.request_format = "native";
     if (event.type === "change") { l.bad = false; render(); } }
   function layaClick(s, event) { const t = event.target;
     if (t.closest("[data-laya-refresh]")) { layaRefresh(s); return; }
     if (t.closest("[data-laya-save]")) { layaSave(s); return; }
+    const preset = t.closest("[data-laya-preset]"); if (preset) { layaApplyPreset(s, preset.dataset.layaPreset); return; }
     const copy = t.closest("[data-laya-copy]"); if (copy) { layaCopyInstall(s, copy.dataset.layaCopy); return; }
     if (t.closest("[data-laya-test]")) { layaTest(s); return; }
     if (t.closest("[data-laya-decide]")) { layaDecide(s); return; } }
