@@ -16,7 +16,7 @@ import threading
 from time import perf_counter
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
 import warnings
 
 from companion_v2.decision.contract import (CONFIGURABLE_DECISION_FIELDS, DECISION_DEFAULTS, LayaDecision,
@@ -535,7 +535,7 @@ class LayaDecisionClient:
     runtime_status = staticmethod(local_runtime_status)
 
     def __init__(self, *, mode: str = "local", endpoint: str = "", api_key: str = "",
-                 timeout_seconds: int = 8, local_model_path: str = "",
+                 proxy: str = "", timeout_seconds: int = 8, local_model_path: str = "",
                  request_format: str = "native", model: str = ""):
         # Same enumeration as the settings store: MODE_MODELS is the single
         # source of truth. Do not write a literal set of allowed modes here --
@@ -562,6 +562,7 @@ class LayaDecisionClient:
             self.endpoint = _workers_ai_endpoint(endpoint)
             self.transport = _WorkersAITransport(self.model)
         self.api_key = api_key
+        self.proxy = proxy.strip()
         self.timeout_seconds = timeout_seconds
         self.last_trace = {}
 
@@ -737,7 +738,15 @@ class LayaDecisionClient:
 
         def send() -> str:
             try:
-                with urlopen(request, timeout=self.timeout_seconds) as response:
+                if self.proxy:
+                    # Keep the proxy local to this request. AstrBot removes the
+                    # process proxy variables when its own http_proxy is empty,
+                    # so urllib must receive an explicit handler here.
+                    opener = build_opener(ProxyHandler({"http": self.proxy, "https": self.proxy}))
+                    response = opener.open(request, timeout=self.timeout_seconds)
+                else:
+                    response = urlopen(request, timeout=self.timeout_seconds)
+                with response:
                     content = response.read(MAX_RESPONSE_BYTES + 1)
             except HTTPError as error:
                 detail = _safe_error_text(error.read(4096), self.api_key)

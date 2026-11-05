@@ -37,6 +37,7 @@ CHAT_COMPLETIONS_ENDPOINT_REQUIRED = ("OpenAI 兼容网关使用 /v1/chat/comple
                                       "TypeSafe 官方 Jev 请把接入方式改为「远程 HTTP 服务」")
 WORKERS_AI_ENDPOINT_REQUIRED = ("Workers AI 地址不需要 /v1 后缀；请填 "
                                 "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/run")
+PROXY_INVALID = "代理地址必须是 http:// 或 https:// 地址，例如 http://127.0.0.1:7890"
 
 
 DEFAULTS = {
@@ -45,13 +46,15 @@ DEFAULTS = {
     # native: Laya SystemOne flat body. cloudflare: Workers AI envelope with
     # the state/questions nested under input.
     "request_format": "native",
-    "remote_model": "",
     "local_model_path": "",
     "endpoint": "",
     "api_key": "",
     # Named apart from the historical `model` key, which older settings files
     # carried without any effect; adopting it would silently retarget a server.
     "remote_model": "",
+    # Optional per-request proxy for Laya's remote transports. It stays separate
+    # from AstrBot's process-wide proxy settings, which other plugins also use.
+    "proxy": "",
     "timeout_seconds": 20,
     # 0 disables the host-side gate. Values are percentages because the model
     # page exposes a familiar 0-100 control; Laya reports a 0-1 probability.
@@ -233,6 +236,22 @@ class LayaSettingsStore:
             limit = 256 if key == "remote_model" else 4096
             if type(values[key]) is not str or len(values[key]) > limit:
                 raise LayaSettingsError("laya_config_invalid", f"{key} 配置无效")
+        proxy = values["proxy"]
+        if type(proxy) is not str or len(proxy) > 2048:
+            raise LayaSettingsError("laya_config_invalid", PROXY_INVALID)
+        proxy = proxy.strip().rstrip("/")
+        if proxy:
+            try:
+                parsed = urlsplit(proxy)
+                hostname = parsed.hostname
+                parsed.port
+            except ValueError as error:
+                raise LayaSettingsError("laya_config_invalid", PROXY_INVALID) from error
+            if (parsed.scheme not in {"http", "https"} or not hostname
+                    or parsed.username is not None or parsed.password is not None
+                    or parsed.fragment or "#" in proxy):
+                raise LayaSettingsError("laya_config_invalid", PROXY_INVALID)
+        values["proxy"] = proxy
         # An empty endpoint keeps the historical contract: the missing address
         # is reported when a request is attempted, not while saving the mode.
         if values["endpoint"].strip():
@@ -265,12 +284,12 @@ class LayaSettingsStore:
             "enabled": values["enabled"],
             "mode": values["mode"],
             "request_format": values.get("request_format", "native"),
-            "remote_model": values.get("remote_model", ""),
             "local_model_path": values["local_model_path"],
             "endpoint": values["endpoint"],
             "remote_model": values["remote_model"],
             "default_model": values["remote_model"] or MODE_MODELS[values["mode"]],
             "api_key_set": bool(values["api_key"]),
+            "proxy_set": bool(values["proxy"]),
             "timeout_seconds": values["timeout_seconds"],
             "followup_confidence_threshold": values["followup_confidence_threshold"],
             "decision_fields": dict(values["decision_fields"]),
@@ -305,6 +324,8 @@ class LayaSettingsStore:
             next_values["decision_fields"] = {**current["decision_fields"], **changes["decision_fields"]}
         if "api_key" in changes and changes["api_key"] == "":
             next_values["api_key"] = current["api_key"]
+        if "proxy" in changes and changes["proxy"] == "":
+            next_values["proxy"] = current["proxy"]
         self._validate(next_values)
         next_values["revision"] = uuid4().hex
         self._write(next_values)
