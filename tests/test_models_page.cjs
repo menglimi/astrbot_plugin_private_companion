@@ -75,11 +75,11 @@ function harness() {
       bridgeFor: () => ({then: resolve => resolve(window.AstrBotPluginPage)}),
     },
     AstrBotPluginPage: {
-      apiGet: (route, params) => new Promise((resolve, reject) => {
+      apiGet: (route, params, options) => new Promise((resolve, reject) => {
         if (/[?#]/.test(route)) return reject(new Error('invalid plugin endpoint'));
-        requests.push({method: 'GET', route, params, resolve, reject});
+        requests.push({method: 'GET', route, params, options, resolve, reject});
       }),
-      apiPost: (route, values) => new Promise((resolve, reject) => requests.push({method: 'POST', route, values, resolve, reject})),
+      apiPost: (route, values, options) => new Promise((resolve, reject) => requests.push({method: 'POST', route, values, options, resolve, reject})),
     },
     sessionStorage: {
       getItem: key => (store.has(key) ? store.get(key) : null),
@@ -1860,5 +1860,108 @@ test('Laya page offers a Jev judgment backend with its own address, key and mode
     .reject(new Error('laya_auth_failed'));
   await flush();
   assert.match(node.innerHTML, /判断服务鉴权失败/, 'a rejected key keeps its own actionable message');
+  /* 失败后页面会自动补拉运行记录；结算这两个读请求，避免测试留下悬挂的桥定时器。 */
+  requests.filter(item => item.method === 'GET' && item.route === 'model/laya').at(-1)
+    .resolve(layaStatus({mode: 'jev', endpoint: 'https://jev.example.test/v1',
+      remote_model: 'jev-1.14.0', default_model: 'jev-1.14.0', revision: 'laya-jev'}));
+  requests.filter(item => item.method === 'GET' && item.route === 'model/laya/logs').at(-1).resolve({events: []});
+  await flush();
+  page.unmount();
+});
+
+function layaRemoteStatus(overrides) {
+  return {enabled: true, mode: 'remote', endpoint: 'https://laya.test/v1', request_format: 'native',
+    remote_model: '', default_model: 'multilingual', api_key_set: true, timeout_seconds: 20,
+    followup_confidence_threshold: 0,
+    decision_fields: {turn_state: true, action: true, reply_intent: true, reply_style: true,
+      reply_form: true, segment_mode: true, tool_need: true},
+    package_installed: false, package_version: '', model_cache_ready: false,
+    model_cache_path: 'C:/cache/huggingface/hub', python_executable: 'C:/AstrBot/python.exe',
+    install_command: "& 'C:/AstrBot/python.exe' -m pip install 'laya==0.4.0'",
+    remote_install_command: '', remote_start_command: '', revision: 'laya-remote', ...overrides};
+}
+
+async function openLayaPage() {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node);
+  requests[0].resolve(status());
+  await flush();
+  node.click('[data-model-tab]', {modelTab: 'laya'});
+  requests.find(item => item.method === 'GET' && item.route === 'model/laya').resolve(layaRemoteStatus());
+  requests.find(item => item.method === 'GET' && item.route === 'model/laya/logs').resolve({events: []});
+  await flush();
+  return {page, node, requests};
+}
+
+/* 失败后的自动刷新由 catch 里的 layaRefreshQuiet 发起；测试要显式结算这两个读请求，
+   页面才会走完 finally 并把这次失败行渲染进运行记录。 */
+function settleLayaRefresh(requests, events) {
+  const statusRead = requests.filter(item => item.method === 'GET' && item.route === 'model/laya').at(-1);
+  const logRead = requests.filter(item => item.method === 'GET' && item.route === 'model/laya/logs').at(-1);
+  statusRead.resolve(layaRemoteStatus());
+  logRead.resolve({events});
+}
+
+test('Laya 451 refusal shows the server reason and the legal-region explanation', async () => {
+  const {page, node, requests} = await openLayaPage();
+  node.click('[data-laya-test]');
+  const probe = requests.find(item => item.method === 'POST' && item.route === 'model/laya/test');
+  assert.ok(probe, 'the connection test goes through the page bridge');
+  probe.resolve({status: 'error', message: 'laya_http_error',
+    reason: 'Laya HTTP 451：{"title":"Typesafe is not available in your region.","status":451}',
+    data: {code: 'laya_http_error'}});
+  await flush();
+  settleLayaRefresh(requests, []);
+  await flush();
+
+  assert.match(node.innerHTML, /451/);
+  assert.match(node.innerHTML, /地区/);
+  assert.match(node.innerHTML, /不是插件故障/);
+  assert.match(node.innerHTML, /代理地址/);
+  assert.match(node.innerHTML, /服务端原文/);
+  assert.match(node.innerHTML, /Typesafe is not available in your region\./,
+    'the redacted server text must survive in the message');
+  assert.doesNotMatch(node.innerHTML, /详细信息见下方/,
+    'a status code must no longer replace the server explanation');
+  page.unmount();
+});
+
+test('a failed Laya test refreshes the run log without a manual refresh', async () => {
+  const {page, node, requests} = await openLayaPage();
+  const logReadsBefore = requests.filter(item => item.method === 'GET' && item.route === 'model/laya/logs').length;
+  assert.match(node.innerHTML, /暂无 Laya 调用记录/);
+
+  node.click('[data-laya-test]');
+  requests.find(item => item.method === 'POST' && item.route === 'model/laya/test')
+    .resolve({status: 'error', message: 'laya_http_error',
+      reason: 'Laya HTTP 403：forbidden by policy', data: {code: 'laya_http_error'}});
+  await flush();
+
+  const logReadsAfter = requests.filter(item => item.method === 'GET' && item.route === 'model/laya/logs').length;
+  assert.equal(logReadsAfter, logReadsBefore + 1, 'the failed call must trigger a log read by itself');
+  settleLayaRefresh(requests, [{status: 'failed', source: 'probe', mode: 'remote', elapsed_ms: 850,
+    reason_code: 'laya_http_error', reason: 'Laya HTTP 403：forbidden by policy',
+    observed_at: new Date().toISOString()}]);
+  await flush();
+
+  assert.match(node.innerHTML, /data-state="failed"/);
+  assert.match(node.innerHTML, /forbidden by policy/);
+  assert.doesNotMatch(node.innerHTML, /暂无 Laya 调用记录/);
+  page.unmount();
+});
+
+test('Laya connection test forwards its long timeout to the page bridge', async () => {
+  const {page, node, requests} = await openLayaPage();
+  node.click('[data-laya-test]');
+  const probe = requests.find(item => item.method === 'POST' && item.route === 'model/laya/test');
+  assert.equal(probe.options?.timeoutMs, 600000,
+    'a checkpoint download must not hit the bridge default timeout');
+
+  probe.reject(new Error('laya_auth_failed'));
+  await flush();
+  settleLayaRefresh(requests, []);
+  await flush();
+  assert.match(node.innerHTML, /判断服务鉴权失败/, 'machine codes keep their existing message');
   page.unmount();
 });
