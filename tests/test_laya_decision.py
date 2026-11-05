@@ -15,8 +15,8 @@ from astrbot_host.laya_client import LayaDecisionClient, _LOCAL_ROUTERS, _decisi
 from companion_v2.decision.contract import DecisionContractError, deterministic_skip_reason, parse_decision
 from companion_v2.decision.prompt import DECISION_QUESTIONS, build_state
 from companion_v2.decision.service import LayaDecisionService
-from companion_v2.decision.store import (MODE_MODELS, LayaSettingsStore, LayaSettingsError,
-                                          role_storage_key)
+from companion_v2.decision.store import (DEFAULTS, MODE_MODELS, LayaSettingsStore,
+                                          LayaSettingsError, role_storage_key)
 
 
 def decision_document():
@@ -1325,6 +1325,11 @@ def test_every_declared_mode_passes_settings_and_client_validation(tmp_path):
         client = LayaDecisionClient(**_mode_settings(mode))
         assert client.mode == mode
         assert client.model == MODE_MODELS[mode]
+
+
+def test_client_timeout_default_matches_the_settings_default():
+    """The page reads this value from the store, so a second literal would drift."""
+    assert LayaDecisionClient(mode="local").timeout_seconds == DEFAULTS["timeout_seconds"]
 
 
 def test_undeclared_mode_is_rejected_by_both_gates(tmp_path):
