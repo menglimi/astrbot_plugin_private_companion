@@ -97,6 +97,109 @@ def test_cloudflare_request_format_is_validated_and_persisted(tmp_path):
     assert store.raw()["request_format"] == "cloudflare"
 
 
+def test_laya_proxy_is_validated_and_persisted(tmp_path):
+    store = LayaSettingsStore(tmp_path, "target", "role")
+    status = store.read()
+    assert status["proxy_set"] is False
+    assert "proxy" not in status
+
+    status = store.update(store.raw()["revision"], {"proxy": "http://127.0.0.1:7890/"})
+    assert status["proxy_set"] is True
+    assert "proxy" not in status
+    assert store.raw()["proxy"] == "http://127.0.0.1:7890"
+    assert "127.0.0.1:7890" not in json.dumps(status, ensure_ascii=False)
+
+    status = store.update(store.raw()["revision"], {"proxy": ""})
+    assert status["proxy_set"] is True
+    assert store.raw()["proxy"] == "http://127.0.0.1:7890"
+
+
+@pytest.mark.parametrize("proxy", [
+    "localhost:7890",
+    "127.0.0.1:7890",
+    "socks5://127.0.0.1:1080",
+    "ftp://127.0.0.1:21",
+    "http://u:p@h:1",
+    "http://127.0.0.1:7890/#fragment",
+    "http://127.0.0.1:7890/" + "x" * 2048,
+])
+def test_laya_proxy_rejects_invalid_values(tmp_path, proxy):
+    store = LayaSettingsStore(tmp_path, "target", "role")
+    with pytest.raises(LayaSettingsError) as error:
+        store.update(store.raw()["revision"], {"proxy": proxy})
+    assert error.value.code == "laya_config_invalid"
+
+
+def test_laya_proxy_is_used_only_for_remote_requests(tmp_path, monkeypatch):
+    proxy = "http://127.0.0.1:7890"
+    handlers, opened = [], []
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, _limit):
+            return self.payload
+
+    class Opener:
+        def open(self, request, timeout):
+            opened.append(request.full_url)
+            if request.full_url.endswith("/chat/completions"):
+                payload = {"choices": [{"message": {"content": json.dumps(laya_result())}}]}
+            elif request.full_url.endswith("/ai/run"):
+                payload = {"success": True, "result": laya_result()}
+            else:
+                payload = laya_result()
+            return Response(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+    def build(handler):
+        handlers.append(handler)
+        return Opener()
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("configured proxy must not fall back to urlopen")
+
+    monkeypatch.setattr(laya_module, "build_opener", build)
+    monkeypatch.setattr(laya_module, "urlopen", unexpected)
+
+    endpoints = {
+        "remote": "https://laya.test/v1",
+        "jev": "https://gateway.test/v1",
+        "workers_ai": "https://api.cloudflare.com/client/v4/accounts/acc-1/ai/run",
+    }
+    for mode, endpoint in endpoints.items():
+        store = LayaSettingsStore(tmp_path / mode, "target", "role")
+        store.update(store.raw()["revision"],
+                     {"enabled": True, "mode": mode, "endpoint": endpoint, "proxy": proxy})
+        service = LayaDecisionService(store, client_factory=LayaDecisionClient)
+        assert asyncio.run(service.test())["status"] == "ok"
+
+    assert len(handlers) == len(endpoints)
+    assert all(handler.proxies == {"http": proxy, "https": proxy} for handler in handlers)
+    assert len(opened) == len(endpoints)
+
+    plain = LayaSettingsStore(tmp_path / "plain", "target", "role")
+    plain.update(plain.raw()["revision"],
+                 {"enabled": True, "mode": "remote", "endpoint": "https://laya.test/v1"})
+    direct = []
+
+    def open_url(request, timeout):
+        direct.append((request.full_url, timeout))
+        return Response(json.dumps(laya_result(), ensure_ascii=False).encode("utf-8"))
+
+    monkeypatch.setattr(laya_module, "urlopen", open_url)
+    service = LayaDecisionService(plain, client_factory=LayaDecisionClient)
+    assert asyncio.run(service.test())["status"] == "ok"
+    assert len(handlers) == len(endpoints)
+    assert direct == [("https://laya.test/v1/systemone", 20)]
+
+
 def test_cloudflare_body_wraps_input_and_unwraps_result(monkeypatch):
     captured = {}
 

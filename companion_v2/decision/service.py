@@ -185,7 +185,8 @@ class LayaDecisionService:
             raise LayaClientError("laya_client_unavailable", "Laya 执行适配器暂不可用，本轮继续普通回复流程")
         return self.client_factory(mode=values["mode"], endpoint=values["endpoint"],
                                    local_model_path=values["local_model_path"],
-                                   api_key=values["api_key"], timeout_seconds=values["timeout_seconds"],
+                                   api_key=values["api_key"], proxy=values.get("proxy", ""),
+                                   timeout_seconds=values["timeout_seconds"],
                                    request_format=values.get("request_format", "native"),
                                    # An empty operator field must fall back to the backend's
                                    # own pinned model, which the client resolves from
