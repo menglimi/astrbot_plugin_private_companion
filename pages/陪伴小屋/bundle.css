@@ -1115,6 +1115,9 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
 @media(max-width:980px){.persona-mode-grid{grid-template-columns:1fr}.persona-guide{grid-template-columns:1fr}.persona-hub-head{flex-direction:column}.persona-hub-badge{align-self:flex-start}}
 @media(max-width:560px){.persona-hub-head{padding:var(--sp-3)}.persona-hub-title{gap:10px}.persona-hub-mark{flex-basis:38px;width:38px;height:38px}.persona-mode-card{padding:12px}}
 
+/* 旧版「全部功能」分组说明 */
+.all-feature-note{margin:0;padding:var(--sp-3) var(--sp-4);border-top:1px solid var(--t-line);color:var(--muted);font-size:var(--fs-micro);line-height:1.6}
+
 /* confirmation-dialog.css */
 .confirmation-dialog {
   width: min(460px, calc(100vw - 32px));
