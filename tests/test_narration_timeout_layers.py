@@ -369,8 +369,11 @@ class VideoNarrationRoundTests(_NarrationFixture, unittest.IsolatedAsyncioTestCa
     async def test_a_fast_round_keeps_its_caption_and_the_declared_deadline(self):
         self.slow_round = False
         self.round_text = "画面里有一只猫跳上窗台。"
-        narration = await self.caption()
+        with self.assertLogs(self.logger_name, level="INFO") as captured:
+            narration = await self.caption()
         self.assertEqual((narration.text, narration.available), ("画面里有一只猫跳上窗台。", True))
+        self.assertRegex("\n".join(captured.output),
+                         r"视频原生转述完成 position=0 videos=1 native=True elapsed_seconds=\d+\.\d\d")
         self.assertAlmostEqual(self.deadline_seconds(), self.budget_seconds, delta=1)
 
 

@@ -254,6 +254,12 @@ class NativeVideoNarrationService:
                                wait, VIDEO_NARRATION_PROVIDER_TIMEOUT_SECONDS, budget_seconds)
                 return VideoNarration(video.source, "视频转述失败，尚未读到视频内容。", False)
             text = self.results.pop(task_id, "")
+            # 成功路径此前完全静默，排障时无法把「已读到视频」和「没有调用」区分开。
+            logger.info("[CompanionV2] 视频原生转述完成 position=%s videos=%s native=%s "
+                        "elapsed_seconds=%.2f",
+                        video.descriptor.position, len(parent_request.videos),
+                        job["request"].native_video_input,
+                        max(0.0, (self.tasks.now() - now).total_seconds()))
             return VideoNarration(video.source,
                 text[:job["max_chars"]] if text else "视频模型没有返回可用转述，尚未读到视频内容。", bool(text))
         except TaskError as error:
