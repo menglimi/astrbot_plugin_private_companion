@@ -12,7 +12,8 @@ from tests.multi_host_support import MultiFixture
 from astrbot.api.web import PluginRequest, bind_request_context
 from starlette.requests import Request
 from astrbot_host.integration_registry import IntegrationRegistry, STATUS_SCHEMA
-from astrbot_host.integration_catalog import OPTIONAL_PROVIDERS
+from astrbot_host.integration_catalog import (
+    BUNDLED_EXTENSIONS, EXTERNAL_PROVIDERS, OPTIONAL_PROVIDERS)
 from astrbot_host.native_extensions import NativeExtensionRegistry
 from astrbot_host.native_extensions.builtins import create_bundled_extensions, MANAGED_EXTENSIONS
 from astrbot_host.management_identity import dashboard_operator
@@ -148,6 +149,50 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(lease.state == "inactive" and lease._start_task is None
                                 for lease in leases))
             await registry.aclose()
+
+
+class ExternalProviderCatalogTests(unittest.TestCase):
+    """Third-party providers are only discoverable through this catalog."""
+
+    SPEC = "astrbot_plugin_video_vision"
+
+    def entry(self):
+        return next(item for item in EXTERNAL_PROVIDERS if item["plugin_id"] == self.SPEC)
+
+    def test_video_vision_provider_is_registered_with_complete_metadata(self):
+        entry = self.entry()
+        # owner/installed/status are filled in by IntegrationRegistry._provider.
+        # An owner here would make the record look bundled to older callers.
+        self.assertEqual(set(entry),
+            {"plugin_id", "capability_id", "label", "description", "furniture"})
+        self.assertEqual(entry["capability_id"], "video_vision")
+        self.assertEqual(entry["label"], "基米看得见视频")
+        self.assertEqual(entry["description"],
+            "普通聊天的原生视频理解由该插件提供（含引用视频与体积压缩）。")
+        self.assertEqual(set(entry["furniture"]), {"id", "name", "panel_id"})
+        self.assertTrue(all(isinstance(value, str) and value
+                            for value in entry["furniture"].values()))
+
+    def test_video_vision_stays_out_of_the_bundled_catalog(self):
+        self.assertEqual(len(BUNDLED_EXTENSIONS), 7)
+        self.assertNotIn("video_vision", {item["capability_id"] for item in BUNDLED_EXTENSIONS})
+
+    def test_snapshot_lists_installed_provider_without_inventing_status(self):
+        star = NS(root_dir_name=self.SPEC, name="视频理解", version="1.2.3", activated=True,
+                  star_cls=NS(), pages=[])
+        value = IntegrationRegistry(NS(get_all_stars=lambda: [star])).snapshot()
+        item = next(p for p in value["providers"] if p["plugin_id"] == self.SPEC)
+        self.assertEqual(item["owner"], "external")
+        self.assertEqual(item["capability_id"], "video_vision")
+        self.assertTrue(item["installed"])
+        self.assertEqual(item["integration_state"], "installed")
+        self.assertFalse(item["execution_integrated"])
+        # The video plugin exports no status adapter: install-only is the whole
+        # truth, so no enablement or readiness may be guessed here.
+        self.assertFalse(item["status_connected"])
+        self.assertIsNone(item["enabled"])
+        self.assertIsNone(item["runtime_ready"])
+        self.assertEqual(value["summary"]["provider_count"], len(EXTERNAL_PROVIDERS))
 
 
 class MultiIntegrationTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
