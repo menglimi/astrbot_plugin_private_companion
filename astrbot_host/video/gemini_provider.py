@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import inspect
 from collections import OrderedDict
 from collections.abc import Mapping
 from copy import deepcopy
@@ -16,6 +17,47 @@ from companion_v2.adapters.astrbot.provider import (UsageTariff, provider_class_
 from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings
 from companion_v2.execution.models import ProviderBinding, TaskError, digest, encode
 from companion_v2.model_gateway.models import Amount, LocalProvider, ProviderResponse, ToolCall
+
+_TEMPERATURE_PARAMETER = "temperature"
+
+
+async def _prepare_generation_config(native, payloads, tools, tool_choice, system_instruction,
+                                     modalities, temperature):
+    """按宿主真实签名决定温度怎么传，兼容 AstrBot 4.29.1 与 4.29.2+。
+
+    AstrBot 4.29.1 的 ``ProviderGoogleGenAI._prepare_query_config`` 把
+    ``temperature`` 作为第 6 个形参（默认 0.7）；4.29.2 起该形参被删除
+    （AstrBot 提交 d95047926 / #10719），温度改为从 ``payloads["temperature"]``
+    读取，再由 ``parameter_aliases`` 并进 ``GenerateContentConfig``。基线两处
+    调用都以 6 个位置实参传温度，因此在 4.29.2+ 上会在发出任何请求之前直接抛
+    ``TypeError``。
+
+    但无条件丢掉第 6 个实参也不对：probe 传的是 0（贪心），不是默认的 0.7。
+    丢掉它，4.29.1 会静默回落到 0.7，4.29.2+ 又会因为 ``payloads`` 里没有该键
+    而落到同一个默认值——两种宿主都会悄悄改变采样行为。所以这里用
+    ``inspect.signature`` 探测宿主签名（绑定方法会自动去掉 ``self``，看到的正是
+    调用方视角的形参集合）：
+
+    * 宿主仍声明 ``temperature``：照旧传第 6 个位置实参，4.29.1 上的调用与改动
+      前逐字节一致。
+    * 宿主没有该形参：把温度写进 ``payloads``，键名就是宿主
+      ``parameter_aliases`` 里的 ``"temperature": ("temperature",)``。
+
+    探测本身失败（宿主把方法实现成无法反射的对象）时退回后一条路径：它在
+    4.29.1 上只是被忽略的多余键（旧实现不读 ``payloads["temperature"]``），在
+    4.29.2+ 上被正确读取，任何宿主都不会因为参数个数不符而抛 ``TypeError``。
+    只复制、不修改调用方传进来的 ``payloads``。
+    """
+    try:
+        parameters = inspect.signature(native._prepare_query_config).parameters
+    except (TypeError, ValueError):
+        parameters = None
+    if parameters is not None and _TEMPERATURE_PARAMETER in parameters:
+        return await native._prepare_query_config(
+            payloads, tools, tool_choice, system_instruction, modalities, temperature)
+    return await native._prepare_query_config(
+        {**payloads, _TEMPERATURE_PARAMETER: temperature},
+        tools, tool_choice, system_instruction, modalities)
 
 
 class GeminiNativeVideoProvider:
@@ -104,7 +146,8 @@ class GeminiNativeVideoProvider:
         """Use the dashboard's context-free probe through this native transport."""
         self._current()
         payloads = {"model": self.model, "max_tokens": min(self.maximum_output_tokens, 64)}
-        config = await self.native._prepare_query_config(payloads, None, "auto", None, ["TEXT"], 0)
+        config = await _prepare_generation_config(
+            self.native, payloads, None, "auto", None, ["TEXT"], 0)
         self._current()
         result = await self.native.client.models.generate_content(
             model=self.model,
@@ -224,8 +267,8 @@ class GeminiNativeVideoProvider:
                     "max_tokens": envelope.max_output_tokens}
         tools = (self.native_types.tool_set(tools=[self.native_types.function_tool(**item, handler=None)
                   for item in wire.tools]) if wire.tools else None)
-        config = await self.native._prepare_query_config(
-            payloads, tools, "auto", system_instruction, ["TEXT"], temperature)
+        config = await _prepare_generation_config(
+            self.native, payloads, tools, "auto", system_instruction, ["TEXT"], temperature)
         self._current()
         if envelope.before_dispatch is None:
             raise TaskError("model_request_fence_missing", "native video dispatch requires its live owner fence")

@@ -13,7 +13,7 @@ from companion_v2.adapters.astrbot.model_wire import build_wire, tool_alias
 from companion_v2.adapters.astrbot.provider import UsageTariff
 from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings
 from companion_v2.model_gateway.models import Amount, ModelEnvelope, ToolExchange, ToolSpec
-from astrbot_host.video.gemini_provider import GeminiNativeVideoProvider
+from astrbot_host.video.gemini_provider import GeminiNativeVideoProvider, _prepare_generation_config
 
 
 class NativeVideoTransportTests(VideoFixture, unittest.IsolatedAsyncioTestCase):
@@ -245,6 +245,91 @@ class NativeGeminiUsageTests(unittest.TestCase):
     def test_an_impossible_cache_count_is_still_refused(self):
         self.assertIsNone(self.usage(NS(prompt_token_count=10, candidates_token_count=3,
                                         cached_content_token_count=99)))
+
+
+class NativeGeminiGenerationConfigTests(unittest.IsolatedAsyncioTestCase):
+    """AstrBot 4.29.2 删掉了 temperature 形参，升级不能让温度语义悄悄变掉。"""
+
+    class SixParameterHost:
+        """4.29.1 及更早：温度是 ``_prepare_query_config`` 的第 6 个形参。"""
+
+        provider_config = {"id": "gemini-native", "model": "gemini-3.8-flash"}
+        model_name = "gemini-3.8-flash"
+        default_params = {}
+
+        def __init__(self):
+            self.calls = []
+            self.client = NS(models=NS(generate_content=self.generate_content))
+
+        def meta(self):
+            return NS(id="gemini-native")
+
+        def get_model(self):
+            return self.model_name
+
+        async def _prepare_query_config(self, payloads, tools=None, tool_choice="auto",
+                                        system_instruction=None, modalities=None,
+                                        temperature=0.7):
+            # ``effective`` 是宿主真正拿去建 GenerateContentConfig 的值：旧宿主只认形参。
+            self.calls.append(NS(payloads=dict(payloads), positional=temperature,
+                                 effective=temperature))
+            return {"max_output_tokens": payloads["max_tokens"]}
+
+        async def generate_content(self, **kwargs):
+            return NS(candidates=[NS(finish_reason=NS(name="STOP"),
+                                     content=NS(parts=[NS(text="OK", thought=False)]))])
+
+    class FiveParameterHost(SixParameterHost):
+        """4.29.2 起：形参没了，温度只从 ``payloads["temperature"]`` 读。"""
+
+        async def _prepare_query_config(self, payloads, tools=None, tool_choice="auto",
+                                        system_instruction=None, modalities=None):
+            self.calls.append(NS(payloads=dict(payloads), positional=None,
+                                 effective=payloads.get("temperature")))
+            return {"max_output_tokens": payloads["max_tokens"]}
+
+    def adapter(self, host_class):
+        native = host_class()
+        settings = TextProviderSettings("gemini-native", UsageTariff(1, 1, 1),
+                                        maximum_output_tokens=128, maximum_input_estimate=131072)
+        return GeminiNativeVideoProvider(
+            NS(get_provider_by_id=lambda provider_id: native), NS(),
+            NS(video_provider_type=host_class, version="4.29.1"), native,
+            settings=settings), native
+
+    async def test_a_host_that_still_declares_the_parameter_receives_probe_temperature_positionally(self):
+        adapter, native = self.adapter(self.SixParameterHost)
+
+        await adapter.probe()
+
+        self.assertEqual(len(native.calls), 1)
+        call = native.calls[0]
+        self.assertEqual(call.positional, 0, "4.29.1 仍以第 6 个位置实参收到 probe 的贪心温度")
+        self.assertEqual(call.effective, 0)
+        self.assertNotIn("temperature", call.payloads, "旧宿主不读 payloads，温度不该重复写一份")
+
+    async def test_a_host_without_the_parameter_reads_probe_temperature_from_payloads(self):
+        adapter, native = self.adapter(self.FiveParameterHost)
+
+        await adapter.probe()
+
+        self.assertEqual(len(native.calls), 1)
+        call = native.calls[0]
+        self.assertIsNone(call.positional, "4.29.2+ 的宿主不接受第 6 个位置实参")
+        self.assertEqual(call.payloads["temperature"], 0, "probe 的贪心温度要跟着 payloads 一起走")
+        self.assertEqual(call.effective, 0)
+
+    async def test_the_generation_temperature_survives_both_host_signatures(self):
+        for host_class in (self.SixParameterHost, self.FiveParameterHost):
+            with self.subTest(host=host_class.__name__):
+                native = host_class()
+
+                await _prepare_generation_config(
+                    native, {"model": "gemini-3.8-flash", "max_tokens": 128},
+                    None, "auto", "system", ["TEXT"], 0.7)
+
+                self.assertEqual(native.calls[0].effective, 0.7,
+                                 "generate 的 0.7 不能因为宿主签名不同而回落成别的值")
 
 
 async def _ok():
