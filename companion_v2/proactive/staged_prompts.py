@@ -127,7 +127,7 @@ def write_request_for(base, job, records, preferences, *, reactions_available, v
             and greeting_event.get("kind") == "insomnia_night" else "",
         ALERT_SCOPE_INSTRUCTION if official_alert else "",
         WRITE_REACTION_INSTRUCTION if reactions_available else "",
-        ("声音更适合这句话时可增加 voice_intent:true 和 voice_text，后者须朗读正文已有的完整意思，"
+        ("声音更适合这句话时可增加 voice_intent:true；中文直接朗读 text，只有外语配音才增加 voice_text，"
          "不补充新问题或事实；正文始终完整保留。语音使用" +
          {"zh": "中文", "ja": "日语", "en": "英语"}.get(getattr(job.voice_policy, "language", "zh"), "中文") +
          "，参考长度约 " + str(preferences.values["voice_action_max_chars"]) + " 字。") if voice_available else "",

@@ -454,7 +454,7 @@ class PromptGuardTests(unittest.TestCase):
         self.assertIn("人格中的「关心健康/监督饮食」本身不是证据", CONTACT_INSTRUCTION)
         self.assertIn("不假定对方刚刚或经常有某种饮食", PURPOSE_INSTRUCTIONS["play"])
         self.assertIn("不凭空说「你又/总是/老是", DEFAULT_PROMPT)
-        self.assertIn("voice_text 只能朗读正文里已有的意思", VOICE_INSTRUCTION)
+        self.assertIn("外语 voice_text 只能表达正文里已有的意思", VOICE_INSTRUCTION)
         self.assertIn("若正文主要是连续汇报角色自身状态", JUDGE_INSTRUCTION)
         self.assertIn("必须有材料直接支持", JUDGE_INSTRUCTION)
 
