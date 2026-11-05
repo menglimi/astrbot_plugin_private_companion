@@ -4181,15 +4181,25 @@ const allFunctionsGroups=[
       ['存储','storage'],['备份','backup'],['迁移','migration']]],
   ]],
 ];
-function catalogPageHref(){
-  const token=new URLSearchParams(location.search).get('asset_token')||'';
-  return 'catalog.html'+(token?`?asset_token=${encodeURIComponent(token)}`:'');
+function allFunctionHref(key){
+  return key.startsWith('life:')?`#life/${key.slice(5)}`:`#manage/${key}`;
 }
 function renderAllFunctionsPage(){
-  // 全部功能已重组为独立的功能地图页；旧的功能开关总表只保留兼容入口。
-  const href=catalogPageHref();
-  setTimeout(()=>{if(location.hash.startsWith('#manage/all'))location.replace(href);},0);
-  return `<div class="all-functions-page"><div class="all-functions-loading" role="status">正在打开功能地图…</div></div>`;
+  /* 功能地图留在小屋内部：catalog.html 是整页导航，宿主给页面的 asset_token 只有
+     60 秒有效期（AstrBot PLUGIN_PAGE_ASSET_TOKEN_TTL_SECONDS），超过后再打开就会
+     只看到 {"status":"error","message":"Token 过期"}。这里改用同一份分组数据在
+     应用内渲染，进入地图不再依赖一次性 token。 */
+  const groups=allFunctionsGroups.map(([title,items])=>{
+    const cards=items.map(([key,icon,label,desc,subs])=>{
+      const href=allFunctionHref(key);
+      const sublinks=(subs||[]).map(([text,slug])=>`<a class="secondary" href="${href}/${slug}">${text}</a>`).join('');
+      return `<article class="all-function-card"><header><i data-lucide="${icon}"></i><div><strong>${label}</strong><p>${desc}</p></div></header>`
+        +(sublinks?`<div class="all-function-subs">${sublinks}</div>`:'')
+        +`<div class="all-function-card-actions"><a class="secondary" href="${href}">打开</a></div></article>`;
+    }).join('');
+    return `<details class="all-function-fold" open><summary class="all-function-fold-head"><span class="all-function-fold-title"><strong>${title}</strong><small>${items.length} 个入口</small></span><span class="all-function-fold-toggle">展开 / 收起</span></summary><div class="all-function-fold-body"><div class="all-functions-grid">${cards}</div></div></details>`;
+  }).join('');
+  return `<div class="all-functions-page"><p class="all-functions-notice">按功能分类查看全部入口；点卡片或分段直接进入对应工作台。</p>${groups}</div>`;
 }
 function filterAllFunctions(value){
   const query=normalizeSearchText(value).trim();
