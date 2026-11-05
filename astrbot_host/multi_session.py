@@ -263,7 +263,16 @@ class MultiPrivateBridge(NativePrivateBridge):
         """Keep authenticated group text when optional native media is unavailable."""
         if getattr(getattr(event.message_obj, "type", None), "value", None) != "GroupMessage":
             return Outcome.failed("host_scene_unsupported", "text-only fallback requires a native group event")
-        return await self.groups.capture_text_only(event)
+        # 文本化捕获把每个视频折成一行「[视频不可用]」，位置到那一刻就不在任何
+        # 返回值里了。趁组件还在，先按 capture() 的取值规则留给请求钩子；它按窗口
+        # 的视频理解开关决定要不要真的补挂。取不到位置不影响这一轮正常回复。
+        from .core_reply_video_sources import remember_capture, video_positions
+        positions = video_positions(event, video_type=self.groups.video_type,
+                                    component_reader=self.groups.component_reader)
+        captured = await self.groups.capture_text_only(event)
+        if positions and captured.is_success:
+            remember_capture(captured.unwrap(), positions)
+        return captured
 
     @staticmethod
     def _role_conversation_id(conversation_id, role):

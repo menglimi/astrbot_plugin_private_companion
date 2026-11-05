@@ -23,6 +23,16 @@ from astrbot_host.image_access import GROUP_IMAGE_CAPABILITIES
 from astrbot_host.multi_api import PREFIX
 from astrbot_host.multi_settings import MultiHostSettings
 from astrbot_host.settings import HostControlError
+from astrbot_host.video.loader import load_native_video
+
+
+class GroupVideo:
+    """Minimal host Video component: the group bridge only reads ``file``/``url``."""
+
+    type = "Video"
+
+    def __init__(self, *, file="", url=""):
+        self.file, self.url = file, url
 
 
 class GroupHostTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
@@ -188,6 +198,34 @@ class GroupHostTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(captured.is_success, captured.failure)
         self.assertIn('"status"', captured.unwrap().text)
         self.assertIn("未读取正文", captured.unwrap().text)
+
+    async def test_text_only_group_capture_remembers_its_video_positions(self):
+        from astrbot_host import core_reply_video_sources as sources
+        sources.reset()
+        self.addCleanup(sources.reset)
+        # 群聊核心回复路径只走 capture_text_only，它把 Video 折成「[视频不可用]」。
+        # 位置必须在这之前留下来，否则下一轮 @ 时那条视频就彻底消失了。
+        self.types = replace(self.types, video=GroupVideo, video_loader=load_native_video)
+        self.controller = self.make_controller(group_config())
+        await self.start_host()
+        event = self.group_event(identifier="group-video")
+        event.message_obj.raw_message["message"] = [
+            {"type": "video", "data": {"file": "native-video-id", "url": "https://example.invalid/v.mp4"}}
+        ]
+        event.message_obj.message = [GroupVideo(file="native-video-id", url="https://example.invalid/v.mp4")]
+
+        observed = await self.controller.session.bridge.capture_text_only(event)
+        self.assertTrue(observed.is_success, observed.failure)
+        self.assertIn("视频不可用", observed.unwrap().text)
+
+        key = sources.key_from_capture(observed.unwrap())
+        self.assertEqual(key, (event.platform_meta.id, "100", "300",
+                               observed.unwrap().recipients.recipients[0].subject_id, "role-a"),
+                         "the capture remembers its own host window, not just the group id")
+        self.assertEqual(len(key), 5)
+        self.assertEqual(tuple((item.position, item.locator) for item in sources.take(key)),
+                         ((0, "https://example.invalid/v.mp4"),),
+                         "capture()'s order: file is not base64://, so the url wins")
 
     async def test_private_memory_never_enters_group_prompt_or_group_tools(self):
         app = await self.start_host()

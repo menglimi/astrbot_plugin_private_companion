@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Mapping
 from dataclasses import replace as replace_dataclass
 from pathlib import Path
@@ -1225,6 +1226,13 @@ class PrivateCompanionV2StagingPlugin(Star):
         except Exception as error:
             logger.warning("[CompanionV2] 核心回复感知信息暂不可用，继续回复 error_type=%s",
                            type(error).__name__)
+        # 补挂放在感知注入之后：这段 JSON 里本轮视频先如实写成 absent，等这里真的
+        # 挂上内容块，-1000000 的钩子（restate_companion_core_video_state）再把三态
+        # 改写成 injected。视频不是回复的前提，任何失败都只降级成一行告警。
+        try:
+            await self._attach_core_reply_videos(prepared, req)
+        except Exception as error:
+            logger.warning("[CompanionV2] 跨轮视频补挂跳过 error_type=%s", type(error).__name__)
         if application is not None:
             try:
                 with measure_core_preparation(event, "telemetry_capture", now=self.staging.now):
@@ -1234,6 +1242,87 @@ class PrivateCompanionV2StagingPlugin(Star):
                 logger.warning("[CompanionV2] 核心回复统计暂不可用，继续回复 error_type=%s", type(error).__name__)
         from .astrbot_host.core_reply_presentation import capture_core_reply_tool_names
         capture_core_reply_tool_names(event, req)
+
+    async def _attach_core_reply_videos(self, prepared, request):
+        """把上一条群消息里被文本化丢弃的视频补挂进这一轮请求。
+
+        消息是独立事件：用户先裸发一条视频、再单独发一条 @ 时，第二轮事件里没有
+        任何 Video 组件，核心既写不出占位符也扫不到视频。位置在
+        ``capture_text_only`` 把它折成「[视频不可用]」之前就存进了进程内缓存
+        （``astrbot_host/core_reply_video_sources.py``），这里按**既有**开关决定
+        要不要用它，不新增任何配置键。
+
+        一次性语义：位置在任何判断之前就被取出（``take`` 是弹出），所以无论这一轮
+        最终有没有挂上，下一轮都不会再拿同一条视频试第二次。
+        """
+        from .astrbot_host.core_reply_video_sources import key_from_context, take
+        state = prepared if isinstance(prepared, Mapping) else {}
+        context = state.get("context")
+        scope = getattr(context, "scope", None)
+        if scope is None or getattr(getattr(scope, "kind", None), "value", None) != "group":
+            return
+        locators = take(key_from_context(context))
+        if not locators:
+            return
+        from .astrbot_host.core_reply_perception import video_request_state
+        # 外部视频插件（-300000）可能已经给这一轮追加过视频块。先判后挂：一轮里
+        # 出现两个视频块既浪费预算，也让「模型看到的是哪一条视频」说不清。
+        if video_request_state(request) == "injected":
+            return
+        application = getattr(getattr(self.staging, "session", None), "application", None)
+        settings = self._video_understanding_settings(application, context)
+        if settings.get("video_understanding_enabled") is not True:
+            return
+        from companion_v2.conversation.media.understanding import media_scope_enabled
+        if not media_scope_enabled(settings, "video_understanding", scope):
+            return
+        from companion_v2.conversation.media.video.models import MAX_VIDEOS, fits_video_budget
+        from .astrbot_host.video.loader import load_native_video
+        videos = []
+        for locator in locators[:MAX_VIDEOS]:
+            try:
+                videos.append(await load_native_video(locator))
+            except Exception as error:
+                # 位置过期、下载失败、解码超时、超出体积预算：这一轮安静地少一段
+                # 视频，文字回复照常进行。
+                logger.warning("[CompanionV2] 群聊视频补挂跳过 position=%s code=%s",
+                               getattr(locator, "position", None),
+                               getattr(error, "code", type(error).__name__))
+                return
+        if not videos or not fits_video_budget(tuple(video.descriptor for video in videos)):
+            return
+        parts = getattr(request, "extra_user_content_parts", None)
+        if not isinstance(parts, list):
+            return
+        from astrbot.core.agent.message import AudioURLPart
+        # 与外部视频插件同一形态：ContentPart 没有 video 类型，所以借 audio_url 传
+        # data URI，核心的 process_audio_url 从 MIME 认出 video/mp4 再交给原生视频
+        # Part。mark_as_temp 保证这份字节不落进会话历史。
+        for video in videos:
+            data_uri = ("data:" + video.descriptor.mime_type + ";base64,"
+                        + base64.b64encode(video.content).decode("ascii"))
+            parts.append(AudioURLPart(audio_url=AudioURLPart.AudioURL(url=data_uri)).mark_as_temp())
+        logger.info("[CompanionV2] 群聊视频补挂 event_ref=%s videos=%s",
+                    state.get("event_ref"), len(videos))
+
+    def _video_understanding_settings(self, application, context):
+        """读这个窗口的媒体理解设置；读不到就返回 {}（等于本轮不挂）。
+
+        必须走 ``reply_settings.capture``：媒体理解字段属于
+        ``conversation.presentation``（``companion_v2/conversation/reply_settings.py:24-26``
+        导入的 ``UNDERSTANDING_DEFAULTS``），``capture`` 会补上文档化的默认值并跑
+        一遍 ``understanding.settings`` 校验。读不到时必须等于不挂——这些开关的默认
+        值是 True，把异常吞成默认开就成了绕过用户的显式关闭。
+        """
+        reader = getattr(application, "reply_settings", None) if application is not None else None
+        if reader is None:
+            return {}
+        try:
+            return dict(reader.capture(context, self.staging.now())["settings"])
+        except Exception as error:
+            logger.warning("[CompanionV2] 视频理解设置暂不可读，本轮不补挂 error_type=%s",
+                           type(error).__name__)
+            return {}
 
     @filter.on_agent_begin(priority=-1000000)
     async def observe_companion_core_agent_begin(self, event: AstrMessageEvent, run_context):
