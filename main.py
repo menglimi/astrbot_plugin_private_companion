@@ -1283,6 +1283,19 @@ class PrivateCompanionV2StagingPlugin(Star):
         from .astrbot_host.core_reply_history_guard import repair_request_history
         repair_request_history(event, req)
 
+    # 视频内容块由外部插件在 -300000 追加，晚于本插件写感知 JSON 的 250000，所以
+    # 那份 JSON 里的视频三态永远看不到真实结果。这里最后再跑一次，只就地改写那一段
+    # JSON 文本；同一份请求改写两次得到逐字节相同的文本，重复触发不会累加。
+    # 改写失败只记一行告警：一句感知标注不值得让整轮回复失败。
+    @filter.on_llm_request(priority=-1000000)
+    async def restate_companion_core_video_state(self, event: AstrMessageEvent, req):
+        from .astrbot_host.core_reply_perception import rewrite_core_reply_video_state
+        try:
+            rewrite_core_reply_video_state(req)
+        except Exception as error:
+            logger.warning("[CompanionV2] 视频输入状态重写失败 error_type=%s",
+                           type(error).__name__)
+
     @filter.on_agent_begin(priority=-1000000)
     async def repair_companion_core_runner_history(self, event: AstrMessageEvent, run_context):
         from .astrbot_host.core_reply_history_guard import repair_run_context_history
