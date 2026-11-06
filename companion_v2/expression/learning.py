@@ -291,8 +291,13 @@ def parse_output(raw: object, *, allowed_evidence: set[str] | frozenset[str], de
     still gets the maximum.
     """
     if type(raw) is str:
+        value = raw.strip()
+        # 模型常把整段合法 JSON 包在 ```json 围栏里；围栏只是呈现方式，
+        # 不改变契约本身，解析前剥掉，避免把合法结果判成 invalid_json。
+        if value.startswith("```"):
+            value = value.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         try:
-            raw = json.loads(raw)
+            raw = json.loads(value)
         except json.JSONDecodeError as error:
             raise ValueError("invalid_json") from error
     if not isinstance(raw, Mapping) or set(raw) != {"summary", "signals"}:
