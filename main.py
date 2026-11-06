@@ -911,6 +911,12 @@ class PrivateCompanionV2StagingPlugin(Star):
                 return
             if not group_admission["admitted"]:
                 suppress_default_reply(event)
+                # 群聊「故意不说话」不写台账（那是 SUPPRESSED 的语义），但也不能
+                # 什么都不留：用户反馈「机器人不理我」时，这行是唯一能区分
+                # 「判了不该说」和「根本没走到这里」的线索。只写码值，不带正文。
+                logger.info("[CompanionV2] 群聊本轮保持沉默 event_ref=%s reason=%s mentioned=%s",
+                            event_ref, group_admission.get("reason") or "role_choice",
+                            bool(group_admission.get("mentioned")))
                 return
         logger.info("[CompanionV2] 核心回复准入检查 event_ref=%s channel=%s", event_ref, channel)
         try:

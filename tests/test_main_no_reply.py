@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib.util
+import logging
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -9,6 +10,7 @@ from types import ModuleType, SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
+from astrbot_host.logging_bridge import PLUGIN_NAME as ASTRBOT_PLUGIN
 from tests import test_astrbot_staging_host as _astrbot_test_runtime
 from tests.test_management_access import INSTALLATION, NOW
 from companion_v2.foundation.outcome import Outcome
@@ -202,6 +204,33 @@ class MainNoReplyTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(event.stopped)
         self.assertTrue(event.call_llm)
         self.staging.receive_claimed.assert_not_awaited()
+
+    async def test_group_silent_choice_is_logged_without_a_ledger_row(self):
+        # A silent group choice is a decision, not a missing reply, so it stays out
+        # of the inbound ledger; the log is the only place an operator can see that
+        # the turn was left to AstrBot on purpose instead of failing unobserved.
+        self.staging.claims = lambda _event: True
+        self.staging.target_for_event = lambda _event: self.target
+        self.staging.group_reply_candidate.return_value = NS(
+            failure=None,
+            unwrap=lambda: {"admitted": False, "reason": "", "mentioned": False})
+        event = group_event()
+        # astrbot.api.logger routes this entry module to the plugin's own logger,
+        # which AstrBot deliberately isolates from the global one: let this single
+        # capture travel up so the assertion still targets the AstrBot hierarchy.
+        sink = logging.getLogger("astrbot.plugin." + ASTRBOT_PLUGIN)
+
+        with patch.object(sink, "propagate", True), \
+                self.assertLogs("astrbot", level="INFO") as captured:
+            await self.plugin.receive_companion_message(event)
+
+        lines = [line for line in captured.output if "群聊本轮保持沉默" in line]
+        self.assertEqual(len(lines), 1, captured.output)
+        self.assertIn("event_ref=", lines[0])
+        self.assertIn("reason=role_choice", lines[0])
+        self.assertIn("mentioned=False", lines[0])
+        self.assertEqual(self.runtime.read_all("SELECT * FROM inbound_no_replies", ()), ())
+        self.assertTrue(event.call_llm)
 
 
 class StartupRetryTests(unittest.IsolatedAsyncioTestCase):
