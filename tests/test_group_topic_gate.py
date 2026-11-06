@@ -76,6 +76,18 @@ class TopicGateTests(unittest.TestCase):
         self.assertEqual(detail["decision"], "starvation")
         self.assertNotIn("e", new_state["topics"])
 
+    def test_same_sender_follow_up_lowers_the_score(self):
+        previous = {"at": (NOW - timedelta(seconds=10)).isoformat(), "reason": "mention", "sender": "u1"}
+        current = state()
+        current["answered"] = [previous]
+        allowed, new_state, detail = evaluate(current, event_id="e", reason="mention", text="在吗？",
+                                              at=NOW, enabled=True, window_seconds=60, max_replies=3,
+                                              sender="u1")
+        self.assertTrue(allowed)
+        self.assertEqual(detail["feedback"], -2)
+        self.assertEqual(detail["score"], 5)
+        self.assertEqual(new_state["answered"][-1]["sender"], "u1")
+
 
 if __name__ == "__main__":
     unittest.main()
