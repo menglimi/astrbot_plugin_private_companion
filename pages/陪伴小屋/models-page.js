@@ -281,7 +281,10 @@ window.CompanionModelsPage = (() => {
   };
   async function api(method, endpoint, body, timeout = 30000) { let timer;
     try { const bridge = window.CompanionProduct.bridgeNow() || await window.CompanionProduct.bridgeFor();
-      const response = await Promise.race([method === "GET" ? bridge.apiGet(endpoint, body) : bridge.apiPost(endpoint, body), new Promise((_, reject) => { timer = setTimeout(() => reject(failure("bridge_timeout")), timeout); })]);
+      /* 页面桥自带一个较短的默认超时（18 秒），长任务必须把调用方的超时透传给它；
+         本地竞速比桥晚 5 秒，让桥先决定结果，避免两边同时超时后互相覆盖。 */
+      const options = {timeoutMs: timeout};
+      const response = await Promise.race([method === "GET" ? bridge.apiGet(endpoint, body, options) : bridge.apiPost(endpoint, body, options), new Promise((_, reject) => { timer = setTimeout(() => reject(failure("bridge_timeout")), timeout + 5000); })]);
       const {wrapped, value} = responseContent(response);
       if (wrapped?.status === "error") {
         const code = codeOf(wrapped) || "invalid_response";
@@ -1123,6 +1126,35 @@ window.CompanionModelsPage = (() => {
       l.data = data; l.draft = layaDraftFrom(data); l.stale = false; l.bad = false; l.notice = "Laya 配置已保存。"; }
     catch (err) { if (!current(ticket, s)) return; l.bad = true; l.notice = fail(err, "Laya 配置保存未完成。"); }
     finally { l.busy = false; if (current(ticket, s)) render(); } }
+  /* 远程服务返回的 reason 已由后端脱敏，比 codes 里的通用文案更有诊断价值；
+     状态码解释只在 Laya 这里使用，避免影响其他配置页的错误提示。 */
+  const LAYA_HTTP_HINTS = {
+    403: "服务端拒绝访问（403 Forbidden），请核对 API Key、访问权限或服务端白名单",
+    404: "接口路径不存在（404 Not Found），请核对服务地址是否带有正确的接口前缀",
+    407: "代理要求先完成鉴权（407 Proxy Authentication Required），请核对代理账号与密码",
+    429: "请求过于频繁或额度已用尽（429 Too Many Requests），请稍后重试或检查服务配额",
+    451: "服务端按地区或法律限制拒绝（451 Unavailable For Legal Reasons），不是插件故障；可更换网络出口，或填写「代理地址」后重试",
+  };
+  function layaHttpHint(status) {
+    if (LAYA_HTTP_HINTS[status]) return LAYA_HTTP_HINTS[status];
+    if (status === 500) return "服务端内部错误（500 Internal Server Error），请稍后重试或联系服务提供方";
+    if (status === 502) return "网关未能从上游取得有效响应（502 Bad Gateway），请稍后重试";
+    if (status === 503) return "服务暂时不可用（503 Service Unavailable），请稍后重试";
+    if (status === 504) return "网关等待上游响应超时（504 Gateway Timeout），请稍后重试";
+    if (status >= 500) return `服务端返回服务器错误（${status}），请稍后重试或联系服务提供方`;
+    return `服务端返回 HTTP ${status}，请核对服务地址、凭据与网络出口`;
+  }
+  function layaErrorText(err, fallback) {
+    const detail = String(err?.reason || "").trim();
+    const http = /^Laya HTTP (\d{3})/.exec(detail);
+    if (http) {
+      const status = Number(http[1]);
+      const body = detail.slice(http[0].length).replace(/^[：:\s]+/, "").slice(0, 200);
+      return `Laya HTTP ${status} · ${layaHttpHint(status)}${body ? `；服务端原文：${body}` : ""}`;
+    }
+    if (detail && !CODE.test(detail)) return detail;
+    return errors[err?.code] || errors[err?.message] || fallback;
+  }
   async function layaTest(s) { const l = s.laya; if (l.busy || l.loading || !l.data) return;
     if (layaDirty(l)) { l.bad = true; l.notice = "请先保存当前 Laya 配置，再执行连接或模型下载测试。"; render(); return; }
     if ((l.draft?.mode || l.data.mode) === "local" && l.data.local_runtime_state === "gpu_unavailable") {
@@ -1133,7 +1165,9 @@ window.CompanionModelsPage = (() => {
     const ticket = version; l.busy = true; l.test = {status: "testing"}; l.notice = l.data.mode === "local" ? "正在调用官方 Router；首次测试会自动下载检查点…" : l.data.mode === "jev" ? "正在调用 Jev 判断服务…" : l.data.mode === "workers_ai" ? "正在调用 Cloudflare Workers AI…" : "正在调用官方 SystemOne HTTP 接口…"; render();
     try { const result = await api("POST", path + "/laya/test", {}, 600000); if (!current(ticket, s)) return;
       l.test = result; l.notice = "Laya 调用完成；当前模式和检查点已验证。"; l.bad = false; await layaRefreshQuiet(s, ticket); }
-    catch (err) { if (!current(ticket, s)) return; l.test = {status: "unknown", code: err.code || err.message, reason: err.reason || ""}; l.bad = true; l.notice = fail(err, "Laya 连接测试未完成。"); }
+    catch (err) { if (!current(ticket, s)) return; l.test = {status: "unknown", code: err.code || err.message, reason: err.reason || ""}; l.bad = true; l.notice = layaErrorText(err, "Laya 连接测试未完成。");
+      /* 先把失败原因画出来，再补拉运行记录；日志读取慢时用户也不会一直停在等待态。 */
+      render(); await layaRefreshQuiet(s, ticket); }
     finally { l.busy = false; if (current(ticket, s)) render(); } }
   async function layaRefreshQuiet(s, ticket) { try { const [data, history] = await Promise.all([api("GET", path + "/laya"), api("GET", path + "/laya/logs")]); if (current(ticket, s)) { s.laya.data = data; s.laya.draft = layaDraftFrom(data); s.laya.logs = history.events || []; } } catch {} }
   /* ---------- DeepSeek search binding ---------- */
@@ -1194,7 +1228,9 @@ window.CompanionModelsPage = (() => {
     const ticket = version; l.busy = true; l.preview = {status: "testing"}; l.notice = "正在请求 Laya 进行语义分类…"; render();
     try { const result = await api("POST", path + "/laya/decide", {facts: {message_kind: "text", user_text: text}}, 125000); if (!current(ticket, s)) return;
       l.preview = result; l.notice = result.status === "skipped" ? "这条测试消息被规则跳过。" : "已收到 Laya 决策。"; l.bad = false; await layaRefreshQuiet(s, ticket); }
-    catch (err) { if (!current(ticket, s)) return; l.preview = {status: "unknown", code: err.code || err.message}; l.bad = true; l.notice = fail(err, "Laya 决策调用未完成。"); }
+    catch (err) { if (!current(ticket, s)) return; l.preview = {status: "unknown", code: err.code || err.message, reason: err.reason || ""}; l.bad = true; l.notice = layaErrorText(err, "Laya 决策调用未完成。");
+      /* 先让失败原因可见，再补拉运行记录，避免日志读取拖住错误提示。 */
+      render(); await layaRefreshQuiet(s, ticket); }
     finally { l.busy = false; if (current(ticket, s)) render(); } }
   function layaField(l, key, label, hint, type = "text") {
     const value = l.draft?.[key] ?? "", disabled = l.loading || l.busy;
@@ -1211,7 +1247,7 @@ window.CompanionModelsPage = (() => {
     try { await navigator.clipboard.writeText(command); s.laya.notice = field === "torch_install_command" ? "已复制 CUDA 版 PyTorch 安装命令；请按驱动确认 cu128 是否兼容，安装后重启 AstrBot。" : field === "remote_start_command" ? "已复制 Laya 服务启动命令。" : field === "remote_install_command" ? "已复制远程 Laya 服务依赖安装命令。" : "已复制当前 AstrBot Python 环境的安装命令。安装后重启 AstrBot，再刷新状态。"; s.laya.bad = false; }
     catch { s.laya.notice = "无法访问剪贴板，请选中并复制下方命令。"; s.laya.bad = false; } render(); }
   function layaResult(result) { if (!result) return ""; if (result.status === "testing") return '<div class="model-notice">正在等待 Laya…</div>'; if (result.status === "skipped") return `<div class="model-notice">本次未调用 Laya：${esc(result.reason || "程序规则已处理")}</div>`;
-    if (result.status !== "ok") return `<div class="model-notice error">${esc(fail(result, "Laya 结果未知。"))}</div>`;
+    if (result.status !== "ok") return `<div class="model-notice error">${esc(layaErrorText(result, "Laya 结果未知。"))}</div>`;
     const decision = result.decision; if (!decision) return "";
     const meta = [];
     if (typeof result.action_confidence === "number" && Number.isFinite(result.action_confidence))
