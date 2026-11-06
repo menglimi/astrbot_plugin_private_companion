@@ -23,7 +23,9 @@ from companion_v2.decision.contract import (CONFIGURABLE_DECISION_FIELDS, DECISI
                        DecisionContractError, deterministic_skip_reason, parse_decision)
 from companion_v2.decision.prompt import (DECISION_QUESTIONS, INTERVENTION_CHOICES, build_state,
     decision_questions, facts_document, intervention_question, render_intervention_state, render_model_state)
-from companion_v2.decision.store import MODE_MODELS, cached_multilingual_model
+from companion_v2.decision.store import (
+    CHAT_COMPLETIONS_ENDPOINT_REQUIRED, MODE_MODELS, SYSTEMONE_ENDPOINT_REQUIRED,
+    WORKERS_AI_ENDPOINT_REQUIRED, cached_multilingual_model)
 
 
 logger = logging.getLogger(__name__)
@@ -46,10 +48,20 @@ from companion_v2.decision.client import LayaClientError
 def _endpoint(value: str, target: str = SYSTEMONE_PATH) -> str:
     """Normalise a service address to the exact path the selected backend posts to."""
     raw = str(value or "").strip()
-    parsed = urlsplit(raw)
+    try:
+        parsed = urlsplit(raw)
+    except ValueError as error:
+        raise LayaClientError("laya_endpoint_invalid", "Laya 服务地址必须是 HTTP(S) 地址") from error
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise LayaClientError("laya_endpoint_invalid", "Laya 服务地址必须是 HTTP(S) 地址")
     path = parsed.path.rstrip("/")
+    # Appending one protocol's suffix to the other's address produced paths
+    # like /v1/systemone/v1/chat/completions, which every server answers with
+    # 404. Refuse the address while the caller can still see which mode fits.
+    if target == SYSTEMONE_PATH and path.endswith(CHAT_COMPLETIONS_PATH):
+        raise LayaClientError("laya_endpoint_invalid", SYSTEMONE_ENDPOINT_REQUIRED)
+    if target == CHAT_COMPLETIONS_PATH and path.endswith(SYSTEMONE_PATH):
+        raise LayaClientError("laya_endpoint_invalid", CHAT_COMPLETIONS_ENDPOINT_REQUIRED)
     if not path.endswith(target):
         path += target[len("/v1"):] if path.endswith("/v1") else target
     return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, ""))
@@ -63,17 +75,17 @@ def _workers_ai_endpoint(value: str) -> str:
     ``/ai`` root, or only the account base.
     """
     raw = str(value or "").strip()
-    parsed = urlsplit(raw)
+    try:
+        parsed = urlsplit(raw)
+    except ValueError as error:
+        raise LayaClientError("laya_endpoint_invalid", "Laya 服务地址必须是 HTTP(S) 地址") from error
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise LayaClientError("laya_endpoint_invalid", "Laya 服务地址必须是 HTTP(S) 地址")
     path = parsed.path.rstrip("/")
     if path.endswith(WORKERS_AI_PATH):
         return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, ""))
     if "/v1/" in path or path.endswith("/v1"):
-        raise LayaClientError(
-            "laya_endpoint_invalid",
-            "Workers AI 地址不需要 /v1 后缀；请填 "
-            "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/run")
+        raise LayaClientError("laya_endpoint_invalid", WORKERS_AI_ENDPOINT_REQUIRED)
     if path.endswith("/ai"):
         path += "/run"
     elif "/accounts/" in path:
@@ -690,9 +702,16 @@ class LayaDecisionClient:
             "connection_test": True,
         }, enabled_fields=enabled_fields)
 
+    @property
+    def _cloudflare_request(self) -> bool:
+        # request_format is shared by every backend in the settings file; a
+        # value left over from an earlier remote setup must not replace the
+        # Jev or Workers AI transport selected by the current mode.
+        return self.mode == "remote" and self.request_format == "cloudflare"
+
     def _parse_body(self, raw: str) -> dict:
         document = _parse_document(raw)
-        if self.request_format == "cloudflare":
+        if self._cloudflare_request:
             return _cloudflare_result(document)
         # Each backend has its own envelope: Jev answers travel in one chat
         # message, Workers AI nests them under result. A shared flat parse here
@@ -702,7 +721,7 @@ class LayaDecisionClient:
         return document
 
     async def _post(self, model_state: str, questions: dict) -> str:
-        if self.request_format == "cloudflare":
+        if self._cloudflare_request:
             # Cloudflare Workers AI wraps the model payload under ``input``.
             payload = {"model": self.model,
                        "input": {"state": model_state, "questions": questions}}

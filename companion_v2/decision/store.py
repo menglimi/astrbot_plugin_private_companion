@@ -11,6 +11,7 @@ import shlex
 import sys
 import threading
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from .contract import CONFIGURABLE_DECISION_FIELDS
@@ -26,6 +27,16 @@ MODE_MODELS = {"local": "multilingual", "remote": "multilingual", "jev": "jev-la
                # neuron allowance; third-party models such as typesafe/jev are
                # billed separately and need an override here.
                "workers_ai": "@cf/cloudflare/clef"}
+
+# The settings layer and the HTTP client give the same correction for an
+# address that belongs to another protocol, so operators see one instruction
+# no matter which gate refuses the configuration.
+SYSTEMONE_ENDPOINT_REQUIRED = ("远程 HTTP 服务使用 SystemOne 协议，地址应以 /v1/systemone 结尾；"
+                               "OpenAI 兼容网关请把接入方式改为「OpenAI 兼容网关」")
+CHAT_COMPLETIONS_ENDPOINT_REQUIRED = ("OpenAI 兼容网关使用 /v1/chat/completions 协议；"
+                                      "TypeSafe 官方 Jev 请把接入方式改为「远程 HTTP 服务」")
+WORKERS_AI_ENDPOINT_REQUIRED = ("Workers AI 地址不需要 /v1 后缀；请填 "
+                                "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/run")
 
 
 DEFAULTS = {
@@ -57,6 +68,18 @@ class LayaSettingsError(ValueError):
         super().__init__(reason)
         self.code = code
         self.reason = reason
+
+
+def _endpoint_path(value: str) -> str | None:
+    """Return the URL path, or None when the address is unusable.
+
+    Scheme and host validation stays in the HTTP client; a malformed address
+    must not become a settings error that blocks saving unrelated fields.
+    """
+    try:
+        return urlsplit(value).path.rstrip("/")
+    except ValueError:
+        return None
 
 
 def role_storage_key(target_id: object, role_id: object) -> str:
@@ -210,6 +233,17 @@ class LayaSettingsStore:
             limit = 256 if key == "remote_model" else 4096
             if type(values[key]) is not str or len(values[key]) > limit:
                 raise LayaSettingsError("laya_config_invalid", f"{key} 配置无效")
+        # An empty endpoint keeps the historical contract: the missing address
+        # is reported when a request is attempted, not while saving the mode.
+        if values["endpoint"].strip():
+            path = _endpoint_path(values["endpoint"].strip())
+            if path is not None:
+                if values["mode"] == "remote" and path.endswith("/v1/chat/completions"):
+                    raise LayaSettingsError("laya_config_invalid", SYSTEMONE_ENDPOINT_REQUIRED)
+                if values["mode"] == "jev" and path.endswith("/v1/systemone"):
+                    raise LayaSettingsError("laya_config_invalid", CHAT_COMPLETIONS_ENDPOINT_REQUIRED)
+                if values["mode"] == "workers_ai" and ("/v1/" in path or path.endswith("/v1")):
+                    raise LayaSettingsError("laya_config_invalid", WORKERS_AI_ENDPOINT_REQUIRED)
         if type(values["timeout_seconds"]) is not int or isinstance(values["timeout_seconds"], bool) or not 1 <= values["timeout_seconds"] <= 120:
             raise LayaSettingsError("laya_config_invalid", "timeout_seconds 超出范围")
         threshold = values["followup_confidence_threshold"]
