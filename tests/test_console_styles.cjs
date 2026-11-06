@@ -16,6 +16,17 @@
  * **同样的引用列表**收集样式并内联。漏引时预览也无样式，和真实页面表现
  * 一致，所以「本地看过了」并不构成任何验证。这条测试就是补这个缺口。
  *
+ * 7.0.16 起页面改成一张合包：tools/sync_framework_page.py 按
+ * css-sources.json 的顺序把源表拼成 bundle.css，每张表前留一行以文件名
+ * 命名的注释，index.html 只留 <link ... href="bundle.css?v=...">。于是
+ * 「管理页有样式」从「有一条 console.css 的 link」变成三段链：
+ *
+ *   清单里有 console.css  →  合包里含它的规则  →  页面引用 bundle.css
+ *
+ * 任何一段断了，.console-* 结构样式都会整段失效，症状和当年漏引一样。
+ * 只断言那条直接 link 会把已经生效的样式判成缺失（这正是 7.0.16 之后
+ * 本文件一直红着的原因），所以下面按链逐段核对。
+ *
  * 用 node --test 运行。
  */
 "use strict";
@@ -27,12 +38,26 @@ const path = require("node:path");
 const DIR = path.join(__dirname, "..", "pages", "陪伴小屋");
 const INDEX = fs.readFileSync(path.join(DIR, "index.html"), "utf8");
 const APP = fs.readFileSync(path.join(DIR, "app.js"), "utf8");
+const BUNDLE = fs.readFileSync(path.join(DIR, "bundle.css"), "utf8");
+const CSS_SOURCES = JSON.parse(fs.readFileSync(path.join(DIR, "css-sources.json"), "utf8"));
 
 /* 剥掉注释再比对选择器——注释里出现某个类名不算「有样式」。 */
 const withoutComments = source => source.replace(/\/\*[\s\S]*?\*\//g, "");
 
 const linkedStyles = () => [...INDEX.matchAll(
   /<link\s+rel="stylesheet"\s+href="([^"?]+)[^"]*"/g)].map(m => m[1]);
+
+/* 合包按「以文件名命名的注释行」分段，段边界由构建脚本决定；这里跟着
+   同一份约定读，不另立一套解析。 */
+function bundleSection(name) {
+  const sections = new Map();
+  let previous = null;
+  for (const m of BUNDLE.matchAll(/^\/\* ([^ ]+\.css) \*\/$/gm)) {
+    if (previous) sections.set(previous.name, BUNDLE.slice(previous.end + 1, m.index));
+    previous = { name: m[1], end: m.index + m[0].length };
+  }
+  return sections.get(name);
+}
 
 function selectorsOf(name) {
   const source = withoutComments(fs.readFileSync(path.join(DIR, name), "utf8"));
@@ -46,12 +71,29 @@ function selectorsOf(name) {
   return out;
 }
 
-test("console.css 被 index.html 引用", () => {
-  /* 这一条是整个文件存在的理由。它缺失时管理页没有结构样式，
-     而预览页会以同样的方式缺样式，所以任何本地检查都发现不了。 */
-  assert.ok(linkedStyles().includes("console.css"),
-    "index.html 没有引用 console.css：管理页的 .console-* 结构样式全部失效，"
+test("console.css 经合包进入页面，而不是靠一条直接 link", () => {
+  /* 这一条是整个文件存在的理由：三段链任何一段断了，管理页都没有结构
+     样式，而预览页会以同样的方式缺样式，所以任何本地检查都发现不了。 */
+  assert.ok(linkedStyles().includes("bundle.css"),
+    "index.html 没有引用 bundle.css：管理页的 .console-* 结构样式全部失效，"
     + "十几个配置页会渲染成浏览器默认样式的裸 HTML");
+  assert.ok(CSS_SOURCES.includes("console.css"),
+    "css-sources.json 里没有 console.css：重新构建后管理页结构样式会整段消失");
+  const section = bundleSection("console.css");
+  assert.ok(section,
+    "bundle.css 里找不到 console.css 段落：运行 "
+    + "python -X utf8 tools/sync_framework_page.py 重新生成");
+  /* 关键选择器点名，失败时一眼看出丢的是哪一块。 */
+  for (const selector of [".console", ".console-section", ".console-section-head",
+                          ".console-row", ".console-mount-head"]) {
+    assert.ok(section.includes(selector),
+      `bundle.css 的 console.css 段落里没有 ${selector}`);
+  }
+  /* 剩下的逐条核对：改了 console.css 却没重新构建时，新选择器不会出现在
+     合包里；整段样式就这样静默地少掉。 */
+  const missing = [...selectorsOf("console.css")].filter(sel => !section.includes(sel));
+  assert.deepStrictEqual(missing, [],
+    `console.css 有规则没进 bundle.css（改完样式忘了重新构建？）：${missing.slice(0, 5).join("、")}`);
 });
 
 test("所有被引用的样式表都存在", () => {
