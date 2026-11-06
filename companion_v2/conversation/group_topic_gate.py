@@ -61,7 +61,7 @@ def empty_state():
 
 
 def evaluate(state, *, event_id, reason, text, at, enabled, window_seconds, max_replies,
-             ttl_seconds=TTL_SECONDS, max_pending=MAX_PENDING):
+             ttl_seconds=TTL_SECONDS, max_pending=MAX_PENDING, max_skip=3):
     """Return ``(allowed, new_state, detail)`` for one candidate event."""
     if not enabled or not isinstance(at, datetime) or at.tzinfo is None:
         return True, state, {"gate": "disabled"}
@@ -89,6 +89,16 @@ def evaluate(state, *, event_id, reason, text, at, enabled, window_seconds, max_
         topic["skipped"] += 1
         detail["decision"] = "budget"
         return False, {"topics": topics, "replies": [when.isoformat() for when in replies]}, detail
+    others = [value for key_, value in topics.items() if key_ != key]
+    best_other = max((int(value.get("score", 0)) for value in others), default=None)
+    detail["best_pending"] = best_other
+    detail["skipped"] = topic["skipped"]
+    if topic["skipped"] >= max(1, int(max_skip)):
+        # 公平性兜底：一直被跳过的话题在预算内强制回答一次，避免永远被更容易的话题挤掉。
+        detail["decision"] = "starvation"
+        topics.pop(key, None)
+        replies.append(at)
+        return True, {"topics": topics, "replies": [when.isoformat() for when in replies]}, detail
     if pending > max_pending and topic["score"] < 4:
         topic["skipped"] += 1
         detail["decision"] = "backlog"
@@ -96,6 +106,11 @@ def evaluate(state, *, event_id, reason, text, at, enabled, window_seconds, max_
     if pending >= 2 and topic["score"] <= 0:
         topic["skipped"] += 1
         detail["decision"] = "hard_topic"
+        return False, {"topics": topics, "replies": [when.isoformat() for when in replies]}, detail
+    if best_other is not None and best_other > topic["score"] + 1:
+        # 已经有一个更收得尾的话题在排队：本轮先不答当前这条，等它下次再来或过期。
+        topic["skipped"] += 1
+        detail["decision"] = "easy_first"
         return False, {"topics": topics, "replies": [when.isoformat() for when in replies]}, detail
     topics.pop(key, None)
     replies.append(at)

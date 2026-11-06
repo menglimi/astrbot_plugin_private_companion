@@ -58,6 +58,24 @@ class TopicGateTests(unittest.TestCase):
         self.assertTrue(allowed)
         self.assertNotIn("old", new_state["topics"])
 
+    def test_easier_pending_topic_wins_when_current_is_harder(self):
+        pending = {"easier": {"created": NOW.isoformat(), "skipped": 0, "score": 9}}
+        allowed, new_state, detail = evaluate(state(topics=pending), event_id="e",
+                                              reason="context_word", text="这个怎么弄？",
+                                              at=NOW, enabled=True, window_seconds=60, max_replies=3)
+        self.assertFalse(allowed)
+        self.assertEqual(detail["decision"], "easy_first")
+        self.assertEqual(new_state["topics"]["e"]["skipped"], 1)
+
+    def test_starvation_forces_a_repeatedly_skipped_topic(self):
+        queued = {"e": {"created": NOW.isoformat(), "skipped": 3, "score": -1}}
+        allowed, new_state, detail = evaluate(state(topics=queued), event_id="e",
+                                              reason="context_word", text="很长的问题" * 10,
+                                              at=NOW, enabled=True, window_seconds=60, max_replies=3)
+        self.assertTrue(allowed)
+        self.assertEqual(detail["decision"], "starvation")
+        self.assertNotIn("e", new_state["topics"])
+
 
 if __name__ == "__main__":
     unittest.main()
