@@ -3,13 +3,15 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, Mock
 
-from astrbot.core.agent.message import Message, TextPart, dump_messages_with_checkpoints
+from astrbot.core.agent.message import AudioURLPart, Message, TextPart, dump_messages_with_checkpoints
 from astrbot.core.provider.sources.fishaudio_tts_api_source import ProviderFishAudioTTSAPI
 from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA, inject_core_reply_prompt
 from astrbot_host.core_reply_perception import (
     inject_core_reply_perception_context,
     inject_core_reply_perception_policy,
+    rewrite_core_reply_video_state,
+    video_request_state,
 )
 from companion_v2.conversation.voice_reply import VoiceReplyPolicy
 
@@ -40,6 +42,25 @@ def perception_payload(request):
     value = request.extra_user_content_parts[-1].text
     return json.loads(value.removeprefix("<companion_v2_context>\n")
                       .removesuffix("\n</companion_v2_context>"))
+
+
+def context_part(request):
+    """本插件写的那段感知 JSON（按前缀找：注入的视频块会排在它后面）。"""
+    for part in request.extra_user_content_parts:
+        text = getattr(part, "text", None)
+        if isinstance(text, str) and text.startswith("<companion_v2_context>\n"):
+            return part
+    raise AssertionError("request carries no companion_v2_context part")
+
+
+def context_payload(request):
+    text = context_part(request).text
+    return json.loads(text.removeprefix("<companion_v2_context>\n")
+                      .removesuffix("\n</companion_v2_context>"))
+
+
+def video_state(request):
+    return context_payload(request)["environment"]["request_contents"]["video"]
 
 
 class CoreReplyPerceptionTests(unittest.IsolatedAsyncioTestCase):
@@ -347,6 +368,98 @@ class CoreReplyPerceptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["environment"]["chat_route"]["status"], "unavailable")
         self.assertEqual(payload["environment"]["configured_input_modalities"]["status"],
                          "not_explicitly_declared")
+
+
+class CoreReplyVideoStateTests(unittest.IsolatedAsyncioTestCase):
+    """本轮视频三态：absent / placeholder_only / injected，以及迟到的重写。"""
+
+    PLACEHOLDER = "[Video Attachment: name clip.mp4, path C:\\tmp\\clip.mp4]"
+
+    def classify(self, *parts):
+        return video_request_state(NS(extra_user_content_parts=list(parts)))
+
+    async def perceived_request(self, *parts):
+        event = Event()
+        event.extra[CORE_REPLY_CONTEXT_EXTRA] = {"prepared": prepared()}
+        request = NS(system_prompt="AstrBot 人格", model=None, image_urls=[], audio_urls=[],
+                     func_tool=None, extra_user_content_parts=list(parts))
+        await inject_core_reply_perception_context(event, request)
+        return request
+
+    def test_a_turn_without_any_video_is_absent(self):
+        self.assertEqual(self.classify(TextPart(text="今晚想吃什么")), "absent")
+        self.assertEqual(self.classify(), "absent")
+
+    def test_only_the_core_path_placeholder_is_placeholder_only(self):
+        self.assertEqual(self.classify(TextPart(text=self.PLACEHOLDER)), "placeholder_only")
+        # QQ/NapCat 把视频当 File 组件投递时，核心写的是 [File Attachment: ...]。
+        self.assertEqual(
+            self.classify(TextPart(text="[File Attachment: name seg.mp4, path C:\\tmp\\seg.mp4]")),
+            "placeholder_only")
+        # 引用消息里的视频只有 ref（可能不是本地路径），同样是占位。
+        self.assertEqual(
+            self.classify(TextPart(text="[Video Attachment in quoted message: "
+                                        "name clip.mp4, ref https://example.invalid/clip.mp4]")),
+            "placeholder_only")
+        # 普通文件不是视频，不能因为都是附件就说本轮有视频。
+        self.assertEqual(
+            self.classify(TextPart(text="[File Attachment: name notes.pdf, path C:\\tmp\\notes.pdf]")),
+            "absent")
+
+    def test_a_video_block_borrowing_audio_url_is_injected(self):
+        video = AudioURLPart(audio_url=AudioURLPart.AudioURL(url="data:video/mp4;base64,AAAA"))
+        self.assertEqual(self.classify(video), "injected")
+        # 外部插件成功后占位文本仍在（被改写成别的措辞）也不影响结论。
+        self.assertEqual(self.classify(TextPart(text=self.PLACEHOLDER), video), "injected")
+        # 真的语音不是视频。
+        self.assertEqual(
+            self.classify(AudioURLPart(audio_url=AudioURLPart.AudioURL(
+                url="data:audio/aac;base64,AAAA"))), "absent")
+
+    async def test_a_late_video_block_turns_the_payload_from_placeholder_to_injected(self):
+        # 250000：外部视频插件还没跑，请求里只有核心写的占位文本，所以这里只能写
+        # placeholder_only —— 这正是需要在 -1000000 重写的原因。
+        request = await self.perceived_request(TextPart(text=self.PLACEHOLDER))
+        self.assertEqual(video_state(request), "placeholder_only")
+        video = AudioURLPart(audio_url=AudioURLPart.AudioURL(url="data:video/mp4;base64,AAAA"))
+
+        request.extra_user_content_parts.append(video)
+        self.assertTrue(rewrite_core_reply_video_state(request))
+
+        self.assertEqual(video_state(request), "injected")
+        self.assertEqual(len(request.extra_user_content_parts), 3)
+        self.assertIs(request.extra_user_content_parts[-1], video)
+
+    async def test_rewriting_twice_writes_the_same_text_and_adds_no_part(self):
+        request = await self.perceived_request(TextPart(text=self.PLACEHOLDER))
+        before = context_payload(request)
+        request.extra_user_content_parts.append(
+            AudioURLPart(audio_url=AudioURLPart.AudioURL(url="data:video/mp4;base64,AAAA")))
+
+        self.assertTrue(rewrite_core_reply_video_state(request))
+        rewritten = context_part(request).text
+        self.assertFalse(rewrite_core_reply_video_state(request))
+        self.assertEqual(context_part(request).text, rewritten)
+
+        self.assertEqual(len(request.extra_user_content_parts), 3)
+        part = context_part(request)
+        self.assertTrue(part._no_save, "重写不能弄丢 mark_as_temp")
+        after = context_payload(request)
+        self.assertEqual(after["environment"]["request_contents"]["video"], "injected")
+        # 只改 video 一个字段，其余感知内容逐字保留。
+        self.assertEqual({key: value for key, value in after.items() if key != "environment"},
+                         {key: value for key, value in before.items() if key != "environment"})
+        self.assertEqual(
+            {key: value for key, value in after["environment"].items() if key != "request_contents"},
+            {key: value for key, value in before["environment"].items() if key != "request_contents"})
+
+    async def test_a_request_without_the_perception_payload_is_left_alone(self):
+        parts = [TextPart(text="今晚想吃什么")]
+        request = NS(extra_user_content_parts=parts)
+
+        self.assertFalse(rewrite_core_reply_video_state(request))
+        self.assertEqual(len(parts), 1)
+        self.assertEqual(parts[0].text, "今晚想吃什么")
 
 
 if __name__ == "__main__":
