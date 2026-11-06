@@ -46,19 +46,56 @@ function fakeElement() {
 
 /* index.html 按顺序加载的经典脚本（无 type="module"），它们共享同一个全局生效范围。
    assets/ 里的第三方与编译产物不装：本文件不验它们。 */
-function pageScripts() {
-  return [...INDEX.matchAll(/<script(?![^>]*\btype=)[^>]*\ssrc="([^"?]+)[^"]*"[^>]*>/g)]
+function pageScripts(html = INDEX) {
+  return [...html.matchAll(/<script(?![^>]*\btype=)[^>]*\ssrc="([^"?]+)[^"]*"[^>]*>/g)]
     .map(m => m[1])
     .filter(name => !name.startsWith("assets/"));
 }
 
-test("决策页模块由宿主页在 app.js 前加载", () => {
+/* 完整资源模板的范围。模板里的脚本由 performance-gate.js 按原顺序克隆激活，
+   所以模板内的文档顺序就是真实的执行顺序。 */
+function fullAssetTemplate() {
+  const start = INDEX.indexOf('<template id="companion-full-assets">');
+  const end = INDEX.indexOf("</template>", start);
+  assert.ok(start > 0 && end > start, "缺少 companion-full-assets 模板");
+  return INDEX.slice(start, end);
+}
+
+test("决策页模块在 modules-ready 之前落地，由 app.js 的重绘挂上", () => {
   const context = loadApp();
   const scripts = pageScripts();
   assert.ok(scripts.indexOf("decision-page.js") >= 0,
     "index.html 未加载 decision-page.js，决策页会停留在初始占位");
-  assert.ok(scripts.indexOf("decision-page.js") < scripts.indexOf("app.js"),
-    "decision-page.js 必须在 app.js 启动前加载");
+
+  /* 这条用例原先要求「decision-page.js 必须早于 app.js」。那是 7.0.0 的加载
+     顺序；首屏合包（7.0.16，0478f6fc）落地后就不是了：app.js 末尾的注释把
+     架构写死了——完整资源包故意把 app.js 放在大块页面模块之前，让外壳先画；
+     最后一个模块落地后由 module-ready.js 发 companion:modules-ready，
+     app.js 收到再重绘一次，把当时还没到位的模块挂上。所以 decision-page.js
+     晚于 app.js 是设计，不是「决策页模块没被创建」：
+
+       - decision-page.js 只在 window 上注册模块，不引用 app.js 的顶层符号；
+       - app.js 侧全部用 window.CompanionDecisionPage?. 惰性取用，
+         外壳先画时拿不到就跳过，不会抛 ReferenceError 中断整页渲染。
+
+     真正会让决策页停在骨架的是「modules-ready 提前发」：它早于最后一个模块
+     执行时，app.js 的重绘发生在模块注册之前，之后也没有第二次重绘。所以这里
+     守的是「决策页模块在 modules-ready 之前」，不是「在 app.js 之前」。 */
+  assert.ok(scripts.indexOf("app.js") < scripts.indexOf("decision-page.js"),
+    "app.js 必须早于页面模块（外壳先画、模块后补），顺序被改回去时这条会提示架构方向变了");
+  assert.ok(scripts.indexOf("decision-page.js") < scripts.indexOf("module-ready.js"),
+    "module-ready.js 必须晚于 decision-page.js：事件早发，app.js 的重绘会拿不到决策页模块");
+  const inert = pageScripts(fullAssetTemplate());
+  assert.strictEqual(inert[inert.length - 1], "module-ready.js",
+    "module-ready.js 必须是完整资源模板里的最后一个脚本，否则它之后落地的模块永远等不到重绘");
+
+  /* app.js 侧的两半：挂载走惰性 ?.，补挂走 modules-ready 重绘。删掉任一半，
+     决策页在首屏就只剩骨架，而 node --check 依然通得过。 */
+  assert.match(APP, /window\.CompanionDecisionPage\?\.mount\(decisionHost,/,
+    "app.js 的决策页挂载必须是惰性 ?. 取用，否则 app.js 先跑时会抛错");
+  assert.match(APP,
+    /window\.addEventListener\("companion:modules-ready",\s*\(\)\s*=>\s*\{[^}]*render\(\)/s,
+    "app.js 必须监听 companion:modules-ready 并重绘，否则后补的页面模块不会挂上");
   assert.strictEqual(typeof context.window.CompanionDecisionPage?.mount, "function",
     "宿主页脚本顺序未创建决策页挂载模块");
 });
