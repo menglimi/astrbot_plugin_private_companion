@@ -1,5 +1,15 @@
 # 更新日志
 
+## 7.1.4 - 2026-11-07
+
+### xAI Grok Imagine 接入
+
+- 新增独立的 xAI 生图协议（模型页「协议」可选「xAI Grok Imagine」）：Grok Imagine 不接受 OpenAI 的 `size`，生图改发 `aspect_ratio` + `resolution`（宽高约分后按服务商枚举发送，无法整除时不发送尺寸参数、由服务端自选；`1k`/`1.5k`/`2k` 由「尺寸标签」控制）。
+- 改图接入：参考图先上传 xAI Files API，再用 JSON `image`/`images`（`file_id`）提交 `/v1/images/edits`，最多 5 张参考图，上传文件在请求结束后自动删除；改图保持原图构图，不走 multipart。
+- `quality` 仅 `grok-imagine-image-2.0` 接受（自动/低/中），1.0 或其它取值不会发送；`response_format` 支持服务端默认与 `b64_json`。
+- 兼容旧配置：以 `openai` 协议保存、地址属于 `api.x.ai` 的端点会自动按 xAI 协议投影，并在下次保存后把协议字段落盘；平台自动识别也会按主机名识别 `x.ai`/`*.x.ai`。
+- 模型页按协议给出对应提示（协议迁移、参考图上限 5、质量与分辨率说明）；改图参考图数量在路由层按 5 收敛，避免向服务商发送必然被拒的请求。
+
 ## 7.1.3 - 2026-11-06
 
 ### 群聊高压与话题调度

@@ -85,20 +85,26 @@ def _image_routes(settings, operation):
 
 
 def _online_edit_reference_limit(endpoint):
-    if (endpoint.get("enabled") is not True or not endpoint.get("base_url")
-            or endpoint.get("platform") == "minimax"):
+    if (endpoint.get("enabled") is not True or not endpoint.get("base_url")):
         return None
     platform = endpoint.get("platform", "auto")
-    if platform == "auto":
-        try:
-            from .native_extensions.image_native.output_routing import resolve_platform
-            platform = resolve_platform(endpoint)
-        except Exception:
+    try:
+        from .native_extensions.image_native.output_routing import (
+            XAI_MAX_REFERENCE_IMAGES, effective_platform)
+        platform = effective_platform(endpoint)
+    except Exception:
+        if platform == "auto":
             return None
-    if platform not in {"openai", "openrouter", "agnes", "sensenova", "doubao"}:
+    if platform not in {"openai", "openrouter", "agnes", "sensenova", "doubao", "xai"}:
         return None
     value = endpoint.get("max_reference_images", MAX_REFERENCE_IMAGES)
-    return value if type(value) is int and value > 0 else None
+    if type(value) is not int or value <= 0:
+        return None
+    # Grok Imagine edits accept five references at most; the routing layer
+    # clamps the saved value the same way.
+    if platform == "xai":
+        value = min(value, XAI_MAX_REFERENCE_IMAGES)
+    return value
 
 
 def _local_edit_reference_limit(settings, route):

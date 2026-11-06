@@ -56,7 +56,7 @@ _PREFIX = "photo_action_config."
 _MISSING = object()
 _PLATFORMS = frozenset({
     "auto", "openai", "openrouter", "agnes", "sensenova", "minimax",
-    "bailian", "modelscope", "doubao", "gemini",
+    "bailian", "modelscope", "doubao", "gemini", "xai",
 })
 _PLATFORM_ALIASES = {
     "openai-compatible": "openai", "openai_compatible": "openai",
@@ -73,6 +73,7 @@ _PLATFORM_ALIASES = {
     "sense-nova": "sensenova", "日日新": "sensenova", "商汤日日新": "sensenova",
     "minimaxi": "minimax", "minimax-ai": "minimax", "minimax_ai": "minimax", "海螺": "minimax",
     "agnes-ai": "agnes", "agnes_ai": "agnes", "agnes-image": "agnes", "sapiens": "agnes",
+    "x-ai": "xai", "x.ai": "xai", "grok": "xai", "grok-imagine": "xai", "grok imagine": "xai",
 }
 # V1 never exposed an image quality knob.  A migrated endpoint therefore starts
 # on the service default instead of claiming ``standard``, a value only older
@@ -142,6 +143,8 @@ def _platform(value, base_url="", model=""):
     if platform == "auto":
         host = re.sub(r"^https?://", "", str(base_url).lower()).split("/", 1)[0]
         model = str(model).lower()
+        if host == "x.ai" or host.endswith(".x.ai"):
+            return "xai"
         if "minimax" in host or model in {"image-01", "image-01-live"}:
             return "minimax"
         if "openrouter.ai" in host:
@@ -600,7 +603,8 @@ def convert_image_configuration(config: dict) -> ImageConfigurationMigration:
         output_sources["operation_routes"] = tuple(sorted(set(output_sources.get("backend", ()))
             | set(output_sources.get("endpoints", ()))))
         executable_online = any(item["enabled"] and item["base_url"] and item["model"]
-            and item["platform"] in {"auto", "openai", "openrouter", "agnes", "sensenova", "minimax", "doubao"}
+            and item["platform"] in {"auto", "openai", "openrouter", "agnes", "sensenova",
+                                     "minimax", "doubao", "xai"}
             for item in endpoints)
         output_changes["enabled"] = bool(online and executable_online)
         output_sources["enabled"] = output_sources["operation_routes"]

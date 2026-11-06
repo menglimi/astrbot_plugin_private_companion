@@ -286,3 +286,19 @@ test("the output page drafts server-default quality and no response format for a
   assert.equal(endpoint.quality, "");
   assert.equal(endpoint.response_format, "");
 });
+
+test("an xAI endpoint uses Grok Imagine's own protocol fields", async () => {
+  const {node} = await openImageConfiguration({
+    platform: "xai", model: "grok-imagine-image-2.0", base_url: "https://api.x.ai/v1",
+    quality: "low", response_format: "", max_reference_images: 5,
+  });
+
+  const quality = selectOptions(node.innerHTML, "endpoints.0.quality");
+  assert.deepEqual(quality.values, ["", "auto", "low", "medium"]);
+  assert.deepEqual(quality.selected, ["low"]);
+  assert.match(node.innerHTML, /xAI 仅 grok-imagine-image-2\.0/);
+  assert.match(node.innerHTML, /1k、1\.5k、2k/);
+  assert.match(node.innerHTML, /xAI 改图最多 5 张参考图/);
+  assert.match(node.innerHTML, /xAI Grok Imagine/);
+  assert.ok(selectOptions(node.innerHTML, "endpoints.0.platform").values.includes("xai"));
+});
