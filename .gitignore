@@ -49,3 +49,9 @@ astrbot_plugin_*_config.json
 # Boundary feedback and temporary emotion runtime are implemented in this core.
 /astrbot_plugin_nene_boundary/
 /astrbot_plugin_temp_emotion/
+
+# 临时预览与调试产物（页面截图、临时代理、调试页）
+/_tmp-preview/
+/_tmp_preview/
+/dash-debug.html
+/=ro
