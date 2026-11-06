@@ -170,8 +170,11 @@
 
     <script defer src="screen-observation.js?v=screen-retained-20261014"></script>
     <script defer src="screen-access.js?v=screen-retained-20261014"></script>
-    <script defer src="room-editor.js?v=transient-time-preview-20261029-r2"></script>
+    <!-- app.js 先于 room-editor.js：体素在首屏就挂载，此时 room-editor 的
+         顶层函数还不存在，mountStage 里的两处回调因此必须惰性解析（见
+         app.js 的注释）。tests/test_voxel_mount_callbacks.cjs 守住这个顺序。 -->
     <script defer src="app.js?v=persona-actions-20261103"></script>
+    <script defer src="room-editor.js?v=transient-time-preview-20261029-r2"></script>
     <script defer src="memory-page.js?v=memory-repair-20261028"></script>
     <script defer src="contact-page.js?v=proactive-media-diagnostics-20261029"></script>
     <script defer src="learning-page.js?v=learning-record-ownership-20261012"></script>
