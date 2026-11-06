@@ -378,15 +378,22 @@ class RoleJournalWriter:
             completion = await self.gateway.generate(run, request)
             if completion.draft is None:
                 raise ValueError("private writing requires a final draft")
+            try:
+                if isinstance(job, _SelectionJob):
+                    selected = selection_output(completion.draft.text, job.materials,
+                                                limit=getattr(job, "selection_limit", 64))
+                else:
+                    material = (derivatives_output(completion.draft.text, parent) if parent is not None
+                                else draft_output(completion.draft.text, job))
+            except ValueError as error:
+                code = ("journal_selection_invalid" if isinstance(job, _SelectionJob)
+                        else "journal_output_invalid")
+                raise TaskError(code, str(error) or "journal output is invalid") from error
             if isinstance(job, _SelectionJob):
-                selected = selection_output(completion.draft.text, job.materials,
-                                            limit=getattr(job, "selection_limit", 64))
                 run.validate()
                 self._target_current(job)
                 self._selections[id(job)] = selected
                 return TaskResult("succeeded", result_ref=digest(selected))
-            material = (derivatives_output(completion.draft.text, parent) if parent is not None
-                        else draft_output(completion.draft.text, job))
             # The local effect and its receipt share one transaction and the final lease check.
             with self.runtime.transaction():
                 run.validate()
