@@ -5,7 +5,37 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from astrbot_host.display_names import PlatformDisplayNames
+from astrbot_host.display_names import PlatformDisplayNames, event_person_names
+
+
+class EventPersonNameTests(unittest.TestCase):
+    def test_official_old_and_new_payloads_use_only_the_current_speaker(self):
+        peer = "SYNTHETIC_OPENID"
+        for platform in ("qq_official", "qq_official_webhook"):
+            for group in (False, True):
+                field = "member_openid" if group else "user_openid"
+                event = NS(platform_meta=NS(name=platform), message_obj=NS(
+                    group_id="GROUP_OPENID" if group else "", sender=NS(user_id=peer, nickname=peer)))
+                for raw in (NS(), {"author": {field: peer}}, NS(author=NS(**{field: peer}))):
+                    event.message_obj.raw_message = raw
+                    self.assertEqual(event_person_names(event), ("", ""))
+                for raw in ({"author": {field: peer, "username": "真实昵称"}},
+                            NS(raw_data={"author": {field: peer, "username": "真实昵称"}}),
+                            NS(author=NS(**{field: peer, "username": "真实昵称"}))):
+                    event.message_obj.raw_message = raw
+                    self.assertEqual(event_person_names(event), ("真实昵称", ""))
+                event.message_obj.raw_message = NS(raw_data={
+                    "author": {field: "OTHER_OPENID", "username": "其他人"},
+                    "msg_elements": [{"author": {field: peer, "username": "被引用的人"}}]})
+                self.assertEqual(event_person_names(event), ("", ""))
+                event.message_obj.sender.nickname = "标准事件昵称"
+                self.assertEqual(event_person_names(event), ("标准事件昵称", ""))
+
+    def test_onebot_names_and_group_cards_keep_their_existing_source(self):
+        event = NS(platform_meta=NS(name="aiocqhttp"), message_obj=NS(
+            sender=NS(user_id="200", nickname="标准事件旧称呼"),
+            raw_message={"sender": {"nickname": "平台昵称", "card": "群名片"}}))
+        self.assertEqual(event_person_names(event), ("平台昵称", "群名片"))
 
 
 class PlatformDisplayNameTests(unittest.IsolatedAsyncioTestCase):
@@ -50,6 +80,15 @@ class PlatformDisplayNameTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls, before)
         self.assertTrue(all(action in {"get_friend_list", "get_group_list", "get_login_info"}
                             for action, _ in self.calls))
+
+    async def test_official_group_name_replaces_opaque_id_without_onebot_queries(self):
+        groups = [dict(platform_id="official", account_id="official", group_id="SYNTHETIC_GROUP_OPENID",
+                       display_name="SYNTHETIC_GROUP_OPENID", group_name="新版识别的群名")]
+        result = await self.names.targets(groups)
+        self.assertEqual(result[0]["display_name"], "新版识别的群名")
+        self.assertEqual(result[0]["group_name"], "新版识别的群名")
+        self.assertEqual(groups[0]["display_name"], "SYNTHETIC_GROUP_OPENID")
+        self.assertEqual(self.calls, [])
 
     async def test_detail_fallback_checks_identity_and_retains_existing_name_on_failure(self):
         self.responses[("100", "get_friend_list")] = []

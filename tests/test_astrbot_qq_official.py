@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, patch
 
 from astrbot.core.message.components import At, Plain
 from astrbot_host.account_session_api import AccountSessionWebAPI
+from astrbot_host.acquaintance_api import AcquaintanceWebAPI
+from astrbot_host.management_identity import dashboard_operator
 from astrbot_host.multi_controller import AstrBotMultiController
 from astrbot_host.group_admission import group_trigger_facts
 from astrbot_host.multi_settings import MultiHostSettings
@@ -23,7 +25,10 @@ from companion_v2.execution.models import TaskContext, digest
 from companion_v2.foundation.refs import SubjectKind, SubjectRef
 from companion_v2.identity_policy.models import AuthenticatedHostPrincipal
 from companion_v2.identity_policy.personas import PersonaBinding, PersonaSelector, SelectorKind
+from companion_v2.memory.person.access import owner_key
+from companion_v2.memory.person.admin_names import PersonAcquaintanceNameManagement
 from tests.multi_host_support import MultiFixture, multi_config
+from tests.group_host_support import Query
 from tests.staging_bootstrap_support import wait_for_batch
 from astrbot_host.group_settings import GroupTarget
 from tests.native_adapter_support import NativeFixture
@@ -308,6 +313,96 @@ class OfficialMultiHostTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         )
         self.controller = self.make_controller(self.config)
 
+    async def _check_name_upgrade(self, *, group):
+        if group:
+            self.config["multi_host"]["group_targets"] = [dict(target_id="official-group",
+                platform_id=ACCOUNT, account_id=ACCOUNT, bot_id="bot-test", group_id=GROUP_OPENID)]
+            self.window_personas[f"{ACCOUNT}:GroupMessage:{GROUP_OPENID}"] = "original"
+            self.controller = self.make_controller(self.config)
+        app = await self.start_host()
+        topology = self.controller.session_topology
+        sequence = 0
+
+        async def receive(nickname, group_name=None):
+            nonlocal sequence
+            sequence += 1
+            event = OfficialEvent(self.native.platform, group=group)
+            event.message_obj.message_id = f"official-name-{sequence}"
+            event.message_obj.sender.nickname = OFFICIAL_OPENID
+            author = {"member_openid" if group else "user_openid": OFFICIAL_OPENID}
+            if nickname is not None:
+                author["username"] = nickname
+            event.message_obj.raw_message = NS(id=event.message_obj.message_id, content="你好",
+                raw_data={"author": author})
+            if group:
+                event.message_obj.group = NS(group_id=GROUP_OPENID, group_name=group_name)
+            result = await self.controller.receive_claimed(event)
+            self.assertTrue(result.is_success, result.failure)
+            batch = result.unwrap()
+            await topology.observe(event)
+            context = TaskContext.restore(json.loads(app.messages.batch(batch)["context_json"]))
+            return context, event
+
+        context, event = await receive(None, GROUP_OPENID)
+        card = app.messages.acquaintance
+        self.assertIsNone(json.loads(card.row(owner_key(context))["document_json"])["platform_nickname"])
+        # Simulate a stored fallback from before a host upgrade.
+        card.record_platform_names(context, nickname=OFFICIAL_OPENID)
+        context, event = await receive("升级后昵称", "升级后群名")
+        document = json.loads(card.row(owner_key(context))["document_json"])
+        self.assertEqual(document["platform_nickname"], "升级后昵称")
+        self.assertEqual(document["display_name_events"][0]["old"], OFFICIAL_OPENID)
+        self.assertEqual(document["native_account_id"], OFFICIAL_OPENID)
+
+        # Use the real relation directory, including native group-name merging.
+        if group:
+            self.native.conversation_manager.session_conversations = {
+                event.unified_msg_origin: self.native.conversations[ACCOUNT]}
+        with patch("astrbot_host.acquaintance_api.request", NS(username="admin", query={})), \
+                patch.object(topology, "services", AsyncMock(return_value={})):
+            result = await AcquaintanceWebAPI(self.controller).directory()
+        self.assertEqual(result["status"], "ok", result)
+        person = next(p for p in result["data"]["persons"] if p["native_account_id"] == OFFICIAL_OPENID)
+        self.assertEqual(person["display_name"], "升级后昵称")
+        if group:
+            named_group = next(g for g in result["data"]["groups"] if g["group_id"] == GROUP_OPENID)
+            self.assertEqual(named_group["display_name"], "升级后群名")
+            network = next(g for g in result["data"]["group_networks"] if g["group_id"] == GROUP_OPENID)
+            self.assertEqual(network["members"][0]["display_name"], "升级后昵称")
+
+        # Missing fields and ID fallbacks must not downgrade a recognized name.
+        await receive(OFFICIAL_OPENID, GROUP_OPENID)
+        self.assertEqual(json.loads(card.row(owner_key(context))["document_json"])["platform_nickname"], "升级后昵称")
+        route = document["route"]
+        route_fields = {key: route[key] for key in ("platform", "bot_id", "account_id", "role_id")}
+        operator = dashboard_operator(app.runtime, "admin", at=self.clock.now())
+        PersonAcquaintanceNameManagement(app.runtime).set_nickname(operator,
+            routes=(route_fields,), observed_at=self.clock.now(), subject_id=route["subject_id"],
+            **route_fields, native_account_id=OFFICIAL_OPENID, nickname="管理员备注",
+            expected_revision=card.row(owner_key(context))["revision"], operation_key="official-admin-name").unwrap()
+        await receive("再次改名", "再次改群名")
+        document = json.loads(card.row(owner_key(context))["document_json"])
+        self.assertEqual(document["platform_nickname"], "再次改名")
+        self.assertEqual(document["admin_nickname"], "管理员备注")
+        with patch("astrbot_host.acquaintance_api.request", NS(username="admin", query=Query(read_mode="stored"))), \
+                patch.object(topology, "inventory", AsyncMock(
+                    side_effect=AssertionError("stored names must not query native sessions"))) as inventory:
+            result = await AcquaintanceWebAPI(self.controller).directory()
+        self.assertEqual(result["status"], "ok", result)
+        person = next(p for p in result["data"]["persons"] if p["native_account_id"] == OFFICIAL_OPENID)
+        self.assertEqual(person["display_name"], "管理员备注")
+        inventory.assert_not_awaited()
+        if group:
+            named_group = next(g for g in result["data"]["groups"] if g["group_id"] == GROUP_OPENID)
+            self.assertEqual(named_group["group_name"], "再次改群名")
+            self.assertEqual(named_group["display_name"], "再次改群名")
+
+    async def test_official_private_name_upgrade_replaces_id_and_preserves_admin_remark(self):
+        await self._check_name_upgrade(group=False)
+
+    async def test_official_group_name_upgrade_reaches_directory_and_member_network(self):
+        await self._check_name_upgrade(group=True)
+
     async def test_blank_shared_provider_follows_astrbot_current_default(self):
         self.config["model"]["provider_id"] = ""
         self.controller.refresh_settings()
@@ -318,6 +413,54 @@ class OfficialMultiHostTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         official = next(row for row in accounts if row["platform_id"] == ACCOUNT)
         self.assertEqual(official["platform_name"], "qq_official")
         self.assertEqual(official["account_id"], ACCOUNT)
+
+    async def test_account_discovery_keeps_unconfigured_official_groups_visible(self):
+        private_umo = f"{ACCOUNT}:FriendMessage:{OFFICIAL_OPENID}"
+        group_umo = f"{ACCOUNT}:GroupMessage:{GROUP_OPENID}"
+        sessions = {private_umo: "private-cid", group_umo: "group-cid"}
+        rows = [{"session_id": umo, "conversation_id": cid, "persona_id": "original"}
+                for umo, cid in sessions.items()]
+        self.native.conversation_manager = NS(
+            get_curr_conversation_id=AsyncMock(side_effect=sessions.get),
+            db=NS(get_session_conversations=AsyncMock(return_value=(rows, len(rows)))),
+            get_conversation=AsyncMock(side_effect=AssertionError("history must not be loaded")),
+        )
+        self.types = replace(self.types, persona_selection_lookup=lambda *_args: "original")
+        request = NS(username="admin", query={})
+        for platform_name in ("qq_official", "qq_official_webhook"):
+            for private_bound in (True, False):
+                with self.subTest(platform_name=platform_name, private_bound=private_bound):
+                    self.native.platform.metadata.name = platform_name
+                    config = deepcopy(self.config)
+                    if not private_bound:
+                        config["multi_host"]["targets"] = []
+                    controller = self.make_controller(config)
+                    before = deepcopy(controller.config)
+                    with patch("astrbot_host.account_session_api.request", request), \
+                            patch("astrbot_host.setup_api.request", request), \
+                            patch("astrbot_host.setup_api.display_names",
+                                  return_value=NS(targets=AsyncMock(side_effect=lambda items: items))), \
+                            patch.object(controller.session_topology, "services", AsyncMock(return_value={})):
+                        response = await AccountSessionWebAPI(controller).get()
+                        self.assertEqual(response["status"], "ok", response)
+                        discovered = response["data"]["discovered"]
+                        self.assertTrue(discovered["directory"]["complete"])
+                        windows = {row["unified_msg_origin"]: row for row in discovered["targets"]
+                                   if row["native"]}
+                        self.assertEqual(set(windows), set(sessions))
+                        self.assertEqual(windows[private_umo]["scope_kind"], "private")
+                        group = windows[group_umo]
+                        self.assertEqual(group["scope_kind"], "group")
+                        self.assertEqual(group["group_id"], GROUP_OPENID)
+                        self.assertEqual(group["account_id"], ACCOUNT)
+                        self.assertEqual(group["roles"][0]["role_id"], "role-a")
+                        self.assertFalse(group["managed"])
+                        # Runtime preparation must still require an explicit group binding.
+                        runtime = await controller.session_topology.inventory(settings=controller.settings)
+                        self.assertFalse(any(row["scope_kind"] == "group" for row in runtime))
+                    self.assertEqual(controller.config, before)
+        self.native.conversation_manager.get_conversation.assert_not_awaited()
+        self.assertEqual(self.native.platform.sent, [])
 
     async def test_fresh_public_plugin_data_root_can_open_installations_storage(self):
         public = self.root / "astrbot-data" / "plugin_data" / "astrbot_plugin_private_companion"

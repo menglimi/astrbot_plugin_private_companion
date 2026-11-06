@@ -948,13 +948,15 @@ window.CompanionProduct = (() => {
       </section>`;
     }
     if(name==="identity" && !catalog.acquaintance_api) return empty("关系网入口尚未加载，请重新读取角色与会话。");
-    if(!["host","identity","designer"].includes(name) && !role()?.[name+"_api"]) return empty(unavailable(name));
+    const endpoint = name==="relationships" && target()?.scope_kind==="group"
+      ? role()?.group_memory_api : role()?.[name+"_api"];
+    if(!["host","identity","designer"].includes(name) && !endpoint) return empty(unavailable(name));
     return `<section class="product-workspace" data-workspace="${name}" data-workspace-tab="${e(tab)}" data-load-state="loading" aria-busy="true"><div class="product-workspace-loading" role="status" aria-live="polite"><span class="product-workspace-spinner" aria-hidden="true"></span><span data-workspace-status>正在打开${e(title)}…</span><button class="button small" type="button" data-workspace-load-retry hidden>重试</button></div><iframe title="${title}工作区" class="product-workspace-frame" sandbox="allow-scripts allow-forms"></iframe></section>`;
   }
   /* 工作区仍由唯一公开页面承载，页内路由保留原有宿主桥上下文。 */
   function workspaceAddress(name, tab="") {
     return {host:"#manage",life:"#life/diary"+(["reading","sleep","receipts"].includes(tab)?"/"+tab:""),
-      relationships:"#manage/governance/relationship",identity:"#manage/identity",persona:"#manage/governance/questionnaire",designer:"#manage/governance/questionnaire"}[name]||"";
+      relationships:"#manage/identity-feelings",identity:"#manage/identity",persona:"#manage/governance/questionnaire",designer:"#manage/governance/questionnaire"}[name]||"";
   }
   function unmountWorkspace() {
     for(const context of workspaceFrames.values())clearTimeout(context.loadTimer);
@@ -1217,8 +1219,7 @@ window.CompanionProduct = (() => {
         }
         if(selected.target_id===destination.target_id&&selected.role_id===role.role_id
           &&typeof window.navigate==="function"){
-          window.navigate("manage",target.tab==="group-reply"?"decision":"governance",
-            target.tab==="group-reply"?"":"relationship");
+          window.navigate("manage",target.tab==="group-reply"?"decision":"identity-feelings", "");
         }else{
           navigationFailure("未能进入该群的配置页，请重新读取群聊目录后重试。");
         }

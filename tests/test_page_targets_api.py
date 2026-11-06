@@ -190,6 +190,28 @@ class SinglePageTests(PageRequests, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(group["configured"])
         self.assertEqual(response["data"]["group_networks"][0]["members"][0]["native_account_id"], "700")
 
+        topology = self.controller.session_topology
+        observed = {group_id: {"unified_msg_origin": f"{settings.platform_id}:GroupMessage:{group_id}",
+                              "account_id": settings.account_id, "group_name": name}
+                    for group_id, name in (("450", "已保存群名"), ("999", "仅发现的群"))}
+        request = Request({"type": "http", "method": "GET", "path": PREFIX + "/acquaintance",
+                           "headers": [], "query_string": b"read_mode=stored"})
+        before_grants = runtime.read_all("SELECT grant_id FROM identity_grants ORDER BY grant_id", ())
+        with bind_request_context(PluginRequest(request, username="admin")), \
+                patch.object(topology, "_observed", return_value=observed), \
+                patch.object(topology, "inventory", AsyncMock(
+                    side_effect=AssertionError("stored directory must not discover sessions"))) as inventory:
+            response = await directory()
+        self.assertEqual(response["status"], "ok", response)
+        self.assertEqual(len(response["data"]["groups"]), 1)
+        group = response["data"]["groups"][0]
+        self.assertEqual((group["group_id"], group["group_name"], group["display_name"]),
+                         ("450", "已保存群名", "已保存群名"))
+        self.assertFalse(group["configured"])
+        self.assertNotIn("discovered", group)
+        self.assertEqual(runtime.read_all("SELECT grant_id FROM identity_grants ORDER BY grant_id", ()), before_grants)
+        inventory.assert_not_awaited()
+
     async def test_native_group_session_is_listed_without_importing_v2_permissions(self):
         (await self.controller.initialize_profile()).unwrap()
         routes = {path: handler for path, handler, _, _ in self.native.registered_web_apis}

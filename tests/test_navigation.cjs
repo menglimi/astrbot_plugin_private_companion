@@ -79,6 +79,16 @@ test("navigation is exposed to the setup guide and workspace modules", () => {
   assert.equal(h.run("currentNavigationHref()"), "#manage/data/migration");
 });
 
+test("the group archive destination renders the relationship workspace", () => {
+  const h = harness();
+  h.window.CompanionProduct.workspace = name => `<section data-workspace="${name}"></section>`;
+  h.window.navigate("manage", "identity-feelings");
+  assert.equal(h.window.location.hash, "#manage/identity-feelings");
+  const html = h.run("renderManage()");
+  assert.match(html, /data-workspace="relationships"/);
+  assert.doesNotMatch(html, /relationshipProfileConfigWorkspace/);
+});
+
 test("returning home clears configuration, diary and furniture selections", () => {
   const h = harness(), shell = h.window.CompanionShell;
   for (const destination of ["navigate('manage','models')", "navigate('life','diary','sleep')",

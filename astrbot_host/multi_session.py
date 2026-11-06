@@ -45,6 +45,7 @@ from companion_v2.conversation.media.understanding import intake_settings as fil
 from companion_v2.screen.interpretation import screen_interpretation_profile
 from companion_v2.reality.model_profile import reality_text_profile
 from .settings import HostControlError
+from .display_names import event_person_names
 from .huawei_health.service import get_huawei_health_service_for_root
 from companion_v2.conversation.voice_reply import VoiceReplyDelivery
 from companion_v2.execution.models import Lane, ProviderBinding, TaskContext, TaskError, digest, require, stamp
@@ -1306,25 +1307,24 @@ class MultiHostSession:
                 slot="manual:" + mode + ":" + captured.event_id, manual=True, refresh=refresh)
 
     def _record_platform_names(self, event, context):
-        """Record platform display names from the already authenticated OneBot
+        """Record platform display names from the already authenticated native
         event. Optional derivation: any failure only costs a name, never intake."""
         try:
-            raw = getattr(event.message_obj, "raw_message", None)
-            sender = raw.get("sender") if isinstance(raw, Mapping) else None
-            if not isinstance(sender, Mapping):
+            nickname, card = event_person_names(event)
+            if not nickname and not card:
                 return
             group = context.scope.kind is ScopeKind.GROUP
             if not group and context.scope.native_scope_id != context.actor.principal.native_account_id:
                 return
             self.application.messages.acquaintance.record_platform_names(
                 context, group_id=context.scope.native_scope_id if group else None,
-                nickname=sender.get("nickname"), card=sender.get("card"))
+                nickname=nickname, card=card)
             if group:
                 # Keep platform names in the same group relationship projection
                 # as the acquaintance card; both remain display clues, never
                 # identity proof.
                 self.application.messages.group_network.record_names(
-                    context, nickname=sender.get("nickname"), card=sender.get("card"), at=self.now())
+                    context, nickname=nickname, card=card, at=self.now())
         except Exception:
             pass
 
