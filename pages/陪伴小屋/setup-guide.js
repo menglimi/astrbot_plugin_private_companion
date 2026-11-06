@@ -2887,6 +2887,7 @@ window.CompanionSetup = (() => {
         ${connectionDiagnostic()}
         ${bindingFacts(binding)}
         <p class="setup-confirm-copy">候选绑定只保存在本插件目录，不会触发聊天回复。平台、Bot 账号、私聊对象和人格都正确后，点「确认此窗口」。</p>
+        <p class="setup-confirm-copy">如果这不是你希望的窗口，先在该私聊发送 <code>companion_unbind</code> 清除候选，再重新发送绑定指令。</p>
         ${noticeMarkup()}
         <div class="setup-actions">${button("confirm-binding", "确认此窗口", {primary: true})}${button("refresh", "重新读取")}</div>
       </section>`;
@@ -2906,6 +2907,7 @@ window.CompanionSetup = (() => {
       <p>在希望当前版本接收管理员指令、也作为主动消息主要投递窗口的私聊中，发送固定指令：</p>
       <p class="setup-command"><code>${escape(command)}</code></p>
       <p>回到这里核对平台、Bot 账号、私聊对象和人格，再由管理面板确认。若该账号使用多个人格，可发送 <code>我会永远陪着你 人格名</code> 指定。</p>
+      <p class="setup-confirm-copy">绑定指令不会触发聊天回复，结果以本页核对为准。如果之前试过、页面却一直停在这里，先在该私聊发送 <code>companion_unbind</code>，再重新发送绑定指令。</p>
       ${connectionDiagnostic()}
       ${state?.settings_error ? `<p class="setup-inline-error">${escape(product()?.errorLabel?.(state.settings_error) || "运行设置尚未就绪，请核对账号、人格与模型。")}</p>` : ""}
       ${noticeMarkup()}
