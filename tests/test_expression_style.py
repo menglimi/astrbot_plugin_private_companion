@@ -134,6 +134,12 @@ class StyleLearningOutputTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.parse(payload)
 
+    def test_accepts_json_wrapped_in_a_markdown_fence(self):
+        payload = self.signal()
+        fenced = "```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```"
+        result = self.parse(fenced)
+        self.assertEqual(result.signals[0].proposal, payload["signals"][0]["proposal"])
+
     def test_rejects_invalid_json(self):
         with self.assertRaises(ValueError) as caught:
             self.parse("{nope")
