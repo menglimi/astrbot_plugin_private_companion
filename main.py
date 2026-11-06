@@ -639,7 +639,10 @@ class PrivateCompanionV2StagingPlugin(Star):
         event.stop_event()
         result = await self.staging.receive_binding(event)
         if result.get("handled"):
-            logger.info("[CompanionV2] 首次绑定: %s", result.get("reason") or "ok")
+            # 绑定回复不发给用户（此时还没有运行会话），但至少让日志带上
+            # 面板/日志里能直接照做的下一步，例如先发 companion_unbind。
+            logger.info("[CompanionV2] 首次绑定: %s%s", result.get("reason") or "ok",
+                        (" reply=" + str(result.get("reply"))) if result.get("reply") else "")
         else:
             logger.warning("[CompanionV2] 绑定命令未被受理")
 
