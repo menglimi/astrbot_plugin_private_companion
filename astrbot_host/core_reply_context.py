@@ -257,8 +257,8 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             state = "ready" if block else "empty"
         except Exception as error:
             state = "unavailable"
-            logger.warning("[CompanionV2] 核心回复背景降级 section=%s error_type=%s",
-                           name, type(error).__name__)
+            logger.warning("[CompanionV2] 核心回复背景降级 section=%s error_type=%s code=%s",
+                           name, type(error).__name__, getattr(error, "code", None) or "-")
             return
         finally:
             measured.append({"owner": "private_companion.v2", "purpose": name, "state": state,
