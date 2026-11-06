@@ -15,6 +15,15 @@ EXTERNAL_PROVIDERS: tuple[dict[str, Any], ...] = (
         "description": "仅显示旧版插件的运行状态，旧版资料与执行仍由原插件管理。",
         "furniture": {"id": "legacy-core", "name": "陪伴核心台", "panel_id": "legacy-core"},
     },
+    # 目录是外部提供方的唯一发现入口：未登记的插件永远不会被读取状态，
+    # 所以视频理解即使由第三方插件执行，也要在这里留一条可见性记录。
+    {
+        "plugin_id": "astrbot_plugin_video_vision",
+        "capability_id": "video_vision",
+        "label": "基米看得见视频",
+        "description": "普通聊天的原生视频理解由该插件提供（含引用视频与体积压缩）。",
+        "furniture": {"id": "video-vision", "name": "观影机", "panel_id": "video-vision"},
+    },
 )
 
 BUNDLED_EXTENSIONS: tuple[dict[str, Any], ...] = (
