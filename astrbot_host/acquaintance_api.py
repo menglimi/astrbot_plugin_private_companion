@@ -586,6 +586,8 @@ class AcquaintanceWebAPI:
                 routes, groups = _directory_routes(settings)
                 result = self._members(PersonAcquaintanceDirectory(controller.runtime).directory(routes), settings)
             topology = getattr(controller, "session_topology", None)
+            stored_names = (await asyncio.to_thread(topology.stored_group_names)
+                            if topology is not None and stored_only else {})
             if topology is not None and not stored_only:
                 try:
                     _include_native_groups(groups, await topology.inventory(scope_kind="group"))
@@ -628,6 +630,11 @@ class AcquaintanceWebAPI:
                                        "member_count": network["member_count"],
                                        "msg_count": sum(member["group_observation"]["message_count"]
                                                          for member in network["members"])})
+            for group in groups:
+                name = stored_names.get((group.get("platform_id"), group.get("account_id"),
+                                         str(group.get("group_id") or "")))
+                if name:
+                    group.update(group_name=name, display_name=name)
             names = display_names(controller)
             name_options = {"cached_only": True} if stored_only else {}
             persons, groups = await asyncio.gather(names.persons(result["persons"], **name_options),

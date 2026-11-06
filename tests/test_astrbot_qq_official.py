@@ -384,11 +384,18 @@ class OfficialMultiHostTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         document = json.loads(card.row(owner_key(context))["document_json"])
         self.assertEqual(document["platform_nickname"], "再次改名")
         self.assertEqual(document["admin_nickname"], "管理员备注")
-        with patch("astrbot_host.acquaintance_api.request", NS(username="admin", query=Query(read_mode="stored"))):
+        with patch("astrbot_host.acquaintance_api.request", NS(username="admin", query=Query(read_mode="stored"))), \
+                patch.object(topology, "inventory", AsyncMock(
+                    side_effect=AssertionError("stored names must not query native sessions"))) as inventory:
             result = await AcquaintanceWebAPI(self.controller).directory()
         self.assertEqual(result["status"], "ok", result)
         person = next(p for p in result["data"]["persons"] if p["native_account_id"] == OFFICIAL_OPENID)
         self.assertEqual(person["display_name"], "管理员备注")
+        inventory.assert_not_awaited()
+        if group:
+            named_group = next(g for g in result["data"]["groups"] if g["group_id"] == GROUP_OPENID)
+            self.assertEqual(named_group["group_name"], "再次改群名")
+            self.assertEqual(named_group["display_name"], "再次改群名")
 
     async def test_official_private_name_upgrade_replaces_id_and_preserves_admin_remark(self):
         await self._check_name_upgrade(group=False)

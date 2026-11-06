@@ -216,6 +216,26 @@ class SessionTopology:
             raise TaskError("session_directory_invalid", "the native session directory is unreadable")
         return rows
 
+    def stored_group_names(self):
+        """Read observed labels without discovering sessions or resolving roles."""
+        try:
+            rows = self._observed()
+        except (OSError, ValueError, TaskError) as error:
+            logger.warning("[CompanionV2] 已保存群名读取失败 error_type=%s", type(error).__name__)
+            return {}
+        names = {}
+        for row in sorted((row for row in rows.values() if isinstance(row, dict)),
+                          key=lambda row: str(row.get("last_seen_at") or ""), reverse=True):
+            route = session_route(row.get("unified_msg_origin"))
+            account = row.get("account_id")
+            if route is None or route[1] != "group" or not isinstance(account, str) or not account:
+                continue
+            # Older group display_name fields may contain a speaker's nickname.
+            name = platform_label(row.get("group_name"), route[2])
+            if name:
+                names.setdefault((route[0], account, route[2]), name)
+        return names
+
     async def services(self, umo):
         return await load_session_settings(umo)
 

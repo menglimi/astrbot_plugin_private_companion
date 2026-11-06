@@ -226,6 +226,43 @@ class SessionTopologyTests(unittest.IsolatedAsyncioTestCase):
         rows = SessionTopology._partial_windows(umo, topology.accounts(), [], observed)
         self.assertEqual({row["account_id"]: row["display_name"] for row in rows}, names)
 
+    async def test_stored_group_names_keep_platform_account_and_latest_valid_name(self):
+        from astrbot_host.session_topology import SessionTopology
+        topology = self.controller.session_topology
+        rows = [
+            ("qq-main:GroupMessage:300", "100", "旧群名", "2026-01-01"),
+            ("qq-main:GroupMessage:200_300", "100", "新群名", "2026-01-02"),
+            ("qq-main:GroupMessage:300", "100", "300", "2026-01-03"),
+            ("qq-main:GroupMessage:300", "101", "另一账号群名", "2026-01-04"),
+            ("qq-second:GroupMessage:300", "100", "另一平台群名", "2026-01-05"),
+            ("qq-main:GroupMessage:301", "100", None, "2026-01-06"),
+            ("qq-main:GroupMessage:302", "", "账号不明", "2026-01-06"),
+            ("qq-main:FriendMessage:300", "100", "私聊名字", "2026-01-06"),
+        ]
+        stored = {str(i): dict(unified_msg_origin=umo, account_id=account, group_name=name,
+                              display_name="发言人昵称", last_seen_at=at)
+                  for i, (umo, account, name, at) in enumerate(rows)}
+        stored["invalid"] = None
+        topology.path.parent.mkdir(parents=True, exist_ok=True)
+        topology.path.write_text(json.dumps(stored), encoding="utf-8")
+        reloaded = SessionTopology(self.controller)
+        self.assertEqual(reloaded.stored_group_names(), {
+            ("qq-main", "100", "300"): "新群名",
+            ("qq-main", "101", "300"): "另一账号群名",
+            ("qq-second", "100", "300"): "另一平台群名",
+        })
+
+    async def test_stored_group_names_fall_back_when_optional_directory_is_missing_or_invalid(self):
+        topology = self.controller.session_topology
+        self.assertEqual(topology.stored_group_names(), {})
+        topology.path.parent.mkdir(parents=True, exist_ok=True)
+        for payload in (b"{", b"[]", b"\xff"):
+            with self.subTest(payload=payload):
+                topology.path.write_bytes(payload)
+                self.assertEqual(topology.stored_group_names(), {})
+        with patch.object(topology, "_observed", side_effect=OSError("unreadable directory")):
+            self.assertEqual(topology.stored_group_names(), {})
+
     async def test_background_writes_are_serial_off_thread_and_termination_drains_them(self):
         topology = self.controller.session_topology
         entered, release = threading.Event(), threading.Event()
