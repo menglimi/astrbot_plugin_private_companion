@@ -272,6 +272,14 @@ class GroupParticipation:
             self._frozen_turns[batch["batch_id"]] = frozen
         return replace(request, instruction=instruction + frozen["hints"])
 
+    def air_settings(self, settings):
+        """Expose the air-guard values the high-intensity gate reads.
+
+        The topic gate needs the same window/threshold as the closeout; keeping
+        one reader avoids a second, drifting copy of those defaults.
+        """
+        return group_air_settings(settings)
+
     def high_intensity_state(self, context, instruction, *, at, settings):
         """Read the opt-in hard closeout from confirmed role turns.
 
