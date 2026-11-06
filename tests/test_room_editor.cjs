@@ -241,11 +241,32 @@ test("布局样式与右栏重绘共同守住工作台位置", () => {
 
   const html = fs.readFileSync(path.join(PAGE, "index.html"), "utf8");
   assert.match(html, /data-detail="arrange"/);
-  assert.match(html, /room-editor\.js\?v=/);
   /* 只要求带缓存戳，不钉死某一轮的名字：布局改版时版本号本来就会换，
      钉死它会让这条断言在下一次改版时红在一个和「工作台位置」无关的地方。 */
-  assert.match(html, /styles\.css\?v=[\w][\w.-]*/);
+  assert.match(html, /room-editor\.js\?v=/);
   assert.match(html, /app\.js\?v=/);
+
+  /* 样式自 7.0.16 起走合包：index.html 只引用一张由
+     tools/sync_framework_page.py 按 css-sources.json 拼出来的 bundle.css，
+     styles.css 不再是单独的 link。这条断言原先直接找 styles.css 的 link，
+     合包之后它永远找不到——而工作台的布局其实没丢，于是它红在一个和
+     「工作台位置」无关的地方。
+
+     合包把「漏引」换了个样子：styles.css 从清单里消失、或者改了规则忘了
+     重新构建，页面都会静默少掉工作台的高度与网格。预览构建器按同一份清单
+     内联，本地目视也看不出差别。所以三段分开断言，断在哪一段都能指名道姓。 */
+  assert.match(html, /bundle\.css\?v=[0-9a-f]{16}/,
+    "index.html 没有引用 bundle.css：工作台一张样式表都没加载");
+  const cssSources = JSON.parse(fs.readFileSync(path.join(PAGE, "css-sources.json"), "utf8"));
+  assert.ok(cssSources.includes("styles.css"),
+    "css-sources.json 里没有 styles.css：重新构建后工作台布局会整段消失");
+  /* 逐字比对而不是只看「有没有这条选择器」：改了 styles.css 却没重新构建时，
+     合包里留着的是旧数值，页面按旧布局排版，只比选择器名是发现不了的。 */
+  const heightRule = css.match(/\.room-editing \.shell-side\s*\{[^}]*height:[^;]+;/s);
+  assert.ok(heightRule, "styles.css 里找不到 .room-editing .shell-side 的高度规则");
+  const bundle = fs.readFileSync(path.join(PAGE, "bundle.css"), "utf8");
+  assert.ok(bundle.includes(heightRule[0]),
+    "bundle.css 的工作台高度规则与 styles.css 不一致：改完样式请运行 python -X utf8 tools/sync_framework_page.py 重新生成");
 });
 
 test("工作台提供 V1 式房屋与家具卡片、数值坐标和方向微调", () => {
