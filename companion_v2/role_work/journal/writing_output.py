@@ -13,7 +13,12 @@ def object_output(text):
                 raise ValueError("duplicate writing field")
             value[key] = item
         return value
-    value = json.loads(text, object_pairs_hook=pairs)
+    raw = text.strip()
+    # 模型常把整段合法 JSON 包在 ```json 围栏里；剥掉围栏再解析，
+    # 否则日记/选材会被误判成 unhandled_exception。
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    value = json.loads(raw, object_pairs_hook=pairs)
     if not isinstance(value, dict):
         raise ValueError("writing output must be an object")
     return value
