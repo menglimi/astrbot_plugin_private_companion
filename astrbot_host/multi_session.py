@@ -845,6 +845,22 @@ class MultiHostSession:
                         context, captured.instruction, at=captured.at, settings=settings)
                     if reason and not group_high_intensity.allows(reason, closeout):
                         reason = ""
+                    if reason:
+                        gate_air = participation.air_settings(settings)
+                        if gate_air["group_high_intensity_enabled"]:
+                            from companion_v2.conversation import group_topic_gate
+                            allowed, gate = group_topic_gate.decide(
+                                self.runtime, context, event_id=captured.event_id, reason=reason,
+                                text=captured.text, at=captured.at, enabled=True,
+                                window_seconds=gate_air["group_air_guard_window_seconds"],
+                                max_replies=max(2, gate_air["group_air_guard_max_bot_replies"]))
+                            if not allowed:
+                                logger.info(
+                                    "[CompanionV2] 群聊高压话题排队：本轮跳过 reason=%s decision=%s "
+                                    "score=%s pending=%s replies=%s",
+                                    reason, gate.get("decision"), gate.get("score"),
+                                    gate.get("pending"), gate.get("replies"))
+                                reason = ""
                     if not reason and facts["has_image"] and self.core_reply_observations is not None:
                         try:
                             self.core_reply_observations.media(event, {
