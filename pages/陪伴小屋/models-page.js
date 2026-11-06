@@ -1100,9 +1100,10 @@ window.CompanionModelsPage = (() => {
   const layaDraftFrom = data => ({enabled: !!data.enabled, mode: data.mode || "local",
     request_format: data.request_format || "native", remote_model: data.remote_model || "",
     endpoint: data.endpoint || "", local_model_path: data.local_model_path || "",
-    api_key: "", proxy: "", timeout_seconds: Number(data.timeout_seconds) || 20,
+    api_key: "", proxy: data.proxy || "", timeout_seconds: Number(data.timeout_seconds) || 20,
     followup_confidence_threshold: Math.max(0, Math.min(100, Number(data.followup_confidence_threshold) || 0)),
     decision_fields: Object.fromEntries(LAYA_DECISION_FIELDS.map(([key]) => [key, data.decision_fields?.[key] !== false]))});
+  const layaProxyValue = l => String(l.draft?.proxy ?? "").trim();
   const layaChanges = l => { const changes = {};
     ["enabled", "mode", "request_format", "remote_model", "endpoint", "timeout_seconds", "local_model_path", "followup_confidence_threshold"].forEach(key => {
       const current = key === "request_format" ? l.data[key] || "native"
@@ -1113,7 +1114,9 @@ window.CompanionModelsPage = (() => {
     if (LAYA_DECISION_FIELDS.some(([key]) => l.draft.decision_fields[key] !== (l.data.decision_fields?.[key] !== false)))
       changes.decision_fields = l.draft.decision_fields;
     if (l.draft.api_key) changes.api_key = l.draft.api_key;
-    if (l.draft.proxy) changes.proxy = l.draft.proxy;
+    /* 代理不是密钥：清空输入框就是「直连」，所以空串也要能提交；只有与已保存地址
+       不同才算改动，否则保存按钮会一直亮着。 */
+    if (layaProxyValue(l) !== String(l.data.proxy || "").trim()) changes.proxy = layaProxyValue(l);
     return changes; };
   const layaDirty = l => !!l.data && !!l.draft && Object.keys(layaChanges(l)).length > 0;
   const layaEndpointPath = value => String(value || "").trim().split(/[?#]/)[0].replace(/\/+$/, "");
@@ -1138,7 +1141,9 @@ window.CompanionModelsPage = (() => {
     catch (err) { if (!current(ticket, s)) return; l.bad = true; l.notice = fail(err, "无法读取 Laya 配置。"); }
     finally { l.loading = false; if (current(ticket, s)) render(); } }
   async function layaSave(s) { const l = s.laya; if (l.busy || l.loading || !l.data || l.stale || !layaDirty(l)) return;
-    const ticket = version, changes = layaChanges(l); l.busy = true; l.notice = "正在保存 Laya 配置…"; render();
+    /* 保存时总是带上代理地址（含空串）：空串就是直连，不能让「没提交」被误读成
+       「保持原值」。 */
+    const ticket = version, changes = {...layaChanges(l), proxy: layaProxyValue(l)}; l.busy = true; l.notice = "正在保存 Laya 配置…"; render();
     try { const data = await api("POST", path + "/laya/save", {revision: l.data.revision, changes}); if (!current(ticket, s)) return;
       l.data = data; l.draft = layaDraftFrom(data); l.stale = false; l.bad = false; l.notice = "Laya 配置已保存。"; }
     catch (err) { if (!current(ticket, s)) return; l.bad = true; l.notice = fail(err, "Laya 配置保存未完成。"); }
@@ -1249,10 +1254,10 @@ window.CompanionModelsPage = (() => {
       /* 先让失败原因可见，再补拉运行记录，避免日志读取拖住错误提示。 */
       render(); await layaRefreshQuiet(s, ticket); }
     finally { l.busy = false; if (current(ticket, s)) render(); } }
-  function layaField(l, key, label, hint, type = "text") {
+  function layaField(l, key, label, hint, type = "text", badge = "") {
     const value = l.draft?.[key] ?? "", disabled = l.loading || l.busy;
     if (type === "bool") return `<label class="model-fd"><span class="model-cap">${label}<em>${hint}</em></span><label class="model-switch"><input type="checkbox" data-laya-field="${key}" ${value ? "checked" : ""} ${disabled ? "disabled" : ""}><i></i></label></label>`;
-    return `<label class="model-fd"><span class="model-cap">${label}<em>${hint}</em></span><input type="${type}" data-laya-field="${key}" value="${esc(value)}" ${disabled ? "disabled" : ""}></label>`;
+    return `<label class="model-fd"><span class="model-cap">${label}${badge}<em>${hint}</em></span><input type="${type}" data-laya-field="${key}" value="${esc(value)}" ${disabled ? "disabled" : ""}></label>`;
   }
   function layaPercentField(l, key, label, hint) {
     const value = l.draft?.[key] ?? 0, disabled = l.loading || l.busy;
@@ -1294,7 +1299,10 @@ window.CompanionModelsPage = (() => {
     const dirty = layaDirty(l), installed = l.data.package_installed, mode = l.draft?.mode || l.data.mode;
     const gpuUnavailable = mode === "local" && l.data.local_runtime_state === "gpu_unavailable";
     const runtimeLabel = gpuUnavailable ? "CUDA 不可用" : mode === "local" ? "本地 Python" : mode === "jev" ? "OpenAI 兼容网关" : mode === "workers_ai" ? "Cloudflare Workers AI" : "远程 HTTP";
-    const proxyHint = "可选，仅 Laya 判断请求使用，不影响 AstrBot 主模型；国内访问 TypeSafe 通常需要代理，如 http://127.0.0.1:7890；留空则沿用 AstrBot 进程的网络设置" + (l.data.proxy_set ? "。已配置；留空保留现有代理" : "");
+    /* 三段式：用途 / 留空=直连 / 示例，旁边再给一个一眼可见的状态徽章。 */
+    const proxyHint = "可选，仅 Laya 判断请求使用；留空表示直连；示例 http://127.0.0.1:7890";
+    const proxyBadge = layaProxyValue(l)
+      ? '<span class="model-pill ok">经代理</span>' : '<span class="model-pill">直连</span>';
     const packageKpi = mode === "local" ? installed ? `已安装 ${l.data.package_version || ""}` : "待安装" : "外部服务";
     const modelKpi = mode === "jev" ? l.data.default_model || "jev-latest"
       : mode === "workers_ai" ? l.data.default_model || "未填写"
@@ -1307,7 +1315,7 @@ window.CompanionModelsPage = (() => {
         ${gpuUnavailable ? `<div class="model-alert"><b>本地 Laya 当前不可用：</b>当前 AstrBot Python 使用的是 CPU 版 PyTorch${torchText ? `（${esc(torchText)}）` : ""}。Laya 本地模式需要 CUDA；请安装与驱动匹配的 CUDA 版 PyTorch 后重启 AstrBot，或在上方把接入方式切到「远程 HTTP 服务」或「OpenAI 兼容网关」。
           <div class="model-editor-actions"><button type="button" class="button small" data-laya-copy="torch_install_command">复制 CUDA PyTorch 安装命令</button></div>
           ${l.data.torch_install_command ? `<code class="model-laya-cmd">${esc(l.data.torch_install_command)}</code><small>命令默认使用 cu128；请按显卡驱动把 cu128 换成 cu126 等兼容版本。安装会替换当前 CPU 版 torch，但不会改动已安装的 laya。</small>` : ""}</div>` : ""}
-        <div class="model-laya-fields">${layaField(l, "enabled", "启用 Laya", "关闭时调用会跳过", "bool")}${layaSelect(l, "mode", "接入方式", "远程 HTTP 服务走 SystemOne；OpenAI 兼容网关仅用于只提供 /v1/chat/completions 的第三方中转，TypeSafe 官方 Jev 请选「远程 HTTP 服务」", [["local", "本地 Python 包"], ["remote", "远程 HTTP 服务"], ["jev", "OpenAI 兼容网关"], ["workers_ai", "Cloudflare Workers AI"]])}${mode === "remote" ? layaSelect(l, "request_format", "接口格式", "官方 SystemOne 平铺，或 Cloudflare Workers AI 的 input 包装", [["native", "Laya 官方 SystemOne"], ["cloudflare", "Cloudflare Workers AI"]]) : ""}${mode === "remote" ? layaField(l, "endpoint", "SystemOne 服务地址", (l.draft.request_format || l.data.request_format) === "cloudflare" ? "填到 /ai/run；请求会包 input，返回的 result 会自动拆开" : "可填服务根地址、/v1 或完整 /v1/systemone") : ""}${mode === "jev" ? layaField(l, "endpoint", "网关地址", "仅用于只提供 /v1/chat/completions 的第三方中转；可填服务根地址、/v1 或完整路径") : ""}${mode === "workers_ai" ? layaField(l, "endpoint", "Workers AI 地址", "填 accounts/<ACCOUNT_ID>/ai/run，或只填 accounts/<ACCOUNT_ID>；模型写在请求体里") : ""}${mode !== "local" ? layaField(l, "api_key", "API Key", l.data.api_key_set ? "已配置；留空保留现有密钥" : "按服务端要求填写；留空表示不鉴权", "password") : ""}${mode !== "local" ? layaField(l, "proxy", "代理地址", proxyHint) : ""}${mode !== "local" ? layaField(l, "remote_model", "判断模型名", mode === "jev" ? "留空使用 jev-latest；网关上的模型名可在此覆盖" : mode === "workers_ai" ? "留空使用 @cf/cloudflare/clef（吃每日免费神经元额度）；更快可用 @cf/cloudflare/clef-flash，第三方模型如 typesafe/jev-1.14.0 需单独付费" : "留空使用官方 multilingual；仅自建服务改名时才需要填写") : ""}${layaField(l, "timeout_seconds", "调用超时（秒）", "用于本地推理或远程连接，不参与语义判断", "number")}${layaPercentField(l, "followup_confidence_threshold", "连续接话置信阈值", "0 关闭；仅约束非点名续接。Laya 行动概率低于此值时改为旁听，建议从 40–55% 起按日志校准")}</div>
+        <div class="model-laya-fields">${layaField(l, "enabled", "启用 Laya", "关闭时调用会跳过", "bool")}${layaSelect(l, "mode", "接入方式", "远程 HTTP 服务走 SystemOne；OpenAI 兼容网关仅用于只提供 /v1/chat/completions 的第三方中转，TypeSafe 官方 Jev 请选「远程 HTTP 服务」", [["local", "本地 Python 包"], ["remote", "远程 HTTP 服务"], ["jev", "OpenAI 兼容网关"], ["workers_ai", "Cloudflare Workers AI"]])}${mode === "remote" ? layaSelect(l, "request_format", "接口格式", "官方 SystemOne 平铺，或 Cloudflare Workers AI 的 input 包装", [["native", "Laya 官方 SystemOne"], ["cloudflare", "Cloudflare Workers AI"]]) : ""}${mode === "remote" ? layaField(l, "endpoint", "SystemOne 服务地址", (l.draft.request_format || l.data.request_format) === "cloudflare" ? "填到 /ai/run；请求会包 input，返回的 result 会自动拆开" : "可填服务根地址、/v1 或完整 /v1/systemone") : ""}${mode === "jev" ? layaField(l, "endpoint", "网关地址", "仅用于只提供 /v1/chat/completions 的第三方中转；可填服务根地址、/v1 或完整路径") : ""}${mode === "workers_ai" ? layaField(l, "endpoint", "Workers AI 地址", "填 accounts/<ACCOUNT_ID>/ai/run，或只填 accounts/<ACCOUNT_ID>；模型写在请求体里") : ""}${mode !== "local" ? layaField(l, "api_key", "API Key", l.data.api_key_set ? "已配置；留空保留现有密钥" : "按服务端要求填写；留空表示不鉴权", "password") : ""}${mode !== "local" ? layaField(l, "proxy", "代理地址", proxyHint, "text", proxyBadge) : ""}${mode !== "local" ? layaField(l, "remote_model", "判断模型名", mode === "jev" ? "留空使用 jev-latest；网关上的模型名可在此覆盖" : mode === "workers_ai" ? "留空使用 @cf/cloudflare/clef（吃每日免费神经元额度）；更快可用 @cf/cloudflare/clef-flash，第三方模型如 typesafe/jev-1.14.0 需单独付费" : "留空使用官方 multilingual；仅自建服务改名时才需要填写") : ""}${layaField(l, "timeout_seconds", "调用超时（秒）", "用于本地推理或远程连接，不参与语义判断", "number")}${layaPercentField(l, "followup_confidence_threshold", "连续接话置信阈值", "0 关闭；仅约束非点名续接。Laya 行动概率低于此值时改为旁听，建议从 40–55% 起按日志校准")}</div>
         ${mode === "remote" ? `<div class="model-editor-actions"><button type="button" class="button small" data-laya-preset="laya" ${l.loading || l.busy ? "disabled" : ""}>填入 Laya 官方</button><button type="button" class="button small" data-laya-preset="typesafe" ${l.loading || l.busy ? "disabled" : ""}>填入 TypeSafe Jev 官方</button></div>` : ""}
         ${layaProtocolAlert(l, mode)}
 ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cloudflare" ? '<p class="model-note">Cloudflare Workers AI：服务地址填到 <code>/ai/run</code>；请求体会自动包成 <code>{"model": "...", "input": {"state": "...", "questions": {...}}}</code>，HTTP 200 的 <code>result</code> 会自动拆开。模型名按 Workers AI 的模型标识填写。</p>' : ""}

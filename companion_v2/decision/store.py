@@ -236,6 +236,8 @@ class LayaSettingsStore:
             limit = 256 if key == "remote_model" else 4096
             if type(values[key]) is not str or len(values[key]) > limit:
                 raise LayaSettingsError("laya_config_invalid", f"{key} 配置无效")
+        # An empty address is valid and means "no proxy": the Laya client then
+        # falls back to a direct connection, exactly like leaving it unset.
         proxy = values["proxy"]
         if type(proxy) is not str or len(proxy) > 2048:
             raise LayaSettingsError("laya_config_invalid", PROXY_INVALID)
@@ -289,6 +291,11 @@ class LayaSettingsStore:
             "remote_model": values["remote_model"],
             "default_model": values["remote_model"] or MODE_MODELS[values["mode"]],
             "api_key_set": bool(values["api_key"]),
+            # The page prefills the saved address so the operator can see whether
+            # Laya's requests are tunnelled. A proxy route is not a credential, so
+            # it is reported verbatim; `proxy_set` stays for callers that only
+            # need the boolean.
+            "proxy": values["proxy"],
             "proxy_set": bool(values["proxy"]),
             "timeout_seconds": values["timeout_seconds"],
             "followup_confidence_threshold": values["followup_confidence_threshold"],
@@ -324,8 +331,10 @@ class LayaSettingsStore:
             next_values["decision_fields"] = {**current["decision_fields"], **changes["decision_fields"]}
         if "api_key" in changes and changes["api_key"] == "":
             next_values["api_key"] = current["api_key"]
-        if "proxy" in changes and changes["proxy"] == "":
-            next_values["proxy"] = current["proxy"]
+        # `proxy` follows the opposite rule. The page echoes the saved address, so
+        # a key that is present but empty is the operator's "direct connection"
+        # choice and must be stored as such; only a missing key keeps the current
+        # value, which the merge above already handled.
         self._validate(next_values)
         next_values["revision"] = uuid4().hex
         self._write(next_values)

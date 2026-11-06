@@ -101,17 +101,28 @@ def test_laya_proxy_is_validated_and_persisted(tmp_path):
     store = LayaSettingsStore(tmp_path, "target", "role")
     status = store.read()
     assert status["proxy_set"] is False
-    assert "proxy" not in status
+    assert status["proxy"] == ""
 
     status = store.update(store.raw()["revision"], {"proxy": "http://127.0.0.1:7890/"})
     assert status["proxy_set"] is True
-    assert "proxy" not in status
+    # The page prefills this value; a proxy address is not a credential.
+    assert status["proxy"] == "http://127.0.0.1:7890"
     assert store.raw()["proxy"] == "http://127.0.0.1:7890"
-    assert "127.0.0.1:7890" not in json.dumps(status, ensure_ascii=False)
 
-    status = store.update(store.raw()["revision"], {"proxy": ""})
-    assert status["proxy_set"] is True
+    # A missing key keeps the saved route: only an explicit value changes it.
+    kept = store.update(store.raw()["revision"], {"timeout_seconds": 30})
+    assert kept["proxy_set"] is True
     assert store.raw()["proxy"] == "http://127.0.0.1:7890"
+
+
+def test_clearing_laya_proxy_means_direct_connection(tmp_path):
+    store = LayaSettingsStore(tmp_path, "target", "role")
+    store.update(store.raw()["revision"], {"proxy": "http://127.0.0.1:7890"})
+
+    cleared = store.update(store.raw()["revision"], {"proxy": ""})
+    assert cleared["proxy"] == ""
+    assert cleared["proxy_set"] is False
+    assert store.raw()["proxy"] == ""
 
 
 @pytest.mark.parametrize("proxy", [
