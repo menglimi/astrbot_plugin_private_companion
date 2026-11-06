@@ -627,7 +627,7 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
 .persona-guide-copy small{color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.55}
 .persona-steps{display:grid;gap:6px;align-content:start;margin:0;padding:0;list-style:none}
 .persona-steps li{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:start;gap:8px;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.55}
-.persona-steps li>span{display:grid;place-items:center;width:21px;height:21px;border-radius:50%;background:var(--t-surface);border:1px solid var(--t-line-firm);color:var(--t-accent-ink);font-size:10px;font-weight:700}
+.persona-steps li>span{display:grid;place-items:center;width:21px;height:21px;border-radius:50%;background:var(--t-surface);border:1px solid var(--t-line-firm);color:var(--t-accent-ink);font-size:var(--fs-micro);font-weight:700}
 .persona-steps li>p{margin:0}
 .persona-helper{grid-column:1 / -1;border-top:1px solid var(--t-line);padding-top:8px}
 .persona-helper summary{cursor:pointer;color:var(--t-accent-ink);font-size:var(--fs-tiny);font-weight:600}

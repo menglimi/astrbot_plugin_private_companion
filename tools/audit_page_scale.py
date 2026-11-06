@@ -175,6 +175,26 @@ OTHERS = ()
 # 在 is_measured 的说明里写清它对齐的是谁——没有理由的不许进。
 MEASURED = re.compile(r"(?:^|\s)(?:19|26|43|44|46|48|92|102|125)px\s*$")
 
+# 按页判定的**唯一**入口：所有遍历 pages/*.css 的检查都从这里取文件。
+#
+# 生成物（GENERATED_CSS）是把源文件拼接后的副本，源文件里有的声明它一条不少。
+# 让它参与判定不会多发现一个缺陷，只会把同一个问题报两次——
+# 2026-11 实测：【三之三】只跳过了 SNAPSHOT_CSS，于是
+#   ✗ bundle.css 里的 var(--fs-2)
+#   ✗ decision-page.css 里的 var(--fs-2)
+# 并列出现，而 bundle.css 的那一行正是 decision-page.css 那一行的副本。
+# 重复报告比漏报更贵：读的人要先花时间确认"这是两处还是一处"，
+# 确认完还得记住哪一条是可以忽略的。
+#
+# 【三】与【三之二】本来就各自写了 GENERATED_CSS 的排除，【二】写了两条，
+# 【三之三】漏了一条——四处各写一遍，漏一处就没有任何东西会发现。
+# 收敛成这个函数之后，"生成物不参与判定"只有一处定义。
+def page_sources():
+    for path in sorted(PAGES.glob("*.css")):
+        if path.name in SNAPSHOT_CSS or path.name in GENERATED_CSS:
+            continue
+        yield path
+
 
 def is_measured(prop, value):
     """左侧缩进：悬挂缩进与轨道缩进，数值来自实测而非版式节奏。
@@ -328,10 +348,7 @@ def audit_page(path):
 def scale_sources():
     """找出所有声明尺度令牌的文件（应当只有 tokens.css）。"""
     owners = {}
-    pat = re.compile(r"--(?:r|sp|fs)-[a-z0-9]+\s*:\s*[^;]+")
-    for path in sorted(PAGES.glob("*.css")):
-        if path.name in GENERATED_CSS:
-            continue
+    for path in page_sources():
         text = re.sub(r"/\*.*?\*/", " ", path.read_text(encoding="utf-8"), flags=re.S)
         # 只看自定义属性定义处（--x: ...），不看引用 var(--x)
         defs = set(re.findall(r"(--(?:r|sp|fs)-[a-z0-9]+)\s*:", text))
@@ -358,6 +375,8 @@ def main():
     args = ap.parse_args()
 
     failures = []
+    # 参与过按页判定的文件名。生成物快照永远不该出现在这里（见【六】）。
+    judged: set[str] = set()
 
     print("=" * 70)
     print("拓展页尺度审计")
@@ -365,6 +384,7 @@ def main():
 
     print("\n【一】已迁移页面必须零写死")
     for name in MIGRATED:
+        judged.add(name)
         path = PAGES / name
         if not path.exists():
             failures.append("缺少 %s" % name)
@@ -393,9 +413,8 @@ def main():
     else:
         print("      最小档 --fs-micro = %gpx（阈值从这里读出，不写死）" % floor)
         floor_hits = []
-        for path in sorted(PAGES.glob("*.css")):
-            if path.name in SNAPSHOT_CSS or path.name in GENERATED_CSS:
-                continue
+        for path in page_sources():
+            judged.add(path.name)
             hits = audit_font_floor(path, floor)
             if hits:
                 floor_hits.append((path.name, hits))
@@ -410,6 +429,7 @@ def main():
     print("\n【三】尺度令牌只能有一个源")
     owners = scale_sources()
     for name, defs in owners.items():
+        judged.add(name)
         mark = "✓" if name == "tokens.css" else "✗"
         print("  %s %-22s 声明 %d 个尺度令牌" % (mark, name, len(defs)))
         if name != "tokens.css":
@@ -420,9 +440,10 @@ def main():
     # 否则它会绕过【一】的阈值检查——"新写的页不用管"正是尺度再次失控的入口。
     # 令牌定义本身（tokens.css）与只提到名字的注释不算「使用」。
     TOKEN_FILES = {"tokens.css"}
-    for path in sorted(PAGES.glob("*.css")):
-        if path.name in MIGRATED or path.name in TOKEN_FILES or path.name in GENERATED_CSS:
+    for path in page_sources():
+        if path.name in MIGRATED or path.name in TOKEN_FILES:
             continue
+        judged.add(path.name)
         text = re.sub(r"/\*.*?\*/", " ", path.read_text(encoding="utf-8"), flags=re.S)
         if re.search(r"var\(--fs-", text):
             failures.append("%s 使用了 --fs-* 但不在 MIGRATED 名单里" % path.name)
@@ -449,9 +470,8 @@ def main():
             text = re.sub(r"/\*.*?\*/", " ", path.read_text(encoding="utf-8"), flags=re.S)
             declared_scale |= set(re.findall(r"(--(?:fs|sp|r)-[a-z0-9]+)\s*:", text))
     dangling = []
-    for path in sorted(PAGES.glob("*.css")):
-        if path.name in SNAPSHOT_CSS:
-            continue
+    for path in page_sources():
+        judged.add(path.name)
         text = re.sub(r"/\*.*?\*/", " ", path.read_text(encoding="utf-8"), flags=re.S)
         local = set(re.findall(r"(--(?:fs|sp|r)-[a-z0-9]+)\s*:", text))
         for name in sorted(set(re.findall(r"var\(\s*(--(?:fs|sp|r)-[a-z0-9]+)", text)) - declared_scale - local):
@@ -478,6 +498,8 @@ def main():
               % (min(gaps)[0], min(gaps)[1], min(gaps)[2]))
 
     print("\n【五】尚未迁移的页面（只统计，不作判定；字号下界仍由【二】判定）")
+    for name in OTHERS:
+        judged.add(name)
     pending = [(n, len(audit_page(PAGES / n)["font"]),
                 len(audit_page(PAGES / n)["space"])) for n in OTHERS if (PAGES / n).exists()]
     pending.sort(key=lambda t: -(t[1] + t[2]))
@@ -485,6 +507,27 @@ def main():
         print("      %-22s 字号 %-3d 间距 %-3d  合计 %d" % (name, f, s, f + s))
     rest = sum(f + s for _, f, s in pending[8:])
     print("      （其余 %d 个文件合计 %d 处）" % (max(0, len(pending) - 8), rest))
+
+    print("\n【六】审计自身卫生：生成物快照不得进按页报告")
+    # 这一条检查的不是页面，而是上面五节**取文件的口径**。
+    # 生成物快照（bundle.css）是源文件拼接后的副本，同一条声明在它和源文件里
+    # 各有一份：哪一节忘了排除，报告里就会并列出现
+    #   ✗ bundle.css 里的 var(--fs-2)
+    #   ✗ decision-page.css 里的 var(--fs-2)
+    # 看着像两处缺陷，实际只有一处。【三之三】漏掉 GENERATED_CSS 时就是这样。
+    # 过滤本身在 page_sources 里做；这里只断言没有任何一节把生成物带进判定，
+    # 将来新增一节却忘了走那个入口，会在这一行当场变红。
+    artifacts = SNAPSHOT_CSS | GENERATED_CSS
+    leaked = sorted(judged & artifacts)
+    if leaked:
+        failures.append("生成物快照参与了按页判定（同一处问题会被报两次）：" + "、".join(leaked))
+        for name in leaked:
+            print("  ✗ %s 是生成物，不该进按页判定" % name)
+    elif not any((PAGES / name).exists() for name in artifacts):
+        print("  （生成物快照不在树里，没有可验证的对象）")
+    else:
+        print("  ✓ 生成物快照（%s）不参与按页判定，%d 个源文件在判定范围内"
+              % ("、".join(sorted(artifacts)), len(list(page_sources()))))
 
     print()
     if failures:
