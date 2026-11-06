@@ -535,7 +535,7 @@ class LayaDecisionClient:
     runtime_status = staticmethod(local_runtime_status)
 
     def __init__(self, *, mode: str = "local", endpoint: str = "", api_key: str = "",
-                 proxy: str = "", timeout_seconds: int = 8, local_model_path: str = "",
+                 proxy: str = "", timeout_seconds: int = 20, local_model_path: str = "",
                  request_format: str = "native", model: str = ""):
         # Same enumeration as the settings store: MODE_MODELS is the single
         # source of truth. Do not write a literal set of allowed modes here --
