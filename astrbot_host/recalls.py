@@ -4,7 +4,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import logging
 
-from companion_v2.adapters.astrbot.native import account_number
+from companion_v2.adapters.astrbot.native import (
+    account_number, event_account_id, event_peer_id, native_client_connected,
+    platform_client_matches,
+)
 from companion_v2.conversation.quotes.models import message_number
 from companion_v2.conversation.recalls import MessageRecall
 from companion_v2.execution.models import TaskError
@@ -41,14 +44,60 @@ class NativeNoticeRoute:
     session_id: str
     client: object
     group_id: str = ""
+    platform: object | None = None
+    platform_name: str = ""
+
+
+def _lark_private_message_route(controller, event):
+    message, meta, native_session = event.message_obj, event.platform_meta, event.session
+    raw = getattr(message, "raw_message", None)
+    if (getattr(raw, "chat_type", None) != "p2p"
+            or getattr(raw, "message_id", None) != message.message_id):
+        return None
+    login, sender = event_account_id(event), event_peer_id(event)
+    settings = controller.settings
+    if hasattr(settings, "targets"):
+        target = settings.private_target(meta.id, login, sender)
+        if target is None:
+            return None
+        bot_id = target.bot_id
+    else:
+        scope = controller.configuration.scope if controller.configuration is not None else None
+        if scope is None or (meta.id, login, sender) != (
+                scope.platform, scope.account_id, scope.native_scope_id):
+            return None
+        bot_id = scope.bot_id
+    bridge = controller.session.bridge
+    account = bridge.accounts.get((meta.id, login))
+    pinned = bridge.platforms.get(meta.id)
+    if account is None or account.bot_id != bot_id or pinned is None:
+        raise TaskError("host_recall_route", "message account is outside the pinned native bridge")
+    platform, client = pinned
+    if (controller.context.get_platform_inst(meta.id) is not platform
+            or platform.get_client() is not client or platform.meta().id != meta.id
+            or platform.meta().name != "lark" or not platform_client_matches(platform, event.bot)
+            or not native_client_connected(platform, login)):
+        raise TaskError("host_recall_account_changed", "message must come from the current connected platform")
+    if (getattr(message.type, "value", None) != "FriendMessage" or message.group_id
+            or getattr(native_session.message_type, "value", None) != "FriendMessage"
+            or native_session.platform_id != meta.id or native_session.platform_name != meta.id
+            or native_session.session_id != sender
+            or event.unified_msg_origin != f"{meta.id}:FriendMessage:{sender}"):
+        raise TaskError("host_recall_route", "message fields do not identify one original private route")
+    return NativeNoticeRoute(ScopeKind.PRIVATE, meta.id, bot_id, login, sender, sender,
+                             native_session.session_id, client, platform=platform, platform_name="lark")
 
 
 def authenticate_notice_route(controller, event, kind, *, expected_post="notice"):
     session = controller.session
     if (session is None or controller._terminated or session.application.state != "running"
-            or not isinstance(event, controller.native_types.event) or not has_post_type(event, expected_post)):
+            or not isinstance(event, controller.native_types.event)):
         return None
     message, meta, native_session = event.message_obj, event.platform_meta, event.session
+    if meta.name == "lark" and kind is ScopeKind.PRIVATE and expected_post == "message":
+        return _lark_private_message_route(controller, event)
+    if not has_post_type(event, expected_post):
+        return None
     raw = message.raw_message
     login, sender = account_number(raw.get("self_id")), account_number(raw.get("user_id"))
     peer = account_number(raw.get("group_id")) if kind is ScopeKind.GROUP else sender

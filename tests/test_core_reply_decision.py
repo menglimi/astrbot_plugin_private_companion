@@ -107,6 +107,18 @@ class CoreReplyDecisionTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.native.provider.client.state.calls, [])
         self.assertEqual(self.app.runtime.read_all("SELECT * FROM conversation_batches", ()), ())
 
+    async def test_merged_group_candidate_keeps_original_fragment_ids(self):
+        participation = self.app.tools.group_participation
+        event = self.incoming("merged-latest", "小星\n帮我看看")
+        with (patch.object(participation, "observe_early", wraps=participation.observe_early) as observe,
+              patch.object(participation.admission, "candidate",
+                           wraps=participation.admission.candidate) as candidate):
+            result = await self.controller.group_reply_candidate(
+                event, merged_event_ids=("merged-first",), latest_native_text="帮我看看")
+        self.assertTrue(result.is_success, result.failure)
+        self.assertEqual(observe.call_args.kwargs["text"], "帮我看看")
+        self.assertEqual(candidate.call_args.kwargs["merged_event_ids"], ("merged-first",))
+
     async def test_silent_candidate_never_wakes_core_or_sends_and_logs_laya_source(self):
         self.prediction = laya_result({"action": "silent"})
         event = self.incoming("other-member-question", "dsh 有没有什么好玩的插件")

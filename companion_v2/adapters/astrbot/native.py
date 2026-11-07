@@ -231,18 +231,18 @@ def platform_client_matches(platform, client):
 
     aiocqhttp and the two QQ Official adapters hand us the very client object
     the event arrived on, so identity is a meaningful liveness probe.  Lark
-    (Feishu) exposes a ``lark.ws.Client`` instead and can never satisfy that
-    comparison; there, a non-None client is the best available signal.
+    (Feishu) exposes a ``lark.ws.Client`` instead. Its event carries the
+    platform's API client, which must still match the selected instance.
     """
     try:
         current = platform.get_client()
     except (AttributeError, TypeError, ValueError):
         return False
-    if current is client:
+    if client is not None and current is client:
         return True
     try:
         if platform.meta().name == "lark":
-            return current is not None
+            return current is not None and client is not None and platform.lark_api is client
     except (AttributeError, TypeError, ValueError):
         return False
     return False
@@ -380,6 +380,7 @@ class NativeConversationInput:
     forwards: tuple[CapturedForward, ...] = ()
     audios: tuple[CapturedAudio, ...] = ()
     videos: tuple[CapturedVideo, ...] = ()
+    merged_event_ids: tuple[str, ...] = ()
 
 
 NativePrivateInput = NativeConversationInput  # Preserve the private adapter's public snapshot name.
@@ -899,8 +900,9 @@ class NativePrivateBridge:
             event_client = event.bot
             cid, role, instruction = await self._role(account, sender)
             scope = ScopeRef(self.installation_id, platform_id, ScopeKind.PRIVATE, sender, account.bot_id, login, cid, sender)
-            if event_client is not self.client(scope):
+            if not platform_client_matches(self.platform(scope), event_client):
                 raise TaskError("host_client_mismatch", "event did not originate from the registered account client")
+            self.client(scope)
             frozen_images, frozen_quotes, frozen_forwards = tuple(locators), tuple(quote_locators), tuple(forward_locators)
             frozen_audios, frozen_videos = tuple(audio_locators), tuple(video_locators)
             frozen_files = tuple(file_locators)
@@ -976,8 +978,10 @@ class NativePrivateBridge:
                     raise TaskError("host_persona_changed", "host role changed while preparing attachments")
                 fresh_actor = require(self.identities.resolve_authenticated(principal, observed_at=self.now()))
                 if (fresh_actor.subject, fresh_actor.binding_id, fresh_actor.binding_revision) != (
-                        actor.subject, actor.binding_id, actor.binding_revision) or event_client is not self.client(scope):
+                        actor.subject, actor.binding_id, actor.binding_revision) or not platform_client_matches(
+                            self.platform(scope), event_client):
                     raise TaskError("host_image_owner_changed", "original image sender or client changed")
+                self.client(scope)
             return Outcome.success(NativePrivateInput(event_id, principal, ConversationRoute(scope, user=actor.subject),
                 AudienceRef(scope, (actor.subject,)), text, at, role, instruction, tuple(images), quotes, forwards, audios, videos))
         except TaskError as error:
