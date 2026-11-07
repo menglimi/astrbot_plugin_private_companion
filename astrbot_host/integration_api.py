@@ -102,11 +102,11 @@ class IntegrationWebAPI:
             role_id, target_id = data.get("role_id"), data.get("target_id")
             if (role_id is None) != (target_id is None):
                 raise ValueError("role_id and target_id must be supplied together")
-            if role_id is not None and any(
-                    type(value) is not str or not 1 <= len(value) <= 160
-                    or any(not (char.isascii() and (char.isalnum() or char in "._:-")) for char in value)
-                    for value in (role_id, target_id)):
-                raise ValueError("role_id and target_id must be bounded stable identifiers")
+            if role_id is not None and (
+                    type(role_id) is not str or not 1 <= len(role_id) <= 512
+                    or role_id != role_id.strip() or type(target_id) is not str
+                    or not 1 <= len(target_id) <= 160 or target_id != target_id.strip()):
+                raise TaskError("integration_identity_invalid", "select a valid role and target")
             if extension_id not in MANAGED_EXTENSIONS:
                 raise ValueError("only V2 bundled extensions can be managed here")
             if action not in ("assemble", "update", "pause", "resume", "uninstall"):
@@ -129,6 +129,11 @@ class IntegrationWebAPI:
                 registry = getattr(controller, "native_extensions", None)
                 if runtime is None or registry is None:
                     raise TaskError("staging_not_initialized", "load the V2 profile before managing its extensions")
+                identity = None
+                if role_id is not None:
+                    identity = lifecycle_role_identity(controller, role_id=role_id, target_id=target_id)
+                    if identity is None:
+                        raise TaskError("integration_identity_invalid", "selected role or target is no longer configured")
                 observed_at = controller.now()
                 operator = dashboard_operator(runtime, username, at=observed_at)
                 management = CapabilityManagementService(runtime)
@@ -170,7 +175,8 @@ class IntegrationWebAPI:
                 await registry.reconcile_service(extension_id)
                 role_selection = None
                 if action == "assemble" and extension_id in AUTO_ROLE_EXTENSIONS:
-                    identity = lifecycle_role_identity(controller, role_id=role_id, target_id=target_id)
+                    if identity is None:
+                        identity = lifecycle_role_identity(controller)
                     if identity is not None:
                         role, bot_id = identity
                         role_selection = enable_role(runtime, extension_id, role, bot_id, observed_at)
@@ -181,4 +187,4 @@ class IntegrationWebAPI:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
             return outcome_response(Outcome.failed(
-                "integration_lifecycle_request_invalid", "invalid UTF-8 extension lifecycle command"))
+                "integration_lifecycle_request_invalid", "invalid extension lifecycle command"))
