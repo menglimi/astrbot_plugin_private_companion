@@ -227,8 +227,7 @@ test("an external profile save clears the stale draft so leaving stops warning",
 });
 
 /* 反向保护：不相关的事件不能顺手把草稿清掉，否则用户真的会丢掉未保存的编辑。 */
-test("an unrelated event must not discard the draft", () => {
-  const h = harness(new Map(), []);
+test("an unrelated event must not discard the draft", () => {  const h = harness(new Map(), []);
   const state = h.module.state;
   state.target = "role_profile";
   state.draft = {fields: {name: "旧名字"}};
@@ -239,4 +238,56 @@ test("an unrelated event must not discard the draft", () => {
 
   h.document.dispatchEvent({type: "companion:something-else"});
   assert.equal(h.module.isDirty(), true, "无关事件不能影响草稿");
+});
+
+/* 🔴 2026-11-04 报障：「拟人优化后应用不上去，新的自我内容只能填空白，覆盖不了旧内容」。
+ *
+ * 默认勾选规则是「草稿里有、档案里还空着」的项——这本身是对的（覆盖要用户明确选）。
+ * 但已经有内容的项没有任何入口一次选中，字段上也看不出「已有设定」，
+ * 于是「覆盖所选字段」永远只落在空白项上，看起来就像覆盖失效。
+ * 这两条盯着：已有内容的项被选中时确实会提交覆盖；全是空白时不再假装覆盖。 */
+test("replace mode submits a selected field that already has content", async () => {
+  const section = {sections: {role_profile: {settings: {name: "旧名字"}, edit_token: "e".repeat(64)}}};
+  const h = harness(new Map(), [() => Promise.resolve({result: {operation_id: "op", replayed: false}})], {
+    section, fields: {name: "新名字"}, selected: ["name"],
+  });
+  h.module.state.target = "role_profile";
+  h.module.state.scopeKey = "target-a:role-a";
+  h.module.state.draft = {fields: {name: "新名字"}};
+  h.module.state.selectedFields = new Set(["name"]);
+  h.module.state.limits = {name: 100};
+  h.module.state.totalLimit = 30000;
+  h.module.state.current = {settings: {name: "旧名字"}};
+
+  await h.module.apply("replace");
+  const posts = h.calls.filter(call => call.method === "POST");
+  assert.equal(posts.length, 1, "覆盖已有内容必须真的提交一次保存");
+  assert.deepEqual(posts[0].body.changes, {name: "新名字"});
+});
+
+test("replace mode refuses to masquerade as a blank fill", async () => {
+  const section = {sections: {role_profile: {settings: {name: ""}, edit_token: "e".repeat(64)}}};
+  const h = harness(new Map(), [() => Promise.resolve({result: {operation_id: "op", replayed: false}})], {
+    section, fields: {name: "新名字"}, selected: ["name"],
+  });
+  h.module.state.target = "role_profile";
+  h.module.state.scopeKey = "target-a:role-a";
+  h.module.state.draft = {fields: {name: "新名字"}};
+  h.module.state.selectedFields = new Set(["name"]);
+  h.module.state.limits = {name: 100};
+  h.module.state.totalLimit = 30000;
+  h.module.state.current = {settings: {name: ""}};
+
+  await h.module.apply("replace");
+  assert.equal(h.calls.filter(call => call.method === "POST").length, 0);
+  assert.match(h.noticeNode.textContent, /都是空白/);
+  assert.match(h.noticeNode.textContent, /选中已有设定/);
+});
+
+test("the draft dialog can select fields that already have content", () => {
+  assert.match(source, /data-role-profile-draft-select-existing/);
+  assert.match(source, /data-role-profile-draft-select-all/);
+  assert.match(source, /选中已有设定/);
+  assert.match(source, /全选有内容项/);
+  assert.match(source, /role-profile-draft-current-tag/);
 });

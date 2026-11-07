@@ -119,7 +119,8 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
                                  "qzone",
                                  "relay",
                                  "relationship_profile",
-                                 "role_profile", "screen", "wardrobe", "web_understanding", "proactive.contact"}
+                                 "role_profile", "screen", "wardrobe", "web_understanding", "proactive.contact",
+                                 "system.prompts"}
             expected_sections.add("image.output")
             self.assertTrue(expected_sections.issubset(status))
             self.assertEqual(set(status), expected_sections)
@@ -189,7 +190,7 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
                                 ("conversation", "expression", "model", "screen", "person",
                                  "role", "knowledge", "library", "photo", "wardrobe",
                                  "proactive", "private_access", "relationship", "content",
-                                 "qzone"), name)
+                                 "qzone", "system"), name)
             # The workbench renders its layer rail from these, so every section
             # must publish the chain and a per-field source, not just its values.
             for name, section in status.items():
@@ -921,6 +922,33 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
             private_status = (await call(handlers[first], query={"sections": "role.growth.skills"}))
             self.assertEqual(private_status["status"], "ok")
             self.assertEqual(private_status["data"]["sections"]["role.growth.skills"]["scope"], "role")
+        finally:
+            self.controller.unregister_routes()
+
+    async def test_system_prompt_section_round_trips_and_restores_the_builtin_text(self):
+        handlers, first, _ = await self.routes()
+        try:
+            response = await call(handlers[first], query={"sections": "system.prompts"})
+            self.assertEqual(response["status"], "ok", response)
+            section = response["data"]["sections"]["system.prompts"]
+            default = section["fields"]["voice_drama"]["default"]
+            self.assertEqual(section["settings"]["voice_drama"], default)
+            self.assertEqual(section["fields"]["voice_drama"]["maximum_chars"], 8000)
+            saved = await call(handlers[first + "/configure"], {
+                "section": "system.prompts", "operation_key": "system-prompt-save",
+                "edit_token": section["edit_token"],
+                "changes": {"voice_drama": "自定义 Drama 规则"}})
+            self.assertEqual(saved["status"], "ok", saved)
+            changed = (await call(handlers[first], query={"sections": "system.prompts"}))[
+                "data"]["sections"]["system.prompts"]
+            self.assertEqual(changed["settings"]["voice_drama"], "自定义 Drama 规则")
+            restored = await call(handlers[first + "/configure"], {
+                "section": "system.prompts", "operation_key": "system-prompt-restore",
+                "edit_token": changed["edit_token"], "changes": {}, "reset": ["voice_drama"]})
+            self.assertEqual(restored["status"], "ok", restored)
+            final = (await call(handlers[first], query={"sections": "system.prompts"}))[
+                "data"]["sections"]["system.prompts"]
+            self.assertEqual(final["settings"]["voice_drama"], default)
         finally:
             self.controller.unregister_routes()
 

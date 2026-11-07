@@ -34,6 +34,8 @@ window.CompanionProduct = (() => {
     perception_save_failed:"感知设置未能完成保存，请刷新核对。",
     integration_request_invalid:"家具清单读取请求无效，请重新读取状态。",
     bridge_timeout:"连接超时，请刷新核对。", invalid_response:"数据不完整，请刷新核对。", scope_changed:"对象已切换，请重新打开工作区。",
+    /* 目录重读过一次仍然没有这个接口：这时能修的是角色映射，不是刷新页面。 */
+    workspace_api_missing:"角色目录已重新读取，但当前角色仍然没有这个接口。请回到「账号与会话」重新保存角色映射，再打开这个工作区。",
     /* labels 是「这一项现在能不能用」，不是开发进度。
      写「已接入」的那种说法回答的是「这一块做到哪一步了」，用户不关心；
      「状态读取正常 / 适配器尚未加载」才是他打开页面想知道的。 */
@@ -79,7 +81,6 @@ window.CompanionProduct = (() => {
     capability_not_discardable:"这件拓展当前不能卸载，请刷新后核对状态。",
     integration_extension_unavailable:"V2 内置拓展暂不可用，请重新读取家具状态。",
     integration_lifecycle_request_invalid:"拓展操作无效，请刷新后重试。",
-    integration_identity_invalid:"当前角色或会话已变更，请重新选择后重试。",
     host_not_running:"角色还没开始接收消息，请先点「开始连接」。",
     staging_preview_disabled:"当前运行实例只保留正式投递确认，没有可查看的草稿。",
     staging_draft_unavailable:"那一条回复已经失效，请再发一条消息。",
@@ -266,7 +267,6 @@ window.CompanionProduct = (() => {
   const fail = (code, confirmed = false) => Object.assign(new Error(errors[code] || "暂不可读取，请刷新核对。"),
     {code, ...(confirmed ? {confirmed:true} : {})});
   let bridge, catalog, manifest, data = {}, failures = {}, failureCodes = {}, selected = {target_id:null,role_id:null};
-  let selectedGroupId = "";
   let bridgeReady = false;
   let releaseAppearanceContext = null;
   let generation = 0, changed = () => {}, loading = false, notice = "";
@@ -418,11 +418,7 @@ window.CompanionProduct = (() => {
       if (owner.isConnected) owner.contentWindow.postMessage({channel:"companion-workspace",...payload},"*");
     }
   }
-  const target = () => {
-    const current = catalog?.targets.find(item => item.target_id === selected.target_id);
-    return selectedGroupId && current?.scope_kind === "group" && current.group_id === "*"
-      ? {...current, group_id:selectedGroupId} : current;
-  };
+  const target = () => catalog?.targets.find(item => item.target_id === selected.target_id);
   const targetPreference = item => [
     item.scope_kind === "private" ? 1 : 0,
     item.scope_kind === "private" && item.participant_id && item.participant_id !== "*" ? 1 : 0,
@@ -452,14 +448,12 @@ window.CompanionProduct = (() => {
   const role = () => {
     const current = target()?.roles.find(item => item.role_id === selected.role_id);
     const owner = roleTarget()?.roles.find(item => item.role_id === selected.role_id);
-    const chosen = !owner ? current : target()?.scope_kind !== "group" || owner === current ? owner
-      : {...owner, reply_api:current.reply_api || owner.reply_api,
-          group_memory_api:current.group_memory_api || null};
-    if (!selectedGroupId || typeof chosen?.reply_api !== "string") return chosen;
-    return {...chosen, reply_api:chosen.reply_api.replace(/\/reply$/,
-      `/groups/${encodeURIComponent(selectedGroupId)}/reply`)};
+    if (!owner) return current;
+    if (target()?.scope_kind !== "group" || owner === current) return owner;
+    return {...owner, reply_api:current.reply_api || owner.reply_api,
+      group_memory_api:current.group_memory_api || null};
   };
-  const scopeKey = () => JSON.stringify([catalog?.installation_id, selected.target_id, selected.role_id, selectedGroupId]);
+  const scopeKey = () => JSON.stringify([catalog?.installation_id, selected.target_id, selected.role_id]);
   /* 后端 outcome_response() 把机器码同时放在 message 与 data.code 上，因为页面桥
      只转发 message、会丢掉信封其余字段。所以取码要看两处，不能只认 data.code；
      下面 api() 里的英文措辞兜底只是老桥接形态的退路。 */
@@ -584,7 +578,6 @@ window.CompanionProduct = (() => {
     const context = current?.roles.some(item => item.role_id === choice?.role.role_id)
       ? current : choice?.target;
     selected = {target_id:context?.target_id ?? null, role_id:choice?.role.role_id ?? null};
-    selectedGroupId = "";
   }
   let summaryRequest = 0;
   const SUMMARY_CACHE_MS = 45000;
@@ -732,10 +725,7 @@ window.CompanionProduct = (() => {
     if (results[1].status === "fulfilled") manifest = results[1].value;
     const retained = catalog.targets.find(item => item.target_id === previous.target_id
       && item.roles.some(roleItem => roleItem.role_id === previous.role_id));
-    if (retained) {
-      selected = previous;
-      if (retained.scope_kind !== "group" || retained.group_id !== "*") selectedGroupId = "";
-    }
+    if (retained) selected = previous;
     else chooseDefault();
     growthPage = null; growthCursor = null;
     rebindWorkspaceContexts();
@@ -747,6 +737,34 @@ window.CompanionProduct = (() => {
     renderScope();
     sendWorkspace({kind:"host-mappings-refreshed", selection:{...selected}});
     changed({kind:"host-mappings", selection:{...selected}});
+  }
+
+  /* 工作区挂载时记下的角色接口，可能因为重载插件、保存映射或切换账号而过期：
+   页面还拿着旧路径，目录里已经换成新的，或者这个角色根本没有这一项了。
+   请求时按「当下的目录」重新解析一次，能从根上避免拿旧上下文去拼地址。 */
+  function workspaceApi(kind) {
+    const currentRole = role();
+    if (kind === "designer") return "/" + HOST + "/persona-designer";
+    if (kind === "identity") return typeof catalog?.acquaintance_api === "string" ? catalog.acquaintance_api : "";
+    if (kind === "relationships" && target()?.scope_kind === "group")
+      return currentRole?.group_memory_api || "";
+    return currentRole?.[kind + "_api"] || "";
+  }
+
+  /* 只在「确实没有接口」时重读一次目录，并做单飞 + 冷却：
+   一次挂载里可能同时有几个请求撞上同一个过期上下文，不能各拉一遍目录。 */
+  let roleDirectoryHeal = null, roleDirectoryHealedAt = 0;
+  function healRoleDirectory() {
+    if (roleDirectoryHeal) return roleDirectoryHeal;
+    if (Date.now() - roleDirectoryHealedAt < 5000) return Promise.resolve(false);
+    roleDirectoryHeal = refreshDirectoryAfterMapping()
+      .then(() => { roleDirectoryHealedAt = Date.now(); return true; })
+      .catch(error => {
+        console.warn("[CompanionV2] 工作区角色目录重读失败", {code:error?.code || "unknown"});
+        return false;
+      })
+      .finally(() => { roleDirectoryHeal = null; });
+    return roleDirectoryHeal;
   }
   async function manageExtension(capabilityId, action, expectedRevision, operationKey) {
     const item = manifest?.extensions?.find(extension => extension.capability_id === capabilityId);
@@ -773,13 +791,12 @@ window.CompanionProduct = (() => {
     if (typeof catalog?.acquaintance_api !== "string") return Promise.reject(fail("invalid_response"));
     return api("GET", relative(catalog.acquaintance_api));
   }
-  async function choose(targetId, roleId, quiet=false, groupId="") {
+  async function choose(targetId, roleId, quiet=false) {
     const next = catalog?.targets.find(t => t.target_id === targetId);
     if (!next?.roles.some(r => r.role_id === roleId)) return;
-    if (selected.target_id === targetId && selected.role_id === roleId && selectedGroupId === groupId) return;
+    if (selected.target_id === targetId && selected.role_id === roleId) return;
     const ticket = ++generation;
     selected = {target_id:targetId,role_id:roleId}; data = {}; failures = {}; failureCodes = {}; growthPage = null; growthCursor = null;
-    selectedGroupId = groupId;
     rebindWorkspaceContexts();
     loading = true;
     if (!quiet) changed();
@@ -817,7 +834,7 @@ window.CompanionProduct = (() => {
   }
   const nativeId = value => /^\d+$/.test(String(value || "")) ? String(value) : "";
   const subjectLabel = item => item?.display_name || nativeId(item?.group_id || item?.participant_id) || "当前聊天对象";
-  const platformLabel = item => ({qq:"QQ · OneBot",default:"QQ · OneBot",aiocqhttp:"QQ · OneBot",onebot:"QQ · OneBot",qq_official:"QQ 官方机器人",qq_official_webhook:"QQ 官方机器人（Webhook）"})[item?.platform_name || item?.platform_id] || "当前平台";
+  const platformLabel = item => ({qq:"QQ · OneBot",default:"QQ · OneBot",aiocqhttp:"QQ · OneBot",onebot:"QQ · OneBot",qq_official:"QQ 官方机器人",qq_official_webhook:"QQ 官方机器人（Webhook）",lark:"飞书机器人",telegram:"Telegram",discord:"Discord",slack:"Slack",kook:"KOOK",dingtalk:"钉钉",line:"LINE",satori:"Satori",mattermost:"Mattermost",misskey:"Misskey",webchat:"WebChat",wecom:"企业微信",wecom_ai_bot:"企业微信 AI 机器人",weixin_oc:"微信开放平台",weixin_official_account:"微信公众号"})[item?.platform_name || item?.platform_id] || "当前平台";
   const accountLabel = item => {
     const id = nativeId(item.account_id);
     return item.account_name ? item.account_name + (id ? `（${id}）` : "") : id ? `QQ ${id}` : "当前账号";
@@ -1215,14 +1232,9 @@ window.CompanionProduct = (() => {
       const target=message.target;
       if(["group-reply","group-memory"].includes(target?.tab)){
         const navigationFailure=text=>send({kind:"navigate-failed",tab:target.tab,message:text});
-        let destination=catalog?.targets.find(item=>item.scope_kind==="group"
+        const destination=catalog?.targets.find(item=>item.scope_kind==="group"
           &&item.platform_id===target.platform_id&&item.bot_id===target.bot_id
           &&item.account_id===target.account_id&&item.group_id===target.group_id);
-        const wildcard=!destination && target.tab==="group-reply"
-          ? catalog?.targets.find(item=>item.scope_kind==="group"&&item.group_id==="*"
-              &&item.platform_id===target.platform_id&&item.bot_id===target.bot_id
-              &&item.account_id===target.account_id) : null;
-        if(wildcard)destination=wildcard;
         const role=destination?.roles.find(item=>item.role_id===target.role_id);
         const api=target.tab==="group-reply"?role?.reply_api:role?.group_memory_api;
         if(typeof api!=="string"){
@@ -1230,7 +1242,7 @@ window.CompanionProduct = (() => {
           return;
         }
         try{
-          await choose(destination.target_id,role.role_id,true,wildcard?target.group_id:"");
+          await choose(destination.target_id,role.role_id,true);
         }catch{
           navigationFailure("打开本群配置时未能切换角色，请重新读取群聊目录后重试。");
           return;
@@ -1273,6 +1285,22 @@ window.CompanionProduct = (() => {
       valid();
       method=message.method;path=message.path;
       if(!["GET","POST"].includes(method)||typeof path!=="string")throw fail("invalid_response");
+      /* 角色接口按当下目录解析，而不是用挂载时那份快照：目录过期时这条路径
+         能直接走通，不需要用户刷新。确实没有接口才重读一次目录；重读让选中
+         角色变了就中止（工作区正在换角色重挂，旧请求不能再落到新角色上）。 */
+      let roleApi="";
+      if(!["host","designer"].includes(context.kind)){
+        roleApi=workspaceApi(context.kind);
+        /* 没有目录可读时（宿主还没连上）不去重读：那会把一次无效请求
+           变成两次网络请求，页面自己会有连接失败的提示。 */
+        if(!roleApi&&catalog){
+          const selectionBefore=JSON.stringify(selected);
+          await healRoleDirectory();
+          if(JSON.stringify(selected)!==selectionBefore)throw fail("scope_changed");
+          roleApi=workspaceApi(context.kind);
+        }
+        if(!roleApi)throw fail("workspace_api_missing");
+      }
       let mapped;
       if(context.kind==="host") {
         const allowed=(method==="GET"&&path==="host/status")
@@ -1299,20 +1327,20 @@ window.CompanionProduct = (() => {
         const allowed=(method==="GET"&&["acquaintance","acquaintance/authorization","acquaintance/settings","acquaintance/strangers"].includes(path))
            ||(method==="POST"&&["acquaintance/authorization","acquaintance/settings","acquaintance/identity","acquaintance/admin-name","acquaintance/stranger-target"].includes(path));
         if(!allowed)throw fail("invalid_response");
-        mapped=relative(context.api)+path.slice("acquaintance".length);
+        mapped=relative(roleApi)+path.slice("acquaintance".length);
       } else if(context.kind==="relationships"&&context.scope_kind==="group") {
         const suffix=path.slice("group-memory".length);
         const allowed=(method==="GET"&&["", "/safety", "/operation"].includes(suffix))
           ||(method==="POST"&&["/detail", "/retract", "/safety/review"].includes(suffix));
         if(!path.startsWith("group-memory")||!allowed)throw fail("invalid_response");
-        mapped=relative(context.api)+suffix;
+        mapped=relative(roleApi)+suffix;
       } else {
         const name=context.kind;
         const personaModelCall=name==="persona"&&method==="POST"
           &&["persona/standardize","persona/tryouts","persona/style-rules"].includes(path);
         if(!personaModelCall&&((path!==name&&path!==name+"/command")||(method==="GET")!==(path===name)))
           throw fail("invalid_response");
-        mapped=relative(context.api)+(personaModelCall?path.slice(name.length):path===name?"":"/command");
+        mapped=relative(roleApi)+(personaModelCall?path.slice(name.length):path===name?"":"/command");
       }
       // Preserve original response envelopes and error reasons for each workspace.
       timeoutMs=requestTimeout({timeoutMs:message.timeoutMs});

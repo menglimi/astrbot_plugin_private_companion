@@ -37,6 +37,15 @@ class ProactiveContactTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
             changes={PRESENTATION_GROUP + "." + key: value for key, value in changes.items()},
             operation=self.operation(context.scope, owner=PRESENTATION_GROUP), observed_at=self.clock.now())
 
+    async def test_source_read_validates_dependency_once(self):
+        app = await self.enabled()
+        source = self.source(app)
+        with patch.object(app.proactive.sources, "validate_reference",
+                          wraps=app.proactive.sources.validate_reference) as validate:
+            records = app.proactive._records(self.contact_context(), (source,), self.clock.now())
+        self.assertEqual(len(records), 1)
+        self.assertEqual(validate.call_count, 1)
+
     async def test_skip_is_counted_but_does_not_consume_the_daily_contact_allowance(self):
         app = await self.enabled()
         self.settings(app, {"max_contacts_24h": 1}).unwrap()

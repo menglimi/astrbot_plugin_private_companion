@@ -140,6 +140,18 @@ class HostFixture(ManagementFixture):
 
 
 class HostApplicationTests(HostFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_contact_schedule_is_not_rescanned_on_every_driver_wake(self):
+        host = self.host()
+        app = host.application
+        with patch.object(app, "CONTACT_SCHEDULE_INTERVAL_SECONDS", 60.0), patch.object(
+                app.contact_schedule, "advance_async", wraps=app.contact_schedule.advance_async) as advance:
+            await self.start(host)
+            await self.until(lambda: advance.call_count == 1)
+            for _ in range(5):
+                app.notify()
+                await asyncio.sleep(0.01)
+            self.assertEqual(advance.call_count, 1)
+
     async def test_relationship_memory_service_is_assembled_as_the_access_boundary(self):
         host = await self.start()
         self.assertIs(host.application.relationship_memories.runtime, host.application.runtime)

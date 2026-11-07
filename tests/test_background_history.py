@@ -226,6 +226,42 @@ class BackgroundHistoryTests(ContactScheduleFixture, unittest.IsolatedAsyncioTes
         history = [json.loads(m.payload) for m in self.called[-1].original.context.materials if m.owner == "delivery.history"]
         self.assertEqual({item["owner"] for item in history}, {"agenda.reminder", "proactive.contact"})
 
+    async def test_capture_and_read_share_validation_only_inside_one_snapshot(self):
+        app = await self.enabled()
+        self.settings(app, {"dedup_enabled": False}).unwrap()
+        for index in range(3):
+            task = (await self.contact(app, self.opportunity("shared-" + str(index)))).unwrap().task
+            await self.delivery_state(app, task.task_id, "delivered")
+        context = self.contact_context()
+        at = self.clock.now()
+        with app.runtime.read_snapshot(), app.background_history.validation_scope():
+            with patch.object(app.background_history, "_validated_history_record",
+                              wraps=app.background_history._validated_history_record) as guard:
+                snapshot = app.background_history.capture(context, at)
+                items = app.background_history.read(snapshot, context, at)
+                first_pass = guard.call_count
+                app.background_history.read(snapshot, context, at + timedelta(seconds=1))
+        unique = {ref["delivery_id"] for ref in snapshot["references"]}
+        self.assertGreaterEqual(len(unique), 3)
+        self.assertEqual(len(items), len(snapshot["references"]))
+        self.assertEqual(first_pass, len(unique),
+                         "capture and read at one time must validate each reference only once")
+        self.assertEqual(guard.call_count, 2 * len(unique),
+                         "a later observation time must revalidate the references")
+
+    async def test_capture_authorizes_once_instead_of_once_per_reference(self):
+        app = await self.enabled()
+        self.settings(app, {"dedup_enabled": False}).unwrap()
+        for index in range(3):
+            task = (await self.contact(app, self.opportunity("auth-" + str(index)))).unwrap().task
+            await self.delivery_state(app, task.task_id, "delivered")
+        context = self.contact_context()
+        with patch.object(app.tasks, "authorize_context", wraps=app.tasks.authorize_context) as guard:
+            snapshot = app.background_history.capture(context, self.clock.now())
+        self.assertGreaterEqual(len(snapshot["references"]), 3)
+        self.assertLessEqual(guard.call_count, 2,
+                             "one capture must not re-authorize every reference")
+
     async def test_unanswered_is_observed_background_and_resets_after_actual_input(self):
         host, _ = await self.scheduled(automatic=False)
         app = host.application

@@ -44,6 +44,12 @@ class VoiceDirectionModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.direction(policy, provider("IndexTTS-2", "v2")), INDEXTTS_DIRECTION)
         self.assertEqual(await self.direction(policy, provider("fishaudio_tts_api", "drama-3")), "")
 
+    def test_drama_direction_mentions_the_experimental_singing_cue(self):
+        self.assertIn("[singing]", DRAMA_DIRECTION)
+        self.assertIn("[哼唱]", DRAMA_DIRECTION)
+        self.assertIn("官方标签表", DRAMA_DIRECTION)
+        self.assertIn("普通对话", DRAMA_DIRECTION)
+
     async def test_direction_mode_requires_a_supported_value(self):
         with self.assertRaises(ValueError):
             VoiceReplyPolicy(direction_mode="network")

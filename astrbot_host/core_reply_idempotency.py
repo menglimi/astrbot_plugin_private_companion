@@ -47,6 +47,10 @@ from .core_reply import CORE_REPLY_CONTEXT_EXTRA
 
 # The net lives on the turn's reply state and is removed when the turn ends.
 DELIVERY_NET_KEY = "_delivery_net"
+# Bodies already delivered by the native send tool in this turn.  The final
+# assistant response can repeat exactly what the tool just sent; that is one
+# effect, not two messages.
+NATIVE_TOOL_KEYS_KEY = "_native_tool_sent_keys"
 # The identity the net is bound to.  Kept apart from the net so a missing reset
 # can never make the current turn read another turn's net.
 DELIVERY_TURN_KEY = "_delivery_turn"
@@ -82,6 +86,7 @@ def begin_core_reply_delivery_turn(event) -> bool:
     core[DELIVERY_SEQUENCE_KEY] = sequence
     core[DELIVERY_TURN_KEY] = {"event_ref": event_ref, "sequence": sequence,
                                "snapshot": snapshot}
+    core.pop(NATIVE_TOOL_KEYS_KEY, None)
     return True
 
 
@@ -118,6 +123,47 @@ def should_drop_core_reply_duplicate(event, part) -> bool:
         return False
     net["dropped"] += 1
     logger.info("[CompanionV2] 同一轮相邻重复正文已丢弃 reason=duplicate_adjacent "
+                "turn=%s event_ref=%s digest=%s",
+                _turn_label(core), _event_ref(core), _digest(key[0]))
+    return True
+
+
+def remember_native_tool_message(event, message) -> None:
+    """Remember one body the native send tool delivered successfully."""
+    core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+    if not isinstance(core, dict):
+        return
+    key = _delivery_key(message)
+    if key is None:
+        return
+    keys = core.get(NATIVE_TOOL_KEYS_KEY)
+    keys = list(keys) if isinstance(keys, list) else []
+    if key not in keys:
+        keys.append(key)
+        core[NATIVE_TOOL_KEYS_KEY] = keys
+
+
+def should_drop_native_tool_duplicate(event, part) -> bool:
+    """Drop the final response when the send tool already delivered that body.
+
+    A model may call ``send_message_to_user`` for an ordinary text turn and then
+    repeat the same message as its final answer.  The tool send and the final
+    send are two platform calls; without this check the user sees the same
+    bubbles twice.  Only an exact body + decoration match is removed, only once,
+    and only while the turn's delivery is known to have succeeded.
+    """
+    core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+    if not isinstance(core, dict) or core.get("send_unknown") or core.get("send_failed"):
+        return False
+    key = _delivery_key(part)
+    if key is None:
+        return False
+    keys = core.get(NATIVE_TOOL_KEYS_KEY)
+    if not isinstance(keys, list) or key not in keys:
+        return False
+    keys.remove(key)
+    core[NATIVE_TOOL_KEYS_KEY] = keys
+    logger.info("[CompanionV2] 工具已发送的相同正文不再重复 reason=native_tool_duplicate "
                 "turn=%s event_ref=%s digest=%s",
                 _turn_label(core), _event_ref(core), _digest(key[0]))
     return True

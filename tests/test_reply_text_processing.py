@@ -148,6 +148,32 @@ class ReplyTextProcessingTests(unittest.TestCase):
             "<personality_sync>{\"ok\":true}</personality_sync>"
             "<pc_unregistered>{\"x\":1}</pc_unregistered>正文"), "正文")
 
+    def test_unparsed_tool_call_envelopes_never_become_visible_text(self):
+        # A provider that returns the model's tool call as completion text must
+        # not post the wire protocol into the group.  This is the exact shape a
+        # group turn produced: choose(mode=skip) written out instead of called.
+        envelope = ("<｜｜DSML｜｜ calls>\n"
+                    '<｜｜DSML｜｜ invoke name="group_participation_choose">\n'
+                    '<｜｜DSML｜｜ parameter name="mode" string="true">skip</｜｜DSML｜｜ parameter>\n'
+                    '<｜｜DSML｜｜ parameter name="reason" string="true">对方在跟开发者聊注册和iOS登录的进度'
+                    "</｜｜DSML｜｜ parameter>\n"
+                    "</｜｜DSML｜｜ invoke>\n"
+                    "</｜｜DSML｜｜ calls>")
+        self.assertEqual(strip_internal_expression_protocol(envelope), "")
+        self.assertEqual(strip_internal_expression_protocol("我先看看。\n" + envelope), "我先看看。")
+        self.assertEqual(strip_internal_expression_protocol(envelope + "\n先这样"), "先这样")
+        # An envelope the provider cut off must not leave its tail behind either.
+        self.assertEqual(strip_internal_expression_protocol("正文" + envelope.split("</")[0]), "正文")
+        self.assertEqual(strip_internal_expression_protocol(
+            '<|DSML|tool_calls><|DSML|invoke name="x">{}</|DSML|invoke></|DSML|tool_calls>'), "")
+
+    def test_tool_call_protocol_cleanup_keeps_prose_and_code_examples(self):
+        marker = "<｜｜DSML｜｜ calls>"
+        self.assertEqual(strip_internal_expression_protocol("正文" + marker), "正文")
+        self.assertEqual(strip_internal_expression_protocol("DSML 是模型协议"), "DSML 是模型协议")
+        code = "示例：\n```\n" + marker + "\n```\n保留"
+        self.assertEqual(strip_internal_expression_protocol(code), code)
+
     def test_control_block_cleanup_preserves_code_and_tts_but_not_prose_after_a_partial_tag(self):
         code = '示例：`<pc_reaction_expression>{"x":1}</pc_reaction_expression>` 保留'
         self.assertEqual(strip_internal_expression_protocol(code), code)

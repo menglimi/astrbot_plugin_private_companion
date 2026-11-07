@@ -14,7 +14,11 @@ being silently folded into a generation that can no longer see them.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 import time
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -27,6 +31,7 @@ class _ActiveReply:
     created: float
     session_key: str = ""
     request_started: bool = False
+    expired: bool = False
 
 
 class PrivateReplyFollowUps:
@@ -36,18 +41,29 @@ class PrivateReplyFollowUps:
     only until the first provider request or a bounded idle timeout.
     """
 
-    def __init__(self, *, clock=time.monotonic, idle_seconds=120.0):
+    def __init__(self, *, clock=time.monotonic, idle_seconds=120.0,
+                 request_deadline_seconds=10.0):
         if type(idle_seconds) not in (int, float) or idle_seconds <= 0:
             raise ValueError("private follow-up idle timeout must be positive")
+        if type(request_deadline_seconds) not in (int, float) or request_deadline_seconds <= 0:
+            raise ValueError("private follow-up request deadline must be positive")
         self._clock = clock
         self._idle_seconds = float(idle_seconds)
+        self._request_deadline_seconds = float(request_deadline_seconds)
         self._active: dict[str, _ActiveReply] = {}
+
+    def _release(self, key, active, reason):
+        self._active.pop(key, None)
+        logger.info(
+            "[CompanionV2] 私聊后续合并窗口关闭 target=%s event_ref=%s reason=%s waited_ms=%s",
+            key, active.event_ref, reason,
+            round(max(0.0, self._clock() - active.created) * 1000))
 
     def _prune(self):
         now = self._clock()
         for key, active in tuple(self._active.items()):
             if now - active.created > self._idle_seconds:
-                self._active.pop(key, None)
+                self._release(key, active, "idle")
 
     @staticmethod
     def _event_session(event):
@@ -89,10 +105,27 @@ class PrivateReplyFollowUps:
         active = self._active.get(key)
         if active is None:
             return None
-        if self._clock() - active.created > self._idle_seconds:
-            self._active.pop(key, None)
-            return None
         if active.event is event or active.request_started:
+            return None
+        waited = self._clock() - active.created
+        if waited > self._request_deadline_seconds:
+            # The first provider request never arrived (an unconfigured model,
+            # an empty turn AstrBot skipped, a cancelled send). Keeping the
+            # window open would suppress every later message for good, so stop
+            # merging into it. Entries already folded stay for a late request,
+            # otherwise that request would silently lose them.
+            if active.applied >= len(active.entries):
+                self._release(key, active, "request_missing")
+                return None
+            if not active.expired:
+                active.expired = True
+                logger.info(
+                    "[CompanionV2] 私聊后续合并窗口停止合并 target=%s event_ref=%s "
+                    "reason=request_missing waited_ms=%s",
+                    key, active.event_ref, round(max(0.0, waited) * 1000))
+            return None
+        if waited > self._idle_seconds:
+            self._active.pop(key, None)
             return None
         body = str(text or "").strip()
         if not body:

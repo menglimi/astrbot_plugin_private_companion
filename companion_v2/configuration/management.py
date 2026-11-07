@@ -55,6 +55,8 @@ from ..role_work.growth.configuration import (GROUP as GROWTH_GROUP, OWNER as GR
 from ..role_profile.configuration import (FIELD_LIMITS as ROLE_PROFILE_FIELD_LIMITS,
     GROUP as ROLE_PROFILE_GROUP, OWNER as ROLE_PROFILE_OWNER,
     configuration_fields as role_profile_fields)
+from ..system_prompts.configuration import (GROUP as SYSTEM_PROMPT_GROUP,
+    MAX_PROMPT_CHARS, OWNER as SYSTEM_PROMPT_OWNER)
 from ..relationships.profile import (FIELD_LIMITS as RELATIONSHIP_PROFILE_FIELD_LIMITS,
     GROUP as RELATIONSHIP_PROFILE_GROUP, OWNER as RELATIONSHIP_PROFILE_OWNER,
     configuration_fields as relationship_profile_fields,
@@ -624,6 +626,20 @@ class RoleProfileManagement(GroupEditor):
         contract = super()._field_contract()
         for name, maximum in ROLE_PROFILE_FIELD_LIMITS.items():
             contract[name]["maximum_chars"] = maximum
+        return contract
+
+
+class SystemPromptManagement(GroupEditor):
+    """Fixed system prompt blocks, editable per role with restore-to-default."""
+
+    group, owner = SYSTEM_PROMPT_GROUP, SYSTEM_PROMPT_OWNER
+    layers = (ConfigLayer.ROLE,)
+    error_prefix = "system_prompt"
+
+    def _field_contract(self):
+        contract = super()._field_contract()
+        for entry in contract.values():
+            entry["maximum_chars"] = MAX_PROMPT_CHARS
         return contract
 
 

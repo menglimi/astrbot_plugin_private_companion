@@ -104,6 +104,18 @@ class StrangerNoticeTests(StrangerFixture, unittest.IsolatedAsyncioTestCase):
                          "婉拒陌生人不该签发任何授权")
         self.assertEqual(receipt["count_today"], 1)
 
+    async def test_group_temporary_session_gets_the_configured_refusal(self):
+        await self.start_host()
+        event = self.event(identifier="temp-session")
+        event.message_obj.raw_message.update(sub_type="group", group_id=300)
+
+        receipt = await self.handle(event)
+
+        self.assertIsNotNone(receipt)
+        self.assertEqual(len(self.sent_texts()), 1)
+        sent = [params for action, params in self.records() if action == "send_private_msg"][0]
+        self.assertEqual(sent["group_id"], 300)
+
     async def test_cooldown_and_daily_cap_both_hold(self):
         app = await self.start_host()
 

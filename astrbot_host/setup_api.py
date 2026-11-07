@@ -1356,7 +1356,26 @@ class SetupWebAPI:
                 raise TaskError("proactive_diagnostic_unavailable",
                                 "the active host has no source-backed proactive producer registry")
             try:
-                candidate = await producer(context, "chat", at=now)
+                # The guide asks the administrator to send one private message
+                # immediately before this test.  The new turn can still be
+                # completing when the button is pressed; _origin then correctly
+                # reports contact_conversation_changed.  That is a transient
+                # race, not an unusable test opportunity: wait briefly for the
+                # current turn to settle and retry the same real producer.
+                candidate = None
+                for attempt_no in range(30):
+                    now = self.controller.now()
+                    try:
+                        candidate = await producer(context, "chat", at=now)
+                        break
+                    except TaskError as error:
+                        if error.code != "contact_conversation_changed" or attempt_no == 29:
+                            raise
+                        if attempt_no % 5 == 0:
+                            logger.info(
+                                "[CompanionV2] 主动测试等待当前私聊轮次完成 attempt=%s/30",
+                                attempt_no + 1)
+                        await asyncio.sleep(1.0)
             except TaskError:
                 stages.append({"stage": "trusted_candidate", "state": "failed"})
                 self.progress.record_proactive_test_progress(attempt_id=attempt_id, stages=stages)

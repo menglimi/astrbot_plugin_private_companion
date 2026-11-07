@@ -40,7 +40,7 @@ from companion_v2.role_work.journal.writing import writing_profiles
 from companion_v2.proactive.service import contact_profile, persona_judge_profile, plan_profile
 from companion_v2.role_work.reader import reading_profile
 from companion_v2.model_gateway.routing import configuration_fields
-from companion_v2.memory.reflection import reflection_profile
+from companion_v2.memory.reflection import reflection_output_tokens, reflection_profile
 from companion_v2.role_work.state.maintenance import state_output_budget, state_profile
 from companion_v2.agenda.planning import planning_profile
 from companion_v2.role_work.growth.progress import growth_progress_profile
@@ -52,6 +52,7 @@ from companion_v2.conversation.media.image_narration import image_narration_prof
 from companion_v2.conversation.media.video.narration import video_narration_profile
 from companion_v2.conversation.media.understanding import intake_settings as file_intake_settings
 from companion_v2.conversation.relay_settings import configuration_fields as relay_configuration_fields
+from companion_v2.system_prompts.configuration import configuration_fields as system_prompt_configuration_fields
 from .presence import OneBotPresencePort
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
@@ -311,7 +312,8 @@ class AstrBotStagingSession:
                     contact_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
                     plan_profile(profile.provider_id, max_output_tokens=min(1024, profile.max_output_tokens)),
                     persona_judge_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
-                    reflection_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
+                    reflection_profile(profile.provider_id,
+                        max_output_tokens=reflection_output_tokens(profile.max_output_tokens)),
                     state_profile(profile.provider_id, max_output_tokens=state_output_budget(profile.max_output_tokens, self.models)),
                     planning_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
                     growth_progress_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
@@ -328,6 +330,8 @@ class AstrBotStagingSession:
         registry_ids = {item.field_id for item in registry_fields}
         registry_fields += tuple(field for field in relay_configuration_fields()
                                  if field.field_id not in registry_ids)
+        registry_fields += tuple(field for field in system_prompt_configuration_fields()
+                                 if field.field_id not in {item.field_id for item in registry_fields})
         registry = FieldRegistry(version="astrbot-staging.v1", fields=registry_fields)
         self.sender_binding = ProviderBinding("message.delivery", "astrbot-staging.onebot_private",
             native_types.version, digest([target.key, profile.persona, "onebot_private"]))

@@ -105,6 +105,9 @@ class NativeExtensionWebAPI(PerceptionWebAPI):
             else:
                 allowed = {'mihome_start_login', 'mihome_login_status', 'mihome_sync_devices',
                     'mihome_logout', 'mihome_save_mappings', 'mihome_device_status', 'mihome_control_power',
+                    'mihome_home_care_status', 'mihome_home_care_save', 'mihome_home_care_run',
+                    'mihome_care_status', 'mihome_care_save', 'mihome_care_feedback',
+                    'mihome_care_think',
                     'scan_camera', 'test_camera', 'consent_camera', 'update_camera_policy', 'update_audio_policy',
                     'scan_audio', 'select_audio', 'test_audio', 'request_audio_consent',
                     'revoke_audio_consent', 'save', 'disable', 'stop_session', 'test',

@@ -48,6 +48,10 @@ function harness(responses) {
       };
       if (route.endsWith('/voice')) return responses.voice || {providers: []};
       if (route.endsWith('/image')) return responses.image || {actions: []};
+      if (route.startsWith('/config?sections=system.prompts')) {
+        const value = responses.systemPrompts;
+        return typeof value === 'function' ? value(requests) : value;
+      }
       if (route === '/model') {
         const value = Array.isArray(responses.model)
           ? responses.model[Math.min(modelReads++, responses.model.length - 1)]
@@ -65,7 +69,8 @@ function harness(responses) {
   };
   const window = {
     CompanionProduct: {
-      role: () => ({model_api: '/astrbot_plugin_private_companion/model', role_id: 'role-a'}),
+      role: () => ({model_api: '/astrbot_plugin_private_companion/model',
+        config_api: '/astrbot_plugin_private_companion/config', role_id: 'role-a'}),
       bridgeNow: () => bridge,
     },
     lucide: {createIcons() {}},
@@ -2086,4 +2091,95 @@ test('a registry default above a provider ceiling is guidance, not a routing err
   assert.match(explicit.root.innerHTML, /输出上限过高/);
   assert.doesNotMatch(explicit.root.innerHTML, /是插件默认值/);
   explicit.page.unmount();
+});
+
+test('system prompt workspace edits one rule, shows risk and restores the built-in default', async () => {
+  const defaults = {
+    voice_rules: '默认语音标签规则',
+    voice_drama: '默认 Drama 规则',
+    voice_indextts: '默认 IndexTTS2 规则',
+    background: '默认背景总则',
+    relationship: '默认相处资料说明',
+    knowledge: '默认知识说明',
+    memory: '默认记忆说明',
+  };
+  const section = {
+    settings: {...defaults, voice_drama: '自定义 Drama 规则'},
+    fields: Object.fromEntries(Object.entries(defaults).map(([key, value]) => [key, {kind: 'text', default: value}])),
+    edit_token: 'prompt-token',
+  };
+  const h = harness({
+    maintenance: {generated_at: localStamp(), summary: {}, totals: {}, daily: [], history: [], recent: [], budget: {}},
+    systemPrompts: {sections: {'system.prompts': section}},
+  });
+  h.page.mount(h.root, {activeView: 'system-prompts'});
+  await flush();
+  assert.match(h.root.innerHTML, /系统提示词/);
+  assert.match(h.root.innerHTML, /修改风险/);
+  assert.match(h.root.innerHTML, /FishAudio Drama 3 表演指令/);
+  assert.match(h.root.innerHTML, /恢复内置默认/);
+  assert.equal(h.requests.some(([method, route]) => method === 'GET' && route === '/config?sections=system.prompts'), true);
+
+  h.root.click('[data-system-prompt]', {systemPrompt: 'voice_drama'});
+  await flush();
+  assert.match(h.root.innerHTML, /自定义 Drama 规则/);
+  h.root.input('新的 Drama 规则', '[data-system-prompt-draft]');
+  h.root.click('[data-system-prompt-save]');
+  await flush();
+  const save = h.requests.find(([method, route]) => method === 'POST' && route === '/config/configure');
+  assert.equal(save[2].changes.voice_drama, '新的 Drama 规则');
+  assert.equal(save[2].reset.length, 0);
+
+  h.root.click('[data-system-prompt-reset]');
+  await flush();
+  const reset = h.requests.filter(([method, route]) => method === 'POST' && route === '/config/configure').at(-1);
+  assert.equal(Object.keys(reset[2].changes).length, 0);
+  assert.equal(reset[2].reset[0], 'voice_drama');
+  h.page.unmount();
+});
+
+test('the token total splits conversation, plugin and extension into one proportion bar', async () => {
+  const today = localDay();
+  const bucket = (tokens, extra = {}) => daily(today, {tokens, calls: 1, ...extra});
+  const source = tokens => ({summary: bucket(tokens), totals: bucket(tokens),
+    daily: [bucket(tokens)], history: [bucket(tokens)], windows: {}, hourly: [], recent: []});
+  const extension = {available: true, installed: true, display_name: '一起房间',
+    totals: bucket(44648), daily: [bucket(44648)], history: [bucket(44648)]};
+  const totals = bucket(12300);
+  const h = harness({maintenance: {generated_at: today + 'T09:00:00', summary: totals, totals,
+    daily: [totals], history: [totals], recent: [], budget: {},
+    usage_sources: {conversation: source(11000), plugin: source(1300)},
+    external_token_sources: {together: extension}}});
+  h.page.mount(h.root);
+  await flush();
+  const overview = () => h.root.innerHTML.split('data-maint-view="overview"')[1].split('data-maint-view="prompts"')[0];
+  const split = overview().split('class="maint-usage-split"')[1].split('</section>')[0];
+  assert.match(split, /总用量构成/);
+  assert.match(split, /合计 56,948 Token/);
+  assert.match(split, /data-part="conversation" style="--split-share:19\.3%"/);
+  assert.match(split, /data-part="plugin" style="--split-share:2\.3%"/);
+  assert.match(split, /data-part="extension" style="--split-share:78\.4%"/);
+  assert.match(split, /<span>对话<\/span><strong>11,000<\/strong><small>19\.3%<\/small>/);
+  assert.match(split, /<span>插件<\/span><strong>1,300<\/strong><small>2\.3%<\/small>/);
+  assert.match(split, /<span>拓展<\/span><strong>44,648<\/strong><small>78\.4%<\/small>/);
+  assert.match(split, /对话 \+ 插件构成角色总用量/);
+  assert.match(split, /aria-label="总用量构成：对话 11,000 Token，19\.3%；插件 1,300 Token，2\.3%；拓展 44,648 Token，78\.4%"/);
+  // 单项来源页签不展示三段合计，避免把角色总量当成单一来源。
+  h.root.click('[data-token-source]', {tokenSource: 'plugin'});
+  await flush();
+  assert.doesNotMatch(overview(), /maint-usage-split/);
+  h.page.unmount();
+
+  // 没有接入任何内置能力时，拓展段写明未接入，不补一个 0 也不虚构比例。
+  const bare = harness({maintenance: {generated_at: today + 'T09:00:00', summary: totals, totals,
+    daily: [totals], history: [totals], recent: [], budget: {},
+    usage_sources: {conversation: source(11000), plugin: source(1300)}}});
+  bare.page.mount(bare.root);
+  await flush();
+  const bareSplit = bare.root.innerHTML.split('class="maint-usage-split"')[1].split('</section>')[0];
+  assert.match(bareSplit, /合计 12,300 Token/);
+  assert.match(bareSplit, /<span>拓展<\/span><strong>未接入<\/strong><small>—<\/small>/);
+  const bareTrack = bareSplit.split('maint-usage-split-track')[1].split('</div>')[0];
+  assert.doesNotMatch(bareTrack, /data-part="extension"/, '未接入的拓展不画成 0 宽度段');
+  bare.page.unmount();
 });

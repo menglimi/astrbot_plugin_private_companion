@@ -77,3 +77,15 @@ test("understanding tabs show live settings and keep the shared editor in the ac
   assert.equal(h.editor.parentElement, h.slots.forwards);
   assert.match(h.stats[4].innerHTML, />32</);
 });
+
+test("understanding reports tab changes for route synchronization", () => {
+  const h = harness(), changes = [];
+  h.page.mount(h.root, {onTabChange: tab => changes.push(tab)});
+  h.page.select("video");
+  h.page.select("video");
+  h.page.select("unknown");
+  assert.deepEqual(changes, ["video"]);
+  h.page.unmount();
+  h.page.select("image");
+  assert.deepEqual(changes, ["video"]);
+});

@@ -145,12 +145,23 @@
           <span><strong>隐藏无往来用户</strong></span>
         </label>
       </div>
-      <section id="stranger-contacts" class="stranger-contacts" aria-label="近期私聊被拒" hidden>
+      <section id="stranger-contacts" class="stranger-contacts" aria-label="陌生号与新私聊">
         <header class="panel-heading compact-heading">
-          <h2>近期私聊被拒</h2>
+          <h2>陌生号与新私聊</h2>
           <div class="panel-heading-meta"><span class="result-count" id="stranger-count">0 人</span></div>
         </header>
-        <p class="panel-note">这里保留曾因未配置私聊目标而被拒的账号与时间。确认收到方后，可只为该账号添加具体目标；权限沿用现有设置。</p>
+        <p class="panel-note">被拒过的账号会记在这里；也可以不等对方先说话，直接填对方账号提前建档。只为该账号添加具体私聊目标，权限沿用现有设置。</p>
+        <form id="stranger-add" class="stranger-add" hidden>
+          <label class="stranger-field">收到方
+            <select id="stranger-account" required></select>
+          </label>
+          <label class="stranger-field">对方账号
+            <input id="stranger-peer" type="text" inputmode="numeric" maxlength="64"
+                   placeholder="如 QQ 号或平台账号" required>
+          </label>
+          <button type="submit" class="secondary" id="stranger-submit">提前添加</button>
+        </form>
+        <p class="panel-note stranger-empty" id="stranger-empty">还没有被拒的私聊记录；收到陌生私聊或在上方手动填入账号后会出现在这里。</p>
         <p class="panel-note stranger-status" id="stranger-status" role="status" hidden></p>
         <ul id="stranger-list" class="stranger-list"></ul>
       </section>

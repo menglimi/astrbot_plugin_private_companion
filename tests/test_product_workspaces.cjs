@@ -250,6 +250,22 @@ test("designer state and late replies survive remount while leaving the extensio
   assert.equal(replacement.messages.at(-1).data.state, null);
 });
 
+test("persona pickers use in-frame listboxes so long lists scroll instead of the parent page", () => {
+  const designerMarkup = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/workspaces/designer/index.html"), "utf8");
+  const designerCss = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/workspaces/designer/style.css"), "utf8");
+  const personaMarkup = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/workspaces/persona/index.html"), "utf8");
+  const personaCss = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/workspaces/persona/style.css"), "utf8");
+  const profileDraft = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/role-profile-draft.js"), "utf8");
+  const selfCss = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/self-page.css"), "utf8");
+  assert.match(designerMarkup, /id="persona-select" size="8"/);
+  assert.match(personaMarkup, /id="source-persona" size="6"/);
+  assert.match(profileDraft, /data-role-profile-draft-persona size="6"/);
+  assert.match(designerCss, /dialog\{[^}]*overflow:auto[^}]*overscroll-behavior:contain/);
+  assert.match(designerCss, /html,body\{overscroll-behavior-y:contain\}/);
+  assert.match(personaCss, /html,body\{overscroll-behavior-y:contain\}/);
+  assert.match(selfCss, /\.role-profile-draft-persona select\{[^}]*overflow-y:auto[^}]*overscroll-behavior:contain/);
+});
+
 test("optional designer UI failure leaves the core account workspace usable", async () => {
   const h = await harness(null, [], {lazyBundles: true});
   const designer = h.addFrame("designer"); h.product.mountWorkspace();
@@ -389,6 +405,41 @@ test("persona questionnaire relays all model steps only within its selected role
     assert.equal(frame.messages.at(-1).ok, false, path);
   }
   assert.equal(h.calls.length, before);
+});
+
+test("a workspace request resolves the role API from the current directory", async () => {
+  const h = await harness();
+  h.product.mountWorkspace();
+  const role = h.catalog.targets[0].roles[0];
+  h.setDirectory({...h.catalog, targets: [{...h.catalog.targets[0],
+    roles: [{...role, persona_api: "/" + HOST + "/targets/first/roles/synthetic-role/persona-v2"}]}]});
+  await h.product.connect(() => {});
+  await h.request(h.persona, "GET", "persona");
+  assert.equal(h.persona.messages.at(-1).ok, true, "目录过期不该把请求判成 invalid_response");
+  assert.equal(h.calls.at(-1).endpoint, "targets/first/roles/synthetic-role/persona-v2");
+  assert.equal(h.calls.filter(call => call.endpoint === "persona").length, 0,
+    "旧的角色接口地址不能再被使用");
+});
+
+test("a missing role API reads the directory once and then says what to fix", async () => {
+  const h = await harness();
+  h.product.mountWorkspace();
+  const role = h.catalog.targets[0].roles[0];
+  h.setDirectory({...h.catalog, targets: [{...h.catalog.targets[0],
+    roles: [{...role, persona_api: null}]}]});
+  await h.product.connect(() => {});
+  const readTargets = () => h.calls.filter(call => call.endpoint === "page/targets").length;
+  const before = readTargets();
+  await h.request(h.persona, "GET", "persona", "persona-missing");
+  assert.equal(readTargets(), before + 1, "缺失时重读一次角色目录");
+  const response = h.persona.messages.at(-1);
+  assert.equal(response.ok, false);
+  assert.equal(response.code, "workspace_api_missing");
+  assert.match(response.error, /重新保存角色映射/);
+
+  await h.request(h.persona, "GET", "persona", "persona-missing-again");
+  assert.equal(readTargets(), before + 1, "冷却期内不重复拉目录");
+  assert.equal(h.persona.messages.at(-1).code, "workspace_api_missing");
 });
 
 test("server rejection envelopes stay confirmed through the product and workspace bridges", async () => {

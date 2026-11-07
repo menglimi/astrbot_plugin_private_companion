@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 
 from companion_v2.conversation.forwards.models import ForwardIntakePolicy
 from companion_v2.conversation.quotes.models import message_number
@@ -18,13 +19,41 @@ class NativeQuoteLocator:
     message_id: str
 
 
+def _host_temp_image(value):
+    """Whether ``value`` is an existing file inside AstrBot's own temp directory.
+
+    AstrBot's preprocess stage downloads every inbound image and rewrites the
+    component's ``url`` and ``file`` to that absolute cache path. The image
+    tools must keep refusing arbitrary network-message paths, but a file the
+    host itself wrote under ``<data>/temp`` is already a trusted attachment.
+    Resolve before comparing so ``..`` segments and symlinks cannot escape the
+    directory, and fall back to the public-URL rule whenever the host module or
+    the path is unavailable.
+    """
+    if type(value) is not str or not value or value.startswith(("base64://", "\\\\", "//")):
+        return False
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+    except ImportError:
+        return False
+    try:
+        path = Path(value)
+        if not path.is_absolute():
+            return False
+        root = Path(get_astrbot_temp_path()).resolve()
+        resolved = path.resolve()
+        return resolved.is_file() and resolved.is_relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def image_locator(position, file, url):
     # Inspect the protocol prefix before any path or filename operation. In
     # particular, keep base64 originals when the host also supplies a URL.
     value = file if type(file) is str and file.startswith("base64://") else url or file
     if type(value) is not str or not value:
         raise TaskError("host_image_unavailable", "image has no original host attachment")
-    return NativeImageLocator(position, value)
+    return NativeImageLocator(position, value, host_resolved=_host_temp_image(value))
 
 
 def audio_locator(position, file, url):

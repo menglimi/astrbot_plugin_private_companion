@@ -169,7 +169,7 @@ class AccountSessionWebAPI:
                 accounts.append(dict(zip(("platform_id", "account_id", "bot_id"), account)))
             targets = section.setdefault("targets", [])
             if not any((item.get("platform_id"), item.get("account_id"), item.get("bot_id")) == account
-                       for item in targets):
+                       and str(item.get("participant_id")) == "*" for item in targets):
                 targets.append({"target_id": "private-" + digest((platform_id, account_id, "*"))[:20],
                                 "platform_id": platform_id, "account_id": account_id,
                                 "bot_id": bot_id, "participant_id": "*"})
@@ -580,10 +580,14 @@ class AccountSessionWebAPI:
                     output.append({"target_id": previous["target_id"] if previous else kind + "-" + digest(route)[:20],
                                    "platform_id": key[0], "account_id": key[1], "bot_id": key[2], peer_field: peer})
             if sync_private_targets:
-                # Keep existing private routes and stable IDs. Only accounts with
-                # no private target receive a discovery template; groups stay explicit.
-                represented = {account_key(row) for row in private}
-                for key in sorted(selected - represented):
+                # Keep existing private routes and stable IDs. Every selected
+                # account also gets one wildcard admission template so a new
+                # private window is picked up after its first message without
+                # another manual save. Exact windows keep their own target and
+                # still win over the template in MultiHostSettings.private_target.
+                wildcard_accounts = {account_key(row) for row in private
+                                     if str(row.get("participant_id")) == "*"}
+                for key in sorted(selected - wildcard_accounts):
                     private.append({"target_id": "private-" + digest((key[0], key[1], "*"))[:20],
                                    "platform_id": key[0], "account_id": key[1],
                                    "bot_id": key[2], "participant_id": "*"})

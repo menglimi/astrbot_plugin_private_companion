@@ -551,7 +551,10 @@
 :root[data-motion="low"] .wb-section-tab>svg{transition-duration:0s!important}
 
 /* === 响应式 === */
-@media(max-width:760px){
+/* 1120px 与外壳左栏收起同档：模块列表一旦还按 178–220px 侧栏排，剩下的表单
+   列在平板竖屏只剩两三百像素，标签与说明会被压成一列竖排字。这一档就把
+   「配置模块」改成横向标签条，表单独占整行；760px 以下沿用同一套。 */
+@media(max-width:1120px){
   .wb-section-layout{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}
   .wb-section-sidebar{position:static;max-height:none;overflow:visible;padding:var(--sp-2)}
   .wb-section-nav-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);padding:var(--sp-1) var(--sp-2) var(--sp-2)}
@@ -561,6 +564,8 @@
   .wb-section-tab-copy strong{white-space:normal}
   .wb-section-tab>svg{display:none}
   .wb-section-index{width:21px;height:21px}
+}
+@media(max-width:760px){
   .wb-replacement-form{grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
   .wb-replacement-form .wb-keyword-add{grid-column:1/-1}
   .wb-order-tools{grid-template-columns:minmax(0,1fr) auto}

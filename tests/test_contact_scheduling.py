@@ -7,9 +7,10 @@ from unittest.mock import patch
 
 from companion_v2.conversation.foreground import BackgroundPromptTrigger
 from companion_v2.conversation.flow import ConversationPolicy
-from companion_v2.execution.models import TaskError
+from companion_v2.conversation.models import InboundConversationEvent
+from companion_v2.execution.models import TaskError, digest, encode, stamp
 from companion_v2.foundation.outcome import Outcome
-from companion_v2.foundation.refs import SubjectKind, SubjectRef
+from companion_v2.foundation.refs import SourceRef, SubjectKind, SubjectRef, VersionRef
 from tests.contact_schedule_support import ContactScheduleFixture
 from tests.test_management_access import INSTALLATION, SCOPE
 from tests.test_role_tool_loop import answered
@@ -73,6 +74,41 @@ class ContactSchedulingTests(ContactScheduleFixture, unittest.IsolatedAsyncioTes
                                (json.dumps(document, ensure_ascii=False), batch_id))
 
         self.assertEqual(app.contact_schedule._legacy_rows(0), ())
+
+    async def test_media_only_latest_turn_anchors_to_the_newest_text_input(self):
+        from companion_v2.conversation.native_turns import NativeConversationTurns
+
+        host, _ = await self.scheduled(automatic=False)
+        app = host.application
+        NativeConversationTurns(app.runtime)
+        context = self.contact_context()
+        at = self.clock.now() + timedelta(minutes=5)
+        anchor_at = at - timedelta(minutes=2)
+        role_instruction = "原角色人格提示"
+        # A text message, then a newer image/video-like turn with no input.
+        with app.runtime.transaction() as connection:
+            for turn_id, observed_at, input_id in (
+                    ("core-reply:text-anchor", anchor_at, "core-input-anchor"),
+                    ("core-reply:media-only", at, None)):
+                connection.execute("""INSERT INTO conversation_native_turns
+                    (turn_id, context_key, context_json, role_instruction,
+                     input_observation_id, observed_at, generation_state, phase_at, last_sent_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, NULL)""",
+                    (turn_id, context.key, encode(context), role_instruction, input_id,
+                     stamp(observed_at), stamp(observed_at)))
+        source = SourceRef("native-anchor", "conversation.host_input", context.scope,
+                           VersionRef("native-anchor", 1), anchor_at)
+        event = InboundConversationEvent("native-anchor", context.actor.principal, context.scope,
+            source, "text", digest("anchor"), anchor_at)
+
+        with patch("companion_v2.conversation.native_turns.input_event", return_value=event), \
+                patch.object(app.contact_schedule.messages, "authorize"):
+            origin, latest, resolved = app.contact_schedule._origin(
+                context, "core-reply:media-only", at)
+
+        self.assertEqual(origin["batch_id"], "core-reply:text-anchor")
+        self.assertEqual(latest["turn_id"], "core-reply:text-anchor")
+        self.assertIs(resolved, event)
 
     async def test_full_task_history_blocks_repeated_contact_planning_with_reason(self):
         host, _ = await self.scheduled()

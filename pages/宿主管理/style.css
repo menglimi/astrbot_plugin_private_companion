@@ -264,15 +264,25 @@ dialog::backdrop { background: rgba(25, 27, 45, .48); }
 @media (max-width: 760px) {
   .topology-summary { align-items: flex-start; text-align: left; }
   .topology-heading { gap: 12px; }
-  .topology-canvas { grid-template-columns: 1fr; gap: 15px; }
-  .topology-column:not(:last-child)::after { display: block; width: 1px; height: 13px; margin: 2px auto -3px; background: var(--line-strong); content: ""; }
-  .topology-links { z-index: 0; }
-  .topology-session-list { max-height: 374px; }
+  /* 竖排的映射块。三列叠成一列后，跨列的贝塞尔连线没有可读走向（会在标题之间来回穿），
+     所以手机上去掉 SVG 连线，改用列间的短竖线表示 01 → 02 → 03 的顺序；
+     每列自己收成一张卡片，边界比纯叠放更清楚。 */
+  .topology-canvas { grid-template-columns: 1fr; gap: 8px; }
+  .topology-links { display: none; }
+  .topology-column { padding: 11px 11px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-muted); }
+  .topology-column:not(:last-child)::after { display: block; width: 1px; height: 10px; margin: 5px auto 0; background: var(--line-strong); content: ""; }
+  /* 手机整页本来就在滚动，会话列表再套一层固定高度的内部滚动只剩一条缝；
+     交给页面滚动，一页 5 条也仍然是分页的。 */
+  .topology-session-list { max-height: none; overflow: visible; padding: 0; }
+  .topology-column-heading { margin-bottom: 8px; }
+  .topology-pagination { margin-top: 10px; }
 }
 @media (max-width: 520px) {
   .topology-panel { padding: 18px 15px 15px; }
   .topology-heading, .topology-summary { align-items: flex-start; }
   .topology-summary { width: 100%; flex-direction: row; justify-content: space-between; }
+  .topology-column { padding: 10px; }
+  .topology-pagination .button { min-height: 34px; padding: 6px 10px; }
 }
 
 /* === 显示维度 ===

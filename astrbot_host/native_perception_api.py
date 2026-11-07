@@ -12,6 +12,7 @@ from astrbot.api.web import request
 
 from companion_v2.configuration.management import ProactiveContactManagement
 from companion_v2.agenda.planning_config import configured_annual_calendars, configured_weather_location
+from companion_v2.proactive.weather_alerts import active_official_alerts
 from companion_v2.capabilities.reality_access import ACTION as REALITY_SNAPSHOT_ACTION, RealitySnapshotAccess
 from companion_v2.capabilities.reality_camera import ACTION as REALITY_CAMERA_ACTION, RealityCameraAccess
 from companion_v2.configuration.models import ConfigurationError
@@ -203,17 +204,29 @@ class NativePerceptionWebAPI:
         except Exception:
             return {"state": "unavailable"}
         alerts = []
-        for alert in snapshot.alerts[:4]:
-            alerts.append({"title": str(alert.title)[:160],
-                           "severity": str(alert.severity)[:32],
-                           "starts_at": alert.starts_at.isoformat(),
-                           "ends_at": alert.ends_at.isoformat(),
-                           "description": str(alert.description)[:240]})
+        # The current-weather adapter has no warning endpoint; fetch the host's
+        # separate official-alert port (QWeather, or the zero-config NMC fallback).
+        alert_events = getattr(getattr(app, "contact_schedule", None), "official_alert_events", None)
+        alert_port = getattr(alert_events, "port", None)
+        if alert_port is not None:
+            try:
+                observation = await asyncio.wait_for(alert_port.fetch(location), timeout=7)
+                active = active_official_alerts(observation, location, app.now())
+                alerts = [{
+                    "title": str(item.headline)[:160],
+                    "event_name": str(item.event_name)[:80],
+                    "severity": str(item.severity)[:32],
+                    "starts_at": item.effective_at.isoformat(),
+                    "ends_at": item.expires_at.isoformat(),
+                    "description": str(item.description)[:240],
+                } for item in active[:4]]
+            except Exception:
+                alerts = []
         return {"state": "available", "location": snapshot.location,
                 "provider": snapshot.provider, "observed_at": snapshot.observed_at.isoformat(),
                 "condition": snapshot.condition, "temperature_c": snapshot.temperature_c,
                 "humidity_pct": snapshot.humidity_pct, "wind_kph": snapshot.wind_kph,
-                "alert_count": len(snapshot.alerts), "alerts": alerts}
+                "alert_count": len(alerts), "alerts": alerts}
 
     @staticmethod
     def _public_mobile_snapshot(snapshot, read_at):

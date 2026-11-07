@@ -112,7 +112,8 @@ test("received-poke page renders and saves a bounded repeated-poke count", async
   const button = {disabled: false, textContent: "保存戳一戳设置"};
   const controls = {enabled: {checked: true}, trigger_probability: {value: "25"},
     back_probability: {value: "50"}, back_times: {value: "4"}, model_reply_enabled: {checked: true},
-    model_reply_probability: {value: "65"}, replies: {value: "我在"}};
+    model_reply_probability: {value: "65"}, replies: {value: "我在"},
+    context_reply_enabled: {checked: false}, context_delay_seconds: {value: "3"}};
   const form = {dataset: {hostForm: "poke"}, querySelector(selector) {
     const field = selector.match(/^\[name="(.+)"\]$/)?.[1];
     return field ? controls[field] : selector.includes("button") ? button : message;
@@ -123,7 +124,7 @@ test("received-poke page renders and saves a bounded repeated-poke count", async
   assert.equal(saved.route, "host-options/poke");
   assert.deepEqual(JSON.parse(JSON.stringify(saved.body.changes)), {enabled: true, trigger_probability: 0.25,
     back_probability: 0.5, back_times: 4, model_reply_enabled: true, model_reply_probability: 0.65,
-    replies: ["我在"]});
+    context_reply_enabled: false, context_delay_seconds: 3, replies: ["我在"]});
   assert.match(h.root.innerHTML, /value="4"/);
 });
 

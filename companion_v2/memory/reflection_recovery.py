@@ -1,12 +1,46 @@
 """Durable private output checkpoints and explicit, bounded repair attempts."""
 
 import json
+from datetime import datetime, timedelta
 
 from companion_v2.execution.models import TERMINAL, TaskContext, TaskError, digest, encode, require, stamp
 
 from . import codec
 from .models import owner_key
 from .reflection_output import OutputProblem, parse_output, proposal_for_repair, redact_output, validate_output
+
+
+# A batch stays ``running`` only while a worker owns it. After a process restart
+# no worker does: the model call that was in flight is unknown and must not be
+# replayed, but the batch cannot keep the dashboard "running" forever either.
+ABANDONED_RUNNING_AFTER = timedelta(hours=2)
+
+
+def abandon_stale_running(reflection, context, batch_id, at, *, older_than=ABANDONED_RUNNING_AFTER):
+    """Settle one interrupted ``running`` batch that no worker can still own.
+
+    Returns ``True`` only when this call changed the row. A batch updated within
+    ``older_than`` is left alone: a fresh process is not the only writer, and a
+    live worker owns its own row.
+    """
+    with reflection.runtime.transaction() as connection:
+        row = connection.execute("SELECT * FROM memory_reflections WHERE batch_id = ? AND owner_key = ?",
+                                 (batch_id, owner_key(context))).fetchone()
+        if (row is None or row["state"] != "running"
+                or TaskContext.restore(json.loads(row["context_json"])).key != context.key):
+            return False
+        try:
+            updated = datetime.fromisoformat(row["updated_at"])
+        except (TypeError, ValueError):
+            updated = None
+        if updated is not None and at - updated < older_than:
+            return False
+        result = json.loads(row["result_json"] or '{"summary":null}')
+        result.setdefault("issues", []).append({"code": "memory_reflection_abandoned", "path": "$"})
+        connection.execute("""UPDATE memory_reflections SET state = 'failed', result_json = ?, updated_at = ?
+            WHERE batch_id = ? AND state = 'running'""",
+            (encode(result), stamp(at), batch_id))
+    return True
 
 
 REPAIRABLE = frozenset({"invalid_json", "duplicate_json_field", "nonfinite_json_number", "invalid_shape",

@@ -1,6 +1,7 @@
 """Governance for derived sources, shared by all source consumers."""
 
 import asyncio
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from threading import get_ident
@@ -10,6 +11,15 @@ from companion_v2.storage.codec import decode_timestamp
 
 
 _CURRENT = ContextVar("source_validation_traversal", default=None)
+_BATCH = ContextVar("source_validation_batch", default=None)
+
+_REACHABLE = """WITH RECURSIVE reachable(id, lineage, revision) AS (
+    VALUES (?, ?, ?)
+    UNION
+    SELECT d.input_id, d.input_lineage, d.input_revision
+    FROM source_dependencies d JOIN reachable r
+      ON d.dependent_id = r.id AND d.dependent_lineage = r.lineage AND d.dependent_revision = r.revision
+) """
 
 
 def _task():
@@ -34,6 +44,67 @@ class _Traversal:
     checked: set = field(default_factory=set)
     visiting: set = field(default_factory=set)
     active: bool = True
+
+
+@dataclass
+class _Batch:
+    runtime: object
+    at: object
+    thread: int
+    task: object
+    connection: object
+    rows: dict = field(default_factory=dict)
+    edges: dict = field(default_factory=dict)
+    active: bool = True
+
+
+@contextmanager
+def validation_batch(runtime, at):
+    """Reuse database rows only while one read snapshot pins their contents."""
+    with runtime.read_snapshot() as connection:
+        if getattr(runtime, "_write_depth", 0):
+            yield
+            return
+        batch = _BATCH.get()
+        if (batch is not None and batch.active and batch.runtime is runtime and batch.at == at
+                and batch.thread == get_ident() and batch.task is _task()):
+            yield
+            return
+        batch = _Batch(runtime, at, get_ident(), _task(), connection)
+        token = _BATCH.set(batch)
+        try:
+            yield
+        finally:
+            batch.active = False
+            batch.rows.clear()
+            batch.edges.clear()
+            _BATCH.reset(token)
+
+
+def _batch_for(state):
+    batch = _BATCH.get()
+    if (batch is not None and batch.active and batch.runtime is state.runtime and batch.at == state.at
+            and batch.thread == state.thread and batch.task is state.task):
+        return batch
+    return None
+
+
+def _prefetch(batch, root):
+    rows = batch.connection.execute(_REACHABLE + """SELECT r.id AS reach_id,
+        r.lineage AS reach_lineage, r.revision AS reach_revision, s.*
+        FROM reachable r LEFT JOIN sources s ON s.source_id = r.id
+          AND s.lineage_id = r.lineage AND s.source_revision = r.revision""", root)
+    for row in rows:
+        current = (row["reach_id"], row["reach_lineage"], row["reach_revision"])
+        batch.rows[current] = row if row["source_id"] is not None else None
+        batch.edges[current] = []
+    edges = batch.connection.execute(_REACHABLE + """SELECT d.dependent_id, d.dependent_lineage,
+        d.dependent_revision, d.input_id, d.input_lineage, d.input_revision
+        FROM source_dependencies d JOIN reachable r ON d.dependent_id = r.id
+          AND d.dependent_lineage = r.lineage AND d.dependent_revision = r.revision""", root)
+    for edge in edges:
+        current = (edge["dependent_id"], edge["dependent_lineage"], edge["dependent_revision"])
+        batch.edges[current].append((edge["input_id"], edge["input_lineage"], edge["input_revision"]))
 
 
 def key(reference):
@@ -65,13 +136,19 @@ def validate(runtime, reference, at):
 
 def _walk(state, reference_key):
     runtime, at = state.runtime, state.at
+    batch = _batch_for(state)
     pending, entered = [(reference_key, False)], set()
     try:
         while pending:
             current, exiting = pending.pop()
-            # Even a repeated read must observe current source revocation/expiry.
-            row = runtime.read_one("""SELECT * FROM sources
-                WHERE source_id = ? AND lineage_id = ? AND source_revision = ?""", current)
+            if batch is not None:
+                if current not in batch.rows:
+                    _prefetch(batch, current)
+                row = batch.rows[current]
+            else:
+                # Independent calls must observe current revocation and expiry.
+                row = runtime.read_one("""SELECT * FROM sources
+                    WHERE source_id = ? AND lineage_id = ? AND source_revision = ?""", current)
             if row is None or row["state"] != "active":
                 raise TaskError("source_dependency_unavailable", "an original source dependency is unavailable")
             if at < decode_timestamp(row["issued_at"]) or (row["expires_at"] and at >= decode_timestamp(row["expires_at"])):
@@ -90,8 +167,9 @@ def _walk(state, reference_key):
                 state.visiting.add(current)
                 entered.add(current)
                 pending.append((current, True))
-                pending.extend((tuple(r), False) for r in runtime.read_all("""SELECT input_id, input_lineage, input_revision
-                    FROM source_dependencies WHERE dependent_id = ? AND dependent_lineage = ? AND dependent_revision = ?""", current))
+                inputs = batch.edges[current] if batch is not None else runtime.read_all("""SELECT input_id, input_lineage, input_revision
+                    FROM source_dependencies WHERE dependent_id = ? AND dependent_lineage = ? AND dependent_revision = ?""", current)
+                pending.extend((tuple(r), False) for r in inputs)
     finally:
         # An owner can catch a rejected nested read. Its unfinished nodes must not
         # become cached successes or remain marked as a recursive visit.

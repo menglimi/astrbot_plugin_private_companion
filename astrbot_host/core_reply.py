@@ -215,7 +215,9 @@ def prepare_core_reply_event(
                     message = await message
             from .core_reply_media_delivery import native_reply_messages, native_wire_message
             from .core_reply_voice import commit_pending_voice_claim, release_pending_voice_claim
-            from .core_reply_idempotency import record_core_reply_delivery, should_drop_core_reply_duplicate
+            from .core_reply_idempotency import (record_core_reply_delivery,
+                                                  should_drop_core_reply_duplicate,
+                                                  should_drop_native_tool_duplicate)
             result = None
             for part in native_reply_messages(event, message):
                 # A repeat right after an accepted body is the same delivery twice.
@@ -224,6 +226,8 @@ def prepare_core_reply_event(
                 # Dropping it here keeps the send accounting honest: no attempt, no
                 # notification and no behavior record for a body that never leaves.
                 if should_drop_core_reply_duplicate(event, part):
+                    continue
+                if should_drop_native_tool_duplicate(event, part):
                     continue
                 try:
                     await authorize_delivery()
@@ -614,7 +618,8 @@ def inject_core_reply_prompt(event: Any, req: Any) -> None:
     from .core_reply_voice import prepare_core_reply_voice, voice_prompt_instruction
     voice_instruction = voice_prompt_instruction(
         prepared.get("voice_reply_policy") if isinstance(prepared, Mapping) else None,
-        prepared.get("voice_provider_instruction", "") if isinstance(prepared, Mapping) else "")
+        prepared.get("voice_provider_instruction", "") if isinstance(prepared, Mapping) else "",
+        prepared.get("voice_rules_instruction", "") if isinstance(prepared, Mapping) else "")
     previous_voice = state.pop("_voice_prompt_instruction", None)
     if previous_voice and previous_voice in req.system_prompt:
         req.system_prompt = req.system_prompt.replace(previous_voice, "", 1).rstrip()

@@ -1,4 +1,4 @@
-﻿"""Account edits synchronize private targets without widening group access."""
+"""Account edits synchronize private targets without widening group access."""
 
 from copy import deepcopy
 import json
@@ -55,8 +55,10 @@ class AccountTargetSyncTests(unittest.IsolatedAsyncioTestCase):
             persona_ids=["另一个人格", "第三个人格"], role_id="新角色")
         self.assertEqual(result["status"], "ok", result)
         after = self.config["multi_host"]
-        for key in ("targets", "group_targets"):
-            self.assertEqual(after[key], before[key])
+        self.assertEqual(after["targets"][:-1], before["targets"])
+        self.assertEqual(after["targets"][-1]["participant_id"], "*")
+        self.assertEqual(after["targets"][-1]["bot_id"], "bot-a")
+        self.assertEqual(after["group_targets"], before["group_targets"])
         self.assertIn(self.accounts[0], after["accounts"])
         self.assertEqual(after["personas"][:-2], before["personas"])
         self.assertEqual(after["personas"][-2:], [
@@ -116,11 +118,17 @@ class AccountTargetSyncTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "ok", result)
         current = self.config["multi_host"]
-        self.assertEqual(current["targets"][:1], previous_private)
-        template = current["targets"][1]
-        self.assertEqual((template["platform_id"], template["account_id"],
-                          template["bot_id"], template["participant_id"]),
+        self.assertEqual(current["targets"][0], previous_private[0])
+        # The account that already had an explicit private window now also gets
+        # a wildcard admission template, so new private chats join automatically.
+        wildcard_a, wildcard_b = current["targets"][1:3]
+        self.assertEqual((wildcard_a["platform_id"], wildcard_a["account_id"],
+                          wildcard_a["bot_id"], wildcard_a["participant_id"]),
+                         ("qq-main", "100", "bot-a", "*"))
+        self.assertEqual((wildcard_b["platform_id"], wildcard_b["account_id"],
+                          wildcard_b["bot_id"], wildcard_b["participant_id"]),
                          ("qq-second", "101", "bot-b", "*"))
+        self.assertEqual(len(current["targets"]), 3)
         self.assertEqual(current["group_targets"], previous_groups)
         self.assertTrue(all(row["group_id"] != "*" for row in current["group_targets"]))
         self.assertEqual(result["data"]["configuration"]["sessions"], current["targets"])
@@ -174,8 +182,11 @@ class AccountTargetSyncTests(unittest.IsolatedAsyncioTestCase):
         result = await self.save(accounts=self.accounts, personas=self.personas)
 
         self.assertEqual(result["status"], "ok", result)
-        self.assertEqual(self.config["multi_host"]["targets"], previous["targets"])
-        self.assertEqual(self.config["multi_host"]["group_targets"], previous["group_targets"])
+        current = self.config["multi_host"]
+        self.assertEqual(current["targets"][:2], previous["targets"])
+        self.assertEqual(current["targets"][2]["participant_id"], "*")
+        self.assertEqual(current["targets"][2]["bot_id"], "bot-b")
+        self.assertEqual(current["group_targets"], previous["group_targets"])
 
     async def test_new_target_reference_to_unselected_account_is_rejected(self):
         before = deepcopy(self.config)

@@ -1,7 +1,7 @@
 """Synthetic news source, durable polling, and automatic contact tests."""
 
 import asyncio
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -486,6 +486,53 @@ class NewsContactTests(ContactScheduleFixture, unittest.IsolatedAsyncioTestCase)
         self.assertEqual(inspirations.capture(context, self.clock.now())["entries"], [])
         with self.assertRaises(TaskError):
             inspirations.read(snapshot, context, self.clock.now())
+
+    async def test_capture_reads_all_candidates_in_one_snapshot_instead_of_per_contact(self):
+        """现场 54–117 秒的根因：每个联系人、每个分段都重新拿一次全局锁。
+
+        抓取必须在同一个 SQLite 快照里完成，且候选分段的读取是一次批量查询，
+        不能按联系人再查一遍（N+1）。
+        """
+        port = NewsPort(self.clock, [[self.article()]])
+        app, context = await self.setup_news(port)
+        self.advance(app, 60)
+        await self.automatic_delivery(app)
+        inspirations = app.proactive.inspirations
+        runtime = app.runtime
+        original_snapshot, original_all = runtime.read_snapshot, runtime.read_all
+        depth, outer, statements = {"n": 0, "outer": 0}, [], []
+
+        @contextmanager
+        def counting_snapshot():
+            depth["n"] += 1
+            if depth["n"] == 1:
+                outer.append(1)
+            try:
+                with original_snapshot() as connection:
+                    yield connection
+            finally:
+                depth["n"] -= 1
+
+        def counting_all(statement, parameters):
+            statements.append(statement)
+            return original_all(statement, parameters)
+
+        with patch.object(runtime, "read_snapshot", counting_snapshot), \
+                patch.object(runtime, "read_all", counting_all):
+            material = inspirations.capture_contribution(context, self.clock.now())
+
+        self.assertIsNotNone(material)
+        self.assertEqual(len(outer), 1, "整轮抓取只应开一个最外层快照")
+        delivery_reads = [text for text in statements if "background_deliveries" in text]
+        contact_batches = [text for text in statements if "FROM proactive_contacts WHERE contact_id IN" in text]
+        self.assertFalse(any("json_extract(request_json, '$.source_ref') = ?" in text and "LIMIT ?" in text
+                             for text in statements),
+                         "不应再按联系人逐个重查分段")
+        self.assertEqual(len(contact_batches), 1, f"联系人应一次批量读回，实际 {len(contact_batches)} 次")
+        self.assertEqual(len(delivery_reads), 2,
+                         f"分段查询应为「候选汇总 + 一次批量」，实际 {len(delivery_reads)} 次")
+        self.assertTrue(any("json_extract(request_json, '$.source_ref') IN (" in text for text in delivery_reads),
+                        "候选分段应一次性批量读取")
 
     async def test_prompt_contribution_reuses_the_single_receipt_validation_pass(self):
         port = NewsPort(self.clock, [[self.article()]])

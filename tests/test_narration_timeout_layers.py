@@ -5,7 +5,7 @@ supervised task, waits for it, then falls back to a caption-less reply. Four
 layers used to be unrelated literals - a provider default (15 s image, 60 s
 video), a task definition (35 s / 65 s), a deadline of `wait + 1` that sat
 *outside* the waiting reply, and the configured wait itself (1-30 s / 1-60 s).
-With the default wait of 8 s or 20 s the round could therefore only ever be cut
+With the former default waits of 8 s and 20 s the round could therefore only ever be cut
 by the outermost layer: the provider budget could not expire, the task deadline
 could not expire, and the image sidecar returned an empty caption without
 recording anything. These tests pin the ordering, the recorded cause, the
@@ -330,6 +330,11 @@ class VideoNarrationRoundTests(_NarrationFixture, unittest.IsolatedAsyncioTestCa
         return narrations[0]
 
     async def test_a_round_that_outlives_its_provider_budget_is_reported_by_the_model_layer(self):
+        # A saved short model timeout exercises the same layer without waiting
+        # through the 43 s default used for real video requests.
+        self.wait_seconds = 6
+        self.provider_seconds = 2
+        _, self.budget_seconds, self.wait = video_narration_layers(self.wait_seconds)
         with self.assertLogs(self.logger_name, level="WARNING") as captured:
             narration = await self.caption()
         self.assertEqual((narration.text, narration.available), ("视频转述失败，尚未读到视频内容。", False))

@@ -1495,7 +1495,14 @@
 .perception-hero-grid{display:grid;gap:8px;min-width:0}
 .perception-hero-grid.is-one{grid-template-columns:minmax(0,1fr)}
 .perception-hero-grid.is-two{grid-template-columns:repeat(2,minmax(0,1fr))}
-.perception-hero{display:grid;grid-template-columns:36px minmax(0,1fr) auto 14px;align-items:start;gap:10px;width:100%;min-width:0;min-height:76px;padding:11px 12px;border:1px solid color-mix(in srgb,var(--board) 22%,var(--t-line));border-radius:var(--r-md);background:linear-gradient(135deg,color-mix(in srgb,var(--board) 8%,var(--t-surface-raised,var(--t-surface))),var(--t-surface));color:var(--t-text);font:inherit;text-align:left;cursor:pointer;transition:background-color .16s ease,border-color .16s ease,transform .16s ease,box-shadow .16s ease}
+/* 英雄卡内部不再让「状态徽标」和正文抢同一行：徽标固定落到第二行、与正文左对齐。
+   两列板在 1024px 左右时每张英雄卡只有 ~228px，36px 图标 + auto 徽标 + 14px 箭头
+   会把文字列压到 ~35px，中文一列一个字；徽标换行后文字列能拿回一百多像素。 */
+.perception-hero{display:grid;grid-template-columns:36px minmax(0,1fr) 14px;grid-template-areas:"icon copy chevron" ". badge .";align-items:start;gap:10px;row-gap:3px;width:100%;min-width:0;min-height:76px;padding:11px 12px;border:1px solid color-mix(in srgb,var(--board) 22%,var(--t-line));border-radius:var(--r-md);background:linear-gradient(135deg,color-mix(in srgb,var(--board) 8%,var(--t-surface-raised,var(--t-surface))),var(--t-surface));color:var(--t-text);font:inherit;text-align:left;cursor:pointer;transition:background-color .16s ease,border-color .16s ease,transform .16s ease,box-shadow .16s ease}
+.perception-hero-icon{grid-area:icon}
+.perception-hero-copy{grid-area:copy}
+.perception-hero-chevron{grid-area:chevron}
+.perception-hero .perception-reading-badge{grid-area:badge;justify-self:start;margin-top:1px}
 .perception-hero:hover{border-color:color-mix(in srgb,var(--board) 52%,var(--t-line));background:color-mix(in srgb,var(--board) 12%,var(--t-surface));transform:translateY(-1px);box-shadow:var(--t-shadow)}
 .perception-board .perception-hero.is-selected,.perception-board .perception-mini.is-selected{border-color:var(--t-accent);background:color-mix(in srgb,var(--t-accent) 10%,var(--t-surface));box-shadow:inset 3px 0 0 var(--t-accent),var(--t-shadow)}
 .perception-hero.is-time{background:linear-gradient(140deg,color-mix(in srgb,var(--t-ok) 10%,var(--t-surface)),var(--t-surface) 74%)}
@@ -1521,9 +1528,17 @@
 .perception-hero-chevron svg{width:14px;height:14px}
 
 .perception-mini-grid{display:grid;gap:8px;min-width:0}
-.perception-mini-grid.is-two{grid-template-columns:repeat(2,minmax(0,1fr))}
-.perception-mini-grid.is-three{grid-template-columns:repeat(3,minmax(0,1fr))}
-.perception-mini{display:grid;grid-template-columns:24px minmax(0,1fr) auto 12px;align-items:start;gap:8px;width:100%;min-width:0;min-height:58px;padding:9px 10px;border:1px solid var(--t-line-firm,var(--t-line));border-radius:var(--r-sm);background:var(--t-surface-soft);color:var(--t-text);font:inherit;text-align:left;cursor:pointer;transition:background-color .16s ease,border-color .16s ease,transform .16s ease,box-shadow .16s ease}
+/* 小卡不再固定均分：窄卡片里三等分只剩 ~150px，标题会被挤成一列一个字。
+   auto-fit + 最小列宽让它们先换行，而不是继续压窄。 */
+.perception-mini-grid.is-two{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+.perception-mini-grid.is-three{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+/* 状态徽标和英雄卡一样落到第二行：它一旦挤在第一行，`minmax(0,1fr)` 的文字列
+   就会被压到 40px 上下，中文竖着排。 */
+.perception-mini{display:grid;grid-template-columns:24px minmax(0,1fr) 12px;grid-template-areas:"icon copy chevron" ". badge .";align-items:start;gap:8px;row-gap:2px;width:100%;min-width:0;min-height:58px;padding:9px 10px;border:1px solid var(--t-line-firm,var(--t-line));border-radius:var(--r-sm);background:var(--t-surface-soft);color:var(--t-text);font:inherit;text-align:left;cursor:pointer;transition:background-color .16s ease,border-color .16s ease,transform .16s ease,box-shadow .16s ease}
+.perception-mini-icon{grid-area:icon}
+.perception-mini-copy{grid-area:copy}
+.perception-mini-chevron{grid-area:chevron}
+.perception-mini .perception-reading-badge{grid-area:badge;justify-self:start;margin-top:0}
 .perception-mini:hover{border-color:color-mix(in srgb,var(--board) 50%,var(--t-line));background:color-mix(in srgb,var(--board) 9%,var(--t-surface));transform:translateY(-1px);box-shadow:var(--t-shadow)}
 .perception-mini-icon{display:grid;place-items:center;width:24px;height:24px;margin-top:1px;border-radius:6px;background:color-mix(in srgb,var(--board) 12%,transparent);color:var(--board)}
 .perception-mini-icon svg{width:14px;height:14px}
@@ -1540,9 +1555,16 @@
 
 .perception-board-hint{margin:var(--sp-2) 2px 0;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.55}
 .perception-board-hint:before{content:"↳ ";color:var(--t-accent);font-weight:700}
+/* 这块板在第 1475 行重新声明成两列，把前面那条 ≤900px 的「单列」规则按源码顺序
+   盖掉了——手机上于是仍是两列，每张卡只剩 ~180px，卡里 36px 图标 + auto 徽标 +
+   14px 箭头把文字列压到 0 宽，中文就竖成一列一个字。放宽到这里，让窄屏一定单列。 */
+@media(max-width:900px){
+  .perception-board{grid-template-columns:minmax(0,1fr)}
+}
 @media(max-width:760px){
   .perception-hero-grid.is-two,.perception-mini-grid.is-two,.perception-mini-grid.is-three{grid-template-columns:minmax(0,1fr)}
-  .perception-hero{grid-template-columns:32px minmax(0,1fr) auto 12px}
+  .perception-hero{grid-template-columns:32px minmax(0,1fr) 14px;row-gap:4px}
+  .perception-hero-icon{width:32px;height:32px}
 }
 @media(prefers-reduced-motion:reduce){.perception-hero,.perception-mini,.perception-board-open,.perception-hero-chevron,.perception-mini-chevron{transition:none;transform:none}}
 :root[data-motion="off"] .perception-hero,:root[data-motion="off"] .perception-mini,:root[data-motion="off"] .perception-board-open{transition:none;transform:none}

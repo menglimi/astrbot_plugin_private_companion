@@ -4,10 +4,10 @@ window.CompanionNativeExtensionManagement = (() => {
   const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const qrSource = value => /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(String(value || "")) ? value : "";
   const cameraPreviewSource = value => /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(String(value || "")) ? value : "";
-  const actionNames = {mihome_start_login:"扫码登录", mihome_login_status:"检查登录状态", mihome_sync_devices:"同步设备", mihome_logout:"退出米家账号", mihome_device_status:"读取设备状态",
+  const actionNames = {mihome_start_login:"扫码登录", mihome_login_status:"检查登录状态", mihome_sync_devices:"同步设备", mihome_logout:"退出米家账号", mihome_device_status:"读取设备状态", mihome_save_mappings:"保存设备映射", mihome_device_profile:"读取设备能力", mihome_device_action:"设置设备属性",
     scan_camera:"扫描摄像头", consent_camera:"更新摄像头确认", update_camera_policy:"保存摄像头策略", connect:"连接 VTube Studio", request_auth:"请求 VTS 授权", list_hotkeys:"读取热键",
     scan_audio:"扫描音频设备", select_audio:"保存音频输出", test_audio:"播放设备测试音", request_audio_consent:"准备本人音频授权", revoke_audio_consent:"撤销音频授权",
-    update_audio_policy:"保存语音策略", save:"保存叫醒安排", disable:"关闭叫醒", stop_session:"停止本次叫醒", test:"试听叫醒", cancel_reminder:"取消提醒"};
+    update_audio_policy:"保存语音策略", save:"保存早晨照料", disable:"关闭早晨照料", stop_session:"停止本次叫醒", test:"试听一次", cancel_reminder:"取消提醒"};
   actionNames.test_camera = "测试摄像头调用";
   const errors = {
     native_extension_inactive:"模块已暂停，请先启用模块再操作。",
@@ -41,6 +41,10 @@ window.CompanionNativeExtensionManagement = (() => {
       this.audioOpen = saved?.audioOpen || false; this.audioDraft = saved?.audioDraft || null;
       this.cameraTestResult = saved?.cameraTestResult || null; this.cameraPreview = saved?.cameraPreview || null;
       this.mihomeFeedback = null;
+      this.mihomeManage = false;
+      this.mihomeOpen = new Set();
+      this.mihomeProfiles = {};
+      this.mihomeStatus = {};
       this.click = event => this.onClick(event);
       this.change = event => this.onChange(event);
       root.addEventListener("click", this.click); root.addEventListener("change", this.change);
@@ -67,6 +71,10 @@ window.CompanionNativeExtensionManagement = (() => {
       if (!this.record.management) {
         this.root.innerHTML = `<section class="native-management"><h4>连接与设备管理</h4><p>管理状态尚未读取。</p><button class="button small" type="button" data-native-management-refresh>重新读取管理状态</button><p data-native-action-notice role="status" aria-live="polite"></p></section>`;
       } else this.root.innerHTML = this.name === "reality" ? this.reality() : this.live();
+      const icons = this.root.querySelectorAll?.("[data-lucide]");
+      if (icons?.length && window.lucide?.createIcons) {
+        window.lucide.createIcons({ nodes: [...icons], attrs: { "aria-hidden": "true" } });
+      }
       if (this.name === "reality") {
         const cameraBody = this.root.querySelector("[data-native-camera-details] .native-management-body");
         if (cameraBody) cameraBody.insertAdjacentHTML("beforeend",
@@ -100,7 +108,14 @@ window.CompanionNativeExtensionManagement = (() => {
     }
     mihomeDevices(mi, logged, available) {
       const devices = Array.isArray(mi.devices) ? mi.devices : [];
-      if (!devices.length) return `<p class="native-management-muted">${!available ? "米家就绪后可登录并同步设备。" : logged ? "设备目录还是空的，点击同步设备读取。" : "登录后可以同步设备。"}</p>`;
+      if (!devices.length) {
+        const title = !available ? "米家还在准备" : logged ? "还没有同步到设备" : "先登录米家账号";
+        const note = !available ? "米家运行时暂不可用，稍后刷新管理状态。"
+          : logged ? "同步一次就能自动起好别名，之后只需要纠正。"
+          : "扫码登录后会自动同步设备并生成别名。";
+        return `<div class="mihome-empty"><span class="mihome-empty-icon"><i data-lucide="house-plug"></i></span>
+          <strong>${title}</strong><p>${note}</p></div>`;
+      }
       const settings = this.record.settings?.mihome || {}, managed = mi.tool_settings || {};
       const storedControl = settings.control_tool && typeof settings.control_tool === "object" ? settings.control_tool : {};
       const managedControl = managed.control_tool && typeof managed.control_tool === "object" ? managed.control_tool : {};
@@ -109,32 +124,211 @@ window.CompanionNativeExtensionManagement = (() => {
       const readonly = settings.enable_readonly_tool === true
         || settings.enable_readonly_tool === undefined && managed.enable_readonly_tool === true;
       const controlEnabled = control.enable === true;
-      const rows = devices.map(device => {
-        const aliases = Array.isArray(device.aliases) ? device.aliases.filter(alias => typeof alias === "string" && alias.trim()) : [];
-        const controls = aliases.length ? aliases.map(alias => {
-          const actions = [];
-          if (readonly) actions.push(this.button("mihome_device_status", "读取状态", `data-native-mihome-alias="${escape(alias)}"`));
-          if (controlEnabled && allowed.has(alias)) {
-            actions.push(this.button("mihome_control_power", "开机", `data-native-mihome-alias="${escape(alias)}" data-native-mihome-power="true"`));
-            actions.push(this.button("mihome_control_power", "关机", `data-native-mihome-alias="${escape(alias)}" data-native-mihome-power="false"`));
-          } else if (!allowed.has(alias)) {
-            actions.push(`<button class="button small" type="button" data-native-mihome-allow="${escape(alias)}">${controlEnabled ? "允许此设备" : "允许并启用控制"}</button>`);
-          } else {
-            actions.push(`<button class="button small" type="button" data-native-mihome-enable-control>启用设备控制</button>`);
-          }
-          return `<div class="native-mihome-alias"><code>${escape(alias)}</code><div class="native-mihome-alias-actions">${actions.join("")}</div></div>`;
-        }).join("") : `<span class="native-management-muted">未设置别名，暂不可互动</span>`;
-        return `<tr><td><strong>${escape(device.name || device.did || "设备")}</strong><small>${escape(device.model || "")}</small></td>`
-          + `<td>${escape([device.home_name, device.room_name].filter(Boolean).join(" · ") || device.room || "—")}</td>`
-          + `<td><span class="native-mihome-state state-${device.online === true ? "online" : device.online === false ? "offline" : "unknown"}">${device.online === true ? "在线" : device.online === false ? "离线" : "尚未读取"}</span></td>`
-          + `<td>${controls}</td></tr>`;
-      }).join("");
+      const categories = Array.isArray(mi.categories) && mi.categories.length ? mi.categories : ["无类别"];
+      const mappingRows = Array.isArray(mi.mappings) ? mi.mappings : [];
+      const categoryFor = alias => {
+        const row = mappingRows.find(item => item && item.alias === alias);
+        return row && categories.includes(row.category) ? row.category : "";
+      };
+      const categoryOf = device => {
+        const alias = (Array.isArray(device.aliases) ? device.aliases : [])[0] || "";
+        const configured = categoryFor(alias);
+        if (configured && configured !== "无类别") return configured;
+        const model = String(device.model || "").toLowerCase();
+        if (/acpartner|aircondition|lumi\.ac/.test(model)) return "空调类别";
+        if (/plug|socket|adswb|switch/.test(model)) return "开关类别";
+        if (/speaker|sound|wifispeaker/.test(model)) return "音箱类别";
+        if (/lamp|light|yeelink/.test(model)) return "灯";
+        if (/diffuser/.test(model)) return "香薰机";
+        if (/vacuum|sweep/.test(model)) return "扫地机类别";
+        if (/sensor_ht|thermo/.test(model)) return "温湿度计类别";
+        return configured || "无类别";
+      };
+      const glyphFor = category => ({"空调类别":"snowflake", "净化器类别":"wind", "风扇类别":"fan",
+        "扫地机类别":"bot", "音箱类别":"speaker", "开关类别":"toggle-left", "灯":"lightbulb",
+        "香薰机":"droplets", "温湿度计类别":"thermometer", "体脂秤类别":"scale",
+        "热水器类别":"flame", "路由器":"router", "门磁传感器类别":"door-open",
+        "燃气传感器类别":"flame-kindling"}[category] || "cpu");
+      const roomOf = device => String(device.room_name || "").trim() || "未分组";
+      const rooms = [];
+      for (const device of devices) {
+        const room = roomOf(device);
+        let group = rooms.find(item => item.room === room);
+        if (!group) rooms.push(group = {room, devices: []});
+        group.devices.push(device);
+      }
+      rooms.sort((left, right) => (left.room === "未分组" ? 1 : 0) - (right.room === "未分组" ? 1 : 0));
+      const online = devices.filter(device => device.online === true).length;
+      const offline = devices.filter(device => device.online === false).length;
+      const named = devices.filter(device => (device.aliases || []).length > 0);
+      const controllable = named.filter(device => (device.aliases || []).some(alias => allowed.has(alias))).length;
+      const locked = named.filter(device => !(device.aliases || []).some(alias => allowed.has(alias))).length;
+      const manage = this.mihomeManage === true;
+      const roomGlyph = room => ({"卧室":"bed-double", "客厅":"sofa", "书房":"book-open",
+        "餐厅":"utensils", "厨房":"cooking-pot", "浴室":"bath", "阳台":"sun",
+        "玄关":"door-open", "儿童房":"baby", "衣帽间":"shirt"}[room] || "door-closed");
+      const roomMarkup = rooms.map(group => `<section class="mihome-room">
+        <header class="mihome-room-head"><i class="mihome-room-icon" data-lucide="${roomGlyph(group.room)}"></i><h4>${escape(group.room)}</h4><span class="mihome-room-rule"></span><small>${group.devices.length} 台</small></header>
+        <div class="mihome-cards">${group.devices.map(device => this.mihomeCard(device, {
+          allowed, readonly, controlEnabled, manage, categories, room: group.room, category: categoryOf(device),
+          glyph: glyphFor(categoryOf(device)), categoryOptions: categories
+            .map(name => `<option value="${escape(name)}"${name === categoryOf(device) ? " selected" : ""}>${escape(name)}</option>`).join(""),
+        })).join("")}</div></section>`).join("");
+      const pendingAliases = devices.flatMap(device => Array.isArray(device.aliases) ? device.aliases : [])
+        .filter(alias => typeof alias === "string" && alias.trim() && !allowed.has(alias));
       const notes = [];
       if (!readonly) notes.push(`<span>状态读取未开启。</span><button class="button small" type="button" data-native-mihome-readonly>启用状态读取</button>`);
-      if (!controlEnabled) notes.push("<span>设备控制未开启；点击设备旁的允许按钮会同时启用控制并加入白名单。</span>");
-      else if (!allowed.size) notes.push("<span>控制白名单为空；先点设备旁的「允许此设备」。</span>");
-      const feedback = this.mihomeFeedback ? `<div class="native-mihome-feedback${this.mihomeFeedback.failed ? " is-error" : ""}" role="status"><strong>${escape(this.mihomeFeedback.alias || "设备")}</strong><p>${escape(this.mihomeFeedback.message || "")}</p></div>` : "";
-      return `<div class="native-management-table native-mihome-table"><table><thead><tr><th>设备</th><th>位置</th><th>状态</th><th>互动</th></tr></thead><tbody>${rows}</tbody></table></div>${notes.length ? `<div class="native-mihome-policy">${notes.join("")}</div>` : ""}${feedback}`;
+      if (pendingAliases.length && !locked) notes.push(`<button class="button small" type="button" data-native-mihome-allow-all>允许全部设备 · ${pendingAliases.length}</button>`);
+      if (controlEnabled && control.admin_only !== false) notes.push(`<span class="mihome-note"><i data-lucide="shield-check"></i>控制只允许核心管理员发起</span>`);
+      const feedback = this.mihomeFeedback ? `<div class="mihome-feedback${this.mihomeFeedback.failed ? " is-error" : ""}" role="status"><strong>${escape(this.mihomeFeedback.alias || "设备")}</strong><span>${escape(this.mihomeFeedback.message || "")}</span></div>` : "";
+      return `<section class="mihome-home">
+        <header class="mihome-hero">
+          <div class="mihome-hero-copy">
+            <span class="mihome-eyebrow">小米智能家居</span>
+            <h3>家里现在 <em>${online}</em> 台在线</h3>
+            <p>共 ${devices.length} 台设备${locked ? ` · ${locked} 台等待授权` : ""}${offline ? ` · ${offline} 台离线` : ""}</p>
+          </div>
+          <div class="mihome-hero-side">
+            <div class="mihome-stats">
+              <span><i class="mihome-stat-dot is-online"></i>在线<strong>${online}</strong></span>
+              <span><i class="mihome-stat-dot is-control"></i>可控<strong>${controllable}</strong></span>
+              <span><i class="mihome-stat-dot is-locked"></i>待授权<strong>${locked}</strong></span>
+            </div>
+            <button class="mihome-manage" type="button" data-native-mihome-manage aria-pressed="${manage}"><i data-lucide="${manage ? "check" : "pencil"}"></i>${manage ? "完成纠正" : "纠正设备"}</button>
+          </div>
+        </header>
+        ${roomMarkup}
+        ${manage ? `<div class="mihome-savebar"><span>改完别名或类别后保存；清空别名等于停止控制这台设备。</span><button class="button small" type="button" data-native-mihome-save-mappings>保存映射</button></div>` : ""}
+        ${notes.length ? `<div class="mihome-policy">${notes.join("")}</div>` : ""}${feedback}</section>`;
+    }
+    mihomeCard(device, {allowed, readonly, controlEnabled, manage, room, category, glyph, categoryOptions}) {
+      const aliases = (Array.isArray(device.aliases) ? device.aliases : [])
+        .filter(alias => typeof alias === "string" && alias.trim());
+      const primary = aliases[0] || "";
+      const open = primary && this.mihomeOpen.has(primary);
+      const status = primary ? (this.mihomeStatus[primary]?.properties || {}) : {};
+      const locked = aliases.length > 0 && !aliases.some(alias => allowed.has(alias));
+      const offline = device.online === false;
+      const on = status.on;
+      const tone = offline ? "offline" : locked ? "locked" : on === true ? "on" : on === false ? "off" : "unknown";
+      const metaParts = [];
+      if (status.mode != null) metaParts.push(String(status.mode));
+      if (status.target_temperature != null) metaParts.push(`${status.target_temperature}°C`);
+      if (status.brightness != null) metaParts.push(`亮度 ${status.brightness}`);
+      if (status.fan_level != null) metaParts.push(`风速 ${status.fan_level}`);
+      const stateText = offline ? "离线" : locked ? "待授权" : on === true ? "开" : on === false ? "关" : "未读";
+      const meta = metaParts.join(" · ") || (aliases.length
+        ? (locked ? "允许后即可控制" : Object.keys(status).length ? "状态可读取" : "状态未读取")
+        : "还没有别名");
+      const switchMarkup = controlEnabled && !locked && aliases.length
+        ? `<button class="mihome-switch" type="button" role="switch" aria-checked="${on === true}" data-native-mihome-power-toggle="${escape(primary)}"${offline ? " disabled" : ""}><span class="mihome-switch-track"><span class="mihome-switch-thumb"></span></span><span class="mihome-switch-text">${on === true ? "开" : on === false ? "关" : "开关"}</span></button>`
+        : "";
+      const allowMarkup = locked
+        ? `<button class="mihome-allow" type="button" data-native-mihome-allow="${escape(primary)}"><i data-lucide="unlock"></i>允许此设备</button>`
+        : "";
+      const detailMarkup = aliases.length && !locked
+        ? `<button class="mihome-link" type="button" data-native-mihome-detail="${escape(primary)}">${open ? "收起" : "调节"}</button>`
+        : "";
+      const editor = manage ? `<div class="mihome-edit"><label><span>别名</span><input type="text" maxlength="64" value="${escape(primary)}" placeholder="如 卧室灯" data-native-mihome-alias-input></label><label><span>类别</span><select data-native-mihome-category>${categoryOptions}</select></label></div>` : "";
+      const sheet = open ? `<div class="mihome-sheet"><div class="mihome-sheet-head"><span>调节</span><button class="mihome-icon-button" type="button" data-native-mihome-status="${escape(primary)}" title="刷新状态" aria-label="刷新状态"><i data-lucide="refresh-cw"></i></button></div>${this.mihomeControls(primary)}</div>` : "";
+      const categoryLabel = String(category || "").replace(/类别$/, "") || "设备";
+      return `<article class="mihome-card" data-native-mihome-row data-native-mihome-alias="${escape(primary)}" data-did="${escape(device.did || "")}" data-tone="${tone}">
+        <header class="mihome-card-head"><span class="mihome-glyph" aria-hidden="true"><i data-lucide="${glyph}"></i></span>
+          <div class="mihome-card-id"><strong>${escape(device.name || "设备")}</strong><small>${escape(room || "未分组")} · ${escape(categoryLabel)}</small></div>
+          <span class="mihome-dot" data-online="${device.online === true ? "true" : device.online === false ? "false" : "unknown"}" title="${device.online === true ? "在线" : device.online === false ? "离线" : "未读取"}"></span></header>
+        <div class="mihome-readout"><span class="mihome-value">${stateText}</span><span class="mihome-meta">${escape(meta)}</span></div>
+        <div class="mihome-card-actions">${switchMarkup}${allowMarkup}${detailMarkup}</div>
+        ${editor}${sheet}
+      </article>`;
+    }
+    mihomeControls(alias) {
+      const profile = this.mihomeProfiles[alias];
+      if (!profile) return `<p class="mihome-loading">正在读取设备能力…</p>`;
+      const status = this.mihomeStatus[alias]?.properties || {};
+      const labels = [...(profile.writable_properties || []), ...(profile.readable_properties || [])]
+        .reduce((map, item) => ({...map, [item.key]: item.name}), {});
+      const chips = Object.entries(status).slice(0, 6)
+        .filter(([, value]) => ["string", "number", "boolean"].includes(typeof value))
+        .map(([key, value]) => `<span class="mihome-chip">${escape(labels[key] || key)}<strong>${escape(typeof value === "boolean" ? (value ? "开" : "关") : String(value))}</strong></span>`).join("");
+      const fields = (profile.writable_properties || []).filter(item => item.key !== "on").map(item => {
+        const current = status[item.key];
+        const label = `<span class="mihome-field-label">${escape(item.name)}</span>`;
+        if (item.kind === "select" && (item.options || []).length) {
+          return `<div class="mihome-field">${label}<div class="mihome-segment">${item.options.map(option =>
+            `<button type="button" class="${String(current) === option ? "is-active" : ""}" data-native-mihome-set="${escape(item.key)}" data-native-mihome-set-alias="${escape(alias)}" data-native-mihome-value="${escape(option)}">${escape(option)}</button>`).join("")}</div></div>`;
+        }
+        return `<div class="mihome-field">${label}<div class="mihome-stepper">
+          <button type="button" data-native-mihome-step="-1" data-native-mihome-step-alias="${escape(alias)}" data-native-mihome-step-key="${escape(item.key)}" aria-label="减小">−</button>
+          <input type="number" data-native-mihome-prop="${escape(item.key)}" value="${escape(current ?? item.examples?.[0] ?? "")}"${item.minimum != null ? ` min="${item.minimum}"` : ""}${item.maximum != null ? ` max="${item.maximum}"` : ""}>
+          <button type="button" data-native-mihome-step="1" data-native-mihome-step-alias="${escape(alias)}" data-native-mihome-step-key="${escape(item.key)}" aria-label="增大">+</button>
+          <button class="mihome-apply" type="button" data-native-mihome-apply="${escape(item.key)}" data-native-mihome-apply-alias="${escape(alias)}">应用</button></div></div>`;
+      }).join("");
+      const reason = profile.unsupported_reason ? `<p class="mihome-hint">${escape(profile.unsupported_reason)}</p>` : "";
+      return `<div class="mihome-controls">${chips ? `<div class="mihome-chips">${chips}</div>` : ""}${reason}${fields || (!reason ? `<p class="mihome-hint">这台设备只支持开关，没有可调属性。</p>` : "")}</div>`;
+    }
+    async saveMihomeMappings() {
+      if (this.busy || this.blocked || !this.current()) return;
+      const rows = [];
+      this.root.querySelectorAll("[data-native-mihome-row]").forEach(row => {
+        const alias = String(row.querySelector("[data-native-mihome-alias-input]")?.value || "").trim();
+        const category = String(row.querySelector("[data-native-mihome-category]")?.value || "无类别");
+        rows.push({alias, did: String(row.dataset.did || ""), category});
+      });
+      if (rows.some(row => row.alias.length > 64)) {
+        this.notice("设备别名最多 64 个字，请缩短后再保存。", true);
+        return;
+      }
+      this.mihomeFeedback = null;
+      await this.run("mihome_save_mappings", {mappings: rows});
+    }
+    toggleMihomeManage() {
+      this.mihomeManage = !this.mihomeManage;
+      this.render();
+    }
+    async toggleMihomeCard(alias) {
+      if (!alias || this.busy) return;
+      if (this.mihomeOpen.has(alias)) {
+        this.mihomeOpen.delete(alias);
+        this.render();
+        return;
+      }
+      this.mihomeOpen.add(alias);
+      this.render();
+      if (!this.mihomeProfiles[alias]) await this.run("mihome_device_profile", {alias});
+      await this.run("mihome_device_status", {alias});
+      if (this.current()) this.render();
+    }
+    async toggleMihomePower(alias) {
+      if (!alias || this.busy) return;
+      const on = this.mihomeStatus[alias]?.properties?.on === true;
+      await this.run("mihome_control_power", {alias, is_on: !on});
+    }
+    async applyMihomeProperty(alias, key, explicitValue) {
+      if (!alias || !key || this.busy) return;
+      let value = explicitValue;
+      if (value == null) {
+        const card = [...this.root.querySelectorAll("[data-native-mihome-alias]")]
+          .find(node => node.dataset.nativeMihomeAlias === alias);
+        const input = card ? [...card.querySelectorAll("[data-native-mihome-prop]")]
+          .find(node => node.dataset.nativeMihomeProp === key) : null;
+        value = input ? String(input.value || "").trim() : "";
+      }
+      if (!value) {
+        this.notice("先填写要设置的值。", true);
+        return;
+      }
+      await this.run("mihome_device_action", {alias, action: key, value});
+      if (this.current()) await this.run("mihome_device_status", {alias});
+    }
+    adjustMihomeStep(button) {
+      const input = button.closest?.(".mihome-stepper")?.querySelector("input");
+      if (!input) return;
+      const step = Number(button.dataset.nativeMihomeStep) || 1;
+      const current = Number(input.value);
+      const next = (Number.isFinite(current) ? current : 0) + step;
+      const minimum = input.min === "" ? -Infinity : Number(input.min);
+      const maximum = input.max === "" ? Infinity : Number(input.max);
+      input.value = String(Math.min(maximum, Math.max(minimum, next)));
     }
     camera(data) {
       const users = Array.isArray(data.users) ? data.users : [], camera = data.camera || {};
@@ -175,13 +369,16 @@ window.CompanionNativeExtensionManagement = (() => {
         <p class="native-management-muted">${escape(user?.label || this.cameraUser || "尚未选择用户")} · ${consented ? "本人音频授权已生效" : "准备授权后，将提示文字发到本人的私聊，由本人确认。"}</p>
         <div class="native-management-actions">${this.button("request_audio_consent")}${this.button("revoke_audio_consent")}</div>
         <fieldset class="native-management-policy"><legend>主动语音</legend><label class="native-management-consent"><input type="checkbox" data-native-audio-proactive ${policy.proactive_voice_enabled ? "checked" : ""}>将主动联系同步播放到本机</label>${number("policy_volume","主动语音音量（0–100）",policy.playback_volume ?? 35,0,100)}${this.button("update_audio_policy")}</fieldset>
-        <fieldset class="native-management-policy"><legend>叫醒安排</legend><label class="native-management-consent"><input type="checkbox" data-native-alarm-enabled ${alarm.enabled ? "checked" : ""}>启用此用户的叫醒安排</label><label class="native-management-field">叫醒时间<input type="time" data-native-alarm-time value="${escape(alarm.time || "07:30")}"></label>
-        <div class="native-management-days" role="group" aria-label="重复日期">${["周一","周二","周三","周四","周五","周六","周日"].map((label,index) => `<label class="native-management-consent"><input type="checkbox" data-native-alarm-day="${index}" ${days.includes(index) ? "checked" : ""}>${label}</label>`).join("")}</div>
-        <label class="native-management-field">叫醒话题<input type="text" data-native-alarm-message maxlength="240" value="${escape(alarm.message || "")}" placeholder="例如提醒吃早餐，文案由角色生成"></label>
-        <label class="native-management-field">通知方式<select data-native-alarm-delivery>${modes.map(([value,title]) => `<option value="${value}" ${value === (alarm.delivery_mode || "chat_on_failure") ? "selected" : ""}>${title}</option>`).join("")}</select></label>
-        <div class="native-management-grid">${[["playback_volume","叫醒音量（0–100）",alarm.playback_volume ?? 35,0,100],["repeat_count","每次播放次数",alarm.repeat_count ?? 1,1,6],["repeat_interval_seconds","播放间隔（秒）",alarm.repeat_interval_seconds ?? 20,5,300],["snooze_minutes","稍后再叫（分钟）",alarm.snooze_minutes ?? 10,1,120],["volume_step","每次递增音量",alarm.volume_step ?? 8,0,30],["max_volume","最大音量（0–100）",alarm.max_volume ?? 70,0,100],["fade_in_ms","音量渐入（毫秒）",alarm.fade_in_ms ?? 800,0,5000]].map(args => number(...args)).join("")}</div>
-        <label class="native-management-consent"><input type="checkbox" data-native-alarm-ack ${alarm.require_acknowledgement !== false ? "checked" : ""}>在私聊中确认起床后停止</label>
-        <div class="native-management-actions">${this.button("save")}${this.button("disable")}${this.button("stop_session")}${this.button("test")}</div><p class="native-management-muted">${alarm.next_trigger_text ? `下次叫醒：${escape(alarm.next_trigger_text)}` : "尚无下次叫醒时间"}${alarm.contact_session?.status ? ` · 本次状态：${escape(alarm.contact_session.status)}` : ""}</p></fieldset>
+        <fieldset class="native-management-policy"><legend>早晨照料</legend>
+        <label class="native-management-consent"><input type="checkbox" data-native-alarm-enabled ${alarm.enabled ? "checked" : ""}>在早晨试着叫你，而不是按闹钟执行</label>
+        <p class="native-management-muted">它会先看你醒没醒；叫一次没回应才继续，最晚到「约定时间」就停。需要本人完成本机语音授权后才会出声。</p>
+        <div class="native-management-grid">
+          <label class="native-management-field">大概几点起<input type="time" data-native-alarm-time value="${escape(alarm.time || "07:30")}"></label>
+          <label class="native-management-field">最晚（可选）<input type="time" data-native-alarm-deadline value="${escape(alarm.deadline || "")}"></label>
+          <label class="native-management-field">怎么叫<select data-native-alarm-mode>${[["gentle","轻一点"],["normal","正常"],["persistent","执着一点"]].map(([value,title]) => `<option value="${value}" ${value === (alarm.mode || "normal") ? "selected" : ""}>${title}</option>`).join("")}</select></label>
+        </div>
+        <label class="native-management-field">想让你记得的事（可选）<input type="text" data-native-alarm-message maxlength="240" value="${escape(alarm.message || "")}" placeholder="例如提醒吃早餐，文案由角色生成"></label>
+        <div class="native-management-actions">${this.button("save")}${this.button("disable")}${this.button("stop_session")}${this.button("test")}</div><p class="native-management-muted">${alarm.next_trigger_text ? `下次：${escape(alarm.next_trigger_text)}` : "尚未安排"}${alarm.contact_session?.status ? ` · 本次：${escape(alarm.contact_session.status)}` : ""}</p></fieldset>
         ${reminders.length ? `<fieldset class="native-management-policy"><legend>待办提醒</legend><ul class="native-management-reminders">${reminders.map(row => `<li><span>${escape(row.scheduled_text || "时间待确认")} · ${escape(row.topic || "提醒")}</span>${this.button("cancel_reminder","取消这条提醒",`data-native-reminder-id="${escape(row.id)}"`)}</li>`).join("")}</ul></fieldset>` : ""}
       </div></details>`;
     }
@@ -235,8 +432,8 @@ window.CompanionNativeExtensionManagement = (() => {
       const policy = user?.policy || {}, alarm = user?.alarm || {};
       return {device_id:output.selected_device_id || "system_default", output_volume:output.playback_volume ?? 35,
         policy:{proactive_voice_enabled:policy.proactive_voice_enabled === true, playback_volume:policy.playback_volume ?? 35},
-        alarm:{enabled:alarm.enabled === true, time:alarm.time || "07:30", message:alarm.message || "",
-          delivery_mode:alarm.delivery_mode || "chat_on_failure", require_acknowledgement:alarm.require_acknowledgement !== false,
+        alarm:{enabled:alarm.enabled === true, time:alarm.time || "07:30", deadline:alarm.deadline || "",
+          mode:alarm.mode || "normal", message:alarm.message || "",
           days:Array.isArray(alarm.days) ? alarm.days : [0,1,2,3,4,5,6],
           playback_volume:alarm.playback_volume ?? 35, repeat_count:alarm.repeat_count ?? 1,
           repeat_interval_seconds:alarm.repeat_interval_seconds ?? 20, snooze_minutes:alarm.snooze_minutes ?? 10,
@@ -249,11 +446,9 @@ window.CompanionNativeExtensionManagement = (() => {
       };
       const alarm = {enabled:this.root.querySelector("[data-native-alarm-enabled]").checked,
         time:this.root.querySelector("[data-native-alarm-time]").value,
-        message:this.root.querySelector("[data-native-alarm-message]").value,
-        delivery_mode:this.root.querySelector("[data-native-alarm-delivery]").value,
-        require_acknowledgement:this.root.querySelector("[data-native-alarm-ack]").checked,
-        days:[...this.root.querySelectorAll("[data-native-alarm-day]:checked")].map(node => Number(node.dataset.nativeAlarmDay))};
-      for (const key of ["playback_volume","repeat_count","repeat_interval_seconds","snooze_minutes","volume_step","max_volume","fade_in_ms"]) alarm[key] = value(key);
+        deadline:this.root.querySelector("[data-native-alarm-deadline]").value,
+        mode:this.root.querySelector("[data-native-alarm-mode]").value,
+        message:this.root.querySelector("[data-native-alarm-message]").value};
       return {device_id:this.root.querySelector("[data-native-audio-device]").value, output_volume:value("output_volume"),
         policy:{proactive_voice_enabled:this.root.querySelector("[data-native-audio-proactive]").checked, playback_volume:value("policy_volume")}, alarm};
     }
@@ -321,8 +516,14 @@ window.CompanionNativeExtensionManagement = (() => {
         }
         this.options.onRecord?.(record);
         if (!this.current()) return;
+        if (action === "mihome_device_profile") {
+          const alias = String(payload?.alias || "");
+          if (alias && record.result) this.mihomeProfiles[alias] = record.result;
+        }
         if (action === "mihome_device_status") {
+          const alias = String(payload?.alias || "");
           const result = record.result || {};
+          if (alias && result) this.mihomeStatus[alias] = result;
           const propertyLabels = {on:"开关", power:"功率", brightness:"亮度", color_temperature:"色温",
             mode:"模式", temperature:"温度", humidity:"湿度", battery:"电量"};
           const properties = Object.entries(result.properties || {})
@@ -336,12 +537,19 @@ window.CompanionNativeExtensionManagement = (() => {
           this.mihomeFeedback = {alias:String(payload?.alias || "设备"), failed:!confirmed,
             message:`${payload?.is_on === true ? "开机" : "关机"}${confirmed ? "已确认执行。" : "已发出，但设备未确认；请刷新状态核对。"}`};
         }
+        if (action === "mihome_device_action") {
+          const confirmed = record.result?.confirmed === true;
+          this.mihomeFeedback = {alias:String(payload?.alias || "设备"), failed:!confirmed,
+            message:`${payload?.action || "设置"}：${confirmed ? "已确认执行。" : "已发出，但设备未确认；请刷新状态核对。"}`};
+        }
         this.render();
         if (record.result?.confirmation_required) this.notice(record.result.prompt || "请由本人在私聊中完成音频授权确认。");
         else if (action === "request_auth" && record.management.authenticated !== true) this.notice("授权还未完成。请到 VTube Studio 弹窗中点“允许”，再重新连接核对。", true);
         else if (action === "mihome_start_login") { this.reads = 0; this.notice("登录已发起，正在生成二维码；显示后用米家 App 扫描并确认。"); this.scheduleRead(); }
+        else if (action === "mihome_sync_devices") this.notice("设备已同步；原本没有别名的设备已按米家名称自动填好，确认后点「允许全部设备」即可。");
         else if (action === "test_camera") this.notice(this.cameraTestResult.message, this.cameraTestResult.status === "error");
-        else if (action === "mihome_device_status" || action === "mihome_control_power") this.notice(this.mihomeFeedback?.message || "设备操作已完成。", this.mihomeFeedback?.failed === true);
+        else if (action === "mihome_device_status" || action === "mihome_control_power" || action === "mihome_device_action") this.notice(this.mihomeFeedback?.message || "设备操作已完成。", this.mihomeFeedback?.failed === true);
+        else if (action === "mihome_device_profile") { /* 卡片展开本身就是反馈 */ }
         else this.notice(`${actionNames[action] || "操作"}已完成。`);
       } catch (error) {
         if (this.current()) {
@@ -387,6 +595,21 @@ window.CompanionNativeExtensionManagement = (() => {
         ? `已允许 ${alias}，并启用设备控制。`
         : `已允许 ${alias} 的设备控制。`);
     }
+    async allowAllMihomeAliases() {
+      const control = this.record.settings?.mihome?.control_tool || {};
+      const allowed = this.mihomeStringList(control.allowed_devices);
+      for (const device of this.record.management?.mihome?.devices || []) {
+        for (const alias of Array.isArray(device.aliases) ? device.aliases : []) {
+          if (typeof alias === "string" && alias.trim() && !allowed.includes(alias)) allowed.push(alias);
+        }
+      }
+      if (!allowed.length) {
+        this.notice("还没有可用别名，请先同步设备。", true);
+        return;
+      }
+      await this.updateMihomeConfig({control_tool:{allowed_devices:allowed, enable:true}},
+        `已允许全部 ${allowed.length} 台设备，并启用控制。`);
+    }
     payload(action, button) {
       if (action === "mihome_login_status") return {qr_revision:this.record.management?.mihome?.login?.qr_revision || ""};
       if (action === "mihome_device_status" || action === "mihome_control_power") {
@@ -403,9 +626,8 @@ window.CompanionNativeExtensionManagement = (() => {
         if (!user_id) throw new Error("先选择已有私聊的用户。");
         if (action === "update_audio_policy") return {user_id, ...draft.policy};
         if (action === "save") {
-          if (!draft.alarm.time || !draft.alarm.days.length) throw new Error("请选择叫醒时间和至少一个重复日期。");
-          const invalid = [...this.root.querySelectorAll("[data-native-audio-input]")].find(node => !node.value.trim() || !node.checkValidity());
-          if (invalid) { invalid.focus(); throw new Error("请填写范围内的整数音量与叫醒参数。"); }
+          if (!draft.alarm.time) throw new Error("请选择大概的起床时间。");
+          if (draft.alarm.deadline && draft.alarm.deadline <= draft.alarm.time) throw new Error("最晚时间需要晚于起床时间。");
           return {user_id, ...draft.alarm};
         }
         if (action === "test") return {user_id, playback_volume:draft.alarm.playback_volume, message:draft.alarm.message};
@@ -439,6 +661,34 @@ window.CompanionNativeExtensionManagement = (() => {
       }
       if (button.hasAttribute("data-native-mihome-allow")) {
         void this.allowMihomeAlias(button.dataset.nativeMihomeAllow); return;
+      }
+      if (button.hasAttribute("data-native-mihome-allow-all")) {
+        void this.allowAllMihomeAliases(); return;
+      }
+      if (button.hasAttribute("data-native-mihome-manage")) {
+        this.toggleMihomeManage(); return;
+      }
+      if (button.hasAttribute("data-native-mihome-detail")) {
+        void this.toggleMihomeCard(button.dataset.nativeMihomeDetail); return;
+      }
+      if (button.hasAttribute("data-native-mihome-power-toggle")) {
+        void this.toggleMihomePower(button.dataset.nativeMihomePowerToggle); return;
+      }
+      if (button.hasAttribute("data-native-mihome-status")) {
+        void this.run("mihome_device_status", {alias: button.dataset.nativeMihomeStatus}); return;
+      }
+      if (button.hasAttribute("data-native-mihome-apply")) {
+        void this.applyMihomeProperty(button.dataset.nativeMihomeApplyAlias, button.dataset.nativeMihomeApply); return;
+      }
+      if (button.hasAttribute("data-native-mihome-set")) {
+        void this.applyMihomeProperty(button.dataset.nativeMihomeSetAlias,
+          button.dataset.nativeMihomeSet, button.dataset.nativeMihomeValue); return;
+      }
+      if (button.hasAttribute("data-native-mihome-step")) {
+        this.adjustMihomeStep(button); return;
+      }
+      if (button.hasAttribute("data-native-mihome-save-mappings")) {
+        void this.saveMihomeMappings(); return;
       }
       if (button.hasAttribute("data-native-mihome-enable-control")) {
         void this.updateMihomeConfig({control_tool:{enable:true}}, "设备控制已启用。"); return;

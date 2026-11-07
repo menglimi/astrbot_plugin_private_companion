@@ -352,6 +352,7 @@ class NativeConversationInput:
     forwards: tuple[CapturedForward, ...] = ()
     audios: tuple[CapturedAudio, ...] = ()
     videos: tuple[CapturedVideo, ...] = ()
+    merged_event_ids: tuple[str, ...] = ()
 
 
 NativePrivateInput = NativeConversationInput  # Preserve the private adapter's public snapshot name.

@@ -7,8 +7,14 @@ Pillow>=12,<15
 tzdata>=2025.2; sys_platform == "win32"
 # QWeather official-alert JWT signing (AstrBot's bundled runtime already includes it).
 cryptography>=42
-# Explicit lunar anniversaries in proactive greetings.
-lunarcalendar>=0.0.9
+# Lunar dates for the date context. ``lunardate`` is pure Python; the older
+# ``lunarcalendar`` pulls the compiled ``ephem`` extension into AstrBot's
+# shared plugin site-packages. AstrBot 4.29 preloads those dependencies and
+# refuses to swap an already loaded C extension, so a second ephem copy makes
+# every plugin load log a dependency-conflict warning. The conversation layer
+# already prefers ``lunardate`` and can also fall back to a manually installed
+# ``lunarcalendar``.
+lunardate>=0.2
 # Bounded execution for administrator-configured presentation cleanup patterns.
 regex>=2024.11.6
 # Attachment text extraction (astrbot_host/files/parsing.py). These are imported

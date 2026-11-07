@@ -1,4 +1,4 @@
-﻿/* 闄即灏忓眿澶栧３甯冨眬銆? *
+/* 闄即灏忓眿澶栧３甯冨眬銆? *
  * 鏂偣灏哄害锛堥〉闈㈢骇锛屽彧鏈夎繖鍑犳。锛涙柊澧為〉闈㈢骇瑙勫垯璇锋寕鍒板叾涓竴妗ｏ級锛? *   360   瓒呯獎鎵嬫満锛堝鑸敹鍒版渶灏忋€侀潰鏉垮崟鍒楋級
  *   520   绐勬墜鏈猴紙涓ゅ垪缃戞牸鏀舵垚涓€鍒楋級
  *   650   鎵嬫満妯睆 / 灏忓钩鏉? *   760   骞虫澘绔栧睆锛氬乏鏍忓彉鎴愭í鍚戝浘鏍囨潯
@@ -180,6 +180,31 @@
   color: var(--t-text-faint);
 }
 
+/* 左栏展开开关。只在「图标条」档位（761–1120px）出现：宽屏左栏本来就有名称，
+   手机上是一条带文字的横向导航带，都不需要它。展开后左栏回到 --shell-rail，
+   分组标题与每一项的名称一起回来；收起时只留图标，和这一档原有的样子一致。 */
+.rail-toggle {
+  display: none;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 32px;
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm, var(--r-xs));
+  background: transparent;
+  color: var(--t-text-faint);
+  font: inherit;
+  font-size: var(--fs-tiny);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.rail-toggle:hover { background: var(--t-surface-soft); color: var(--t-text); }
+.rail-toggle:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 2px; }
+.rail-toggle i { width: 15px; height: 15px; flex: none; }
+.rail-toggle span { display: none; }
+
 /* === 涓讳綋 === */
 .shell-body {
   grid-area: body;
@@ -212,6 +237,22 @@
   #homeShell .shell-nav-link span { display: none; }
   #homeShell .shell-nav-link { justify-content: center; padding-inline: 0; }
   #homeShell .rail-foot .shell-nav-link { justify-content: center; }
+  /* 图标条档位的展开态。展开是栅格列变宽而不是浮层：内容跟着让位，不会
+     盖住正在填的表单；窄屏上多占的 152px 也还在可用范围内。 */
+  .rail-toggle { display: flex; justify-content: center; padding-inline: 0; }
+  #homeShell[data-rail="expanded"] { grid-template-columns: var(--shell-rail) minmax(0, 1fr); }
+  #homeShell[data-rail="expanded"] .rail { padding-inline: var(--sp-3); }
+  #homeShell[data-rail="expanded"] .rail-brand { justify-content: flex-start; padding-inline: var(--sp-2); }
+  #homeShell[data-rail="expanded"] .rail-brand > span:not(.brand-symbol),
+  #homeShell[data-rail="expanded"] .shell-nav-title,
+  #homeShell[data-rail="expanded"] .shell-nav-link span { display: block; }
+  #homeShell[data-rail="expanded"] .shell-nav-link,
+  #homeShell[data-rail="expanded"] .rail-foot .shell-nav-link {
+    justify-content: flex-start;
+    padding-inline: var(--sp-2);
+  }
+  #homeShell[data-rail="expanded"] .rail-toggle { justify-content: flex-start; padding-inline: var(--sp-2); }
+  #homeShell[data-rail="expanded"] .rail-toggle span { display: inline; }
 }
 @media (max-width: 760px) {
   /* #homeShell 鐨勪袱琛岃鍒嗗紑绠楋細宸︽爮鏄唴瀹归珮搴︼紝涓讳綋鍚冩帀鍓╀笅鐨勮鍙ｃ€?     涓よ閮界暀 auto 鏃讹紝鏍呮牸鐨?align-content:normal锛堢瓑浠?stretch锛変細鎶婂墿浣欑┖闂?     骞虫憡缁欎袱琛屸€斺€斿乏鏍忛偅涓€琛岃鎷夐珮锛岃€屽乏鏍忚嚜宸?align-self:start 浠嶆槸 56px锛?     浜庢槸鍐呭闈㈡澘涓婃柟绌哄嚭涓€鏉?259px 鐨勭敾甯冭壊妯甫锛堢缉鐣ユ€佸挨鍏舵槑鏄撅細

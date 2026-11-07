@@ -56,14 +56,28 @@ DECLARATION = re.compile(r"--([a-z0-9-]+)\s*:")
 HARDCODED_BASELINE = {
     "styles.css": 274,          # 外壳 + 未迁移旧页面的共用样式，最大一块，留到最后
     "product-page.css": 22,
-    "navigation.css": 17,       # 死掉的 .mobile-nav/#mainNav 分支删除后从 20 降到 17
+    # 「全部功能」浮层迁到 --t-* 令牌后从 17 降到 4。剩下的是 ::backdrop 的
+    # 压暗遮罩（它必须始终比页面暗，不能跟着主题文字色走），以及 .rail-links /
+    # .nav-group 三段已无 JS 生成的旧样式。
+    "navigation.css": 4,
     "shell.css": 2,
     "contact-page.css": 1,
     # 缓存分析图的数据序列色（绿/青/紫/金四色）。它们是图表数据编码，
     # 不是界面色：换主题时数据序列必须保持同一套颜色，否则同一张图
     # 在不同主题下会读成不同的东西。这是明确保留的例外，不是待还的债。
     "maintenance-page.css": 8,
+    # 图片上的压暗渐变与叠在上面的白字：必须始终比照片暗，跟着主题变会让
+    # 亮色主题下的缩略图标题直接看不见。固定值是有意的，不是漏改。
+    "output-page.css": 2,
+    # 卡片阴影与虚线上的一层白色蒙层：固定透明度的阴影在六套主题下都成立，
+    # 换成随主题变的颜色反而会让暗色主题的浮起感消失。
+    "setup-guide.css": 1,
 }
+
+# 生成物：bundle.css 是 css-sources.json 按序拼接的产物，里面的色值是从源
+# 文件复制的副本。要抓的问题在源文件上（上面那张表），对拼接产物再数一遍
+# 只会让同一个数字翻倍，且永远无法归零。
+GENERATED_STYLESHEETS = {"bundle.css"}
 
 # tokens.css 本身是色值的唯一来源，不参与第 4 条。
 # tokens-bridge.css 只做旧变量名桥接，它的色值引用都指向令牌，同样豁免。
@@ -253,7 +267,7 @@ def main() -> int:
     over_budget: list[str] = []
     migrated: list[str] = []
     for path in sorted(PAGE_DIR.glob("*.css")):
-        if path.name in COLOR_SOURCE_EXEMPT:
+        if path.name in COLOR_SOURCE_EXEMPT or path.name in GENERATED_STYLESHEETS:
             continue
         count = len(hardcoded_colors(path))
         budget = HARDCODED_BASELINE.get(path.name, 0)

@@ -8,6 +8,7 @@ const vm = require("node:vm");
 const ROOT = path.join(__dirname, "..");
 const PAGE = path.join(ROOT, "pages", "陪伴小屋");
 const HOST = "astrbot_plugin_private_companion";
+const {assertStylesheetBundled} = require("./page-styles.cjs");
 
 test("学习工作台按导航加载每个真实数据模块", () => {
   const app = fs.readFileSync(path.join(PAGE, "app.js"), "utf8");
@@ -44,9 +45,9 @@ test("学习工作台按导航加载每个真实数据模块", () => {
   assert.match(review, /state:"active"/);
   assert.match(review, /state:"decided"/);
   assert.doesNotMatch(review, /CompanionProduct\.role|CompanionProduct\.target/);
-  assert.match(html, /self-review-page\.css/);
+  assertStylesheetBundled("self-review-page.css");
   assert.match(html, /self-review-page\.js/);
-  assert.match(html, /learning-hub\.css/);
+  assertStylesheetBundled("learning-hub.css");
   assert.match(html, /learning-overview\.js/);
   assert.match(html, /learning-review-page\.js/);
   assert.match(html, /expression-signals-page\.js/);

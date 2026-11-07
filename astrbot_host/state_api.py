@@ -1,6 +1,8 @@
 """Authenticated state and calendar API for the host's original pinned target."""
 
+import asyncio
 import json
+from datetime import timedelta
 
 from astrbot.api.web import request
 from companion_v2.execution.models import TaskError, require
@@ -8,6 +10,7 @@ from companion_v2.foundation.outcome import Outcome
 from companion_v2.role_work.state.management import StateManagement
 from companion_v2.agenda.planning_config import configured_weather_location, configured_weather_max_age
 from companion_v2.agenda.weather_reading import WeatherReading
+from companion_v2.proactive.weather_alerts import active_official_alerts
 from companion_v2.role_work.state.configuration import GROUP, target_for
 from .growth_api import _source
 from .management_identity import dashboard_operator
@@ -20,6 +23,34 @@ class StateWebAPI:
         self.controller = controller
         self._weather_application = None
         self._weather_reading = None
+        self._alert_cache = None
+
+    async def _alerts(self, app, location, now):
+        """Current official alerts for the role location, cached for five minutes."""
+        cached = self._alert_cache
+        if (cached is not None and cached[0] is app and cached[1] == location
+                and timedelta(0) <= now - cached[2] < timedelta(minutes=5)):
+            return cached[3]
+        events = getattr(getattr(app, "contact_schedule", None), "official_alert_events", None)
+        port = getattr(events, "port", None)
+        if port is None:
+            return []
+        try:
+            observation = await asyncio.wait_for(port.fetch(location), timeout=6)
+            active = active_official_alerts(observation, location, now)
+            alerts = [{
+                "title": item.headline,
+                "event_name": item.event_name,
+                "severity": item.severity,
+                "sender_name": item.sender_name,
+                "issued_at": item.issued_at.isoformat(),
+                "ends_at": item.expires_at.isoformat(),
+                "description": item.description,
+            } for item in active]
+        except Exception:
+            return []
+        self._alert_cache = (app, location, now, alerts)
+        return alerts
 
     def routes(self):
         return [(PREFIX, self.status, ["GET"], "Read role state and calendar"),
@@ -107,6 +138,7 @@ class StateWebAPI:
 
             result = await reading.read(port, location, max_age=configured_weather_max_age(settings),
                 now=app.now, force=force)
+            alerts = await self._alerts(app, location, app.now())
 
             async with controller._control_lock:
                 current_app, current_context, current_settings = self._weather_context()
@@ -117,8 +149,9 @@ class StateWebAPI:
                         or configured_weather_max_age(current_settings) != configured_weather_max_age(settings)
                         or app.calendar_planning.weather_port is not port):
                     raise TaskError("weather_settings_changed", "weather settings changed during the read")
-                return outcome_response(Outcome.success({**result, "timezone":current_settings["planning_timezone"],
-                    "server_time":app.now().isoformat()}))
+                return outcome_response(Outcome.success({**result, "alerts": alerts,
+                    "timezone": current_settings["planning_timezone"],
+                    "server_time": app.now().isoformat()}))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, OverflowError):

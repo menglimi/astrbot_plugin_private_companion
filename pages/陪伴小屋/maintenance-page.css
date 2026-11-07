@@ -1376,7 +1376,7 @@
 .maint-prompt-section > .maint-panel-heading { align-items: flex-end; margin:0; }
 .maint-prompt-section .maint-scope-note { display: flex; align-items: center; gap:var(--sp-1); margin:var(--sp-2) 0 0; color: var(--t-text-faint); font-size:var(--fs-micro); line-height: 1.45; }
 .maint-prompt-section .maint-scope-note svg { width: 13px; height: 13px; color: var(--t-accent-ink); }
-.maint-prompt-summary { display:flex; align-items:center; gap:var(--sp-3); color:var(--t-text-faint); font-size:var(--fs-micro); white-space:nowrap; }
+.maint-prompt-summary { display:flex; align-items:center; flex-wrap:wrap; justify-content:flex-end; gap:var(--sp-3); color:var(--t-text-faint); font-size:var(--fs-micro); white-space:nowrap; }
 .maint-prompt-summary span { display:flex; align-items:baseline; gap:var(--sp-1); }
 .maint-prompt-summary strong { color:var(--t-text-strong); font-size:var(--fs-body); font-variant-numeric:tabular-nums; }
 .maint-prompt-workspace { display: grid; grid-template-columns: minmax(235px, .72fr) minmax(0, 1.8fr); align-items:start; gap:var(--sp-3); min-width: 0; }
@@ -1902,6 +1902,47 @@
 .maint-budget-limits > .maint-budget-limit--hard { color:var(--t-risk); }
 .maint-budget-meterline .maint-budget-tick { position:absolute; top:17px; left:var(--limit-pos,100%); width:2px; height:14px; border-radius:1px; background:var(--t-warn); transform:translateX(-1px); }
 .maint-budget-block[data-state="warn"] .maint-budget-tick { box-shadow:0 0 4px color-mix(in srgb, var(--t-warn) 55%, transparent); }
+
+/* 总用量构成条：对话 / 插件 / 拓展 的同一周期占比。 */
+.maint-usage-split {
+  display:grid;
+  gap:var(--sp-2);
+  min-width:0;
+  padding:var(--sp-3) var(--sp-4);
+  border:1px solid var(--t-line);
+  border-radius:var(--r-xs);
+  background:var(--t-surface);
+}
+.maint-usage-split-head { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:var(--sp-1) var(--sp-2); min-width:0; }
+.maint-usage-split-head > strong { color:var(--t-text-strong); font-size:var(--fs-body); }
+.maint-usage-split-head > span { color:var(--t-text-faint); font-size:var(--fs-micro); font-variant-numeric:tabular-nums; }
+.maint-usage-split-track { display:flex; overflow:hidden; width:100%; height:12px; border-radius:999px; background:var(--t-surface-sunken); }
+.maint-usage-split-track > i { flex:0 0 auto; width:var(--split-share,0%); min-width:2px; height:100%; transition:width 420ms cubic-bezier(.2,.7,.2,1); }
+.maint-usage-split-track > i + i { box-shadow:inset 2px 0 0 var(--t-surface); }
+.maint-usage-split-track > i[data-part="conversation"] { background:var(--maint-token-series-1); }
+.maint-usage-split-track > i[data-part="plugin"] { background:var(--maint-token-series-2); }
+.maint-usage-split-track > i[data-part="extension"] { background:var(--maint-token-series-3); }
+.maint-usage-split-legend { display:flex; flex-wrap:wrap; gap:var(--sp-1) var(--sp-4); margin:0; padding:0; list-style:none; }
+.maint-usage-split-legend > li { display:inline-flex; align-items:baseline; gap:var(--sp-1); min-width:0; color:var(--t-text-soft); font-size:var(--fs-micro); }
+.maint-usage-split-legend > li > i { flex:none; align-self:center; width:8px; height:8px; border-radius:2px; background:var(--maint-token-series-1); }
+.maint-usage-split-legend > li[data-part="plugin"] > i { background:var(--maint-token-series-2); }
+.maint-usage-split-legend > li[data-part="extension"] > i { background:var(--maint-token-series-3); }
+.maint-usage-split-legend span { color:var(--t-text-soft); }
+.maint-usage-split-legend strong { color:var(--t-text-strong); font-weight:650; font-variant-numeric:tabular-nums; }
+.maint-usage-split-legend small { color:var(--t-text-faint); font-variant-numeric:tabular-nums; }
+.maint-usage-split-note { display:flex; align-items:flex-start; gap:var(--sp-1); margin:0; color:var(--t-text-faint); font-size:var(--fs-micro); line-height:1.5; }
+.maint-usage-split-note > svg { flex:none; width:13px; height:13px; margin-top:2px; }
+.maint-usage-split.is-empty .maint-usage-split-track { background:var(--t-line); }
+.maint-usage-split-empty { margin:0; color:var(--t-text-faint); font-size:var(--fs-micro); }
+@media (max-width:640px) {
+  .maint-usage-split { padding:var(--sp-3); }
+  .maint-usage-split-legend { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:var(--sp-1); }
+  .maint-usage-split-legend > li { flex-wrap:wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .maint-usage-split-track > i { transition:none; }
+}
+:root[data-motion="off"] .maint-usage-split-track > i { transition:none; }
 .maint-token-dashboard-summary .maint-soft-limit { display:grid; gap:var(--sp-1); width:auto; padding:var(--sp-2) 0 0; border:0; border-top:1px solid var(--t-line); border-radius:0; background:transparent; }
 .maint-token-dashboard-summary .maint-soft-limit > div:first-child { display:flex; justify-content:space-between; gap:var(--sp-2); color:var(--t-text-faint); font-size:var(--fs-micro); }
 .maint-token-dashboard-summary .maint-soft-limit strong { color:var(--t-text-strong); font-variant-numeric:tabular-nums; }
@@ -2420,6 +2461,11 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
 .maint-cache-panel [data-part="miss"],.maint-cache-panel [data-part="materials"] { --cache-part:var(--maint-token-series-1); }
 .maint-cache-panel [data-part="output"],.maint-cache-panel [data-part="system"] { --cache-part:#FFC258; }
 .maint-cache-panel [data-part="tools"] { --cache-part:var(--t-text-soft); }
+/* 总用量构成复用缓存拉链图，但分段是对话/插件/拓展，不是缓存四段；
+   缺这三个映射时 SVG 的 currentColor 会退回黑色。 */
+.maint-usage-composition [data-part="conversation"] { --cache-part:var(--maint-token-series-1); }
+.maint-usage-composition [data-part="plugin"] { --cache-part:var(--maint-token-series-2); }
+.maint-usage-composition [data-part="extension"] { --cache-part:var(--maint-token-series-3); }
 .maint-cache-panel [data-part="total"] { --cache-part:var(--t-risk-ink); }
 .maint-cache-zip { height:24px; margin-top:var(--sp-2); }
 .maint-cache-zip > svg { display:block; width:100%; height:100%; overflow:visible; }
@@ -2858,4 +2904,26 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
 @media (prefers-reduced-motion: reduce) {
   .maint-diagnostic-categories button,
   .maint-diagnostic-focus { animation:none; transition:none; }
+}
+
+/* 系统提示词：固定规则的风险提示与分组标签 */
+.maint-system-risk {
+  display:grid;
+  grid-template-columns:auto minmax(0,1fr);
+  gap:10px;
+  padding:12px 14px;
+  border:1px solid color-mix(in srgb, var(--t-warn) 32%, var(--t-line));
+  border-radius:var(--r-xs);
+  background:color-mix(in srgb, var(--t-warn-quiet) 72%, var(--t-surface));
+}
+.maint-system-risk > svg { width:18px; height:18px; color:var(--t-warn-ink); }
+.maint-system-risk strong { display:block; margin-bottom:3px; color:var(--t-warn-ink); font-size:var(--fs-tiny); }
+.maint-system-risk p { margin:0; color:var(--t-text-soft); font-size:var(--fs-micro); line-height:1.55; }
+.maint-system-risk p + p { margin-top:4px; color:var(--t-text-faint); }
+.maint-prompt-group-label { margin:7px 4px 2px; color:var(--t-text-faint); font-size:var(--fs-micro); font-weight:650; letter-spacing:.04em; }
+.maint-prompt-group-label:first-child { margin-top:0; }
+.maint-prompt-groups .maint-prompt-task { min-height:60px; }
+@media (max-width:900px) {
+  .maint-prompt-workspace { grid-template-columns:minmax(0,1fr); }
+  .maint-prompt-catalog { position:static; }
 }

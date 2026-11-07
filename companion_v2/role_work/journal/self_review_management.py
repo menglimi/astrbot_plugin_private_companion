@@ -9,8 +9,7 @@ been withdrawn, so an operator is never stuck with an undecidable row.
 from __future__ import annotations
 
 import json
-from datetime import datetime
-from logging import getLogger
+from datetime import datetime, timedelta
 
 from companion_v2.execution.models import TaskError, digest, stamp
 from companion_v2.execution.service import outcome
@@ -18,13 +17,14 @@ from companion_v2.execution.service import outcome
 from ..growth.management import RoleGrowthManagement
 
 
-logger = getLogger(__name__)
-
-
 # A page cursor names the ``(created_at, item_id)`` of the last row of the page.
 # A bare item id is the cursor older builds emitted when this list was ordered and
 # paged by the hashed item id; that order cannot be resumed under the time order.
 CURSOR_SEPARATOR = "|"
+# 自动采纳的指导原本只活一个模型给的短期限。操作者确认某条真的有用时，可以把它
+# 留成长期指导；注入前仍会重新核对原始证据，证据失效时一样停止注入。
+RETAIN_WINDOW = timedelta(days=365)
+RETAINED_AT_LEAST = timedelta(days=300)
 
 
 def cursor_text(row) -> str:
@@ -92,10 +92,7 @@ class SelfReviewManagement:
         try:
             descriptions = self.evidence.describe_handles(handles, opened_at, closed_at, context, at)
         except TaskError as error:
-            # ``TaskError`` keeps its reason in ``args[0]``; it has no ``.reason``
-            # attribute, so reading one turned this degradation into an
-            # ``AttributeError`` that escaped both ``list`` and the route layer.
-            raise TaskError("self_review_evidence_changed", str(error)) from None
+            raise TaskError("self_review_evidence_changed", error.reason) from None
         return run, handles, descriptions
 
     def _cursor(self, value):
@@ -160,16 +157,14 @@ class SelfReviewManagement:
                     run_summary = run["summary"]
                 except TaskError as error:
                     unavailable = error.code
-                except Exception:
-                    # A row that cannot be projected is this row's problem, not the
-                    # page's: an unexpected failure here must not turn the whole
-                    # bucket into a failed read that hides every other row.
-                    logger.exception("self-review item projection failed: %s", row["item_id"])
-                    unavailable = "self_review_evidence_changed"
                 if expires_at is not None and expires_at <= stamp(at):
                     expired += 1
                 if row["state"] != "pending":
                     actions = []
+                    if (row["state"] == "accepted" and unavailable is None and expires_at is not None
+                            and expires_at > stamp(at)
+                            and datetime.fromisoformat(expires_at) < at + RETAINED_AT_LEAST):
+                        actions = ["retain"]
                 elif (unavailable is not None or expires_at is None or expires_at <= stamp(at)
                       or row["kind"] != "ask_user"):
                     actions = ["reject"]
@@ -197,8 +192,8 @@ class SelfReviewManagement:
 
     @outcome
     def command(self, *, operator, context, item_id, action, view_token, operation_key):
-        if action not in ("accept", "reject"):
-            raise TaskError("self_review_command_invalid", "select accept or reject")
+        if action not in ("accept", "reject", "retain"):
+            raise TaskError("self_review_command_invalid", "select accept, reject or retain")
         self.management._validate_operation_key(operation_key)
         at = self.management.ledger.now()
         with self.runtime.transaction() as connection:
@@ -207,6 +202,9 @@ class SelfReviewManagement:
             if type(view_token) is not str or view_token != self._token(operator, context, row, policy_revision):
                 raise TaskError("self_review_view_stale", "refresh the self-review item before deciding")
             decision_key = digest([operator.subject, context.key, operation_key, item_id, action])
+            if action == "retain":
+                return self._retain(connection, operator, context, row, at, decision_key,
+                                    owner=owner)
             if row["state"] != "pending":
                 if row["state"] == ("accepted" if action == "accept" else "rejected") and row["decision_key"] == decision_key:
                     return {"item_id": item_id, "state": row["state"], "replayed": True}
@@ -233,3 +231,34 @@ class SelfReviewManagement:
             self.app.notify()
             return {"item_id": item_id, "state": "accepted" if action == "accept" else "rejected",
                 "replayed": False}
+
+    def _retain(self, connection, operator, context, row, at, decision_key, *, owner):
+        """Extend one already-accepted guidance to a long-term window.
+
+        The original evidence is re-resolved first; a long retention never makes
+        guidance injectable once its window is gone.
+        """
+        if row["state"] != "accepted":
+            raise TaskError("self_review_command_invalid", "only accepted guidance can be kept long-term")
+        if row["decision_key"] == decision_key:
+            return {"item_id": row["item_id"], "state": "accepted", "expires_at": row["expires_at"],
+                    "replayed": True}
+        try:
+            current = datetime.fromisoformat(row["expires_at"])
+        except (TypeError, ValueError):
+            raise TaskError("self_review_item_unavailable", "guidance has no usable expiry") from None
+        if current <= at:
+            raise TaskError("self_review_expired", "this guidance has already expired")
+        if current >= at + RETAINED_AT_LEAST:
+            return {"item_id": row["item_id"], "state": "accepted", "expires_at": row["expires_at"],
+                    "replayed": False}
+        self._basis(row, owner, context, at)
+        retained = stamp(at + RETAIN_WINDOW)
+        changed = connection.execute("""UPDATE role_self_review_items
+            SET expires_at = ?, decided_by = ?, decision_key = ?
+            WHERE item_id = ? AND owner_key = ? AND scope_key = ? AND state = 'accepted'""",
+            (retained, operator.subject.subject_id, decision_key,
+             row["item_id"], digest(owner), digest(context.scope)))
+        if changed.rowcount != 1:
+            raise TaskError("self_review_decided", "self-review item changed during decision")
+        return {"item_id": row["item_id"], "state": "accepted", "expires_at": retained, "replayed": False}

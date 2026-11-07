@@ -1323,11 +1323,13 @@ class AstrBotMultiController:
         except Exception:
             logger.warning("[CompanionV2] 私聊递话回执处理失败", exc_info=True)
 
-    async def group_reply_candidate(self, event):
+    async def group_reply_candidate(self, event, *, merged_event_ids=(), latest_native_text=None):
         session, target = self.session, self.target_for_event(event)
         if not self.claims(event) or session is None or not isinstance(target, GroupTarget):
             return Outcome.failed("host_not_claimed", "group reply candidate requires an active configured target")
-        return await session.prepare_group(event, target, reply_candidate=True)
+        return await session.prepare_group(event, target, reply_candidate=True,
+                                           merged_event_ids=merged_event_ids,
+                                           latest_native_text=latest_native_text)
 
     async def receive_group_repeat(self, event, admission, *, prepared=None):
         """Forward the two literal repeat actions without a model fallback."""

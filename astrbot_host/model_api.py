@@ -25,7 +25,6 @@ from companion_v2.proactive.search_settings import SearchSettingsError, SearchSe
 
 from .management_identity import dashboard_operator
 from .core_reply_configuration import CORE_MANAGED_FIELDS, project_core_reply_configuration
-from .model_settings import provider_output_limit_rows
 from .memory_diagnostics import process_memory_snapshot
 from .memory_linkage import read_external_memory_summary
 from .maintenance_checks import read_host_checks
@@ -238,7 +237,7 @@ def _schema_fields(source, field_metadata, provider_type=""):
         meta = field_metadata.get(key) if isinstance(field_metadata.get(key), dict) else {}
         if provider_type == "fishaudio_tts_api" and key == "model":
             meta = {**meta, "type": "string", "description": "Fish Audio 模型",
-                    "hint": "Drama 3 支持方括号表演指令及 <whisper> 等成对局部语气标签；S2/S2.1 使用方括号，S1 使用圆括号。",
+                    "hint": "Drama 3 支持方括号表演指令及 <whisper> 等成对局部语气标签；S2/S2.1 使用方括号，S1 使用圆括号。[singing]/[哼唱] 是社区实测偶发生效的实验性指令，官方标签表未列出。",
                     "options": deepcopy(FISH_AUDIO_MODEL_OPTIONS)}
         raw_options = meta.get("options") if isinstance(meta.get("options"), list) else []
         labels = meta.get("labels") if isinstance(meta.get("labels"), list) else []
@@ -484,6 +483,36 @@ class ModelWebAPI:
         from .web_api import outcome_response
         return outcome_response(result)
 
+    def _host_route(self, session):
+        """The exact AstrBot config and model the session's own UMO resolves to."""
+        try:
+            scope = session.profile.target.scope
+            kind = getattr(scope.kind, "value", scope.kind)
+            message_type = "FriendMessage" if str(kind) == "private" else "GroupMessage"
+            umo = f"{scope.platform}:{message_type}:{scope.native_scope_id}"
+            context = self.controller.context
+            config = {}
+            manager = getattr(context, "astrbot_config_mgr", None)
+            getter = getattr(manager, "get_conf_info", None)
+            if callable(getter):
+                info = getter(umo) or {}
+                name = str(info.get("name") or "")
+                if str(info.get("id") or "") == "default" or not name:
+                    name = "AstrBot 默认配置"
+                config = {"id": str(info.get("id") or ""), "name": name}
+            provider_id, model = "", ""
+            using = getattr(context, "get_using_provider", None)
+            if not callable(using):
+                return {}
+            if callable(using):
+                provider = using(umo)
+                meta = provider.meta() if callable(getattr(provider, "meta", None)) else None
+                provider_id = str(getattr(meta, "id", "") or "")
+                model = str(getattr(meta, "model", "") or "")
+            return {"umo": umo, "config": config, "provider": provider_id, "model": model}
+        except Exception:
+            return {}
+
     async def _run(self, action):
         try:
             data = None
@@ -517,18 +546,11 @@ class ModelWebAPI:
             else:
                 result = await asyncio.to_thread(manager.configure, operator, {**data, "layer": layer})
             if action in {"status", "configure"} and result.is_success:
-                payload = project_core_reply_configuration(result.unwrap())
-                # The reply provider's ceiling is the plugin's own global
-                # 「最大输出 Token」 (with a floor), not something the AstrBot
-                # provider declared. Ship that provenance so the page points the
-                # operator at the setting that actually moves the number.
-                common = getattr(getattr(_session, "settings", None), "common", None)
-                if (common is not None and isinstance(payload, dict)
-                        and isinstance(payload.get("providers"), list)):
-                    payload = {**payload, "providers": provider_output_limit_rows(
-                        payload["providers"], plugin_global=common.max_output_tokens,
-                        primary_id=common.provider_id)}
-                result = Outcome.success(payload)
+                if action == "status":
+                    payload = dict(result.unwrap())
+                    payload["host_route"] = self._host_route(_session)
+                    result = Outcome.success(payload)
+                result = Outcome.success(project_core_reply_configuration(result.unwrap()))
             if action == "maintenance" and result.is_success:
                 payload = dict(result.unwrap())
                 payload["external_token_sources"] = read_token_sources(self.controller)

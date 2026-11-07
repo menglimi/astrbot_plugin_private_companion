@@ -32,6 +32,7 @@ class Pending:
     version: int = 0
     wake_logged: bool = False
     followups_logged: int = 0
+    force_ready: bool = False
 
     @property
     def latest_text(self):
@@ -55,9 +56,10 @@ class Reservation:
 class PrivateDebounce:
     """Shared per-target debounce state for one running plugin instance."""
 
-    def __init__(self, policy=None, *, clock=time.monotonic):
+    def __init__(self, policy=None, *, clock=time.monotonic, log_enabled=True):
         self.policy = policy
         self._clock = clock
+        self._log_enabled = log_enabled
         self._pending: dict[str, Pending] = {}
         self._lock = asyncio.Lock()
         self._sequence = 0
@@ -80,7 +82,7 @@ class PrivateDebounce:
         )
 
     def _ensure_wake_logged(self, pending):
-        if pending.wake_logged or not pending.entries:
+        if not self._log_enabled or pending.wake_logged or not pending.entries:
             return
         first_text = pending.entries[0][1]
         pending.wake_logged = True
@@ -90,7 +92,7 @@ class PrivateDebounce:
         self._log_followups(pending)
 
     def _log_followups(self, pending):
-        if not pending.wake_logged:
+        if not self._log_enabled or not pending.wake_logged:
             return
         while pending.followups_logged < len(pending.entries) - 1:
             index = pending.followups_logged + 1
@@ -268,6 +270,8 @@ class PrivateDebounce:
                     return pending.state
                 if pending.owner_ticket != reservation.ticket or pending.owner is not event:
                     return "superseded"
+                if pending.force_ready:
+                    return "ready"
                 version = pending.version
                 policy = pending.policy
                 if policy is None:
@@ -321,6 +325,15 @@ class PrivateDebounce:
                     debounce_log.cancelled("private", target=pending.key, reason="aborted")
             pending.wake.set()
             return True
+
+    def flush(self, key):
+        """End a collecting window at the next event-loop turn without dropping it."""
+        pending = self._pending.get(key)
+        if pending is None or pending.state != "active":
+            return False
+        pending.force_ready = True
+        pending.wake.set()
+        return True
 
     @staticmethod
     def superseded_by_same_event(reservation, event):

@@ -80,6 +80,21 @@ class PrivateAccessNoticeTests(SendingFixture, unittest.IsolatedAsyncioTestCase)
         self.assertIsNotNone(document)
         self.assertIsNotNone(document["last_notice_at"])
 
+    async def test_group_temporary_session_is_refused_as_a_private_message(self):
+        app, context = await self.host()
+        self.revoke_dialogue(context)
+        event = self.event(identifier="temp-1")
+        event.message_obj.raw_message.update(sub_type="group", group_id=300)
+
+        result = await self.controller.receive_claimed(event)
+
+        self.assertEqual(result.failure.code, "private_access_dialogue_denied")
+        self.assertEqual(self.native.provider.client.state.calls, [])
+        self.assertEqual(len(self.sent_texts()), 1)
+        sent = [params for action, params in self.records() if action == "send_private_msg"][0]
+        self.assertEqual(sent["user_id"], int(self.controller.settings.target("first").participant_id))
+        self.assertEqual(sent["group_id"], 300)
+
     async def test_cooldown_keeps_the_second_message_silent(self):
         _app, context = await self.host()
         self.revoke_dialogue(context)

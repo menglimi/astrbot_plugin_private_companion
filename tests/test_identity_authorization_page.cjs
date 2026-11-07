@@ -456,47 +456,6 @@ test("群名用于列表、图谱和搜索，历史群不会重复统计", async
   assert.equal(h.element("people-result-count").textContent, "1 人");
 });
 
-test("群聊备注优先显示并用原始平台 ID 保存与清除", async () => {
-  const group = {group_id: "SYNTHETIC_GROUP_OPENID", display_name: "平台群名", remark: "管理备注",
-    remark_revision: 2, platform_id: "qq-main", bot_id: "bot-a", account_id: "account-a",
-    configured: true, member_count: 0, msg_count: 0};
-  const h = harness({groups: [group], post: (request) => {
-    group.remark = request.body.remark;
-    group.remark_revision = request.body.expected_revision + 1;
-    return {status: "ok", data: {remark: group.remark, remark_revision: group.remark_revision}};
-  }});
-  await h.send();
-  assert.match(flat(h.element("groups-list")), /管理备注/);
-  assert.match(h.element("relationship-graph").innerHTML, /管理备注/);
-  findAll(h.element("groups-list"), "group-card")[0].handlers.click();
-  const detail = h.element("group-detail");
-  assert.match(flat(detail), /管理备注.*平台 ID SYNTHETIC_GROUP_OPENID/);
-  const form = findAll(detail, "group-remark-form")[0];
-  const input = form.children.find(item => item.tagName === "INPUT");
-  input.value = "新备注";
-  input.handlers.input();
-  form.handlers.submit({preventDefault() {}});
-  await h.send(request => request.method === "POST");
-  const write = h.requests.find(request => request.method === "POST");
-  assert.equal(write.route, "acquaintance/group-remark");
-  assert.deepEqual(JSON.parse(JSON.stringify(write.body)), {
-    platform_id: "qq-main", bot_id: "bot-a", account_id: "account-a",
-    group_id: "SYNTHETIC_GROUP_OPENID", remark: "新备注", expected_revision: 2,
-  });
-  await h.send(request => request.method === "GET" && request.route === endpoint);
-  assert.match(flat(h.element("group-detail")), /新备注/);
-  const clear = findControl(h.element("group-detail"), "清除备注");
-  clear.handlers.click();
-  const nextForm = findAll(h.element("group-detail"), "group-remark-form")[0];
-  nextForm.handlers.submit({preventDefault() {}});
-  await h.send(request => request.method === "POST" && !request.answered);
-  const writes = h.requests.filter(request => request.method === "POST");
-  assert.equal(writes[1].body.remark, "");
-  assert.equal(writes[1].body.expected_revision, 3);
-  await h.send(request => request.method === "GET" && request.route === endpoint);
-  assert.match(flat(h.element("group-detail")), /平台群名/);
-});
-
 test("关系网展示自动接入状态，待映射群前往账号与会话", async () => {
   const h = harness({groups: [
     {group_id: "450", display_name: "项目讨论群", platform_id: "qq-main", bot_id: "bot-a",
@@ -1901,4 +1860,55 @@ test("宿主没有宿主确认能力时，页面内联确认框照常取消与�
   await h.settle();
   assert.equal(h.requests.filter((request) => request.method === "POST"
     && request.route === strangerTargetPath).length, 1, "确认只写一次");
+});
+
+/* 新联系人还没发过消息时，被拒列表是空的；入口不能被藏掉，否则「给新加的人建档」
+   就只剩一条必须先被拒过的路。手动表单把这一步提前。 */
+test("列表为空时仍显示入口，可手动填账号提前建档", async () => {
+  const h = harness({
+    group_access: {mode: "shared", editable: true, running: false,
+      accounts: [{platform_id: "qq-main", account_id: "account-a", bot_id: "bot-a"}], persona_bots: ["bot-a"]},
+    post: (request) => request.route === strangerTargetPath
+      ? {state: "added", target_id: "private-new", saved: true} : undefined,
+  });
+  await h.send();
+  await h.send((request) => request.route === strangersPath);
+
+  assert.equal(h.element("stranger-contacts").hidden, false, "空列表也要露出入口");
+  assert.equal(h.element("stranger-empty").hidden, false);
+  assert.equal(h.element("stranger-add").hidden, false);
+  assert.equal(h.element("stranger-account").children.length, 1);
+  assert.equal(h.element("stranger-account").children[0].value, JSON.stringify(["qq-main", "account-a"]));
+
+  h.element("stranger-account").value = JSON.stringify(["qq-main", "account-a"]);
+  h.element("stranger-peer").value = "123456";
+  h.element("stranger-add").handlers.submit({preventDefault() {}});
+  await h.settle();
+  await h.send((request) => request.route === strangerTargetPath);
+
+  const posts = h.requests.filter((request) => request.method === "POST" && request.route === strangerTargetPath);
+  assert.equal(posts.length, 1);
+  assert.deepEqual({...posts[0].body}, {platform_id: "qq-main", login: "account-a", peer: "123456"});
+  assert.match(h.element("notice").textContent, /已添加/);
+  assert.equal(h.element("stranger-peer").value, "", "提交成功后清空对方账号");
+});
+
+test("手动添加只接受具体账号，通配符与空值不写配置", async () => {
+  const h = harness({
+    group_access: {mode: "shared", editable: true, running: false,
+      accounts: [{platform_id: "qq-main", account_id: "account-a", bot_id: "bot-a"}], persona_bots: ["bot-a"]},
+    post: () => ({state: "added", target_id: "private-new", saved: true}),
+  });
+  await h.send();
+  await h.send((request) => request.route === strangersPath);
+  h.element("stranger-account").value = JSON.stringify(["qq-main", "account-a"]);
+
+  for (const peer of ["*", "  "]) {
+    h.element("stranger-peer").value = peer;
+    h.element("stranger-add").handlers.submit({preventDefault() {}});
+    await h.settle();
+  }
+
+  assert.equal(h.requests.filter((request) => request.method === "POST").length, 0);
+  assert.match(h.element("notice").textContent, /通配符|填写对方账号/);
 });

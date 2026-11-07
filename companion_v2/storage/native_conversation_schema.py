@@ -27,4 +27,14 @@ STATEMENTS = (
     """CREATE TABLE IF NOT EXISTS conversation_native_sends (
         observation_id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, sent_at TEXT NOT NULL
     )""",
+    *(
+        f"""CREATE INDEX IF NOT EXISTS {table}_private_participant_idx ON {table}(
+            json_extract(context_json, '$.role_binding.role.subject_id'),
+            json_extract(context_json, '$.role_binding.scope.bot_id'),
+            json_extract(context_json, '$.role_binding.scope.installation_id'),
+            json_extract(context_json, '$.audience.scope.kind'),
+            json_extract(context_json, '$.actor.subject.subject_id'))"""
+        for table in ("conversation_batches", "conversation_native_turns",
+                      "conversation_native_observations")
+    ),
 )

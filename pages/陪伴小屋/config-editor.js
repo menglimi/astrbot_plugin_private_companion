@@ -663,6 +663,8 @@ window.CompanionConfigEditors = (() => {
         scan_interval_minutes: "私聊学习扫描间隔 / 分钟",
         group_scan_interval_minutes: "群聊学习扫描间隔 / 分钟",
         learning_mode: "学习强度",
+        private_learning_enabled: "私聊表达学习",
+        group_learning_enabled: "群聊表达学习",
         private_application_enabled: "私聊应用规则",
         group_application_enabled: "群聊应用规则",
         sample_review_enabled: "审核原始样本",
@@ -670,7 +672,14 @@ window.CompanionConfigEditors = (() => {
         group_daily_batch_limit: "角色群聊每日学习批次",
         group_new_messages: "群聊新增消息门槛",
       },
-      helps: {},
+      helps: {
+        private_learning_enabled: "从和你的私聊里学习称呼、语气和习惯；只学表达，不记隐私。",
+        group_learning_enabled: "从群聊里学习说话分寸和梗；不会把群里的私事带进私聊。",
+        private_application_enabled: "把学到的表达用在私聊回复里；关闭后仍可继续学习，只是不拿来回复。",
+        group_application_enabled: "把学到的表达用在群聊回复里；关闭后群聊不受学习结果影响。",
+        sample_review_enabled: "原始样本先进入待整理区，由你确认后再归纳成规则；未审核规则不会自动启用。",
+        style_review_enabled: "回复发出前检查是否学过头、照抄或断句不自然；只做小幅修正，不改事实和承诺。",
+      },
       choices: {learning_mode: {light: "轻量", balanced: "均衡", aggressive: "深入"}},
       order: ["learning_mode", "private_application_enabled", "group_application_enabled",
         "sample_review_enabled", "style_review_enabled", "window_hours", "sample_limit",
@@ -1979,11 +1988,6 @@ window.CompanionConfigEditors = (() => {
           .map(instance => instance.refresh()));
       },
       selectSection(id) { for (const instance of instances) instance.selectSection(id); },
-      /* 分段可见性同样由各分区自己的内核实例决定；不转发时页面只会「看起来
-         什么都没发生」——群聊参与页按标签页收窄分段的那条路径就会静默失效。 */
-      setVisibleGroups(ids, preferredId) {
-        for (const instance of instances) instance.setVisibleGroups?.(ids, preferredId);
-      },
       saveField(kind, field, value) {
         const instance = instances.find(item => item.group === kind);
         return instance ? instance.saveField(field, value) : Promise.resolve({state: "unavailable"});

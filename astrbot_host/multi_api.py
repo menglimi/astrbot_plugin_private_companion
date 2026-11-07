@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 import logging
+import time
 
 from astrbot.api.web import request
 from companion_v2.execution.models import TaskError, digest
@@ -126,6 +127,10 @@ class InstallationControllerView:
 class MultiHostWebAPI:
     unregister = StagingWebAPI.unregister
 
+    # 角色路由刷新失败后的退避窗口。刷新会在保存映射后与 controller 重建并发，
+    # 一次瞬时失败不能变成「新角色永远 404」。
+    ROLE_ROUTE_RETRY_SECONDS = 5.0
+
     def __init__(self, controller):
         self.controller = controller
         self._registered_routes = []
@@ -145,7 +150,7 @@ class MultiHostWebAPI:
                 self.unregister()
             raise
 
-    def target_inventory(self):
+    def target_inventory(self, *, refresh_routes=True):
         settings = self.controller.settings
         if settings is None:
             return []
@@ -196,7 +201,8 @@ class MultiHostWebAPI:
                                  "group" if isinstance(target, GroupTarget) else "private")}
             for role in sorted({p.role_id for p in settings.personas if p.bot_id == target.bot_id})]}
             for target in settings.all_targets]
-        self._ensure_role_routes(inventory)
+        if refresh_routes:
+            self._ensure_role_routes(inventory)
         return inventory
 
     def _ensure_role_routes(self, inventory):
@@ -207,24 +213,30 @@ class MultiHostWebAPI:
         ``config_api`` (and every other per-role API) whose route did not exist;
         AstrBot then answered "未找到该路由" on the role-profile tab. Refresh once
         when the inventory proves a route is missing.
+
+        保存映射会与 controller 重建并发，注册可能瞬时失败。这里只退避几秒，
+        不做永久标记：一次失败不能让新角色的路由一直 404 到下次重载插件。
         """
-        if getattr(self, "_role_routes_refresh_failed", False):
-            return
         if getattr(self, "_refreshing_role_routes", False):
+            return
+        retry_at = getattr(self, "_role_routes_retry_at", 0.0)
+        if retry_at and time.monotonic() < retry_at:
             return
         registered = {route for route, _ in self._registered_routes}
         expected = {role.get("config_api") for target in inventory
                     for role in target.get("roles", []) if role.get("config_api")}
         if not expected or expected <= registered:
+            self._role_routes_retry_at = 0.0
             return
         self._refreshing_role_routes = True
         try:
             self.controller.unregister_routes()
             self.controller.register_routes()
+            self._role_routes_retry_at = 0.0
         except Exception:
-            self._role_routes_refresh_failed = True
-            logger.warning("[CompanionV2] 角色路由刷新失败 error_type=%s",
-                           "registration_failed")
+            self._role_routes_retry_at = time.monotonic() + self.ROLE_ROUTE_RETRY_SECONDS
+            logger.warning("[CompanionV2] 角色路由刷新失败，%.0f 秒后重试 error_type=%s",
+                           self.ROLE_ROUTE_RETRY_SECONDS, "registration_failed")
         finally:
             self._refreshing_role_routes = False
 
@@ -332,7 +344,9 @@ class MultiHostWebAPI:
                                ("revoke-group-delivery", "revoke_group_delivery")):
             routes.append((PREFIX + "/" + action, self.control(method, target="delivery" in action),
                            ["POST"], "Companion V2 " + action))
-        for target in self.target_inventory():
+        # 注册过程本身就用同一份 inventory 组装角色路由，不需要再嵌套一次
+        # unregister/register（那会把整套路由重复注册两遍）。
+        for target in self.target_inventory(refresh_routes=False):
             for role in target["roles"]:
                 if role["group_memory_api"] is not None:
                     routes.extend(GroupMemoryWebAPI(self.controller, target["target_id"], role["role_id"]).routes(

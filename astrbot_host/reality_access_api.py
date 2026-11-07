@@ -22,6 +22,7 @@ CAPABILITY_PATHS = {
     CAMERA_ACTION: "/camera",
     "reality.device.list": "/device-list",
     "reality.device.status": "/device-status",
+    "reality.device.inspect": "/device-inspect",
     "reality.device.control": "/device-control",
     "reality.device.action": "/device-action",
     "reality.operation.lookup": "/operation-lookup",

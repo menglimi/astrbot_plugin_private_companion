@@ -742,7 +742,8 @@ function renderFurniturePanel(id){
   const entry=directory.find(item=>item.station===id);
   if(!entry)return renderHomePanel();
   const status=capabilityStatus(entry.cap)[0];
-  const head=panelHead(entry.name,entry.text,entry.icon,chip(status));
+  const head=panelHead(entry.name,entry.text,entry.icon,
+    chip(status)+button('回到小屋','data-shell-home'));
   if(id==='calendar')return head+`<div class="shell-panel-body">${renderRoleState('','planning')}</div>`;
   if(id==='garden')return head+`<div class="shell-panel-body">${product.growthMarkup()}</div>`;
   const ws=FURNITURE_WORKSPACES[id]?product.workspace(...FURNITURE_WORKSPACES[id]):'';

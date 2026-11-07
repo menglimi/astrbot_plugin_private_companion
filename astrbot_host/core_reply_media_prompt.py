@@ -44,7 +44,9 @@ def finalize_core_reply_media_prompt(event, run_context):
     prepared = core.get("prepared", {})
     if not isinstance(prepared, Mapping):
         return
-    voice = voice_prompt_instruction(prepared.get("voice_reply_policy"), prepared.get("voice_provider_instruction", ""))
+    voice = voice_prompt_instruction(prepared.get("voice_reply_policy"),
+        prepared.get("voice_provider_instruction", ""),
+        prepared.get("voice_rules_instruction", ""))
     reaction = core.get("_reaction_reply", {}).get("enabled", False)
     instructions = [part for part in (voice, REACTION_INSTRUCTION if reaction else "") if part]
     if not instructions:
@@ -123,7 +125,8 @@ def core_media_request_diagnostics(event, run_context):
     block = core.get("_media_prompt_instruction")
     note = {"voice_mode": policy.trigger_mode if isinstance(policy, VoiceReplyPolicy) else "disabled",
             "voice_prompt_present": bool(policy and voice_prompt_instruction(
-                policy, prepared.get("voice_provider_instruction", "")) in systems),
+                policy, prepared.get("voice_provider_instruction", ""),
+                prepared.get("voice_rules_instruction", "")) in systems),
             "reaction_enabled": reaction, "reaction_prompt_present": reaction and REACTION_INSTRUCTION in systems,
             "presentation_present": bool(block and block in systems)}
     core.setdefault("_media_request_diagnostics", []).append(note)

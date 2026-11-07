@@ -195,6 +195,7 @@ class ShutdownReport:
 
 class CompanionApplication:
     WAL_CHECKPOINT_INTERVAL_SECONDS = 30.0
+    CONTACT_SCHEDULE_INTERVAL_SECONDS = 2.0
     # Expired model reservations only become eligible after twice their task
     # timeout, so a one-minute maintenance pass never competes with live work.
     BUDGET_RECLAIM_INTERVAL_SECONDS = 60.0
@@ -886,6 +887,7 @@ class CompanionApplication:
         try:
             loop = asyncio.get_running_loop()
             next_contact_delivery_check = 0.0
+            next_contact_schedule_check = 0.0
             next_wal_checkpoint = loop.time()
             next_budget_reclaim = loop.time() + self.BUDGET_RECLAIM_INTERVAL_SECONDS
             while self.state == "running":
@@ -957,7 +959,9 @@ class CompanionApplication:
                     deadline = min(deadline, journal_deadline) if deadline else journal_deadline
                 more_background = self.background.advance() or more_background
                 await asyncio.sleep(0)
-                await self.contact_schedule.advance_async()
+                if loop.time() >= next_contact_schedule_check:
+                    await self.contact_schedule.advance_async()
+                    next_contact_schedule_check = loop.time() + self.CONTACT_SCHEDULE_INTERVAL_SECONDS
                 await asyncio.sleep(0)
                 if loop.time() >= next_wal_checkpoint:
                     checkpoint = getattr(self.runtime, "checkpoint_passive", None)

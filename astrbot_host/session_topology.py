@@ -525,8 +525,10 @@ class SessionTopology:
     async def inventory_report(self, *, settings=None, scope_kind=None, include_unmanaged=False):
         # Discovery needs unbound windows even when normalized runtime settings
         # supply the account and persona mappings. Startup still limits its inventory.
-        managed_only = settings is not None and not include_unmanaged
-        accounts, configured = self.accounts(settings), self.configured(settings)
+        discovery = include_unmanaged
+        managed_only = settings is not None and not discovery
+        accounts = self.accounts(None if discovery else settings)
+        configured = self.configured(settings)
         if scope_kind is not None:
             configured = [row for row in configured if row["scope_kind"] == scope_kind]
         if managed_only:

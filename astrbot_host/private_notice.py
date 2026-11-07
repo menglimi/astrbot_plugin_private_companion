@@ -107,9 +107,15 @@ async def send_private_notice(controller, event, *, text, route, transport=None)
     raw_onebot = peer.isdigit() and (not platform_name or platform_name in {"aiocqhttp", "qq", "onebot"})
     if raw_onebot:
         api = transport if transport is not None else _transport(controller, route)
+        target = {"user_id": int(peer)}
+        # QQ 群临时会话需要同时带来源群，否则协议端无法定位这轮临时会话。
+        group_id = getattr(route, "group_id", "")
+        if group_id:
+            target["group_id"] = int(group_id)
         try:
-            result = await api.call_action("send_private_msg", self_id=route.login, user_id=int(peer),
-                                          message=[{"type": "text", "data": {"text": str(text)}}])
+            result = await api.call_action("send_private_msg", self_id=route.login,
+                                          message=[{"type": "text", "data": {"text": str(text)}}],
+                                          **target)
         except Exception:  # noqa: BLE001 - platform call failure is not replayed
             return {"state": "failed", "reason": "platform_call_failed"}
         identifier = result.get("message_id") if isinstance(result, Mapping) else None

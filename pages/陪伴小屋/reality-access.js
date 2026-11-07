@@ -41,6 +41,9 @@ window.CompanionRealityAccess = (() => {
     deviceStatus:{path:"/device-status", capability:"reality.device.status", icon:"activity", title:"单设备状态",
       description:"按精确别名读取设备档案允许公开的属性。", allowed:"允许读取设备状态", revoke:"撤回设备状态授权",
       saved:"已允许当前私聊读取设备状态。", removed:"已撤回当前私聊的设备状态授权。", ready:"设备状态工具已进入当前对话。"},
+    deviceInspect:{path:"/device-inspect", capability:"reality.device.inspect", icon:"clipboard-list", title:"设备能力画像",
+      description:"读取型号/类别画像声明的可写属性、可读属性与动作，不碰设备；控制前用它确认可用名称。", allowed:"允许读取设备能力画像", revoke:"撤回设备能力画像授权",
+      saved:"已允许当前私聊读取设备能力画像。", removed:"已撤回当前私聊的设备能力画像授权。", ready:"设备能力画像工具已进入当前对话。"},
     deviceControl:{path:"/device-control", capability:"reality.device.control", icon:"power", title:"设备电源控制",
       description:"对扩展白名单中的精确别名设备开关电源，会产生真实设备动作。", allowed:"允许控制设备电源", revoke:"撤回电源控制授权",
       saved:"已允许当前私聊控制白名单设备电源。", removed:"已撤回当前私聊的电源控制授权。", ready:"电源控制工具已进入当前对话。"},
@@ -56,7 +59,7 @@ window.CompanionRealityAccess = (() => {
   };
   const groups = [
     ["手机与镜头", ["mobile", "camera"]],
-    ["米家设备", ["deviceList", "deviceStatus", "deviceControl", "deviceAction"]],
+    ["米家设备", ["deviceList", "deviceStatus", "deviceInspect", "deviceControl", "deviceAction"]],
     ["设备操作确认", ["operationLookup", "operationCancel"]],
   ];
   let node = null, scope = "", paths = {}, statuses = {}, pending = {}, busy = new Set(), focusKind = "";

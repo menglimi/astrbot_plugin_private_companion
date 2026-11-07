@@ -1,6 +1,8 @@
 @charset "UTF-8";
 /* 人物设定工坊：样式跟着既有工作区走（同一套变量名、同一套主题维度），
    这样嵌进小屋时和别的工作区看起来是同一个产品。 */
+html,body{overscroll-behavior-y:contain}
+#source-persona{max-height:min(38vh,280px);overflow-y:auto;overscroll-behavior:contain}
 :root {
   color-scheme: light;
   --page: #f5f7f5;

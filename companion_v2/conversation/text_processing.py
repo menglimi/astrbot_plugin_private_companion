@@ -46,6 +46,22 @@ _REACTION_EXPRESSION_CLOSE_PROTOCOL = regex.compile(
     rf"{_PROTOCOL_LT}\s*/\s*{REACTION_EXPRESSION_TAG_NAME}\s*{_PROTOCOL_GT}",
     regex.IGNORECASE | regex.DOTALL,
 )
+# A provider that cannot parse a tool call returns it as completion text.
+# DeepSeek's DSML envelope is the shape observed in a group turn:
+#   <｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="..."><｜｜DSML｜｜ parameter
+#   name="mode" string="true">skip</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke>
+#   </｜｜DSML｜｜ calls>
+# where the doubled fullwidth bar is the tokenizer's spelling of the marker
+# delimiter.  It is transport protocol, never prose.
+_TOOL_CALL_PROTOCOL_TAG = re.compile(
+    rf"(?:<|＜|&lt;)\s*(?P<close>/\s*)?(?:[|｜]\s*){{1,4}}DSML(?:[|｜]\s*){{1,4}}"
+    rf"(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)?[^<>]*?(?:>|＞|&gt;)",
+    re.IGNORECASE | re.DOTALL,
+)
+_TOOL_CALL_PROTOCOL_START = re.compile(
+    r"(?:<|＜|&lt;)\s*(?:/\s*)?(?:[|｜]\s*){1,4}DSML", re.IGNORECASE,
+)
+_TOOL_CALL_PROTOCOL_BLANKS = re.compile(r"\n{3,}")
 _PAIRS = {"(": ")", "[": "]", "{": "}", "（": "）", "【": "】", "《": "》",
           "〈": "〉", "「": "」", "『": "』", "“": "”", "‘": "’", '"': '"'}
 
@@ -163,12 +179,18 @@ FORBIDDEN_WORD_SCOPES = frozenset(("bot_only", "group_only", "bot_and_group"))
 
 # Prompt guidance handles ambiguous intent; this narrow check only catches an
 # explicit completion or near-term promise paired with a concrete real-world action.
+# 群相关动作单列一组：用户报障里最常被编造的就是「我加群了」「拉你进群了」。
+_REALITY_GROUP_ACTION = (
+    r"(?:(?:把(?:大家|你|他|她|他们|她们)?)?拉(?:大家|你|他|她)?(?:进|来)?群|加(?:进|入)?群|建(?:好|了|个)?群)")
+_REALITY_ACTION = (
+    rf"(?:{_REALITY_GROUP_ACTION}|修(?:好)?网|开(?:好)?房间|登(?:录|陆)|"
+    r"控制(?:设备|手机|电脑)|到(?:现场|线下))")
 _REALITY_PROMISE = regex.compile(
     r"(?:我)?(?:已(?:经)?|刚(?:刚|才)?|成功(?:地)?|完成(?:了)?|马上|立刻|现在就|稍后)"
     r"[^。！？!?\n]{0,24}"
-    r"(?:拉(?:进|来)?群|修(?:好)?网|开(?:好)?房间|登(?:录|陆)|控制(?:设备|手机|电脑)|到(?:现场|线下))"
+    rf"{_REALITY_ACTION}"
     r"(?:了|啦|好|成功)?"
-    r"|(?:我)?(?:拉(?:进|来)?群|修(?:好)?网|开(?:好)?房间|登(?:录|陆)|控制(?:设备|手机|电脑)|到(?:现场|线下))"
+    rf"|(?:我)?{_REALITY_ACTION}"
     r"(?:了|啦|好|成功|完成)", regex.IGNORECASE)
 
 
@@ -459,9 +481,60 @@ def strip_paired_control_blocks(text, *, exclude=("tts",), preserve_code_spans=T
     )
 
 
+def has_tool_call_protocol(text):
+    """Whether text carries a wire marker a provider failed to parse."""
+    return type(text) is str and "DSML" in text.upper()
+
+
+def strip_tool_call_protocol(text):
+    """Drop tool-call wire syntax a provider left in the completion text.
+
+    A complete envelope goes with its payload: the parameters hold the call's
+    routing arguments, and showing them is never a reply.  An unterminated
+    envelope goes from its first tag, because nothing after a broken protocol
+    marker is trustworthy.  Visible prose around the envelope survives, so a
+    turn that wrote only the call becomes empty and the delivery boundary drops
+    it instead of posting the protocol.  Markdown code spans keep examples.
+    """
+    if not has_tool_call_protocol(text):
+        return text
+    masked, restore = _mask_control_code_spans(text)
+    spans, open_tags = [], []
+    for match in _TOOL_CALL_PROTOCOL_TAG.finditer(masked):
+        name = (match.group("name") or "").casefold()
+        if match.group("close"):
+            for index in range(len(open_tags) - 1, -1, -1):
+                if open_tags[index][0] == name:
+                    spans.append((open_tags[index][1], match.end()))
+                    del open_tags[index:]
+                    break
+            else:
+                spans.append((match.start(), match.end()))
+        elif name:
+            open_tags.append((name, match.start()))
+        else:
+            spans.append((match.start(), match.end()))
+    spans.extend((start, len(masked)) for _name, start in open_tags)
+    spans = _merged(spans)
+    if not spans:
+        return text
+    chunks, cursor = [], 0
+    for start, end in spans:
+        chunks.append(masked[cursor:start])
+        cursor = end
+    chunks.append(masked[cursor:])
+    visible = "".join(chunks)
+    truncated = _TOOL_CALL_PROTOCOL_START.search(visible)
+    if truncated is not None:
+        visible = visible[:truncated.start()]
+    visible = _restore_control_code_spans(
+        _TOOL_CALL_PROTOCOL_BLANKS.sub("\n\n", visible).strip(), restore)
+    return visible
+
+
 def strip_internal_expression_protocol(text):
-    """Remove internal control blocks before text can be shown or sent."""
-    return strip_paired_control_blocks(text)
+    """Remove internal control blocks and unparsed tool-call syntax."""
+    return strip_tool_call_protocol(strip_paired_control_blocks(text))
 
 
 def _partial_protocol_match(pattern, text):

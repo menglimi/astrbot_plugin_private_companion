@@ -144,14 +144,19 @@ class RealityHostDelivery:
             ThoughtKind.CONVERSATION, "手机陪伴终端本次上报了一条经授权的当前地点标签，判断是否值得自然提起；不把地点变化解释成用户行为、情绪或安全状态，没有合适的话就继续陪伴。",
             EvidenceSnapshot(context.scope, at, (reference,)), 1.0)
         if not diagnostic:
-            with application.runtime.transaction() as connection:
-                connection.execute("INSERT INTO runtime_metadata(key, value) VALUES (?, ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, fingerprint))
+            # 这里只把指纹交给调用方；真正记为"已经用掉这个地点"要等
+            # proactive.contact 接受之后（见 location()）。先记后发会让一次
+            # 被额度/静默时段挡下的到达永久丢失：下次同一个地点会被当成没变。
+            candidate_fingerprint = fingerprint
+        else:
+            candidate_fingerprint = ""
         candidate = {"accepted": True, "opportunity": opportunity,
             "intents": (ContactIntent("environment", thought),), "role_instruction": background["prompt"],
             "route": {"id": "reality_location_event", "label": "手机陪伴终端地点来源",
                       "variant": "mobile_location"},
             "stages": [{"stage": "mobile_location_fetch", "state": "passed"}]}
+        if candidate_fingerprint:
+            candidate["place_fingerprint"] = candidate_fingerprint
         if diagnostic:
             candidate["diagnostic_origin"] = {**diagnostic_origin,
                 "reality_location_event": {"test_id": test_id,
@@ -171,7 +176,15 @@ class RealityHostDelivery:
         if not candidate.get("accepted"):
             return candidate
         application, context = candidate.pop("application"), candidate.pop("context")
+        fingerprint = candidate.pop("place_fingerprint", "")
         result = await application.proactive.contact(context, candidate["opportunity"], candidate["intents"],
             role_instruction=candidate["role_instruction"], selection_seed=candidate["opportunity"].opportunity_id)
+        if result.is_success and fingerprint:
+            # 只有这里真的把这次到达交给主动联系之后才记指纹：被额度、静默
+            # 时段或去重挡下时，下一次同一个地点还要能重新尝试。
+            with application.runtime.transaction() as connection:
+                connection.execute("INSERT INTO runtime_metadata(key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    ("reality.location.last:" + context.key, fingerprint))
         return {"accepted": result.is_success,
                 "reason": None if result.is_success else result.failure.code}

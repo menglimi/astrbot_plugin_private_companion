@@ -152,6 +152,81 @@ class ManifestResolver:
         return evidence
 
 
+_CONTEXT_MODES = {"relevant": "relevant", "相关": "relevant", "pinned": "pinned", "置顶": "pinned"}
+_POLARITIES = {"positive": "positive", "正面": "positive", "negative": "negative", "负面": "negative",
+               "uncertain": "uncertain", "不明确": "uncertain", "unknown": "uncertain"}
+_RETENTIONS = {"session": "session", "会话": "session", "short": "short", "短期": "short",
+               "durable": "durable", "长期": "durable", "protected": "protected", "保护": "protected"}
+# 归因是自由说明里的高频词。模型会写 self / self_report / direct_observation（现场 2026-11-04
+# 的三次拒绝都是这一类），而内部合同只认 user / third_party / bot / unknown / observed。
+# 别名并进合同值，认不出的直接丢掉走默认值——不能让一个措辞把整条事实判成 invalid_proposal。
+_ATTRIBUTIONS = {"user": "user", "self": "user", "用户": "user", "自述": "user", "用户自述": "user",
+                 "self_report": "user", "self-reported": "user", "first_person": "user",
+                 "observed": "observed", "observation": "observed", "direct_observation": "observed",
+                 "直接观察": "observed", "观察": "observed",
+                 "third_party": "third_party", "third-party": "third_party", "转述": "third_party", "他人转述": "third_party",
+                 "bot": "bot", "角色": "bot", "角色自述": "bot",
+                 "unknown": "unknown", "不确定": "unknown"}
+
+
+def _coerce_soft_details(data):
+    """Keep a model's soft qualifier from discarding the whole proposal.
+
+    ``details`` is free-form for the model, but the written proposal validates a
+    few enums, a number and two timestamps. One stray word such as
+    ``context_mode="轻松私聊…"`` used to raise and turn an otherwise valid fact into
+    ``invalid_proposal``. Unknown values are dropped here (the dataclass default
+    applies), while known aliases and numeric strings are folded into the value
+    the internal profile accepts.
+    """
+    value = data.get("context_mode")
+    if value is not None:
+        mapped = _CONTEXT_MODES.get(str(value).strip().lower()) if isinstance(value, str) else None
+        if mapped is None:
+            data.pop("context_mode", None)
+        else:
+            data["context_mode"] = mapped
+    value = data.get("polarity")
+    if value is not None:
+        mapped = _POLARITIES.get(str(value).strip().lower()) if isinstance(value, str) else None
+        if mapped is None:
+            data.pop("polarity", None)
+        else:
+            data["polarity"] = mapped
+    value = data.get("retention")
+    if value is not None:
+        mapped = _RETENTIONS.get(str(value).strip().lower()) if isinstance(value, str) else None
+        if mapped is None:
+            data.pop("retention", None)
+        else:
+            data["retention"] = mapped
+    value = data.get("attribution")
+    if value is not None:
+        mapped = _ATTRIBUTIONS.get(str(value).strip().lower()) if isinstance(value, str) else None
+        if mapped is None:
+            data.pop("attribution", None)
+        else:
+            data["attribution"] = mapped
+    value = data.get("single_value")
+    if value is not None and type(value) is not bool:
+        folded = {"true": True, "false": False, "是": True, "否": False}.get(str(value).strip().lower())
+        if folded is None:
+            data.pop("single_value", None)
+        else:
+            data["single_value"] = folded
+    for name in ("valid_from", "valid_to"):
+        value = data.get(name)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            try:
+                from datetime import datetime
+                datetime.fromisoformat(value)
+            except ValueError:
+                data.pop(name, None)
+    return data
+
+
 def normalize_proposal(raw, manifest):
     if type(raw) is not dict:
         raise OutputProblem("invalid_proposal")
@@ -186,7 +261,7 @@ def normalize_proposal(raw, manifest):
     for key in ("predicate", "object", "representation"):
         if data.get(key, "") is None:
             data.pop(key)
-    return data
+    return _coerce_soft_details(data)
 
 
 def _groups(data, manifest):

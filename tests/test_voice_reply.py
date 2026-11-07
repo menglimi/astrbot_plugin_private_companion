@@ -94,6 +94,19 @@ class VoicePolicyTests(unittest.TestCase):
                 self.assertEqual((current.language, current.provider_for_language()), (language, provider))
         self.assertEqual(saved.language, "zh")
 
+    def test_turn_language_override_understands_singing_and_chatting_requests(self):
+        """旧版用户会说「用中文唱」，动词表漏了「唱」就会静默沿用保存语种。"""
+        for text, language in (("用中文唱", "zh"), ("请用日语唱一首", "ja"),
+                               ("用英语聊", "en"), ("用中文唱给我听", "zh")):
+            with self.subTest(text=text):
+                self.assertEqual(requested_voice_language(text), language)
+        self.assertEqual(requested_voice_language("不要用中文唱"), "")
+        self.assertEqual(requested_voice_language("把这句歌词翻译成中文唱"), "")
+        saved = VoiceReplyPolicy(language="ja", zh_provider_id="chinese-tts")
+        current = voice_policy_for_turn(saved, "用中文唱")
+        self.assertEqual((current.language, current.provider_for_language()), ("zh", "chinese-tts"))
+        self.assertEqual(saved.language, "ja")
+
     def test_turn_language_override_ignores_negation_and_translation_questions(self):
         for text in (
             "不要用英语回答",

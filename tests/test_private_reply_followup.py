@@ -56,6 +56,41 @@ class PrivateReplyFollowUpTests(unittest.TestCase):
         self.assertEqual(manager.for_request(first), ((), ((first, "直接说完", first.created_at),)))
         self.assertIsNone(manager.fold("target", event("补充", 1), "补充"))
 
+    def test_window_releases_when_the_first_request_never_arrives(self):
+        now = [10.0]
+        manager = PrivateReplyFollowUps(clock=lambda: now[0], request_deadline_seconds=5)
+        first = event("只发了一个表情")
+        self.assertIsNotNone(manager.start(
+            "target", first, "event-1", ((first, "只发了一个表情", first.created_at),)))
+        now[0] = 16.0
+        self.assertIsNone(manager.fold("target", event("后来的正事", 2), "后来的正事"))
+        self.assertIsNone(manager.active_for("target"))
+        self.assertIsNone(manager.for_request(first))
+
+    def test_entry_folded_before_the_deadline_still_merges_when_the_request_is_late(self):
+        now = [10.0]
+        manager = PrivateReplyFollowUps(clock=lambda: now[0], request_deadline_seconds=5)
+        first = event("在吗")
+        manager.start("target", first, "event-1", ((first, "在吗", first.created_at),))
+        second = event("再补一句", 1)
+        self.assertIsNotNone(manager.fold("target", second, "再补一句"))
+        now[0] = 30.0
+        pending, entries = manager.for_request(first)
+        self.assertEqual([item[1] for item in pending], ["再补一句"])
+        self.assertEqual([item[1] for item in entries], ["在吗", "再补一句"])
+
+    def test_expired_window_stops_merging_but_keeps_folded_entries(self):
+        now = [10.0]
+        manager = PrivateReplyFollowUps(clock=lambda: now[0], request_deadline_seconds=5)
+        first = event("在吗")
+        manager.start("target", first, "event-1", ((first, "在吗", first.created_at),))
+        self.assertIsNotNone(manager.fold("target", event("补充一", 1), "补充一"))
+        now[0] = 20.0
+        self.assertIsNone(manager.fold("target", event("补充二", 2), "补充二"))
+        pending, entries = manager.for_request(first)
+        self.assertEqual([item[1] for item in pending], ["补充一"])
+        self.assertEqual([item[1] for item in entries], ["在吗", "补充一"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -162,6 +162,16 @@ def take(key, *, at=None):
     return locators if now <= deadline else ()
 
 
+def peek(key, *, at=None):
+    """Check whether this window has a pending video without consuming it."""
+    captured = _sources.get(key) if key else None
+    if captured is None:
+        return ()
+    deadline, locators = captured
+    now = _clock() if at is None else at
+    return locators if now <= deadline else ()
+
+
 def reset():
     """测试用：忘掉所有待补挂的位置。"""
     _sources.clear()

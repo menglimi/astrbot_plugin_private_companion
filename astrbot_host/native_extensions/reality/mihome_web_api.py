@@ -45,9 +45,20 @@ from .mihome_device_profiles import (
     CATEGORY_WATER_HEATER,
     VALID_CATEGORIES,
     has_model_profile,
+    get_device_detail_actions,
     get_device_detail_readable_keys,
     get_device_detail_writable_keys,
+    get_device_action_map,
+    get_device_display_map,
+    get_device_help_examples,
+    get_device_help_hints,
+    get_device_prop_map,
+    get_device_property_value_map,
+    get_device_val_map,
+    get_reverse_action_map,
+    get_reverse_prop_map,
     resolve_effective_category,
+    resolve_profile,
 )
 from .mihome_client import MiHomeAuthError, MiHomeClientError
 
@@ -60,6 +71,8 @@ _DEVICE_WRITABLE_PROPERTIES = {
     "set_brightness": "brightness",
     "set_color_temperature": "color_temperature",
 }
+# 与参考插件一致：这两类动作会把指令转发给别的设备，静态画像再声明也不放行。
+DENIED_CROSS_DEVICE_ACTIONS = frozenset({"execute-text-directive", "tv-switchon"})
 
 MAX_MAPPING_COUNT = 500
 MAX_ALIAS_LENGTH = 64
@@ -416,6 +429,7 @@ class MiHomeWebAPI:
                 {"alias": alias, "did": did, "category": category_map.get(alias, CATEGORY_NONE)}
                 for alias, did in sorted(device_map.items())
             ],
+            "categories": list(CATEGORY_OPTIONS),
             "tool_settings": self._tool_settings(),
             "mapping_errors": mapping_errors,
             "snapshot_at": self._device_snapshot_at,
@@ -457,13 +471,94 @@ class MiHomeWebAPI:
             devices = await self._client.get_devices()
             self._device_snapshot = self._compact_device_snapshot(devices)
             self._device_snapshot_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 同步是用户已经点过的动作：顺手把没有别名的设备按米家名称补好，
+        # 免去逐台打字起名；已有别名与白名单一律不动。
+        await self._auto_assign_aliases(devices)
         return self.extension_snapshot()
+
+    async def _auto_assign_aliases(self, devices: list[dict[str, Any]]) -> bool:
+        """Give every freshly synced device a default alias from its cloud name.
+
+        Only devices without any mapping are touched; a name already in use gets
+        a numeric suffix.  It also fills the category from the trusted model
+        profile and allow-lists devices whose profile declares a real power
+        switch, so a fresh installation works after one sync.  Nothing already
+        configured is overwritten and the whitelist is never widened by hand edits.
+        """
+        if not isinstance(devices, list) or not devices:
+            return False
+        device_map, category_map, errors = self._mapping_snapshot()
+        if errors:
+            return False
+        control = self._tool_settings()["control_tool"]
+        allowed = list(control["allowed_devices"])
+        mapped = set(device_map.values())
+        used = set(device_map)
+        changed = False
+        for item in devices:
+            if not isinstance(item, dict):
+                continue
+            did = str(item.get("did") or "").strip()
+            if not did:
+                continue
+            model = str(item.get("model") or "")
+            alias = next((name for name, value in device_map.items() if value == did), "")
+            if not alias:
+                name = re.sub(r"\s+", " ", str(item.get("name") or "")).strip()
+                base = name[:MAX_ALIAS_LENGTH] or "设备-" + did[-4:]
+                alias, index = base, 2
+                while alias in used:
+                    suffix = " " + str(index)
+                    alias = base[: MAX_ALIAS_LENGTH - len(suffix)] + suffix
+                    index += 1
+                device_map[alias] = did
+                used.add(alias)
+                mapped.add(did)
+                changed = True
+            configured = category_map.get(alias, CATEGORY_NONE)
+            effective = resolve_effective_category(model=model, category=configured)
+            if configured in (None, "", CATEGORY_NONE) and effective != CATEGORY_NONE:
+                category_map[alias] = effective
+                changed = True
+            is_ir = did.startswith("ir.") or model.lower().startswith("miir.")
+            writable = get_device_detail_writable_keys(model=model, category=effective)
+            if not is_ir and "on" in writable and alias not in allowed:
+                allowed.append(alias)
+                changed = True
+        if not changed:
+            return False
+        async with self._operation_lock:
+            self._config["device_map"] = json.dumps(device_map, ensure_ascii=False, indent=2)
+            self._config["device_category_map"] = json.dumps(category_map, ensure_ascii=False, indent=2)
+            if allowed != control["allowed_devices"]:
+                self._config["control_tool"] = {**control, "enable": True, "allowed_devices": allowed}
+            await self._persist_config()
+        return True
 
     async def extension_logout(self) -> dict[str, Any]:
         removed = await self.logout_account()
         return {"credential_removed": bool(removed), "logged_in": False}
 
-    def extension_control_preflight(self, alias: str, *, native: bool = False) -> str:
+    def _is_core_admin(self, actor: Any) -> bool:
+        """True only when this exact actor subject holds the core tier."""
+        if not isinstance(actor, dict):
+            return False
+        subject = actor.get("subject") if isinstance(actor.get("subject"), dict) else actor
+        subject_id = str(subject.get("subject_id") or "").strip()
+        subject_kind = str(subject.get("kind") or "").strip()
+        if not subject_id or not subject_kind:
+            return False
+        try:
+            runtime = self.plugin.controller.runtime
+            row = runtime.read_one(
+                "SELECT tier FROM subject_access_tiers WHERE subject_id = ? AND subject_kind = ?",
+                (subject_id, subject_kind))
+        except Exception:
+            return False
+        return bool(row) and str(row["tier"]) == "core"
+
+    def extension_control_preflight(self, alias: str, *, native: bool = False,
+                                    actor: Any = None) -> str:
         device_map, _category_map, errors = self._mapping_snapshot()
         if errors:
             raise WebAPIError("米家设备映射配置无效，请先在米家管理中修复。", 409)
@@ -473,23 +568,29 @@ class MiHomeWebAPI:
         control = self._tool_settings()["control_tool"]
         if not self._config.get("enabled", True) or not control["enable"] or alias not in control["allowed_devices"]:
             raise WebAPIError("当前设备不在已启用的控制白名单中。", 403)
-        if native and control["admin_only"]:
-            raise WebAPIError("当前原生调用无法证明管理员身份，设备控制已拒绝。", 403)
+        if native and control["admin_only"] and not self._is_core_admin(actor):
+            raise WebAPIError(
+                "设备控制只允许核心管理员使用；请由核心管理员本人发起，"
+                "或在米家管理页手动操作。",
+                403,
+            )
         return did
 
-    async def extension_control_power(self, alias: str, is_on: bool, *, native: bool = False) -> dict[str, Any]:
-        did = self.extension_control_preflight(alias, native=native)
+    async def extension_control_power(self, alias: str, is_on: bool, *, native: bool = False,
+                                      actor: Any = None) -> dict[str, Any]:
+        did = self.extension_control_preflight(alias, native=native, actor=actor)
         confirmed = await self.plugin.client.control_power(did, bool(is_on), alias)
         return {"alias": alias, "is_on": bool(is_on), "confirmed": bool(confirmed)}
 
-    def extension_device_target(self, alias: str, *, native: bool = False) -> dict[str, Any]:
+    def extension_device_target(self, alias: str, *, native: bool = False,
+                                actor: Any = None) -> dict[str, Any]:
         """Return the policy target for one exact alias, without the device ID.
 
         The DID stays inside this module: callers get the category, whether the
         device is currently allow-listed, and a binding revision derived from
         the alias mapping so a stale reference can be detected after a rebind.
         """
-        did = self.extension_control_preflight(alias, native=native)
+        did = self.extension_control_preflight(alias, native=native, actor=actor)
         device_map, category_map, _ = self._mapping_snapshot()
         row = next((item for item in self._cached_device_rows() if item.get("did") == did), {})
         revision = hashlib.sha256(
@@ -497,31 +598,520 @@ class MiHomeWebAPI:
         return {"alias": alias, "category": category_map.get(alias, CATEGORY_NONE),
                 "cached_online": row.get("isOnline"), "binding_revision": revision}
 
-    def extension_device_actions(self, alias: str) -> dict[str, Any]:
-        """List the verbs this exact device profile itself declares as writable."""
-        directory = self.extension_device_directory()
-        device_map, category_map, _ = self._mapping_snapshot()
+    def _device_profile_context(self, alias: str) -> dict[str, Any]:
+        """Resolve one exact alias to the model/category its profile comes from."""
+        device_map, category_map, errors = self._mapping_snapshot()
+        if errors:
+            raise WebAPIError("米家设备映射配置无效，请先在米家管理中修复。", 409)
+        if not isinstance(alias, str) or not alias or alias != alias.strip():
+            raise WebAPIError("设备别名无效。", 400)
         did = device_map.get(alias)
         if did is None:
             raise WebAPIError("只能控制已配置精确别名的设备。", 404)
         row = next((item for item in self._cached_device_rows() if item.get("did") == did), {})
         model = str(row.get("model") or "")
+        configured = category_map.get(alias, CATEGORY_NONE)
+        return {
+            "alias": alias,
+            "did": did,
+            "model": model,
+            "configured_category": configured,
+            "category": resolve_effective_category(model=model, category=configured),
+            "is_ir": did.startswith("ir.") or model.lower().startswith("miir."),
+            "has_model_profile": bool(has_model_profile(model)),
+        }
+
+    def extension_device_profile(self, alias: str) -> dict[str, Any]:
+        """Static capability picture: Chinese writable keys, readable keys and actions.
+
+        Mirrors the reference plugin's inspect tool: only what the model/category
+        profile itself declares, with the example values used by its help pages.
+        Dynamic discovery is deliberately not part of this answer.
+        """
+        context = self._device_profile_context(alias)
+        model, category = context["model"], context["category"]
+        writable_keys = get_device_detail_writable_keys(model=model, category=category)
+        readable_keys = get_device_detail_readable_keys(model=model, category=category)
+        action_keys = [key for key in get_device_detail_actions(model=model, category=category)
+                       if key not in DENIED_CROSS_DEVICE_ACTIONS]
+        reverse_props = get_reverse_prop_map(model=model, category=category)
+        reverse_actions = get_reverse_action_map(model=model, category=category)
+        display = get_device_display_map(model=model, category=category)
+        examples = get_device_help_examples(model=model, category=category)
+        hints = get_device_help_hints(model=model, category=category)
+        writable = []
+        for key in writable_keys:
+            name = reverse_props.get(key, display.get(key, key))
+            options = [str(item) for item in examples.get(name, [])]
+            hint = str(hints.get(name, ""))
+            numeric = key in ("brightness", "color_temperature", "target_temperature") or (
+                bool(options) and all(re.fullmatch(r"\d+", item) for item in options))
+            bounds = re.search(r"(\d+)\s*[~-]\s*(\d+)", hint)
+            low, high = None, None
+            if key in ("brightness", "color_temperature"):
+                low, high = 1, 100
+            elif bounds:
+                low, high = int(bounds.group(1)), int(bounds.group(2))
+            writable.append({
+                "key": key, "name": name, "examples": options, "hint": hint,
+                "kind": "number" if numeric else "select" if options else "text",
+                "options": [] if numeric else options,
+                "minimum": low, "maximum": high,
+            })
+        actions = [{"key": key, "name": reverse_actions.get(key, key)} for key in action_keys]
+        supported = bool(context["has_model_profile"] and not context["is_ir"] and (writable or actions))
+        reason = ""
+        if context["is_ir"]:
+            reason = "红外设备不开放直接控制，请改用米家场景。"
+        elif not context["has_model_profile"]:
+            reason = "未命中受信任的型号画像；可直接开关电源，其他属性请改用米家场景。"
+        elif not writable and not actions:
+            reason = "当前型号画像没有可写属性或动作。"
+        return {**context, "direct_control_supported": supported,
+                "writable_properties": writable,
+                "readable_properties": [{"key": key, "name": display.get(key, key)} for key in readable_keys],
+                "actions": actions, "unsupported_reason": reason}
+
+    HOME_CARE_ACTIONS = ("power_off", "power_on", "temperature")
+
+    def _home_care_settings(self) -> dict[str, Any]:
+        """Opt-in household routines, kept intentionally tiny and auditable.
+
+        A routine is one device, one clock time and one safe action.  It is not
+        a general automation editor: the point is to let the companion's
+        proactive layer do a couple of ordinary chores (turn the light off at
+        bedtime) without turning the plugin into a home-automation hub.
+        """
+        raw = self._config.get("home_care")
+        if not isinstance(raw, dict):
+            raw = {}
+        routines: list[dict[str, Any]] = []
+        for item in raw.get("routines") or []:
+            if not isinstance(item, dict):
+                continue
+            routine_id = str(item.get("id") or "").strip()
+            if not re.fullmatch(r"[a-z0-9_]{1,40}", routine_id):
+                continue
+            clock = str(item.get("time") or "").strip()
+            if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", clock):
+                continue
+            action = str(item.get("action") or "")
+            if action not in self.HOME_CARE_ACTIONS:
+                continue
+            value: Any = action == "power_on"
+            if action == "temperature":
+                try:
+                    value = int(item.get("value"))
+                except (TypeError, ValueError):
+                    continue
+                if not 16 <= value <= 30:
+                    continue
+            days: list[int] = []
+            for day in item.get("days") or list(range(7)):
+                try:
+                    day = int(day)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= day <= 6 and day not in days:
+                    days.append(day)
+            routines.append({
+                "id": routine_id,
+                "label": str(item.get("label") or routine_id).strip()[:40] or routine_id,
+                "time": clock,
+                "days": sorted(days) or list(range(7)),
+                "alias": str(item.get("alias") or "").strip()[:MAX_ALIAS_LENGTH],
+                "action": action,
+                "value": value,
+                "enabled": item.get("enabled") is True,
+            })
+        runs: list[dict[str, Any]] = []
+        for item in raw.get("runs") or []:
+            if isinstance(item, dict) and isinstance(item.get("at"), str):
+                runs.append({
+                    "routine_id": str(item.get("routine_id") or "")[:40],
+                    "at": item["at"][:40],
+                    "marker": str(item.get("marker") or "")[:80],
+                    "ok": item.get("ok") is True,
+                    "message": str(item.get("message") or "")[:MAX_ERROR_LENGTH],
+                })
+        return {"enable": raw.get("enable") is True, "routines": routines[:10], "runs": runs[-20:]}
+
+    def extension_home_care_status(self) -> dict[str, Any]:
+        home_care = self._home_care_settings()
+        control = self._tool_settings()["control_tool"]
+        device_map, category_map, errors = self._mapping_snapshot()
+        devices = []
+        for alias in control["allowed_devices"]:
+            did = device_map.get(alias)
+            if not did:
+                continue
+            row = next((item for item in self._cached_device_rows() if item.get("did") == did), {})
+            devices.append({"alias": alias, "category": category_map.get(alias, CATEGORY_NONE),
+                            "online": row.get("isOnline"), "name": row.get("name") or alias})
+        return {**home_care, "available": bool(self._config.get("enabled", True)),
+                "control_enabled": control["enable"] is True,
+                "devices": devices, "mapping_errors": errors}
+
+    async def extension_home_care_save(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise WebAPIError("居家照料配置格式无效。", 400)
+        control = self._tool_settings()["control_tool"]
+        allowed = set(control["allowed_devices"])
+        routines = []
+        for item in payload.get("routines") or []:
+            if not isinstance(item, dict):
+                continue
+            routine_id = str(item.get("id") or "").strip()
+            if not re.fullmatch(r"[a-z0-9_]{1,40}", routine_id):
+                raise WebAPIError("每条照料计划都需要合法的 id。", 400)
+            clock = str(item.get("time") or "").strip()
+            if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", clock):
+                raise WebAPIError("照料时间需要 HH:MM 格式。", 400)
+            action = str(item.get("action") or "")
+            if action not in self.HOME_CARE_ACTIONS:
+                raise WebAPIError("不支持的照料动作。", 400)
+            alias = str(item.get("alias") or "").strip()
+            if alias not in allowed:
+                raise WebAPIError("只能为已允许控制的设备安排照料计划。", 400)
+            value: Any = action == "power_on"
+            if action == "temperature":
+                try:
+                    value = int(item.get("value"))
+                except (TypeError, ValueError):
+                    raise WebAPIError("温度需要整数取值。", 400)
+                if not 16 <= value <= 30:
+                    raise WebAPIError("温度需要在 16~30 之间。", 400)
+            days = sorted({int(day) for day in item.get("days") or list(range(7))
+                           if str(day).lstrip("-").isdigit() and 0 <= int(day) <= 6})
+            routines.append({
+                "id": routine_id, "label": str(item.get("label") or routine_id)[:40],
+                "time": clock, "days": days or list(range(7)), "alias": alias,
+                "action": action, "value": value, "enabled": item.get("enabled") is True,
+            })
+        if len(routines) > 10:
+            raise WebAPIError("最多安排 10 条居家照料计划。", 400)
+        current = self._home_care_settings()
+        async with self._operation_lock:
+            self._config["home_care"] = {"enable": payload.get("enable") is True,
+                                         "routines": routines, "runs": current["runs"]}
+            await self._persist_config()
+        return self.extension_home_care_status()
+
+    async def _execute_home_care(self, routine: dict[str, Any]) -> dict[str, Any]:
+        alias = routine["alias"]
+        control = self._tool_settings()["control_tool"]
+        if not control["enable"] or alias not in control["allowed_devices"]:
+            raise WebAPIError("设备控制未启用，或这台设备已不在白名单。", 403)
+        if routine["action"] == "temperature":
+            return await self.extension_device_action(alias, "target_temperature",
+                                                      str(routine["value"]), native=False)
+        return await self.extension_control_power(alias, routine["action"] == "power_on",
+                                                  native=False)
+
+    async def extension_home_care_run(self, routine_id: str) -> dict[str, Any]:
+        home_care = self._home_care_settings()
+        routine = next((item for item in home_care["routines"] if item["id"] == routine_id), None)
+        if routine is None:
+            raise WebAPIError("没有找到这条照料计划。", 404)
+        at = datetime.now()
+        try:
+            receipt = await self._execute_home_care(routine)
+            ok = bool(receipt.get("confirmed"))
+            message = "已执行" if ok else "设备未确认"
+        except WebAPIError:
+            raise
+        except Exception as exc:
+            ok, message = False, str(exc)[:MAX_ERROR_LENGTH]
+        home_care["runs"] = (home_care["runs"] + [{
+            "routine_id": routine_id, "at": at.isoformat(timespec="seconds"),
+            "marker": f"manual:{routine_id}:{at.isoformat(timespec='seconds')}",
+            "ok": ok, "message": message,
+        }])[-20:]
+        async with self._operation_lock:
+            self._config["home_care"] = home_care
+            await self._persist_config()
+        return {**self.extension_home_care_status(), "result": {"ok": ok, "message": message}}
+
+    async def extension_home_care_tick(self, now: datetime | None = None) -> dict[str, Any]:
+        """Run due routines once per local day; called by the reality runtime loop."""
+        home_care = self._home_care_settings()
+        if not home_care["enable"] or not home_care["routines"]:
+            return {"ran": 0}
+        current = now or datetime.now()
+        clock = current.strftime("%H:%M")
+        today = current.strftime("%Y-%m-%d")
+        ran = 0
+        for routine in home_care["routines"]:
+            if not routine["enabled"] or current.weekday() not in routine["days"]:
+                continue
+            if routine["time"] != clock:
+                continue
+            marker = f"{routine['id']}:{today}"
+            if any(run.get("marker") == marker for run in home_care["runs"]):
+                continue
+            try:
+                receipt = await self._execute_home_care(routine)
+                ok = bool(receipt.get("confirmed"))
+                message = "已执行" if ok else "设备未确认"
+            except Exception as exc:
+                ok, message = False, str(exc)[:MAX_ERROR_LENGTH]
+            home_care["runs"] = (home_care["runs"] + [{
+                "routine_id": routine["id"], "at": current.isoformat(timespec="seconds"),
+                "marker": marker, "ok": ok, "message": message,
+            }])[-20:]
+            ran += 1
+            if ran >= 3:
+                break
+        if ran:
+            async with self._operation_lock:
+                self._config["home_care"] = home_care
+                await self._persist_config()
+        return {"ran": ran}
+
+    def _care_settings(self) -> dict[str, Any]:
+        from companion_v2.proactive.care import normalize_settings
+        return normalize_settings(self._config.get("care"))
+
+    def extension_care_status(self) -> dict[str, Any]:
+        from companion_v2.proactive.care import ACTIONS, CONCERNS
+        settings = self._care_settings()
+        _device_map, category_map, _errors = self._mapping_snapshot()
+        control = self._tool_settings()["control_tool"]
+        devices = [{"alias": alias, "category": category_map.get(alias, CATEGORY_NONE)}
+                   for alias in control["allowed_devices"]]
+        learning = {}
+        for item in CONCERNS:
+            rows = [entry for entry in settings["feedback"] if entry["concern_id"] == item.id]
+            praise = sum(1 for entry in rows if entry["verdict"] == "praise")
+            pause = sum(1 for entry in rows if entry["verdict"] == "pause")
+            learning[item.id] = {"praise": praise, "pause": pause, "trust": praise - pause}
+        return {**settings,
+                "concerns_meta": [{"id": item.id, "label": item.label, "note": item.note,
+                                   "weight": item.weight, "supported": item.supported,
+                                   "cue": item.cue} for item in CONCERNS],
+                "learning": learning,
+                "action_meta": [{"id": key, "risk": meta["risk"], "label": meta["label"],
+                                 "description": meta["description"],
+                                 "default_enabled": meta["default_enabled"] is True}
+                                for key, meta in ACTIONS.items()],
+                "devices": devices, "available": bool(self._config.get("enabled", True)),
+                "control_enabled": control["enable"] is True}
+
+    async def extension_care_tick(self, now: datetime | None = None) -> dict[str, Any]:
+        """Observe devices and record what the character would notice; never act."""
+        from companion_v2.proactive.care import DeviceObservation, appraise
+        settings = self._care_settings()
+        if not settings["enable"]:
+            return {"observed": 0, "impulses": []}
+        control = self._tool_settings()["control_tool"]
+        if not control["enable"]:
+            return {"observed": 0, "impulses": []}
+        current = now or datetime.now()
+        observations = []
+        for alias in control["allowed_devices"]:
+            try:
+                status = await self.extension_read_device_status(alias)
+            except Exception:
+                continue
+            if not isinstance(status, dict) or status.get("available") is not True:
+                continue
+            row = next((item for item in self._cached_device_rows()
+                        if alias in (item.get("aliases") or [])), {})
+            observations.append(DeviceObservation(
+                alias=alias,
+                category=str(row.get("category") or self._care_category(alias)),
+                online=row.get("isOnline"),
+                state=status.get("properties") or {},
+            ))
+        impulses = appraise(settings, observations, current)
+        known = {}
+        for index, item in enumerate(settings["impulses"]):
+            known.setdefault(item.get("marker"), index)
+        added: list[dict[str, Any]] = []
+        changed = False
+        today = current.date().isoformat()
+        counters = settings["counters"]
+        if counters.get("date") != today:
+            counters = {"date": today,
+                        "by_action": {key: 0 for key in settings["actions"]}}
+            changed = True
+        seen = getattr(self, "_care_seen", None)
+        if not isinstance(seen, dict):
+            seen = self._care_seen = {}
+        for impulse in impulses:
+            marker = impulse.get("marker")
+            existing = known.get(marker)
+            acted = False
+            concern_id = impulse.get("concern_id")
+            action_config = settings["actions"].get(concern_id) or {}
+            concern = settings["concerns"].get(concern_id) or {}
+            if impulse.get("action") and action_config.get("enabled") is True \
+                    and concern.get("enabled") is True:
+                key = f"{concern_id}:{impulse['alias']}"
+                first = seen.get(key)
+                if first is None:
+                    seen[key] = current.isoformat(timespec="seconds")
+                    impulse["reason"] = "它先看着，想再等一会儿，还没有动手。"
+                else:
+                    try:
+                        waited = int((current - datetime.fromisoformat(first)).total_seconds() // 60)
+                    except (TypeError, ValueError):
+                        waited = 0
+                    if waited >= int(action_config["patience_minutes"]) \
+                            and int(counters["by_action"].get(concern_id, 0)) < int(action_config["daily_cap"]):
+                        try:
+                            if concern_id == "ac_temperature":
+                                observed = next((item for item in observations
+                                                 if item.alias == impulse["alias"]), None)
+                                try:
+                                    current_target = int(observed.state.get("target_temperature")) \
+                                        if observed is not None else 24
+                                except (TypeError, ValueError):
+                                    current_target = 24
+                                warm_target = min(24, current_target + 2)
+                                receipt = await self.extension_device_action(
+                                    impulse["alias"], "target_temperature", str(warm_target),
+                                    native=False)
+                            else:
+                                receipt = await self.extension_control_power(
+                                    impulse["alias"], False, native=False)
+                            confirmed = bool(receipt.get("confirmed"))
+                        except Exception as exc:
+                            confirmed = False
+                            impulse["reason"] = f"它想帮忙，但没有成功：{str(exc)[:120]}"
+                        if confirmed:
+                            impulse["verdict"] = "acted"
+                            if concern_id == "ac_temperature":
+                                impulse["reason"] = (f"温度偏低已经 {waited} 分钟，"
+                                                     "它把空调往舒适方向调了一点，没有出声。")
+                            else:
+                                impulse["reason"] = (f"灯亮了 {waited} 分钟，你大概已经睡了；"
+                                                     "它把灯关掉了，没有出声。")
+                            counters["by_action"][concern_id] = int(
+                                counters["by_action"].get(concern_id, 0)) + 1
+                            seen.pop(key, None)
+                            acted = True
+                            changed = True
+            if existing is not None:
+                if acted:
+                    settings["impulses"][existing] = impulse
+                continue
+            added.append(impulse)
+        active = {f"{item['concern_id']}:{item['alias']}" for item in impulses}
+        for key in list(seen):
+            if key not in active:
+                seen.pop(key, None)
+        if added:
+            settings["impulses"] = (settings["impulses"] + added)[-40:]
+            changed = True
+        settings["counters"] = counters
+        if changed:
+            async with self._operation_lock:
+                self._config["care"] = settings
+                await self._persist_config()
+        return {"observed": len(observations), "impulses": added +
+                [item for item in impulses if item.get("verdict") == "acted"]}
+
+    def _care_category(self, alias: str) -> str:
+        _device_map, category_map, _errors = self._mapping_snapshot()
         category = category_map.get(alias, CATEGORY_NONE)
-        writable = set(get_device_detail_writable_keys(model=model, category=category))
+        return "" if category == CATEGORY_NONE else category
+
+    async def extension_care_feedback(self, concern_id: str, verdict: str) -> dict[str, Any]:
+        from companion_v2.proactive.care import CONCERNS
+        if concern_id not in {item.id for item in CONCERNS}:
+            raise WebAPIError("未知的在意项。", 400)
+        if verdict not in {"allow", "pause", "praise"}:
+            raise WebAPIError("未知的纠正方式。", 400)
+        settings = self._care_settings()
+        item = settings["concerns"].setdefault(
+            concern_id, {"enabled": False, "weight": "medium", "note": ""})
+        action = settings["actions"].get(concern_id)
+        settings["feedback"] = (settings["feedback"] + [{
+            "concern_id": concern_id, "verdict": verdict,
+            "at": datetime.now().isoformat(timespec="seconds")}])[-30:]
+        if verdict == "allow":
+            item["enabled"] = True
+            item["weight"] = "high"
+        elif verdict == "pause":
+            item["enabled"] = False
+            item["weight"] = "low"
+            if action is not None:
+                action["enabled"] = False
+        else:
+            item["weight"] = "high"
+            if action is not None:
+                action["patience_minutes"] = max(15, int(action["patience_minutes"]) - 5)
+        async with self._operation_lock:
+            self._config["care"] = settings
+            await self._persist_config()
+        return self.extension_care_status()
+
+    async def extension_care_save(self, payload: Any) -> dict[str, Any]:
+        from companion_v2.proactive.care import normalize_settings
+        if not isinstance(payload, dict):
+            raise WebAPIError("在意设置格式无效。", 400)
+        current = self._care_settings()
+        settings = normalize_settings({"enable": payload.get("enable") is True,
+                                       "concerns": payload.get("concerns") or {},
+                                       "actions": payload.get("actions") or {},
+                                       "counters": current["counters"],
+                                       "feedback": current["feedback"],
+                                       "impulses": current["impulses"]})
+        async with self._operation_lock:
+            self._config["care"] = settings
+            await self._persist_config()
+        return self.extension_care_status()
+
+
+    def _device_value(self, *, model: str, category: str, key: str, value: Any) -> Any:
+        """Fold the Chinese value from a profile into what the cloud property wants."""
+        if isinstance(value, bool):
+            return value
+        text = "" if value is None else str(value).strip()
+        if not text or len(text) > 256:
+            raise WebAPIError("该属性取值无效。", 400)
+        property_map = get_device_property_value_map(model=model, category=category, property_key=key)
+        if text in property_map:
+            return property_map[text]
+        value_map = get_device_val_map(model=model, category=category)
+        if text in value_map:
+            return value_map[text]
+        if re.fullmatch(r"-?\d+", text):
+            return int(text)
+        return text
+
+    def extension_device_actions(self, alias: str) -> dict[str, Any]:
+        """List the verbs and profile action names this exact device declares."""
+        directory = self.extension_device_directory()
+        profile = self.extension_device_profile(alias)
+        writable = {item["key"] for item in profile["writable_properties"]}
         actions = ["power"]
         for verb, prop in (("set_mode", "mode"), ("set_brightness", "brightness"),
                            ("set_color_temperature", "color_temperature")):
             if prop in writable:
                 actions.append(verb)
-        return {"alias": alias, "actions": actions, "logged_in": bool(directory.get("logged_in"))}
+        return {"alias": alias, "actions": actions,
+                "profile_properties": [item["name"] for item in profile["writable_properties"]],
+                "profile_actions": [item["name"] for item in profile["actions"]],
+                "direct_control_supported": profile["direct_control_supported"],
+                "unsupported_reason": profile["unsupported_reason"],
+                "logged_in": bool(directory.get("logged_in"))}
 
     async def extension_device_action(self, alias: str, action: str, value: Any, *,
                                       native: bool = False,
+                                      actor: Any = None,
                                       binding_revision: str = "") -> dict[str, Any]:
         """Run one declared device verb, refusing anything the profile does not allow."""
-        if action not in _DEVICE_WRITABLE_PROPERTIES and action != "power":
+        if not isinstance(action, str) or not action.strip() or len(action) > 64:
             raise WebAPIError("该设备动作不在允许的动作集合内。", 400)
-        target = self.extension_device_target(alias, native=native)
+        action = action.strip()
+        if action not in _DEVICE_WRITABLE_PROPERTIES and action != "power":
+            # 参考插件的「属性/动作」控制：中文名由设备画像换算成底层 key。
+            return await self._extension_profile_action(alias, action, value, native=native,
+                                                        actor=actor,
+                                                        binding_revision=binding_revision)
+        target = self.extension_device_target(alias, native=native, actor=actor)
         if binding_revision and str(binding_revision) != target["binding_revision"]:
             # The alias was rebound after this request was prepared.  The old
             # reference must not silently follow the new device.
@@ -529,7 +1119,7 @@ class MiHomeWebAPI:
         if action == "power":
             if not isinstance(value, bool):
                 raise WebAPIError("电源动作需要布尔取值。", 400)
-            return await self.extension_control_power(alias, value, native=native)
+            return await self.extension_control_power(alias, value, native=native, actor=actor)
         prop = _DEVICE_WRITABLE_PROPERTIES[action]
         allowed = self.extension_device_actions(alias)["actions"]
         if action not in allowed:
@@ -545,12 +1135,55 @@ class MiHomeWebAPI:
             if not isinstance(value, str) or not value.strip() or len(value) > 60:
                 raise WebAPIError("该属性需要字符串取值。", 400)
             value = value.strip()
-        did = self.extension_control_preflight(alias, native=native)
+        did = self.extension_control_preflight(alias, native=native, actor=actor)
         self._ensure_operation_available()
         async with self._operation_lock:
             confirmed = await self.plugin.client.set_property(did, prop, value, alias)
         return {"alias": alias, "action": action, "property": prop,
                 "value": value, "confirmed": bool(confirmed)}
+
+    async def _extension_profile_action(self, alias: str, action: str, value: Any, *,
+                                        native: bool = False,
+                                        actor: Any = None,
+                                        binding_revision: str = "") -> dict[str, Any]:
+        """Resolve one Chinese property/action name through the device profile.
+
+        The model never sends a raw property key: it sends the name shown by
+        ``reality.device.inspect`` and this method folds it through the profile's
+        reverse maps. A name the profile does not declare is refused before any
+        network call, exactly like the reference plugin's control tool.
+        """
+        context = self._device_profile_context(alias)
+        model, category = context["model"], context["category"]
+        prop_map = get_device_prop_map(model=model, category=category)
+        action_map = get_device_action_map(model=model, category=category)
+        writable = get_device_detail_writable_keys(model=model, category=category)
+        target = self.extension_device_target(alias, native=native, actor=actor)
+        if binding_revision and str(binding_revision) != target["binding_revision"]:
+            raise WebAPIError("设备绑定已变更，请按当前绑定重新发起。", 409)
+        key = prop_map.get(action, action if action in writable else None)
+        if key is not None:
+            if key not in writable:
+                raise WebAPIError("该设备档案未声明此属性可写。", 403)
+            folded = self._device_value(model=model, category=category, key=key, value=value)
+            did = self.extension_control_preflight(alias, native=native, actor=actor)
+            self._ensure_operation_available()
+            async with self._operation_lock:
+                confirmed = await self.plugin.client.set_property(did, key, folded, alias)
+            return {"alias": alias, "action": action, "property": key,
+                    "value": folded, "confirmed": bool(confirmed)}
+        key = action_map.get(action, action)
+        declared = [item for item in get_device_detail_actions(model=model, category=category)
+                    if item not in DENIED_CROSS_DEVICE_ACTIONS]
+        if key not in declared:
+            raise WebAPIError("该设备档案没有声明这个动作。", 403)
+        if not context["has_model_profile"]:
+            raise WebAPIError("直接控制动作需要精确型号画像；请改用米家场景。", 403)
+        did = self.extension_control_preflight(alias, native=native, actor=actor)
+        self._ensure_operation_available()
+        async with self._operation_lock:
+            confirmed = await self.plugin.client.run_action(did, key, alias)
+        return {"alias": alias, "action": action, "key": key, "confirmed": bool(confirmed)}
 
     def extension_device_directory(self) -> dict[str, Any]:
         """Return only mapped aliases and policy hints to the V2 model."""

@@ -30,6 +30,32 @@ from companion_v2.foundation.refs import ScopeKind
 logger = getLogger(__name__)
 MODEL_FAILURE_NOTICE = "刚刚我这边卡住了，没能接住你的消息。你再发我一次，我马上接着聊。"
 
+# 可公开的失败分类：只说对方能判断或转告管理员的原因，不带内部码、堆栈或请求细节。
+# 目的不是解释实现，而是让群友/用户知道「等一等」「换个模型」还是「找管理员」。
+MODEL_FAILURE_REASONS = {
+    "model_budget_exhausted": "（今天模型额度用完了，管理员补充额度后就能继续）",
+    "model_budget_configuration": "（模型预算配置有问题，管理员在「模型与连接」里检查一下）",
+    "model_budget_policy_changed": "（预算策略刚调整过，稍后再发一次）",
+    "model_provider_unavailable": "（当前没有可用的文本模型，管理员检查一下模型连接）",
+    "model_route_invalid": "（模型路由配置无效，管理员检查「模型与连接」）",
+    "model_plan_missing": "（这次没有生成可用的模型请求计划，管理员检查模型配置）",
+    "model_task_unavailable": "（这个任务暂时没有可用模型）",
+    "model_task_unregistered": "（这个任务还没接入模型）",
+    "model_capability_mismatch": "（所选模型不支持这次请求需要的能力）",
+    "model_output_limit": "（输出上限设置超出了模型能力）",
+    "model_output_truncated": "（模型把话说到一半被截断了，再发一次我重新组织）",
+    "model_refused": "（模型拒绝了这次请求，换个说法或稍后再试）",
+    "model_timeout": "（模型响应超时了）",
+    "model_transport_failed": "（模型连接中断了）",
+    "host_model_limit_input": "（这轮材料超出了模型的输入上限）",
+    "host_model_limit_output": "（输出上限超出了模型能力）",
+}
+
+
+def model_failure_notice(code):
+    """One public sentence: the friendly fallback plus the actionable reason."""
+    return MODEL_FAILURE_NOTICE + MODEL_FAILURE_REASONS.get(code, "")
+
 
 def single_part(text):
     return (text,)
@@ -277,7 +303,7 @@ class LocalReplyGenerator:
         code = error.code if isinstance(error, TaskError) else "model_settlement_failed"
         logger.warning("[CompanionV2] 私聊模型回复未完成，改发本地收尾提示 batch=%s failure=%s",
                        batch_id, code)
-        return ModelCompletion(None, ModelDraft(MODEL_FAILURE_NOTICE, ()), False)
+        return ModelCompletion(None, ModelDraft(model_failure_notice(code), ()), False)
 
     def _request(self, run, segmentation=None, streaming=None, voice=None, presentation=None, base_request=None,
                  image_output=None):

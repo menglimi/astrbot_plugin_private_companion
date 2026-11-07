@@ -17,6 +17,7 @@ from astrbot.core.agent.tool import FunctionTool, ToolSet
 
 from companion_v2.agenda.models import AgendaTarget, MemoCursor
 from companion_v2.conversation.agenda_tools import AgendaRoleSession
+from companion_v2.conversation.interaction_tools import POKE_ACTION, POKE_SPEC
 from companion_v2.conversation.tool_loop import READ_ACTIONS
 from companion_v2.conversation.native_tool_media import native_image_data
 from companion_v2.execution.models import TaskContext, TaskError, digest, encode, require
@@ -39,13 +40,14 @@ GROUP_READ_ACTIONS = frozenset({"group.memory.query", "group.memory.legacy.query
 # Stable window-level manifests.  The order is part of the cached tool prefix:
 # append new actions at the end and bump TOOL_MANIFEST_VERSION when the schema
 # changes, never splice a tool in because one message looks special.
-TOOL_MANIFEST_VERSION = "2026-10-31.2"
+TOOL_MANIFEST_VERSION = "2026-11-06.1"
 LEAN_GROUP_TOOL_ORDER = ("group.participation.choose", "group.memory.query",
                          "group.memory.remember", "acquaintance.recall",
                          "reaction.search", "slang.search")
 LEAN_GROUP_ACTIONS = frozenset(LEAN_GROUP_TOOL_ORDER)
 STANDARD_GROUP_ACTIONS = LEAN_GROUP_ACTIONS | frozenset((
-    "group.behavior.learn", "group.behavior.feedback", "slang.learn", "turn.evidence"))
+    "group.behavior.learn", "group.behavior.feedback", "slang.learn", "turn.evidence",
+    POKE_ACTION))
 LEAN_GROUP_INSTRUCTION = ("【群聊精简工具】本轮工具集固定且很小。决定接话时直接写出回复，不要先调用 "
     "group.participation.choose；只有决定旁听或等待时才调用 choose(mode=skip)。"
     "不要因为缺少某个工具就声称无法回应，先用自然语言把当前能说的说完。")
@@ -76,7 +78,8 @@ TOOL_INSTRUCTION = """陪伴工具作用于当前会话与角色，日常聊天�
 证据句柄用于工具，当前消息需作为证据时先调用 turn.evidence；记忆提议引用本轮提供的真实句柄。来源通常不打断聊天，被追问时再自然说明。
 对方接受刚提出的具体游戏、共处或通话邀请时，调用当前开放的对应工具创建或接续活动，以成功结果为准并给出完整房间链接，不用口头报坐标代替真实对局。不编链接，不在入口未就绪或工具未开放时声称已建房、开局或拨通。
 按完整本轮原话分清双方先手与颜色，已被更正的旧选择不沿用。human_side 是用户方：五子棋中“你执黑”“你先下”或点名角色“黑先”表示角色黑、用户白，human_side=white；“我执黑”“我先下”才是 human_side=black。
-access_scope=same_device 的链接仅供运行 AstrBot 的电脑使用；public_access=unavailable 表示公网入口未就绪，不能把本机链接说成手机或外网入口。"""
+access_scope=same_device 的链接仅供运行 AstrBot 的电脑使用；public_access=unavailable 表示公网入口未就绪，不能把本机链接说成手机或外网入口。
+对方明确点名要你戳一戳/拍一拍某个人时，调用 interaction.poke，target 用对方给出的昵称、群名片或 QQ；只戳被点名的人，不猜同名，同一轮对同一人只戳一次。不要用文字假装已经戳过；结果未知时如实说明，不重复调用。"""
 EVIDENCE_SPEC = ToolSpec("turn.evidence", "读取本轮已认证发言的证据句柄，供记忆、日历、成长和关系提案使用。",
                         encode({"type": "object", "properties": {}, "additionalProperties": False}))
 
@@ -294,6 +297,8 @@ class CoreReplyToolSession:
                 offered.extend(_OfferedTool(spec, "authoring") for spec in authoring.catalog_for(
                     context, (spec.action for spec in native_tools)))
         offered.append(_OfferedTool(EVIDENCE_SPEC, "evidence"))
+        if context.scope.kind in (ScopeKind.GROUP, ScopeKind.PRIVATE):
+            offered.append(_OfferedTool(POKE_SPEC, "interaction"))
         if self.context.scope.kind is ScopeKind.GROUP and self.group_tool_profile in ("lean", "standard"):
             return group_tool_manifest(offered, self.group_tool_profile)
         return tuple(offered)
@@ -388,6 +393,103 @@ class CoreReplyToolSession:
                 result["memory_evidence_handle"] = query.offer(self.context, "memory:" + self.turn_id, captured)
         return result
 
+    async def poke(self, arguments):
+        """戳一戳当前会话里被点名的成员；私聊戳当前对话人。
+
+        这是旧版"主动戳一戳"的按需入口：只做一次平台动作，不写记忆、不建任务、
+        不重试。群聊必须给 target，解析不到就失败并要求补 QQ，绝不猜同名。
+        """
+        scope = self.context.scope
+        target = arguments.get("target")
+        hint = " ".join(target.split()) if isinstance(target, str) else ""
+        attempted = self.state.setdefault("interaction_pokes", [])
+        unconfirmed = self.state.setdefault("interaction_poke_unconfirmed", set())
+        if len(attempted) >= 2:
+            raise TaskError("interaction_poke_limit", "本轮已经戳过，先回应对方。")
+        bot = getattr(self.event, "bot", None)
+        call = getattr(bot, "call_action", None)
+        if not callable(call):
+            raise TaskError("interaction_unavailable", "当前平台没有可用的戳一戳通道。")
+        if scope.kind is ScopeKind.PRIVATE:
+            user_id, display = str(scope.native_scope_id), hint or str(scope.native_scope_id)
+        else:
+            if not hint:
+                raise TaskError("interaction_target_required", "群聊里要说明戳谁，填昵称、群名片或 QQ。")
+            user_id, display = await self._resolve_group_member(call, hint)
+        key = (str(scope.native_scope_id), user_id)
+        if key in unconfirmed:
+            raise TaskError("interaction_poke_unconfirmed", "上一次戳的结果没有确认，不要重复调用。")
+        if key in attempted:
+            raise TaskError("interaction_poke_repeated", "同一个人本轮只戳一次。")
+        if not user_id.isdigit() or not str(scope.native_scope_id).isdigit():
+            raise TaskError("interaction_unavailable", "当前会话不是数字账号，无法戳一戳。")
+        action = "group_poke" if scope.kind is ScopeKind.GROUP else "friend_poke"
+        params = {"user_id": int(user_id)}
+        if scope.kind is ScopeKind.GROUP:
+            params["group_id"] = int(scope.native_scope_id)
+        try:
+            await call(action, **params)
+        except Exception:  # noqa: BLE001 - 平台调用失败就是未确认，不重试
+            attempted.append(key)
+            unconfirmed.add(key)
+            raise TaskError("interaction_poke_unknown", "戳一戳没有拿到平台确认；不要重复调用。") from None
+        attempted.append(key)
+        logger.info("[CompanionV2] 按需戳一戳 action=%s target=%s", action, user_id)
+        return {"state": "succeeded", "effect": "committed",
+                "payload": {"action": action, "target": user_id, "display": display}}
+
+    async def _resolve_group_member(self, call, hint):
+        """Resolve one group member by QQ, nickname, card or relationship alias."""
+        scope = self.context.scope
+        group_id = str(scope.native_scope_id)
+        if hint.isdigit():
+            return hint, hint
+        rows = []
+        try:
+            members = await call("get_group_member_list", group_id=int(group_id))
+        except Exception:  # noqa: BLE001 - 读不到成员列表就要求直接给 QQ
+            raise TaskError("interaction_member_unavailable", "读不到群成员列表，请直接给 QQ 号。") from None
+        for item in members if isinstance(members, list) else ():
+            if not isinstance(item, dict):
+                continue
+            user_id = str(item.get("user_id") or "").strip()
+            if user_id:
+                rows.append((user_id, str(item.get("nickname") or "").strip(),
+                             str(item.get("card") or "").strip()))
+        exact = [user_id for user_id, nickname, card in rows if hint in (user_id, nickname, card)]
+        hits = exact or [user_id for user_id, nickname, card in rows
+                         if hint and (hint in nickname or hint in card)]
+        if not hits:
+            aliases = self._relationship_aliases(group_id)
+            hits = [user_id for user_id, values in aliases.items() if hint in values]
+        if len(hits) == 1:
+            return hits[0], hint
+        if len(hits) > 1:
+            raise TaskError("interaction_target_ambiguous", "匹配到多个人，请补充 QQ 号。")
+        raise TaskError("interaction_target_not_found", "没有找到这个人，请补充 QQ 号。")
+
+    def _relationship_aliases(self, group_id):
+        """Known aliases for this group's members, never invented identities."""
+        try:
+            from companion_v2.relationships.group_network import route_owner_key
+            scope = self.context.scope
+            owner = route_owner_key(scope.installation_id, scope.platform, scope.bot_id,
+                                    scope.account_id, group_id, self.context.role_binding.role.subject_id)
+            network = self.application.messages.group_network.read_owner(owner)
+        except Exception:  # noqa: BLE001 - optional local evidence must not block the platform read
+            return {}
+        members = network.get("members") if isinstance(network, dict) else None
+        if not isinstance(members, dict):
+            return {}
+        result = {}
+        for account_id, item in members.items():
+            if not isinstance(item, dict):
+                continue
+            values = [str(entry.get("value") or "").strip()
+                      for entry in item.get("aliases", ()) if isinstance(entry, dict)]
+            result[str(account_id)] = tuple(value for value in values if value)
+        return result
+
     def assert_current(self):
         if (self.event.get_extra(CORE_REPLY_CONTEXT_EXTRA) is not self.state
                 or self.state.get("prepared") is not self.prepared):
@@ -430,6 +532,8 @@ class CoreReplyToolSession:
                 result = execute_core_behavior(self, action, arguments, native_call_id(wrapper, action, arguments))
             elif offered.owner == "evidence":
                 result = await self.evidence()
+            elif offered.owner == "interaction":
+                result = await self.poke(arguments)
             elif offered.owner == "external":
                 if action in ("image.edit", "image.mask_edit"):
                     # An explicit empty inbound selection means this edit only

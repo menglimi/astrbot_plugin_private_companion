@@ -31,7 +31,7 @@ window.CompanionRoleProfileDraft = (() => {
       '<div><span data-role-profile-draft-target>PERSONA → ROLE CANON</span><h2 id="roleProfileDraftTitle">整理角色资料</h2></div>' +
       '<button class="icon-button" type="button" data-role-profile-draft-close aria-label="关闭" title="关闭">' + icon("x") + '</button></header>' +
       '<section class="role-profile-draft-compose" aria-label="补充角色设定">' +
-      '<div class="role-profile-draft-source-picks"><label class="role-profile-draft-persona">AstrBot 人格<select data-role-profile-draft-persona aria-label="选择整理来源人格"></select></label>' +
+      '<div class="role-profile-draft-source-picks"><label class="role-profile-draft-persona">AstrBot 人格<select data-role-profile-draft-persona size="6" aria-label="选择整理来源人格"></select></label>' +
       '<label class="role-profile-draft-persona">整理模型<select data-role-profile-draft-provider aria-label="选择整理使用的文本模型"><option value="">跟随当前聊天模型</option></select></label></div>' +
       '<label for="roleProfileDraftSupplement" data-role-profile-draft-supplement-label>补充已确认的角色设定</label>' +
       '<textarea id="roleProfileDraftSupplement" rows="3" maxlength="4000" placeholder="例如：她其实是人造人，生日是第一次醒来的那天；不擅长直接表达担心。"></textarea>' +
@@ -48,6 +48,8 @@ window.CompanionRoleProfileDraft = (() => {
       '<div class="role-profile-draft-notes" data-role-profile-draft-notes hidden></div>' +
       '<div class="role-profile-draft-tools"><div><strong data-role-profile-draft-count>—</strong><span>项有内容</span></div>' +
       '<div><button type="button" class="button small" data-role-profile-draft-select-empty>选中空白项</button>' +
+      '<button type="button" class="button small" data-role-profile-draft-select-existing>选中已有设定</button>' +
+      '<button type="button" class="button small" data-role-profile-draft-select-all>全选有内容项</button>' +
       '<button type="button" class="button small" data-role-profile-draft-clear>清空选择</button></div></div>' +
       '<div class="role-profile-draft-groups" data-role-profile-draft-groups></div></section>' +
       '<footer class="role-profile-draft-actions" data-role-profile-draft-actions hidden><span data-role-profile-draft-budget></span>' +
@@ -279,6 +281,18 @@ window.CompanionRoleProfileDraft = (() => {
       .map(input => input.value)
       .filter(field => hasDraftContent(field, $(`[data-role-profile-draft-value="${field}"]`)?.value));
   }
+  /* 三种快捷选择共用一处：空白项（默认）、已有设定的项、全部有内容项。
+     默认只勾空白项是安全的，但必须有办法一眼看出「已有设定」的项也能覆盖。 */
+  function selectDraftFields(match) {
+    state.selectedFields = new Set();
+    for (const input of document.querySelectorAll("[data-role-profile-draft-select]")) {
+      const field = input.value;
+      const value = $("[data-role-profile-draft-value=\"" + field + "\"]")?.value || "";
+      input.checked = hasDraftContent(field, value) && match(field);
+      if (input.checked) state.selectedFields.add(field);
+    }
+    updateMeter();
+  }
   function updateMeter() {
     const selected = selectedFields();
     const budget = $("[data-role-profile-draft-budget]");
@@ -368,7 +382,11 @@ window.CompanionRoleProfileDraft = (() => {
         return '<article class="role-profile-draft-field' + (inferred.has(field) ? " is-inferred" : "") + '">' +
           '<label class="role-profile-draft-check"><input type="checkbox" data-role-profile-draft-select value="' + escapeHTML(field) + '"' +
           (checked ? " checked" : "") + (hasContent ? "" : " disabled") + ' aria-label="选择' + escapeHTML(label) + '">' +
-          "<span>" + escapeHTML(label) + "</span>" + (inferred.has(field) ? "<i>" + icon("sparkles") + "推断</i>" : "") + "</label>" +
+          "<span>" + escapeHTML(label) + "</span>" +
+          /* 这一项在当前档案里已经有内容：勾选后再点「覆盖所选字段」才会真的替换它。
+             没有这个标记时，用户只看到默认勾上的空白项，很容易以为覆盖按钮坏了。 */
+          (current.trim() ? '<span class="role-profile-draft-current-tag">已有设定</span>' : "") +
+          (inferred.has(field) ? "<i>" + icon("sparkles") + "推断</i>" : "") + "</label>" +
           control +
           '<div class="role-profile-draft-field-meta"><small>' + escapeHTML(help) + "</small><span data-role-profile-draft-length=\"" +
           escapeHTML(field) + "\">" + value.length + (maximum ? " / " + maximum : "") + "</span></div>" + old + "</article>";
@@ -489,11 +507,19 @@ window.CompanionRoleProfileDraft = (() => {
       state.scopeKey = scope;
       state.current = current;
       state.lastProviderId = String(payload.provider_id || providerId || "");
-      if (currentError) notice("草稿已生成，但当前资料没有读到；暂时不能写入。" + apiError(currentError), true);
-      else notice(target === "relationship_profile"
-        ? "草稿只用于当前私聊关系；请核对用户资料与关系描述，再选择要保存的字段。"
-        : "草稿已结合当前角色档案生成；本次引用的世界资料列在下方，请检查内容和推断标记。");
       paintDraft();
+      /* 默认只勾「这次新补的空白项」。若草稿里的内容在档案里都已有设定，
+         默认选择会是空的；这时必须说明去哪里点，否则用户会以为应用按钮坏了。 */
+      const contentFields = Object.keys(state.draft?.fields || {})
+        .filter(field => hasDraftContent(field, draftValue(field)));
+      const noDefaultSelection = contentFields.length > 0 && !(state.selectedFields?.size);
+      const selectionHint = noDefaultSelection
+        ? " 其中 " + contentFields.length + " 项在角色档案里已有设定，默认不勾选；要覆盖请点「选中已有设定」或「全选有内容项」。"
+        : "";
+      if (currentError) notice("草稿已生成，但当前资料没有读到；暂时不能写入。" + apiError(currentError), true);
+      else notice((target === "relationship_profile"
+        ? "草稿只用于当前私聊关系；请核对用户资料与关系描述，再选择要保存的字段。"
+        : "草稿已结合当前角色档案生成；本次引用的世界资料列在下方，请检查内容和推断标记。") + selectionHint);
     } catch (error) {
       if (ticket === state.ticket) notice(apiError(error), true);
     } finally {
@@ -605,6 +631,12 @@ window.CompanionRoleProfileDraft = (() => {
     buttons.forEach(button => { button.disabled = true; });
     try {
       const fresh = await readCurrent(role, state.target);
+      /* 「覆盖」只对已有内容的项有意义：选中的全是空白时，它和「填入空白」
+         是同一件事。直接说清楚并停下，比静默完成一次看起来没生效的写入好。 */
+      if (mode === "replace" && !Object.keys(values).some(field => String(fresh.settings[field] || "").trim())) {
+        notice("所选字段目前都是空白，覆盖和填入空白没有区别。要替换旧内容，请先点「选中已有设定」，再勾选要覆盖的项。", true);
+        return;
+      }
       const changes = {};
       const skipped = [];
       for (const [field, value] of Object.entries(values)) {
@@ -697,13 +729,18 @@ window.CompanionRoleProfileDraft = (() => {
     if (event.target.closest?.("[data-role-profile-draft-generate]")) { event.preventDefault(); void generate(); return; }
     if (event.target.closest?.("[data-role-profile-draft-select-empty]")) {
       event.preventDefault();
-      state.selectedFields = new Set();
-      for (const input of document.querySelectorAll("[data-role-profile-draft-select]")) {
-        const value = $("[data-role-profile-draft-value=\"" + input.value + "\"]")?.value || "";
-        input.checked = hasDraftContent(input.value, value) && !hasDraftContent(input.value, oldValue(input.value));
-        if (input.checked) state.selectedFields.add(input.value);
-      }
-      updateMeter(); return;
+      selectDraftFields(field => !hasDraftContent(field, oldValue(field)));
+      return;
+    }
+    if (event.target.closest?.("[data-role-profile-draft-select-existing]")) {
+      event.preventDefault();
+      selectDraftFields(field => hasDraftContent(field, oldValue(field)));
+      return;
+    }
+    if (event.target.closest?.("[data-role-profile-draft-select-all]")) {
+      event.preventDefault();
+      selectDraftFields(() => true);
+      return;
     }
     if (event.target.closest?.("[data-role-profile-draft-clear]")) {
       event.preventDefault();

@@ -76,7 +76,8 @@ class VideoDescriptor:
                 or tuple(f.index for f in self.frames) != selected_indices(self.frame_count)
                 or tuple(f.image.position for f in self.frames) != tuple(range(len(self.frames)))
                 or self.timing not in ("decoder_elapsed_ms", "unknown")
-                or type(self.decoder) is not str or not re.fullmatch(r"opencv:[0-9.]{3,24}", self.decoder)
+                or type(self.decoder) is not str or not re.fullmatch(
+                    r"(?:opencv:[0-9.]{3,24}|ffmpeg:external)", self.decoder)
                 or self.renderer != PROFILE):
             raise TaskError("video_manifest_invalid", "video requires a bounded original and explicit sampled coverage")
         times = tuple(f.start_ms for f in self.frames)

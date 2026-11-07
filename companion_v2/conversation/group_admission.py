@@ -122,7 +122,7 @@ class GroupReplyAdmission:
     def candidate(self, context, *, text, instruction, at, settings, participation,
                   mentioned=False, native_wakeup=False, mentions_others=False, reply_ids=(),
                   mentions_all=False, quoted_bot=False, has_image=False, persona_name="", event_id=None,
-                  continuation=None):
+                  continuation=None, merged_event_ids=()):
         self.messages.group_context.authorize(context, self.messages.tasks.now())
         wakeup = group_wakeup_settings(settings)
         if mentioned:
@@ -156,7 +156,11 @@ class GroupReplyAdmission:
             return "image_interest"
         if not compact or not any(char.isalnum() for char in compact):
             return ""
-        items = list(self.observations.get(self._key(context), ()))
+        excluded = set(merged_event_ids)
+        if event_id is not None:
+            excluded.add(event_id)
+        items = [item for item in self.observations.get(self._key(context), ())
+                 if item.get("event_id") not in excluded]
         current = {"kind": "member", "speaker_id": context.actor.principal.native_account_id,
                    "received_at": stamp(at), "text": compact}
         if event_id is not None:
@@ -175,7 +179,8 @@ class GroupReplyAdmission:
         # A repeated question or interest keyword is still a literal repeat.
         # Other candidates remain references for the ordinary role reply.
         question = (self.question_reference(context, text=compact, instruction=instruction, at=at,
-                                            settings=settings, event_id=event_id)
+                                            settings=settings, event_id=event_id,
+                                            merged_event_ids=merged_event_ids)
                     if wakeup["group_wakeup_question_enabled"] else {"score": 0})
         if (wakeup["group_wakeup_question_enabled"] and question["score"] > 0
                 and question["score"] >= wakeup["group_wakeup_question_threshold"]):
@@ -206,10 +211,14 @@ class GroupReplyAdmission:
         from .behavior import GroupBehavior
         return GroupBehavior(self.messages).candidate(context, text=text)
 
-    def question_reference(self, context, *, text, instruction, at, settings, event_id=None):
+    def question_reference(self, context, *, text, instruction, at, settings, event_id=None,
+                           merged_event_ids=()):
         wakeup = group_wakeup_settings(settings)
+        excluded = set(merged_event_ids)
+        if event_id is not None:
+            excluded.add(event_id)
         recent = [item for item in self.observations.get(self._key(context), ())
-                  if not event_id or item.get("event_id") != event_id]
+                  if item.get("event_id") not in excluded]
         return question_signal(text, recent=recent, at=at,
             speaker_id=context.actor.principal.native_account_id,
             bot_turns=self._current_core_turns(context, instruction, at),

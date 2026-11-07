@@ -57,7 +57,25 @@ class PrivateConversationHistory:
     def authorize(self, context, at, action):
         if context.scope.kind is not ScopeKind.PRIVATE or self.messages is None:
             raise TaskError("private_history_unavailable", "private dialogue requires its original message owner")
-        require(self.tasks.authorize_context(context, action=action, observed_at=at))
+        self.confirmed._authorize(context, action, at)
+
+    def _cached_body(self, ref, context, at, *, historical=False, round_metadata=False):
+        """Reuse one validated reference inside a single capture.
+
+        同一条对话快照会被每个分段、每条引用重复展开；一次 `_capture` 里
+        同一份引用重校验几十次是 2026-11-07 报告里的 D2。缓存只在
+        `BackgroundHistory.validation_scope()` 内存在，调用结束即失效。
+        """
+        scope = self.confirmed._validation.get()
+        if scope is None:
+            return self._body(ref, context, at, historical=historical, round_metadata=round_metadata)
+        key = (context.key, stamp(at), historical, round_metadata,
+               json.dumps(ref, ensure_ascii=False, sort_keys=True))
+        hit = scope["dialogue"].get(key)
+        if hit is None:
+            hit = self._body(ref, context, at, historical=historical, round_metadata=round_metadata)
+            scope["dialogue"][key] = hit
+        return {**hit}
 
     def _body(self, ref, context, at, *, historical=False, round_metadata=False):
         self.reference_key(ref)
@@ -121,7 +139,7 @@ class PrivateConversationHistory:
         keys = [self.reference_key(ref) for ref in snapshot["references"]]
         if len(set(keys)) != len(keys):
             raise TaskError("private_history_invalid", "dialogue references must be unique")
-        items = tuple(self._body(ref, context, at, historical=historical, round_metadata=round_metadata)
+        items = tuple(self._cached_body(ref, context, at, historical=historical, round_metadata=round_metadata)
                       for ref in snapshot["references"])
         if sum(len(json.dumps({key: value for key, value in item.items() if not key.startswith("_")},
                               ensure_ascii=False)) for item in items) > MAX_CHARS:

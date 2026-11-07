@@ -106,8 +106,11 @@ window.CompanionUnderstandingPage = (() => {
     }
   }
 
+  let onTabChange = null;
+
   function select(tab, {focus = false} = {}) {
     if (!tabs.some(([id]) => id === tab)) return false;
+    const changed = active !== tab;
     active = tab;
     if (!root) return true;
     root.dataset.understandingActive = tab;
@@ -128,6 +131,7 @@ window.CompanionUnderstandingPage = (() => {
     if (editor && slot && editor.parentElement !== slot) slot.appendChild(editor);
     window.CompanionReplyPage?.setPerceptionModule?.(tab);
     paintMetrics();
+    if (changed) onTabChange?.(tab);
     return true;
   }
 
@@ -157,10 +161,11 @@ window.CompanionUnderstandingPage = (() => {
     select(tabs[next][0], {focus: true});
   }
 
-  function mount(element) {
+  function mount(element, {onTabChange: onChange} = {}) {
     if (root && root !== element) unmount();
     if (!element) return unmount();
     root = element;
+    onTabChange = typeof onChange === "function" ? onChange : null;
     root.addEventListener("click", onClick);
     root.addEventListener("keydown", onKeydown);
     select(root.dataset.understandingActive || active);
@@ -172,6 +177,7 @@ window.CompanionUnderstandingPage = (() => {
       root.removeEventListener("keydown", onKeydown);
     }
     root = null;
+    onTabChange = null;
   }
 
   function updateReplyStatus(value) {

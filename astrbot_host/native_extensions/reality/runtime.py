@@ -103,10 +103,23 @@ class RealityRuntime(NativeService, RealitySettingsMethods, RealitySpeechMethods
                 raise RuntimeError('移动端网关启动失败，请检查配对令牌和端口配置')
             await self._set_official_reminders_paused(False)
             self._alarm_task = self._create_lifecycle_background_task(self._alarm_loop(), label='alarms')
+            self._create_lifecycle_background_task(self._care_loop(), label='care')
             # 旧版运行记录（音响输出、摄像头设备目录、按用户的摄像头授权）只补一次；
             # 关掉这个开关时不再重复尝试。
             if not self.data.get('legacy_migration_completed'):
                 self._create_lifecycle_background_task(self._migration_loop(), label='legacy-migration')
+
+    async def _care_loop(self) -> None:
+        """Observe devices for the care layer; phase 1 records impulses, never acts."""
+        while True:
+            try:
+                if self.mihome_web_api is not None:
+                    await self.mihome_web_api.extension_care_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning('[RealityCompanion] 在意轮询失败: %s', _single_line(exc, 160))
+            await asyncio.sleep(300)
 
     async def _set_official_reminders_paused(self, paused):
         manager = self._official_cron_manager()

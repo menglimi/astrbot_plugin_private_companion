@@ -3008,6 +3008,12 @@ window.CompanionSetup = (() => {
     delivery: "平台投递", receipt: "投递回执",
   };
   const PROACTIVE_TEST_FAILURE_SUGGESTIONS = {
+    dashboard_identity_required: "请从已登录的 AstrBot Dashboard 打开陪伴小屋；QQ 核心管理员绑定不能代替 Dashboard 登录。",
+    unbound_identity: "当前 Dashboard 账号尚未完成本体身份绑定，请重新登录管理界面并刷新状态。",
+    core_access_required: "当前 Dashboard 账号缺少核心管理权限，请由仍有权限的管理员核对授权。",
+    scope_not_granted: "当前 Dashboard 账号没有此配置范围的授权，请核对角色与私聊窗口。",
+    authorization_denied: "当前 Dashboard 账号没有管理此配置的权限；请核对 Dashboard 授权与已绑定的核心私聊窗口。",
+    "core.authorization.denied": "核心授权未通过。先核对 AstrBot 版本是否至少为 4.27.2，再分别检查 Dashboard 管理权限和核心私聊窗口绑定。",
     setup_contact_generation_failed: "生成任务已结束，请检查模型路由与该任务的失败原因。",
     model_task_unregistered: "当前角色尚未配置主动联系模型任务。",
     model_provider_unavailable: "主动联系模型不可用，请检查模型路由。",
