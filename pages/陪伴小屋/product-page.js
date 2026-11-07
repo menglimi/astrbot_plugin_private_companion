@@ -79,6 +79,7 @@ window.CompanionProduct = (() => {
     capability_not_discardable:"这件拓展当前不能卸载，请刷新后核对状态。",
     integration_extension_unavailable:"V2 内置拓展暂不可用，请重新读取家具状态。",
     integration_lifecycle_request_invalid:"拓展操作无效，请刷新后重试。",
+    integration_identity_invalid:"当前角色或会话已变更，请重新选择后重试。",
     host_not_running:"角色还没开始接收消息，请先点「开始连接」。",
     staging_preview_disabled:"当前运行实例只保留正式投递确认，没有可查看的草稿。",
     staging_draft_unavailable:"那一条回复已经失效，请再发一条消息。",
