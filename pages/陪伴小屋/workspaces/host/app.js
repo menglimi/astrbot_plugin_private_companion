@@ -182,15 +182,17 @@
     const text = String(value ?? "").trim();
     return text || fallback;
   };
-  const platformLabel = value => ({qq:"QQ · OneBot",default:"QQ · OneBot",aiocqhttp:"QQ · OneBot",onebot:"QQ · OneBot",qq_official:"QQ 官方机器人",qq_official_webhook:"QQ 官方机器人（Webhook）"})[value] || "当前平台";
+  const platformLabel = value => ({qq:"QQ · OneBot",default:"QQ · OneBot",aiocqhttp:"QQ · OneBot",onebot:"QQ · OneBot",qq_official:"QQ 官方机器人",qq_official_webhook:"QQ 官方机器人（Webhook）",lark:"飞书机器人",telegram:"Telegram"})[value] || "当前平台";
   const nativeId = value => String(value ?? "").trim();
-  const numericId = value => /^\d+$/.test(nativeId(value)) ? nativeId(value) : "";
+  /* Telegram group ids are negative; keep them visible beside the group name. */
+  const numericId = value => /^-?\d+$/.test(nativeId(value)) ? nativeId(value) : "";
   const topologyScope = (target) => {
     const kind = target?.scope_kind === "group" || target?.group_id ? "群聊" : "私聊";
     const id = nativeId(target.group_id || target.participant_id);
     const name = groupDisplayName(target) || (kind === "私聊" ? String(target.display_name || "").trim() : "");
-    // Numeric OneBot ids are useful beside a nickname; opaque QQ Official
-    // openids are shown only when no human-readable window name is available.
+    // Numeric ids (OneBot accounts, Telegram users/groups) are useful beside a
+    // nickname; opaque QQ Official openids are shown only when no readable
+    // window name is available.
     const suffix = numericId(id) || (name ? "" : id);
     return `${kind} ${name ? name + (suffix ? `（${suffix}）` : "") : suffix || "当前对象"}`;
   };

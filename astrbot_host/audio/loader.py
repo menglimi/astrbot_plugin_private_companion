@@ -12,7 +12,7 @@ from companion_v2.adapters.astrbot.native import NativeAudioLocator
 from companion_v2.conversation.media.audio.models import AudioDescriptor, CapturedAudio, MAX_AUDIO_BYTES, MAX_WAVE_BYTES
 from companion_v2.conversation.media.models import MAX_IMAGE_BYTES
 from companion_v2.execution.models import TaskError
-from ..media import fetch_image as fetch_public_attachment
+from ..media import fetch_image as fetch_public_attachment, read_host_resolved_attachment
 
 
 DECODE_TIMEOUT = 8
@@ -62,6 +62,11 @@ async def load_native_audio(locator):
             if len(encoded) > (MAX_AUDIO_BYTES + 2) // 3 * 4:
                 raise TaskError("host_audio_limit", "voice exceeds the intake byte budget")
             content = base64.b64decode(encoded, validate=True)
+        elif locator.host_resolved is True:
+            # AstrBot already downloaded Telegram voice/audio into its temp
+            # directory; only a file inside that directory is trusted.
+            content = await asyncio.to_thread(
+                read_host_resolved_attachment, value, MAX_AUDIO_BYTES)
         else:
             # The existing public attachment transport enforces this same byte
             # ceiling and checks redirects plus the actual connector DNS result.
@@ -71,6 +76,8 @@ async def load_native_audio(locator):
     except TaskError as error:
         if error.code.startswith("host_image_"):
             raise TaskError(error.code.replace("host_image_", "host_audio_", 1), "original voice attachment is unavailable") from None
+        if error.code.startswith("host_attachment_"):
+            raise TaskError(error.code.replace("host_attachment_", "host_audio_", 1), "original voice attachment is unavailable") from None
         raise
     except Exception:
         raise TaskError("host_audio_fetch_failed", "original voice could not be prepared") from None

@@ -201,8 +201,23 @@
     route.role_id ? `内部归属 ${route.role_id}` : ""].filter(Boolean).join(" · ");
   const personaLabel = person => Array.isArray(person?.persona_ids) && person.persona_ids.length
     ? person.persona_ids.map(value => value || "默认人格").join("、") : person?.role_name || "当前角色";
-  const accountLabel = person => person.account_name || (/^\d+$/.test(String(person.account_id || ""))
-    ? `QQ ${person.account_id}` : "当前 Bot 账号");
+  /* Route rows carry the configured platform instance id (defaults to the
+     adapter name), so labels must not assume OneBot. */
+  const PLATFORM_FAMILIES = {qq: "QQ", default: "QQ", aiocqhttp: "QQ", onebot: "QQ",
+    qq_official: "QQ", qq_official_webhook: "QQ", lark: "飞书", telegram: "Telegram"};
+  const platformFamily = value => PLATFORM_FAMILIES[value] || "";
+  const nativeAccountLabel = (person) => {
+    const id = String(person?.native_account_id || "未知");
+    const family = platformFamily(person?.platform)
+      || (/^\d+$/.test(String(person?.account_id || "")) ? "QQ" : "");
+    return family ? `${family} ${id}` : `账号 ${id}`;
+  };
+  const accountLabel = person => {
+    if (person.account_name) return person.account_name;
+    const accountId = String(person.account_id || "");
+    if (/^\d+$/.test(accountId)) return `QQ ${accountId}`;
+    return accountId ? `账号 ${accountId}` : "当前 Bot 账号";
+  };
   const operation = () => "member:" + Date.now().toString(36) + ":" + Math.random().toString(36).slice(2, 10);
   const shortTime = value => value ? new Intl.DateTimeFormat("zh-CN", {month: "numeric", day: "numeric"}).format(new Date(value)) : "暂无";
   function unwrap(response) {
@@ -1144,7 +1159,7 @@
     nameRow.append(element("h3", nameOf(person)), element("span", tierLabels[tier], "member-tier-badge"));
     const metaRow = element("div", undefined, "member-meta-row");
     const metaTexts = [];
-    for (const [glyph, text] of [["at-sign", "QQ " + (person.native_account_id || "未知")],
+    for (const [glyph, text] of [["at-sign", nativeAccountLabel(person)],
         ["bot", accountLabel(person)], ["sparkles", personaLabel(person)]]) {
       if (text && !metaTexts.some(entry => entry[1] === text)) metaTexts.push([glyph, text]);
     }

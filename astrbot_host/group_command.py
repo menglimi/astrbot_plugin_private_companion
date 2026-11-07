@@ -28,7 +28,16 @@ def parse_group_control(text):
 
 
 def _core_sender(session, route, target, *, at):
-    """Resolve the actual sender and require installation core membership."""
+    """Resolve the actual sender and require installation core membership.
+
+    Platform admin flags are deliberately not trusted here: Telegram never sets
+    ``event.role``/``is_admin`` for bot admins, and the same command must mean
+    the same thing on every adapter.  The only authority is the installation's
+    own CORE subject tier, resolved from the authenticated route sender; an
+    unbound or non-core sender gets the readable refusal text instead of a
+    crash.  A core administrator therefore has to be bound in the dashboard
+    (their private participant id is what the group sender resolves to).
+    """
     from companion_v2.identity_policy.models import AuthenticatedHostPrincipal
     from .command_authority import is_core_subject
     from .multi_authority import HOST_ID

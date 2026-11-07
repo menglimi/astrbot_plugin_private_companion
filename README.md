@@ -26,7 +26,7 @@
 | 显示名 | 我会永远陪着你 |
 | 当前版本 | `7.1.6`（7.x 架构线，内部领域标识 `private_companion.v2`） |
 | AstrBot 版本 | `>= 4.27.2` |
-| 声明支持平台 | `aiocqhttp`（OneBot v11）、`qq_official`、`qq_official_webhook` |
+| 声明支持平台 | `aiocqhttp`（OneBot v11）、`qq_official`、`qq_official_webhook`、`telegram` |
 | 管理入口 | AstrBot 插件扩展页「陪伴小屋」（支持低配设备开启「性能模式」切换为轻量状态页） |
 | 数据存储 | 独立 SQLite 运行库（覆盖升级自动隔离于 `companion-7` 子目录，支持备份快照与跨盘迁移） |
 | 内置原生扩展 | `Content`、`Image`、`Screen`、`Reality`、`Together`、`Game`、`Live` 七项能力随包内置 |
@@ -136,7 +136,7 @@ https://github.com/menglimi/astrbot_plugin_private_companion
 
 ### 3.2 首次使用（「陪伴小屋 → 开始使用」八步引导）
 
-首次安装后，先在 AstrBot 中准备好可用的平台适配器（`aiocqhttp` 或 QQ 官方机器人）、聊天模型和人格，再打开插件扩展页 **「陪伴小屋 → 开始使用」**，按页面左侧分组步骤树完成 **第 1–8 步** 配置：
+首次安装后，先在 AstrBot 中准备好可用的平台适配器（`aiocqhttp`、QQ 官方机器人或 Telegram）、聊天模型和人格，再打开插件扩展页 **「陪伴小屋 → 开始使用」**，按页面左侧分组步骤树完成 **第 1–8 步** 配置：
 
 > 从零开始的完整操作清单（含绑定指令、测试失败码处理）见 [首次使用：从零到跑通](docs/FIRST_RUN_FROM_ZERO.md)。
 
@@ -153,12 +153,27 @@ https://github.com/menglimi/astrbot_plugin_private_companion
 
 #### 账号、平台身份与多窗口归属
 
-- **平台无关身份识别**：同时支持 OneBot 数字 QQ 号与 QQ 官方机器人（`qq_official` / `qq_official_webhook`）的 C2C `openid`、`group_openid` 及平台实例 ID。私聊窗口列表会自动读取并显示发送者昵称，避免长串 `openid` 挤占标题。
-- **QQ 官方名称更新**：读取 AstrBot 提供的群名称与发送者昵称，也兼容旧 SDK 原始消息中的昵称字段。升级后收到带有效名称的新消息，再读取目录即可将原来的 ID 回退显示更新为名称，无需删除已有关系或熟人卡；管理员手动备注保持优先。旧版 AstrBot 缺少字段、群信息接口无权限或平台返回空名称时，保留已识别的名称，无名称时继续显示 ID。
+- **平台无关身份识别**：同时支持 OneBot 数字 QQ 号、QQ 官方机器人（`qq_official` / `qq_official_webhook`）的 C2C `openid`、`group_openid`，以及 Telegram 的数字用户 ID 与平台实例 ID。私聊窗口列表会自动读取并显示发送者昵称，避免长串 `openid` 挤占标题。
+- **平台名称更新**：读取 AstrBot 提供的群名称与发送者昵称（Telegram 读取 Bot API 的群标题与用户名），也兼容旧 SDK 原始消息中的昵称字段。升级后收到带有效名称的新消息，再读取目录即可将原来的 ID 回退显示更新为名称，无需删除已有关系或熟人卡；管理员手动备注保持优先。旧版 AstrBot 缺少字段、群信息接口无权限或平台返回空名称时，保留已识别的名称，无名称时继续显示 ID。
 - **跨账号同角色自动合并**：同一个 AstrBot 人格在多个 Bot 账号下使用相同角色名时，会自动合并为同一个角色与记忆归属，拓扑图按「同一角色 + 同一人格 ID」合并展示。
 - **同一用户多私聊窗口合并**：在「账号与会话」中支持手动合并同一用户的多个私聊窗口，可选：
   - **只共享角色**：共享角色状态与关系资料，各自窗口独立收发。
   - **主窗口接管**：将别名窗口的入站消息统一归入主窗口身份，回复与主动联系均走主窗口；随时可在会话详情中解除合并。
+
+#### Telegram 平台支持
+
+Telegram 与 OneBot / QQ 官方机器人共用同一套角色、记忆与主动联系逻辑，由 AstrBot 的 `telegram` 适配器负责收发。接入步骤：
+
+1. 在 AstrBot「平台」中添加 **Telegram** 适配器，填入 BotFather 申请到的 Bot Token；如网络需要，可同时配置 `telegram_api_base_url` / `telegram_file_base_url` 或 `http_proxy` 环境变量。
+2. 在 Telegram 里私聊该 Bot，发送绑定口令 `我会永远陪着你`（旧口令 `companion_bind` 仍可用）。
+3. 回到「陪伴小屋 → 开始使用」，确认这个私聊窗口为核心管理员窗口，再按八步引导完成模型、人格与主动设置。
+
+Telegram 的账号键是平台实例 ID，聊天对象是数字用户 ID（群聊为负数群 ID，话题群为 `群ID#话题ID`），因此同一套插件安装也可以同时接入 QQ / 飞书账号。
+
+- **支持**：私聊与群聊普通回复、主动联系、记忆与生活日程、图片 / 文件 / 视频 / 语音收发（语音自动转 OGG/OPUS，缺少 FFmpeg 时退化为文件发送）、Telegram 原生引用回复、话题群按话题隔离会话、输入中状态、多 Telegram 实例。
+- **不支持或降级**：戳一戳、QQ 表情、QQ 在线状态与自定义短状态、QQ 空间、合并转发读取、群成员列表与跨窗 @ 递话、撤回通知与撤回拦截；长文本由 AstrBot 适配器按 4096 字切分，Bot API 下载的文件受 20 MB 限制。
+
+> 完整的支持矩阵、已知限制与排障说明见 [Telegram 平台支持说明](docs/TELEGRAM_SUPPORT.md)。
 
 ---
 

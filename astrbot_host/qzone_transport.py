@@ -44,7 +44,15 @@ def manual_qzone_cookie(data_root=None):
 
 
 def build_qzone_transport(context, *, data_root=None, bot_selector=None):
-    """Build an available transport; absent accounts and credentials expose no tools."""
+    """Build an available transport; absent accounts and credentials expose no tools.
+
+    Qzone is a QQ feature: only ``aiocqhttp`` clients can supply the runtime
+    session, so a Telegram-only deployment gets ``None`` here.  The Qzone tool
+    port is then not declared at all, and the dashboard route reports the
+    readable ``qzone_unavailable`` state instead of failing.  The explicit
+    manual cookie stays a separate operator opt-in because it needs no OneBot
+    connection at all.
+    """
     if not qzone_bot_candidates(context) and not manual_qzone_cookie(data_root):
         return None
 

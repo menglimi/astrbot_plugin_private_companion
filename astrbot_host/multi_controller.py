@@ -13,6 +13,7 @@ from companion_v2.adapters.astrbot.native import (
     HostPersona, NativePrivateBridge, bounded_native_lookup, event_account_id, event_peer_id,
     native_client_connected, persona_instruction, platform_client_matches, supported_platform_name,
 )
+from companion_v2.adapters.astrbot.telegram import event_client as resolve_event_client
 from companion_v2.adapters.astrbot.group import group_event_route
 from companion_v2.adapters.astrbot.provider import provider_fingerprint
 from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings, assemble_providers
@@ -1187,9 +1188,9 @@ class AstrBotMultiController:
                 route = group_event_route(event)
                 target = self.settings.group_target(route.platform_id, route.account_id, route.group_id)
                 platform = self.context.get_platform_inst(meta.id)
-                if (target is None or platform is None or platform.get_client() is not event.bot
+                if (target is None or platform is None or platform.get_client() is not resolve_event_client(event)
                         or (connected and not native_client_connected(
-                            platform, route.account_id, event.bot))):
+                            platform, route.account_id, resolve_event_client(event)))):
                     return None
                 return target
             sender, login = event_peer_id(event), event_account_id(event)
@@ -1203,7 +1204,7 @@ class AstrBotMultiController:
             platform = self.context.get_platform_inst(meta.id)
             if target is None or platform is None:
                 return None
-            if not platform_client_matches(platform, event.bot):
+            if not platform_client_matches(platform, resolve_event_client(event)):
                 return None
             return self.settings.effective_private_target(target)
         except (ValueError, AttributeError, TypeError):

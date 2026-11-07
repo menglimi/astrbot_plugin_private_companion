@@ -17,7 +17,7 @@ window.CompanionStatePage = (() => {
     bridge_timeout:"未收到状态确认，请刷新核对。", invalid_response:"服务返回的数据不完整，请刷新核对。",
   };
   const presentationReasons = {
-    presentation_disabled:"开关已关闭", presence_port_missing:"未安装 QQ 展示端口", host_not_running:"角色尚未运行或已停止",
+    presentation_disabled:"开关已关闭", presence_port_missing:"未安装 QQ 展示端口", presence_unsupported:"当前平台不支持 QQ 展示（在线状态/自定义短状态）", host_not_running:"角色尚未运行或已停止",
     authorization_denied:"当前窗口缺少展示授权", binding_revoked:"当前身份授权已撤销", binding_rebound:"当前身份绑定已变化",
     role_binding_changed:"当前角色绑定已变化，请重新打开页面",
     multiple_presence_owners:"同一 QQ 账号有多个展示窗口，请保留一个窗口启用自定义短状态",

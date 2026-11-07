@@ -13,7 +13,7 @@ from companion_v2.adapters.astrbot.native import NativeVideoLocator
 from companion_v2.conversation.media.models import CapturedImage, MAX_TURN_BYTES
 from companion_v2.conversation.media.video.models import CapturedVideo, VideoDescriptor, MAX_VIDEO_BYTES
 from companion_v2.execution.models import TaskError
-from ..media import fetch_attachment
+from ..media import fetch_attachment, read_host_resolved_attachment
 
 
 DECODE_TIMEOUT = 12
@@ -80,6 +80,9 @@ async def fetch_native_video_bytes(locator):
             if len(encoded) > (MAX_VIDEO_BYTES + 2) // 3 * 4:
                 raise TaskError("host_video_limit", "video exceeds its intake byte budget")
             content = base64.b64decode(encoded, validate=True)
+        elif locator.host_resolved is True:
+            content = await asyncio.to_thread(
+                read_host_resolved_attachment, value, MAX_VIDEO_BYTES)
         else:
             content = await fetch_attachment(value, maximum_bytes=MAX_VIDEO_BYTES)
         if not 0 < len(content) <= MAX_VIDEO_BYTES:
@@ -88,6 +91,8 @@ async def fetch_native_video_bytes(locator):
     except TaskError as error:
         if error.code.startswith("host_image_"):
             raise TaskError(error.code.replace("host_image_", "host_video_", 1), "original video attachment is unavailable") from None
+        if error.code.startswith("host_attachment_"):
+            raise TaskError(error.code.replace("host_attachment_", "host_video_", 1), "original video attachment is unavailable") from None
         raise
     except Exception:
         raise TaskError("host_video_fetch_failed", "original video could not be prepared") from None

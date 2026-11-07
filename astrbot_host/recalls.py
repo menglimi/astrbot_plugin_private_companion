@@ -8,6 +8,7 @@ from companion_v2.adapters.astrbot.native import (
     account_number, event_account_id, event_peer_id, native_client_connected,
     platform_client_matches,
 )
+from companion_v2.adapters.astrbot.telegram import event_client as resolve_event_client
 from companion_v2.conversation.quotes.models import message_number
 from companion_v2.conversation.recalls import MessageRecall
 from companion_v2.execution.models import TaskError
@@ -75,7 +76,7 @@ def _lark_private_message_route(controller, event):
     platform, client = pinned
     if (controller.context.get_platform_inst(meta.id) is not platform
             or platform.get_client() is not client or platform.meta().id != meta.id
-            or platform.meta().name != "lark" or not platform_client_matches(platform, event.bot)
+            or platform.meta().name != "lark" or not platform_client_matches(platform, resolve_event_client(event))
             or not native_client_connected(platform, login)):
         raise TaskError("host_recall_account_changed", "message must come from the current connected platform")
     if (getattr(message.type, "value", None) != "FriendMessage" or message.group_id
@@ -88,6 +89,66 @@ def _lark_private_message_route(controller, event):
                              native_session.session_id, client, platform=platform, platform_name="lark")
 
 
+def _telegram_message_route(controller, event, kind):
+    """Authenticate one Telegram message event as a route for chat commands.
+
+    Telegram has no OneBot notice envelope, so commands that use
+    ``authenticate_notice_route(..., expected_post="message")`` (group LLM
+    block, refusal notices) need their own field-level verification.  The
+    adapter already verified the update; this only re-checks that the
+    normalized fields identify one configured native route.
+    """
+    message, meta, native_session = event.message_obj, event.platform_meta, event.session
+    if meta.name != "telegram":
+        return None
+    event_kind = "GroupMessage" if kind is ScopeKind.GROUP else "FriendMessage"
+    if getattr(native_session.message_type, "value", None) != event_kind:
+        return None
+    login, sender = event_account_id(event), event_peer_id(event)
+    peer = event_group_id(event) if kind is ScopeKind.GROUP else sender
+    settings = controller.settings
+    if hasattr(settings, "targets"):
+        target = (settings.group_target(meta.id, login, peer)
+                  if kind is ScopeKind.GROUP else settings.private_target(meta.id, login, peer))
+        if target is None:
+            return None
+        bot_id = target.bot_id
+    else:
+        configuration = controller.configuration
+        if configuration is None:
+            return None
+        scope = configuration.scope
+        if (meta.id, login, peer) != (scope.platform, scope.account_id, scope.native_scope_id):
+            return None
+        bot_id = scope.bot_id
+    bridge = controller.session.bridge.groups if kind is ScopeKind.GROUP else controller.session.bridge
+    account = bridge.accounts.get((meta.id, login))
+    pinned = bridge.platforms.get(meta.id)
+    if account is None or account.bot_id != bot_id or pinned is None:
+        raise TaskError("host_recall_route", "message account is outside the pinned native bridge")
+    platform, client = pinned
+    if (controller.context.get_platform_inst(meta.id) is not platform
+            or platform.get_client() is not client or platform.meta().id != meta.id
+            or platform.meta().name != "telegram"
+            or not platform_client_matches(platform, resolve_event_client(event))
+            or not native_client_connected(platform, login)):
+        raise TaskError("host_recall_account_changed", "message must come from the current connected platform")
+    if kind is ScopeKind.GROUP:
+        if (getattr(message.type, "value", None) != "GroupMessage"
+                or message.group_id != peer or native_session.session_id != peer
+                or event.unified_msg_origin != f"{meta.id}:GroupMessage:{peer}"):
+            raise TaskError("host_recall_route", "message fields do not identify one original group route")
+    else:
+        if (getattr(message.type, "value", None) != "FriendMessage" or message.group_id
+                or native_session.session_id != sender
+                or event.unified_msg_origin != f"{meta.id}:FriendMessage:{sender}"):
+            raise TaskError("host_recall_route", "message fields do not identify one original private route")
+    return NativeNoticeRoute(kind, meta.id, bot_id, login, sender, peer,
+                             native_session.session_id, client,
+                             group_id=peer if kind is ScopeKind.GROUP else "",
+                             platform=platform, platform_name="telegram")
+
+
 def authenticate_notice_route(controller, event, kind, *, expected_post="notice"):
     session = controller.session
     if (session is None or controller._terminated or session.application.state != "running"
@@ -96,6 +157,8 @@ def authenticate_notice_route(controller, event, kind, *, expected_post="notice"
     message, meta, native_session = event.message_obj, event.platform_meta, event.session
     if meta.name == "lark" and kind is ScopeKind.PRIVATE and expected_post == "message":
         return _lark_private_message_route(controller, event)
+    if meta.name == "telegram" and expected_post == "message":
+        return _telegram_message_route(controller, event, kind)
     if not has_post_type(event, expected_post):
         return None
     raw = message.raw_message
@@ -124,7 +187,7 @@ def authenticate_notice_route(controller, event, kind, *, expected_post="notice"
         raise TaskError("host_recall_route", "notice account is outside the pinned native bridge")
     platform, client = pinned
     if (controller.context.get_platform_inst(meta.id) is not platform or platform.get_client() is not client
-            or event.bot is not client or platform.meta().id != meta.id or platform.meta().name != "aiocqhttp"
+            or resolve_event_client(event) is not client or platform.meta().id != meta.id or platform.meta().name != "aiocqhttp"
             or meta.name != "aiocqhttp" or not client._wsr_api_clients.get(login)):
         raise TaskError("host_recall_account_changed", "notice must come from the current connected platform and client")
     event_kind = "GroupMessage" if kind is ScopeKind.GROUP else "FriendMessage"

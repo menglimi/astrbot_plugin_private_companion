@@ -9,6 +9,7 @@ import re
 from time import time
 from types import SimpleNamespace
 
+from companion_v2.adapters.astrbot.telegram import PLATFORM_NAME as TELEGRAM_PLATFORM_NAME
 from companion_v2.adapters.astrbot.tools import AstrBotToolDeclaration
 from companion_v2.conversation.native_tool_sources import input_row
 from companion_v2.conversation.relay import plan_relay
@@ -249,6 +250,38 @@ class RelayToolPort:
         cache[key] = (time() + max(1, int(minutes)) * 60, value)
         return value
 
+    def _platform_name(self, context):
+        """The native platform family of one invocation, best effort.
+
+        Relay name resolution is the only part of this tool that still depends
+        on the OneBot group/member APIs; callers use this to fail closed on
+        adapters that expose neither.
+        """
+        getter = getattr(self.bridge, "platform_name", None)
+        if not callable(getter):
+            return ""
+        try:
+            return str(getter(context.scope) or "")
+        except Exception:  # noqa: BLE001 - platform name is only a transport hint
+            return ""
+
+    def _refuse_telegram_name_resolution(self, context, *, mention):
+        """Refuse a name lookup Telegram cannot perform, before any OneBot call.
+
+        Telegram exposes no ``get_group_list``/``get_group_member_list``
+        equivalent, and an outbound ``At`` needs a username that only a member
+        lookup could produce.  Group ids the operator already whitelisted stay
+        usable; anything that needs resolution fails closed with one explicit
+        code instead of calling a OneBot action that cannot exist here.
+        """
+        if self._platform_name(context) != TELEGRAM_PLATFORM_NAME:
+            return
+        if mention:
+            raise TaskError("host_relay_target_unsupported",
+                            "Telegram 的 @ 需要用户名，且没有群成员列表可解析；这条递话不能指定 @ 对象")
+        raise TaskError("host_relay_target_unsupported",
+                        "Telegram 没有可读取的群列表；请直接提供群聊 ID 或把它加入递话群白名单")
+
     async def _resolve_group_target(self, context, hint, allowed_groups, cache_minutes=60):
         text = hint.strip() if isinstance(hint, str) else ""
         if ":GroupMessage:" in text:
@@ -260,6 +293,7 @@ class RelayToolPort:
         allowed = self._setting_values(allowed_groups)
         if text in allowed:
             return text
+        self._refuse_telegram_name_resolution(context, mention=False)
         cache_key = (context.scope.platform, context.scope.account_id)
         groups = self._cache_get(self._group_list_cache, cache_key)
         if groups is None:
@@ -316,6 +350,7 @@ class RelayToolPort:
         text = hint.strip() if isinstance(hint, str) else ""
         if not text:
             return ""
+        self._refuse_telegram_name_resolution(context, mention=True)
         if _PRIVATE_DESTINATION.fullmatch(text):
             return text
         if not group_id.isdigit():

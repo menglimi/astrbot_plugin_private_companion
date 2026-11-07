@@ -51,6 +51,9 @@ async def _send_private(controller, event, *, platform_id, login, peer, text):
 
 
 async def _send_group(controller, event, *, platform_id, login, peer, text, mention_id=""):
+    # Delayed relays are created only after their @ target was resolved, which
+    # Telegram cannot do (no member list); send_group_notice also refuses a
+    # telegram mention at the last boundary instead of dropping the @ silently.
     route = _route(event, controller, kind=ScopeKind.GROUP, platform_id=platform_id, login=login, peer=peer)
     route.platform = _platform_for(controller, platform_id)
     transport = prepare_relay_transport(_native_controller(controller), route)

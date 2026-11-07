@@ -8,6 +8,7 @@ import json
 import logging
 
 from companion_v2.adapters.astrbot.group import group_event_route
+from companion_v2.adapters.astrbot.telegram import event_client as resolve_event_client
 from companion_v2.adapters.astrbot.native import (
     account_number,
     bounded_native_lookup,
@@ -23,7 +24,7 @@ from companion_v2.execution.models import TaskError, digest
 from .identity_derivation import derive_bot_id, derive_role_id, role_display_name
 from .native import SESSION_SETTINGS_LOOKUP_BUDGET_SECONDS, load_session_settings
 from .multi_settings import find_persona_mapping
-from .display_names import event_person_names, platform_label
+from .display_names import display_names, event_person_names, platform_label
 
 
 logger = logging.getLogger(__name__)
@@ -194,10 +195,19 @@ class SessionTopology:
                     for raw_id in clients:
                         remember(meta.id, account_number(raw_id), platform_name=meta.name)
                 else:
-                    # QQ Official and the webhook adapter do not expose a
-                    # OneBot self-id. Their stable account key is the platform
+                    # QQ Official, Lark and Telegram do not expose a OneBot
+                    # self-id. Their stable account key is the platform
                     # instance id, also used by event_identity.
                     remember(meta.id, meta.id, platform_name=meta.name)
+                    if meta.name == "telegram":
+                        # Telegram's account key is an opaque instance id; a
+                        # cached bot username keeps the picker readable without
+                        # a second platform call. Observed labels still win.
+                        label = display_names(self.controller).cached_label(
+                            meta.id, meta.id, "account", meta.id)
+                        row = result.get((meta.id, meta.id))
+                        if label and row is not None:
+                            row["account_name"] = label
             except (AttributeError, ValueError, TypeError):
                 continue
         rows = sorted(result.values(), key=lambda row: (row["platform_id"], row["account_id"]))
@@ -426,7 +436,7 @@ class SessionTopology:
         if not supported_platform_name(meta.name):
             logger.debug("[CompanionV2] 跳过事件：平台 %s 不在支持名单", meta.name)
             return
-        if not platform_client_matches(platform, event.bot):
+        if not platform_client_matches(platform, resolve_event_client(event)):
             logger.debug(
                 "[CompanionV2] 跳过事件：事件携带的 bot(%s) 不是平台当前的 client",
                 type(getattr(event, "bot", None)).__name__,

@@ -90,13 +90,7 @@ class LiveSpeechMethods:
             return {}
         audio_path = str(audio_path)
         record_audio_path = self._prepare_bili_live_audio_for_record(audio_path)
-        try:
-            record = Record(file=record_audio_path, url=record_audio_path)
-        except TypeError:
-            try:
-                record = Record(file=record_audio_path)
-            except TypeError:
-                record = Record.fromFileSystem(record_audio_path)
+        record = await self._bili_live_tts_record(session_id, record_audio_path)
         visible_text = self._strip_tts_blocks_from_text(text)
         subtitle_text = self._build_bili_live_tts_subtitle_text(visible_text=visible_text, spoken_text=spoken)
         if schedule_local_playback:
@@ -106,6 +100,41 @@ class LiveSpeechMethods:
             await self._push_subtitle(subtitle_text, source='bili_live')
         logger.info('[B站直播] 已生成直播自动回应 TTS: convert=%.2fs provider=%.2fs path=%s text=%s', convert_elapsed, tts_elapsed, record_audio_path, spoken[:80])
         return {'chain': [record], 'spoken_text': spoken, 'subtitle_text': subtitle_text, 'audio_path': record_audio_path, 'source_audio_path': audio_path}
+
+    async def _bili_live_tts_record(self, session_id: str, record_audio_path: str):
+        """Build the outbound voice component for the live room's platform.
+
+        Telegram rejects WAV voice notes and re-encodes every plain ``Record``
+        to WAV inside AstrBot, so a Telegram live-room TTS uses the converted
+        OGG/MP3/M4A path through ``TelegramVoiceRecord``.  Every other platform
+        keeps the plain Record it always had.
+        """
+        platform_name = ""
+        try:
+            from astrbot.core.platform.message_session import MessageSession
+            platform_id = MessageSession.from_str(session_id).platform_name
+            platform = self.context.get_platform_inst(platform_id)
+            if platform is not None:
+                platform_name = str(platform.meta().name or "")
+        except Exception:
+            platform_name = ""
+        if platform_name == "telegram":
+            try:
+                from companion_v2.adapters.astrbot.platform_sender import TelegramVoiceRecord
+                from astrbot_host.telegram_media import telegram_voice_path
+
+                converted = await telegram_voice_path(record_audio_path)
+                if converted:
+                    return TelegramVoiceRecord(file=converted, path=converted)
+            except Exception:
+                logger.warning('[B站直播] Telegram 语音转码失败，退回普通语音段', exc_info=True)
+        try:
+            return Record(file=record_audio_path, url=record_audio_path)
+        except TypeError:
+            try:
+                return Record(file=record_audio_path)
+            except TypeError:
+                return Record.fromFileSystem(record_audio_path)
 
     def _sanitize_bili_live_tts_spoken_text(self, text: str, *, source_text: str='') -> str:
         cleaned = self._strip_tts_blocks_from_text(text)

@@ -319,6 +319,10 @@ async def prepare_core_reply_voice_message(
             file_value = audio_data.get("file") if isinstance(audio_data, dict) else None
             if not isinstance(file_value, str) or not file_value.startswith("base64://"):
                 raise ValueError("tts_audio_unavailable")
+            # TTS normally returns WAV.  The platform wire boundary
+            # (core_reply_media_delivery.native_wire_message) converts the part
+            # into a Telegram-compatible voice note, or a document fallback when
+            # no conversion is possible; other platforms keep the plain Record.
             record = Record(file=file_value, text=chunk)
             object.__setattr__(record, "_companion_v2_spoken_text", visible_speech(chunk).strip())
             records.append(record)

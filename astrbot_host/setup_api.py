@@ -58,7 +58,7 @@ PROACTIVE_TEST_SUGGESTIONS = {
     "contact_purpose_paused": "检查所选目的的暂停状态和恢复时间。",
     "contact_quiet_hours": "当前处于静默时段；结束后再运行测试。",
     "delivery_result_unknown": "投递结果未知；先核对核心管理员私聊，不要重放这次尝试。",
-    "delivery_failed": "检查 OneBot 私聊连接、机器人在线状态和平台返回错误。",
+    "delivery_failed": "检查平台私聊连接、机器人在线状态和平台返回错误。",
     "contact_diagnostic_source_required": "展开技术详情查看本次没有测试机会的原因。关系表达类使用已完成的私聊窗口和用途设置；事件类需要当前有效事件来源。没有候选时不会调用模型。",
     "contact_weather_unavailable": "检查角色地点与天气观测设置，并确认 Open-Meteo 或已配置的和风凭据可访问；刷新后先在状态页确认出现当前观测。",
     "contact_news_unavailable": "检查当前资讯源的网络抓取结果与条目发布时间；真实测试不会用合成新闻替代。",
@@ -81,7 +81,7 @@ PROACTIVE_TEST_SUGGESTIONS = {
     "model_budget_soft_deferred": "本次 proactive.compose 被本地每日软限额暂缓；检查软限额设置，额度恢复后再测。",
     "persona_review_denied": "检查 proactive.judge 的 Provider、角色设定和拒绝理由；调整后重新验收，不能绕过人格复核。",
     "delivery_result_unknown": "投递结果未知；核对核心管理员私聊与平台消息记录。确认是否收到前不要重试本次测试。",
-    "delivery_failed": "检查 OneBot 私聊连接、机器人在线状态和平台返回错误；确认没有收到后，再用新的验收尝试重测。",
+    "delivery_failed": "检查平台私聊连接、机器人在线状态和平台返回错误；确认没有收到后，再用新的验收尝试重测。",
     "setup_core_window_ambiguous": "检查已配置私聊目标的核心用户身份；主动测试只会发送到唯一且当前有效的核心管理员私聊窗口。",
     "host_persona_binding_changed": "绑定已按当前窗口自动修复；若反复出现，请在「开始使用」重新确认管理员私聊窗口。",
 }
@@ -142,13 +142,13 @@ PROACTIVE_TEST_STAGE_SUGGESTIONS = {
     "screen_capture": "检查已授权的截图设备及本次任务记录；未知结果不能重拍。",
     "screen_interpretation": "检查 screen.interpretation 的视觉模型、实际截图原件及分析任务记录。",
     "mobile_location_fetch": "检查现实触及模块、手机端配对、位置读取授权和本次地点快照时效。",
-    "image_attachment": "检查私聊表情边界、已授权图库素材、图片检索和 QQ 图片投递能力。",
+    "image_attachment": "检查私聊表情边界、已授权图库素材、图片检索和平台图片投递能力。",
     "model_route": "在模型路由中为 proactive.compose 选择可用文本 Provider。",
     "attempt_budget": "该上限已不再单独限制；现在只按窗口每日实际联系额度限制发送。",
     "delivery_budget": "查看「主动联系」中的每日实际联系上限与待回执发送。",
     "model_generation": "检查 proactive.compose Provider、任务参数、服务可达性与模型用量。",
     "persona_review": "检查 proactive.judge 路由、角色设定和复核理由；不要跳过复核。",
-    "delivery": "检查 OneBot 连接和平台回执；未知结果先核对收件窗口，禁止重发。",
+    "delivery": "检查平台连接和回执；未知结果先核对收件窗口，禁止重发。",
     "receipt": "检查同一 attempt 的平台投递回执和核心管理员私聊是否实际收到。",
 }
 
@@ -209,7 +209,7 @@ class SetupWebAPI:
         return [
             (PREFIX + "/status", self.status, ["GET"], "Read persistent Companion V2 setup progress"),
             (PREFIX + "/upgrade", self.prepare_upgrade, ["POST"], "Confirm existing legacy account and persona mappings"),
-            (PREFIX + "/targets", self.api_targets, ["GET"], "Read connected OneBot accounts and native personas"),
+            (PREFIX + "/targets", self.api_targets, ["GET"], "Read connected platform accounts and native personas"),
             (PREFIX + "/binding/confirm", self.confirm_binding, ["POST"], "Confirm the Companion V2 core administrator window"),
             (PREFIX + "/binding/reset", self.reset_binding, ["POST"], "Release the confirmed core administrator window so it can be bound again"),
             (PREFIX + "/model", self.model, ["POST"], "Choose the initial Companion V2 text provider"),

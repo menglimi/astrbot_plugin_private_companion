@@ -1,5 +1,20 @@
 # 更新日志
 
+## 未发布
+
+### Telegram 平台适配
+
+- 新增 `telegram` 平台支持：平台白名单、账号键（平台实例 id）、`telegram-user:` 主体命名空间、事件 client 解析（Telegram 事件只有 `.client`，没有 `.bot`）。
+- 入站媒体：Telegram Bot API 媒体 URL 在冻结 locator 前下载到 AstrBot 临时目录（代理感知、只允许配置的 file host、20 MB 上限、按事件清理）；语音/音频本地 wav 直接按 host-resolved 读取。
+- 引用消息：Telegram 的 `Reply` 组件自带被引用消息链，新增 `TelegramQuoteLocator` 直接冻结文本、图片、发送者与时间，无需 OneBot 历史接口。
+- 出站：`At` 使用 username；`Face` 在 Telegram 上丢弃；TTS 语音经 FFmpeg 转 OGG/OPUS 后用 `TelegramVoiceRecord` 绕过 AstrBot 对 `Record` 的强制 WAV 转码（失败时降级为音频文件/文字）；主动消息同样走注入的语音转换器。
+- 群聊：负数群 id 与论坛话题 `群id#话题id` 路由；`@bot` 按 bot 用户名识别；Telegram 群聊关闭 AstrBot 流式编辑（规避 4.29.1 群流式 `UnboundLocalError`）。
+- 指令与通知：新增 Telegram 消息路由认证，`陪伴 日程`、`全部重置`、`陪伴群 关闭LLM`、拒绝回执与私聊递话可用；跨窗口递话的 @群友解析在 Telegram 上明确失败（无群成员列表）。
+- 输入中状态：新增 `TelegramPresencePort`（`send_chat_action`）。
+- 面板与文档：账号/会话/关系页支持 Telegram 平台标签、负数组 id 与 `telegram-user:` 主体；`metadata.yaml` 声明 telegram；新增 `docs/TELEGRAM_SUPPORT.md`（支持矩阵、不支持功能、安装与排障）。
+- 不支持/降级：戳一戳、撤回感知、合并转发、QQ 表情、QQ 空间、好友申请通知、原生 emoji reaction、按 QQ 号 @群友；详见 `docs/TELEGRAM_SUPPORT.md`。
+- 顺带修复 7.1.5 的宿主装配回归：`companion_v2/host/application.py` 缺少 `RoleSystemPromptConfigurationOwner`，导致 `system.prompts.*` 配置字段无 owner、`initialize_profile()` 失败。
+
 ## 7.1.6 - 2026-11-08
 
 - 修复表情/表情包被当成「无法读取的媒体」：群里任何一条带 QQ 表情的消息都会让整轮捕获失败（`host_group_media_unsupported`），插件退回 AstrBot 核心、丢掉 V2 的分段/语音/Laya；私聊核心回复则得到空文本，模型只能当没说话。现在 `Face`/`Mface` 折成有界的 `[表情]` 并算作成员的一条消息，贴纸图片（`sub_type=1` 或表情摘要）折成 `[表情包]`；当轮感知另附 `emoji_expression` 指引：按情绪回应，不要问「你发了什么」、不要要求对方改用文字。补 `tests/test_group_face_capture.py` 6 项。

@@ -41,7 +41,10 @@ class OneBotTextSender:
     supports_images = False
 
     def __init__(self, bridge, *, binding, version, reverse_api_type, authorize, now=None, voice=None,
-                 voice_delivery=None, reaction_image_format=None):
+                 voice_delivery=None, reaction_image_format=None, voice_converter=None):
+        # OneBot sends the rendered voice as-is; the Telegram-only converter is
+        # accepted for the shared sender factory and intentionally ignored.
+        del voice_converter
         check_version(version)
         if not callable(authorize):
             raise ValueError("OneBot delivery requires a current authorization callback")

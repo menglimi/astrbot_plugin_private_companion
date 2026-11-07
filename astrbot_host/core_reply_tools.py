@@ -297,7 +297,13 @@ class CoreReplyToolSession:
                 offered.extend(_OfferedTool(spec, "authoring") for spec in authoring.catalog_for(
                     context, (spec.action for spec in native_tools)))
         offered.append(_OfferedTool(EVIDENCE_SPEC, "evidence"))
-        if context.scope.kind in (ScopeKind.GROUP, ScopeKind.PRIVATE):
+        platform_getter = getattr(self.event, "get_platform_name", None)
+        platform_name = platform_getter() if callable(platform_getter) else ""
+        if (context.scope.kind in (ScopeKind.GROUP, ScopeKind.PRIVATE)
+                and platform_name != "telegram"):
+            # Telegram has no poke transport; offering the tool would only
+            # waste a model turn on a guaranteed failure.  Every other adapter
+            # keeps the tool (it fails gracefully when it has no poke action).
             offered.append(_OfferedTool(POKE_SPEC, "interaction"))
         if self.context.scope.kind is ScopeKind.GROUP and self.group_tool_profile in ("lean", "standard"):
             return group_tool_manifest(offered, self.group_tool_profile)

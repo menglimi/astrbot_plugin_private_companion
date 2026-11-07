@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from companion_v2.adapters.astrbot.native import event_account_id, event_peer_id, native_id, supported_platform_name
+from companion_v2.adapters.astrbot.telegram import event_client as resolve_event_client
 from companion_v2.adapters.astrbot.staging_bootstrap import AstrBotStagingBootstrap
 from companion_v2.adapters.astrbot.staging_config import StagingConfiguration, StagingConfigurationError
 from companion_v2.capabilities import CapabilityManagementService
@@ -877,7 +878,7 @@ class AstrBotStagingController:
                 and event_account_id(event) == scope.account_id
                 and event_peer_id(event) == scope.native_scope_id
                 and event.platform_meta.id == scope.platform
-                and event.bot is session.bridge.client(scope)
+                and resolve_event_client(event) is session.bridge.client(scope)
             )
         except Exception:
             return False

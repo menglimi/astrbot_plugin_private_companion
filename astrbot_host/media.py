@@ -172,3 +172,24 @@ async def load_native_image(locator):
         raise
     except Exception:
         raise TaskError("host_image_fetch_failed", "original image could not be prepared") from None
+
+
+def read_host_resolved_attachment(value, maximum_bytes):
+    """Read an attachment the trusted host already wrote to its temp directory.
+
+    Telegram voice/audio is downloaded by AstrBot into ``<data>/temp`` and the
+    Telegram media preparer materializes photos/documents/videos there too.
+    Only a file inside that directory is trusted; every other network-message
+    path keeps the public-URL rule.
+    """
+    from companion_v2.adapters.astrbot.host_paths import is_host_temp_file
+
+    if not is_host_temp_file(value):
+        raise TaskError("host_attachment_location_invalid",
+                        "resolved attachment must be a file inside the host temp directory")
+    path = Path(value)
+    with path.open("rb") as stream:
+        content = stream.read(maximum_bytes + 1)
+    if len(content) > maximum_bytes:
+        raise TaskError("host_attachment_limit", "attachment exceeds the intake byte budget")
+    return content

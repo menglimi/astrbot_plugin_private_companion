@@ -10,6 +10,7 @@ from time import monotonic
 CACHE_SECONDS = 300
 RETRY_SECONDS = 30
 LOOKUP_TIMEOUT = 2
+TELEGRAM_PLATFORM_NAME = "telegram"
 
 
 def _name(value):
@@ -21,6 +22,37 @@ def _identifier(value):
         return ""
     text = str(value).strip()
     return text if text.isascii() and text.isdigit() and int(text) > 0 else ""
+
+
+def _opaque_identifier(value):
+    """A configured platform instance id, such as Telegram's account key."""
+    if type(value) not in (str, int):
+        return ""
+    text = str(value).strip()
+    if not text or len(text) > 128 or ":" in text:
+        return ""
+    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in text):
+        return ""
+    return text
+
+
+def _telegram_chat_id(value):
+    """A Telegram chat id: positive for users, negative for groups."""
+    if type(value) not in (str, int):
+        return ""
+    text = str(value).strip()
+    if not text or len(text) > 32:
+        return ""
+    try:
+        number = int(text)
+    except ValueError:
+        return ""
+    return text if str(number) == text else ""
+
+
+def _telegram_name(record):
+    """The stable label Telegram carries for a user or bot."""
+    return _name(getattr(record, "username", None)) or _name(getattr(record, "first_name", None))
 
 
 def platform_label(value, native_id=""):
@@ -37,8 +69,14 @@ def event_person_names(event):
     if not peer:
         return "", ""
     normalized_name = platform_label(getattr(sender, "nickname", None), peer)
+    platform_name = getattr(getattr(event, "platform_meta", None), "name", "")
+    if platform_name == TELEGRAM_PLATFORM_NAME:
+        # Telegram's raw_message is a telegram.Update rather than a mapping.
+        # The adapter has already put the authenticated sender's username on
+        # the message member, and Telegram has no separate group card.
+        return normalized_name, ""
     raw = getattr(message, "raw_message", None)
-    if getattr(getattr(event, "platform_meta", None), "name", "") in {"qq_official", "qq_official_webhook"}:
+    if platform_name in {"qq_official", "qq_official_webhook"}:
         payload = raw if isinstance(raw, Mapping) else getattr(raw, "raw_data", None)
         author = (payload.get("author") if isinstance(payload, Mapping) else None) or getattr(raw, "author", None)
         field = "member_openid" if getattr(message, "group_id", None) else "user_openid"
@@ -60,11 +98,19 @@ class PlatformDisplayNames:
         self._locks = {}
         self._slots = asyncio.Semaphore(6)
 
-    def _api(self, platform_id, account_id):
+    def _platform(self, platform_id):
+        """The loaded instance whose configured id matches, or None."""
         try:
             platform = self.context.get_platform_inst(platform_id)
-            metadata = platform.meta()
-            if metadata.name != "aiocqhttp" or metadata.id != platform_id:
+            if platform is None or platform.meta().id != platform_id:
+                return None
+            return platform
+        except Exception:
+            return None
+
+    def _api(self, platform, account_id):
+        try:
+            if platform is None or platform.meta().name != "aiocqhttp":
                 return None
             client = platform.get_client()
             if not getattr(client, "_wsr_api_clients", {}).get(account_id):
@@ -74,8 +120,20 @@ class PlatformDisplayNames:
         except Exception:
             return None
 
-    async def _read(self, platform_id, account_id, action, **params):
-        api = self._api(platform_id, account_id)
+    def _telegram_client(self, platform):
+        """The live Telegram client for one configured instance, or None."""
+        try:
+            if platform is None or platform.meta().name != TELEGRAM_PLATFORM_NAME:
+                return None
+            client = platform.get_client()
+        except Exception:
+            return None
+        if callable(getattr(client, "get_chat", None)) or callable(getattr(client, "get_me", None)):
+            return client
+        return None
+
+    async def _read(self, platform, account_id, action, **params):
+        api = self._api(platform, account_id)
         if api is None:
             return None
         try:
@@ -91,6 +149,19 @@ class PlatformDisplayNames:
             # A failed optional name lookup must not block configuration or permissions.
             return None
 
+    async def _call_telegram(self, client, method, **params):
+        """Call one read-only Telegram Bot API method under the same budget."""
+        call = getattr(client, method, None)
+        if not callable(call):
+            return None
+        try:
+            async with self._slots:
+                return await asyncio.wait_for(call(**params), LOOKUP_TIMEOUT)
+        except Exception:
+            # Telegram may be behind a proxy or the bot may lack the chat;
+            # an optional label never blocks configuration or permissions.
+            return None
+
     async def _cached(self, key, read):
         cached = self._cache.get(key)
         if cached and cached[0] > monotonic():
@@ -103,26 +174,71 @@ class PlatformDisplayNames:
             self._cache[key] = (monotonic() + (CACHE_SECONDS if result else RETRY_SECONDS), result)
             return result
 
+    @staticmethod
+    def _cached_keys(platform_id, account_id, kind, native_id):
+        """Every key shape a lookup may have stored, without host calls."""
+        keys = []
+        account, native = _identifier(account_id), _identifier(native_id)
+        if account and native:
+            keys.append((platform_id, account, kind, native))
+        account = _opaque_identifier(account_id)
+        native = _opaque_identifier(native_id) if kind == "account" else _telegram_chat_id(native_id)
+        if account and native:
+            keys.append((platform_id, account, kind, native))
+        return keys
+
+    def cached_label(self, platform_id, account_id, kind, native_id):
+        """A last-known label for synchronous callers; never contacts a platform."""
+        platform_id = str(platform_id or "").strip()
+        if not platform_id:
+            return ""
+        for key in self._cached_keys(platform_id, account_id, kind, native_id):
+            cached = self._cache.get(key)
+            if cached:
+                return cached[1]
+        return ""
+
     async def lookup(self, platform_id, account_id, kind, native_id, *, cached_only=False):
-        account_id, native_id = _identifier(account_id), _identifier(native_id)
-        if not platform_id or not account_id or not native_id:
+        platform_id = str(platform_id or "").strip()
+        if not platform_id:
+            return ""
+        if cached_only:
+            # Last-known labels are presentation only; never wait for a platform
+            # when the caller is painting an existing local directory.
+            return self.cached_label(platform_id, account_id, kind, native_id)
+        platform = self._platform(platform_id)
+        telegram_client = self._telegram_client(platform)
+        if telegram_client is not None:
+            # Telegram's account key is the configured platform instance id and
+            # its chats are signed integers; neither fits the OneBot numeric id.
+            account_id = _opaque_identifier(account_id)
+            if account_id != platform_id:
+                return ""
+            native_id = (_opaque_identifier(native_id) if kind == "account"
+                         else _telegram_chat_id(native_id))
+        else:
+            account_id, native_id = _identifier(account_id), _identifier(native_id)
+        if not account_id or not native_id:
             return ""
         key = (platform_id, account_id, kind, native_id)
-        if cached_only:
-            # Last-known labels are presentation only; never wait for OneBot
-            # when the caller is painting an existing local directory.
-            cached = self._cache.get(key)
-            return cached[1] if cached else ""
 
         async def read():
+            if telegram_client is not None:
+                if kind == "account":
+                    # The client itself is the only authority for its bot name.
+                    return _telegram_name(await self._call_telegram(telegram_client, "get_me"))
+                record = await self._call_telegram(telegram_client, "get_chat", chat_id=int(native_id))
+                if kind == "group":
+                    return _name(getattr(record, "title", None))
+                return _telegram_name(record)
             if kind == "account":
-                record = await self._read(platform_id, account_id, "get_login_info")
+                record = await self._read(platform, account_id, "get_login_info")
                 if isinstance(record, dict) and _identifier(record.get("user_id")) == native_id:
                     return _name(record.get("nickname"))
                 return ""
             action, id_field = ("get_group_list", "group_id") if kind == "group" else ("get_friend_list", "user_id")
             records = await self._cached((platform_id, account_id, action),
-                lambda: self._read(platform_id, account_id, action))
+                lambda: self._read(platform, account_id, action))
             for record in records if isinstance(records, list) else ():
                 if not isinstance(record, dict) or _identifier(record.get(id_field)) != native_id:
                     continue
@@ -131,7 +247,7 @@ class PlatformDisplayNames:
                 if name:
                     return name
             detail_action = "get_group_info" if kind == "group" else "get_stranger_info"
-            record = await self._read(platform_id, account_id, detail_action, **{id_field: int(native_id)})
+            record = await self._read(platform, account_id, detail_action, **{id_field: int(native_id)})
             if isinstance(record, dict) and _identifier(record.get(id_field)) == native_id:
                 return _name(record.get("group_name" if kind == "group" else "nickname"))
             return ""

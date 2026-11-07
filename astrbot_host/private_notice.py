@@ -27,6 +27,27 @@ async def send_text_notice(controller, route, *, text, transport=None):
     """平台直发一句纯文本到已认证的路由（私聊或群），返回有界回执。"""
     if not text or not str(text).strip():
         return {"state": "skipped", "reason": "blank_line"}
+    platform_name = str(getattr(route, "platform_name", "") or "").lower()
+    peer = str(getattr(route, "peer", "") or "")
+    raw_onebot = peer.isdigit() and (not platform_name or platform_name in {"aiocqhttp", "qq", "onebot"})
+    if not raw_onebot:
+        # QQ Official / Telegram / other AstrBot-native platforms use the
+        # platform session transport instead of a OneBot action.
+        platform = getattr(route, "platform", None)
+        if platform is None or not callable(getattr(platform, "send_by_session", None)):
+            return {"state": "failed", "reason": "platform_transport_unavailable"}
+        try:
+            from astrbot.core.message.components import Plain
+            from astrbot.core.message.message_event_result import MessageChain
+            from astrbot.core.platform.message_session import MessageSession
+            from astrbot.core.platform.message_type import MessageType
+            kind = MessageType.GROUP_MESSAGE if route.kind is ScopeKind.GROUP else MessageType.FRIEND_MESSAGE
+            await platform.send_by_session(MessageSession(route.platform_id, kind, peer),
+                                           MessageChain([Plain(str(text))]))
+        except Exception:  # noqa: BLE001 - send outcome is unknown, never replayed here
+            return {"state": "failed", "reason": "platform_call_failed"}
+        receipt = digest(["text-notice-session.v1", route.platform_id, route.login, peer, str(text)])
+        return {"state": "delivered", "message_id": "session:" + receipt, "receipt": receipt}
     api = transport if transport is not None else _transport(controller, route)
     if route.kind is ScopeKind.GROUP:
         action, target = "send_group_msg", {"group_id": int(route.peer)}
@@ -54,6 +75,11 @@ async def send_group_notice(controller, route, *, text, mention_id="", transport
         return {"state": "failed", "reason": "mention_target_invalid"}
     platform = getattr(route, "platform", None)
     platform_name = str(getattr(route, "platform_name", "") or "").lower()
+    if mention and platform_name == "telegram":
+        # Telegram renders an @ from the component's username; an id-only At is
+        # silently dropped by the adapter.  A relay that promised a mention must
+        # fail closed here instead of delivering without it.
+        return {"state": "failed", "reason": "mention_target_unsupported"}
     raw_onebot = peer.isdigit() and (not platform_name or platform_name in {"aiocqhttp", "qq", "onebot"})
 
     if raw_onebot:

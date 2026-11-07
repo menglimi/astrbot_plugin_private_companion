@@ -120,6 +120,7 @@ from companion_v2.references.configuration import (ReferenceConfigurationOwner, 
 from companion_v2.references.service import ReferenceAssetService
 from companion_v2.references.wardrobe import (WardrobeConfigurationOwner, WardrobeSettings,
     configuration_fields as wardrobe_configuration_fields)
+from companion_v2.system_prompts.configuration import RoleSystemPromptConfigurationOwner
 from companion_v2.qzone.configuration import (QzoneConfigurationOwner, QzoneSettings,
     configuration_fields as qzone_configuration_fields)
 from companion_v2.qzone.service import QzoneService
@@ -279,6 +280,7 @@ class CompanionApplication:
                     reference_configuration_owner,
                     WardrobeConfigurationOwner(runtime),
                     QzoneConfigurationOwner(runtime),
+                    RoleSystemPromptConfigurationOwner(runtime),
                     *capability_owners))
         try:
             migrate_presence_to_role(runtime)

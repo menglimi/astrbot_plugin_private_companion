@@ -57,8 +57,8 @@ window.CompanionProduct = (() => {
        后者要做的才是去确认已经发出去的那条。少了这一行，新码会落进
        fail() 的兜底「暂不可读取，请刷新核对。」——用户会以为页面读不到数据。 */
     setup_steps_incomplete:"还有引导步骤没有完成，请先完成（或跳过）剩下的步骤，再做这次测试。",
-    staging_delivery_not_enabled:"这个运行实例没有可用的 OneBot 私聊通道。请核对绑定的 Bot 账号、私聊对象和人格。",
-    staging_delivery_window_invalid:"当前 OneBot 投递通道配置无效，请核对账号与目标。",
+    staging_delivery_not_enabled:"这个运行实例没有可用的平台私聊通道。请核对绑定的 Bot 账号、私聊对象和人格。",
+    staging_delivery_window_invalid:"当前平台投递通道配置无效，请核对账号与目标。",
     staging_delivery_profile_required:"这个窗口的角色配置尚未就绪，请重新读取账号与会话。",
     staging_delivery_session_active:"当前运行实例正在接收消息，请先停止再修改目标。",
     staging_delivery_expiry_invalid:"角色配置无效，请重新读取连接状态。",
@@ -832,16 +832,20 @@ window.CompanionProduct = (() => {
     const id = nativeId(item.group_id || item.participant_id);
     return `${kind} ${item.display_name ? item.display_name + (id ? `（${id}）` : "") : id || "当前对象"}`;
   }
-  const nativeId = value => /^\d+$/.test(String(value || "")) ? String(value) : "";
+  /* Telegram group ids are negative and chat ids stay numeric; opaque
+     platform ids (QQ Official openids, a Telegram instance id) are not shown. */
+  const nativeId = value => /^-?\d+$/.test(String(value || "")) ? String(value) : "";
   const subjectLabel = item => item?.display_name || nativeId(item?.group_id || item?.participant_id) || "当前聊天对象";
   const platformLabel = item => ({qq:"QQ · OneBot",default:"QQ · OneBot",aiocqhttp:"QQ · OneBot",onebot:"QQ · OneBot",qq_official:"QQ 官方机器人",qq_official_webhook:"QQ 官方机器人（Webhook）",lark:"飞书机器人",telegram:"Telegram",discord:"Discord",slack:"Slack",kook:"KOOK",dingtalk:"钉钉",line:"LINE",satori:"Satori",mattermost:"Mattermost",misskey:"Misskey",webchat:"WebChat",wecom:"企业微信",wecom_ai_bot:"企业微信 AI 机器人",weixin_oc:"微信开放平台",weixin_official_account:"微信公众号"})[item?.platform_name || item?.platform_id] || "当前平台";
   const accountLabel = item => {
     const id = nativeId(item.account_id);
-    return item.account_name ? item.account_name + (id ? `（${id}）` : "") : id ? `QQ ${id}` : "当前账号";
+    if (item.account_name) return item.account_name + (id ? `（${id}）` : "");
+    if (id) return `QQ ${id}`;
+    return item.account_id ? `账号 ${item.account_id}` : "当前账号";
   };
   function readableLabel(value, fallback) {
     const text = typeof value === "string" ? value.trim() : "";
-    return !text || /^(?:role[-_:]|staging[-_:]|dashboard:|onebot-user:)/i.test(text)
+    return !text || /^(?:role[-_:]|staging[-_:]|dashboard:|(?:onebot|qq-official|telegram|lark)-user:)/i.test(text)
       || /^[a-f0-9]{24,}$/i.test(text) ? fallback : text;
   }
   function roleLabel(item = role(), index = null) {
@@ -853,13 +857,17 @@ window.CompanionProduct = (() => {
     const owner = roleTarget();
     return owner ? roleLabel() : "尚未选择角色";
   }
+  /* Subject ids carry their platform family (onebot-user:, qq-official-user:,
+     telegram-user:, lark-user:); the label must not assume OneBot. */
+  const userSubjectPrefixes = ["onebot-user:", "qq-official-user:", "telegram-user:", "lark-user:"];
+  const isUserSubject = id => userSubjectPrefixes.some(prefix => id.startsWith(prefix));
   function actorLabel(id) {
     if (!id) return "";
     if (id === catalog?.operator_id) return catalog.operator_name || "当前管理员";
     const actorRole = target()?.roles.find(item => item.role_id === id);
     if (actorRole) return roleLabel(actorRole);
-    if (id === "onebot-user:" + target()?.participant_id) return target().display_name || "当前聊天对象";
-    return id.startsWith("dashboard:") ? "其他管理员" : id.startsWith("onebot-user:") ? "授权用户" : "其他操作者";
+    if (userSubjectPrefixes.some(prefix => id === prefix + target()?.participant_id)) return target().display_name || "当前聊天对象";
+    return id.startsWith("dashboard:") ? "其他管理员" : isUserSubject(id) ? "授权用户" : "其他操作者";
   }
   function executorLabel(plan) {
     return plan.executor_is_current ? "当前私聊窗口" : "同一角色的其他私聊窗口";

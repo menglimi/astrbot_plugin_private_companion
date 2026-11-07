@@ -612,6 +612,16 @@ class PrivateCompanionV2StagingPlugin(Star):
         # the companion look like it owns a command it does not handle.
         if competing_command_handler(event, own_module=__name__) is not None:
             return
+        # AstrBot 4.29.1 streams a Telegram group reply by sending one message and
+        # then editing it; the first send's result is dereferenced outside the
+        # try block, so a failed first chunk (media or >4096 chars) raises
+        # UnboundLocalError.  Keep only our own Telegram group replies
+        # non-streaming; private chats keep Telegram's safe sendMessageDraft path
+        # and every other platform is untouched.
+        platform_getter = getattr(event, "get_platform_name", None)
+        if (callable(platform_getter) and platform_getter() == "telegram"
+                and self._claims_target(event)):
+            event.set_extra("enable_streaming", False)
         result = await self.staging.observe_group_early(event)
         if result is not None and result.failure is None:
             try:

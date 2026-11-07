@@ -1015,7 +1015,7 @@ window.CompanionSetup = (() => {
       ${topology ? `<section class="setup-migration-role-topology"><header><p class="setup-migration-manager-label">Bot 与伴侣角色</p><span>${groups.length} 个 Bot · ${readyRoleCount} 个角色可接收旧版资料</span></header><ul>${topology}</ul></section>`
         : legacyAccountCatalogState === "loading" ? `<p class="setup-migration-empty" role="status">正在读取已连接的 Bot 账号和 AstrBot 人格…</p>`
           : legacyAccountCatalogState === "unavailable" ? `<p class="setup-migration-empty" role="alert">暂时读不到 Bot 与人格目录。请重试读取。</p>`
-            : `<p class="setup-migration-empty" role="status">尚未发现已连接的 OneBot 账号。请先在 AstrBot 连接 Bot 账号。</p>`}
+            : `<p class="setup-migration-empty" role="status">尚未发现已连接的平台账号。请先在 AstrBot 连接 Bot 账号。</p>`}
     </section>`;
   }
 
@@ -2869,7 +2869,7 @@ window.CompanionSetup = (() => {
   function bindingFacts(binding) {
     if (!binding || !binding.participant_id) return "";
     return `<dl class="setup-facts">
-      <div><dt>平台</dt><dd>${escape(product()?.platformLabel?.(binding) || "QQ · OneBot")}</dd></div>
+      <div><dt>平台</dt><dd>${escape(product()?.platformLabel?.(binding) || "当前平台")}</dd></div>
       <div><dt>Bot 账号</dt><dd>${escape(legacyAccountLabel(binding))}</dd></div>
       <div><dt>私聊对象</dt><dd>${escape(legacyTargetLabel(binding))}</dd></div>
       <div><dt>AstrBot 人格</dt><dd>${escape(binding.persona_id === "[%None]" ? "默认人格" : binding.persona_id || "跟随当前会话")}</dd></div>

@@ -25,6 +25,12 @@ from .quotes import NativeQuoteLocator, image_locator
 from .forwards import NativeForwardLocator, resource_id
 from .group_quotes import mention_text
 from .files import file_locator, prepare_file_text, MAX_FILES
+from .host_paths import is_host_temp_file
+from .telegram import (
+    PLATFORM_NAME as TELEGRAM_PLATFORM_NAME,
+    event_client as resolve_event_client,
+    telegram_quote_locator,
+)
 
 
 @dataclass(frozen=True)
@@ -247,7 +253,7 @@ class NativeGroupBridge(NativePrivateBridge):
             original_parts = raw.get("message") if isinstance(raw, Mapping) else None
             self._validate_quote_components(original_parts, parts)
             text = self._text_only_parts(event, route)
-            at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event.bot
+            at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), resolve_event_client(event)
             principal = AuthenticatedHostPrincipal(self.installation_id, self.host_id, route.platform_id,
                 route.sender_id, account.bot_id, route.account_id)
             cid, role, instruction = await self._role(account, route.session_id)
@@ -372,6 +378,14 @@ class NativeGroupBridge(NativePrivateBridge):
             parts = self.component_reader(event) if self.component_reader is not None else tuple(event.message_obj.message)
             if not parts or len(parts) > 128:
                 raise TaskError("host_media_unsupported", "message components are empty or exceed the intake budget")
+            if route._platform_name == TELEGRAM_PLATFORM_NAME and self.media_preparer is not None:
+                try:
+                    parts = await asyncio.wait_for(
+                        self.media_preparer(event, self.platforms[route.platform_id][0], parts),
+                        MEDIA_PREPARE_TIMEOUT)
+                except asyncio.TimeoutError:
+                    raise TaskError("host_media_timeout",
+                                    "Telegram group media preparation exceeded its bounded intake time") from None
             self._validate_quote_components(original_parts, parts)
             text_parts, image_locators, quote_locators, forward_locators = [], [], [], []
             audio_locators, video_locators = [], []
@@ -389,6 +403,10 @@ class NativeGroupBridge(NativePrivateBridge):
                 elif kind == "Reply" and self.reply_type is not None and type(part) is self.reply_type:
                     if onebot:
                         quote_locators.append(NativeQuoteLocator(position, message_number(part.id)))
+                    elif route._platform_name == TELEGRAM_PLATFORM_NAME:
+                        locator = telegram_quote_locator(position, part)
+                        if locator is not None:
+                            quote_locators.append(locator)
                     text_parts.append("\n[引用消息]\n")
                 elif kind == "Forward" and self.forward_type is not None and type(part) is self.forward_type:
                     if onebot:
@@ -398,13 +416,15 @@ class NativeGroupBridge(NativePrivateBridge):
                     value = part.file if type(part.file) is str and part.file.startswith("base64://") else part.url or part.file
                     if type(value) is not str or not value:
                         raise TaskError("host_audio_unavailable", "group voice has no original host attachment")
-                    audio_locators.append(NativeAudioLocator(position, value))
+                    audio_locators.append(NativeAudioLocator(position, value,
+                                                             host_resolved=is_host_temp_file(value)))
                     text_parts.append("\n[语音 " + str(len(audio_locators)) + "]\n")
                 elif kind == "Video" and self.video_type is not None and type(part) is self.video_type:
                     value = part.file if type(part.file) is str and part.file.startswith("base64://") else part.url or part.file
                     if type(value) is not str or not value:
                         raise TaskError("host_video_unavailable", "group video has no original host attachment")
-                    video_locators.append(NativeVideoLocator(position, value))
+                    video_locators.append(NativeVideoLocator(position, value,
+                                                             host_resolved=is_host_temp_file(value)))
                     text_parts.append("\n[视频 " + str(len(video_locators)) + "]\n")
                 elif kind == "File" and self.file_type is not None and type(part) is self.file_type:
                     if len(file_locators) < MAX_FILES:
@@ -453,7 +473,7 @@ class NativeGroupBridge(NativePrivateBridge):
                                  if allow_text_fallback else None)
             except TaskError:
                 fallback_text = None
-            at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event.bot
+            at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), resolve_event_client(event)
             principal = AuthenticatedHostPrincipal(self.installation_id, self.host_id, route.platform_id,
                 route.sender_id, account.bot_id, route.account_id)
             # All mutable native fields above are frozen before host I/O. Identity

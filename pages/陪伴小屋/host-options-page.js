@@ -112,7 +112,7 @@ window.CompanionHostOptionsPage = (() => {
     const replies = value.replies.map(esc).join("\n");
     return `<section class="host-options-panel" aria-label="收到戳一戳回应">
       <header class="host-options-heading"><div><h3>收到戳一戳</h3>
-        <p>仅响应已配置目标发给当前 Bot 的 OneBot 戳一戳。保存后立即生效。</p></div></header>
+        <p>仅 OneBot 平台支持：响应已配置目标发给当前 Bot 的戳一戳；Telegram 等平台没有戳一戳，该功能保持关闭。保存后立即生效。</p></div></header>
       <form data-host-form="poke" novalidate>
         <div class="host-options-row"><div class="host-options-copy"><strong>回应收到的戳一戳</strong>
           <small>关闭后仍可单独保留下方短句和概率设置。</small></div>

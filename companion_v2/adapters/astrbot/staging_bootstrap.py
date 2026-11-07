@@ -458,7 +458,10 @@ class AstrBotStagingBootstrap:
     def _connected_account(self, bridge):
         scope = self.configuration.scope
         client = bridge.client(scope)
-        if not getattr(client, "_wsr_api_clients", {}).get(scope.account_id):
+        from .native import native_client_connected
+
+        platform = bridge.platforms.get(scope.platform, (None, None))[0]
+        if not native_client_connected(platform, scope.account_id, client):
             raise TaskError("staging_account_unavailable", "configured native account is not connected")
 
     async def initialize(self) -> Outcome[BootstrapReceipt]:

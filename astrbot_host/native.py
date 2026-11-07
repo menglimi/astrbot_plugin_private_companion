@@ -24,8 +24,8 @@ from sqlmodel import select
 
 from companion_v2.adapters.astrbot.native import (
     NATIVE_LOOKUP_SLOW_SECONDS, HostPersona, NativePrivateBridge, account_number, bounded_native_lookup,
-    configured_default_persona_id, native_client_connected, persona_instruction, report_slow_native_lookup,
-    supported_platform_name,
+    configured_default_persona_id, native_client_connected, native_user_subject_id, persona_instruction,
+    report_slow_native_lookup, supported_platform_name,
 )
 from companion_v2.adapters.astrbot.provider import looks_like_text_provider, provider_fingerprint
 from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings, assemble_providers
@@ -43,6 +43,7 @@ from .files.loader import load_native_file
 from .video.gemini_provider import GeminiNativeVideoProvider
 from .quotes import load_native_quote, load_native_group_quote
 from .forwards import load_native_forwards, load_native_group_forwards
+from .telegram_media import prepare_telegram_media, telegram_voice_path
 
 
 HOST_ID = "astrbot-local-staging"
@@ -299,6 +300,8 @@ def installed_native_types() -> NativeAdapterTypes:
         session_persona_override_lookup=load_session_persona_override,
         persona_snapshot_lookup=load_persona_snapshot_selection,
         persona_selection_lookup=resolve_native_persona_selection,
+        media_preparer=prepare_telegram_media,
+        voice_converter=telegram_voice_path,
     )
 
 
@@ -494,7 +497,8 @@ class NativeProbeService:
             scope=scope,
             host_id=HOST_ID,
             ecosystem_id=ECOSYSTEM_ID,
-            subject=SubjectRef(installation_id, SubjectKind.HUMAN, "onebot-user:" + settings.participant_id),
+            subject=SubjectRef(installation_id, SubjectKind.HUMAN,
+                               native_user_subject_id(metadata.name, settings.participant_id)),
             persona=HostPersona(settings.bot_id, selected, role, digest(instruction)),
             authority_ref="astrbot-dashboard:" + settings.profile_id,
             valid_from=valid_from or self.now(),

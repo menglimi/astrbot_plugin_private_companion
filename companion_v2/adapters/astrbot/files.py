@@ -29,6 +29,9 @@ class NativeFileLocator:
     position: int
     name: str
     locator: str
+    # Set only for an attachment the trusted host already wrote to its temp
+    # directory (Telegram documents are materialized there before intake).
+    host_resolved: bool = False
 
 
 @dataclass(frozen=True)
@@ -52,7 +55,10 @@ class FileText:
 
 def file_locator(position, part):
     value = getattr(part, "url", None) or getattr(part, "file_", None) or ""
-    return NativeFileLocator(position, safe_name(getattr(part, "name", None)), value if type(value) is str else "")
+    value = value if type(value) is str else ""
+    from .host_paths import is_host_temp_file
+    return NativeFileLocator(position, safe_name(getattr(part, "name", None)), value,
+                             host_resolved=is_host_temp_file(value))
 
 
 async def prepare_file_text(locators, loader, preferences, *, client, scope, payload_budget=65536):

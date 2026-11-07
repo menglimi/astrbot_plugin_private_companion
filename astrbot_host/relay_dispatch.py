@@ -2,13 +2,19 @@
 
 学 V1 的做法：V1 的 atrelay 就是拿目标私聊 id 直接调 OneBot 的
 `send_private_msg`。V2 已经有同样的原语——`private_notice.send_private_notice`
-（`call_action("send_private_msg", self_id=..., user_id=...)`），所以这里不重造
-发送通道，只补三件 V1 没有严格做好的事：
+（OneBot 账号走 `call_action("send_private_msg", ...)`，QQ Official / Telegram
+等 AstrBot 原生平台走 `platform.send_by_session`），所以这里不重造发送通道，
+只补三件 V1 没有严格做好的事：
 
 1. **先判定再发送**：一律经过 `plan_relay`，未通过就只返回拒绝码，不触网；
 2. **管理员路径必须带确认**：`needs_confirm=True` 且没有 `confirmed=True` 时
    只回一条待确认结果，绝不发送；
 3. **审计**：把计划里的 audit 字段原样返回，由调用方写入 outbox。
+
+Telegram 的 @ 对象需要用户名、且没有 OneBot 群成员列表可解析，因此带 @ 的群聊
+递话在 `relay_tools` 解析阶段就以 ``host_relay_target_unsupported`` 拒绝；
+``send_group_notice`` 在最后一道边界上对 telegram + mention 也会失败关闭，
+不会静默丢掉 @ 后照常发送。
 
 这个模块只做"一次递话"，不订阅事件、不注册工具——接入点由调用方决定。
 """

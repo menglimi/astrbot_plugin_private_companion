@@ -62,7 +62,7 @@
       },
       "delivery_mode": {
         "description": "投递形态（旧字段）",
-        "hint": "仅保留旧配置兼容：正式宿主固定使用 OneBot 原生私聊发送，该字段不再影响行为。",
+        "hint": "仅保留旧配置兼容：正式宿主固定使用平台原生私聊发送，该字段不再影响行为。",
         "type": "string",
         "options": [
           "onebot_private",
@@ -79,17 +79,17 @@
     "invisible": true,
     "items": {
       "platform_id": {
-        "description": "OneBot 平台实例 ID",
+        "description": "平台实例 ID",
         "type": "string",
         "default": "default"
       },
       "account_id": {
-        "description": "Bot QQ 账号",
+        "description": "Bot 账号",
         "type": "string",
         "default": ""
       },
       "participant_id": {
-        "description": "测试参与者 QQ",
+        "description": "测试参与者账号",
         "hint": "留空则由引导绑定；只有这个账号发给所选 Bot 的私聊纯文本会被接管。",
         "type": "string",
         "default": ""
@@ -146,12 +146,12 @@
                 "default": "target-1"
               },
               "platform_id": {
-                "description": "OneBot 平台实例 ID",
+                "description": "平台实例 ID",
                 "type": "string",
                 "default": "default"
               },
               "account_id": {
-                "description": "Bot QQ 账号",
+                "description": "Bot 账号",
                 "type": "string",
                 "default": ""
               },
@@ -161,7 +161,7 @@
                 "default": "bot-1"
               },
               "participant_id": {
-                "description": "私聊参与者 QQ",
+                "description": "私聊参与者账号",
                 "type": "string",
                 "default": ""
               }
@@ -213,12 +213,12 @@
                 "default": "group-1"
               },
               "platform_id": {
-                "description": "OneBot 平台实例 ID",
+                "description": "平台实例 ID",
                 "type": "string",
                 "default": "default"
               },
               "account_id": {
-                "description": "Bot QQ 账号",
+                "description": "Bot 账号",
                 "type": "string",
                 "default": ""
               },
@@ -255,7 +255,7 @@
       },
       "delivery_mode": {
         "description": "私聊投递形态（旧字段）",
-        "hint": "仅保留旧配置兼容：正式宿主固定使用 OneBot 原生私聊发送，该字段不再影响行为。",
+        "hint": "仅保留旧配置兼容：正式宿主固定使用平台原生私聊发送，该字段不再影响行为。",
         "type": "string",
         "options": [
           "onebot_private",
@@ -265,7 +265,7 @@
       },
       "group_delivery_mode": {
         "description": "群投递形态（旧字段）",
-        "hint": "仅为旧配置兼容保留，不再控制投递；群消息始终走已配置的 OneBot 原生渠道。运行前预览由操作级草稿接口决定。",
+        "hint": "仅为旧配置兼容保留，不再控制投递；群消息始终走已配置的平台原生渠道。运行前预览由操作级草稿接口决定。",
         "type": "string",
         "invisible": true,
         "options": [
@@ -681,7 +681,7 @@
   },
   "poke": {
     "description": "互动｜戳一戳",
-    "hint": "默认关闭。仅响应已配置目标对当前 Bot 的 OneBot 戳一戳；发送沿用该目标已认证的 OneBot 通道及关系权限。通知按账号、目标、发送者和秒级时间去重；同一秒内重复戳会合并。未知发送结果不会自动重试。",
+    "hint": "默认关闭。仅 OneBot 平台支持：响应已配置目标对当前 Bot 的戳一戳；发送沿用该目标已认证的 OneBot 通道及关系权限。Telegram 等平台没有戳一戳，该功能保持关闭。通知按账号、目标、发送者和秒级时间去重；同一秒内重复戳会合并。未知发送结果不会自动重试。",
     "invisible": true,
     "type": "object",
     "items": {

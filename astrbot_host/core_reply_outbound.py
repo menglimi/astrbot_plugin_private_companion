@@ -88,7 +88,17 @@ def prepare_core_reply_outbound_message(event, prepared, message, *, segment_ind
     mentions = [account for account in (behavior_mentions or (plan.mentions if plan else ()))
                 if not any(isinstance(component, At)
                            and str(getattr(component, "qq", "")) == account for component in output)]
-    mention_components = [At(qq=account) for account in mentions]
+    platform_getter = getattr(event, "get_platform_name", None)
+    telegram = callable(platform_getter) and platform_getter() == "telegram"
+    if telegram:
+        from .telegram_media import telegram_mention_name
+        mention_components = []
+        for account in mentions:
+            name = telegram_mention_name(event, account)
+            if name:
+                mention_components.append(At(qq=account, name=name))
+    else:
+        mention_components = [At(qq=account) for account in mentions]
     order = plan.order if plan else ()
     if order:
         output.extend(mention_components)

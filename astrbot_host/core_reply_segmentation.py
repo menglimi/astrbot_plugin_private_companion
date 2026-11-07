@@ -319,6 +319,15 @@ def activate_core_reply_segmentation(event):
 
 
 def uses_managed_group_stream(event):
+    """Whether this group reply must be buffered into complete native bubbles.
+
+    Only the OneBot adapter has no native text stream: it needs the plugin's
+    own segmentation to publish whole ``MessageChain`` bubbles.  Every other
+    adapter keeps AstrBot's own streaming path.  In particular the Telegram
+    adapter implements ``send_streaming`` (draft/edit messages) and splits long
+    text into 4096-character chunks itself, so intercepting the stream here
+    would replace a native feature with a worse one.
+    """
     core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
     state = (core.get("_reply_segmentation") or core.get("_group_segmentation")
              if isinstance(core, dict) else None)

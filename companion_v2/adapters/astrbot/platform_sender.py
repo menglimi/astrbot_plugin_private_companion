@@ -25,9 +25,27 @@ from companion_v2.delivery.models import DeliveryEnvelope
 from companion_v2.execution.models import TaskError, digest, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind
+from .telegram import PLATFORM_NAME as TELEGRAM_PLATFORM_NAME
 
 
 logger = logging.getLogger(__name__)
+
+
+class TelegramVoiceRecord(Record):
+    """A ``Record`` whose host conversion returns an already-valid voice file.
+
+    AstrBot's Telegram adapter calls ``Record.convert_to_file_path()`` before
+    ``send_voice``, and that conversion always re-encodes to WAV, which
+    Telegram rejects as a voice note.  This subclass keeps the normal Record
+    surface but returns the prepared OGG/MP3/M4A path unchanged.
+    """
+
+    def __init__(self, file, *, path, text=None):
+        super().__init__(file=file, text=text)
+        self._telegram_voice_path = path
+
+    async def convert_to_file_path(self):
+        return self._telegram_voice_path
 
 
 class AstrBotPlatformSender:
@@ -36,7 +54,7 @@ class AstrBotPlatformSender:
     supports_images = True
 
     def __init__(self, bridge, *, binding, version, reverse_api_type, authorize, now=None, voice=None,
-                 voice_delivery=None, reaction_image_format=None):
+                 voice_delivery=None, reaction_image_format=None, voice_converter=None):
         # version/reverse_api_type are accepted for the common sender factory.
         del version, reverse_api_type, reaction_image_format
         if not callable(authorize):
@@ -45,6 +63,11 @@ class AstrBotPlatformSender:
         self.authorize = authorize
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.voice, self.voice_delivery = voice, voice_delivery
+        # Trusted host hook: convert rendered TTS audio into a Telegram voice
+        # note format (OGG/OPUS/MP3/M4A) and return a local path.
+        self.voice_converter = voice_converter if callable(voice_converter) else None
+        # Telegram needs usernames on outbound At components; cache per target.
+        self._telegram_mention_cache = {}
 
     def local_sender(self):
         return LocalSender(self.binding, self.send, supports_images=self.supports_images, supports_poke=False)
@@ -63,7 +86,8 @@ class AstrBotPlatformSender:
         return MessageSession(scope.platform, kind, session_id)
 
     @staticmethod
-    def _chain(component_plan):
+    def _chain(component_plan, *, telegram=False, mention_names=None):
+        mention_names = mention_names or {}
         chain = []
         for component in component_plan.components:
             if component.kind == "text":
@@ -76,14 +100,55 @@ class AstrBotPlatformSender:
                 file_value = data.get("file") if isinstance(data, dict) else None
                 if not isinstance(file_value, str) or not file_value.strip():
                     raise ValueError("voice component has no native file")
-                chain.append(Record(file=file_value))
+                if telegram:
+                    chain.append(TelegramVoiceRecord(file=file_value, path=file_value))
+                else:
+                    chain.append(Record(file=file_value))
             elif component.kind == "at":
-                chain.append(At(qq=str(component.value)))
+                if telegram:
+                    # Telegram renders mentions from usernames; an id-only At
+                    # is silently ignored by the adapter, so omit it instead.
+                    name = mention_names.get(str(component.value))
+                    if not name:
+                        continue
+                    chain.append(At(qq=str(component.value), name=name))
+                else:
+                    chain.append(At(qq=str(component.value)))
             elif component.kind == "face":
+                if telegram:
+                    # Telegram has no QQ face; keep the text instead of failing.
+                    continue
                 chain.append(Face(id=int(component.value)))
             else:
                 raise ValueError("component kind is unsupported by the AstrBot session transport")
         return MessageChain(chain=chain)
+
+    async def _telegram_mention_names(self, platform, component_plan):
+        """Resolve Telegram usernames for outbound At targets (best effort)."""
+        names = {}
+        getter = getattr(platform.get_client(), "get_chat", None)
+        if not callable(getter):
+            return names
+        for component in component_plan.components:
+            if component.kind != "at":
+                continue
+            value = str(component.value)
+            if value in self._telegram_mention_cache:
+                cached = self._telegram_mention_cache[value]
+                if cached:
+                    names[value] = cached
+                continue
+            try:
+                chat = await asyncio.wait_for(getter(chat_id=int(value)), timeout=2.0)
+            except Exception:
+                self._telegram_mention_cache[value] = ""
+                continue
+            username = getattr(chat, "username", None)
+            username = username if isinstance(username, str) else ""
+            self._telegram_mention_cache[value] = username
+            if username:
+                names[value] = username
+        return names
 
     async def _render_voice(self, envelope, scope, context):
         if self.voice is None or not envelope.text:
@@ -180,6 +245,21 @@ class AstrBotPlatformSender:
             session = self._session(scope)
             stage = "voice_render"
             voice_plan, voice_segment, render_state = await self._render_voice(envelope, scope, context)
+            platform_name = str(getattr(getattr(platform, "meta", lambda: None)(), "name", "") or "")
+            telegram = platform_name == TELEGRAM_PLATFORM_NAME
+            if telegram and voice_plan is not None and voice_segment is not None:
+                data = voice_segment.get("data") if isinstance(voice_segment, dict) else None
+                file_value = data.get("file") if isinstance(data, dict) else None
+                converted = (await self.voice_converter(file_value)
+                             if isinstance(file_value, str) and self.voice_converter is not None else None)
+                if converted is None:
+                    if envelope.voice_required:
+                        return not_sent("required_voice_unavailable")
+                    if self.voice_delivery is not None and envelope.voice is None:
+                        self.voice_delivery.release(voice_plan, envelope.part_id)
+                    voice_plan, voice_segment = None, None
+                else:
+                    voice_segment = {**voice_segment, "data": {**data, "file": converted}}
             if voice_plan is not None and voice_segment is None:
                 if envelope.voice_required:
                     return not_sent("required_voice_unavailable")
@@ -212,7 +292,9 @@ class AstrBotPlatformSender:
                     component_plan.text_hidden if component_plan is not None else False)
             if not has_message_content:
                 return not_sent("empty_message")
-            chain = self._chain(component_plan)
+            mention_names = (await self._telegram_mention_names(platform, component_plan)
+                             if telegram else {})
+            chain = self._chain(component_plan, telegram=telegram, mention_names=mention_names)
 
             # Re-read the live route and authorization immediately before the
             # platform-owned side effect. This mirrors the OneBot dispatch fence.

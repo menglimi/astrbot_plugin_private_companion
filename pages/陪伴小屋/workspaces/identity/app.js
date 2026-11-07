@@ -82,8 +82,23 @@
     || person?.admin_nickname || ["core", "important"].includes(person?.identity_tier));
   const personFilter = person => isPrivateUser(person) ? "stable"
     : person?.group_member ? "temporary" : person ? "discovered" : null;
-  const accountLabel = (item) => item.account_name || (/^\d+$/.test(String(item.account_id || ""))
-    ? `QQ ${item.account_id}` : "当前 Bot 账号");
+  /* Route rows carry the configured platform instance id (defaults to the
+     adapter name), so labels must not assume OneBot. */
+  const PLATFORM_FAMILIES = {qq: "QQ", default: "QQ", aiocqhttp: "QQ", onebot: "QQ",
+    qq_official: "QQ", qq_official_webhook: "QQ", lark: "飞书", telegram: "Telegram"};
+  const platformFamily = value => PLATFORM_FAMILIES[value] || "";
+  const nativeAccountLabel = (person) => {
+    const id = String(person?.native_account_id || "未知");
+    const family = platformFamily(person?.platform)
+      || (/^\d+$/.test(String(person?.account_id || "")) ? "QQ" : "");
+    return family ? `${family} ${id}` : `账号 ${id}`;
+  };
+  const accountLabel = (item) => {
+    if (item.account_name) return item.account_name;
+    const accountId = String(item.account_id || "");
+    if (/^\d+$/.test(accountId)) return `QQ ${accountId}`;
+    return accountId ? `账号 ${accountId}` : "当前 Bot 账号";
+  };
   const groupsOf = (person) => person.groups && typeof person.groups === "object" ? person.groups : {};
   const groupIdsOf = (person) => Object.keys(groupsOf(person));
   const personaIdsOf = (person) => {
@@ -521,7 +536,7 @@
      title.append(badges);
     head.append(title);
     const meta = node("span", undefined, "card-meta");
-    meta.append(node("span", `QQ ${person.native_account_id || "未知"}`),
+    meta.append(node("span", nativeAccountLabel(person)),
       node("span", personaDisplayLabel(person)),
       node("span", accountLabel(person)));
     if (person.display_route_count > 1) meta.append(node("span", `${person.display_route_count} 个内部归属`, "route-count"));

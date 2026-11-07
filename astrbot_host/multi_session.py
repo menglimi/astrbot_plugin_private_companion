@@ -17,11 +17,12 @@ from companion_v2.adapters.astrbot.native import (
     platform_client_matches,
     supported_platform_name,
 )
+from companion_v2.adapters.astrbot.telegram import event_client as resolve_event_client
 from companion_v2.adapters.astrbot.group import NativeGroupBridge, _is_sticker_segment
 from companion_v2.adapters.astrbot.onebot import OneBotPrivateSender
 from companion_v2.adapters.astrbot.onebot_group import OneBotGroupSender
 from companion_v2.adapters.astrbot.platform_sender import AstrBotPlatformSender
-from companion_v2.adapters.astrbot.presence import OneBotPresencePort
+from companion_v2.adapters.astrbot.presence import presence_port_for
 from companion_v2.adapters.astrbot.provider import AstrBotTextProvider, REPLY_TASK_CAPABILITIES
 from companion_v2.adapters.astrbot.provider_catalog import (TextProviderSettings, assemble_providers,
     attach_native_video, loaded_routing)
@@ -166,7 +167,7 @@ class MultiPrivateBridge(NativePrivateBridge):
                     or event.unified_msg_origin != self._umo(platform_id, sender)
                     or account is None or target is None or target.bot_id != account.bot_id):
                 raise TaskError("host_route_mismatch", "event fields do not identify one registered private route")
-            event_client = event.bot
+            event_client = resolve_event_client(event)
             platform = self.context.get_platform_inst(platform_id)
             if (platform is None or not platform_client_matches(platform, event_client)
                     or not native_client_connected(platform, login)):
@@ -232,7 +233,7 @@ class MultiPrivateBridge(NativePrivateBridge):
             account = self.accounts.get((meta.id, login))
             platform = self.context.get_platform_inst(meta.id)
             if (account is None or account.bot_id != target.bot_id or platform is None
-                    or not platform_client_matches(platform, event.bot)
+                    or not platform_client_matches(platform, resolve_event_client(event))
                     or not native_client_connected(platform, login)):
                 raise TaskError("host_client_mismatch", "private event did not originate from its registered Bot account")
             self.authority.ensure_actor(target)
@@ -362,7 +363,9 @@ class MultiPresence:
 
     def port(self, context):
         session = self.session
-        return OneBotPresencePort(session.bridge, reverse_api_type=session.types.reverse_api,
+        return presence_port_for(
+            session.bridge, session.bridge.platform_name(context.scope),
+            reverse_api_type=session.types.reverse_api,
             authorize=lambda: session.authorize(context), now=session.now)
 
     async def typing(self, context, **kwargs):
@@ -486,6 +489,7 @@ class MultiHostSession:
             persona_selection_lookup=native_types.persona_selection_lookup,
             persona_window_snapshot_lookup=persona_window_snapshot_lookup,
             persona_window_snapshot_update=persona_window_snapshot_update,
+            media_preparer=native_types.media_preparer,
             file_settings=lambda scope, role: file_intake_settings(runtime, scope, role))
         self.model = AstrBotTextProvider(native_context, bridge=self.bridge,
             binding=ProviderBinding("model.text", common.provider_id, native_types.version, provider_fingerprint),
@@ -1397,6 +1401,7 @@ class MultiHostSession:
             reverse_api_type=self.types.reverse_api,
             authorize=lambda: self.authorize_group(envelope) if group else self.authorize(envelope.context), now=self.now,
             voice=self.voice, voice_delivery=self.voice_delivery,
+            voice_converter=getattr(self.types, "voice_converter", None),
             reaction_image_format=lambda: self.application.semantics.store.settings()["reactions_image_format"]
                 if self.application.semantics is not None else "image")
         return await sender.send(envelope)

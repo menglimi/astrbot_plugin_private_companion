@@ -13,6 +13,13 @@ def group_trigger_facts(event, account_id):
     if platform_name in {"qq_official", "qq_official_webhook"}:
         bot_ids.update(value for value in (
             str(getattr(message, "self_id", "") or ""), "qq_official") if value)
+    elif platform_name == "telegram":
+        # Inbound Telegram At components carry usernames; the bot username is
+        # the only value that identifies this bot.
+        bot_ids.update(value for value in (str(getattr(message, "self_id", "") or ""),) if value)
+    elif platform_name == "lark":
+        # Lark inbound At components carry the bot open id on self_id.
+        bot_ids.update(value for value in (str(getattr(message, "self_id", "") or ""),) if value)
     mentioned, mentions_others, mentions_all, has_image, replies = False, False, False, False, []
     for part in parts:
         if isinstance(part, Mapping):
@@ -34,10 +41,17 @@ def group_trigger_facts(event, account_id):
             replies.append(str(identifier))
         elif kind in ("image", "Image"):
             has_image = True
+    bot_native_ids = {str(account_id)}
+    if platform_name == "telegram":
+        # Telegram's Reply.sender_id is the numeric user id; the configured
+        # account key is the platform instance id, so add the bot's own ids.
+        client_id = str(getattr(getattr(event, "client", None), "id", "") or "")
+        self_id = str(getattr(message, "self_id", "") or "")
+        bot_native_ids.update(value for value in (client_id, self_id) if value)
     quoted_bot = any(
         getattr(getattr(part, "type", None), "value", getattr(part, "type", None)) == "Reply"
         and str(getattr(part, "id", "")) in replies
-        and str(getattr(part, "sender_id", "")) == account_id
+        and str(getattr(part, "sender_id", "")) in bot_native_ids
         for part in getattr(message, "message", ()))
     # is_wake also means an event listener activated, so it is not a reply trigger.
     return {"mentioned": mentioned,

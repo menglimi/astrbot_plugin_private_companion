@@ -24,6 +24,13 @@ from companion_v2.conversation.forwards.models import CapturedForward, ForwardIn
 from companion_v2.conversation.media.audio.models import CapturedAudio, MAX_INPUT_AUDIOS, fits_audio_budget
 from companion_v2.conversation.media.video.models import CapturedVideo, MAX_VIDEOS, fits_video_budget
 from .files import file_locator, prepare_file_text, MAX_FILES
+from .host_paths import is_host_temp_file
+from .telegram import (
+    PLATFORM_NAME as TELEGRAM_PLATFORM_NAME,
+    USER_SUBJECT_PREFIX as TELEGRAM_USER_SUBJECT_PREFIX,
+    event_client as resolve_event_client,
+    telegram_quote_locator,
+)
 
 
 SUPPORTED_VERSIONS = frozenset(("4.27.2", "4.28.2", "4.29.0", "4.29.1"))
@@ -35,7 +42,10 @@ VERIFIED_SERIES = frozenset(("4.27", "4.28", "4.29"))
 # Native routing is verified for the OneBot reverse-WS adapter and the two
 # QQ Official adapter names AstrBot exposes.  Keeping the allow-list here
 # prevents an arbitrary adapter from inheriting route privileges by accident.
-SUPPORTED_PLATFORM_NAMES = frozenset(("aiocqhttp", "qq_official", "qq_official_webhook", "lark"))
+SUPPORTED_PLATFORM_NAMES = frozenset(("aiocqhttp", "qq_official", "qq_official_webhook", "lark", "telegram"))
+# The adapters the plugin was originally built for; kept as a named set so
+# platform-specific defaults cannot silently inherit a later adapter.
+DEFAULT_PLATFORM_NAMES = frozenset(("aiocqhttp", "qq_official", "qq_official_webhook"))
 OFFICIAL_PLATFORM_NAMES = frozenset(("qq_official", "qq_official_webhook"))
 _REPORTED_UNVERIFIED = set()
 NATIVE_LOOKUP_TIMEOUT_SECONDS = 20
@@ -198,9 +208,10 @@ def event_account_id(event):
         return route_id(event_platform_id(event))
     if name == "aiocqhttp":
         return account_number(getattr(message, "self_id", None))
-    if name == "lark":
-        # Lark (Feishu) has no stable numeric self id on the event; the
-        # configured platform instance id is the account key, same as QQ Official.
+    if name in ("lark", TELEGRAM_PLATFORM_NAME):
+        # Lark (Feishu) and Telegram have no stable numeric self id on the
+        # event (Telegram's ``self_id`` is the bot username); the configured
+        # platform instance id is the account key, same as QQ Official.
         return route_id(event_platform_id(event))
     raise ValueError("unsupported native event platform")
 
@@ -222,6 +233,8 @@ def native_user_subject_id(platform_name, sender_id):
         return "qq-official-user:" + sender_id
     if platform_name == "lark":
         return "lark-user:" + sender_id
+    if platform_name == TELEGRAM_PLATFORM_NAME:
+        return TELEGRAM_USER_SUBJECT_PREFIX + sender_id
     raise ValueError("unsupported native user platform")
 
 
@@ -357,12 +370,16 @@ class NativeImageLocator:
 class NativeAudioLocator:
     position: int
     locator: str
+    # Set only for an attachment the trusted host already wrote to its temp
+    # directory (Telegram voice/audio arrives as a local wav).
+    host_resolved: bool = False
 
 
 @dataclass(frozen=True)
 class NativeVideoLocator:
     position: int
     locator: str
+    host_resolved: bool = False
 
 
 @dataclass(frozen=True)
@@ -425,7 +442,8 @@ class NativePrivateBridge:
                  audio_type=None, audio_loader=None, component_reader=None, video_type=None, video_loader=None,
                  forward_intake=None, file_type=None, file_loader=None, file_settings=None,
                  session_persona_override_lookup=None, persona_snapshot_lookup=None, persona_selection_lookup=None,
-                 persona_window_snapshot_lookup=None, persona_window_snapshot_update=None):
+                 persona_window_snapshot_lookup=None, persona_window_snapshot_update=None,
+                 media_preparer=None):
         check_version(version)
         self.context, self.event_type, self.identities = context, event_type, identities
         if session_persona_override_lookup is not None and not callable(session_persona_override_lookup):
@@ -479,6 +497,11 @@ class NativePrivateBridge:
         if file_settings is not None and not callable(file_settings):
             raise ValueError("file preferences must come from trusted host assembly")
         self.file_type, self.file_loader, self.file_settings = file_type, file_loader, file_settings
+        # Optional trusted host hook: materialize platform-owned media (Telegram
+        # Bot API URLs) into local files before the frozen locators are built.
+        if media_preparer is not None and not callable(media_preparer):
+            raise ValueError("media preparation must come from trusted host assembly")
+        self.media_preparer = media_preparer
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.accounts = {(a.platform_id, a.self_id): a for a in accounts}
         self.personas = {(p.bot_id, p.persona_id): p for p in personas}
@@ -839,9 +862,18 @@ class NativePrivateBridge:
             parts = self.component_reader(event) if self.component_reader is not None else tuple(message.message)
             if not parts or len(parts) > 128:
                 raise TaskError("host_media_unsupported", "message components are empty or exceed the intake budget")
+            if meta.name == TELEGRAM_PLATFORM_NAME and self.media_preparer is not None:
+                try:
+                    parts = await asyncio.wait_for(
+                        self.media_preparer(event, self.platforms[platform_id][0], parts),
+                        MEDIA_PREPARE_TIMEOUT)
+                except asyncio.TimeoutError:
+                    raise TaskError("host_media_timeout",
+                                    "Telegram media preparation exceeded its bounded intake time") from None
             text_parts, locators, quote_locators, forward_locators, audio_locators, video_locators = [], [], [], [], [], []
             file_locators = []
             onebot = meta.name == "aiocqhttp"
+            telegram = meta.name == TELEGRAM_PLATFORM_NAME
             for position, part in enumerate(parts):
                 kind = getattr(part.type, "value", part.type)
                 if kind == "Plain" and isinstance(part.text, str):
@@ -856,6 +888,10 @@ class NativePrivateBridge:
                 elif kind == "Reply" and self.reply_type is not None and type(part) is self.reply_type:
                     if onebot:
                         quote_locators.append(NativeQuoteLocator(position, message_number(part.id)))
+                    elif telegram:
+                        locator = telegram_quote_locator(position, part)
+                        if locator is not None:
+                            quote_locators.append(locator)
                     text_parts.append("\n[引用消息]\n")
                 elif kind == "Forward" and self.forward_type is not None and type(part) is self.forward_type:
                     if onebot:
@@ -865,13 +901,15 @@ class NativePrivateBridge:
                     value = part.file if type(part.file) is str and part.file.startswith("base64://") else part.url or part.file
                     if type(value) is not str or not value:
                         raise TaskError("host_audio_unavailable", "voice has no original host attachment")
-                    audio_locators.append(NativeAudioLocator(position, value))
+                    audio_locators.append(NativeAudioLocator(position, value,
+                                                             host_resolved=is_host_temp_file(value)))
                     text_parts.append("\n[语音 " + str(len(audio_locators)) + "]\n")
                 elif kind == "Video" and self.video_type is not None and type(part) is self.video_type:
                     value = part.file if type(part.file) is str and part.file.startswith("base64://") else part.url or part.file
                     if type(value) is not str or not value:
                         raise TaskError("host_video_unavailable", "video has no original host attachment")
-                    video_locators.append(NativeVideoLocator(position, value))
+                    video_locators.append(NativeVideoLocator(position, value,
+                                                             host_resolved=is_host_temp_file(value)))
                     text_parts.append("\n[视频 " + str(len(video_locators)) + "]\n")
                 elif kind == "File" and self.file_type is not None and type(part) is self.file_type:
                     if len(file_locators) < MAX_FILES:
@@ -902,7 +940,7 @@ class NativePrivateBridge:
             principal = AuthenticatedHostPrincipal(self.installation_id, self.host_id, platform_id, sender, account.bot_id, login)
             actor = require(self.identities.resolve_authenticated(principal, observed_at=at))
             # Freeze all event fields before any host await; later event middleware cannot restamp them.
-            event_client = event.bot
+            event_client = resolve_event_client(event)
             cid, role, instruction = await self._role(account, sender)
             scope = ScopeRef(self.installation_id, platform_id, ScopeKind.PRIVATE, sender, account.bot_id, login, cid, sender)
             if not platform_client_matches(self.platform(scope), event_client):
@@ -929,9 +967,14 @@ class NativePrivateBridge:
                         raise TaskError("host_quote_invalid", "an input cannot quote itself")
                     quote = await self.quote_loader(locator, client=event_client, scope=scope,
                                                     intake=intake)
+                    allowed_quote_senders = (sender, login)
+                    if telegram:
+                        bot_native_id = str(getattr(event_client, "id", "") or "")
+                        if bot_native_id:
+                            allowed_quote_senders = (sender, bot_native_id)
                     if (not isinstance(quote, CapturedQuote) or quote.position != locator.position
                             or quote.message_id != locator.message_id
-                            or quote.sender_id not in (sender, login)):
+                            or quote.sender_id not in allowed_quote_senders):
                         raise TaskError("host_quote_invalid", "quote loader changed original attribution")
                     quotes.append(quote)
                 forwards = await self.forward_loader(frozen_forwards, message_id=event_id, client=event_client, scope=scope,

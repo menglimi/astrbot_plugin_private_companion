@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from companion_v2.adapters.astrbot.native import account_number
+from companion_v2.adapters.astrbot.telegram import event_client as resolve_event_client
 from companion_v2.execution.models import encode, stamp
 from companion_v2.foundation.refs import ScopeKind
 
@@ -56,6 +57,13 @@ def stranger_route(controller, event):
     meta = getattr(event, "platform_meta", None)
     if not isinstance(raw, Mapping) or meta is None:
         return None
+    if meta.name != "aiocqhttp":
+        # This refusal path reads the OneBot raw envelope and sends through the
+        # reverse-WebSocket account, so it stays OneBot-only.  Telegram's
+        # ``raw_message`` is a ``telegram.Update`` (not a Mapping) and its client
+        # is an ExtBot; other adapters are likewise refused here rather than
+        # guessed at.
+        return None
     if raw.get("post_type") != "message" or raw.get("message_type") != "private":
         return None
     raw_group = raw.get("group_id")
@@ -67,7 +75,7 @@ def stranger_route(controller, event):
     if not login or not peer:
         return None
     platform = controller.context.get_platform_inst(meta.id)
-    if platform is None or platform.get_client() is not event.bot:
+    if platform is None or platform.get_client() is not resolve_event_client(event):
         return None
     if (platform.meta().name != "aiocqhttp" or meta.name != "aiocqhttp"
             or not getattr(controller, "native_types", None)

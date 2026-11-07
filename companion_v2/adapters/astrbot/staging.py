@@ -53,7 +53,7 @@ from companion_v2.conversation.media.video.narration import video_narration_prof
 from companion_v2.conversation.media.understanding import intake_settings as file_intake_settings
 from companion_v2.conversation.relay_settings import configuration_fields as relay_configuration_fields
 from companion_v2.system_prompts.configuration import configuration_fields as system_prompt_configuration_fields
-from .presence import OneBotPresencePort
+from .presence import OneBotPresencePort, presence_port_for
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
 
@@ -95,6 +95,12 @@ class NativeAdapterTypes:
     session_persona_override_lookup: object | None = None
     persona_snapshot_lookup: object | None = None
     persona_selection_lookup: object | None = None
+    # Trusted host hook that materializes platform-owned media (Telegram Bot
+    # API URLs) into local files before locators are frozen.
+    media_preparer: object | None = None
+    # Trusted host hook that converts rendered TTS audio into a platform voice
+    # note format (Telegram: OGG/OPUS/MP3/M4A) and returns a local path.
+    voice_converter: object | None = None
     text_provider_types: tuple[type, ...] = ()
 
     @property
@@ -131,6 +137,10 @@ class NativeAdapterTypes:
             raise ValueError("persona snapshot lookup must be supplied by trusted host assembly")
         if self.persona_selection_lookup is not None and not callable(self.persona_selection_lookup):
             raise ValueError("persona selection lookup must be supplied by trusted host assembly")
+        if self.media_preparer is not None and not callable(self.media_preparer):
+            raise ValueError("media preparation must be supplied by trusted host assembly")
+        if self.voice_converter is not None and not callable(self.voice_converter):
+            raise ValueError("voice conversion must be supplied by trusted host assembly")
         if (self.video is None) != (self.video_loader is None) or (self.video is not None and (
                 not isinstance(self.video, type) or not callable(self.video_loader))):
             raise ValueError("video intake requires an explicit native type and loader")
@@ -269,6 +279,7 @@ class AstrBotStagingSession:
             session_persona_override_lookup=native_types.session_persona_override_lookup,
             persona_snapshot_lookup=native_types.persona_snapshot_lookup,
             persona_selection_lookup=native_types.persona_selection_lookup,
+            media_preparer=native_types.media_preparer,
             file_settings=lambda scope, role: file_intake_settings(runtime, scope, role))
         self.identity = PersistentIdentityDirectory(runtime)
         # These identities are stable across a restart of the same native config.
@@ -345,6 +356,7 @@ class AstrBotStagingSession:
                 reverse_api_type=native_types.reverse_api, authorize=self.require_delivery_authorization,
                 now=now, voice=voice,
                 voice_delivery=VoiceReplyDelivery(runtime, now) if voice is not None else None,
+                voice_converter=native_types.voice_converter,
                 reaction_image_format=lambda: self.application.semantics.store.settings()["reactions_image_format"]
                     if self.application.semantics is not None else "image").local_sender()
         tool_port = native_tool_port
@@ -369,8 +381,11 @@ class AstrBotStagingSession:
             news_port=news_port,
             search_port_factory=search_port_factory,
             qzone_transport=qzone_transport,
-            presence_port=OneBotPresencePort(self.bridge, reverse_api_type=native_types.reverse_api,
-                authorize=self.require_delivery_authorization, now=lambda: self.application.now())
+            presence_port=presence_port_for(
+                self.bridge, self.bridge.platform_name(target.scope),
+                reverse_api_type=native_types.reverse_api,
+                authorize=self.require_delivery_authorization,
+                now=lambda: self.application.now())
                 if not self._uses_local_sender else None)
         self.application = self.host.application
         if callable(getattr(native_tool_port, "bind_role_guard", None)):

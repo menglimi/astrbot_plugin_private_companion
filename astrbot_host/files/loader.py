@@ -11,7 +11,7 @@ import sys
 from companion_v2.adapters.astrbot.files import NativeFileLocator, FileText, TEXT_SUFFIXES, DOCUMENT_SUFFIXES
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.refs import ScopeKind
-from ..media import fetch_attachment
+from ..media import fetch_attachment, read_host_resolved_attachment
 
 
 async def decode_document(content, locator, *, maximum_chars, formats):
@@ -51,6 +51,9 @@ async def load_native_file(locator, *, client, scope, maximum_bytes, maximum_cha
         if len(encoded) > (maximum_bytes + 2) // 3 * 4:
             raise TaskError("host_file_limit", "file exceeds its original byte budget")
         content = base64.b64decode(encoded, validate=True)
+    elif locator.host_resolved is True:
+        content = await asyncio.to_thread(
+            read_host_resolved_attachment, value, maximum_bytes)
     else:
         if not value.startswith(("https://", "http://")):
             if len(value) > 200 or any(char in value for char in ("/", "\\", ":", "\x00")):

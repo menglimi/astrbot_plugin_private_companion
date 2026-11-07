@@ -5,6 +5,7 @@ from astrbot.core.message.components import (
     AtAll,
     BaseMessageComponent,
     ComponentType,
+    File,
     Image,
     Plain,
     Record,
@@ -76,10 +77,54 @@ def native_reply_messages(event, message):
     return tuple(_derive(message, group) for group in bodies)
 
 
+async def _telegram_wire_message(event, message):
+    """Convert TTS voice to a Telegram ``sendVoice`` compatible payload.
+
+    Telegram rejects WAV voice notes, which is the common AstrBot TTS output.
+    A voice part that cannot be converted is dropped; the text remains.
+    """
+    from companion_v2.adapters.astrbot.platform_sender import TelegramVoiceRecord
+    from .telegram_media import telegram_voice_document, telegram_voice_path
+
+    chain = getattr(message, "chain", None)
+    if not isinstance(chain, (list, tuple)):
+        return message
+    track = getattr(event, "track_temporary_local_file", None)
+    output, changed = [], False
+    for part in chain:
+        if not isinstance(part, Record):
+            output.append(part)
+            continue
+        converted = await telegram_voice_path(getattr(part, "file", None))
+        if converted is None:
+            # Keep the audio as a document rather than losing the voice turn.
+            fallback = telegram_voice_document(getattr(part, "file", None))
+            if fallback is not None:
+                path, name = fallback
+                if callable(track):
+                    track(path)
+                output.append(File(name=name, file=path))
+            changed = True
+            continue
+        if callable(track):
+            track(converted)
+        replacement = TelegramVoiceRecord(file=converted, path=converted,
+                                          text=getattr(part, "text", None))
+        spoken = getattr(part, "_companion_v2_spoken_text", None)
+        if spoken is not None:
+            object.__setattr__(replacement, "_companion_v2_spoken_text", spoken)
+        output.append(replacement)
+        changed = True
+    return _derive(message, output) if changed else message
+
+
 async def native_wire_message(event, message):
     """The SDK's Image conversion drops sub_type; keep it for owned QQ stickers."""
     getter = getattr(event, "get_platform_name", None)
-    if not callable(getter) or getter() != "aiocqhttp":
+    platform = getter() if callable(getter) else ""
+    if platform == "telegram":
+        return await _telegram_wire_message(event, message)
+    if platform != "aiocqhttp":
         return message
     chain = getattr(message, "chain", None)
     if not isinstance(chain, (list, tuple)):
