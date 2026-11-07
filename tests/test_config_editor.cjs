@@ -2462,6 +2462,14 @@ test('the self journal reflows to its container width and wraps long controls', 
   assert.match(selfStyle, /\.section-chips\{[^}]*overflow-x:auto/s);
 });
 
+test('the self page can switch the current role in place', () => {
+  assert.match(app, /const selfRoleChoices=typeof product\.roleChoices==='function'\?product\.roleChoices\(\):\[\]/);
+  assert.match(app, /data-self-role aria-label="切换当前角色"/);
+  assert.match(app, /product\.chooseRole\(roleId\)/);
+  assert.match(selfStyle, /\.self-role-switch\{/);
+  assert.match(selfStyle, /\.self-role-switch select\{/);
+});
+
 test('the live self profile uses journal panels and its chapter navigation stays connected', () => {
   assert.match(app, /roleProfileConfigMount=mountConfigEditor\('roleProfileConfigWorkspace',\['role_profile'\],\{\s*role_profile:\{presentation:'journal',sectionTabPrefix:'self-chapter-',initialSection:selfProfileSection,navigationLimit:9\}/);
   assert.match(app, /function selectSelfProfileSection\(section\)\{[\s\S]*?roleProfileConfigMount\?\.selectSection\?\.\(section\)/);

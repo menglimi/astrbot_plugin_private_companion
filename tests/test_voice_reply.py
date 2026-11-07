@@ -11,9 +11,9 @@ import unittest
 
 from companion_v2.conversation.segmentation import LLM_SEGMENT_MARKER, SegmentationPolicy
 from companion_v2.conversation.voice_reply import (
-    VoiceReplyDelivery, VoiceReplyPolicy, capability_instruction, eligible, planned_speech,
-    requested_voice_language, separate_spoken, speech_candidates, speech_chunks, speech_decisions,
-    strip_voice_markup, voice_policy_for_turn,
+    VoiceReplyDelivery, VoiceReplyPolicy, capability_instruction, detected_speech_language, eligible,
+    planned_speech, requested_voice_language, separate_spoken, speech_candidates, speech_chunks,
+    speech_decisions, strip_voice_markup, tts_wait_budget, voice_policy_for_turn,
 )
 from companion_v2.conversation.voice_markup import (
     slice_speech, strip_performance_controls, visible_speech,
@@ -56,7 +56,8 @@ class VoicePolicyTests(unittest.TestCase):
     def test_voice_perception_describes_best_effort_delivery_without_provider_identity(self):
         policy = VoiceReplyPolicy(language="ja", delivery_mode="voice_only", provider_id="private-provider")
         instruction = capability_instruction(policy)
-        self.assertIn("目标语种日语", instruction)
+        self.assertIn("默认语种日语", instruction)
+        self.assertIn("以用户要求为准", instruction)
         self.assertIn("退回文字", instruction)
         self.assertNotIn("private-provider", instruction)
 
@@ -94,14 +95,59 @@ class VoicePolicyTests(unittest.TestCase):
                 self.assertEqual((current.language, current.provider_for_language()), (language, provider))
         self.assertEqual(saved.language, "zh")
 
+    def test_speech_language_is_verified_from_the_text_that_is_actually_spoken(self):
+        """模型自己决定语种，宿主只按实际文本做确定性兜底。"""
+        for text, language in (("おやすみ、ゆっくり休んでね。", "ja"),
+                               ("晚安，好好休息呀。", "zh"),
+                               ("Good night. Rest well.", "en"),
+                               ("晚安，おやすみ", "ja"),
+                               ("", ""), ("12345", "")):
+            with self.subTest(text=text):
+                self.assertEqual(detected_speech_language(text), language)
+        policy = VoiceReplyPolicy(language="ja", provider_id="fallback",
+                                  zh_provider_id="chinese", ja_provider_id="japanese",
+                                  private_zh_provider_id="private-chinese")
+        self.assertEqual(policy.provider_for_language("private", language="zh"), "private-chinese")
+        self.assertEqual(policy.provider_for_language("group", language="zh"), "chinese")
+        self.assertEqual(policy.provider_for_language("private"), "japanese")
+        self.assertEqual(policy.provider_for_language("private", language="xx"), "japanese")
+
+    def test_only_a_mid_reply_segment_uses_the_short_tts_budget(self):
+        """末段/整轮语音不能被 8 秒截断，否则稍慢的 TTS 会静默退成文字。"""
+        policy = VoiceReplyPolicy(timeout_seconds=30)
+        self.assertEqual(tts_wait_budget(policy, segment_index=0, segment_count=3), 8.0)
+        self.assertEqual(tts_wait_budget(policy, segment_index=1, segment_count=3), 8.0)
+        self.assertIsNone(tts_wait_budget(policy, segment_index=2, segment_count=3))
+        self.assertIsNone(tts_wait_budget(policy, segment_index=0, segment_count=1))
+        self.assertIsNone(tts_wait_budget(policy, segment_index=1, segment_count=3, whole_reply=True))
+        self.assertEqual(tts_wait_budget(VoiceReplyPolicy(timeout_seconds=4),
+                                         segment_index=0, segment_count=3), 4.0)
+        self.assertEqual(tts_wait_budget(object(), segment_index=0, segment_count=3), 8.0)
+
+    def test_voice_instruction_asks_for_lyrics_instead_of_claiming_to_have_sung(self):
+        policy = VoiceReplyPolicy(generation_mode="model_tag", language="zh")
+        self.assertIn("把实际要唱的内容", policy.instruction)
+        self.assertIn("不要只在正文里声称已经唱过", policy.instruction)
+        self.assertIn("不要假称唱过", policy.instruction)
+
+    def test_voice_instruction_lets_the_speaking_model_follow_a_language_request(self):
+        policy = VoiceReplyPolicy(generation_mode="model_tag", language="ja")
+        self.assertIn("默认朗读语种是日语", policy.instruction)
+        self.assertIn("按用户要求的语种", policy.instruction)
+        self.assertIn("不再另附译文", policy.instruction)
+        chinese_default = VoiceReplyPolicy(generation_mode="model_tag", language="zh")
+        self.assertIn("标签内用自然中文完整表达", chinese_default.instruction)
+
     def test_turn_language_override_understands_singing_and_chatting_requests(self):
         """旧版用户会说「用中文唱」，动词表漏了「唱」就会静默沿用保存语种。"""
         for text, language in (("用中文唱", "zh"), ("请用日语唱一首", "ja"),
-                               ("用英语聊", "en"), ("用中文唱给我听", "zh")):
+                               ("用英语聊", "en"), ("用中文唱给我听", "zh"),
+                               ("用中文随便说点什么", "zh"), ("用日语简单地唱一句", "ja")):
             with self.subTest(text=text):
                 self.assertEqual(requested_voice_language(text), language)
         self.assertEqual(requested_voice_language("不要用中文唱"), "")
         self.assertEqual(requested_voice_language("把这句歌词翻译成中文唱"), "")
+        self.assertEqual(requested_voice_language("用中文写一段"), "")
         saved = VoiceReplyPolicy(language="ja", zh_provider_id="chinese-tts")
         current = voice_policy_for_turn(saved, "用中文唱")
         self.assertEqual((current.language, current.provider_for_language()), ("zh", "chinese-tts"))

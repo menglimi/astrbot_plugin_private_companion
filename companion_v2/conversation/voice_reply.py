@@ -50,10 +50,12 @@ def requested_voice_language(input_text):
         return ""
 
     for language, name in _TURN_LANGUAGE_NAMES.items():
-        # 说/讲/聊/唱/念/读 都算“指定朗读语种”；V1 时代用户会用「用中文唱」
-        # 这种说法，动词表里少了「唱」就会静默沿用保存的语种。
+        # 说/讲/聊/唱/念/读 都算“指定朗读语种”；动词和语种之间允许一段简短的
+        # 状语（「用中文随便说点什么」「用日语简单地唱一句」），否则用户换个说法
+        # 就会静默沿用保存的语种。
         chinese_request = re.search(
-            rf"(?:请|麻烦|这次|这回|本次|接下来)?\s*(?:用|以)\s*{name}\s*(?:语音)?\s*[，,、\s]*(?:跟我|对我|给我)?\s*(?:回复|回答|答复|说|讲|聊|唱|哼|朗读|念|读)(?:一句|一段|一首|一下)?",
+            rf"(?:请|麻烦|这次|这回|本次|接下来)?\s*(?:用|以)\s*{name}\s*(?:语音)?\s*[，,、\s]*"
+            rf"[^，。！？,.!?\n]{{0,8}}?(?:回复|回答|答复|说|讲|聊|唱|哼|朗读|念|读)(?:一句|一段|一首|一下)?",
             text, re.I,
         ) or re.search(
             rf"(?:请|麻烦)?\s*{name}\s*(?:语音)?\s*(?:回复|回答|答复|说|讲|聊|唱|朗读|念|读)", text, re.I,
@@ -85,6 +87,42 @@ def voice_policy_for_turn(policy, input_text):
         return None
     language = requested_voice_language(input_text)
     return replace(policy, language=language) if language and language != policy.language else policy
+
+
+# Deterministic fallback for the language actually spoken. The model may write a
+# different language than the configured default when the user asks for one; the
+# written text is the only reliable evidence, so the provider is chosen by script.
+_KANA = re.compile(r"[\u3040-\u30ff]")
+_HAN = re.compile(r"[\u4e00-\u9fff]")
+_LATIN = re.compile(r"[A-Za-z]")
+
+
+def detected_speech_language(text):
+    """Language of what will be spoken, from its script; '' when undetermined."""
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    if _KANA.search(text):
+        return "ja"
+    if _HAN.search(text):
+        return "zh"
+    if len(_LATIN.findall(text)) >= 2:
+        return "en"
+    return ""
+
+
+# A mid-reply segment must not wait the full TTS timeout while later text is still
+# pending; the last segment (and whole-reply voice) has nothing behind it, so it
+# may use the configured timeout. Capping the last one to a few seconds silently
+# dropped voice whenever a slower provider (e.g. a cold Chinese voice) answered.
+SEGMENTED_TTS_BUDGET_SECONDS = 8.0
+
+
+def tts_wait_budget(policy, *, segment_index, segment_count, whole_reply=False):
+    """Outer wait for one segment's TTS, or ``None`` to rely on the renderer timeout."""
+    if segment_count <= 1 or whole_reply or segment_index >= segment_count - 1:
+        return None
+    configured = float(getattr(policy, "timeout_seconds", 0) or 0)
+    return min(configured, SEGMENTED_TTS_BUDGET_SECONDS) if configured > 0 else SEGMENTED_TTS_BUDGET_SECONDS
 
 
 def strip_voice_markup(text):
@@ -246,19 +284,34 @@ class VoiceReplyPolicy:
                 prompt += "每个标签后附完整、自然的中文译文，不加标题；可见文字保留外语原文与译文。"
             else:
                 prompt += "标签外保留自然显示文字即可，不必翻译；不要重复朗读原文。"
+        else:
+            prompt += "标签内用自然中文完整表达该段意思，语气贴合当前对话。"
+        # The configured language is only the default. The speaking model sees the
+        # actual turn, so it can honour any wording of a direct request without the
+        # host keeping a phrase list; the host only verifies what was written.
+        default_label = {"zh": "中文", "ja": "日语", "en": "英语"}[self.language]
+        prompt += (f"本轮默认朗读语种是{default_label}；如果用户在本轮明确要求换一种语种"
+                   "（例如「用中文说」「用日语唱」），按用户要求的语种写语音标签，不要沿用默认语种；"
+                   "用户要求中文时标签内直接写中文，不再另附译文。")
+        # A claim is not a performance: the voice layer only reads what the model
+        # wrote, so "已经给你唱完啦" with no lyrics produces a plain reading. Ask
+        # for the lyrics (or an honest refusal) instead of a false claim.
+        prompt += ("用户本轮明确要求唱歌时，把实际要唱的内容（歌词，至少副歌几句）写进语音标签本身，"
+                   "不要只在正文里声称已经唱过；不会唱或没有把握就直说，不要假称唱过。")
         if self.extra_prompt.strip():
             prompt += "\n" + self.extra_prompt.strip()
         return prompt
 
-    def provider_for_language(self, channel=None):
+    def provider_for_language(self, channel=None, language=None):
         transient = getattr(self, "_provider_override", "")
         if transient:
             return transient
+        language = language if language in ("zh", "ja", "en") else self.language
         if channel in ("private", "group"):
-            channel_override = getattr(self, f"{channel}_{self.language}_provider_id", "")
+            channel_override = getattr(self, f"{channel}_{language}_provider_id", "")
             if channel_override:
                 return channel_override
-        return getattr(self, self.language + "_provider_id") or self.provider_id
+        return getattr(self, language + "_provider_id") or self.provider_id
 
     def chance(self, kind):
         override = self.group_probability if kind == "group" else self.private_probability
@@ -290,7 +343,7 @@ def capability_instruction(policy):
     language = {"zh": "中文", "ja": "日语", "en": "英语"}[policy.language]
     delivery = "优先语音呈现" if policy.delivery_mode == "voice_only" else "语音与文字并行"
     mode = {"always": "语音回复", "request": "应用户请求语音回复", "adaptive": "按语境选择语音"}[policy.trigger_mode]
-    return (f"本轮呈现方式：{mode}，目标语种{language}，{delivery}。"
+    return (f"本轮呈现方式：{mode}，默认语种{language}（用户本轮明确要求换语种时以用户要求为准），{delivery}。"
             "本轮设置已通过开关和触发条件检查；人格中旧的仅文字、需另行请求语音等呈现规则由本轮设置替代，角色身份和语气仍遵循人格。"
             "对话模型生成朗读文字，程序在投递时交给 TTS Provider 合成；合成失败时退回文字。"
             "没有成功投递结果前，不要声称已经发送语音。")

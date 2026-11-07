@@ -10,17 +10,16 @@ from astrbot.core.message.message_event_result import MessageChain
 
 from companion_v2.conversation.voice_reply import (
     VoiceReplyPolicy,
+    detected_speech_language,
     separate_spoken,
     speech_candidates,
     speech_chunks,
     strip_voice_markup,
+    tts_wait_budget,
     voice_wrapper_pairing,
 )
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA
 from companion_v2.conversation.voice_markup import slice_speech, visible_speech
-
-
-SEGMENTED_TTS_BUDGET_SECONDS = 8.0
 
 
 def voice_prompt_instruction(policy, provider_instruction="", rules_override=""):
@@ -294,7 +293,12 @@ async def prepare_core_reply_voice_message(
         records = []
         for chunk in chunks:
             await authorize()
-            render_options = {"provider_id": policy.provider_for_language(kind),
+            # The model may have honoured a user request for another language than
+            # the configured default; route the provider by the text that will
+            # actually be spoken instead of trusting the setting alone.
+            language = detected_speech_language(chunk) or policy.language
+            note["language"] = language
+            render_options = {"provider_id": policy.provider_for_language(kind, language=language),
                               "timeout_seconds": policy.timeout_seconds}
             model_override = getattr(policy, "_model_override", "")
             voice_override = getattr(policy, "_voice_override", "")
@@ -303,12 +307,11 @@ async def prepare_core_reply_voice_message(
             if voice_override:
                 render_options["voice_override"] = voice_override
             render = renderer(context, chunk, **render_options)
-            if segment_count > 1:
-                # A whole-reply voice is synthesized while the last text segment
-                # is waiting.  A slow or failing TTS endpoint must not hold that
-                # segment for a minute; cap the budget and degrade to text.
-                configured = float(policy.timeout_seconds or 0)
-                budget = min(configured, SEGMENTED_TTS_BUDGET_SECONDS) if configured > 0 else SEGMENTED_TTS_BUDGET_SECONDS
+            budget = tts_wait_budget(policy, segment_index=segment_index,
+                                     segment_count=segment_count, whole_reply=whole)
+            if budget is not None:
+                # Only a mid-reply segment is capped: the final one (and the
+                # whole-reply synthesis) is bounded by the renderer's own timeout.
                 audio = await asyncio.wait_for(render, timeout=budget)
             else:
                 audio = await render
@@ -333,7 +336,7 @@ async def prepare_core_reply_voice_message(
         return cleaned_message
     note["state"] = "ready"
     logger.info("[CompanionV2] 核心回复 TTS 已合成 event_ref=%s language=%s chars=%s segment=%s/%s",
-                prepared.get("event_ref", "unknown"), policy.language, len(speech),
+                prepared.get("event_ref", "unknown"), note.get("language") or policy.language, len(speech),
                 segment_index + 1, segment_count)
     if isinstance(core, dict) and claim is not None:
         core["_voice_reply_pending_claim"] = (delivery, claim)

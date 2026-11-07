@@ -1698,13 +1698,21 @@ class PrivateCompanionV2StagingPlugin(Star):
             # Both the sendable chain and the provider chain can carry the raw
             # model text; strip every plain part of each so a result assembled
             # after the response observer still cannot leak the protocol.
+            stripped = 0
             for owner in (result, getattr(result, "result_chain", None)):
                 for part in getattr(owner, "chain", None) or ():
                     text = getattr(part, "text", None)
-                    if isinstance(text, str):
+                    if not isinstance(text, str):
+                        continue
+                    try:
                         cleaned = strip_internal_expression_protocol(text)
                         if cleaned != text:
                             part.text = cleaned
+                            stripped += len(text) - len(cleaned)
+                    except Exception:  # noqa: BLE001 - one odd part must not skip the rest
+                        continue
+            if stripped:
+                logger.info("[CompanionV2] 外发边界清理内部标签 chars=%d", stripped)
         except Exception:
             pass
         self._adopt_core_reply_delivery(event)

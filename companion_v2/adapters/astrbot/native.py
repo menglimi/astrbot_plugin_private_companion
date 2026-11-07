@@ -877,6 +877,11 @@ class NativePrivateBridge:
                     if len(file_locators) < MAX_FILES:
                         file_locators.append(file_locator(position, part))
                     text_parts.append("\n[文件附件，正文尚未读取]\n")
+                elif kind in ("Face", "Mface"):
+                    # Sticker/emoji: an emotional expression with no payload. Keep
+                    # a marker instead of rejecting the whole message as media we
+                    # cannot read.
+                    text_parts.append("[表情]")
                 else:
                     raise TaskError("host_media_unsupported", "this component needs its own governed source adapter")
             if len(locators) > MAX_INPUT_IMAGES:

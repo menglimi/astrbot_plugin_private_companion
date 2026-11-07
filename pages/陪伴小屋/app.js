@@ -145,6 +145,16 @@ async function compressRoleAvatar(file){
   }finally{source.close?.();release();}
 }
 document.addEventListener('change',event=>{
+  const picker=event.target.closest?.('[data-self-role]');
+  if(!picker||typeof product.chooseRole!=='function')return;
+  const roleId=picker.value,current=product.role();
+  if(!roleId||roleId===(current?current.role_id:''))return;
+  const pending=product.chooseRole(roleId);
+  if(pending&&typeof pending.catch==='function'){
+    pending.catch(()=>{toast('角色切换失败，请重新读取后重试');});
+  }
+});
+document.addEventListener('change',event=>{
   const input=event.target.closest?.('[data-profile-avatar-file]');
   if(!input)return;
   const file=input.files?.[0];input.value='';
@@ -3775,6 +3785,12 @@ function renderGovernanceOriginal(){
     ['questionnaire','notebook-pen','人格处理'],
     ['knowledge','book-open-text','世界知识']];
   const liveLabel=role?'已识别当前角色':connectionLabel;
+  /* 自我页直接切换角色：不必退回小屋首页的舞台选择器。只在目录里真有多个
+     角色时出现；选中后走产品层同一个 chooseRole，工作区会随之重新绑定。 */
+  const selfRoleChoices=typeof product.roleChoices==='function'?product.roleChoices():[];
+  const selfRoleSwitch=selfRoleChoices.length>1
+    ?`<label class="self-role-switch"><span>切换角色</span><select data-self-role aria-label="切换当前角色">${selfRoleChoices.map((item,index)=>`<option value="${escapeHTML(item.role.role_id)}"${item.role.role_id===(role?role.role_id:'')?' selected':''}>${escapeHTML(product.roleLabel(item.role,index))}</option>`).join('')}</select></label>`
+    :'';
   return `<div class="self-page${selfPane==='questionnaire'?' is-questionnaire-focus':''}">
     <section class="journal-cover" aria-label="当前角色">
       <div class="portrait${avatarDataUrl?' has-avatar':''}" data-profile-portrait>
@@ -3789,6 +3805,7 @@ function renderGovernanceOriginal(){
       <div class="journal-id">
         <div class="journal-name-row"><h2 data-profile-name data-profile-fallback="${escapeHTML(roleLabel)}">${escapeHTML(roleLabel)}</h2>
           <span class="live" data-state="${escapeHTML(connection.state||'unknown')}"><i aria-hidden="true"></i><span data-profile-status>${escapeHTML(liveLabel)}</span></span></div>
+        ${selfRoleSwitch}
         <div class="journal-avatar-action"><label class="profile-avatar-upload" for="profile-avatar-input" data-profile-avatar-label>${avatarDataUrl?'更换头像':'上传头像'}</label></div>
         <div class="stickers" aria-label="角色速览">
           ${[['identity','身份'],['appearance','识别点'],['personality','性格'],['voice','口吻'],['world','所在世界']].map(([id,label])=>`<button type="button" class="sticker" data-self-focus="${id}"><b>${label}</b><span data-profile-signal="${id}">正在读取…</span></button>`).join('')}

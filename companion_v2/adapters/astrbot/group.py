@@ -46,6 +46,18 @@ class GroupEventRoute:
         return self._platform_name
 
 
+def _is_sticker_segment(part):
+    """OneBot marks a sticker image with sub_type=1 (or a 表情 summary)."""
+    if not isinstance(part, Mapping) or part.get("type") != "image":
+        return False
+    data = part.get("data")
+    if not isinstance(data, Mapping):
+        return False
+    if str(data.get("sub_type", "")).strip() == "1":
+        return True
+    return "表情" in str(data.get("summary") or "")
+
+
 def group_event_route(event):
     """Cross-check normalized fields against one supported authenticated event."""
     message, meta, session = event.message_obj, event.platform_meta, event.session
@@ -131,7 +143,7 @@ class NativeGroupBridge(NativePrivateBridge):
         # untrusted text rewrite could masquerade as the original media.
         native_for_raw = {"image": "Image", "reply": "Reply", "forward": "Forward",
                           "record": "Record", "video": "Video", "file": "File"}
-        if any(kind not in {"text", "at", *native_for_raw} for kind in raw_kinds):
+        if any(kind not in {"text", "at", "face", "mface", *native_for_raw} for kind in raw_kinds):
             raise TaskError("host_group_media_unsupported", "group component type is unavailable")
         if any(native_for_raw[kind] not in native_kinds for kind in raw_kinds if kind in native_for_raw):
             raise TaskError("host_group_media_unsupported", "group media differs from its original component")
@@ -164,7 +176,14 @@ class NativeGroupBridge(NativePrivateBridge):
                     except (TaskError, ValueError, TypeError):
                         text.append("[提及不可用]")
                 elif kind == "image":
-                    text.append("\n[图片不可用]\n")
+                    # A QQ sticker image (sub_type=1) is an emotional expression,
+                    # not a photo to caption; keep it as the member's message so
+                    # the turn does not depend on fetching the attachment.
+                    if _is_sticker_segment(part):
+                        text.append("[表情包]")
+                        has_text = True
+                    else:
+                        text.append("\n[图片不可用]\n")
                 elif kind == "reply":
                     text.append("\n[引用消息不可用]\n")
                 elif kind == "forward":
@@ -175,6 +194,11 @@ class NativeGroupBridge(NativePrivateBridge):
                     text.append("\n[视频不可用]\n")
                 elif kind == "file":
                     text.append("\n[文件附件，正文尚未读取]\n")
+                elif kind in ("face", "mface"):
+                    # A sticker carries a feeling, not an attachment. Count it as
+                    # the member's message so the turn stays a normal reply.
+                    text.append("[表情]")
+                    has_text = True
                 else:
                     text.append("\n[消息组件不可用]\n")
                 continue
@@ -191,6 +215,9 @@ class NativeGroupBridge(NativePrivateBridge):
                     has_text |= value == "[提及机器人]"
                 except (TaskError, ValueError, TypeError):
                     text.append("[提及不可用]")
+            elif kind in ("Face", "Mface"):
+                text.append("[表情]")
+                has_text = True
             elif kind in ("Image", "Reply", "Forward", "Record", "Video", "File"):
                 has_text |= kind == "Reply" and not require_text
                 text.append({"Image": "\n[图片不可用]\n", "Reply": "\n[引用消息不可用]\n",
@@ -244,7 +271,8 @@ class NativeGroupBridge(NativePrivateBridge):
             return
         if (not isinstance(original_parts, list) or not 1 <= len(original_parts) <= 128
                 or any(not isinstance(part, Mapping) or not isinstance(part.get("data"), Mapping)
-                       or part.get("type") not in ("text", "at", "image", "reply", "forward", "record", "video", "file")
+                       or part.get("type") not in ("text", "at", "face", "mface", "image", "reply",
+                                                   "forward", "record", "video", "file")
                        for part in original_parts)):
             raise TaskError("host_group_media_unsupported", "original group components need their own source adapter")
         try:
@@ -335,7 +363,9 @@ class NativeGroupBridge(NativePrivateBridge):
             if original_parts is not None and (not isinstance(original_parts, list)
                     or not 1 <= len(original_parts) <= 128
                     or any(not isinstance(p, Mapping) or not isinstance(p.get("data"), Mapping)
-                           or p.get("type") not in ("text", "at", "image", "reply", "forward", "record", "video", "file") for p in original_parts)):
+                           or p.get("type") not in ("text", "at", "face", "mface", "image", "reply",
+                                                     "forward", "record", "video", "file")
+                           for p in original_parts)):
                 # Host STT can replace Record with Plain before this plugin runs.
                 # Such text cannot bypass the original group media contract.
                 raise TaskError("host_group_media_unsupported", "original group components need their own source adapter")
@@ -380,6 +410,10 @@ class NativeGroupBridge(NativePrivateBridge):
                     if len(file_locators) < MAX_FILES:
                         file_locators.append(file_locator(position, part))
                     text_parts.append("\n[文件附件，正文尚未读取]\n")
+                elif kind in ("Face", "Mface"):
+                    # Sticker/emoji: an emotional expression with no payload. It
+                    # must not reject the whole group turn as unreadable media.
+                    text_parts.append("[表情]")
                 else:
                     raise TaskError("host_group_media_unsupported", "this group component needs its own source adapter")
             if original_parts is not None:
