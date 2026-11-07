@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CORE_ID = "astrbot_plugin_private_companion"
 VERSION = "7.1.4"
 RELEASE_SCHEMA = "companion.v2.release.v2"
+MARKET_MAX_BYTES = 16_000_000
 NATIVE_EXTENSION_FILES = {
     "content": ("companion_v2/content/assembly.py", "companion_v2/content/provider.py",
                 "astrbot_host/native_extensions/content.py"),
@@ -398,6 +399,8 @@ def build_plugin(root, directories, output):
     filename = CORE_ID + "-" + info["version"] + ".zip"
     target = output / filename
     zip_entries(target, files)
+    if target.stat().st_size > MARKET_MAX_BYTES:
+        raise ValueError("plugin ZIP exceeds AstrBot market's 16 MB limit")
     return {**info, "filename": filename, "sha256": digest(target.read_bytes()),
             "bytes": target.stat().st_size, "files": len(files),
             "integration": "native-bundled", "execution_owner": CORE_ID, **runtime_contract}

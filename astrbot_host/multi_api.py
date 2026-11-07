@@ -339,6 +339,10 @@ class MultiHostWebAPI:
                         role["group_memory_api"]))
                     routes.extend(GroupReplyWebAPI(self.controller, target["target_id"], role["role_id"]).routes(
                         role["reply_api"]))
+                    if target["group_id"] == "*":
+                        prefix = role["reply_api"].removesuffix("/reply") + "/groups/<path:group_id>/reply"
+                        routes.extend(GroupReplyWebAPI(self.controller, target["target_id"], role["role_id"])
+                                      .routes(prefix, dynamic=True))
                     routes.extend(GroupModelWebAPI(self.controller, target["target_id"], role["role_id"]).routes(
                         role["model_api"]))
                     routes.extend(LegacyGroupDataWebAPI(self.controller, target["target_id"], role["role_id"]).routes(

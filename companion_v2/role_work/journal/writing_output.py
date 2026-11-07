@@ -5,6 +5,12 @@ import json
 from .models import DreamRecall, JournalDerivatives, JournalDraft, JournalKind
 
 
+class JournalOutputError(ValueError):
+    def __init__(self, code, reason):
+        super().__init__(reason)
+        self.code = code
+
+
 def object_output(text):
     def pairs(items):
         value = {}
@@ -28,6 +34,12 @@ def draft_output(text, job):
     value = object_output(text)
     if set(value) != {"body", "form", "recall", "afterglow"}:
         raise ValueError("writing result must contain only its body fields")
+    if job.target.key.kind is JournalKind.DIARY:
+        if not isinstance(value["body"], str) or not value["body"].strip():
+            raise JournalOutputError("journal_diary_body_missing", "diary output needs a nonempty body")
+        return JournalDraft(job.target, body=value["body"], form=value["form"], recall=None,
+                            afterglow="", sources=job.sources, activities=job.activities,
+                            journals=job.recent, materials=job.materials)
     recall = DreamRecall(value["recall"]) if value["recall"] is not None else None
     if job.target.key.kind is JournalKind.DREAM:
         if recall is DreamRecall.AFTERGLOW:

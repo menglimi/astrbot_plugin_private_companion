@@ -266,6 +266,7 @@ window.CompanionProduct = (() => {
   const fail = (code, confirmed = false) => Object.assign(new Error(errors[code] || "暂不可读取，请刷新核对。"),
     {code, ...(confirmed ? {confirmed:true} : {})});
   let bridge, catalog, manifest, data = {}, failures = {}, failureCodes = {}, selected = {target_id:null,role_id:null};
+  let selectedGroupId = "";
   let bridgeReady = false;
   let releaseAppearanceContext = null;
   let generation = 0, changed = () => {}, loading = false, notice = "";
@@ -417,7 +418,11 @@ window.CompanionProduct = (() => {
       if (owner.isConnected) owner.contentWindow.postMessage({channel:"companion-workspace",...payload},"*");
     }
   }
-  const target = () => catalog?.targets.find(item => item.target_id === selected.target_id);
+  const target = () => {
+    const current = catalog?.targets.find(item => item.target_id === selected.target_id);
+    return selectedGroupId && current?.scope_kind === "group" && current.group_id === "*"
+      ? {...current, group_id:selectedGroupId} : current;
+  };
   const targetPreference = item => [
     item.scope_kind === "private" ? 1 : 0,
     item.scope_kind === "private" && item.participant_id && item.participant_id !== "*" ? 1 : 0,
@@ -447,12 +452,14 @@ window.CompanionProduct = (() => {
   const role = () => {
     const current = target()?.roles.find(item => item.role_id === selected.role_id);
     const owner = roleTarget()?.roles.find(item => item.role_id === selected.role_id);
-    if (!owner) return current;
-    if (target()?.scope_kind !== "group" || owner === current) return owner;
-    return {...owner, reply_api:current.reply_api || owner.reply_api,
-      group_memory_api:current.group_memory_api || null};
+    const chosen = !owner ? current : target()?.scope_kind !== "group" || owner === current ? owner
+      : {...owner, reply_api:current.reply_api || owner.reply_api,
+          group_memory_api:current.group_memory_api || null};
+    if (!selectedGroupId || typeof chosen?.reply_api !== "string") return chosen;
+    return {...chosen, reply_api:chosen.reply_api.replace(/\/reply$/,
+      `/groups/${encodeURIComponent(selectedGroupId)}/reply`)};
   };
-  const scopeKey = () => JSON.stringify([catalog?.installation_id, selected.target_id, selected.role_id]);
+  const scopeKey = () => JSON.stringify([catalog?.installation_id, selected.target_id, selected.role_id, selectedGroupId]);
   /* 后端 outcome_response() 把机器码同时放在 message 与 data.code 上，因为页面桥
      只转发 message、会丢掉信封其余字段。所以取码要看两处，不能只认 data.code；
      下面 api() 里的英文措辞兜底只是老桥接形态的退路。 */
@@ -577,6 +584,7 @@ window.CompanionProduct = (() => {
     const context = current?.roles.some(item => item.role_id === choice?.role.role_id)
       ? current : choice?.target;
     selected = {target_id:context?.target_id ?? null, role_id:choice?.role.role_id ?? null};
+    selectedGroupId = "";
   }
   let summaryRequest = 0;
   const SUMMARY_CACHE_MS = 45000;
@@ -724,7 +732,10 @@ window.CompanionProduct = (() => {
     if (results[1].status === "fulfilled") manifest = results[1].value;
     const retained = catalog.targets.find(item => item.target_id === previous.target_id
       && item.roles.some(roleItem => roleItem.role_id === previous.role_id));
-    if (retained) selected = previous;
+    if (retained) {
+      selected = previous;
+      if (retained.scope_kind !== "group" || retained.group_id !== "*") selectedGroupId = "";
+    }
     else chooseDefault();
     growthPage = null; growthCursor = null;
     rebindWorkspaceContexts();
@@ -762,12 +773,13 @@ window.CompanionProduct = (() => {
     if (typeof catalog?.acquaintance_api !== "string") return Promise.reject(fail("invalid_response"));
     return api("GET", relative(catalog.acquaintance_api));
   }
-  async function choose(targetId, roleId, quiet=false) {
+  async function choose(targetId, roleId, quiet=false, groupId="") {
     const next = catalog?.targets.find(t => t.target_id === targetId);
     if (!next?.roles.some(r => r.role_id === roleId)) return;
-    if (selected.target_id === targetId && selected.role_id === roleId) return;
+    if (selected.target_id === targetId && selected.role_id === roleId && selectedGroupId === groupId) return;
     const ticket = ++generation;
     selected = {target_id:targetId,role_id:roleId}; data = {}; failures = {}; failureCodes = {}; growthPage = null; growthCursor = null;
+    selectedGroupId = groupId;
     rebindWorkspaceContexts();
     loading = true;
     if (!quiet) changed();
@@ -1203,9 +1215,14 @@ window.CompanionProduct = (() => {
       const target=message.target;
       if(["group-reply","group-memory"].includes(target?.tab)){
         const navigationFailure=text=>send({kind:"navigate-failed",tab:target.tab,message:text});
-        const destination=catalog?.targets.find(item=>item.scope_kind==="group"
+        let destination=catalog?.targets.find(item=>item.scope_kind==="group"
           &&item.platform_id===target.platform_id&&item.bot_id===target.bot_id
           &&item.account_id===target.account_id&&item.group_id===target.group_id);
+        const wildcard=!destination && target.tab==="group-reply"
+          ? catalog?.targets.find(item=>item.scope_kind==="group"&&item.group_id==="*"
+              &&item.platform_id===target.platform_id&&item.bot_id===target.bot_id
+              &&item.account_id===target.account_id) : null;
+        if(wildcard)destination=wildcard;
         const role=destination?.roles.find(item=>item.role_id===target.role_id);
         const api=target.tab==="group-reply"?role?.reply_api:role?.group_memory_api;
         if(typeof api!=="string"){
@@ -1213,7 +1230,7 @@ window.CompanionProduct = (() => {
           return;
         }
         try{
-          await choose(destination.target_id,role.role_id,true);
+          await choose(destination.target_id,role.role_id,true,wildcard?target.group_id:"");
         }catch{
           navigationFailure("打开本群配置时未能切换角色，请重新读取群聊目录后重试。");
           return;

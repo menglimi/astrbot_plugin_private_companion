@@ -5,6 +5,7 @@ from contextlib import nullcontext
 import json
 
 from astrbot.api.web import request
+from companion_v2.adapters.astrbot.native import route_id
 from companion_v2.configuration.contract import contract_of, layers_of, provenance_of
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget, ConfigurationError
 from companion_v2.conversation.participation import CONFIG_GROUP as PARTICIPATION_GROUP
@@ -38,11 +39,12 @@ DEGRADED_STYLE_REASONS = ("role_binding_missing", "expression_group_context_requ
 
 
 class GroupReplyWebAPI:
-    def __init__(self, controller, target_id, role_id):
+    def __init__(self, controller, target_id, role_id, group_id=None):
         self.controller, self.target_id, self.role_id = controller, target_id, role_id
+        self.group_id = group_id
 
-    def routes(self, prefix):
-        return [(prefix, self.status, ["GET"], "Read this group's reply preferences"),
+    def routes(self, prefix, *, dynamic=False):
+        routes = [(prefix, self.status, ["GET"], "Read this group's reply preferences"),
                 (prefix + "/preview", self.preview, ["POST"], "Preview this group's reply without model access"),
                 (prefix + "/configure", self.configure, ["POST"], "Save this group's reply preferences"),
                 (prefix + "/expression", self.expression, ["GET"], "Read this group's expression-learning bounds"),
@@ -62,6 +64,32 @@ class GroupReplyWebAPI:
                 (prefix + "/style/import/apply", self.style_import_apply, ["POST"], "Import group rules for review"),
                 (prefix + "/style/command", self.style_command, ["POST"],
                  "Decide a group expression signal")]
+        if not dynamic:
+            return routes
+
+        def bind(method_name):
+            async def handle(group_id):
+                api = GroupReplyWebAPI(self.controller, self.target_id, self.role_id, group_id)
+                return await getattr(api, method_name)()
+            return handle
+
+        return [(path, bind(handler.__name__), methods, description)
+                for path, handler, methods, description in routes]
+
+    def _selected_target(self, settings):
+        configured = settings.target(self.target_id)
+        if self.group_id is None:
+            return configured
+        if not isinstance(configured, GroupTarget) or configured.group_id != "*" or self.group_id == "*":
+            raise TaskError("group_reply_target_required", "select a group covered by the wildcard target")
+        try:
+            route_id(self.group_id)
+        except ValueError:
+            raise TaskError("group_reply_target_required", "select a valid group route") from None
+        selected = settings.group_target(configured.platform_id, configured.account_id, self.group_id)
+        if selected is None or selected.bot_id != configured.bot_id:
+            raise TaskError("group_reply_target_required", "the native group target changed")
+        return selected
 
     @staticmethod
     def _account(bridge, selected):
@@ -119,7 +147,7 @@ class GroupReplyWebAPI:
                 session = controller.session or controller.last_session
                 if session is None or controller.runtime is None:
                     raise TaskError("staging_not_initialized", "load the V2 profile first")
-                selected = controller.settings.target(self.target_id)
+                selected = self._selected_target(controller.settings)
                 if not isinstance(selected, GroupTarget) or not any(
                         p.bot_id == selected.bot_id and p.role_id == self.role_id for p in controller.settings.personas):
                     raise TaskError("group_reply_target_required", "the configured group/role is unavailable")
@@ -422,7 +450,7 @@ class GroupReplyWebAPI:
                     session = controller.session or controller.last_session
                     if session is None or controller.runtime is None:
                         raise TaskError("staging_not_initialized", "load the V2 profile first")
-                    selected = controller.settings.target(self.target_id)
+                    selected = self._selected_target(controller.settings)
                     if not isinstance(selected, GroupTarget) or not any(
                             p.bot_id == selected.bot_id and p.role_id == self.role_id for p in controller.settings.personas):
                         raise TaskError("group_reply_target_required", "the configured group/role is unavailable")

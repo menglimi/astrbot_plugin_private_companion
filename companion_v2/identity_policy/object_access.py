@@ -41,11 +41,12 @@ class ActionDefinition:
 
 
 DEFAULT_ACTIONS = (
+    ActionDefinition("memo.read", ("memo",), private_owner_without_grant=True),
     *(ActionDefinition(f"memo.{action}", ("memo",)) for action in (
-        "read", "edit", "complete", "reopen", "pin", "unpin", "delete", "delete.commit", "reminder.set",
+        "edit", "complete", "reopen", "pin", "unpin", "delete", "delete.commit", "reminder.set",
     )),
     ActionDefinition("memo.create", ("memo",), shareable=False),
-    ActionDefinition("memo.list", ("memo",), shareable=False),
+    ActionDefinition("memo.list", ("memo",), shareable=False, private_owner_without_grant=True),
     *(ActionDefinition(f"reminder.{action}", ("reminder",)) for action in (
         "read", "cancel", "reschedule", "deliver",
     )),
@@ -83,8 +84,10 @@ DEFAULT_ACTIONS = (
     # CalendarAccess still checks the role-wide switch at each calendar operation.
     *(ActionDefinition(action, ("calendar",), shareable=False, private_owner_without_grant=True)
       for action in ("calendar.read", "calendar.write")),
+    ActionDefinition("relationship.memory.read", ("relationship.memory",), shareable=False,
+                     private_owner_without_grant=True),
     *(ActionDefinition(f"relationship.memory.{action}", ("relationship.memory",), shareable=False)
-      for action in ("read", "propose", "revise", "review", "adopt", "retract")),
+      for action in ("propose", "revise", "review", "adopt", "retract")),
     *(ActionDefinition(f"memory.{action}", ("memory",), shareable=False)
       for action in ("read", "propose", "correct", "retract", "protect", "forget", "reflect", "subscribe")),
     ActionDefinition("memory.manage", ("memory",), core_only=True, shareable=False),
@@ -286,11 +289,12 @@ class ObjectAccessPolicy:
 
     def authorize(
         self, actor: ResolvedIdentity, *, scope: ScopeRef, action: str, owner: SubjectRef,
-        object_key: str | None = None, observed_at: datetime,
+        object_key: str | None = None, observed_at: datetime, allow_private_owner: bool = False,
     ) -> Outcome[ObjectAccessDecision]:
         observed_at = normalize_utc(observed_at, field="observed_at")
         with self.runtime.read_snapshot():
-            feature = self.feature_access(actor, scope=scope, action=action, observed_at=observed_at)
+            feature = self.feature_access(actor, scope=scope, action=action, observed_at=observed_at,
+                                          allow_private_owner=allow_private_owner)
             if not feature.is_success:
                 return feature
             if owner.installation_id != self.runtime.installation_id:
@@ -360,7 +364,7 @@ class ObjectAccessPolicy:
 
     def permitted_object_keys(
         self, actor: ResolvedIdentity, *, scope: ScopeRef, action: str, observed_at: datetime,
-        owner: SubjectRef | None = None,
+        owner: SubjectRef | None = None, allow_private_owner: bool = False,
     ) -> Outcome[tuple[str, ...]]:
         """Return exact currently visible registered objects for an object action.
 
@@ -369,7 +373,8 @@ class ObjectAccessPolicy:
         """
         observed_at = normalize_utc(observed_at, field="observed_at")
         with self.runtime.read_snapshot():
-            feature = self.feature_access(actor, scope=scope, action=action, observed_at=observed_at)
+            feature = self.feature_access(actor, scope=scope, action=action, observed_at=observed_at,
+                                          allow_private_owner=allow_private_owner)
             if not feature.is_success:
                 return Outcome(failure=feature.failure)
             if owner is not None and owner.installation_id != self.runtime.installation_id:

@@ -280,6 +280,28 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
     def captured(name, title, instruction, owner):
         optional(name, lambda: _material_section(title, instruction, _capture_materials(owner, context, at)))
 
+    def context_enabled(kind):
+        runtime = getattr(application, "runtime", None)
+        if not callable(getattr(runtime, "read_one", None)):
+            return True
+        if kind == "life":
+            from companion_v2.role_work.life.configuration import (
+                LifeConfigurationOwner, configuration_fields, target_for,
+            )
+            owner, field = LifeConfigurationOwner, "role.life.enabled"
+        else:
+            from companion_v2.role_work.growth.configuration import (
+                GrowthConfigurationOwner, configuration_fields, target_for,
+            )
+            owner, field = GrowthConfigurationOwner, "role.growth.read_enabled"
+        try:
+            settings = owner(runtime).read(target_for(context), configuration_fields())
+            return settings.fields[field].value is True
+        except Exception as error:
+            logger.warning("[CompanionV2] 核心回复背景开关读取降级 section=%s error_type=%s code=%s",
+                           kind, type(error).__name__, getattr(error, "code", None) or "-")
+            return True
+
     def role_state():
         owner = getattr(messages, "role_state_context", None)
         materials = _ready(_capture_materials(owner, context, at))
@@ -471,9 +493,11 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
                                      perception_settings()["calendar_timezone"])))
         captured("relationship", "相处背景", RELATIONSHIP_INSTRUCTION,
                  getattr(messages, "relationship_context", None))
-        captured("life", "角色生活", LIFE_INSTRUCTION, getattr(messages, "life_context", None))
-        captured("growth", "角色成长", ROLE_GROWTH_INSTRUCTION,
-                 getattr(messages, "role_growth_context", None))
+        if context_enabled("life"):
+            captured("life", "角色生活", LIFE_INSTRUCTION, getattr(messages, "life_context", None))
+        if context_enabled("growth"):
+            captured("growth", "角色成长", ROLE_GROWTH_INSTRUCTION,
+                     getattr(messages, "role_growth_context", None))
         captured("self_review", "角色自我提醒", SELF_REVIEW_INSTRUCTION,
                  getattr(messages, "role_self_review_context", None))
         captured("open_items", "当前未完成事项", OPEN_ITEMS_INSTRUCTION,

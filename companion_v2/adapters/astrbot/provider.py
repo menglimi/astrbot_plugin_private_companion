@@ -622,12 +622,16 @@ class AstrBotTextProvider:
         # 因此分成两个 code；reason 只带配置数值，不带提示词正文。
         if estimated > self.maximum_input_estimate:
             raise TaskError("host_model_limit_input",
-                            f"input limit exceeded: estimated={estimated} maximum={self.maximum_input_estimate}")
+                            f"input limit exceeded: estimated={estimated} maximum={self.maximum_input_estimate}",
+                            details={"estimated_input_tokens": estimated,
+                                     "provider_max_input_tokens": self.maximum_input_estimate})
         if (type(envelope.max_output_tokens) is not int
                 or not 1 <= envelope.max_output_tokens <= self.maximum_output_tokens):
             raise TaskError("host_model_limit_output",
                             f"output limit exceeded: budget={envelope.max_output_tokens} "
-                            f"allowed=1..{self.maximum_output_tokens}")
+                            f"allowed=1..{self.maximum_output_tokens}",
+                            details={"requested_output_tokens": envelope.max_output_tokens,
+                                     "provider_max_output_tokens": self.maximum_output_tokens})
         return estimated
 
     def reserve(self, envelope):

@@ -342,6 +342,14 @@ class PrivateCoreReplyAdmissionTests(MultiFixture, unittest.IsolatedAsyncioTestC
         self.app.router._route_selection.assert_not_called()
 
     async def test_authorized_background_is_injected_without_replacing_core_history(self):
+        from companion_v2.role_work.life.configuration import LifeConfigurationOwner, configuration_fields, target_for
+
+        context = self.controller.authority.context("first", "role-a")
+        owner = LifeConfigurationOwner(self.app.runtime)
+        target = target_for(context)
+        owner.write(target, configuration_fields(), changes={"role.life.enabled": True}, reset=(),
+                    expected_revision=owner.read(target, configuration_fields()).revision,
+                    observed_at=self.clock.now())
         event = self.event(identifier="core-reply-background", text="下午做什么了")
         life = ContextContribution("life-test", "role.life", "role_activity",
             ContributionState.READY, '{"activity":"在书房读了一章小说","state":"completed"}')

@@ -208,6 +208,31 @@ class LegacyStagingReceiptTests(unittest.TestCase):
 
 
 class MultiHostTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_enabled_private_context_grants_are_repaired_without_reissuing_revoked_grants(self):
+        from companion_v2.role_work.life.configuration import LifeConfigurationOwner, configuration_fields, target_for
+
+        await self.start_host()
+        authority = self.controller.authority
+        context = authority.context("first", "role-a")
+        target = target_for(context)
+        owner = LifeConfigurationOwner(authority.runtime)
+        owner.write(target, configuration_fields(), changes={"role.life.enabled": True}, reset=(),
+                    expected_revision=owner.read(target, configuration_fields()).revision,
+                    observed_at=self.clock.now())
+        action = "role.life.read"
+        self.assertFalse(any(grant.scope == context.scope and grant.capability == action
+                             for grant in authority.identities.grants_for_subject(context.actor.subject)))
+
+        authority.provision_scope(authority.settings.target("first"), context.scope, context.role_binding.role)
+        grants = [grant for grant in authority.identities.grants_for_subject(context.actor.subject)
+                  if grant.scope == context.scope and grant.capability == action]
+        self.assertEqual(len(grants), 1)
+        authority.identities.revoke_grant(grants[0].grant_id, revoked_at=self.clock.now(),
+                                          expected_revision=authority.identities.revision)
+        authority.provision_scope(authority.settings.target("first"), context.scope, context.role_binding.role)
+        self.assertEqual(len([grant for grant in authority.identities.grants_for_subject(context.actor.subject)
+                              if grant.scope == context.scope and grant.capability == action]), 1)
+
     async def test_saved_large_output_limit_prepares_and_reloads(self):
         prepared = await self.controller.initialize_profile()
         self.assertTrue(prepared.is_success, prepared.failure)

@@ -51,6 +51,34 @@ class MultiAuthority:
         except Exception:  # noqa: BLE001 - 读不到默认值时退回"按能力表签发"，不阻断登录
             return None
 
+    def _provision_context_grants(self, context):
+        from companion_v2.role_work.growth.configuration import (
+            GrowthConfigurationOwner, configuration_fields as growth_fields, target_for as growth_target,
+        )
+        from companion_v2.role_work.life.configuration import (
+            LifeConfigurationOwner, configuration_fields as life_fields, target_for as life_target,
+        )
+
+        existing = {(grant.scope, grant.capability) for grant in self.identities.grants_for_subject(
+            context.actor.subject)}
+        life = LifeConfigurationOwner(self.runtime).read(life_target(context), life_fields())
+        growth = GrowthConfigurationOwner(self.runtime).read(growth_target(context), growth_fields())
+        life_actions = ("role.life.run", "role.life.read", "role.journal.write", "role.reading.record")
+        for action in life_actions if life.fields["role.life.enabled"].value is True else ():
+            if (context.scope, action) not in existing:
+                grant_id = "life-grant-" + digest(context.key) + ":host:" + digest(action)
+                self.identities.issue_grant(grant_id=grant_id, subject=context.actor.subject,
+                    scope=context.scope, capability=action, tier=AuthorizationTier.STANDARD,
+                    valid_from=self.now(), expected_revision=self.identities.revision)
+        target = growth_target(context)
+        for field, action in (("read_enabled", "role.growth.read"), ("proposals_enabled", "role.growth.propose")):
+            if growth.fields["role.growth." + field].value is not True or (context.scope, action) in existing:
+                continue
+            grant_id = "growth-grant:" + digest([target.key, context.actor.subject, action]) + ":host"
+            self.identities.issue_grant(grant_id=grant_id, subject=context.actor.subject,
+                scope=context.scope, capability=action, tier=AuthorizationTier.STANDARD,
+                valid_from=self.now(), expected_revision=self.identities.revision)
+
     def read(self, key):
         row = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?", (key,))
         return json.loads(row["value"]) if row else None
@@ -315,7 +343,8 @@ class MultiAuthority:
             # 私聊权限的默认值：决定"新用户一开始有没有这两项权限"。
             # 默认关的能力**不签发**——没有授权就是没有权限，页面也会如实显示"未授权"；
             # 默认开的能力即使不在配置能力表里也签发（表管的是宿主能力，不是这两项按人权限）。
-            pending = self._defaults(TaskContext(actor, resolution.binding, AudienceRef(scope, (actor.subject,))))
+            context = TaskContext(actor, resolution.binding, AudienceRef(scope, (actor.subject,)))
+            pending = self._defaults(context)
             decided = {grant.capability for grant in self.identities.grants_for_subject(actor.subject)
                        if grant.subject == actor.subject and grant.scope == scope
                        and grant.grant_id.startswith(PERSON_PERMISSION_GRANT_PREFIX)}
@@ -350,13 +379,14 @@ class MultiAuthority:
                         self.identities.issue_grant(grant_id=self.grant_id(scope, capability), subject=actor.subject,
                             scope=scope, capability=capability, tier=AuthorizationTier.STANDARD, valid_from=at,
                             expected_revision=self.identities.revision)
+            self._provision_context_grants(context)
             from companion_v2.identity_policy.legacy_import import apply_pending_private_authorization
             apply_pending_private_authorization(self.runtime, actor, scope, role.subject_id, self.now())
             self.write(self.context_key(target, role.subject_id), scope.document())
             template = self.settings.template_for(target)
             if template is not None and template.target_id != target.target_id:
                 self.write(self.context_key(template, role.subject_id), scope.document())
-            return TaskContext(actor, resolution.binding, AudienceRef(scope, (actor.subject,)))
+            return context
 
     def select(self, target, scope, role):
         with self.runtime.transaction():
