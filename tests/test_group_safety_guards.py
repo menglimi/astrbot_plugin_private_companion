@@ -51,6 +51,11 @@ class GroupSafetyGuardTests(unittest.TestCase):
         changed, blocked = policy.reality_promise_guard("我已经拉群了")
         self.assertTrue(blocked)
         self.assertEqual(changed, REALITY_PROMISE_GUARD_REPLACEMENT)
+        for text in ("我已经加群了", "我马上建群", "我把大家拉进群了"):
+            with self.subTest(text=text):
+                value, blocked = policy.reality_promise_guard(text)
+                self.assertTrue(blocked, text)
+                self.assertEqual(value, REALITY_PROMISE_GUARD_REPLACEMENT)
         for text in ("我想修网，但需要管理员处理", "‘我已经拉群了’是成员举的例子",
                      "https://example.test/我已经拉群了", "<quote>我已经拉群了</quote>",
                      "我已经拉群了",):

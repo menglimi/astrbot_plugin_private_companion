@@ -29,12 +29,13 @@ VERSION = "0.4.2"
 # device profile itself marks as writable (see mihome_web_api.py).
 DEVICE_ACTIONS = ("power", "set_mode", "set_brightness", "set_color_temperature")
 _ACTIONS = {
-    "reality.snapshot.read", "reality.camera.observe", "reality.device.list", "reality.device.status", "reality.device.control",
+    "reality.snapshot.read", "reality.camera.observe", "reality.device.list", "reality.device.status",
+    "reality.device.inspect", "reality.device.control",
     "reality.device.action", "reality.operation.lookup", "reality.operation.cancel",
 }
 _READ_ACTIONS = {
     "reality.snapshot.read", "reality.device.list", "reality.device.status",
-    "reality.operation.lookup",
+    "reality.device.inspect", "reality.operation.lookup",
 }
 # Actions that answer purely from this provider's own journal.
 _REQUIRED = {
@@ -260,17 +261,24 @@ async def _checked(callback: Callable) -> None:
         raise NativeRealityError("host_authority_revoked")
 
 
-def _bind_power(handler: Callable, alias: str, is_on: bool):
+def _actor_subject(context: Any) -> dict[str, Any] | None:
+    """The exact human subject this turn belongs to, forwarded for authority checks."""
+    actor = context.get("actor") if isinstance(context, dict) else None
+    subject = actor.get("subject") if isinstance(actor, dict) else None
+    return subject if isinstance(subject, dict) else None
+
+
+def _bind_power(handler: Callable, alias: str, is_on: bool, actor: dict[str, Any] | None):
     """Freeze the legacy two-argument power call (extension_control_power)."""
 
     async def dispatch() -> dict[str, Any]:
-        return await handler(alias, is_on, native=True)
+        return await handler(alias, is_on, native=True, actor=actor)
 
     return dispatch
 
 
 def _bind_device_action(handler: Callable, alias: str, verb: str, prop: str | None, amount: Any,
-                        binding_revision: str):
+                        binding_revision: str, actor: dict[str, Any] | None):
     """Freeze the parameterised device call (extension_device_action).
 
     The verb key -- not the property name -- is what the API switches on, and
@@ -278,14 +286,15 @@ def _bind_device_action(handler: Callable, alias: str, verb: str, prop: str | No
     """
 
     async def dispatch() -> dict[str, Any]:
-        return await handler(alias, verb, amount, native=True, binding_revision=binding_revision)
+        return await handler(alias, verb, amount, native=True, actor=actor,
+                             binding_revision=binding_revision)
 
     return dispatch
 
 
-def _binding_revision(target: Callable, alias: str) -> str:
+def _binding_revision(target: Callable, alias: str, actor: dict[str, Any] | None) -> str:
     """Ask the provider for the current binding revision of one exact alias."""
-    value = target(alias, native=True)
+    value = target(alias, native=True, actor=actor)
     if isinstance(value, dict):
         return str(value.get("binding_revision") or "")
     return str(value or "")
@@ -304,7 +313,15 @@ def _parse_verb(arguments: dict[str, Any]) -> tuple[str, str | None, Any]:
             raise NativeRealityError("invalid_reality_device_value")
         return "power", None, raw.strip().lower() == "on"
     prop = {"set_mode": "mode", "set_brightness": "brightness",
-            "set_color_temperature": "color_temperature"}[x]
+            "set_color_temperature": "color_temperature"}.get(x)
+    if prop is None:
+        # Profile-driven name: the property/action lookup happens in the device
+        # profile, so the provider only bounds the string it forwards.
+        if raw is None:
+            return x, None, ""
+        if not isinstance(raw, str) or not raw.strip():
+            raise NativeRealityError("invalid_reality_device_value")
+        return x, None, raw.strip()[:256]
     if not isinstance(raw, str) or not raw.strip():
         raise NativeRealityError("invalid_reality_device_value")
     text = raw.strip()
@@ -385,6 +402,12 @@ class NativeRealityProvider:
                  "parameters": {"type": "object", "properties": {"alias": {"type": "string"}},
                                 "required": ["alias"], "additionalProperties": False},
                  "side_effect": "none", "timeout_seconds": 30},
+                {"action": "reality.device.inspect", "capability": "reality.device.inspect",
+                 "source_owner": PROVIDER_ID,
+                 "description": "按精确别名读取米家设备的静态能力：可写属性（中文名、示例值、说明）、可读属性与已声明动作。控制前先查它，只按这里出现的名称下发。",
+                 "parameters": {"type": "object", "properties": {"alias": {"type": "string"}},
+                                "required": ["alias"], "additionalProperties": False},
+                 "side_effect": "none", "timeout_seconds": 10},
                 {"action": "reality.device.control", "capability": "reality.device.control",
                  "source_owner": PROVIDER_ID, "description": "仅对米家设置中启用且列入控制白名单的设备按精确别名控制电源开关，并返回确认回执。",
                  "parameters": {"type": "object", "properties": {
@@ -393,10 +416,10 @@ class NativeRealityProvider:
                  "side_effect": "external_network", "timeout_seconds": 30},
                 {"action": "reality.device.action", "capability": "reality.device.action",
                  "source_owner": PROVIDER_ID,
-                 "description": "按精确别名对已授权设备执行一个具名动作。power 需要用 value=\"on\" 或 \"off\"；set_brightness / set_color_temperature / set_mode 只在该设备档案自身声明该属性可写时才允许，value 传字符串形式的取值。可选 expect_revision 用来固定本次动作针对的设备绑定修订：别名在此期间被换绑时该次动作会被拒绝，而不会静默作用到新设备上。是否成功以设备云端确认层为准。",
+                 "description": "按精确别名对已授权设备执行一个具名动作。power 需要用 value=\"on\" 或 \"off\"；set_brightness / set_color_temperature / set_mode 只在该设备档案自身声明该属性可写时才允许，value 传字符串形式的取值。也可以直接传 reality.device.inspect 返回的中文属性名（如“温度”“模式”）或中文动作名（如“开始清扫”），由设备画像换算成底层属性与取值。可选 expect_revision 用来固定本次动作针对的设备绑定修订：别名在此期间被换绑时该次动作会被拒绝，而不会静默作用到新设备上。是否成功以设备云端确认层为准。",
                  "parameters": {"type": "object", "properties": {
                      "alias": {"type": "string"},
-                     "action": {"type": "string", "enum": list(DEVICE_ACTIONS)},
+                     "action": {"type": "string"},
                      "value": {"type": "string"},
                      "expect_revision": {"type": "string"}},
                      "required": ["alias", "action"], "additionalProperties": False},
@@ -461,15 +484,20 @@ class NativeRealityProvider:
             if set(arguments) != {"alias"}:
                 raise NativeRealityError("invalid_reality_arguments")
             _text(arguments.get("alias"), "device_alias", 120)
+        elif action == "reality.device.inspect":
+            if set(arguments) != {"alias"}:
+                raise NativeRealityError("invalid_reality_arguments")
+            _text(arguments.get("alias"), "device_alias", 120)
         elif action == "reality.device.action":
             if set(arguments) - {"alias", "action", "value", "expect_revision"} \
                     or not {"alias", "action"} <= set(arguments):
                 raise NativeRealityError("invalid_reality_arguments")
             _text(arguments.get("alias"), "device_alias", 120)
-            if arguments.get("action") not in DEVICE_ACTIONS:
+            name = arguments.get("action")
+            if not isinstance(name, str) or not name.strip() or len(name) > 64 or "\x00" in name:
                 raise NativeRealityError("invalid_reality_device_action")
             if "value" in arguments and (not isinstance(arguments["value"], str)
-                                         or len(arguments["value"]) > 64 or "\x00" in arguments["value"]):
+                                         or len(arguments["value"]) > 256 or "\x00" in arguments["value"]):
                 raise NativeRealityError("invalid_reality_device_value")
             if "expect_revision" in arguments and (
                     not isinstance(arguments["expect_revision"], str)
@@ -519,8 +547,9 @@ class NativeRealityProvider:
                     return self._response(value, self._resolve_operation(scope, value))
                 else:
                     web_api = getattr(self.plugin, "mihome_web_api", None)
-                    method_name = ("extension_device_directory" if value["action"] == "reality.device.list"
-                                   else "extension_read_device_status")
+                    method_name = {"reality.device.list": "extension_device_directory",
+                                   "reality.device.inspect": "extension_device_profile",
+                                   }.get(value["action"], "extension_read_device_status")
                     handler = getattr(web_api, method_name, None) if web_api is not None else None
                     if not callable(handler):
                         raise NativeRealityError("reality_device_read_unavailable")
@@ -610,6 +639,7 @@ class NativeRealityProvider:
             await _checked(before_dispatch)
             web_api = getattr(self.plugin, "mihome_web_api", None)
             alias = value["arguments"]["alias"]
+            actor = _actor_subject(value["context"])
             # Argument decoding happens before dispatch: a malformed value must
             # produce a not_committed receipt, never an unknown one.
             if value["action"] == "reality.device.action":
@@ -629,16 +659,16 @@ class NativeRealityProvider:
             # a binding revision is checked against that pin, so a rebind between
             # preparing and dispatching is refused instead of silently following
             # the new device.
-            current_revision = _binding_revision(target, alias) if callable(target) else ""
+            current_revision = _binding_revision(target, alias, actor) if callable(target) else ""
             pinned = str(value["arguments"].get("expect_revision") or "").strip() \
                 if value["action"] == "reality.device.action" else ""
             if pinned and pinned != current_revision:
                 raise NativeRealityError("reality_device_binding_rebound")
             if value["action"] == "reality.device.action":
                 handler = _bind_device_action(handler, alias, verb, prop, amount,
-                                              current_revision)
+                                              current_revision, actor)
             else:
-                handler = _bind_power(handler, alias, amount)
+                handler = _bind_power(handler, alias, amount, actor)
         except Exception as exc:
             code = exc.code if isinstance(exc, NativeRealityError) else "reality_device_control_unavailable"
             operation = self.store.update(scope, operation["id"], state="failed", effect="not_committed", error=code)

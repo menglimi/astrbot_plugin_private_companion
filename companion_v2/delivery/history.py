@@ -1,6 +1,7 @@
 """Receipt-backed background history; snapshots contain references, never bodies."""
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta
 import json
@@ -9,6 +10,7 @@ from companion_v2.execution.models import TaskContext, TaskError, digest, requir
 from companion_v2.execution.service import outcome
 from companion_v2.conversation.reset import background_current, boundary
 from companion_v2.conversation.private_history import PrivateConversationHistory
+from companion_v2.sources.dependencies import validation_batch
 
 from .service import DeliveryRequest
 from .media import manifest_hash, payload_hash
@@ -40,7 +42,38 @@ class BackgroundHistory:
         self.messages = messages
         self.verify_platform_message = verify_platform_message
         self._reply_reads = ContextVar("background_history_reply_reads", default=frozenset())
+        # 一次读取内的验证结果（授权、逐条历史、对话快照）只对本次调用有效：
+        # 同一条 capture/read 里同一份引用会被展开几十次，重复校验既慢又会把
+        # 全局 SQLite 锁占住（见 2026-11-07 性能报告 D1/D2/D3）。作用域用
+        # ContextVar 打开，调用结束即失效，绝不跨请求复用。
+        self._validation = ContextVar("background_history_validation", default=None)
         self.conversation = PrivateConversationHistory(self)
+
+    @contextmanager
+    def validation_scope(self):
+        """Share authorization and reference validation inside one bounded read."""
+        cache = self._validation.get()
+        if cache is not None:
+            yield cache
+            return
+        cache = {"auth": {}, "records": {}, "dialogue": {}}
+        token = self._validation.set(cache)
+        try:
+            yield cache
+        finally:
+            self._validation.reset(token)
+
+    def _authorize(self, context, action, at):
+        """Memoize one authorization check per capture, not once per reference."""
+        cache = self._validation.get()
+        if cache is None:
+            return require(self.tasks.authorize_context(context, action=action, observed_at=at))
+        key = (context.key, action, stamp(at))
+        hit = cache["auth"].get(key)
+        if hit is None:
+            hit = require(self.tasks.authorize_context(context, action=action, observed_at=at))
+            cache["auth"][key] = hit
+        return hit
 
     @staticmethod
     def reference(row):
@@ -65,6 +98,10 @@ class BackgroundHistory:
                            validated_records=None):
         # Iterative traversal also checks inherited evidence without a recursive
         # history chain or copying an ancestor's private text into another table.
+        if validated_records is None:
+            scope = self._validation.get()
+            if scope is not None:
+                validated_records = scope["records"]
         pending, seen, root = [reference], {}, None
         root_request = None
         while pending:
@@ -78,11 +115,12 @@ class BackgroundHistory:
             if len(seen) == MAX_ANCESTORS:
                 raise TaskError("delivery_history_unavailable", "history ancestry exceeds this bounded context read")
             seen[identifier] = ref
-            cached = validated_records.get(identifier) if validated_records is not None else None
+            cache_key = (identifier, context.key, stamp(at), historical)
+            cached = validated_records.get(cache_key) if validated_records is not None else None
             if cached is None:
                 row, request, body = self._validated_history_record(ref, context, at, historical=historical)
                 if validated_records is not None:
-                    validated_records[identifier] = (dict(ref), row, request, body)
+                    validated_records[cache_key] = (dict(ref), row, request, body)
             else:
                 cached_ref, row, request, body = cached
                 if cached_ref != ref:
@@ -114,7 +152,7 @@ class BackgroundHistory:
         if (request.context.key != context.key or request.delivery_id != identifier
                 or request.payload_hash != row["payload_hash"] or owner is None or owner.history_read is None):
             raise TaskError("delivery_history_unavailable", "history has no original authorized owner")
-        require(self.tasks.authorize_context(request.context, action=owner.action, observed_at=at))
+        self._authorize(request.context, owner.action, at)
         receipt = self.runtime.read_one("""SELECT receipt_json FROM background_delivery_receipts
             WHERE delivery_id = ? AND receipt_ref = ?""", (identifier, row["receipt_ref"]))
         proof = json.loads(receipt[0]) if receipt else {}
@@ -131,11 +169,12 @@ class BackgroundHistory:
         return row, request, body
 
     def capture(self, context, at, *, action="conversation.reply", limit=None, max_chars=None):
-        with self.runtime.read_snapshot():
-            return self._capture(context, at, action=action, limit=limit, max_chars=max_chars)
+        with validation_batch(self.runtime, at), self.validation_scope() as cache:
+            return self._capture(context, at, action=action, limit=limit, max_chars=max_chars,
+                                 validated_records=cache["records"])
 
-    def _capture(self, context, at, *, action, limit, max_chars):
-        require(self.tasks.authorize_context(context, action=action, observed_at=at))
+    def _capture(self, context, at, *, action, limit, max_chars, validated_records=None):
+        self._authorize(context, action, at)
         item_cap = DEFAULT_ITEMS if limit is None else max(0, min(int(limit), MAX_ITEMS))
         char_cap = MAX_CHARS if max_chars is None else max(0, min(int(max_chars), MAX_CHARS))
         snapshot = {"version": VERSION, "context_key": context.key, "references": []}
@@ -168,7 +207,6 @@ class BackgroundHistory:
         selected = []
         # Only this synchronous database snapshot shares validation. Every new
         # read (including the send fence) rechecks withdrawals and authority.
-        validated_records = {}
         for key, group_rows in ordered:
             if len(selected) >= item_cap:
                 break
@@ -191,18 +229,18 @@ class BackgroundHistory:
 
     def read(self, snapshot, context, at, *, action="conversation.reply", historical=False,
              round_metadata=False):
-        with self.runtime.read_snapshot():
+        with validation_batch(self.runtime, at), self.validation_scope() as cache:
             return self._read(snapshot, context, at, action=action, historical=historical,
-                              round_metadata=round_metadata)
+                              round_metadata=round_metadata,
+                               validated_records=cache["records"])
 
-    def _read(self, snapshot, context, at, *, action, historical, round_metadata):
-        require(self.tasks.authorize_context(context, action=action, observed_at=at))
+    def _read(self, snapshot, context, at, *, action, historical, round_metadata, validated_records=None):
+        self._authorize(context, action, at)
         if (type(snapshot) is not dict or set(snapshot) != {"version", "context_key", "references"}
                 or snapshot["version"] != VERSION or snapshot["context_key"] != context.key
                 or type(snapshot["references"]) is not list or len(snapshot["references"]) > MAX_REFERENCES):
             raise TaskError("delivery_history_invalid", "history snapshot belongs to another original context")
         self._references(snapshot["references"])
-        validated_records = {}
         items = tuple(self._body(ref, context, at, historical=historical,
                                  round_metadata=round_metadata, validated_records=validated_records)
                       for ref in snapshot["references"])
@@ -213,13 +251,13 @@ class BackgroundHistory:
 
     @outcome
     def recent(self, context):
-        with self.runtime.read_snapshot():
-            at = self.tasks.now()
+        at = self.tasks.now()
+        with validation_batch(self.runtime, at), self.validation_scope():
             return self.read(self.capture(context, at), context, at)
 
     def interaction(self, context, at, *, action="conversation.reply"):
         """Observable communication only; unanswered does not mean unread or unwilling."""
-        require(self.tasks.authorize_context(context, action=action, observed_at=at))
+        self._authorize(context, action, at)
         reset = boundary(self.runtime, context.scope)
         latest = self.runtime.read_one("""SELECT i.event_key, i.event_hash, i.event_json, b.created_at FROM conversation_inputs i
             JOIN conversation_batches b ON b.batch_id = i.batch_id WHERE b.origin_key = ? AND i.withdrawn = 0
@@ -247,7 +285,7 @@ class BackgroundHistory:
 
     def latest_reply(self, context, at, *, within_minutes, action="proactive.contact", part_id=None, historical=False):
         """The last confirmed foreground text in this window, if its receipt still verifies."""
-        require(self.tasks.authorize_context(context, action=action, observed_at=at))
+        self._authorize(context, action, at)
         cutoff = stamp(at - timedelta(minutes=within_minutes)) if within_minutes else ""
         reset = None if historical else boundary(self.runtime, context.scope)
         query = """SELECT h.*, p.text, p.payload_hash, p.operation_id,
@@ -326,7 +364,7 @@ class BackgroundHistory:
     def verify_reply(self, reference, context, at, *, historical=False):
         if isinstance(reference, dict) and reference.get("kind") == "native_reply":
             from companion_v2.conversation.native_history import body
-            require(self.tasks.authorize_context(context, action="proactive.contact", observed_at=at))
+            self._authorize(context, "proactive.contact", at)
             if self.messages is None:
                 raise TaskError("native_history_unavailable", "native reply owner is unavailable")
             return {"owner": "conversation.native_assistant",

@@ -154,7 +154,7 @@ window.CompanionReplyPage = (() => {
       voice_primary_mention_keywords: "核心用户提及语音词",
       voice_primary_mention_probability: "核心用户提及概率",
       voice_primary_mention_prompt: "核心用户提及提示",
-      voice_enabled: "核心管理员可以在本轮消息中直接指定语音模型、音色或语种；该次回复会临时覆盖保存的语音绑定。",
+      voice_enabled: "核心管理员可以在本轮消息中直接指定语音模型、音色或语种；该次回复会临时覆盖保存的语音绑定。普通成员也可以直接说「用中文说」「用日语唱」这类话，临时切换本轮的朗读语种，不改保存的配置。",
       voice_provider_id: "角色级 TTS 绑定，私聊与群聊共用；触发概率和冷却才按渠道分别覆盖。",
       voice_zh_provider_id: "中文语音优先使用此扩展；留空则跟随通用 TTS 扩展。",
       voice_ja_provider_id: "日语语音优先使用此扩展；留空则跟随通用 TTS 扩展。",

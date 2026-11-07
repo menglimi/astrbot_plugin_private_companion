@@ -4,6 +4,8 @@ import base64
 from collections import OrderedDict
 import io
 import json
+import logging
+import sqlite3
 from PIL import Image
 from astrbot.api.web import request
 from companion_v2.execution.models import TaskContext, TaskError, require
@@ -16,6 +18,7 @@ from .media import inspect_image
 
 PREFIX = "/astrbot_plugin_private_companion/semantic"
 FIELDS = ("name", "description", "visible_text", "tags", "emotions", "intents")
+logger = logging.getLogger(__name__)
 
 
 class SemanticWebAPI:
@@ -243,8 +246,18 @@ class SemanticWebAPI:
             return self.response(result)
         except (TaskError,ValueError,TypeError,KeyError) as error:
             return self.error(error)
+        except sqlite3.Error as error:
+            # The catalog is one SQLite file with a short busy timeout; a
+            # background backfill can hold it past that. Report the real
+            # condition instead of blaming the embedding model.
+            logger.warning("[CompanionV2] 语义素材读取失败 error_type=%s", type(error).__name__)
+            return self.error(TaskError("semantic_store_busy", "semantic catalog is busy"))
+        except Exception as error:
+            logger.warning("[CompanionV2] 语义素材读取异常 error_type=%s", type(error).__name__)
+            return self.error(TaskError("semantic_operation_failed", "semantic catalog read did not complete"))
 
     async def post(self):
+        action = ""
         try:
             raw = await request.body()
             if request.query or len(raw)>7*1024*1024:
@@ -351,8 +364,17 @@ class SemanticWebAPI:
             return self.response(result)
         except (TaskError,ValueError,TypeError,KeyError,UnicodeError,RecursionError) as error:
             return self.error(error)
-        except Exception:
-            return self.error(TaskError("semantic_model_failed","model request failed; original resources were retained"))
+        except sqlite3.Error as error:
+            # Same short-timeout catalog as the read path. "语义模型调用失败"
+            # made operators check the embedding provider even when the file was
+            # merely locked by the vector backfill.
+            logger.warning("[CompanionV2] 语义素材操作失败 action=%s error_type=%s",
+                           action, type(error).__name__)
+            return self.error(TaskError("semantic_store_busy", "semantic catalog is busy"))
+        except Exception as error:
+            logger.warning("[CompanionV2] 语义素材操作异常 action=%s error_type=%s",
+                           action, type(error).__name__)
+            return self.error(TaskError("semantic_operation_failed", "semantic catalog operation did not complete"))
 
     @staticmethod
     def response(value):

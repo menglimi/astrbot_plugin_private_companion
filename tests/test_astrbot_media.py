@@ -60,6 +60,49 @@ class StaticImageLoaderTests(unittest.IsolatedAsyncioTestCase):
                 await load_native_image(NativeImageLocator(0, str(cached)))
             self.assertEqual(caught.exception.code, "host_image_location_invalid")
 
+    async def test_astrbot_temp_attachment_paths_become_host_resolved(self):
+        from types import SimpleNamespace as NS
+        from astrbot.core.message.components import Image
+        from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+        from astrbot_host.core_reply_media import frozen_image_locators
+        from companion_v2.adapters.astrbot.quotes import image_locator
+
+        source = image_bytes("green")
+        root = Path(get_astrbot_temp_path())
+        root.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(dir=root) as directory:
+            cached = Path(directory) / "media_image_cached.png"
+            cached.write_bytes(source)
+            locator = image_locator(2, str(cached), str(cached))
+            self.assertTrue(locator.host_resolved)
+            with patch("astrbot_host.media.aiohttp.ClientSession") as session:
+                captured = await load_native_image(locator)
+                session.assert_not_called()
+            self.assertEqual(captured.content, source)
+            self.assertEqual(captured.descriptor.position, 2)
+
+            # The same trust reaches the frozen attachment list the image tools use.
+            frozen = frozen_image_locators(NS(message_obj=NS(message=[
+                Image(file=str(cached), url=str(cached))])))
+            self.assertEqual(len(frozen), 1)
+            self.assertTrue(frozen[0].host_resolved)
+            with patch("astrbot_host.media.aiohttp.ClientSession") as session:
+                self.assertEqual((await load_native_image(frozen[0])).content, source)
+                session.assert_not_called()
+
+        # A path outside AstrBot's temp directory keeps the public-URL rule,
+        # including a temp-looking path that resolves elsewhere via ``..``.
+        with TemporaryDirectory() as directory:
+            outside = Path(directory) / "outside.png"
+            outside.write_bytes(source)
+            self.assertFalse(image_locator(0, str(outside), str(outside)).host_resolved)
+        escape = root.parent / "escape.png"
+        escape.write_bytes(source)
+        self.addCleanup(escape.unlink, missing_ok=True)
+        self.assertFalse(image_locator(0, str(root / ".." / "escape.png"), "").host_resolved)
+        self.assertFalse(image_locator(0, "relative.png", "").host_resolved)
+        self.assertFalse(image_locator(0, "", "https://public.example/a.png").host_resolved)
+
     async def test_dns_result_used_by_connector_rejects_private_or_mixed_addresses(self):
         resolver = PublicImageResolver()
         self.addAsyncCleanup(resolver.close)

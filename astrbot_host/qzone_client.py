@@ -42,6 +42,11 @@ from companion_v2.qzone.transport import TransportOutcome
 
 COOKIE_ACTION_TIMEOUT_SECONDS = 8.0
 LOGIN_INFO_TIMEOUT_SECONDS = 5.0
+# 页面拉状态是 15 秒超时（product-page.js 的 bridge_timeout）。探测按「2 个 action × 8 个
+# domain × 2 种参数形状」逐个试，每次最多 8 秒——客户端一旦在 get_cookies 上挂住，整轮能拖到
+# 几分钟，页面早在 15 秒就报了「读取超时」，凭据状态于是永远停在「尚未检查」。这里给整轮探测
+# 一个总预算：到点就带着已经拿到的字段返回，让页面拿到「没有可用凭据」这个明确结论。
+COOKIE_PROBE_BUDGET_SECONDS = 10.0
 QZONETOKEN_TIMEOUT_SECONDS = 12.0
 QZONETOKEN_TTL_SECONDS = 1800.0
 MAX_TOKEN_ENTRIES = 8
@@ -263,24 +268,35 @@ class QzoneHttpClient:
         search stops the moment the merge carries both an identity and a secret.
         A shape mismatch or a refusal only moves the search on; none of it is
         re-raised, because one unsupported action says nothing about the next.
+
+        The whole probe shares one budget (``COOKIE_PROBE_BUDGET_SECONDS``): a
+        client that never answers must not keep the page waiting past its own
+        timeout, so the last attempt only gets the time that is left.
         """
         fields = {}
+        deadline = time.monotonic() + COOKIE_PROBE_BUDGET_SECONDS
         for action in COOKIE_ACTIONS:
             for domain in COOKIE_DOMAINS:
                 for params in ({"domain": domain}, {}):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0.05:
+                        self._note("credential.acquire", "budget", manual=False)
+                        return fields
                     result = await self._bot_action(bot, action, params,
-                                                    timeout=COOKIE_ACTION_TIMEOUT_SECONDS)
+                                                    timeout=min(COOKIE_ACTION_TIMEOUT_SECONDS, remaining))
                     if result is not None:
                         for candidate in _cookie_candidates(result):
                             fields.update(parse_cookie_text(candidate))
                     if has_identity_and_secret(fields):
                         return fields
         if not cookie_uin(fields):
-            result = await self._bot_action(bot, "get_login_info", {},
-                                            timeout=LOGIN_INFO_TIMEOUT_SECONDS)
-            uin = _login_uin(result)
-            if uin:
-                fields["uin"] = fields["p_uin"] = f"o{uin}"
+            remaining = deadline - time.monotonic()
+            if remaining > 0.05:
+                result = await self._bot_action(bot, "get_login_info", {},
+                                                timeout=min(LOGIN_INFO_TIMEOUT_SECONDS, remaining))
+                uin = _login_uin(result)
+                if uin:
+                    fields["uin"] = fields["p_uin"] = f"o{uin}"
         return fields
 
     @staticmethod

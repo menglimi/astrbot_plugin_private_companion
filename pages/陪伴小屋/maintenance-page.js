@@ -140,9 +140,8 @@ window.CompanionMaintenancePage = (() => {
   })[value] || "调用异常";
   const tokenSources = [
     ["companion", "角色总用量", "已连接"],
-    ["conversation", "对话 · AstrBot 核心与历史", "已连接"],
+    ["conversation", "对话合计", "已连接"],
     ["astrbot_core", "AstrBot 核心回复", "已连接"],
-    ["legacy_conversation", "历史 V2 回复", "已连接"],
     ["plugin", "插件附加任务", "已连接"],
     ["memory", "外部记忆插件", "未接入"],
     ["together", "一起房间", "未接入"],
@@ -152,10 +151,10 @@ window.CompanionMaintenancePage = (() => {
     ["main", "AstrBot 全部会话", "待同步"],
   ];
   const nativeTokenSources = new Set(["together", "reality", "live", "game"]);
-  const localSourceNames = {companion: "角色总用量", conversation: "对话 · AstrBot 核心与历史",
-    astrbot_core: "AstrBot 核心回复", legacy_conversation: "历史 V2 回复", plugin: "插件附加任务"};
+  const localSourceNames = {companion: "角色总用量", conversation: "对话合计",
+    astrbot_core: "AstrBot 核心回复", plugin: "插件附加任务"};
   const sourceIcons = {companion: "layers-3", conversation: "messages-square", plugin: "shield-check",
-    astrbot_core: "workflow", legacy_conversation: "history", memory: "brain", together: "users-round",
+    astrbot_core: "workflow", memory: "brain", together: "users-round",
     reality: "camera", live: "radio", game: "gamepad-2", main: "workflow"};
   const diagnosticCategories = [
     ["all", "全部", "所有运行信号"], ["model", "模型链路", "Provider、失败与未确认"],
@@ -188,9 +187,8 @@ window.CompanionMaintenancePage = (() => {
     return value && typeof value === "object" ? value : null;
   };
   const sourceDescriptions = {
-    conversation: ["对话 · AstrBot 核心与历史", "分项统计尚未同步。", "重新加载 V2 后刷新统计。"],
+    conversation: ["对话合计", "当前角色的对话调用合计。", "细分来源见 AstrBot 核心回复与插件附加任务；不包含其他 AstrBot 会话。"],
     astrbot_core: ["AstrBot 核心回复", "核心回复观测尚未同步。", "本页只统计已映射到当前角色的核心回复，收到实际模型回执后显示用量。"],
-    legacy_conversation: ["历史 V2 回复", "历史统计尚未同步。", "旧 V2 回复账本保留供历史对照。"],
     plugin: ["插件附加任务", "分项统计尚未同步。", "重新加载 V2 后刷新统计。"],
     memory: ["外部记忆插件 Token", "该独立插件账本没有接入 V2 的授权统计合同。", "接入后才能显示记忆任务、Provider、最近调用与余额；当前角色数据不会替代它。"],
     together: ["一起房间 Token", "一起房间内部统计暂不可用。", "内置能力提供房间任务、Provider 与实际用量回执；单独统计，不计入角色预算。"],
@@ -541,8 +539,8 @@ window.CompanionMaintenancePage = (() => {
         const usage = report ? statsFor(report) : null;
         return {key, label, status: report ? "当前角色" : "待同步", available: Boolean(report),
           tokens: usage?.tokens, calls: usage?.calls, cache: usage?.cacheRate, coverage: usage?.cacheCoverage,
-          scope: key === "companion" ? "对话合计 + 插件附加任务" : key === "conversation" ? "核心回复 + 历史 V2 回复" :
-            key === "astrbot_core" ? "真实核心请求与工具续轮" : key === "legacy_conversation" ? "旧 V2 模型账本" : "主动、记忆、日程等附加调用"};
+          scope: key === "companion" ? "对话合计 + 插件附加任务" : key === "conversation" ? "对话调用合计" :
+            key === "astrbot_core" ? "真实核心请求与工具续轮" : "主动、记忆、日程等附加调用"};
       }
       const source = data.external_token_sources?.[key];
       if (!source?.available) return {key, label, status: source?.installed ? "桥不可用" : baseStatus,
@@ -857,11 +855,248 @@ window.CompanionMaintenancePage = (() => {
     const empty = !state.modelStatus ? "正在读取模型任务目录……" : !tasks.length ? "当前没有可管理的 V2 模型任务。" : !visible.length ? "当前筛选下没有匹配的任务。" : "";
     const customizedCount = tasks.filter(task => task.customized).length;
     const taskRows = visible.map(task => '<button type="button" class="maint-prompt-task' + (task.kind === state.promptSelectedKind ? ' is-active' : '') + '" data-prompt-task="' + escapeHtml(task.kind) + '" aria-pressed="' + (task.kind === state.promptSelectedKind) + '" title="' + escapeHtml(task.description) + '" ' + (state.promptSaving ? 'disabled' : '') + '><span class="maint-prompt-task-copy"><strong>' + escapeHtml(task.label) + '</strong><small>' + escapeHtml(task.description) + '</small><code>' + escapeHtml(task.kind) + '</code></span><span class="maint-prompt-task-state" data-state="' + (task.customized ? 'custom' : 'default') + '"><i aria-hidden="true"></i><small>' + (task.customized ? '已自定义' : '默认') + '</small></span></button>').join("");
-    return '<section class="maint-prompt-section" aria-labelledby="maint-prompt-heading"><div class="maint-panel-heading"><div><span class="maint-eyebrow">运行配置</span><h3 id="maint-prompt-heading">任务提示词</h3><p class="maint-scope-note"><i data-lucide="shield-check"></i>当前窗口</p></div><div class="maint-prompt-summary"><span><strong>' + tasks.length + '</strong> 个任务</span><span><strong>' + customizedCount + '</strong> 个已自定义</span></div></div><div class="maint-prompt-workspace"><aside class="maint-prompt-catalog" aria-label="任务提示词目录"><div class="maint-prompt-catalog-tools"><label><i data-lucide="search"></i><span class="sr-only">搜索任务</span><input type="search" data-prompt-search value="' + escapeHtml(state.promptQuery) + '" placeholder="搜索任务或提示内容" ' + (state.promptSaving ? 'disabled' : '') + '></label><div class="maint-prompt-mode" role="group" aria-label="提示词状态筛选"><button type="button" data-prompt-mode="all" aria-pressed="' + (state.promptMode === 'all') + '" class="' + (state.promptMode === 'all' ? 'is-active' : '') + '" ' + (state.promptSaving ? 'disabled' : '') + '>全部</button><button type="button" data-prompt-mode="customized" aria-pressed="' + (state.promptMode === 'customized') + '" class="' + (state.promptMode === 'customized' ? 'is-active' : '') + '" ' + (state.promptSaving ? 'disabled' : '') + '>已自定义</button></div></div><nav class="maint-prompt-groups" aria-label="任务分组">' + promptGroupMarkup(tasks) + '</nav><div class="maint-prompt-task-list">' + (empty ? '<div class="maint-prompt-list-state">' + escapeHtml(empty) + '</div>' : taskRows) + '</div></aside><section class="maint-prompt-editor" aria-label="提示词编辑器">' + promptEditorMarkup(selected) + '</section></div></section>';
+    return '<section class="maint-prompt-section" aria-labelledby="maint-prompt-heading"><div class="maint-panel-heading"><div><span class="maint-eyebrow">运行配置</span><h3 id="maint-prompt-heading">任务提示词</h3><p class="maint-scope-note"><i data-lucide="shield-check"></i>当前窗口</p></div><div class="maint-prompt-summary"><span><strong>' + tasks.length + '</strong> 个任务</span><span><strong>' + customizedCount + '</strong> 个已自定义</span><button type="button" class="maint-text-action" data-maint-nav="system-prompts">系统提示词</button></div></div><div class="maint-prompt-workspace"><aside class="maint-prompt-catalog" aria-label="任务提示词目录"><div class="maint-prompt-catalog-tools"><label><i data-lucide="search"></i><span class="sr-only">搜索任务</span><input type="search" data-prompt-search value="' + escapeHtml(state.promptQuery) + '" placeholder="搜索任务或提示内容" ' + (state.promptSaving ? 'disabled' : '') + '></label><div class="maint-prompt-mode" role="group" aria-label="提示词状态筛选"><button type="button" data-prompt-mode="all" aria-pressed="' + (state.promptMode === 'all') + '" class="' + (state.promptMode === 'all' ? 'is-active' : '') + '" ' + (state.promptSaving ? 'disabled' : '') + '>全部</button><button type="button" data-prompt-mode="customized" aria-pressed="' + (state.promptMode === 'customized') + '" class="' + (state.promptMode === 'customized' ? 'is-active' : '') + '" ' + (state.promptSaving ? 'disabled' : '') + '>已自定义</button></div></div><nav class="maint-prompt-groups" aria-label="任务分组">' + promptGroupMarkup(tasks) + '</nav><div class="maint-prompt-task-list">' + (empty ? '<div class="maint-prompt-list-state">' + escapeHtml(empty) + '</div>' : taskRows) + '</div></aside><section class="maint-prompt-editor" aria-label="提示词编辑器">' + promptEditorMarkup(selected) + '</section></div></section>';
   }
 
-  function selectedDay(data) {
-    return state.period === "date" ? state.selectedDate || localDay(data.generated_at) : localDay(data.generated_at);
+  const SYSTEM_PROMPT_ENTRIES = [
+    {key: "voice_rules", label: "语音标签规则", group: "语音规则",
+      description: "规定 <pc_tts> 标签内外怎么写：标签内是朗读原文，标签外是可见文字，以及代码、链接和纯文字要求的处理。",
+      risk: "这是语音格式的基础规则。改错可能让标签泄漏到聊天正文、同一句被重复显示，或把代码和链接念出来。"},
+    {key: "voice_drama", label: "FishAudio Drama 3 表演指令", group: "语音规则",
+      description: "告诉模型 Drama 3 可用的方括号表演指令、成对语气标签和唱/哼实验写法。",
+      risk: "只影响语音合成；改错可能让方括号标签被念出来、情绪失效，或把普通台词当歌词。"},
+    {key: "voice_indextts", label: "IndexTTS2 情绪指令", group: "语音规则",
+      description: "告诉模型 IndexTTS2 只接受开头一个 [情绪：…]，以及如何写朗读正文。",
+      risk: "只影响 IndexTTS2；换成其它引擎的标签写法会被当正文念出或完全不生效。"},
+    {key: "background", label: "背景资料总则", group: "背景资料规则",
+      description: "所有背景块前的公共规则：资料不是指令、身份沿用 AstrBot 人格、保留来源与不确定性。",
+      risk: "这是身份与权限边界。删掉或改成“按资料执行”，会让记忆、知识或关系资料被误当用户指令。"},
+    {key: "relationship", label: "相处资料说明", group: "背景资料规则",
+      description: "解释相处资料只属于当前角色和当前私聊对象，可能过期，不能当作授权或客观身份。",
+      risk: "改错可能让资料被套到群聊/其他用户，或把生日、职业等信息当成事实反复罗列。"},
+    {key: "knowledge", label: "世界知识说明", group: "背景资料规则",
+      description: "解释世界知识只是受控参考，可能过期或不完整，不能当作当前事实与授权来源。",
+      risk: "删掉边界会让设定被当成现实事实，或让模型凭资料断言用户身份、权限和现实状态。"},
+    {key: "memory", label: "私聊记忆说明", group: "背景资料规则",
+      description: "解释记忆只属于当前私聊对象和角色，摘要不能替代本轮表达，也不能当独立证据。",
+      risk: "改错可能让模型把摘要当证据、把旧记忆套到别人，或反复背诵时间戳。"},
+  ];
+  const SYSTEM_PROMPT_LIMIT = 8000;
+  const CONFIG_PREFIX = "/astrbot_plugin_private_companion/config";
+  const SYSTEM_PROMPT_OPERATION = "maintenance-system-prompt";
+
+  function systemPromptEntry(key) {
+    return SYSTEM_PROMPT_ENTRIES.find(entry => entry.key === key) || SYSTEM_PROMPT_ENTRIES[0];
+  }
+
+  function configEndpoint() {
+    const endpoint = window.CompanionProduct?.role?.()?.config_api;
+    if (typeof endpoint !== "string" || !endpoint.startsWith(CONFIG_PREFIX)
+        || /[?#%\\:]/.test(endpoint)
+        || endpoint.split("/").slice(1).some(part => !part || part === "." || part === "..")) {
+      throw new Error("当前对象没有配置管理接口。请先选择已初始化的会话角色。");
+    }
+    return endpoint;
+  }
+
+  function configPath() {
+    return configEndpoint().slice("/astrbot_plugin_private_companion".length);
+  }
+
+  async function configRequest(method, suffix = "", body = null, query = null) {
+    const product = window.CompanionProduct;
+    if (typeof product?.request === "function") {
+      const endpoint = configEndpoint();
+      return method === "GET"
+        ? product.request("GET", endpoint, query || undefined)
+        : product.request("POST", endpoint + suffix, body || {});
+    }
+    const path = configPath();
+    if (method === "GET") {
+      const queryText = Object.entries(query || {})
+        .map(([key, value]) => encodeURIComponent(key) + "=" + encodeURIComponent(String(value)))
+        .join("&");
+      return api("GET", path + (queryText ? "?" + queryText : ""));
+    }
+    return api("POST", path + suffix, body || {});
+  }
+
+  function systemPromptSection() {
+    return state?.systemPrompts?.sections?.["system.prompts"] || null;
+  }
+
+  function loadSystemPromptDraft(key) {
+    const section = systemPromptSection();
+    if (!section) return;
+    const entry = systemPromptEntry(key);
+    const field = section.fields?.[entry.key] || {};
+    const value = section.settings?.[entry.key];
+    state.systemPromptKey = entry.key;
+    state.systemPromptDraft = typeof value === "string" ? value : String(field.default || "");
+    state.systemPromptInitial = state.systemPromptDraft;
+    state.systemPromptToken = String(section.edit_token || "");
+    state.systemPromptMessage = "";
+    state.systemPromptMessageKind = "";
+    state.systemPromptOperationKey = "";
+    state.systemPromptOperationKind = "";
+  }
+
+  async function loadSystemPrompts() {
+    if (!state || state.systemPromptsLoading) return;
+    const current = state;
+    const ticket = generation;
+    current.systemPromptsLoading = true;
+    current.systemPromptsError = "";
+    render();
+    try {
+      const data = await configRequest("GET", "", null, {sections: "system.prompts"});
+      if (ticket !== generation || state !== current) return;
+      const section = data?.sections?.["system.prompts"];
+      if (!section || !section.fields || !section.settings) {
+        throw new Error("系统提示词分区尚未返回。");
+      }
+      current.systemPrompts = data;
+      const key = current.systemPromptKey && section.fields[current.systemPromptKey]
+        ? current.systemPromptKey : SYSTEM_PROMPT_ENTRIES[0].key;
+      loadSystemPromptDraft(key);
+    } catch (error) {
+      if (ticket !== generation || state !== current) return;
+      current.systemPromptsError = error?.code ? routeError(error.code) : (error?.message || "读取系统提示词失败。");
+      current.systemPrompts = null;
+    } finally {
+      if (ticket === generation && state === current) {
+        current.systemPromptsLoading = false;
+        render();
+      }
+    }
+  }
+
+  function systemPromptDirty() {
+    return Boolean(state?.systemPrompts && state.systemPromptDraft !== state.systemPromptInitial);
+  }
+
+  function systemPromptOperationKey() {
+    const target = state?.systemPromptKey || "";
+    if (!state.systemPromptOperationKey || state.systemPromptOperationKind !== target) {
+      state.systemPromptOperationKind = target;
+      state.systemPromptOperationKey = SYSTEM_PROMPT_OPERATION + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 9);
+    }
+    return state.systemPromptOperationKey;
+  }
+
+  async function saveSystemPrompt(reset = false) {
+    const section = systemPromptSection();
+    const entry = systemPromptEntry(state?.systemPromptKey);
+    if (!section || !state || state.systemPromptSaving) return;
+    const effectiveReset = reset || !state.systemPromptDraft.trim();
+    const defaultText = String(section.fields?.[entry.key]?.default || "");
+    if (!effectiveReset && !systemPromptDirty()) return;
+    if (effectiveReset && section.settings?.[entry.key] === defaultText) return;
+    const current = state;
+    const ticket = generation;
+    current.systemPromptSaving = true;
+    current.systemPromptMessage = effectiveReset ? "正在恢复内置默认……" : "正在保存系统提示词……";
+    current.systemPromptMessageKind = "busy";
+    render();
+    try {
+      const body = {
+        section: "system.prompts",
+        operation_key: systemPromptOperationKey(),
+        edit_token: current.systemPromptToken,
+        changes: effectiveReset ? {} : {[entry.key]: current.systemPromptDraft},
+        reset: effectiveReset ? [entry.key] : [],
+      };
+      await configRequest("POST", "/configure", body);
+      if (ticket !== generation || state !== current) return;
+      current.systemPrompts = null;
+      await loadSystemPrompts();
+      if (ticket !== generation || state !== current) return;
+      current.systemPromptMessage = effectiveReset ? "已恢复内置默认；只影响当前角色。" : "系统提示词已保存；下一轮回复生效。";
+      current.systemPromptMessageKind = "ok";
+    } catch (error) {
+      if (ticket !== generation || state !== current) return;
+      current.systemPromptMessage = error?.code ? routeError(error.code) : (error?.message || "保存结果未知，请重新读取后核对。");
+      current.systemPromptMessageKind = error?.code ? "error" : "unknown";
+    } finally {
+      if (ticket === generation && state === current) {
+        current.systemPromptSaving = false;
+        render();
+      }
+    }
+  }
+
+  function systemPromptWorkspaceMarkup() {
+    if (!state) return "";
+    if (state.activeMaintenanceNav !== "system-prompts") return "";
+    if (!state.systemPrompts && !state.systemPromptsLoading && !state.systemPromptsError) {
+      window.setTimeout(loadSystemPrompts, 0);
+    }
+    if (state.systemPromptsLoading && !state.systemPrompts) {
+      return '<section class="maint-prompt-section"><div class="maint-prompt-list-state">正在读取系统提示词……</div></section>';
+    }
+    if (state.systemPromptsError && !state.systemPrompts) {
+      return '<section class="maint-prompt-section"><div class="maint-prompt-list-state">' + escapeHtml(state.systemPromptsError) +
+        ' <button type="button" class="maint-text-action" data-system-prompt-reload>重新读取</button></div></section>';
+    }
+    const section = systemPromptSection();
+    if (!section) return '<section class="maint-prompt-section"><div class="maint-prompt-list-state">当前角色没有可读取的系统提示词。</div></section>';
+    const entry = systemPromptEntry(state.systemPromptKey);
+    const field = section.fields?.[entry.key] || {};
+    const value = section.settings?.[entry.key];
+    const customized = typeof value === "string" && value !== String(field.default || "");
+    const dirty = systemPromptDirty();
+    const overLimit = state.systemPromptDraft.length > SYSTEM_PROMPT_LIMIT;
+    const message = state.systemPromptMessage || (dirty ? "有未保存更改" : customized ? "已修改，下一轮回复使用新规则" : "使用内置默认");
+    const messageKind = state.systemPromptMessageKind || (dirty ? "dirty" : customized ? "custom" : "ok");
+    const groups = [...new Set(SYSTEM_PROMPT_ENTRIES.map(item => item.group))];
+    const catalog = groups.map(group => {
+      const items = SYSTEM_PROMPT_ENTRIES.filter(item => item.group === group);
+      return '<div class="maint-prompt-group-label">' + escapeHtml(group) + '</div>' +
+        items.map(item => {
+          const itemValue = section.settings?.[item.key];
+          const itemDefault = section.fields?.[item.key]?.default;
+          const changed = typeof itemValue === "string" && itemValue !== String(itemDefault || "");
+          return '<button type="button" class="maint-prompt-task' +
+            (item.key === entry.key ? ' is-active' : '') + '" data-system-prompt="' + escapeHtml(item.key) +
+            '" aria-pressed="' + (item.key === entry.key) + '"' + (state.systemPromptSaving ? ' disabled' : '') + '>' +
+            '<span class="maint-prompt-task-copy"><strong>' + escapeHtml(item.label) + '</strong><small>' +
+            escapeHtml(item.description) + '</small><code>system.prompts.' + escapeHtml(item.key) + '</code></span>' +
+            '<span class="maint-prompt-task-state" data-state="' + (changed ? 'custom' : 'default') + '"><i aria-hidden="true"></i><small>' +
+            (changed ? '已修改' : '默认') + '</small></span></button>';
+        }).join('');
+    }).join('');
+    const defaultText = String(field.default || "");
+    const canSave = dirty && !state.systemPromptSaving && !overLimit && Boolean(state.systemPromptToken);
+    const canReset = !state.systemPromptSaving && (customized || dirty) && Boolean(state.systemPromptToken);
+    return '<section class="maint-prompt-section" aria-labelledby="maint-system-prompt-heading">' +
+      '<div class="maint-panel-heading"><div><span class="maint-eyebrow">核心提示词</span><h3 id="maint-system-prompt-heading">固定规则与默认值</h3>' +
+      '<p class="maint-scope-note"><i data-lucide="shield-check"></i>当前角色 · 仅影响下一轮核心回复</p></div>' +
+      '<div class="maint-prompt-summary"><span><strong>' + SYSTEM_PROMPT_ENTRIES.length + '</strong> 项固定规则</span><button type="button" class="maint-text-action" data-system-prompt-reload>重新读取</button></div></div>' +
+      '<div class="maint-system-risk" role="note"><i data-lucide="triangle-alert"></i><div><strong>修改风险</strong>' +
+      '<p>' + escapeHtml(entry.risk) + '</p><p>这些文本会直接进入核心回复的系统提示词，不是任务提示词；改错会影响所有私聊/群聊回复。建议只改措辞，不删除身份、权限和资料边界。保存后可在下一轮对话生效；随时可以恢复内置默认。</p></div></div>' +
+      '<div class="maint-prompt-workspace"><aside class="maint-prompt-catalog" aria-label="系统提示词目录">' +
+      '<nav class="maint-prompt-groups" aria-label="系统提示词分组">' + catalog + '</nav></aside>' +
+      '<section class="maint-prompt-editor" aria-label="系统提示词编辑器">' +
+      '<div class="maint-prompt-editor-head"><div class="maint-prompt-task-identity"><div class="maint-prompt-task-meta"><span>' +
+      escapeHtml(entry.group) + '</span><code>system.prompts.' + escapeHtml(entry.key) + '</code></div><h4>' +
+      escapeHtml(entry.label) + '</h4><p>' + escapeHtml(entry.description) + '</p></div>' +
+      '<span class="maint-prompt-badge" data-state="' + (customized ? 'custom' : 'default') + '"><i data-lucide="' +
+      (customized ? 'circle-check' : 'circle-dot') + '"></i><span>' + (customized ? '已修改' : '内置默认') + '</span></span></div>' +
+      '<label class="maint-prompt-field"><span><strong>系统提示词正文</strong><small>最多 ' + SYSTEM_PROMPT_LIMIT + ' 字 · 留空保存等于恢复默认</small></span>' +
+      '<textarea data-system-prompt-draft rows="12" maxlength="' + SYSTEM_PROMPT_LIMIT + '" spellcheck="false"' +
+      (state.systemPromptSaving ? ' disabled' : '') + '>' + escapeHtml(state.systemPromptDraft) + '</textarea></label>' +
+      '<div class="maint-prompt-editor-foot"><span class="maint-prompt-status" data-state="' + escapeHtml(messageKind) + '" role="status" aria-live="polite"><span>' +
+      escapeHtml(message) + '</span><b data-system-prompt-count>' + number(state.systemPromptDraft.length) + ' / ' + SYSTEM_PROMPT_LIMIT + ' 字</b></span>' +
+      '<div class="maint-prompt-actions"><button type="button" class="maint-prompt-secondary" data-system-prompt-reset ' +
+      (canReset ? '' : 'disabled') + '><i data-lucide="rotate-ccw"></i><span>恢复内置默认</span></button>' +
+      '<button type="button" class="maint-prompt-primary" data-system-prompt-save ' + (canSave ? '' : 'disabled') + '><i data-lucide="save"></i><span>' +
+      (state.systemPromptSaving ? '正在保存' : '保存提示词') + '</span></button></div></div>' +
+      '<details class="maint-prompt-default"><summary>查看内置默认文本</summary><section class="maint-prompt-preview" aria-label="系统提示词内置默认">' +
+      '<div class="maint-prompt-subhead"><strong>内置默认</strong><span>代码内置 · 恢复默认时使用</span></div><pre>' + escapeHtml(defaultText) + '</pre></section></details>' +
+      '</section></div></section>';
+  }
+
+  function selectedDay(data) {    return state.period === "date" ? state.selectedDate || localDay(data.generated_at) : localDay(data.generated_at);
   }
 
   function selectedBucket(data) {
@@ -1607,13 +1842,36 @@ window.CompanionMaintenancePage = (() => {
         detail: number(row.delivered_parts) + " / " + number(row.part_count) + " 个片段已送达"});
     }
     events.sort((a, b) => String(b.at || b.row?.at || "").localeCompare(String(a.at || a.row?.at || "")));
-    const visible = events.filter(item => (state.category === "all" || state.category === item.category)
+    /* 同一个 Provider 的同一类准备失败会每分钟重试一次；时间线只保留最新
+       一条，并把次数标在标题上，避免整屏都是重复回执。 */
+    const deduped = [], seen = new Map();
+    for (const item of events) {
+      const key = item.row && item.row.failure
+        ? [item.category, item.title, item.row.kind, item.row.provider, item.row.failure].join("|")
+        : "";
+      if (key && seen.has(key)) { seen.get(key).count += 1; continue; }
+      item.count = 1;
+      if (key) seen.set(key, item);
+      deduped.push(item);
+    }
+    const failureHints = {
+      host_provider_changed: "Provider 已被移除或替换，请到模型与连接重选",
+      host_account_changed: "账号或平台连接已变化，请重新保存账号与会话",
+      host_model_limit_output: "输出上限超过 Provider 允许值",
+      host_model_limit_input: "输入超过 Provider 上下文上限",
+    };
+    const visible = deduped.filter(item => (state.category === "all" || state.category === item.category)
       && (state.severity === "all" || state.severity === item.severity));
     if (!visible.length) return '<div class="maint-empty"><span class="maint-empty-mark">—</span><p>这个问题类型与严重程度下，没有对应的近期事件回执。</p></div>';
     return '<div class="maint-event-list">' + visible.slice(0, 16).map(item => {
-      const detail = item.row ? taskName(item.row.kind) + " · " + (item.row.provider || "未知 Provider") + " · " + stateName(item.row.state) : item.detail;
+      const diagnostics = item.row?.response_diagnostics || {};
+      const code = diagnostics.error_code || item.row?.failure || "";
+      const hint = failureHints[code] ? " · " + failureHints[code] : "";
+      const detail = (item.row ? taskName(item.row.kind) + " · " + (item.row.provider || "未知 Provider") + " · " + stateName(item.row.state) : item.detail)
+        + (code ? " · " + code : "") + (diagnostics.error_type ? " · " + diagnostics.error_type : "") + hint;
       return fmt('<article data-severity="{{0}}" data-category="{{1}}"><i></i><time>{{2}}</time><div><strong>{{3}}</strong><small>{{4}}</small></div></article>',
-        item.severity, item.category, escapeHtml(time(item.at || item.row?.at)), escapeHtml(item.title), escapeHtml(detail));
+        item.severity, item.category, escapeHtml(time(item.at || item.row?.at)),
+        escapeHtml(item.title + (item.count > 1 ? " ×" + item.count : "")), escapeHtml(detail));
     }).join("") + "</div>";
   }
 
@@ -1818,7 +2076,7 @@ window.CompanionMaintenancePage = (() => {
       ],
       identity: [
         ["管理身份校验为什么只显示结论？", "管理身份与角色授权通过后才会返回本页；页面只给出当前请求的校验结论，不显示身份、账号、会话或角色标识。", "identity-evidence", "查看隔离证据"],
-        ["Token 统计范围包含哪些对象？", "当前角色的 AstrBot 核心回复、历史 V2 回复和插件附加任务组成角色总用量，各来源只合计一次。其他 AstrBot 会话和外部插件不并入。", "identity-evidence", "查看账本边界"],
+        ["Token 统计范围包含哪些对象？", "当前角色的 AstrBot 核心回复和插件附加任务组成角色总用量，各来源只合计一次。其他 AstrBot 会话、外部插件和旧版账本不并入。", "identity-evidence", "查看账本边界"],
       ],
       model: [
         ["探测通过就代表真实回复正常吗？", "探测只确认 Provider 可响应，不会走角色提示、消息接收和投递链路；异常时再结合调用回执定位。", "test-zone", "测试 Provider"],
@@ -2474,7 +2732,7 @@ window.CompanionMaintenancePage = (() => {
   }
 
   function cacheControlsMarkup(today) {
-    const sources = [["companion", "角色总用量"], ["conversation", "对话合计"], ["astrbot_core", "核心回复"], ["legacy_conversation", "历史 V2"], ["plugin", "插件任务"]].map(([key, label]) =>
+    const sources = [["companion", "角色总用量"], ["conversation", "对话合计"], ["astrbot_core", "核心回复"], ["plugin", "插件任务"]].map(([key, label]) =>
       '<button type="button" data-token-source="' + key + '" aria-pressed="' + (state.tokenSource === key) +
       '" class="' + (state.tokenSource === key ? "is-active" : "") + '">' + label + '</button>').join("");
     return '<div class="maint-cache-filters"><div class="maint-cache-source-control"><span>当前角色来源</span><div class="maint-periods" role="group" aria-label="缓存诊断来源">' +
@@ -2748,8 +3006,59 @@ window.CompanionMaintenancePage = (() => {
     /* 工具栏之后紧跟的统计区就是「统计来源」这一组 tab 的受控面板。 */
     return '<div class="maint-token-toolbar"><div class="maint-token-source-control"><span>统计来源</span><div class="maint-source-tabs" role="tablist" aria-label="Token 统计来源">' + sourceTabsMarkup() + '</div></div>' +
       periodControlsMarkup(today, "Token 统计时间范围") + '</div><div id="maint-token-source-panel" role="tabpanel" aria-label="Token 统计明细"><div class="maint-token-calibration-row"><span><i data-lucide="shield-check"></i>Provider 已确认用量；未知调用不估算，外部账本独立统计。</span>' +
-      '<details class="maint-source-details"><summary><i data-lucide="info"></i><span>统计口径</span></summary><div class="maint-source-grid"><article data-state="active"><span>纳入统计</span><strong>当前角色的核心回复与插件任务</strong><small>核心观测、历史 V2 回复和插件任务分列；对话合计与角色总量各计一次</small></article><article data-state="limited"><span>其他来源</span><strong>AstrBot 全部会话与外部插件</strong><small>全局统计未接入；外部来源不并入角色预算</small></article><article data-state="limited"><span>可用性</span><strong>实际多轮与最后响应分列</strong><small>核心费用未知；SDK 默认缓存 0 不等同缓存实报</small></article></div></details>' +
+      '<details class="maint-source-details"><summary><i data-lucide="info"></i><span>统计口径</span></summary><div class="maint-source-grid"><article data-state="active"><span>纳入统计</span><strong>当前角色的核心回复与插件任务</strong><small>核心观测与插件任务分列；对话合计与角色总量各计一次</small></article><article data-state="limited"><span>其他来源</span><strong>AstrBot 全部会话与外部插件</strong><small>全局统计未接入；外部来源不并入角色预算</small></article><article data-state="limited"><span>可用性</span><strong>实际多轮与最后响应分列</strong><small>核心费用未知；SDK 默认缓存 0 不等同缓存实报</small></article></div></details>' +
       '<details class="maint-token-source-comparison"><summary>来源同周期对照</summary>' + sourceComparisonMarkup(roleData) + '</details></div></div>';
+  }
+
+  /* 总用量构成条：把「角色总用量」按 对话 / 插件 / 拓展 三段画成比例条。
+     对话与插件来自同一份 V2 角色账本（两者相加就是角色总用量）；拓展是内置
+     能力各自的独立账本，只在展示层合计，不并入角色预算。三段都取当前选择的
+     时间范围，缺失的来源写「未接入」而不是补一个 0。 */
+  function usageSplitMarkup(data) {
+    const valueOf = usage => {
+      if (!usage) return null;
+      const value = Number(statsFor(usage).tokens);
+      return Number.isFinite(value) && value >= 0 ? value : null;
+    };
+    const extensionSources = ["together", "reality", "live", "game"]
+      .map(key => data.external_token_sources?.[key]).filter(Boolean);
+    const extensionReady = extensionSources.some(source => source.available);
+    const extension = extensionReady ? extensionSources.reduce((sum, source) => {
+      if (!source.available) return sum;
+      const tokens = Number(externalBucketForPeriod(source, data)?.tokens);
+      return sum + (Number.isFinite(tokens) && tokens >= 0 ? tokens : 0);
+    }, 0) : null;
+    const parts = [
+      {key: "conversation", label: "对话", tokens: valueOf(localUsage(data, "conversation"))},
+      {key: "plugin", label: "插件", tokens: valueOf(localUsage(data, "plugin"))},
+      {key: "extension", label: "拓展", tokens: extension},
+    ];
+    const total = parts.reduce((sum, part) => sum + (part.tokens || 0), 0);
+    const share = tokens => total > 0 && tokens != null ? Math.round(tokens * 1000 / total) / 10 : 0;
+    const shareText = part => part.tokens == null ? "—"
+      : part.tokens > 0 && share(part.tokens) < 0.1 ? "<0.1%" : percent(share(part.tokens));
+    const reading = parts.map(part => part.label + " " +
+      (part.tokens == null ? "未接入" : number(part.tokens) + " Token，" + shareText(part))).join("；");
+    if (!parts.some(part => (part.tokens || 0) > 0)) {
+      return '<section class="maint-cache-section maint-cache-composition-section maint-usage-composition is-empty" aria-label="总用量构成">' +
+        '<div class="maint-subhead"><strong><i data-lucide="chart-column-stacked"></i>总用量构成</strong><span>对话 + 插件 + 拓展</span></div>' +
+        '<div class="maint-cache-zip-empty">当前时间范围还没有已确认的 Token 用量。</div></section>';
+    }
+    /* 与缓存诊断的 Token 构成保持同一套拉链图：比例按 28 枚三角分配，
+       不再用一条容易看成进度条的细长色带。 */
+    const legend = parts.map(part => fmt(
+      '<div data-part="{{0}}"><span><i></i>{{1}} <b>{{2}}</b></span><strong>{{3}}</strong><small>Token</small></div>',
+      part.key, part.label, shareText(part),
+      part.tokens == null ? "未接入" : number(part.tokens))).join("");
+    return '<section class="maint-cache-section maint-cache-composition-section maint-usage-composition" aria-label="总用量构成">' +
+      '<div class="maint-subhead"><strong><i data-lucide="chart-column-stacked"></i>总用量构成</strong><span>对话 + 插件 + 拓展 · 合计 ' +
+      number(total) + ' Token</span></div>' +
+      '<div class="maint-cache-composition-total"><strong>' + number(total) + '</strong><span>Token</span></div>' +
+      cacheZipperMarkup(parts.map(part => [part.key, part.label, part.tokens || 0]),
+        "总用量构成拉链图", "收到用量后显示总用量构成") +
+      '<div class="maint-cache-zip-legend">' + legend + '</div>' +
+      '<small class="maint-cache-axis-note">对话与插件来自当前角色账本；拓展为内置能力独立账本，只在合计中展示，不并入角色预算。' +
+      (parts.some(part => part.tokens == null) ? ' 未接入的来源不按 0 补齐。' : '') + '</small></section>';
   }
 
   function localTokenDashboardMarkup(data, stats, label, today, periodComparison, providerRows, taskRows, chartData) {
@@ -2772,6 +3081,7 @@ window.CompanionMaintenancePage = (() => {
       ' 条汇总或最后响应。' + (coreCoverage.partial_request_observation_turns ? number(coreCoverage.partial_request_observation_turns) +
         ' 回合仅观测部分请求，含工具参数重查。' : "") + '无法观测的多轮次数保持未知，核心费用不计为零。</p>' : "";
     return '<div class="maint-token-hero maint-token-summary maint-token-dashboard-summary">' + balanceMarkup() + '<div class="maint-usage-total maint-token-summary-card"><span>' + escapeHtml(label) + ' · Provider 已确认 Token</span><strong>' + number(stats.tokens) + '</strong><small>Token</small><div class="maint-usage-subline"><span>已确认 ' + number(stats.knownCalls) + ' 次</span><i></i><span>未确认 ' + number(stats.unconfirmed) + ' 次</span><i></i><span>' + priceNote + '</span></div></div>' + budgetMarkup(budget, spent, held, limit, budgetPct, softEnabled, softPct, softLimit, softState) + '</div>' + observationNote +
+      (state.tokenSource === "companion" ? usageSplitMarkup(data) : "") +
       '<details class="maint-token-drill"><summary>更多用量指标与周期对比</summary><div class="maint-token-drill-content">' + periodComparison + '<div class="maint-token-kpis"><div><span>输入 / 输出</span><strong>' + number(stats.input) + ' / ' + number(stats.output) + '</strong></div><div><span>平均每次</span><strong>' +
       (stats.calls ? number(stats.tokens / stats.calls) : "—") + ' Token</strong></div><div><span>平均延迟</span><strong>' + (stats.latency == null ? "—" : number(stats.latency) + " ms") +
       '</strong></div><div><span>失败 / 未确认调用</span><strong>' + number(stats.failures) + ' / ' + number(stats.unconfirmed) + '</strong></div><div><span>估算 Token</span><strong>不估算</strong></div><div><span>缓存命中 / 命中率</span><strong>' +
@@ -3203,11 +3513,11 @@ window.CompanionMaintenancePage = (() => {
       : localSourceNames[state.tokenSource] ? recentMarkup(recentData)
         : externalRecentMarkup(filteredRecent(recentData), state.showAllCalls ? 80 : 10);
     const ledgerNote = state.activeMaintenanceNav === "efficiency"
-      ? "时间源：核心模型与发送观测 · 历史 V2 回执 · 发送返回与平台确认分列"
+      ? "时间源：核心模型与发送观测 · 平台回执与发送返回分列"
       : localSource ? "数据源：AstrBot 核心观测与 V2 插件账本 · 只计已观测用量 · 缓存以 Provider 实报为准"
       : externalSource?.available ? "数据源：" + (externalSource.display_name || "外部插件") + "独立账本 · 外部费用未提供"
         : "数据源：所选来源尚未接入 · 不展示其他账本记录";
-    const exportMarkup = state.activeMaintenanceNav === "efficiency" ? ""
+    const exportMarkup = ["efficiency", "prompts", "system-prompts"].includes(state.activeMaintenanceNav) ? ""
       : '<button class="maint-export" type="button" data-export-tokens ' + (localSource || state.tokenSource === "main" && externalSource?.available ? "" : "disabled") +
         ' title="导出当前统计 CSV"><i data-lucide="download"></i><span>导出 CSV</span></button>';
     const cacheView = localSource ? cacheMarkup(stats, data)
@@ -3217,13 +3527,14 @@ window.CompanionMaintenancePage = (() => {
     const chartData = Array.isArray(data.history) ? data.history : Array.isArray(data.daily) ? data.daily : [];
     const navItems = [
       ["overview", "Token 统计"], ["diagnostics", "排障"], ["cache", "缓存诊断"],
-      ["efficiency", "回复效率"], ["recent", "最近调用"], ["prompts", "任务提示词"],
+      ["efficiency", "回复效率"], ["recent", "最近调用"], ["prompts", "任务提示词"], ["system-prompts", "系统提示词"],
     ];
     const navMarkup = '<nav class="maint-subnav" aria-label="治理与维护二级导航">' + navItems.map(item =>
       '<button type="button" data-maint-nav="' + item[0] + '" aria-current="' + (state.activeMaintenanceNav === item[0] ? "page" : "false") + '">' + item[1] + '</button>').join("") + '</nav>';
     const boardTitles = {overview: "Token 管理", diagnostics: "运行排障", cache: "缓存诊断", efficiency: "近期回复效率",
-      recent: "最近调用", prompts: "任务提示词"};
-    const boardDescriptions = {efficiency: "近 7 日 · 核心发送耗时与历史投递耗时"};
+      recent: "最近调用", prompts: "任务提示词", "system-prompts": "系统提示词"};
+    const boardDescriptions = {efficiency: "近 7 日 · 核心发送耗时与历史投递耗时",
+      "system-prompts": "核心回复固定规则 · 修改前请阅读风险说明"};
     const boardTitle = boardTitles[state.activeMaintenanceNav] || "运行态势";
     root.innerHTML = '<div class="maint-board"><header class="maint-board-head"><div class="maint-board-copy"><span class="maint-eyebrow">陪伴 / 信号室</span><h2>' + boardTitle + '</h2><p>' +
       (boardDescriptions[state.activeMaintenanceNav] || "运行态势 · 当前角色用量、预算与调用构成。") + '</p></div>' +
@@ -3236,6 +3547,7 @@ window.CompanionMaintenancePage = (() => {
         ? localTokenDashboardMarkup(data, stats, label, today, periodComparison, providerRows, taskRows, chartData)
         : localSourceNames[state.tokenSource] ? unavailableSourceMarkup(state.tokenSource) : externalTokenMarkup(state.tokenSource)) + '</div></section></section>' +
       '<section class="maint-view" data-maint-view="prompts"' + (state.activeMaintenanceNav === "prompts" ? "" : " hidden") + '>' + promptWorkspaceMarkup() + '</section>' +
+      '<section class="maint-view" data-maint-view="system-prompts"' + (state.activeMaintenanceNav === "system-prompts" ? "" : " hidden") + '>' + systemPromptWorkspaceMarkup() + '</section>' +
       '<section class="maint-view" data-maint-view="diagnostics"' + (state.activeMaintenanceNav === "diagnostics" ? "" : " hidden") + '>' + diagnosticsMarkup(roleData, statsFor(roleData)) + '</section>' +
       '<section class="maint-view" data-maint-view="cache"' + (state.activeMaintenanceNav === "cache" ? "" : " hidden") + '>' + cacheView + '</section>' +
       '<section class="maint-view" data-maint-view="efficiency"' + (state.activeMaintenanceNav === "efficiency" ? "" : " hidden") + '>' +
@@ -3578,7 +3890,7 @@ window.CompanionMaintenancePage = (() => {
 
   function setMaintenanceView(view) {
     if (!state) return;
-    const views = ["overview", "diagnostics", "cache", "efficiency", "recent", "prompts"];
+    const views = ["overview", "diagnostics", "cache", "efficiency", "recent", "prompts", "system-prompts"];
     const next = views.includes(view) ? view : "overview";
     const changed = state.activeMaintenanceNav !== next;
     if (changed && next !== "diagnostics" && state.memoryRunning) {
@@ -3597,6 +3909,29 @@ window.CompanionMaintenancePage = (() => {
       render();
       return;
     }
+    const systemPromptItem = target.closest("[data-system-prompt]");
+    if (systemPromptItem && state) {
+      if (state.systemPromptSaving) return;
+      const next = systemPromptItem.dataset.systemPrompt || "";
+      if (!next || next === state.systemPromptKey) return;
+      if (systemPromptDirty()) {
+        state.systemPromptMessage = "当前提示词有未保存更改，请先保存或恢复默认。";
+        state.systemPromptMessageKind = "warn";
+        render();
+        return;
+      }
+      loadSystemPromptDraft(next);
+      render();
+      return;
+    }
+    if (target.closest("[data-system-prompt-reload]") && state) {
+      state.systemPrompts = null;
+      state.systemPromptsError = "";
+      void loadSystemPrompts();
+      return;
+    }
+    if (target.closest("[data-system-prompt-save]") && state) { void saveSystemPrompt(false); return; }
+    if (target.closest("[data-system-prompt-reset]") && state) { void saveSystemPrompt(true); return; }
     const promptMode = target.closest("[data-prompt-mode]");
     if (promptMode && state) {
       state.promptMode = promptMode.dataset.promptMode === "customized" ? "customized" : "all";
@@ -3790,6 +4125,18 @@ window.CompanionMaintenancePage = (() => {
       if (selection.every(Number.isInteger)) replacement?.setSelectionRange?.(...selection);
       return;
     }
+    if (target.matches("[data-system-prompt-draft]")) {
+      if (state.systemPromptSaving) return;
+      state.systemPromptDraft = target.value;
+      state.systemPromptMessage = "";
+      state.systemPromptMessageKind = "";
+      const count = root?.querySelector?.("[data-system-prompt-count]");
+      if (count) count.textContent = number(state.systemPromptDraft.length) + " / " + SYSTEM_PROMPT_LIMIT + " 字";
+      const dirty = systemPromptDirty();
+      const save = root?.querySelector?.("[data-system-prompt-save]");
+      if (save) save.disabled = !dirty || state.systemPromptDraft.length > SYSTEM_PROMPT_LIMIT;
+      return;
+    }
     if (!target.matches("[data-call-search]")) return;
     const selection = [target.selectionStart, target.selectionEnd];
     state.callQuery = target.value || "";
@@ -3850,7 +4197,7 @@ window.CompanionMaintenancePage = (() => {
       memorySamples: [], memoryRunning: false, memorySampling: false, memoryComplete: false,
       memoryError: "", memoryStopReason: "", memoryTimer: null, memoryStartedAt: 0,
       tokenSource: "companion", tokenTrendMode: "daily", tokenBreakdown: "providers", tokenDetailView: "daily",
-      activeMaintenanceNav: ["overview", "diagnostics", "cache", "efficiency", "recent", "prompts"].includes(options.activeView) ? options.activeView : "overview",
+      activeMaintenanceNav: ["overview", "diagnostics", "cache", "efficiency", "recent", "prompts", "system-prompts"].includes(options.activeView) ? options.activeView : "overview",
       onViewChange: typeof options.onViewChange === "function" ? options.onViewChange : null,
       period: "today", selectedDate: localDay(), selectedHour: "", category: "all", severity: "all", callFilter: "all",
       callQuery: "", traceFilter: null, showAllCalls: false, modelStatus: null, openReplySamples: new Set(),
@@ -3858,7 +4205,11 @@ window.CompanionMaintenancePage = (() => {
       promptSelectedSection: "task_prompt", promptView: "edit", promptRuleKey: "",
       promptDraft: "", promptInitial: "", promptEditToken: "", promptInitialized: false,
       promptSaving: false, promptReloading: false, promptStale: false, promptMessage: "", promptMessageKind: "",
-      promptOperationKey: "", promptOperationKind: ""};
+      promptOperationKey: "", promptOperationKind: "",
+      systemPrompts: null, systemPromptsLoading: false, systemPromptsError: "",
+      systemPromptKey: "voice_rules", systemPromptDraft: "", systemPromptInitial: "", systemPromptToken: "",
+      systemPromptMessage: "", systemPromptMessageKind: "", systemPromptSaving: false,
+      systemPromptOperationKey: "", systemPromptOperationKind: ""};
     const cached = maintenanceCache.get(maintenanceScope);
     if (cached) Object.assign(state, cached);
     state.onViewChange?.(state.activeMaintenanceNav);

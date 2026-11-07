@@ -136,7 +136,12 @@ def inspect_image(content, position):
 
 
 def _read_host_resolved_image(value):
-    """Read only an absolute local file returned by the trusted quote resolver."""
+    """Read a local file the trusted host already vouched for.
+
+    Two producers set ``host_resolved``: the quote resolver, and the adapter's
+    check that an inbound attachment was rewritten to a file inside AstrBot's
+    temp directory. Both are absolute files; the marker is the authority.
+    """
     path = Path(value)
     if not path.is_absolute() or value.startswith(("\\\\", "//")) or not path.is_file():
         raise TaskError("host_image_location_invalid", "resolved image cache must be a local absolute file")

@@ -16,6 +16,7 @@ from companion_v2.conversation.text_processing import (
     OUTPUT_TEXT_FIELDS,
     InternalExpressionProtocolFilter,
     ReplyTextPolicy,
+    has_tool_call_protocol,
     strip_internal_expression_protocol,
 )
 from companion_v2.sources.privacy import redact_text
@@ -208,11 +209,28 @@ def note_removed_text(event):
         core["_text_presentation_removed"] = True
 
 
+def _note_unparsed_tool_call(event, text):
+    """One operator-facing line when a provider returns a call as text."""
+    core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+    if not isinstance(core, dict) or not has_tool_call_protocol(text):
+        return
+    prepared = core.get("prepared")
+    event_ref = prepared.get("event_ref", "unknown") if isinstance(prepared, Mapping) else "unknown"
+    logger.warning("[CompanionV2] 核心回复只有未解析的工具调用文本，已拦截 event_ref=%s；"
+                   "请检查 Provider 是否返回结构化 tool_calls", event_ref)
+
+
 def present_core_reply_message(event, message, *, from_stream=False):
     if getattr(message, "type", None) in CONTROL_TYPES:
         return message
+    raw_text = _plain_text(message)
     message = strip_internal_expression_message(message)
     if message is None:
+        # A reply that carried only protocol is an intentional silence, not a
+        # failed delivery: record the removal and tell the operator why.
+        if has_tool_call_protocol(raw_text):
+            _note_unparsed_tool_call(event, raw_text)
+            note_removed_text(event)
         return None
     presentation = core_reply_presentation(event)
     if (presentation is None or getattr(message, MARKED, None) is presentation
@@ -231,6 +249,7 @@ def present_core_reply_message(event, message, *, from_stream=False):
         parts = present_text_parts(message, presentation, tool_names=tool_names)
         if parts:
             return mark_presented("".join(parts), presentation)
+        _note_unparsed_tool_call(event, raw_text)
         note_removed_text(event)
         return None
     chain = getattr(message, "chain", None)
@@ -251,6 +270,7 @@ def present_core_reply_message(event, message, *, from_stream=False):
             index += 1
         result.extend(Plain(part) for part in present_text_parts(text, presentation, tool_names=tool_names))
     if not has_reply_body(result):
+        _note_unparsed_tool_call(event, raw_text)
         note_removed_text(event)
         return None
     derive = getattr(message, "derive", None)

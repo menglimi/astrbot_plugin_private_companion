@@ -40,6 +40,7 @@ class NativeNoticeRoute:
     peer: str
     session_id: str
     client: object
+    group_id: str = ""
 
 
 def authenticate_notice_route(controller, event, kind, *, expected_post="notice"):
@@ -78,6 +79,13 @@ def authenticate_notice_route(controller, event, kind, *, expected_post="notice"
             or meta.name != "aiocqhttp" or not client._wsr_api_clients.get(login)):
         raise TaskError("host_recall_account_changed", "notice must come from the current connected platform and client")
     event_kind = "GroupMessage" if kind is ScopeKind.GROUP else "FriendMessage"
+    # QQ 群临时会话是 message_type=private、sub_type=group，原始事件仍带 group_id。
+    # 它仍然是私聊，只是平台要求发送时带上来源群。
+    private_group = ""
+    if kind is ScopeKind.PRIVATE and raw.get("sub_type") == "group":
+        raw_group = raw.get("group_id")
+        if raw_group not in (None, "", 0, "0"):
+            private_group = account_number(raw_group)
     expected_sessions = (peer, sender + "_" + peer) if kind is ScopeKind.GROUP else (peer,)
     if (account_number(message.self_id) != login or account_number(message.sender.user_id) != sender
             or getattr(message.type, "value", None) != event_kind
@@ -87,9 +95,11 @@ def authenticate_notice_route(controller, event, kind, *, expected_post="notice"
             or event.unified_msg_origin != f"{meta.id}:{event_kind}:{native_session.session_id}"
             or (kind is ScopeKind.GROUP and (account_number(message.group_id) != peer
                                            or str(message.session_id) != peer))
-            or (kind is ScopeKind.PRIVATE and (message.group_id or raw.get("group_id")))):
+            or (kind is ScopeKind.PRIVATE
+                and (message.group_id or raw.get("group_id")) and not private_group)):
         raise TaskError("host_recall_route", "notice fields do not identify one original native route")
-    return NativeNoticeRoute(kind, meta.id, bot_id, login, sender, peer, native_session.session_id, client)
+    return NativeNoticeRoute(kind, meta.id, bot_id, login, sender, peer,
+                             native_session.session_id, client, private_group)
 
 
 def capture_recall(controller, event):

@@ -31,7 +31,18 @@ def dashboard_operator(runtime, username, *, at):
                                             "astrbot-dashboard-api-key" if service else "astrbot-dashboard",
                                             "dashboard", username)
     identities = PersistentIdentityDirectory(runtime)
+    # 先读一次再决定要不要写。原先每个 Dashboard 请求都先开一个写事务
+    # （BEGIN IMMEDIATE），即使这个人早就绑定过、这一笔根本不写任何行：
+    # 在会话繁忙时这个空事务也要排进 V2 的全局 SQLite 锁，把一次纯读取
+    # 变成「等后台写事务」。只有真的缺少绑定时才进入写事务。
+    resolved = identities.resolve_authenticated(principal, observed_at=at)
+    if resolved.is_success:
+        return resolved.unwrap()
+    if resolved.failure is not None and resolved.failure.code != "unbound_identity":
+        # A known revoked binding or downgraded tier is never silently restored.
+        return require(resolved)
     with runtime.transaction():
+        # 事务内重新读：首绑并发时后到的一方要看到先到方刚写入的绑定。
         resolved = identities.resolve_authenticated(principal, observed_at=at)
         if resolved.failure is not None and resolved.failure.code == "unbound_identity":
             subject = SubjectRef(runtime.installation_id, SubjectKind.SERVICE if service else SubjectKind.HUMAN, identifier)

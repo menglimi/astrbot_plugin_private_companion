@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import logging
 from pathlib import Path
 import sqlite3
@@ -3057,9 +3058,82 @@ def _index_shapes(connection: sqlite3.Connection, table: str) -> list[tuple]:
     return sorted(shapes)
 
 
+_BROKEN_REFERENCE_ROW_LIMIT = 20000
+
+
+def _store_path(connection: sqlite3.Connection) -> Path | None:
+    for row in connection.execute("PRAGMA database_list"):
+        if str(row[1]) == "main" and row[2]:
+            return Path(str(row[2]))
+    return None
+
+
+def _quarantine_value(value: object) -> object:
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return {"__bytes_hex__": bytes(value).hex()}
+    return value
+
+
+def _quarantine_broken_references(connection: sqlite3.Connection) -> int:
+    """Drop child rows whose parent row disappeared, keeping a JSONL record.
+
+    A dangling child row can never be reached again: every read path joins it to
+    the parent that is gone.  Refusing to open the store over such rows keeps the
+    whole companion offline until an operator removes them by hand, so the row is
+    copied out first and then deleted in place.
+    """
+    removed: list[dict[str, object]] = []
+    passes = 0
+    while passes < 10:
+        violations = list(connection.execute("PRAGMA foreign_key_check"))
+        if not violations:
+            break
+        passes += 1
+        for child, rowid, _parent, _foreign_key in violations:
+            if rowid is None:
+                continue
+            if len(removed) >= _BROKEN_REFERENCE_ROW_LIMIT:
+                raise StorageOpenError("V2 SQLite has too many broken references to quarantine")
+            quoted = '"' + str(child).replace('"', '""') + '"'
+            row = connection.execute(f"SELECT * FROM {quoted} WHERE rowid = ?", (rowid,)).fetchone()
+            if row is None:
+                continue
+            removed.append({
+                "table": str(child),
+                "rowid": int(rowid),
+                "row": {key: _quarantine_value(row[key]) for key in row.keys()},
+            })
+            connection.execute(f"DELETE FROM {quoted} WHERE rowid = ?", (rowid,))
+    if not removed:
+        return 0
+
+    quarantine: Path | None = None
+    store = _store_path(connection)
+    if store is not None:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        quarantine = store.with_name(f"{store.name}.fk-repair-{stamp}.jsonl")
+        try:
+            with quarantine.open("w", encoding="utf-8") as handle:
+                for item in removed:
+                    handle.write(json.dumps(item, ensure_ascii=False, default=str) + "\n")
+        except OSError as error:
+            logging.getLogger(__name__).warning(
+                "V2 SQLite could not persist the foreign-key quarantine file: %s", error)
+            quarantine = None
+    logging.getLogger(__name__).warning(
+        "V2 SQLite quarantined %d orphaned row(s) while opening the store%s",
+        len(removed), f" (rows saved to {quarantine})" if quarantine else "")
+    return len(removed)
+
+
 def _validate_integrity(connection: sqlite3.Connection) -> None:
     if [tuple(row) for row in connection.execute("PRAGMA quick_check")] != [("ok",)]:
         raise StorageOpenError("V2 SQLite integrity check failed")
+    if connection.execute("PRAGMA foreign_key_check").fetchone() is None:
+        return
+    # Orphaned child rows are unusable, but one of them is enough to keep the whole
+    # store closed.  Quarantine them instead of failing the upgrade outright.
+    _quarantine_broken_references(connection)
     if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise StorageOpenError("V2 SQLite contains broken references")
 

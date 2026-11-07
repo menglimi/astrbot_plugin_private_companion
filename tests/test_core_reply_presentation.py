@@ -25,6 +25,13 @@ from tests.test_astrbot_core_reply import FakeEvent
 CLEANUP = {"content_cleanup_enabled": True, "content_cleanup_scope": "trailing",
            "content_cleanup_words": '["。", "，"]'}
 REPLACE = {"content_replacement_enabled": True, "content_replacements": '["a => aa"]'}
+# A provider that returns the model's tool call as completion text leaves this
+# protocol in the message.  A group turn posted it verbatim once.
+DSML_SKIP = ("<｜｜DSML｜｜ calls>\n"
+             '<｜｜DSML｜｜ invoke name="group_participation_choose">\n'
+             '<｜｜DSML｜｜ parameter name="mode" string="true">skip</｜｜DSML｜｜ parameter>\n'
+             "</｜｜DSML｜｜ invoke>\n"
+             "</｜｜DSML｜｜ calls>")
 
 
 class CoreReplyPresentationTests(unittest.IsolatedAsyncioTestCase):
@@ -267,6 +274,26 @@ class CoreReplyPresentationTests(unittest.IsolatedAsyncioTestCase):
         ordinary = '解释示例：{"name":"ordinary_payload","parameters":{"value":1}}'
         await event.send(ordinary)
         self.assertEqual(self.texts(event), [ordinary])
+
+    async def test_dsml_tool_call_text_is_not_delivered(self):
+        # Both the ordinary send wrapper and the activated delivery guard must
+        # drop a reply that carried nothing but an unparsed tool call.
+        before_guard = self.prepare(channel="group")
+        await before_guard.send(MessageChain(chain=[Plain(DSML_SKIP)]))
+        self.assertEqual(self.texts(before_guard), [])
+
+        event = self.prepare(channel="group")
+        activate_core_reply_delivery_guard(event)
+        await event.send(MessageChain(chain=[Plain(DSML_SKIP)]))
+        self.assertEqual(self.texts(event), [])
+        self.assertTrue(event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["_text_presentation_removed"])
+        self.assertEqual(self.authorize.await_count, 0)
+
+    async def test_dsml_tail_is_removed_and_visible_prose_survives(self):
+        event = self.prepare(channel="group")
+        activate_core_reply_delivery_guard(event)
+        await event.send(MessageChain(chain=[Plain("我先看看。\n"), Plain(DSML_SKIP)]))
+        self.assertEqual(self.texts(event), ["我先看看。"])
 
     async def test_group_buffered_and_incremental_stream_clean_complete_bubbles(self):
         for mode in ("buffered", "incremental"):

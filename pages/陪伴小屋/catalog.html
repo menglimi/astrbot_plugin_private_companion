@@ -56,6 +56,7 @@
     h1 { margin: 0; font-size: 25px; line-height: 1.25; font-weight: 700; }
     .live { color: var(--muted); font-size: 12px; white-space: nowrap; }
     .live[data-state="running"]::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--accent); }
+    .navigation-notice { margin: 0 0 16px; color: var(--warm); font-size: 12px; }
     .search { display: flex; align-items: center; gap: 9px; height: 41px; max-width: 440px; margin-bottom: 22px; border: 1px solid var(--line); border-radius: 6px; padding: 0 12px; color: var(--muted); background: var(--surface); }
     .search:focus-within { border-color: var(--focus); }
     .search svg { width: 17px; height: 17px; flex: none; }
@@ -110,6 +111,7 @@
       </header>
       <div class="content">
         <div class="heading"><h1>全部功能</h1><span class="live" id="liveState" role="status"></span></div>
+        <p class="navigation-notice" id="navigationNotice" role="alert" hidden></p>
         <label class="search"><i data-lucide="search"></i><input id="searchInput" type="search" placeholder="搜索功能" aria-label="搜索功能"></label>
         <div id="groups"></div>
         <p class="empty" id="empty" hidden>没有找到对应功能。</p>
@@ -163,6 +165,40 @@
     function pageHref(route) {
       const [path, hash] = ('./' + route).split('#');
       return path + (token ? '?asset_token=' + encodeURIComponent(token) : '') + '#' + hash;
+    }
+    async function returnHome(event) {
+      if (!token || !window.AstrBotPluginPage?.apiGet) return;
+      event.preventDefault();
+      const notice = document.getElementById('navigationNotice');
+      notice.hidden = true;
+      let timeout;
+      try {
+        const bridge = window.AstrBotPluginPage;
+        const entry = await Promise.race([
+          (async () => {
+            await bridge.ready?.();
+            return bridge.apiGet('page/workspace-entry', {});
+          })(),
+          new Promise((_, reject) => {
+            timeout = setTimeout(() => reject(new Error('page entry timeout')), 8000);
+          }),
+        ]);
+        const entryUrl = new URL(entry?.content_path, location.href);
+        const pageRoot = new URL('.', location.href);
+        const freshToken = entryUrl.searchParams.get('asset_token');
+        if (entryUrl.origin !== pageRoot.origin
+            || !entryUrl.pathname.startsWith('/api/plugin/page/content/astrbot_plugin_private_companion/')
+            || !freshToken) throw new Error('invalid page entry');
+        const home = new URL('index.html', entryUrl);
+        home.searchParams.set('asset_token', freshToken);
+        home.hash = 'life';
+        location.assign(home.href);
+      } catch {
+        notice.textContent = '返回授权暂时无法刷新，请从 AstrBot 插件页面重新打开陪伴小屋。';
+        notice.hidden = false;
+      } finally {
+        clearTimeout(timeout);
+      }
     }
     function icons() {
       if (window.lucide) window.lucide.createIcons();
@@ -245,6 +281,8 @@
     }
     document.getElementById('brandHome').href = pageHref('#life');
     document.getElementById('backHome').href = pageHref('#life');
+    document.getElementById('brandHome').addEventListener('click', returnHome);
+    document.getElementById('backHome').addEventListener('click', returnHome);
     document.getElementById('searchInput').addEventListener('input', render);
     document.getElementById('themeButton').addEventListener('click', () => {
       document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';

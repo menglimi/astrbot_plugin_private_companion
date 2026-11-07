@@ -3,7 +3,6 @@
 const {test} = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const vm = require("node:vm");
 
@@ -148,9 +147,7 @@ test("overview shows the requested context, live routes, authorized devices and 
     "huawei-health/status",
     "reply/recalls",
   ]);
-  /* 渲染快照只用于本地排查，落到系统临时目录：仓库根不再留下未跟踪的
-     测试产物，名字仍叫 dash-debug.html（.gitignore 也挡着这个旧位置）。 */
-  fs.writeFileSync(path.join(os.tmpdir(), "dash-debug.html"), page.root.innerHTML);
+  require("fs").writeFileSync("dash-debug.html", page.root.innerHTML);
   assert.match(page.root.innerHTML, /用户配置区域/);
   assert.match(page.root.innerHTML, /晴 · 22°C/);
   assert.match(page.root.innerHTML, /大风蓝色预警/);
@@ -160,6 +157,10 @@ test("overview shows the requested context, live routes, authorized devices and 
   assert.match(page.root.innerHTML, /不会持续注入日常对话/);
   assert.doesNotMatch(page.root.innerHTML, /余额(?:\s|&nbsp;)*\d+(?:\.\d+)?/);
   assert.match(page.root.innerHTML, /所在地/);
+  const locationCard = /id="perception-channel-env-location"[^>]*title="([^"]*)"/.exec(page.root.innerHTML);
+  assert.ok(locationCard, "所在地卡片应带可读标题");
+  assert.equal(locationCard[1], "已配置 · 用户配置区域",
+    "说明句被删掉后，标题与 aria 不应留下尾随的「 · 」");
   assert.match(page.root.innerHTML, /天气实况/);
   assert.match(page.root.innerHTML, /model-live/);
   assert.match(page.root.innerHTML, /Provider provider-main · 备用 model-safe/);
@@ -194,7 +195,7 @@ test("overview shows the requested context, live routes, authorized devices and 
   assert.match(page.root.innerHTML, /data-context-clock-date/);
   assert.doesNotMatch(page.root.innerHTML, /perception-group|perception-stream-container|perception-stream-details|perception-board-config/);
   assert.equal((page.root.innerHTML.match(/class="perception-board-card/g) || []).length, 4);
-  for (const item of ["所在地", "天气实况", "天气预警", "余额感知", "对话模型", "语音模型", "生图模型",
+  for (const item of ["所在地", "天气实况", "天气预警", "余额感知", "核心管理员对话", "语音模型", "生图模型",
     "视觉模型", "外部资讯", "当前定位", "识屏", "摄像头", "撤回记录", "运动健康", "语音模型",
     "米家设备", "其他注入"]) {
     assert.match(page.root.innerHTML, new RegExp(item));

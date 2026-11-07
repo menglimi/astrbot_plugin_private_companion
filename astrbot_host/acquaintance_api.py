@@ -40,7 +40,6 @@ from companion_v2.foundation.refs import OperationRef, VersionRef
 
 from .management_identity import dashboard_operator
 from .display_names import display_names, platform_label
-from .group_remarks import GroupRemarks, ROUTE_FIELDS as GROUP_REMARK_ROUTE_FIELDS
 from .multi_settings import MultiHostSettings
 from .settings import HostControlError
 
@@ -48,12 +47,12 @@ from .settings import HostControlError
 PREFIX = "/astrbot_plugin_private_companion/acquaintance"
 AUTHORIZATION_PATH = PREFIX + "/authorization"
 ADMIN_NAME_PATH = PREFIX + "/admin-name"
-GROUP_REMARK_PATH = PREFIX + "/group-remark"
 IDENTITY_PATH = PREFIX + "/identity"
 SETTINGS_PATH = PREFIX + "/settings"
 OPEN_LOOPS_PATH = PREFIX + "/open-loops"
 STRANGERS_PATH = PREFIX + "/strangers"
 STRANGER_TARGET_PATH = PREFIX + "/stranger-target"
+STRANGER_REMOVE_PATH = PREFIX + "/stranger-remove"
 MAX_AUTHORIZATION_BODY = 8192
 MAX_STRANGER_ROWS = 100
 logger = logging.getLogger(__name__)
@@ -421,8 +420,6 @@ class AcquaintanceWebAPI:
                  "Switch one page-managed capability for one person"),
                 (ADMIN_NAME_PATH, self.set_admin_name, ["POST"],
                  "Set a directory person's administrator-assigned display name"),
-                (GROUP_REMARK_PATH, self.set_group_remark, ["POST"],
-                 "Set a group route's dashboard display remark"),
                 (IDENTITY_PATH, self.set_identity, ["POST"], "Set one trusted person's management tier"),
                 (SETTINGS_PATH, self.member_settings, ["GET"], "Read one private member's settings"),
                 (SETTINGS_PATH, self.configure_member, ["POST"], "Save one private member's settings"),
@@ -431,7 +428,9 @@ class AcquaintanceWebAPI:
                 (STRANGERS_PATH, self.strangers, ["GET"],
                  "Read private accounts refused by the stranger boundary"),
                 (STRANGER_TARGET_PATH, self.add_stranger_target, ["POST"],
-                 "Allow one refused account as one exact private target of its receiving account")]
+                 "Allow one refused account as one exact private target of its receiving account"),
+                (STRANGER_REMOVE_PATH, self.remove_stranger, ["POST"],
+                 "Remove one refused-account record without touching any target or grant")]
 
     def _settings(self):
         settings = self.controller.settings
@@ -588,7 +587,11 @@ class AcquaintanceWebAPI:
                 settings = self._settings()
                 group_access = _group_target_access(controller, settings)
                 routes, groups = _directory_routes(settings)
-                result = self._members(PersonAcquaintanceDirectory(controller.runtime).directory(routes), settings)
+                # 目录投影是同步 SQLite + 纯 Python 的重活（冷读实测 2–5 秒）。
+                # 它原先跑在事件循环上，期间所有 Dashboard 请求（包括配置保存）
+                # 都发不出去；放进工作线程后，锁仍串行目录请求，但不再占住循环。
+                result = await asyncio.to_thread(
+                    lambda: self._members(PersonAcquaintanceDirectory(runtime).directory(routes), settings))
             topology = getattr(controller, "session_topology", None)
             stored_names = (await asyncio.to_thread(topology.stored_group_names)
                             if topology is not None and stored_only else {})
@@ -606,34 +609,40 @@ class AcquaintanceWebAPI:
                 await self._operator()
                 if controller.runtime is not runtime or controller.settings is not settings_snapshot:
                     raise TaskError("staging_not_initialized", "the profile changed while reading native sessions")
-                members = {}
-                known_groups = {_group_route_key(group) for group in groups}
-                for person in result["persons"]:
-                    for group_id, entry in person["groups"].items():
-                        key = _group_route_key({"platform_id": person["platform"], "bot_id": person["bot_id"],
-                                                "account_id": person["account_id"], "group_id": group_id})
-                        members.setdefault(key, []).append(person)
+
+                def assemble():
+                    members = {}
+                    known_groups = {_group_route_key(group) for group in groups}
+                    for person in result["persons"]:
+                        for group_id, entry in person["groups"].items():
+                            key = _group_route_key({"platform_id": person["platform"], "bot_id": person["bot_id"],
+                                                    "account_id": person["account_id"], "group_id": group_id})
+                            members.setdefault(key, []).append(person)
+                            if key not in known_groups:
+                                known_groups.add(key)
+                                groups.append({"group_id": group_id, "bot_id": person["bot_id"],
+                                    "platform_id": person["platform"], "account_id": person["account_id"],
+                                    "configured": False, "member_count": 0, "msg_count": 0})
+                    for group in groups:
+                        for person in members.get(_group_route_key(group), ()):
+                            group["member_count"] += 1
+                            group["msg_count"] += person["groups"][group["group_id"]]["msg_count"]
+                    networks = _group_relationship_networks(runtime, settings, result["persons"], groups)
+                    known_groups = {_group_route_key(group) for group in groups}
+                    for network in networks:
+                        key = _group_route_key(network)
                         if key not in known_groups:
                             known_groups.add(key)
-                            groups.append({"group_id": group_id, "bot_id": person["bot_id"],
-                                "platform_id": person["platform"], "account_id": person["account_id"],
-                                "configured": False, "member_count": 0, "msg_count": 0})
-                for group in groups:
-                    for person in members.get(_group_route_key(group), ()):
-                        group["member_count"] += 1
-                        group["msg_count"] += person["groups"][group["group_id"]]["msg_count"]
-                group_networks = _group_relationship_networks(runtime, settings, result["persons"], groups)
-                known_groups = {_group_route_key(group) for group in groups}
-                for network in group_networks:
-                    key = _group_route_key(network)
-                    if key not in known_groups:
-                        known_groups.add(key)
-                        groups.append({"group_id": network["group_id"], "bot_id": network["bot_id"],
-                                       "platform_id": network["platform_id"], "account_id": network["account_id"],
-                                       "configured": network["configured"],
-                                       "member_count": network["member_count"],
-                                       "msg_count": sum(member["group_observation"]["message_count"]
-                                                         for member in network["members"])})
+                            groups.append({"group_id": network["group_id"], "bot_id": network["bot_id"],
+                                           "platform_id": network["platform_id"], "account_id": network["account_id"],
+                                           "configured": network["configured"],
+                                           "member_count": network["member_count"],
+                                           "msg_count": sum(member["group_observation"]["message_count"]
+                                                             for member in network["members"])})
+                    return networks
+
+                # 与上面同理：关系网拼装也要逐人/逐群读库，不能占事件循环。
+                group_networks = await asyncio.to_thread(assemble)
             for group in groups:
                 name = stored_names.get((group.get("platform_id"), group.get("account_id"),
                                          str(group.get("group_id") or "")))
@@ -641,7 +650,6 @@ class AcquaintanceWebAPI:
                     group.update(group_name=name, display_name=name)
             names = display_names(controller)
             name_options = {"cached_only": True} if stored_only else {}
-            groups = GroupRemarks(runtime).apply(groups)
             persons, groups = await asyncio.gather(names.persons(result["persons"], **name_options),
                                                   names.targets(groups, **name_options))
             async with controller._control_lock:
@@ -780,6 +788,42 @@ class AcquaintanceWebAPI:
             return outcome_response(Outcome.failed("stranger_target_request_invalid",
                                                    "the target command is not valid JSON"))
 
+    async def remove_stranger(self):
+        """Delete one rejected-account ledger row; never remove a target or grant."""
+        from .stranger_notice import CONTACT_KIND
+        from .web_api import outcome_response
+        controller = self.controller
+        try:
+            raw = await request.body()
+            if len(raw) > MAX_AUTHORIZATION_BODY or request.query:
+                raise TaskError("stranger_remove_request_invalid",
+                                "the remove command requires one bounded JSON body")
+            command = json.loads(raw.decode("utf-8"))
+            if type(command) is not dict or set(command) != {"platform_id", "login", "peer"}:
+                raise TaskError("stranger_remove_request_invalid",
+                                "the remove command requires the record's platform, receiving account and sender")
+            platform_id = command["platform_id"]
+            if type(platform_id) is not str or not platform_id or ":" in platform_id:
+                raise TaskError("stranger_remove_request_invalid",
+                                "the platform instance is not a valid route identifier")
+            try:
+                route = platform_id, route_id(command["login"]), route_id(command["peer"])
+            except (TypeError, ValueError):
+                raise TaskError("stranger_remove_request_invalid",
+                                "the receiving account and sender must be route identifiers") from None
+            view_id = "stranger-contact:" + route[0] + ":" + route[1] + ":" + route[2]
+            async with controller._control_lock:
+                await self._operator()
+                with controller.runtime.transaction() as connection:
+                    removed = connection.execute(
+                        "DELETE FROM memory_views WHERE view_id = ? AND kind = ?",
+                        (view_id, CONTACT_KIND)).rowcount
+            return outcome_response(Outcome.success({"removed": bool(removed)}))
+        except (TaskError, HostControlError) as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, UnicodeError, RecursionError):
+            return outcome_response(Outcome.failed("stranger_remove_request_invalid",
+                                                   "the remove command is not valid JSON"))
 
     async def authorization(self):
         """Read the real state of every capability one person holds."""
@@ -872,35 +916,6 @@ class AcquaintanceWebAPI:
         except (ValueError, TypeError, UnicodeError, RecursionError):
             return outcome_response(Outcome.failed("person_nickname_command_invalid",
                                                    "the name command is not valid JSON"))
-
-    async def set_group_remark(self):
-        from .web_api import outcome_response
-        try:
-            raw = await request.body()
-            if len(raw) > MAX_AUTHORIZATION_BODY or request.query:
-                raise TaskError("group_remark_command_invalid", "provide one bounded JSON body")
-
-            def unique(pairs):
-                result = {}
-                for key, value in pairs:
-                    if key in result:
-                        raise TaskError("group_remark_command_invalid", "the remark command repeats a field")
-                    result[key] = value
-                return result
-
-            command = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
-            if type(command) is not dict or set(command) != {*GROUP_REMARK_ROUTE_FIELDS, "remark", "expected_revision"}:
-                raise TaskError("group_remark_command_invalid", "the remark command does not match its contract")
-            async with self.controller._control_lock:
-                await self._operator()
-                result = GroupRemarks(self.controller.runtime).write(
-                    command, command["remark"], command["expected_revision"])
-                return outcome_response(Outcome.success(result))
-        except TaskError as error:
-            return outcome_response(Outcome.failed(error.code, str(error)))
-        except (ValueError, TypeError, UnicodeError, RecursionError):
-            return outcome_response(Outcome.failed("group_remark_command_invalid",
-                                                   "the remark command is not valid JSON"))
 
     async def _command(self, *, expected):
         raw = await request.body()

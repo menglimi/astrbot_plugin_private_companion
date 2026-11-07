@@ -1,12 +1,16 @@
 """Registry defaults for each model task's output budget.
 
 ``model.max_output_tokens`` is a single island-wide number, and it was written
-for a conversational reply. Structural tasks (learning, review, reflection,
+for a conversational reply. Structured tasks (learning, review, reflection,
 planning, writing, ...) spend a large part of that same budget on reasoning
-before they emit their JSON or body, so those kinds receive a thinking margin on
-top of the host default. The result is only a registry default: a value the user
-saved explicitly always wins, and routing clamps the default to the selected
-provider's declared capability.
+before they emit their JSON or body, so every structured kind now registers a
+flat 30000-token ceiling instead of a per-kind multiplier. Short tasks — replies,
+pokes, verdicts, ID selection — keep their small budgets.
+
+The result is only a registry default: a value the user saved explicitly always
+wins, and routing clamps the default to the selected provider's declared
+capability. That clamp is why a provider that only declares 8192 still gets
+8192: the plugin never asks a provider for more than it says it can emit.
 """
 
 from __future__ import annotations
@@ -17,29 +21,34 @@ from types import MappingProxyType
 from .models import MAX_MODEL_OUTPUT_TOKENS
 
 
-# kind -> (thinking factor, absolute floor). Kinds absent here keep the host
-# default unchanged; that is the right answer for replies and for tasks whose
-# whole output is one identifier or one verdict.
-THINKING_MARGIN = MappingProxyType({
-    # Structured bodies where reasoning dominated the visible output.
-    "role.expression.learn": (4, 8192),
-    "role.self_review": (4, 8192),
-    "memory.reflect": (4, 8192),
-    "content.authoring.draft": (4, 8192),
-    # Structured bodies that are roughly half the size of the ones above.
-    "role.expression.review": (2, 4096),
-    "role.expression.contact_review": (2, 4096),
-    "role.state.maintain": (2, 4096),
-    "proactive.compose": (2, 4096),
-    "proactive.plan": (1, 0),
-    "role.journal.diary": (2, 4096),
-    "role.journal.dream": (2, 4096),
-    "role.journal.derive": (2, 4096),
-    "role.growth.progress": (2, 4096),
-    "role.reading.consume": (2, 4096),
-    "calendar.plan": (2, 4096),
-    "screen.interpretation": (2, 4096),
-    # Nothing but an ID list or a pass/block verdict: no margin is warranted.
+# 结构化任务统一 30000 输出上限。Provider 或产品上限更低时按低的算；用户把全局
+# 上限显式设得更高时沿用用户的值。
+STRUCTURED_OUTPUT_TOKENS = 30_000
+
+STRUCTURED_KINDS = frozenset({
+    "role.expression.learn",
+    "role.self_review",
+    "memory.reflect",
+    "content.authoring.draft",
+    "role.expression.review",
+    "role.expression.contact_review",
+    "role.state.maintain",
+    "proactive.compose",
+    "proactive.plan",
+    "role.journal.diary",
+    "role.journal.dream",
+    "role.journal.derive",
+    "role.growth.progress",
+    "role.reading.consume",
+    "calendar.plan",
+    "screen.interpretation",
+    "reality.text",
+})
+
+# kind -> (thinking factor, absolute floor). Short tasks keep the host default
+# (factor 1, floor 0) unless they need a hard, small ceiling.
+SHORT_TASK_BUDGETS = MappingProxyType({
+    # Nothing but an ID list or a pass/block verdict.
     "role.journal.select": (1, 0),
     "proactive.judge": (1, 0),
     # Replies stay deliberately short and low-latency.
@@ -51,15 +60,27 @@ THINKING_MARGIN = MappingProxyType({
     "conversation.context_image_caption": (1, 0),
 })
 
+# One registry of every task kind and the budget basis it carries; registration
+# tests compare this set with the live profiles so a new task cannot quietly
+# inherit the reply budget.
+THINKING_MARGIN = MappingProxyType({
+    **{kind: (1, STRUCTURED_OUTPUT_TOKENS) for kind in sorted(STRUCTURED_KINDS)},
+    **SHORT_TASK_BUDGETS,
+})
+
 
 def default_output_tokens(kind: str, base: int, *, maximum: int = MAX_MODEL_OUTPUT_TOKENS) -> int:
     """Return the registry default output ceiling for one task kind.
 
     ``base`` is the host-wide default (``model.max_output_tokens``); the product
-    ceiling bounds every result, so a task default can never exceed it.
+    ceiling bounds every result, so a task default can never exceed it. A larger
+    explicit host value is kept rather than lowered back to 30000.
     """
-    factor, floor = THINKING_MARGIN.get(kind, (1, 0))
-    return max(1, min(maximum, max(floor, int(base) * factor)))
+    base = int(base) if isinstance(base, int) and not isinstance(base, bool) else 0
+    if kind in STRUCTURED_KINDS:
+        return max(1, min(maximum, max(base, STRUCTURED_OUTPUT_TOKENS)))
+    factor, floor = SHORT_TASK_BUDGETS.get(kind, (1, 0))
+    return max(1, min(maximum, max(floor, base * factor)))
 
 
 def with_thinking_margins(profiles):

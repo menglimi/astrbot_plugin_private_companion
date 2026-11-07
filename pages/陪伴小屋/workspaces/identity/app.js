@@ -35,8 +35,6 @@
     person_nickname_revision_conflict: "成员资料刚刚被更新，正在读回最新版本。",
     person_nickname_operation_conflict: "这次称呼操作键已用于另一项修改，请重新保存。",
     person_nickname_operation_unresolved: "上一次称呼修改尚未完成，请刷新核对后重试。",
-    group_remark_command_invalid: "群聊备注或群聊路由无效，请刷新后重试。",
-    group_remark_revision_conflict: "群聊备注刚被其他管理窗口修改，已重新读取最新内容。",
     stranger_target_request_invalid: "这次添加缺少有效账号信息，请刷新页面后重试。",
     stranger_target_unavailable: "收到方不可用：无法核对这个账号的当前配置，记录已保留。",
     legacy_plan_stale: "配置刚被其他操作更新，页面已重新读取；请再确认一次。",
@@ -186,8 +184,8 @@
   }
   const groupRouteKey = (group) => JSON.stringify([groupBaseKey(group), personaIdsOf(group).length
     ? ["persona", personaIdsOf(group)] : ["role", group.role_id || ""]]);
-  const groupName = (group) => group.remark || group.display_name || group.group_name || `群 ${groupKey(group)}`;
-  const groupLabel = (group) => group.remark || group.display_name || group.group_name
+  const groupName = (group) => group.display_name || group.group_name || `群 ${groupKey(group)}`;
+  const groupLabel = (group) => group.display_name || group.group_name
     ? `${groupName(group)}（${groupKey(group)}）` : groupName(group);
   const groupRoleLabel = (group) => {
     const values = String(group?.role_name || "").split(/[、,，]/).map(value =>
@@ -323,8 +321,6 @@
       } else {
         previous.configured ||= Boolean(item.configured);
         previous.discovered ||= Boolean(item.discovered);
-        previous.remark ||= item.remark;
-        previous.remark_revision = Math.max(number(previous.remark_revision), number(item.remark_revision));
         previous.display_name ||= item.display_name || item.group_name;
         if (supplied) {
           previous.supplied = true;
@@ -952,29 +948,6 @@
     if (!preserveDetail || !selectedGroup) renderGroupDetail(selectedGroup);
   }
 
-  async function saveGroupRemark(group, input, button) {
-    button.disabled = true;
-    input.disabled = true;
-    try {
-      unwrap(await bridge.apiPost("acquaintance/group-remark", {
-        platform_id: group.platform_id, bot_id: group.bot_id,
-        account_id: group.account_id, group_id: groupKey(group),
-        remark: input.value, expected_revision: number(group.remark_revision),
-      }));
-      notice("群聊备注已保存");
-      await load({preserveNotice: true});
-    } catch (error) {
-      if (error?.code === "group_remark_revision_conflict") {
-        if (await load({preserveNotice: true})) notice(localized(error).message, true);
-      } else {
-        notice(localized(error).message, true);
-      }
-    } finally {
-      input.disabled = false;
-      button.disabled = input.value.trim() === (group.remark || "");
-    }
-  }
-
   function renderGroupDetail(group) {
     const panel = $("group-detail");
     panel.replaceChildren();
@@ -996,7 +969,7 @@
     const detail = node("div", undefined, "group-detail-inner");
     const head = node("header", undefined, "group-detail-head group-detail-hero");
     const title = node("div");
-    title.append(node("span", "GROUP SPACE", "eyebrow"), node("h3", groupName(group)), node("small", `平台 ID ${id}`),
+    title.append(node("span", "GROUP SPACE", "eyebrow"), node("h3", groupName(group)), node("small", `群号 ${id}`),
       node("small", `${groupDetailStatus(group)}${group.role_id ? ` · ${groupRoleLabel(group)}` : ""}`, "detail-subtitle"));
     const routeFacts = node("div", undefined, "group-route-facts");
     routeFacts.append(node("span", group.platform_id || group.platform || "平台待确认"),
@@ -1013,37 +986,7 @@
     metric("互动边", `${edges.length} 条`);
     metric("短时接话", `${number(network?.interaction_count)} 次`);
 
-    detail.append(head);
-    if (groupTargetRouteReady(group)) {
-      const form = node("form", undefined, "group-remark-form");
-      const label = node("label", "群聊备注", "group-remark-label");
-      label.htmlFor = "group-remark-input";
-      const input = node("input");
-      input.id = "group-remark-input";
-      input.type = "text";
-      input.maxLength = 64;
-      input.value = group.remark || "";
-      input.placeholder = "为这个群添加备注";
-      const save = node("button", "保存备注", "secondary group-access-button");
-      save.type = "submit";
-      save.disabled = true;
-      const clear = node("button", "清除备注", "secondary group-access-button");
-      clear.type = "button";
-      clear.hidden = !group.remark;
-      clear.addEventListener("click", () => {
-        input.value = "";
-        save.disabled = false;
-        input.focus();
-      });
-      input.addEventListener("input", () => { save.disabled = input.value.trim() === (group.remark || ""); });
-      form.addEventListener("submit", (event) => {
-        event.preventDefault();
-        if (!save.disabled) void saveGroupRemark(group, input, save);
-      });
-      form.append(label, input, save, clear);
-      detail.append(form);
-    }
-    detail.append(metrics);
+    detail.append(head, metrics);
     const access = node("section", undefined, "detail-section group-access-section");
       const accessHead = node("div", undefined, "group-members-head");
       accessHead.append(node("h4", "V2 群聊接入"), badge(group.configured ? "已接入" : "未接入",
@@ -1338,6 +1281,7 @@
     renderPeople();
     renderGroups({preserveDetail: preserveDetails});
     if (!preserveDetails) renderDetail();
+    fillStrangerAccounts();
     updateGraphFilters();
     updateFilterButtons();
   }
@@ -1530,6 +1474,67 @@
   function renderStrangers() {
     const list = $("stranger-list");
     if (list) list.replaceChildren(...strangerItems.map(strangerRow));
+    const empty = $("stranger-empty");
+    if (empty) empty.hidden = Boolean(strangerItems.length);
+  }
+
+  /* 手动提前建档：不等对方先发消息。收到方取自已配置的私聊目标账号，对方账号只允许
+     具体账号（后端也会拒绝通配符）。 */
+  function fillStrangerAccounts() {
+    const select = $("stranger-account");
+    const form = $("stranger-add");
+    if (!select || !form) return;
+    const accounts = Array.isArray(data?.group_access?.accounts) ? data.group_access.accounts : [];
+    const rows = accounts
+      .filter(item => item && item.platform_id && (item.account_id || item.bot_id))
+      .map(item => ({value: JSON.stringify([item.platform_id, item.account_id || item.bot_id]),
+        label: `${item.platform_id} · ${accountLabel(item)}`}));
+    if (!rows.length) { form.hidden = true; return; }
+    const previous = select.value;
+    select.replaceChildren(...rows.map(row => {
+      const option = document.createElement("option");
+      option.value = row.value;
+      option.textContent = row.label;
+      return option;
+    }));
+    if (previous && rows.some(row => row.value === previous)) select.value = previous;
+    form.hidden = false;
+  }
+
+  async function addStrangerManually(event) {
+    event?.preventDefault?.();
+    if (!bridge) return;
+    const select = $("stranger-account");
+    const peerInput = $("stranger-peer");
+    const button = $("stranger-submit");
+    const peer = String(peerInput?.value || "").trim();
+    if (!select?.value || !peer) {
+      notice("请先选择收到方并填写对方账号。", true);
+      return;
+    }
+    let route;
+    try {
+      route = JSON.parse(select.value);
+    } catch {
+      notice("收到方信息不完整，刷新页面后重试。", true);
+      return;
+    }
+    const [platformId, login] = Array.isArray(route) ? route : [];
+    if (!platformId || !login) {
+      notice("收到方信息不完整，刷新页面后重试。", true);
+      return;
+    }
+    if (!/^[^:*\s]{1,64}$/.test(peer)) {
+      notice("对方账号只能是具体账号，不能带通配符或空格。", true);
+      return;
+    }
+    if (button) button.disabled = true;
+    try {
+      await submitStrangerTarget({platform_id: platformId, login, peer});
+      if (peerInput) peerInput.value = "";
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   function strangerFailure(error) {
@@ -1650,7 +1655,8 @@
       notice(strangerFailure(error).message, true);
     } finally {
       strangerSubmitting = "";
-      await loadStrangers();
+      /* 回执已经落到行上；重读只用来核对，不等它，手动添加才能在保存后立刻清空输入。 */
+      void loadStrangers();
     }
   }
 
@@ -1668,7 +1674,7 @@
       const count = $("stranger-count");
       if (count) count.textContent = `${strangerItems.length} 人`;
       if (status) status.hidden = true;
-      section.hidden = !strangerItems.length;
+      section.hidden = false;
     } catch {
       // A failed read must not erase what the page already showed: keep the last
       // successful copy, put the rows back to that state, and say it is stale.
@@ -1679,7 +1685,7 @@
           : "没有读到最新记录，稍后刷新可重试。";
         status.hidden = false;
       }
-      section.hidden = !strangerItems.length;
+      section.hidden = false;
     }
   }
   async function supplementDirectory(sequence, edits) {
@@ -1815,6 +1821,7 @@
   $("open-private-access")?.addEventListener("click", () => {
     parent.postMessage({channel: "companion-workspace", kind: "open-settings", target: "private-access"}, "*");
   });
+  $("stranger-add")?.addEventListener("submit", addStrangerManually);
   document.addEventListener("companion-mappings-change", () => { if (bridge) void load(); });
   document.addEventListener("companion-navigate-failed", (event) => {
     notice(event.detail?.message || "目标入口暂时不可用，请重新读取群聊目录后再试。", true);

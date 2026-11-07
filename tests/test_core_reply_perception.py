@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, Mock
 
-from astrbot.core.agent.message import AudioURLPart, Message, TextPart, dump_messages_with_checkpoints
+from astrbot.core.agent.message import AudioURLPart, ImageURLPart, Message, TextPart, dump_messages_with_checkpoints
 from astrbot.core.provider.sources.fishaudio_tts_api_source import ProviderFishAudioTTSAPI
 from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA, inject_core_reply_prompt
@@ -11,6 +11,7 @@ from astrbot_host.core_reply_perception import (
     inject_core_reply_perception_context,
     inject_core_reply_perception_policy,
     rewrite_core_reply_video_state,
+    video_placeholder_paths,
     video_request_state,
 )
 from companion_v2.conversation.voice_reply import VoiceReplyPolicy
@@ -415,6 +416,15 @@ class CoreReplyVideoStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.classify(AudioURLPart(audio_url=AudioURLPart.AudioURL(
                 url="data:audio/aac;base64,AAAA"))), "absent")
+
+    def test_ordered_video_frames_are_distinct_from_a_path_placeholder(self):
+        frame = ImageURLPart(image_url=ImageURLPart.ImageURL(
+            url="data:image/png;base64,AAAA", id="companion-video-frame:0:0"))
+        self.assertEqual(self.classify(TextPart(text=self.PLACEHOLDER), frame), "sampled_frames")
+        request = NS(extra_user_content_parts=[TextPart(text=self.PLACEHOLDER)])
+        self.assertEqual(video_placeholder_paths(request), ("C:\\tmp\\clip.mp4",))
+        self.assertEqual(video_placeholder_paths(NS(extra_user_content_parts=[TextPart(text=(
+            "[Video Attachment in quoted message: name clip.mp4, ref https://example.invalid/clip.mp4]"))])), ())
 
     async def test_a_late_video_block_turns_the_payload_from_placeholder_to_injected(self):
         # 250000：外部视频插件还没跑，请求里只有核心写的占位文本，所以这里只能写

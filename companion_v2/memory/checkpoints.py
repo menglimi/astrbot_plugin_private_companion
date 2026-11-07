@@ -88,6 +88,12 @@ class MemoryCheckpointRecovery:
             parent = self.runtime.read_one("SELECT state FROM memory_reflections WHERE batch_id = ?", (parent_id,)) if parent_id else None
             if parent is None or parent["state"] == "complete":
                 return False
+        elif row["state"] == "running":
+            # A restart leaves an in-flight model call unknown. Settle the batch
+            # after the grace period so it stops reading as still running.
+            context = TaskContext.restore(json.loads(row["context_json"]))
+            return recovery.abandon_stale_running(self.reflection, context, row["batch_id"],
+                                                  self.reflection.tasks.now())
         elif row["state"] not in ("received", "modelled"):
             return False
         context = TaskContext.restore(json.loads(row["context_json"]))

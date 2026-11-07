@@ -59,17 +59,27 @@ class FakeReality:
         self.users.append(user_id)
         return {"available": True, "user_id": user_id}
 
-    def extension_control_preflight(self, alias, *, native=False):
+    def extension_control_preflight(self, alias, *, native=False, actor=None):
         if not native:
             raise ValueError("native control required")
         return "test-did"
 
-    async def extension_control_power(self, alias, is_on, *, native=False):
-        self.extension_control_preflight(alias, native=native)
+    async def extension_control_power(self, alias, is_on, *, native=False, actor=None):
+        self.extension_control_preflight(alias, native=native, actor=actor)
         self.calls += 1
         if self.fail:
             raise TimeoutError("unconfirmed")
         return {"alias": alias, "is_on": is_on, "confirmed": self.confirmed}
+
+    def extension_device_target(self, alias, *, native=False, actor=None):
+        return {"alias": alias, "binding_revision": "rev-1"}
+
+    def extension_device_profile(self, alias):
+        return {"alias": alias, "model": "lumi.acpartner.mcn02", "category": "空调类别",
+                "direct_control_supported": True,
+                "writable_properties": [{"key": "target_temperature", "name": "温度", "examples": ["26"], "hint": ""}],
+                "readable_properties": [{"key": "electric_power", "name": "电功率"}],
+                "actions": [], "unsupported_reason": ""}
 
 
 class FakeTickets:
@@ -128,6 +138,23 @@ class NativeRealityTogetherTests(unittest.IsolatedAsyncioTestCase):
         parsed = parse_result(result, request=req, side_effect=effect)
         self.assertEqual(parsed.state, result["state"])
 
+    async def test_device_inspect_is_a_read_only_profile_receipt(self):
+        reality = REALITY.NativeRealityProvider(FakeReality(), self.root / "reality", version=PRODUCT_VERSION)
+        req = request(reality, "reality.device.inspect", invocation="inspect",
+                      arguments={"alias": "客厅空调"})
+        result = await reality.execute(req, before_dispatch=lambda: True)
+        self.check_receipt(reality, req, result, SideEffect.NONE)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(result["result"]["alias"], "客厅空调")
+        self.assertEqual(result["result"]["writable_properties"][0]["name"], "温度")
+        self.assertIsNone(result["operation_id"])
+
+    async def test_device_inspect_requires_an_alias(self):
+        reality = REALITY.NativeRealityProvider(FakeReality(), self.root / "reality", version=PRODUCT_VERSION)
+        req = request(reality, "reality.device.inspect", invocation="inspect")
+        with self.assertRaises(REALITY.NativeRealityError):
+            await reality.execute(req, before_dispatch=lambda: True)
+
     async def test_manifest_and_read_receipts(self):
         reality_plugin = FakeReality()
         reality = REALITY.NativeRealityProvider(reality_plugin, self.root / "reality", version=PRODUCT_VERSION)
@@ -156,7 +183,8 @@ class NativeRealityTogetherTests(unittest.IsolatedAsyncioTestCase):
         # growing action face must be an explicit decision, not drift.
         self.assertEqual(REALITY._ACTIONS, {
             "reality.snapshot.read", "reality.camera.observe", "reality.device.list",
-            "reality.device.status", "reality.device.control", "reality.device.action",
+            "reality.device.status", "reality.device.inspect", "reality.device.control",
+            "reality.device.action",
             "reality.operation.lookup", "reality.operation.cancel",
         })
         self.assertEqual(TOGETHER._ACTIONS, {

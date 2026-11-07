@@ -506,7 +506,6 @@ class ProactiveContacts:
         for source in sources:
             if source.scope != context.scope:
                 raise TaskError("contact_source_scope", "contact evidence belongs to another window")
-            require(self.sources.validate_reference(source, observed_at=at))
             record = require(self.sources.read(source, resolved=context.actor, capability="text",
                 observed_at=at, authorizer=self.tasks.identity))
             if not set(context.audience.recipients).issubset(record.audience.recipients):

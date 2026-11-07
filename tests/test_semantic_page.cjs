@@ -146,6 +146,7 @@ function settingsCatalog(revision = 3, overrides = {}) {
     state: 'ready', selection_ready: true, providers: {embedding: [], rerank: [], analysis: []},
     settings: {revision, enabled: true, memory_enabled: true, reactions_enabled: true,
       reactions_private_enabled: true, reactions_group_enabled: false,
+      reactions_proactive_enabled: false,
       reactions_collection_private_enabled: false, reactions_collection_group_enabled: false,
       reactions_collection_private_probability: 0.1, reactions_collection_group_probability: 0.1,
       reactions_collection_mode: 'automatic',
@@ -163,6 +164,7 @@ function settingsCatalog(revision = 3, overrides = {}) {
 
 const FORM = {enabled: true, memory_enabled: true, reactions_enabled: true,
   reactions_private_enabled: true, reactions_group_enabled: false,
+  reactions_proactive_enabled: true,
   reactions_collection_private_enabled: true, reactions_collection_group_enabled: false,
   reactions_collection_private_probability: 15, reactions_collection_group_probability: 20,
   reactions_collection_mode: 'confirm',
@@ -325,6 +327,9 @@ test('expression settings expose per-scope collection controls and preserve stor
   await flush();
   assert.match(node.innerHTML, /从私聊自动收录/);
   assert.match(node.innerHTML, /从群聊自动收录/);
+  assert.match(node.innerHTML, /允许主动消息带图/);
+  assert.match(node.innerHTML, /模型要图后的发送概率 \/ %/);
+  assert.match(node.innerHTML, /不是每条回复\/主动消息的带图率/);
   assert.match(node.innerHTML, /私聊收录概率 \/ %/);
   assert.match(node.innerHTML, /value="10"/);
   assert.match(node.innerHTML, /semantic-catalog-stats/);
@@ -334,6 +339,7 @@ test('expression settings expose per-scope collection controls and preserve stor
   node.submit('semanticSettings', FORM);
   assert.equal(requests[1].values.changes.reactions_collection_private_probability, 0.15);
   assert.equal(requests[1].values.changes.reactions_collection_group_probability, 0.2);
+  assert.equal(requests[1].values.changes.reactions_proactive_enabled, true);
   assert.equal(requests[1].values.changes.reactions_delivery_mode, 'same_message');
   assert.equal(requests[1].values.changes.reactions_private_enabled, true);
 });
@@ -628,6 +634,21 @@ test('one catalog kind failing keeps the other kind and reports it', async () =>
   assert.match(node.innerHTML, /群黑话一条/, '读到的那个类型照常显示');
   assert.match(node.innerHTML, /部分素材读取失败/, '有类型读失败就必须提示，不能静默');
   assert.match(node.innerHTML, /语义模型调用失败/, '提示里保留具体原因');
+  page.unmount();
+});
+
+/* 语义库被后台写入占住时，提示不能指向嵌入模型（模型本身可能是好的）。 */
+test('a busy semantic catalog reports a retry instead of a model failure', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node, {view: 'expression'});
+  requests[0].resolve(settingsCatalog());
+  await flush();
+  node.click('[data-semantic]', {semantic: 'reindex'});
+  requests[1].reject(Object.assign(new Error('semantic catalog is busy'), {code: 'semantic_store_busy'}));
+  await flush();
+  assert.match(node.innerHTML, /语义库暂时忙/, '忙锁要说清楚是库忙');
+  assert.doesNotMatch(node.innerHTML, /语义模型调用失败/, '不能把库忙说成嵌入模型失败');
   page.unmount();
 });
 

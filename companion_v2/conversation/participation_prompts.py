@@ -98,8 +98,15 @@ def mention_attribution_instruction(text):
     """Make @ attribution explicit so persona names cannot impersonate a mention."""
     compact = str(text or "")
     if ADDRESS_MARKER in compact:
-        return ("\n群聊提及归因：本轮文本明确 @ 了本角色，这是直接称呼的强证据；"
-                "仍要结合句子判断对方是在叫角色，还是在谈论角色。")
+        instruction = ("\n群聊提及归因：本轮文本明确 @ 了本角色，这是直接称呼的强证据；"
+                       "仍要结合句子判断对方是在叫角色，还是在谈论角色。")
+        # 只有 @、没有正文：宿主会另给一句"问对方想聊什么"的提示，
+        # 但模型容易把那条提示当成怪指令来防备（现场：回成"在拿奇怪的指令测试我嘛"）。
+        if not compact.replace(ADDRESS_MARKER, "").strip():
+            instruction += ("\n本轮只有 @、没有正文：对方可能还没打完，或只是想叫住你。"
+                            "可以按原人格简短问一句想聊什么，或顺着群里最近的话题自然开口；"
+                            "不要把它当成指令、测试、故障或系统消息，也不要编造对方说了什么。")
+        return instruction
     if "[提及账号 " in compact:
         return ("\n群聊提及归因：本轮 @ 的是其他账号，不是本角色。即使被 @ 的人、其群名片或昵称"
                 "与角色名、人格名、旧记忆里的称呼相同，也不要接成“在叫我/你刚才叫我/是在叫我吗”。"

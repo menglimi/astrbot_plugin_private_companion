@@ -8,6 +8,7 @@ providing explicit window overrides. Personal permissions and private material
 remain on their user, device or relationship routes.
 """
 
+import asyncio
 import json
 import logging
 
@@ -28,6 +29,7 @@ from companion_v2.configuration.management import (AcquaintanceManagement, BusyG
                                                    ExpressionLearningManagement,
                                                    RoleProfileManagement,
                                                    RelationshipProfileManagement,
+                                                   SystemPromptManagement,
                                                    QzoneManagement,
                                                    RelayManagement,
                                                    ScreenManagement, WardrobeManagement)
@@ -35,6 +37,7 @@ from companion_v2.configuration.models import ConfigurationError
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.knowledge.configuration import KnowledgeSettings
+from companion_v2.storage.runtime import StorageOpenError
 
 from .knowledge_sources import AstrBotKnowledgeSources
 
@@ -62,6 +65,7 @@ SECTIONS = {"quota": ImageQuotaManagement, "image_review": ImageReviewManagement
             "knowledge": KnowledgeManagement, "life": DiaryAndRestManagement,
             "role_profile": RoleProfileManagement,
             "relationship_profile": RelationshipProfileManagement,
+            "system.prompts": SystemPromptManagement,
             "library": LibraryManagement,
             "wardrobe": WardrobeManagement, "photo.reference": ReferenceManagement,
             "group_participation": GroupParticipationManagement,
@@ -69,7 +73,7 @@ SECTIONS = {"quota": ImageQuotaManagement, "image_review": ImageReviewManagement
             "proactive.contact": ProactiveContactManagement}
 
 
-def _document(raw, *, expected):
+def _document(raw, *, expected, optional=()):
     def unique(pairs):
         result = {}
         for key, value in pairs:
@@ -80,7 +84,7 @@ def _document(raw, *, expected):
 
     data = json.loads(raw.decode("utf-8"), object_pairs_hook=unique,
                       parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite value")))
-    if type(data) is not dict or set(data) != expected:
+    if type(data) is not dict or not expected <= set(data) <= expected | set(optional):
         raise ValueError("unexpected or missing configuration fields")
     return data
 
@@ -158,37 +162,62 @@ class ConfigurationWebAPI:
                 raw = await request.body()
                 if len(raw) > 32768:
                     raise ValueError("configuration request is too large")
-                data = _document(raw, expected={"section", "operation_key", "edit_token", "changes"})
+                data = _document(raw, expected={"section", "operation_key", "edit_token", "changes"},
+                                 optional=("reset",))
                 if data["section"] not in self.sections:
                     raise TaskError("configuration_request_invalid", "unknown configuration section")
+                reset = data.get("reset", [])
                 if (type(data["operation_key"]) is not str or not data["operation_key"].strip()
                         or len(data["operation_key"]) > 128 or type(data["edit_token"]) is not str
-                        or len(data["edit_token"]) != 64 or type(data["changes"]) is not dict or not data["changes"]):
+                        or len(data["edit_token"]) != 64 or type(data["changes"]) is not dict
+                        or (not data["changes"] and not reset)
+                        or type(reset) is not list or any(type(name) is not str for name in reset)
+                        or len(set(reset)) != len(reset)):
                     raise ValueError("provide a stable operation key, edit token and explicit changes")
-            async with self.controller._control_lock:
-                controller = self.controller
-                if controller._terminated:
-                    raise TaskError("staging_host_terminated", "plugin is stopped")
-                session = controller.session or controller.last_session
-                if session is None or controller.runtime is None:
-                    raise TaskError("staging_not_initialized", "load the V2 profile first")
-                operator = dashboard_operator(controller.runtime, username, at=controller.now())
-                context = session.profile.target
-                if action == "status":
-                    result = Outcome.success(await self._status(session.application, context, operator, query,
-                                                                 host_context=controller.context))
-                else:
-                    editor = SECTIONS[data["section"]](session.application, context)
-                    result = editor.configure(operator, {key: data[key]
-                                                         for key in ("operation_key", "edit_token", "changes")})
-                    if result.is_success:
+            # 这里刻意不拿 controller._control_lock：同一个 Dashboard 里目录、
+            # 状态、模型等请求都可能在这把锁里跑上几秒，配置保存排在它们后面
+            # 就会撞上前端的 15 秒上限（表现出来就是「保存中…」很久 + 未确认）。
+            # 写入本身由 edit_token 与 tasks.check_generation() 两道栅栏保护，
+            # 不依赖控制锁串行；这里只取一次控制器当前快照。
+            controller = self.controller
+            if controller._terminated:
+                raise TaskError("staging_host_terminated", "plugin is stopped")
+            session = controller.session or controller.last_session
+            if session is None or controller.runtime is None:
+                raise TaskError("staging_not_initialized", "load the V2 profile first")
+            runtime = controller.runtime
+            application, context = session.application, session.profile.target
+            observed_at = controller.now()
+            if action == "status":
+                operator = await asyncio.to_thread(dashboard_operator, runtime, username, at=observed_at)
+                result = Outcome.success(await self._status(application, context, operator, query,
+                                                             host_context=controller.context))
+            else:
+                def write():
+                    operator = dashboard_operator(runtime, username, at=observed_at)
+                    editor = SECTIONS[data["section"]](application, context)
+                    body = {key: data[key] for key in ("operation_key", "edit_token", "changes")}
+                    if reset:
+                        body["reset_to_inherit"] = reset
+                    saved = editor.configure(operator, body)
+                    if saved.is_success:
                         # The operation receipt confirms the write. Pages refresh status
                         # separately so a slow projection cannot turn a committed write
                         # into an unconfirmed POST.
-                        result = Outcome.success({"result": result.unwrap()})
-                return outcome_response(result)
+                        return Outcome.success({"result": saved.unwrap()})
+                    return saved
+
+                # V2 存储是同步 SQLite（单连接 + 全局锁）。放到工作线程里执行，
+                # 事务再慢也只占用那个线程，不会卡住 AstrBot 的事件循环。
+                result = await asyncio.to_thread(write)
+            return outcome_response(result)
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            # 写入改到工作线程后，插件可能在两次取用之间完成重载并关掉运行时。
+            # 这时给一个可重试的明确结果，而不是让异常冒成 500。
+            return outcome_response(Outcome.failed(
+                "configuration_storage_unavailable", "the configuration store is not available"))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
             return outcome_response(Outcome.failed("configuration_request_invalid",
                                                    "invalid UTF-8 configuration request"))
@@ -205,7 +234,10 @@ class ConfigurationWebAPI:
         requested = tuple(section_names) if section_names is not None else self._requested(query)
         for name in requested:
             try:
-                result = self.sections[name](app, context).status(operator)
+                # 分区状态同样是一次同步 SQLite 投影；放到工作线程里读，
+                # 读取再慢也不会把事件循环按住。knowledge 的扩展来源
+                # 仍是异步接口，留在事件循环上取。
+                result = await asyncio.to_thread(self.sections[name](app, context).status, operator)
                 if result.failure is not None:
                     if len(requested) == 1:
                         raise TaskError(result.failure.code, result.failure.reason)

@@ -23,12 +23,14 @@ from companion_v2.conversation.voice_markup import slice_speech, visible_speech
 SEGMENTED_TTS_BUDGET_SECONDS = 8.0
 
 
-def voice_prompt_instruction(policy, provider_instruction=""):
+def voice_prompt_instruction(policy, provider_instruction="", rules_override=""):
     if not isinstance(policy, VoiceReplyPolicy):
         return ""
     from companion_v2.conversation.voice_reply import capability_instruction
 
-    return "\n".join(part for part in (capability_instruction(policy), policy.instruction, provider_instruction) if part)
+    rules = (policy.instruction_with_rules(rules_override)
+             if isinstance(rules_override, str) and rules_override.strip() else policy.instruction)
+    return "\n".join(part for part in (capability_instruction(policy), rules, provider_instruction) if part)
 
 
 def observe_core_voice_response(event, response):

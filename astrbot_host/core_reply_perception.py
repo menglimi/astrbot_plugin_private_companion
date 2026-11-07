@@ -593,7 +593,7 @@ async def inject_core_reply_perception_context(event, request, *, native_context
                 "audio": bool(getattr(request, "audio_urls", None)),
                 "structured_tools": bool(getattr(getattr(request, "func_tool", None), "tools", None)),
                 # 外部视频插件在本插件之后（-300000）才追加内容块，所以这里只能
-                # 看到它之前的样子；真实三态由 -1000000 的钩子就地重写
+                # 看到它之前的样子；最终视频状态由 -1000000 的钩子就地重写
                 # （rewrite_core_reply_video_state）。
                 "video": video_request_state(request),
             }
@@ -619,7 +619,7 @@ async def inject_core_reply_perception_context(event, request, *, native_context
         or details.get("astrbot_animated_image_understanding"))
 
 
-# ---- 本轮视频输入的三态 ----
+# ---- 本轮视频输入的状态 ----
 #
 # 视频不是 bool：核心写的只是一行路径占位符，画面进不进请求取决于另一个插件，
 # 而「模型看到文件名」和「模型看到画面」会让它给出完全不同的回答。压成一个
@@ -627,13 +627,18 @@ async def inject_core_reply_perception_context(event, request, *, native_context
 _VIDEO_ABSENT = "absent"
 _VIDEO_PLACEHOLDER_ONLY = "placeholder_only"
 _VIDEO_INJECTED = "injected"
+_VIDEO_SAMPLED_FRAMES = "sampled_frames"
+_VIDEO_NATIVE_SUMMARY = "native_summary"
+_VIDEO_NATIVE_AND_SAMPLED = "native_and_sampled"
+_VIDEO_FRAME_ID_PREFIX = "companion-video-frame:"
+_VIDEO_NATIVE_SUMMARY_PREFIX = "<companion_video_native_summary>"
 #: AstrBot 的 ContentPart 只有 text/think/image_url/audio_url 四种 type，没有
 #: video，所以外部视频插件借 audio_url 传原始视频；data URI 的 MIME 是唯一判据。
 _VIDEO_DATA_PREFIX = "data:video/"
 #: 核心把附件写成一行文本（astr_main_agent._append_video_attachment 与 File 分支）。
 _VIDEO_PLACEHOLDER_RE = re.compile(
     r"^\[(?P<kind>Video|File) Attachment(?: in quoted message)?: "
-    r"name (?P<name>.*?), (?:path|ref) .*\]$")
+    r"name (?P<name>.*?), (?P<location>path|ref) (?P<value>.*)\]$")
 #: QQ/NapCat 实测把用户发的视频当 File 组件投递，核心于是写 [File Attachment: ...]，
 #: 只有扩展名能区分视频和普通文件；`.ts` 不在表内：相比之下它更可能是源码。
 _VIDEO_SUFFIXES = frozenset({
@@ -661,36 +666,81 @@ def _is_video_placeholder(text):
     return Path((match.group("name") or "").strip()).suffix.lower() in _VIDEO_SUFFIXES
 
 
+def event_has_video(event):
+    """Recognize an original video component before AstrBot builds its request."""
+    parts = getattr(getattr(event, "message_obj", None), "message", ())
+    for part in parts if isinstance(parts, (list, tuple)) else ():
+        kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
+        if kind == "Video":
+            return True
+        if kind == "File" and Path(str(getattr(part, "name", "") or "")).suffix.lower() in _VIDEO_SUFFIXES:
+            return True
+    return False
+
+
+def video_placeholder_paths(request):
+    """Return direct video paths already resolved by AstrBot for this request."""
+    parts = getattr(request, "extra_user_content_parts", None)
+    paths = []
+    for part in parts if isinstance(parts, list) else ():
+        value = _part_text(part)
+        match = _VIDEO_PLACEHOLDER_RE.match(value.strip()) if isinstance(value, str) else None
+        if (match is not None and "in quoted message" not in value
+                and match.group("location") == "path" and _is_video_placeholder(value)):
+            paths.append(match.group("value"))
+    return tuple(paths)
+
+
+def _part_video_frame(part):
+    nested = (part.get("image_url") if isinstance(part, Mapping)
+              else getattr(part, "image_url", None))
+    identifier = nested.get("id") if isinstance(nested, Mapping) else getattr(nested, "id", None)
+    url = nested.get("url") if isinstance(nested, Mapping) else getattr(nested, "url", None)
+    return (isinstance(identifier, str) and identifier.startswith(_VIDEO_FRAME_ID_PREFIX)
+            and isinstance(url, str) and url.startswith("data:image/png;base64,"))
+
+
 def video_request_state(request):
     """这一份请求里，视频究竟以什么形态到了模型面前。
 
-    三态而不是 bool：``placeholder_only`` 表示模型手上只有一行文件名，画面要靠它
-    自己调工具去抽；``injected`` 表示原始视频块已经在请求里了；``absent`` 表示本轮
-    根本没有视频。占位符和内容块可以同时存在（外部插件成功后仍保留改写过的占位
-    文本），所以先数内容块、再看占位符。
+    ``placeholder_only`` 表示只有文件名；``native_summary`` 表示独立的原生视频
+    模型读了原视频并向核心请求提供临时转述；``sampled_frames`` 表示仅附抽帧图片；
+    ``native_and_sampled`` 表示多视频中两种形态并存；``injected`` 表示原视频块
+    被其它插件附上（AstrBot 可能仍在音频预处理时丢弃它）；``absent`` 表示无视频。
 
-    只认视频本身：外部插件把视频交给视觉服务、再把一段**文字**分析注入请求时，
-    请求里没有视频块，这里不会自称 ``injected`` —— 判断那种形态只能匹配该插件的
-    私有措辞，不为它写死。
+    本插件的原生转述有明确标记；外部插件把视频交给视觉服务、再把一段**文字**
+    分析注入请求时，这里不会把它误认成 ``native_summary`` 或 ``injected``。
 
     只读 ``request``，不查任何插件状态。
     """
     parts = getattr(request, "extra_user_content_parts", None)
-    injected = placeholders = 0
+    injected = frames = native = placeholders = 0
     for part in parts if isinstance(parts, list) else ():
         url = _part_video_url(part)
         if isinstance(url, str) and url.startswith(_VIDEO_DATA_PREFIX):
             injected += 1
             continue
+        if _part_video_frame(part):
+            frames += 1
+            continue
+        if isinstance(_part_text(part), str) and _part_text(part).startswith(_VIDEO_NATIVE_SUMMARY_PREFIX):
+            native += 1
+            continue
         if _is_video_placeholder(_part_text(part)):
             placeholders += 1
+    if native and frames:
+        return _VIDEO_NATIVE_AND_SAMPLED
+    if native:
+        return _VIDEO_NATIVE_SUMMARY
+    if frames:
+        return _VIDEO_SAMPLED_FRAMES
     if injected:
         return _VIDEO_INJECTED
     return _VIDEO_PLACEHOLDER_ONLY if placeholders else _VIDEO_ABSENT
 
 
 def rewrite_core_reply_video_state(request):
-    """在所有晚于本插件的请求钩子跑完之后，把视频三态就地改写进那段 JSON。
+    """在所有晚于本插件的请求钩子跑完之后，把视频状态就地改写进那段 JSON。
 
     感知 JSON 在 priority 250000 生成，那时外部视频插件（-300000）还没往请求里
     追加内容块，所以那份 JSON 只可能写着 absent/placeholder_only。这里不重新

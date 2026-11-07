@@ -651,10 +651,13 @@ class SharedTopologyBindingTests(GroupFixture, unittest.IsolatedAsyncioTestCase)
         self.assertTrue(result["data"]["started"], result)
         self.assertEqual([row["account_id"] for row in self.controller.config["multi_host"]["accounts"]], ["100"])
         saved = self.controller.config["multi_host"]
-        self.assertEqual(saved["targets"], original["targets"][:1])
+        self.assertEqual(saved["targets"][0], original["targets"][0])
+        self.assertEqual(saved["targets"][1]["participant_id"], "*")
+        self.assertEqual(saved["targets"][1]["bot_id"], "bot-a")
         self.assertEqual(saved["group_targets"], original["group_targets"][:2])
-        self.assertEqual([(target.target_id, target.participant_id) for target in self.controller.settings.targets],
-                         [("first", "200")])
+        settings_targets = [(target.target_id, target.participant_id) for target in self.controller.settings.targets]
+        self.assertEqual(settings_targets[0], ("first", "200"))
+        self.assertEqual(settings_targets[1][1], "*")
         self.assertTrue(all(row["bot_id"] == "bot-a" for row in saved["personas"]))
         native_host.remember_session_settings(unmapped.unified_msg_origin, {"persona_id": "second"})
         with patch("astrbot_host.native.sp.get_async", AsyncMock(return_value={})):
@@ -693,13 +696,15 @@ class SharedTopologyBindingTests(GroupFixture, unittest.IsolatedAsyncioTestCase)
         self.assertEqual(result["status"], "ok", result)
         self.assertTrue(result["data"]["started"], result)
         saved = self.controller.config["multi_host"]
-        self.assertEqual(saved["targets"][:1], original["targets"][:1])
+        self.assertEqual(saved["targets"][0], original["targets"][0])
         self.assertEqual(saved["group_targets"], original["group_targets"][:2])
-        template = saved["targets"][1]
-        self.assertEqual((template["platform_id"], template["account_id"], template["bot_id"],
-                          template["participant_id"]), ("qq-second", "101", "bot-b", "*"))
-        self.assertEqual(len(saved["targets"]), 2)
-        self.assertNotEqual(template["target_id"], "first")
+        template_a, template_b = saved["targets"][1], saved["targets"][2]
+        self.assertEqual((template_a["platform_id"], template_a["account_id"], template_a["bot_id"],
+                          template_a["participant_id"]), ("qq-main", "100", "bot-a", "*"))
+        self.assertEqual((template_b["platform_id"], template_b["account_id"], template_b["bot_id"],
+                          template_b["participant_id"]), ("qq-second", "101", "bot-b", "*"))
+        self.assertEqual(len(saved["targets"]), 3)
+        self.assertNotEqual(template_b["target_id"], "first")
         self.assertTrue(all(target.group_id != "*" for target in self.controller.settings.group_targets))
         self.assertEqual(self.native.provider.client.state.calls, [])
 
@@ -775,6 +780,51 @@ class SharedTopologyBindingTests(GroupFixture, unittest.IsolatedAsyncioTestCase)
         self.assertEqual([row["group_id"] for row in saved], group_ids)
         self.assertTrue(all(row["account_id"] == "100" and row["bot_id"] == "bot-a" for row in saved))
         self.assertTrue(all(row["group_id"] != "*" for row in saved))
+
+    async def test_unmanaged_native_group_stays_visible_to_the_account_picker(self):
+        """A group that is not configured yet must still be discoverable.
+
+        The shared settings already exist after the first-run upgrade, and they
+        contain only the migrated private target. Passing those settings used to
+        switch the inventory to "managed only", which hid every unconfigured
+        native group: the account page then rejected that group with
+        ``account_group_target_unavailable`` even though AstrBot had the session.
+        """
+        from astrbot_host.setup_api import SetupWebAPI
+        from tests.multi_host_support import multi_config
+
+        # The post-upgrade shape: one migrated private target, no group target.
+        self.controller = self.make_controller(multi_config())
+        private_umo = "qq-main:FriendMessage:200"
+        group_umo = "qq-main:GroupMessage:399"
+        conversation_ids = {private_umo: "private-cid", group_umo: "group-cid"}
+
+        async def current(umo):
+            return conversation_ids.get(umo)
+
+        async def read_sessions(*, platform, **_kwargs):
+            rows = [{"session_id": umo, "conversation_id": cid, "persona_id": "original"}
+                    for umo, cid in conversation_ids.items() if umo.startswith(platform + ":")]
+            return rows, len(rows)
+
+        self.native.conversation_manager.get_curr_conversation_id = current
+        self.native.conversation_manager.db = NS(get_session_conversations=read_sessions)
+        api = SetupWebAPI(self.controller)
+        request = NS(username="admin", query={})
+        with patch.object(self.controller.session_topology, "services",
+                          AsyncMock(return_value={})), \
+                patch("astrbot_host.setup_api.request", request), \
+                patch("astrbot_host.setup_api.display_names",
+                      return_value=NS(targets=AsyncMock(side_effect=lambda rows: rows))):
+            response = await api.api_targets()
+
+        self.assertEqual(response["status"], "ok", response)
+        targets = response["data"]["targets"]
+        groups = [row for row in targets if row.get("scope_kind") == "group"]
+        self.assertIn("399", {row["group_id"] for row in groups})
+        self.assertFalse(any(row["managed"] for row in groups))
+        private = next(row for row in targets if row.get("unified_msg_origin") == private_umo)
+        self.assertTrue(private["managed"])
 
     async def test_directory_timeout_keeps_all_configured_explicit_groups(self):
         async def blocked(**kwargs):

@@ -27,6 +27,14 @@ class WakeupAlarmMixin(RealityTouchCameraMixin, RealityTouchAudioMixin):
     _REALITY_TOUCH_CONFIRMATION_TEXT = "我理解风险并确认授权"
     _WAKEUP_CONTACT_ACTIVE_STATES = {"pending", "playing", "snoozed"}
     _WAKEUP_DELIVERY_MODES = {"audio_only", "audio_and_chat", "chat_on_failure"}
+    _WAKEUP_MODES = {
+        "gentle": {"repeat_count": 1, "repeat_interval_seconds": 180, "snooze_minutes": 15,
+                   "playback_volume": 25, "volume_step": 5, "max_volume": 55, "fade_in_ms": 1500},
+        "normal": {"repeat_count": 2, "repeat_interval_seconds": 90, "snooze_minutes": 10,
+                   "playback_volume": 35, "volume_step": 8, "max_volume": 70, "fade_in_ms": 800},
+        "persistent": {"repeat_count": 4, "repeat_interval_seconds": 45, "snooze_minutes": 5,
+                       "playback_volume": 40, "volume_step": 10, "max_volume": 85, "fade_in_ms": 300},
+    }
 
     def _reality_touch_consent(self, user: dict[str, Any]) -> dict[str, Any]:
         consent = user.get("reality_touch_consent")
@@ -717,6 +725,8 @@ class WakeupAlarmMixin(RealityTouchCameraMixin, RealityTouchAudioMixin):
             "alarm": {
                 "enabled": bool(alarm.get("enabled")),
                 "time": self._wakeup_parse_time(alarm.get("time")),
+                "deadline": self._wakeup_parse_time(alarm.get("deadline")),
+                "mode": _single_line(alarm.get("mode"), 16) or "normal",
                 "days": self._wakeup_days(alarm.get("days")) or list(range(7)),
                 "message": _single_line(alarm.get("message"), 240),
                 "message_mode": "dynamic",
@@ -889,27 +899,42 @@ class WakeupAlarmMixin(RealityTouchCameraMixin, RealityTouchAudioMixin):
             raise ValueError("该用户尚未在私聊中完成现实触及知情确认")
         days = self._wakeup_days(payload.get("days"))
         if not days:
-            raise ValueError("请至少选择一个重复日期")
+            # Morning care no longer exposes a weekday grid; every day is the
+            # default unless an older client explicitly sends a subset.
+            days = list(range(7))
         alarm = self._wakeup_alarm_for_user(user)
+        mode = _single_line(payload.get("mode"), 16).lower()
+        if mode not in self._WAKEUP_MODES:
+            mode = "normal"
+        mode_defaults = self._WAKEUP_MODES[mode]
+        deadline = self._wakeup_parse_time(payload.get("deadline")) if _single_line(payload.get("deadline"), 8) else ""
+        if deadline:
+            start_minutes = int(alarm_time[:2]) * 60 + int(alarm_time[3:])
+            end_minutes = int(deadline[:2]) * 60 + int(deadline[3:])
+            if end_minutes <= start_minutes:
+                raise ValueError("最晚时间需要晚于起床时间")
         alarm.update(
             {
                 "enabled": enabled,
                 "time": alarm_time,
+                "deadline": deadline,
+                "mode": mode,
                 "days": days,
                 "message": _single_line(payload.get("message"), 240),
-                "repeat_count": _safe_int(payload.get("repeat_count"), 1, 1, 6),
-                "repeat_interval_seconds": _safe_int(payload.get("repeat_interval_seconds"), 20, 5, 300),
+                "repeat_count": _safe_int(payload.get("repeat_count"), mode_defaults["repeat_count"], 1, 6),
+                "repeat_interval_seconds": _safe_int(payload.get("repeat_interval_seconds"),
+                                                    mode_defaults["repeat_interval_seconds"], 5, 300),
                 "require_acknowledgement": bool(payload.get("require_acknowledgement", True)),
-                "snooze_minutes": _safe_int(payload.get("snooze_minutes"), 10, 1, 120),
+                "snooze_minutes": _safe_int(payload.get("snooze_minutes"), mode_defaults["snooze_minutes"], 1, 120),
                 "playback_volume": _safe_int(
                     payload.get("playback_volume"),
-                    self._reality_touch_playback_volume(),
+                    mode_defaults["playback_volume"],
                     0,
                     100,
                 ),
-                "volume_step": _safe_int(payload.get("volume_step"), 8, 0, 30),
-                "max_volume": _safe_int(payload.get("max_volume"), 70, 0, 100),
-                "fade_in_ms": _safe_int(payload.get("fade_in_ms"), 800, 0, 5000),
+                "volume_step": _safe_int(payload.get("volume_step"), mode_defaults["volume_step"], 0, 30),
+                "max_volume": _safe_int(payload.get("max_volume"), mode_defaults["max_volume"], 0, 100),
+                "fade_in_ms": _safe_int(payload.get("fade_in_ms"), mode_defaults["fade_in_ms"], 0, 5000),
                 "delivery_mode": (
                     _single_line(payload.get("delivery_mode"), 32).lower()
                     if _single_line(payload.get("delivery_mode"), 32).lower() in self._WAKEUP_DELIVERY_MODES
@@ -1283,6 +1308,18 @@ class WakeupAlarmMixin(RealityTouchCameraMixin, RealityTouchAudioMixin):
             status = _single_line(session.get("status"), 24)
             if status not in self._WAKEUP_CONTACT_ACTIVE_STATES:
                 return
+            deadline = _single_line(alarm.get("deadline"), 8)
+            if deadline:
+                try:
+                    limit = self._wakeup_now().replace(
+                        hour=int(deadline[:2]), minute=int(deadline[3:]), second=0, microsecond=0)
+                except (TypeError, ValueError):
+                    limit = None
+                if limit is not None and self._wakeup_now() > limit:
+                    session.update({"status": "deadline", "completed_at": _now_ts(),
+                                    "next_attempt_at": 0})
+                    self._schedule_data_save(delay=0.2)
+                    return
             now_ts = _now_ts()
             next_attempt_at = _safe_int(session.get("next_attempt_at"), 0, 0)
             if next_attempt_at > now_ts:

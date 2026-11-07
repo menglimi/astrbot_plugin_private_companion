@@ -13,7 +13,7 @@ from companion_v2.conversation.content.access import ContentAccess, document
 from companion_v2.conversation.content.sources import ContentSources
 from companion_v2.execution.models import TaskContext, TaskError, digest, require
 from companion_v2.foundation.refs import AudienceRef, SourceRef, VersionRef
-from companion_v2.sources.dependencies import key, link
+from companion_v2.sources.dependencies import key, link, validation_batch
 from companion_v2.sources.governance import bind
 from companion_v2.sources.models import SourceRecord
 from companion_v2.sources.repositories import SourceRepository
@@ -94,6 +94,24 @@ class SourceValidationTraversalTests(ManagementFixture, unittest.IsolatedAsyncio
         self.sources.revoke(original.reference, expected_governance_revision=1, observed_at=NOW).unwrap()
         self.assertEqual(self.sources.validate_reference(derived.reference, observed_at=NOW).failure.code, "source_revoked")
 
+    def test_read_snapshot_batch_reuses_graph_but_rechecks_owner(self):
+        checked = []
+        guard = self.guard("review.batched", lambda record, at: checked.append(record.reference.source_id))
+        original = self.publish("batched-original", "review.batched")
+        derived = self.publish("batched-derived")
+        link(self.runtime, derived.reference, (original.reference,), NOW)
+        checked.clear()
+
+        with patch.object(self.runtime, "read_all", wraps=self.runtime.read_all) as read_all:
+            with validation_batch(self.runtime, NOW):
+                self.sources.validate_reference(derived.reference, observed_at=NOW).unwrap()
+                self.sources.validate_reference(derived.reference, observed_at=NOW).unwrap()
+                guard.close()
+                self.assertEqual(self.sources.validate_reference(derived.reference, observed_at=NOW).failure.code,
+                                 "source_owner_unavailable")
+        self.assertEqual(checked, ["batched-original", "batched-original"])
+        self.assertFalse(any("FROM source_dependencies" in call.args[0] for call in read_all.call_args_list))
+
     def test_failed_nested_checks_are_not_cached_when_the_owner_catches_them(self):
         failures, checks = [], []
 
@@ -128,6 +146,9 @@ class SourceValidationTraversalTests(ManagementFixture, unittest.IsolatedAsyncio
                                (*key(second.reference), *key(first.reference)))
         self.assertEqual(self.sources.validate_reference(first.reference, observed_at=NOW).failure.code,
                          "source_dependency_cycle")
+        with validation_batch(self.runtime, NOW):
+            self.assertEqual(self.sources.validate_reference(first.reference, observed_at=NOW).failure.code,
+                             "source_dependency_cycle")
 
         def recursive(record, at):
             require(self.sources.validate_reference(record.reference, observed_at=at))

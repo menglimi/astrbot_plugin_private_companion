@@ -535,7 +535,10 @@ class MobileGatewayMixin:
                 return
             result = notifier(user_id)
             if inspect.isawaitable(result):
-                await result
+                result = await result
+            if isinstance(result, dict) and result.get("accepted") is False and result.get("reason"):
+                logger.info('[RealityCompanion] 手机位置未触发主动联系 reason=%s',
+                            _clean(result.get("reason"), 80))
         except Exception as exc:
             logger.debug('[RealityCompanion] 手机位置主动联动暂时失败: %s', _clean(exc, 160))
 

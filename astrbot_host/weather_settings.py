@@ -11,6 +11,7 @@ from companion_v2.execution.models import TaskError, digest
 from .qweather_credentials import HOST_PATTERN, credentials_from_environment, read_credentials
 from .qweather_weather import configured_qweather_weather_port
 from .qweather_alerts import configured_qweather_alert_port
+from .nmc_alerts import configured_nmc_alert_port
 
 
 PROVIDERS = ("auto", "qweather", "open-meteo")
@@ -43,6 +44,21 @@ def normalize_host(value):
     if value and not HOST_PATTERN.fullmatch(value):
         raise ValueError("use the assigned QWeather API Host")
     return value
+
+
+class FallbackWeatherPort:
+    """Keep a live reading when the preferred source is temporarily unavailable."""
+
+    provider = "auto"
+
+    def __init__(self, primary, fallback):
+        self.primary, self.fallback = primary, fallback
+
+    async def fetch(self, location):
+        try:
+            return await self.primary.fetch(location)
+        except Exception:
+            return await self.fallback.fetch(location)
 
 
 class CachedWeatherPort:
@@ -81,8 +97,12 @@ class CachedWeatherPort:
 
 def configured_weather_ports(config):
     settings = weather_settings(config)
-    return (CachedWeatherPort(configured_qweather_weather_port(config), settings["refresh_minutes"]),
-            configured_qweather_alert_port(config))
+    primary = configured_qweather_weather_port(config)
+    if settings["provider"] == "auto" and getattr(primary, "provider", "") == "qweather":
+        from .weather import OpenMeteoWeatherPort
+        primary = FallbackWeatherPort(primary, OpenMeteoWeatherPort())
+    alert_port = configured_qweather_alert_port(config) or configured_nmc_alert_port()
+    return (CachedWeatherPort(primary, settings["refresh_minutes"]), alert_port)
 
 
 class WeatherHostSettings:

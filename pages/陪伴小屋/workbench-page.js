@@ -61,6 +61,8 @@ window.CompanionWorkbench = (() => {
     host_persona_changed: "角色人格已变化，请重新读取角色状态。",
     bridge_timeout: "连接超时，请核对连接后重试。",
     invalid_response: "返回数据不完整，请刷新核对。",
+    /* 宿主对未注册路由的拒绝：通常是插件更新后还没重载，或新角色路由尚未挂上。 */
+    plugin_route_missing: "这个页面的接口还没挂上：插件可能刚更新但未重载，或角色路由还没生效。先刷新本页再试；仍失败就在 AstrBot 插件页重载插件。",
     route_not_found: "当前页面请求的功能路由未注册；请把插件升级到最新版并重启 AstrBot 后重新打开。",
     "未找到该路由": "当前页面请求的功能路由未注册；请把插件升级到最新版并重启 AstrBot 后重新打开。",
     /* 表达学习分区（expression-page.js）走这个内核渲染，它的域内码放在这里，
@@ -941,10 +943,11 @@ window.CompanionWorkbench = (() => {
       if (!names.length) return "";
       let rows = names.map(name => fieldMarkup(s, container, name)).join("");
       if (journal && container.group === "role_profile" && group.id === "identity") {
+        /* 原来这里左侧还有一块 3:4 的虚线「像位」，只画姓名首字：
+           它不读头像、不可点击、对屏幕阅读器隐藏，纯粹占掉 96px 宽。
+           删掉这一格，六项基础身份按同一套紧凑两列排下去。 */
         const identityFields = ["name", "gender", "birthday", "age", "species", "occupation"];
-        const emblem = Array.from(String(s.draft?.name || "").trim())[0] || "设";
-        rows = `<div class="wb-identity-card"><div class="wb-identity-photo" aria-hidden="true">${e(emblem)}</div>`
-          + `<div class="wb-identity-rows">${identityFields.filter(name => names.includes(name))
+        rows = `<div class="wb-identity-card"><div class="wb-identity-rows">${identityFields.filter(name => names.includes(name))
             .map(name => fieldMarkup(s, container, name)).join("")}</div></div>`
           + names.filter(name => !identityFields.includes(name)).map(name => fieldMarkup(s, container, name)).join("");
       }
@@ -1063,6 +1066,7 @@ window.CompanionWorkbench = (() => {
       + `${icon(state.bad ? "alert-circle" : state.ok ? "check-circle-2" : "info")}`
       + `<span>${e(state.notice)}</span>`
       + (state.stale ? `<button type="button" class="button small" data-wb-action="reconcile"${state.busy || state.loading || state.pending ? " disabled" : ""}>核对最新配置</button>` : "")
+      + (!state.status && !state.stale ? `<button type="button" class="button small" data-wb-action="reload"${state.busy || state.loading ? " disabled" : ""}>重新读取</button>` : "")
       + `</div>`;
   }
 
@@ -1311,6 +1315,14 @@ window.CompanionWorkbench = (() => {
         if (!value || typeof value !== "object" || Array.isArray(value)) throw error("invalid_response");
         if (method !== "GET") clearReadCache();
         return value;
+      } catch (problem) {
+        /* 未注册的路由会被宿主直接拒绝，消息就是「未找到该路由」，没有机器码。
+           常见于插件刚更新但没重载，或角色路由还没挂上；换成可操作的提示，
+           别把宿主原文同时摊到四张卡上。 */
+        if (typeof problem?.message === "string" && /未找到该路由|route not found/i.test(problem.message)) {
+          throw error("plugin_route_missing");
+        }
+        throw problem;
       } finally { clearTimeout(timer); }
     }
 
@@ -1897,6 +1909,7 @@ window.CompanionWorkbench = (() => {
       if (!action) return;
       if (action === "save") { void save(false); return; }
       if (action === "retry") { void save(true); return; }
+      if (action === "reload") { void refresh({force: true}); return; }
       if (action === "reconcile") { void refresh(); return; }
       if (action === "reset") {
         if (state.stale) { void refresh({discardDraft: true}); return; }
@@ -2425,6 +2438,10 @@ window.CompanionWorkbench = (() => {
           state.notice = "当前配置已读取，请核对同时修改的设置。";
         } else if (keepDraft) state.notice = dirty()
           ? "已读取最新配置，你的改动已保留，保存后生效。" : "改动已与当前配置一致，无需再次保存。";
+        else if (options?.quiet && !dirty()) {
+          /* 保存后的补偿读取：基线已经确认过，保留「已保存」提示，
+             不要用「已读取最新配置」把它顶掉。 */
+        }
         else if (changed) state.notice = "已读取最新配置。";
         else if (retried) state.notice = "";
         state.loading = false;
@@ -2578,6 +2595,12 @@ window.CompanionWorkbench = (() => {
           relationship_profile: "companion:relationship-profile-updated"}[group];
         if (updatedEvent) document.dispatchEvent(new Event(updatedEvent));
         state.busy = false;
+        /* 服务端只回执、不回带新快照时（配置总线就是这样），本地基线还是
+           保存前的值：底部会继续写「有未保存的改动」，紧接着的补偿读取又会把
+           「已保存」覆盖成「改动已与当前配置一致，无需再次保存」——看起来像
+           根本没保存。回执已经确认写入的正是这些值，先把基线前移，让成功状态
+           立即可见；随后那次读取只负责校准服务端归一化后的值。 */
+        if (!freshValues) state.base = {...state.draft};
         /* 幂等重放：勾画两遍，视觉上区分「新写入」与「复用旧请求确认」。 */
         state.savedState = receipt.replayed ? " is-saved is-replayed" : " is-saved";
         state.ok = true;
@@ -2589,8 +2612,9 @@ window.CompanionWorkbench = (() => {
            但写入后 edit_token 已经轮换：不重新读一次，下一次保存会拿着旧令牌
            去撞版本冲突。这里补一次读取，让令牌与基线跟上。
            注意要放在 paint() 之后：refresh() 会自己重绘并给出「已读取」提示，
-           先读的话保存成功的动效就看不见了。 */
-        if (!freshValues) void refresh();
+           先读的话保存成功的动效就看不见了。
+           quiet：这次读取只校准基线，不该把刚给出的「已保存」换成别的提示。 */
+        if (!freshValues) void refresh({quiet: true});
         setTimeout(() => {
           if (state.savedState) { state.savedState = ""; paint(); }
         }, receipt.replayed ? 1800 : 1300);

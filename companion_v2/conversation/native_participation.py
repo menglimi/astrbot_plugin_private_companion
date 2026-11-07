@@ -79,6 +79,9 @@ def native_participation_turn(participation, context, native_input, settings):
     at = native_input.at
     visible, turns = participation.admission.native_participation_history(
         context, native_input.instruction, at=at, max_age_hours=max(48, values["group_context_max_age_hours"]))
+    merged_ids = set(getattr(native_input, "merged_event_ids", ()))
+    merged_ids.add(native_input.event_id)
+    visible = tuple(item for item in visible if item.get("event_id") not in merged_ids)
     recent_visible = tuple(item for item in visible
                           if (at - parse_moment(item["received_at"])).total_seconds() <= values["group_context_max_age_hours"] * 3600)
     current = {"kind": "member", "speaker_id": context.actor.principal.native_account_id,
@@ -91,6 +94,10 @@ def native_participation_turn(participation, context, native_input, settings):
                               context=SimpleNamespace(materials=()))
     hints = group_hints(request, context, settings, recent, {}, native=True,
                         current_text=native_input.text)
+    if len(merged_ids) > 1:
+        hints += ("\n本轮 current_source 已合并同一成员的连续纯文本补话；这些片段是一次表达，"
+                  "不代表多次叫你。先按完整意思判断要不要接话；接话时抓重点一次回应，"
+                  "不要按换行逐条追答。")
     observation = observe(participation.records, owner=owner_key(context), settings=values,
         items=(*recent_visible, current), at=at, current_speaker=context.actor.principal.native_account_id)
     hints += observation_instruction(values, observation["facts"], group_safety_settings(settings))

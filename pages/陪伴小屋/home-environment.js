@@ -93,14 +93,20 @@ window.CompanionHomeEnvironment = (() => {
       if (scene !== input.currentScene && typeof input.onSceneChange === "function"
         && input.onSceneChange(scene) !== false) input.currentScene = scene;
     }
-    const summary = weatherText(settings, location), condition = weather?.condition || "";
-    const icon = iconFor(condition);
+    const alert = Array.isArray(weather?.alerts) ? weather.alerts[0] : null;
+    const summary = weatherText(settings, location) + (alert ? ` · ${alert.event_name || alert.title}` : "");
+    const condition = weather?.condition || "";
+    const icon = alert ? "triangle-alert" : iconFor(condition);
     const canRefresh = settings.planning_weather_enabled === true && Boolean(location);
     const locationLabel = weather?.location || location || "角色地点未设置";
+    const severity = ({minor:"蓝色 · 一般",moderate:"黄色 · 较重",severe:"橙色 · 严重",extreme:"红色 · 特别严重"})[alert?.severity] || alert?.severity || "级别待核对";
+    const detail = alert
+      ? `官方预警 · ${severity}${alert.ends_at ? ` · 至 ${new Date(alert.ends_at).toLocaleString("zh-CN")}` : ""}`
+      : weatherDetail(settings, location);
     const timeISO = time.date.toISOString();
     host.innerHTML = `<div class="home-environment-icon" aria-hidden="true"><i data-lucide="${icon}"></i></div>
       <div class="home-environment-copy"><strong>${escapeHTML(locationLabel)} · ${escapeHTML(summary)}</strong>
-        <small>${escapeHTML(weatherDetail(settings, location))}</small></div>
+        <small>${escapeHTML(detail)}</small></div>
       <div class="home-environment-clock"><time datetime="${timeISO}">${time.label}</time><small class="home-environment-date">${escapeHTML(time.dateLabel)}</small><small>${escapeHTML(zone)} · ${time.phase}</small></div>
       <button type="button" class="home-environment-refresh" data-home-weather-refresh aria-label="刷新天气" title="刷新天气"
         aria-busy="${loading}" ${!canRefresh || loading ? "disabled" : ""}><i data-lucide="refresh-cw"></i></button>`;

@@ -24,6 +24,7 @@ const INDEX = read("index.html");
 const CSS = read("contact-page.css");
 const RAW_CSS = withoutComments(CSS);
 const JS = read("contact-page.js");
+const {assertStylesheetBundled} = require("./page-styles.cjs");
 const REDUCED_AT = RAW_CSS.indexOf("@media (prefers-reduced-motion:reduce)");
 const REDUCED = REDUCED_AT < 0 ? "" : RAW_CSS.slice(REDUCED_AT);
 
@@ -46,10 +47,11 @@ const animationName = body => {
   return /^[a-z][a-z0-9-]*$/i.test(first) ? first : null;
 };
 
-test("样式表与脚本都被 index.html 引用，并带缓存串", () => {
+test("样式表与脚本都被引用，并带缓存串", () => {
   /* 漏引的表现是「页面还有结构，只是丑」——预览页按同一份引用列表内联，
-     所以本地看起来也一致，目视检查发现不了。 */
-  assert.match(INDEX, /href="contact-page\.css\?v=[\w.-]+"/, "index.html 没有引用 contact-page.css");
+     所以本地看起来也一致，目视检查发现不了。样式表现在由 bundle.css 承载，
+     脚本仍然逐个加载。 */
+  assertStylesheetBundled("contact-page.css");
   assert.match(INDEX, /src="contact-page\.js\?v=[\w.-]+"/, "index.html 没有引用 contact-page.js");
 });
 

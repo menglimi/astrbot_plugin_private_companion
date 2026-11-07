@@ -59,7 +59,7 @@ function harness({withTabs = true} = {}) {
   const tabs=withTabs?[
     tab("config-environment"),tab("config-models"),tab("config-screen"),tab("config-health"),tab("config-news"),
   ]:[];
-  const workspace={id:"perceptionConfigWorkspace",hidden:true,scrollIntoView(){this.scrolled=true;},classList:{names:new Set(),toggle(name,on){on?this.names.add(name):this.names.delete(name);},contains(name){return this.names.has(name);}}};
+  const workspace={id:"perceptionConfigWorkspace",hidden:true,dataset:{},scrollIntoView(){this.scrolled=true;},classList:{names:new Set(),toggle(name,on){on?this.names.add(name):this.names.delete(name);},contains(name){return this.names.has(name);}}};
   const singleHead={id:"perceptionSingleItemHead",hidden:true};
   const singleTitle={id:"perceptionSingleItemTitle",textContent:""};
   const selections=[];
@@ -126,10 +126,13 @@ test("model links select the requested task route and external links stay on the
   assert.equal(view.workspace.scrolled,true);
 
   view.activate("config-balance:perception-detail-balance-source");
+  assert.equal(view.workspace.dataset.perceptionSection,"balance");
   assert.equal(view.pages[4].hidden,false);
   assert.equal(view.tabs[4].attributes["aria-selected"],"true");
   assert.equal(view.pages[1].hidden,true);
   assert.equal(view.balance.details[0].open,true);
+  view.closeSingle();
+  assert.equal(view.workspace.dataset.perceptionSection,undefined);
 });
 
 test("deep links focus their real section without collapsing sibling settings",()=>{

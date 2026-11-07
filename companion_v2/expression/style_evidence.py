@@ -409,7 +409,8 @@ class ExpressionSampleCatalog:
             if not rows:
                 try:
                     rows = self.runtime.read_all("""SELECT context_json FROM conversation_native_observations
-                        WHERE context_key = ? AND kind = 'input' ORDER BY observed_at DESC, rowid DESC LIMIT 1""",
+                        WHERE context_key = ? AND kind = 'input' AND delivery_state = 'input_observed'
+                        ORDER BY observed_at DESC, rowid DESC LIMIT 1""",
                         (key,))
                 except Exception:
                     rows = ()

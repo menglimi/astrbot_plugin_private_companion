@@ -3,12 +3,14 @@
 import asyncio
 import json
 import unittest
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import timedelta
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, patch
 
-from astrbot_host.acquaintance_api import AcquaintanceWebAPI, STRANGER_TARGET_PATH
+from astrbot_host.acquaintance_api import (AcquaintanceWebAPI, STRANGER_REMOVE_PATH,
+                                            STRANGER_TARGET_PATH)
 from astrbot_host.multi_settings import HostControlError, MultiHostSettings
 from astrbot_host.stranger_notice import CONTACT_KIND
 from companion_v2.execution.models import TaskError
@@ -139,6 +141,37 @@ class StrangerTargetApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_route_is_registered_beside_the_read_only_list(self):
         routes = {(path, tuple(methods)) for path, _, methods, _ in self.api.routes()}
         self.assertIn((STRANGER_TARGET_PATH, ("POST",)), routes)
+        self.assertIn((STRANGER_REMOVE_PATH, ("POST",)), routes)
+
+    async def test_removing_a_stranger_deletes_only_that_contact_row(self):
+        deleted = []
+
+        class _Connection:
+            def execute(self, sql, params):
+                deleted.append((sql, params))
+                return NS(rowcount=1)
+
+        @contextmanager
+        def transaction():
+            yield _Connection()
+
+        self.controller.runtime = NS(transaction=transaction)
+        with patch("astrbot_host.acquaintance_api.request",
+                   NS(username="admin", query=_Query(), body=_Body(self.payload()))):
+            result = await self.api.remove_stranger()
+        self.assertEqual(result["status"], "ok", result)
+        self.assertTrue(result["data"]["removed"])
+        self.assertEqual(len(deleted), 1)
+        self.assertIn("DELETE FROM memory_views", deleted[0][0])
+        self.assertEqual(deleted[0][1],
+                         ("stranger-contact:qq-main:100:999", CONTACT_KIND))
+
+    async def test_removing_a_stranger_rejects_unknown_fields(self):
+        with patch("astrbot_host.acquaintance_api.request",
+                   NS(username="admin", query=_Query(), body=_Body({**self.payload(), "extra": True}))):
+            result = await self.api.remove_stranger()
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["data"]["code"], "stranger_remove_request_invalid")
 
     async def test_one_exact_target_is_the_only_configuration_change(self):
         before = deepcopy(self.config)

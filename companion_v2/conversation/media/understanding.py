@@ -12,7 +12,7 @@ GROUP = "conversation.presentation"
 DEFAULTS = {
     "video_understanding_enabled": True,
     "video_understanding_max_chars": 2400,
-    "video_understanding_wait_seconds": 20,
+    "video_understanding_wait_seconds": 45,
     "video_understanding_prompt": "",
     "video_self_recognition_hint": "",
     "image_understanding_private_enabled": True,

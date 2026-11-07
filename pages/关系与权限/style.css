@@ -217,10 +217,6 @@ h3 { margin: 0; font-size: 16px; line-height: 1.4; }
 .group-detail-head > div { min-width: 0; flex: 1; }
 .group-detail-head h3 { overflow-wrap: anywhere; }
 .group-detail-head .badge { flex: none; }
-.group-remark-form { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.group-remark-label { flex: none; color: var(--muted); font-size: 11px; }
-.group-remark-form input { flex: 1 1 180px; min-width: 0; min-height: 34px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; }
-.group-remark-form .group-access-button { margin-top: 0; }
 .group-detail-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
 .group-detail-metrics > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; padding: 9px; background: var(--surface-soft); }
 .group-detail-metrics span { color: var(--quiet); font-size: 10px; }
@@ -986,11 +982,19 @@ select:focus-visible, textarea:focus-visible { outline: 3px solid color-mix(in s
 .stranger-contacts { margin: 0 0 16px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 .stranger-contacts .panel-note { margin: 4px 0 10px; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .stranger-contacts .stranger-status { color: var(--danger); }
+.stranger-add { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; margin: 0 0 10px; }
+.stranger-field { display: grid; gap: 4px; min-width: 0; flex: 1 1 180px; color: var(--muted); font-size: 12px; }
+.stranger-field select, .stranger-field input { min-height: 30px; padding: 4px 8px; border: 1px solid var(--line-strong);
+  border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12.5px; }
+.stranger-field input { width: 100%; box-sizing: border-box; }
+.stranger-add .secondary { min-height: 30px; padding: 4px 12px; font-size: 12px; }
+.stranger-empty { color: var(--muted); }
 .stranger-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 220px; overflow: auto; }
 .stranger-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; }
 .stranger-row.is-unavailable { background: color-mix(in srgb, var(--muted) 6%, var(--surface)); }
 .stranger-identity { display: grid; gap: 2px; min-width: 0; }
 .stranger-row strong { font-weight: 600; font-size: 12.5px; }
+.stranger-row small { color: var(--muted); font-size: 11.5px; }
 .stranger-row small { color: var(--muted); font-size: 11.5px; }
 .stranger-action { display: flex; align-items: center; gap: 8px; flex: none; }
 .stranger-action .secondary { min-height: 30px; padding: 4px 10px; font-size: 12px; }

@@ -33,6 +33,19 @@ logger = logging.getLogger(__name__)
 
 
 KIND = "memory.reflect"
+# A daily reflection can emit up to 32 proposals plus a summary. The chat reply
+# cap (often 2048) truncates that JSON, and the repair path then resends the
+# same material and truncates again. Extraction must not inherit the reply cap.
+REFLECTION_MIN_OUTPUT_TOKENS = 8192
+
+
+def reflection_output_tokens(configured):
+    """Return an output budget large enough for one reflection batch."""
+    try:
+        configured = int(configured or 0)
+    except (TypeError, ValueError):
+        configured = 0
+    return max(REFLECTION_MIN_OUTPUT_TOKENS, configured)
 
 
 def reflection_profile(provider, *, max_output_tokens=4096):

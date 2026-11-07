@@ -17,19 +17,21 @@
 /* 手机上左栏是顶部横条（shell.css 的 ≤760 规则），不是 76px 贴底栏。
    这里原先把浮层抬到 bottom:84px 给底栏让位，于是手机上「全部功能」
    无故悬空 84px；改成贴底的常规间距。 */
-.navigation-dialog{position:fixed;inset:auto 12px var(--sp-4);z-index:40;width:min(460px,calc(100% - 24px));max-height:min(74vh,690px);margin:0 auto;padding:0;border:1px solid #dce4ed;border-radius:var(--r-sm);background:#f8fafc;color:#354253;box-shadow:0 16px 48px #283b5360;overflow:auto}
+/* 「全部功能」浮层。颜色一律走 --t-* 令牌：它现在是每次都能随手打开的
+   主入口，写死的浅色值在夜间/胡桃木主题下会亮成一块白板。 */
+.navigation-dialog{position:fixed;inset:auto 12px var(--sp-4);z-index:40;width:min(460px,calc(100% - 24px));max-height:min(74vh,690px);margin:0 auto;padding:0;border:1px solid var(--t-line-firm);border-radius:var(--r-sm);background:var(--t-surface-raised);color:var(--t-text);box-shadow:var(--t-shadow-lift);overflow:auto}
 .navigation-dialog::backdrop{background:#1c2d4070}
-.navigation-dialog-head{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;padding:var(--sp-3) var(--sp-4);background:#f8fafcf2;border-bottom:1px solid #e0e6ee}
+.navigation-dialog-head{position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;padding:var(--sp-3) var(--sp-4);background:var(--t-veil);border-bottom:1px solid var(--t-line)}
 .navigation-dialog-head h1{font-size:var(--fs-head);line-height:1.4;font-weight:600}
 .navigation-list{padding:var(--sp-2) var(--sp-4) var(--sp-5)}
-.navigation-group{padding:var(--sp-2) 0 var(--sp-3);border-bottom:1px solid #e2e8ee}
+.navigation-group{padding:var(--sp-2) 0 var(--sp-3);border-bottom:1px solid var(--t-line)}
 .navigation-group:last-child{border:0}
-.navigation-group h2{padding:0 3px var(--sp-1);color:#7c8997;font-size:var(--fs-tiny);font-weight:500}
-.navigation-group .navigation-link{display:inline-flex;align-items:center;gap:var(--sp-2);width:calc(50% - 4px);min-height:42px;padding:var(--sp-2) var(--sp-2);margin:2px;text-align:left;color:#45556a;border-radius:var(--r-xs);font-size:var(--fs-body)}
+.navigation-group h2{padding:0 3px var(--sp-1);color:var(--t-text-soft);font-size:var(--fs-tiny);font-weight:500}
+.navigation-group .navigation-link{display:inline-flex;align-items:center;gap:var(--sp-2);width:calc(50% - 4px);min-height:42px;padding:var(--sp-2) var(--sp-2);margin:2px;text-align:left;color:var(--t-text);border-radius:var(--r-xs);font-size:var(--fs-body)}
 .navigation-link svg{width:17px;height:17px;flex:none}
-.navigation-link.active{background:#e7ecf8;color:#526499;font-weight:600}
-.navigation-link:hover{background:#ecf1f5}
-.rail-link:focus-visible,.mobile-nav-link:focus-visible,.navigation-link:focus-visible{outline:2px solid #5c78a5;outline-offset:2px}
+.navigation-link.active{background:var(--t-accent-quiet);color:var(--t-accent-ink);font-weight:600}
+.navigation-link:hover{background:var(--t-surface-soft)}
+.rail-link:focus-visible,.mobile-nav-link:focus-visible,.navigation-link:focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
 /* 配置页外壳已迁到 console.css（.console / .console-section / .boundary）。
    原有的 .config-page / .config-jump / .config-section* / .config-provider-* 已无引用，删除。 */
 /* 手机断点统一到 760（外壳栅格的实际切换点）。此前这里是 650，

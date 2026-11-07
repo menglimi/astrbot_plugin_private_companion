@@ -53,6 +53,23 @@ def latest_scope(runtime, scope):
         scope.kind.value, scope.native_scope_id, scope.bot_id, scope.account_id, scope.session_id)))
 
 
+def latest_input(runtime, context_key):
+    """Newest completed turn for this context that still has an input.
+
+    A text-less native message (image, sticker, video) is admitted as a turn
+    with ``input_observation_id = NULL``. Automatic contact must not stay frozen
+    on that turn until the user happens to send text again, so it anchors to the
+    newest turn that can still prove an authenticated input.
+    """
+    if not turns_available(runtime):
+        return None
+    return project(runtime.read_one("""SELECT * FROM conversation_native_turns
+        WHERE context_key = ? AND input_observation_id IS NOT NULL
+          AND input_observation_id <> ''
+          AND generation_state = 'completed' AND trim(role_instruction) <> ''
+        ORDER BY observed_at DESC, rowid DESC LIMIT 1""", (context_key,)))
+
+
 def context_rows(runtime, *, kind=None):
     if not turns_available(runtime):
         return ()

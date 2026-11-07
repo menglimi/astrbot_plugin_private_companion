@@ -47,6 +47,7 @@ class StrangerRoute:
     login: str
     peer: str
     client: object
+    group_id: str = ""
 
 
 def stranger_route(controller, event):
@@ -57,7 +58,10 @@ def stranger_route(controller, event):
         return None
     if raw.get("post_type") != "message" or raw.get("message_type") != "private":
         return None
-    if raw.get("group_id") is not None:
+    raw_group = raw.get("group_id")
+    group_id = account_number(raw_group) if raw_group not in (None, "", 0, "0") else ""
+    temporary = bool(group_id) and raw.get("sub_type") == "group"
+    if group_id and not temporary:
         return None
     login, peer = account_number(raw.get("self_id")), account_number(raw.get("user_id"))
     if not login or not peer:
@@ -87,7 +91,8 @@ def stranger_route(controller, event):
     client = platform.get_client()
     if not client._wsr_api_clients.get(login):
         return None
-    return StrangerRoute(meta.id, login, peer, client)
+    return StrangerRoute(meta.id, login, peer, client,
+                         group_id if temporary else "")
 
 
 class StrangerNotice:

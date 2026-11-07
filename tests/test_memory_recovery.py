@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from companion_v2.configuration.registry import FieldRegistry
-from companion_v2.execution.models import encode
+from companion_v2.execution.models import encode, stamp
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.memory.management import MemoryManagement
 from companion_v2.memory.reflection import reflection_profile
@@ -45,6 +45,35 @@ class MemoryRecoveryTests(HostFixture, unittest.IsolatedAsyncioTestCase):
 
     def atoms(self, app):
         return app.runtime.read_all("SELECT * FROM memory_atoms", ())
+
+    async def test_startup_settles_an_interrupted_running_batch_after_the_grace_period(self):
+        """重启后 in-flight 的批次不会永远停在 running。"""
+        host, context, prepared = await self.setup_manual()
+        app = host.application
+        batch_id = prepared["batch_id"]
+        with app.runtime.transaction() as connection:
+            connection.execute("UPDATE memory_reflections SET state = 'running', updated_at = ? WHERE batch_id = ?",
+                               (stamp(self.clock.now() - timedelta(hours=3)), batch_id))
+
+        self.assertTrue(reflection_recovery.abandon_stale_running(
+            app.memory_reflection, context, batch_id, self.clock.now()))
+
+        row = app.runtime.read_one("SELECT state, result_json FROM memory_reflections WHERE batch_id = ?", (batch_id,))
+        self.assertEqual(row["state"], "failed")
+        self.assertIn("memory_reflection_abandoned", row["result_json"])
+
+    async def test_a_running_batch_inside_the_grace_period_is_left_alone(self):
+        host, context, prepared = await self.setup_manual()
+        app = host.application
+        batch_id = prepared["batch_id"]
+        with app.runtime.transaction() as connection:
+            connection.execute("UPDATE memory_reflections SET state = 'running', updated_at = ? WHERE batch_id = ?",
+                               (stamp(self.clock.now() - timedelta(minutes=5)), batch_id))
+
+        self.assertFalse(reflection_recovery.abandon_stale_running(
+            app.memory_reflection, context, batch_id, self.clock.now()))
+        row = app.runtime.read_one("SELECT state FROM memory_reflections WHERE batch_id = ?", (batch_id,))
+        self.assertEqual(row["state"], "running")
 
     async def test_fenced_json_is_unwrapped_once_without_a_second_model_call(self):
         host, context, prepared = await self.setup_reflection()
@@ -438,6 +467,29 @@ class ReflectionOutputParsingTests(unittest.TestCase):
         self.assertNotIn(secret, saved)
         self.assertNotIn("fixture-password", saved)
         self.assertIn("[REDACTED]", saved)
+
+    def test_one_soft_detail_word_does_not_discard_the_whole_proposal(self):
+        """每日复盘曾整批 invalid_proposal：context_mode 写成了自由文本。"""
+        from companion_v2.memory.reflection_output import normalize_proposal
+
+        data = normalize_proposal({
+            "operation": "add", "evidence_handles": ["s1"], "predicate": "照片话题互动方式",
+            "object": "主动要求看自拍", "representation": "照片话题里的即时玩闹", "target": None,
+            "details": [{"field": "context_mode", "value": "轻松私聊、围绕照片的玩笑话题"},
+                        {"field": "single_value", "value": "true"},
+                        {"field": "polarity", "value": "不明确"},
+                        {"field": "retention", "value": "长期"},
+                        {"field": "valid_to", "value": "下周"}]}, {"fact_handles": {}})
+
+        self.assertNotIn("context_mode", data, "自由文本的 context_mode 应回落到默认 relevant")
+        self.assertIs(data["single_value"], True)
+        self.assertEqual(data["polarity"], "uncertain")
+        self.assertEqual(data["retention"], "durable")
+        self.assertNotIn("valid_to", data, "解析不了的时间不能带进 Proposal")
+
+        pinned = normalize_proposal({"operation": "add", "evidence_handles": ["s1"],
+            "details": [{"field": "context_mode", "value": "置顶"}]}, {"fact_handles": {}})
+        self.assertEqual(pinned["context_mode"], "pinned")
 
 
 if __name__ == "__main__":

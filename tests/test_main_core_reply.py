@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.conversation.private_debounce import Policy
+from astrbot_host.group_debounce import GroupDebounce
 from companion_v2.conversation.voice_reply import VoiceReplyPolicy
 from tests.test_main_no_reply import ENTRY
 
@@ -138,6 +139,70 @@ class MainCoreReplyTests(unittest.IsolatedAsyncioTestCase):
         await plugin.observe_companion_core_reply_sent(event)
         self.assertIs(event.send.__self__, event)
         self.assertIs(event.send.__func__, CoreReplyEvent._send)
+
+    async def test_face_only_private_turn_opens_no_follow_up_window(self):
+        """纯表情消息没有正文，不能开「等首个模型请求」的合并窗口。
+
+        窗口一旦开着，后来的普通消息会被并进这轮永远不会发出的回复里并被抑制，
+        表现就是「发一个表情卡住整个对话」。
+        """
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        first, second = CoreReplyEvent(), CoreReplyEvent()
+        first.message_obj.message = [NS(type="Face", id="13")]
+        first.message_obj.message_id = "native-face"
+        first.message_str = "[表情:13]"
+        second.message_obj.message = [NS(type="Plain", text="正经说话")]
+        second.message_obj.message_id = "native-text"
+        second.message_str = "正经说话"
+        target = NS(key="target", target_id="target")
+        plan = NS(captured=NS(text="正经说话"), context=NS(key="context"),
+                  debounce=Policy(enabled=False))
+        prepared_by_event = {
+            "native-face": {
+                "context": object(), "instruction": "Use this companion persona.",
+                "prompt_instruction": "Reply conversationally.",
+                "stable_prompt_instruction": "Use the configured companion voice.",
+                "target_id": "target", "channel": "private", "event_id": "native-face",
+                "event_ref": "event-face", "text": "",
+                "native_input": NS(text="", event_id="native-face"),
+            },
+            "native-text": {
+                "context": object(), "instruction": "Use this companion persona.",
+                "prompt_instruction": "Reply conversationally.",
+                "stable_prompt_instruction": "Use the configured companion voice.",
+                "target_id": "target", "channel": "private", "event_id": "native-text",
+                "event_ref": "event-text", "text": "正经说话",
+                "native_input": NS(text="正经说话", event_id="native-text"),
+            },
+        }
+
+        async def prepare(_event, _target, **_kwargs):
+            return Outcome.success(prepared_by_event[_event.message_obj.message_id])
+
+        staging = NS(
+            runtime=None, now=lambda: None, claims=lambda _event: True,
+            target_for_event=lambda _event: target,
+            settings=NS(enabled=True),
+            session=NS(profile=NS(target=target)),
+            session_topology=NS(reply_enabled=AsyncMock(return_value=True), schedule_observe=Mock()),
+            prepare_core_reply_context=AsyncMock(return_value=Outcome.success(plan)),
+            prepare_core_reply=AsyncMock(side_effect=prepare),
+            authorize_core_reply=AsyncMock(return_value=Outcome.success(True)),
+        )
+        plugin.staging = staging
+        staging.session.core_reply_observations = NS(phase=Mock())
+
+        await plugin.receive_companion_message(first)
+        self.assertIsNone(plugin._private_reply_followups().active_for("target"))
+        self.assertTrue(first.is_wake)
+
+        await plugin.receive_companion_message(second)
+        # 第二条消息没有被并进表情轮：它自己走完准入并交给核心。
+        self.assertEqual(staging.prepare_core_reply.await_count, 2)
+        self.assertTrue(second.is_wake)
+        window = plugin._private_reply_followups().active_for("target")
+        self.assertIsNotNone(window)
+        self.assertIs(window.event, second)
 
     async def test_post_debounce_follow_up_joins_the_first_pending_model_request(self):
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
@@ -561,6 +626,66 @@ class MainCoreReplyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(event.is_at_or_wake_command)
         state = event.get_extra("_companion_v2_core_reply_context")
         self.assertEqual(state["prepared"]["channel"], "group")
+
+    async def test_group_text_burst_runs_one_candidate_on_latest_event(self):
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        plugin._group_debounce = GroupDebounce(policy=Policy(
+            min_seconds=0.03, max_seconds=0.05, total_seconds=0.12))
+        first, second = CoreReplyEvent(), CoreReplyEvent()
+        for event, text, message_id in (
+                (first, "小星", "group-first"),
+                (second, "帮我看看这个方案？", "group-latest")):
+            event.message_obj.type = NS(value="GroupMessage")
+            event.message_obj.sender = NS(user_id="200")
+            event.message_obj.message_id = message_id
+            event.message_obj.message = [NS(type="Plain", text=text)]
+            event.message_str = text
+            event.created_at = 1_700_000_000 if event is first else 1_700_000_001
+        target = NS(key="group-target", target_id="group-target")
+
+        async def candidate(event, **kwargs):
+            self.assertIs(event, second)
+            self.assertEqual(event.message_str, "小星\n帮我看看这个方案？")
+            self.assertEqual(kwargs["merged_event_ids"], ("group-first",))
+            self.assertEqual(kwargs["latest_native_text"], "帮我看看这个方案？")
+            return NS(failure=None, unwrap=lambda: {
+                "admitted": True, "reason": "direct_word", "mentioned": False,
+                "context_key": "group-context", "event_id": "group-latest"})
+
+        async def prepare(event, _target, **kwargs):
+            self.assertIs(event, second)
+            self.assertEqual(kwargs["group_admission"]["debounced_event_ids"], ("group-first",))
+            return Outcome.success({
+                "context": object(), "instruction": "Group persona", "prompt_instruction": "Reply naturally",
+                "target_id": "group-target", "channel": "group", "event_id": "group-latest",
+                "text": event.message_str, "native_input": NS(text=event.message_str),
+            })
+
+        staging = NS(runtime=None, now=lambda: None, claims=lambda _event: True,
+            target_for_event=lambda _event: target,
+            session=NS(profile=NS(target=target)), settings=NS(enabled=True),
+            session_topology=NS(reply_enabled=AsyncMock(return_value=True), schedule_observe=Mock()),
+            group_reply_candidate=AsyncMock(side_effect=candidate),
+            prepare_core_reply=AsyncMock(side_effect=prepare),
+            authorize_core_reply=AsyncMock(return_value=Outcome.success(True)))
+        plugin.staging = staging
+
+        with patch.object(ENTRY, "group_event_route", side_effect=lambda event: NS(sender_id="200")):
+            first_task = asyncio.create_task(plugin.receive_companion_message(first))
+            await asyncio.sleep(0.01)
+            second_task = asyncio.create_task(plugin.receive_companion_message(second))
+            await asyncio.wait_for(asyncio.gather(first_task, second_task), 2)
+
+        staging.group_reply_candidate.assert_awaited_once_with(
+            second, merged_event_ids=("group-first",), latest_native_text="帮我看看这个方案？")
+        staging.prepare_core_reply.assert_awaited_once()
+        self.assertFalse(first.is_wake)
+        self.assertTrue(second.is_wake)
+        prepared = second.get_extra(ENTRY.CORE_REPLY_CONTEXT_EXTRA)["prepared"]
+        self.assertEqual(prepared["debounced_message_count"], 2)
+        self.assertEqual([item["text"] for item in prepared["debounced_inputs"]],
+                         ["小星", "帮我看看这个方案？"])
+        await plugin._group_debounce.close()
 
     async def test_slow_directory_observation_does_not_delay_intake_or_model_response(self):
         from astrbot_host.session_topology import SessionTopology

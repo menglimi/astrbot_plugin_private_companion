@@ -17,6 +17,8 @@ window.CompanionSemanticPage = (() => {
     semantic_stopped:"语义服务所在的后台已停止，请重新读取角色状态。",
     supervisor_fenced:"语义服务暂不可用，请重新读取。",
     semantic_model_failed:"语义模型调用失败，请核对嵌入模型配置后重试。",
+    semantic_store_busy:"语义库暂时忙（有后台任务正在写入），请稍后重试。",
+    semantic_operation_failed:"这次操作没有完成，请稍后重试；持续出现请看插件日志。",
     semantic_conflict:"配置已变化，请刷新核对最新版本。",
     semantic_item_missing:"这条素材已不存在，请刷新列表。",
     semantic_result_changed:"结果已变化，请刷新后核对。",
@@ -34,10 +36,14 @@ window.CompanionSemanticPage = (() => {
     || errors[failure?.message]
     || fallback;
   const reactionFlags = new Set(["reactions_enabled","reactions_private_enabled","reactions_group_enabled",
+    "reactions_proactive_enabled",
     "reactions_collection_private_enabled","reactions_collection_group_enabled","vision_review"]);
   const flags = [["enabled","启用语义目录"],["memory_enabled","语义记忆检索"],
     ["reactions_enabled","启用表情包表达"],["reactions_private_enabled","私聊使用表情包"],
     ["reactions_group_enabled","群聊使用表情包"],
+    /* 主动消息带图不是“概率”能单独控制的：模型先要提出 reaction_intent，
+       这一项决定那次请求是否允许真正附图。默认关闭，必须可从这里打开。 */
+    ["reactions_proactive_enabled","允许主动消息带图"],
     ["reactions_collection_private_enabled","从私聊自动收录"],
     ["reactions_collection_group_enabled","从群聊自动收录"],
     ["slang_enabled","群聊黑话目录"],["slang_learning","黑话自动学习"],
@@ -46,7 +52,9 @@ window.CompanionSemanticPage = (() => {
   const semanticNumberFields = [["timeout_seconds","模型超时 / 秒",1,30],["batch_size","索引批次",1,64],
     ["learning_interval_seconds","群词义整理间隔 / 分钟",1,1440],
     ["slang_web_search_candidates","联网检索词数 / 个",1,12],["slang_web_search_results","每词参考条数",1,5]];
-  const reactionNumberFields = [["reactions_trigger_probability","自动发送概率 / %",0,100,1],
+  /* 这个概率只在模型已经要图之后生效，不是“每条主动/回复会带图的概率”。
+     旧标签“自动发送概率”会让 20% 看起来像整体带图率，和实际差一个模型决策。 */
+  const reactionNumberFields = [["reactions_trigger_probability","模型要图后的发送概率 / %",0,100,1],
     ["reactions_cooldown_seconds","发送间隔 / 秒",0,3600,1],
     ["reactions_collection_private_probability","私聊收录概率 / %",0,100,1],
     ["reactions_collection_group_probability","群聊收录概率 / %",0,100,1]];
@@ -208,6 +216,7 @@ window.CompanionSemanticPage = (() => {
     currentViewSelects.forEach(([id,label,choices])=>html+='<label>'+label+'<select name="'+id+'">'+choices.map(([value,text])=>'<option value="'+escape(value)+'" '+(shown[id]===value?'selected':'')+'>'+escape(text)+'</option>').join('')+'</select></label>');
     if(currentViewProviders.length||currentViewNumbers.length||currentViewSelects.length)html+='</div>';
     if(currentViewProviders.length&&!(state.providers?.embedding||[]).length)html+='<p class="semantic-meta">没有读到向量模型。请先在 AstrBot 的模型服务页添加 embedding 类型的 Provider，再回到这里选择。</p>';
+    if(view==="expression")html+='<p class="semantic-meta">表情先由角色模型决定要不要用；这里的概率只在模型已经要图之后生效，不是每条回复/主动消息的带图率。主动消息还要开启「允许主动消息带图」。</p>';
     html+='<div class="semantic-actions"><button class="button primary" type="submit" '+(busy?"disabled":"")+'>'+(draft?'保存草稿':'保存配置')+'</button>';
     /* 冲突时更要能放弃：否则用户只剩「按新版本再存一次」一条路。 */
     if(draft)html+='<button class="button" type="button" data-semantic="discard">放弃草稿</button>';

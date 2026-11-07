@@ -140,6 +140,8 @@ class _CurrentReplyContext:
 
 
 def _remember_sent_text(event, message):
+    from .core_reply_idempotency import remember_native_tool_message
+    remember_native_tool_message(event, message)
     text = message.get_plain_text().strip()
     if text:
         key = "_send_message_to_user_current_session_plain_texts"

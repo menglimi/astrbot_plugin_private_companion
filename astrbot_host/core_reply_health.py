@@ -1,4 +1,8 @@
-"""Read opt-in, consented health material for one private core reply."""
+"""Read opt-in, consented mobile material for one private core reply.
+
+``authorized_mobile_snapshot`` owns the shared private-window gate; health and
+the phone foreground summary project the same snapshot differently.
+"""
 
 from __future__ import annotations
 
@@ -55,12 +59,14 @@ def _role_enabled(runtime, context):
     return bool(selection and selection.enabled)
 
 
-def health_perception_snapshot(application, context, at):
-    """Return a bounded health projection only for an authorized private window.
+def authorized_mobile_snapshot(application, context):
+    """Return the mobile snapshot this private window is allowed to read.
 
-    The mobile telemetry cache is already scoped to the current private user.
-    We still verify role enablement and per-window consent here so a disabled
-    Reality capability can never leak stale health data into a model request.
+    The gateway cache is already scoped to the current private user.  Role
+    enablement and per-window consent are checked here once, so no consumer
+    can turn a disabled Reality capability into a model-visible reading.
+    Health and the phone foreground summary share this gate; each projects the
+    snapshot differently and owns its own failure handling.
     """
     if getattr(getattr(context, "scope", None), "kind", None) != ScopeKind.PRIVATE:
         return None
@@ -78,10 +84,22 @@ def health_perception_snapshot(application, context, at):
         user_id = getattr(principal, "native_account_id", "") if principal is not None else ""
         if not isinstance(user_id, str) or not user_id.strip():
             return None
-        return project_health_context(service.mobile_context(user_id.strip()), observed_at=at)
+        return service.mobile_context(user_id.strip())
+    except Exception as error:
+        logger.warning("[CompanionV2] 核心回复手机感知降级 error_type=%s", type(error).__name__)
+        return None
+
+
+def health_perception_snapshot(application, context, at):
+    """Return a bounded health projection only for an authorized private window."""
+    snapshot = authorized_mobile_snapshot(application, context)
+    if snapshot is None:
+        return None
+    try:
+        return project_health_context(snapshot, observed_at=at)
     except Exception as error:
         logger.warning("[CompanionV2] 核心回复健康感知降级 error_type=%s", type(error).__name__)
         return None
 
 
-__all__ = ["health_perception_snapshot"]
+__all__ = ["authorized_mobile_snapshot", "health_perception_snapshot"]

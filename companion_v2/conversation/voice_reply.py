@@ -9,6 +9,7 @@ import re
 from companion_v2.conversation.segment_control import controlled_parts
 from companion_v2.execution.models import digest, stamp
 from companion_v2.foundation.refs import ScopeKind
+from companion_v2.system_prompts.catalog import VOICE_RULES
 from .voice_markup import (
     VOICE_PROTOCOL_GT, VOICE_PROTOCOL_LT, VOICE_TAG_NAME_PATTERN, canonical_voice_tag,
     slice_speech, strip_performance_controls, visible_speech,
@@ -49,11 +50,13 @@ def requested_voice_language(input_text):
         return ""
 
     for language, name in _TURN_LANGUAGE_NAMES.items():
+        # 说/讲/聊/唱/念/读 都算“指定朗读语种”；V1 时代用户会用「用中文唱」
+        # 这种说法，动词表里少了「唱」就会静默沿用保存的语种。
         chinese_request = re.search(
-            rf"(?:请|麻烦|这次|这回|本次|接下来)?\s*(?:用|以)\s*{name}\s*(?:语音)?\s*[，,、\s]*(?:跟我|对我|给我)?\s*(?:回复|回答|答复|说|讲|朗读|念|读)(?:一句|一段|一下)?",
+            rf"(?:请|麻烦|这次|这回|本次|接下来)?\s*(?:用|以)\s*{name}\s*(?:语音)?\s*[，,、\s]*(?:跟我|对我|给我)?\s*(?:回复|回答|答复|说|讲|聊|唱|哼|朗读|念|读)(?:一句|一段|一首|一下)?",
             text, re.I,
         ) or re.search(
-            rf"(?:请|麻烦)?\s*{name}\s*(?:语音)?\s*(?:回复|回答|答复|朗读|念|读)", text, re.I,
+            rf"(?:请|麻烦)?\s*{name}\s*(?:语音)?\s*(?:回复|回答|答复|说|讲|聊|唱|朗读|念|读)", text, re.I,
         )
         if chinese_request:
             return language
@@ -212,11 +215,12 @@ class VoiceReplyPolicy:
 
     @property
     def instruction(self):
+        return self.instruction_with_rules("")
+
+    def instruction_with_rules(self, rules=""):
         if not self.uses_model_tags:
             return ""
-        prompt = ("标签内就是要朗读、给用户看的那句话：标签外不再复述同一句，只写另说的内容。"
-                  "停顿、呼吸等表演指令只用方括号，如 [pause]，不要写成 <pause>。"
-                  "只有实际要朗读的原文放在 <pc_tts> 与 </pc_tts> 之间；标签内不放分段标记、代码、链接或图片说明。")
+        prompt = rules.strip() if isinstance(rules, str) and rules.strip() else VOICE_RULES
         if self.conversion_scope == "partial":
             prompt = "按本轮语境选取适合口述的自然短句放进语音标签，其余内容保留为文字；无需让语音覆盖整条回复。" + prompt
         elif self.trigger_mode == "request":
@@ -225,10 +229,6 @@ class VoiceReplyPolicy:
             prompt = "本轮采用语音回复，普通短句也将完整口语回应放进语音标签，不必等用户重复请求。" + prompt
         else:
             prompt = "本轮按语境决定是否使用语音；适合口述的内容写入语音标签，没有合适内容时直接写普通正文。" + prompt
-        prompt += (
-            "标签由程序消费，不向用户解释或当作代码展示。代码、链接等适合阅读的内容留在标签外；"
-            "本轮明确要求只用文字时，尊重这次要求。"
-        )
         if self.conversion_scope == "full" and self.trigger_mode in {"always", "request"}:
             prompt += "同一条回复若自然分成多段，各段都保持一致的语音标签与可见文字配对；不要只给前几段加标签，却把后续仍属于本次口语回应的内容留在标签外。"
         prompt += f"每段朗读控制在 {self.max_speech_chars} 字以内；较长内容按自然语意停顿分成多个语音标签。"

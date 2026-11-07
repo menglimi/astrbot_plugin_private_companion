@@ -297,22 +297,33 @@ class ContactSchedule:
         over, the original turn is remembered in ``previous_batch_id``, and the
         caller still runs every safety check against the new row.
         """
-        from companion_v2.conversation.native_turns import input_event, latest_scope
+        from companion_v2.conversation.native_turns import input_event, latest_input, latest_scope
 
         row = self.runtime.read_one("""SELECT f.state AS flow_state, b.* FROM conversation_flows f
             JOIN conversation_batches b ON b.batch_id = f.batch_id WHERE f.route_key = ?
             ORDER BY f.sequence DESC LIMIT 1""", (context.scope.key,))
         native = latest_scope(self.runtime, context.scope)
+        fallback_input = False
         if native is not None and (row is None or native["observed_at"] >= row["created_at"]):
             if (native["context_key"] != context.key or native["generation_state"] != "completed"
                     or not native["role_instruction"].strip()):
                 raise TaskError("contact_conversation_changed", "automatic opportunity requires the latest completed native conversation")
+            anchor_turn = native
+            if not native["input_observation_id"]:
+                # A text-less message (image, sticker, video) admits a native
+                # turn without an authenticated input. Refusing every attempt on
+                # that turn would silence automatic contact until the user sends
+                # text again; use the newest completed turn that still has one.
+                candidate = latest_input(self.runtime, context.key)
+                if candidate is not None:
+                    anchor_turn = candidate
+                    fallback_input = True
             self.messages.authorize(context, at)
-            event = input_event(self.messages, native, at)
-            origin = {"batch_id": native["turn_id"], "event_key": event.scoped_key,
-                      "event_hash": digest([event, context.key, native["role_instruction"]]),
-                      "role_hash": digest(native["role_instruction"])}
-            latest = native
+            event = input_event(self.messages, anchor_turn, at)
+            origin = {"batch_id": anchor_turn["turn_id"], "event_key": event.scoped_key,
+                      "event_hash": digest([event, context.key, anchor_turn["role_instruction"]]),
+                      "role_hash": digest(anchor_turn["role_instruction"])}
+            latest = anchor_turn
         else:
             if (row is None or row["origin_key"] != context.key
                     or row["flow_state"] != "complete" or row["state"] != "ready"
@@ -334,6 +345,13 @@ class ContactSchedule:
                       "role_hash": digest(row["role_instruction"])}
             latest = row
         if origin["batch_id"] == batch_id:
+            return origin, latest, event
+        if fallback_input:
+            # The newest turns have no authenticated input, so anchoring to the
+            # newest turn that still has one is deliberate, not a move to an
+            # older conversation. It uses the same context key and passes every
+            # other origin check; the usual forward-only re-anchor rule below
+            # would reject it purely because the media turn is newer.
             return origin, latest, event
         anchor = self._anchor_time(context, batch_id)
         if anchor is None or datetime.fromisoformat(latest["created_at"]) < anchor:

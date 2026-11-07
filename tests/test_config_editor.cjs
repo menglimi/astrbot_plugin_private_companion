@@ -624,6 +624,28 @@ test('a reason sentence that is not a machine code is kept verbatim', async () =
   assert.match(instance.state.notice, /unsupported reaction delivery settings/);
 });
 
+test('a missing plugin route becomes an actionable retry instead of the host message', async () => {
+  const harnessed = harness(['quota']);
+  harnessed.editors.restore();
+  harnessed.editors.paint();
+  harnessed.editors.read();
+  await drains();
+  /* 插件更新后未重载、或新角色路由尚未挂上时，宿主直接拒绝并回这句话。 */
+  harnessed.requests[0].reject(new Error('未找到该路由'));
+  await drains();
+  const [instance] = harnessed.editors.state.instances;
+  assert.equal(instance.state.denied, true);
+  assert.match(instance.state.notice, /这个页面的接口还没挂上/);
+  assert.doesNotMatch(String(instance.state.notice), /未找到该路由/);
+  assert.match(harnessed.painted.quota, /data-wb-action="reload"[^>]*>重新读取/);
+  harnessed.editors.read();
+  await drains();
+  harnessed.requests[1].resolve(payload('quota'));
+  await drains();
+  assert.ok(instance.state.status);
+  assert.equal(instance.state.notice, '');
+});
+
 test('a failed reread removes the previous workbench configuration from the page', async () => {
   const harnessed = harness(['quota']);
   const [instance] = await loaded(harnessed, ['quota']);
@@ -2301,6 +2323,23 @@ test('role profile controls render as date, chips, quotes, tags and a segmented 
   assert.match(html, /data-wb-field="main_companion_subject"/);
   assert.match(html, /name="wb-expression_private_source_mode" value="owner"/);
   assert.match(html, /wb-identity-picker/);
+});
+
+test('identity section no longer renders the decorative portrait slot', async () => {
+  /* 那块 3:4 的虚线「像位」只画姓名首字：不读头像、不可点击、对屏幕阅读器隐藏，
+     却固定占掉 96px。已删除，六项基础身份按同一套紧凑两列排下去。 */
+  const journal = {role_profile: {
+    presentation: 'journal', sectionTabPrefix: 'self-chapter-', initialSection: 'identity',
+  }};
+  const harnessed = harness(['role_profile'], journal);
+  await loaded(harnessed, ['role_profile']);
+  const html = harnessed.painted.role_profile;
+  assert.doesNotMatch(html, /wb-identity-photo/);
+  assert.match(html, /class="wb-identity-card"><div class="wb-identity-rows">/);
+  for (const row of ['name', 'gender', 'birthday', 'species']) {
+    assert.match(html, new RegExp(`data-wb-row="${row}"`));
+  }
+  assert.doesNotMatch(selfStyle, /\.wb-identity-photo/);
 });
 
 test('lunar birthday values retain calendar, year and leap-month fields', async () => {

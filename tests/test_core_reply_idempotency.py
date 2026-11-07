@@ -26,7 +26,8 @@ from astrbot_host.core_reply import (
     restore_core_reply_event,
 )
 from astrbot_host.core_reply_idempotency import (
-    begin_core_reply_delivery_turn, should_drop_core_reply_duplicate,
+    begin_core_reply_delivery_turn, remember_native_tool_message,
+    should_drop_core_reply_duplicate, should_drop_native_tool_duplicate,
 )
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.outcome import Outcome
@@ -94,6 +95,24 @@ def texts(event):
 
 
 class ReplyDeliveryNetTests(unittest.IsolatedAsyncioTestCase):
+    def test_final_response_does_not_repeat_a_native_tool_send(self):
+        event = DeliveryEvent()
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, {"send_unknown": 0, "send_failed": 0})
+        body = chain(BODY)
+        remember_native_tool_message(event, body)
+
+        self.assertTrue(should_drop_native_tool_duplicate(event, chain(BODY)))
+        self.assertFalse(should_drop_native_tool_duplicate(event, chain(BODY)),
+                         "only the adjacent final copy is removed")
+
+    def test_native_tool_dedupe_keeps_a_different_decoration(self):
+        event = DeliveryEvent()
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, {"send_unknown": 0, "send_failed": 0})
+        remember_native_tool_message(event, chain(BODY))
+
+        self.assertFalse(should_drop_native_tool_duplicate(
+            event, chain(BODY, At(qq="200"))))
+
     async def prepare(self, event=None, prepared=None, **kwargs):
         event = event or DeliveryEvent()
         if prepared is None:

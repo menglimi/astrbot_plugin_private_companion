@@ -41,5 +41,6 @@
   "self-page.css",
   "theme-skins.css",
   "page-motion.css",
-  "screen-observation.css"
+  "screen-observation.css",
+  "care.css"
 ]

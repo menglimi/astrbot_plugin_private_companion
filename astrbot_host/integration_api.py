@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,20 @@ from .management_identity import dashboard_operator
 from .integration_registry import UnifiedCompanionExtensionAPI
 from .native_extensions.builtins import MANAGED_EXTENSIONS
 from .native_extensions.image_native.nai_backend import NAIImageBackend
+
+logger = logging.getLogger(__name__)
+
+
+def _lifecycle_identifier(value: Any) -> bool:
+    """Role and target ids are opaque V2 identifiers, not ASCII slugs.
+
+    A role may legitimately be named in Chinese (for example ``星缘``); the old
+    ASCII-only check rejected the very role the page had selected and surfaced
+    as ``integration_lifecycle_request_invalid``.
+    """
+    return (type(value) is str and 1 <= len(value) <= 160
+            and value == value.strip()
+            and not any(ord(char) < 32 or ord(char) == 127 for char in value))
 
 
 PREFIX = "/astrbot_plugin_private_companion"
@@ -102,11 +117,9 @@ class IntegrationWebAPI:
             role_id, target_id = data.get("role_id"), data.get("target_id")
             if (role_id is None) != (target_id is None):
                 raise ValueError("role_id and target_id must be supplied together")
-            if role_id is not None and (
-                    type(role_id) is not str or not 1 <= len(role_id) <= 512
-                    or role_id != role_id.strip() or type(target_id) is not str
-                    or not 1 <= len(target_id) <= 160 or target_id != target_id.strip()):
-                raise TaskError("integration_identity_invalid", "select a valid role and target")
+            if role_id is not None and any(
+                    not _lifecycle_identifier(value) for value in (role_id, target_id)):
+                raise ValueError("role_id and target_id must be bounded stable identifiers")
             if extension_id not in MANAGED_EXTENSIONS:
                 raise ValueError("only V2 bundled extensions can be managed here")
             if action not in ("assemble", "update", "pause", "resume", "uninstall"):
@@ -129,11 +142,6 @@ class IntegrationWebAPI:
                 registry = getattr(controller, "native_extensions", None)
                 if runtime is None or registry is None:
                     raise TaskError("staging_not_initialized", "load the V2 profile before managing its extensions")
-                identity = None
-                if role_id is not None:
-                    identity = lifecycle_role_identity(controller, role_id=role_id, target_id=target_id)
-                    if identity is None:
-                        raise TaskError("integration_identity_invalid", "selected role or target is no longer configured")
                 observed_at = controller.now()
                 operator = dashboard_operator(runtime, username, at=observed_at)
                 management = CapabilityManagementService(runtime)
@@ -175,8 +183,7 @@ class IntegrationWebAPI:
                 await registry.reconcile_service(extension_id)
                 role_selection = None
                 if action == "assemble" and extension_id in AUTO_ROLE_EXTENSIONS:
-                    if identity is None:
-                        identity = lifecycle_role_identity(controller)
+                    identity = lifecycle_role_identity(controller, role_id=role_id, target_id=target_id)
                     if identity is not None:
                         role, bot_id = identity
                         role_selection = enable_role(runtime, extension_id, role, bot_id, observed_at)
@@ -185,6 +192,8 @@ class IntegrationWebAPI:
                     "role_selection": role_selection, "runtime": registry.status(extension_id)}))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
-        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError) as error:
+            logger.warning("[CompanionV2] 拓展生命周期命令无效 type=%s detail=%s",
+                           type(error).__name__, str(error)[:200])
             return outcome_response(Outcome.failed(
-                "integration_lifecycle_request_invalid", "invalid extension lifecycle command"))
+                "integration_lifecycle_request_invalid", "invalid UTF-8 extension lifecycle command"))

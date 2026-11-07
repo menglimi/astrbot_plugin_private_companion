@@ -43,7 +43,10 @@ _CONTROLS = re.compile(
 # stay exactly as written.
 _BODY_CUES = ("pause", "breath", "sigh", "silence", "inhale", "exhale",
               "停顿", "停顿一下", "稍作停顿", "换气", "吸气", "呼气", "叹息", "沉默",
-              "轻声", "轻笑", "低语", "嘟囔", "小声", "温柔地", "轻柔地", "小声地")
+              "轻声", "轻笑", "低语", "嘟囔", "小声", "温柔地", "轻柔地", "小声地",
+              # Drama 3 的 [singing] 不在官方标签表里，但既然允许模型尝试，就不能让
+              # 它作为普通正文泄漏到聊天里；和停顿、轻笑一样按表演指令剥除。
+              "singing", "哼唱", "唱歌")
 # Longest first, so ``[小声地]`` cannot be cut short to a shorter cue that merely
 # prefixes it. Alternation is first-match, so the order is load-bearing even
 # though the closing bracket already forces a retry today.

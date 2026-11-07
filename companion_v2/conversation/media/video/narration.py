@@ -35,15 +35,15 @@ KIND = "conversation.video_narration"
 OWNER = "conversation.video_narration"
 # Same shape as every other bounded sidecar: one ceiling, three derived layers.
 # A reply turn stalls for at most `video_understanding_wait_seconds` (1-60 s,
-# default 20) while the native video round runs, so that wait is the ceiling and
+# default 45) while the native video round runs, so that wait is the ceiling and
 # the layers derive downward from it - the model round should expire first, the
 # supervised task second, the waiting reply last. The reply and the task follow
 # the configured wait on every call; the model round follows this profile's
-# default (20 - 2 = 18) or the saved ``model.conversation.video_narration
-# .timeout_seconds``, so above a 19 s wait the round expires first and below it
+# default (45 - 2 = 43) or the saved ``model.conversation.video_narration
+# .timeout_seconds``, so above a 44 s wait the round expires first and below it
 # the task does. Either way the inner layer records its own reason instead of
 # being cancelled by the waiting reply, which cannot name what it interrupted.
-VIDEO_NARRATION_WAIT_SECONDS = 20
+VIDEO_NARRATION_WAIT_SECONDS = 45
 VIDEO_NARRATION_MARGIN_SECONDS = 2
 VIDEO_NARRATION_HANDOFF_SECONDS = 1
 VIDEO_NARRATION_PROVIDER_TIMEOUT_SECONDS = VIDEO_NARRATION_WAIT_SECONDS - VIDEO_NARRATION_MARGIN_SECONDS

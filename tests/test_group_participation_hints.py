@@ -31,6 +31,19 @@ class GroupParticipationHintTests(unittest.TestCase):
         self.assertIn("没有明确 @ 本角色", speaking_about)
         self.assertIn("第三人称", speaking_about)
 
+    def test_bare_mention_is_not_framed_as_a_test_or_command(self):
+        """现场：只说 @、没有正文时，模型回过“在拿奇怪的指令测试我嘛”。"""
+        empty = self.hints(current_text="[提及机器人]")
+        self.assertIn("只有 @、没有正文", empty)
+        self.assertIn("不要把它当成指令、测试、故障或系统消息", empty)
+        self.assertIn("顺着群里最近的话题", empty)
+        for padded in (" [提及机器人]  ", "[提及机器人]\n"):
+            with self.subTest(text=padded):
+                self.assertIn("只有 @、没有正文", self.hints(current_text=padded))
+        self.assertNotIn("只有 @、没有正文", self.hints(current_text="[提及机器人] 在吗"))
+        # 只有媒体占位符时也是有内容的一轮，不当成空 @。
+        self.assertNotIn("只有 @、没有正文", self.hints(current_text="[提及机器人] [图片 1]"))
+
     def test_recent_group_history_keeps_each_speaker_out_of_the_current_turn(self):
         history = speaker_history_instruction((
             {"speaker_id": "A", "text": "@星缘 小天使"},

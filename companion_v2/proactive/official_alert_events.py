@@ -20,9 +20,13 @@ from .weather_alerts import MAX_OBSERVATION_AGE, SEVERITY_RANK, active_official_
 SOURCE_OWNER = "proactive.official_weather_alert"
 RETRY = timedelta(minutes=5)
 SOURCE_URL = "https://www.qweather.com/"
+NMC_SOURCE_URL = "https://www.nmc.cn/"
 MEANING = ("这是和风天气对管理员配置的角色所在地提供的官方预警，"
            "但查询坐标不证明通告覆盖目标镇街；不代表对方所在地。"
            "仅当原文明确覆盖整个配置城市或明确包含目标镇街，且没有排除目标镇街时才发送。")
+NMC_MEANING = ("这是中国气象局公开预警中与管理员配置角色所在地同名的通告；"
+               "只按城市名匹配，不代表对方所在地。"
+               "仅当标题明确包含配置地点时才发送。")
 
 
 class _NoCurrentAlert:
@@ -55,7 +59,13 @@ class OfficialAlertContactEvents:
             return None
         settings, _ = self.role_state.settings(context)
         location = configured_weather_location(settings["planning_weather_location"])
-        return (location, digest(location)) if location is not None and location.alert_area else None
+        if location is None:
+            return None
+        # QWeather's alert endpoint is coordinate-based; older migrated locations
+        # often have no explicit alert_area even though the credential and city are
+        # valid. Keep the location itself as the match key instead of silently
+        # disabling the whole warning lane.
+        return (location, digest(location))
 
     def select(self, context, preferences, at):
         if self.port is None or self.retry_at.get(context.key, at) > at:
@@ -158,10 +168,13 @@ class OfficialAlertContactEvents:
     def _record(self, context, row, opportunity):
         alert = json.loads(row["alert_json"])
         attributions = json.loads(row["attributions_json"])
-        body = {"event": "role_location_official_weather_alert", "provider": "qweather",
+        provider = getattr(self.port, "provider", "qweather")
+        source_url = NMC_SOURCE_URL if provider == "nmc" else SOURCE_URL
+        meaning = NMC_MEANING if provider == "nmc" else MEANING
+        body = {"event": "role_location_official_weather_alert", "provider": provider,
                 "role_location": alert.get("role_location"),
                 "alert_city": alert.get("alert_city"), "alert_area": alert.get("alert_area"), "alert": alert,
-                "attributions": attributions, "source_url": SOURCE_URL, "meaning": MEANING}
+                "attributions": attributions, "source_url": source_url, "meaning": meaning}
         receipt = {"context": json.loads(encode(context)), "location_hash": row["location_hash"],
                    "alert_id": row["alert_id"], "chain_id": row["chain_id"]}
         payload = encode({**body, "_receipt": receipt})

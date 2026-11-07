@@ -4,13 +4,16 @@ import asyncio
 import base64
 from dataclasses import replace
 from pathlib import Path
+import subprocess
 import struct
+import sys
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from astrbot_host.video.container import boxes, child, inspect_container
-from astrbot_host.video.decoder import inspect_video, relative_times
-from astrbot_host.video.loader import decode_video, load_native_video
+from astrbot_host.video.decoder import _ffmpeg_binary, inspect_video, relative_times
+from astrbot_host.video.loader import decode_video, load_host_resolved_video, load_native_video
 from companion_v2.adapters.astrbot.native import NativeVideoLocator
 from companion_v2.conversation.media.video.models import CapturedVideo, MAX_VIDEO_BYTES, fits_video_budget
 from companion_v2.execution.models import TaskError
@@ -25,6 +28,37 @@ def table_box(content, kind):
 
 
 class VideoDecoderTests(unittest.IsolatedAsyncioTestCase):
+    def test_ffmpeg_fallback_samples_a_real_mp4_without_opencv(self):
+        binary = _ffmpeg_binary()
+        if binary is None:
+            self.skipTest("FFmpeg is unavailable")
+        with TemporaryDirectory(prefix="v2-ffmpeg-video-test-") as directory:
+            path = Path(directory) / "clip.mp4"
+            subprocess.run([
+                binary, "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                "-i", "color=c=red:s=64x48:r=10:d=1.2", "-c:v", "mpeg4",
+                "-pix_fmt", "yuv420p", str(path),
+            ], check=True, timeout=10)
+            with patch.dict(sys.modules, {"cv2": None}):
+                video = inspect_video(path.read_bytes(), 0)
+        self.assertEqual(video.descriptor.decoder, "ffmpeg:external")
+        self.assertEqual(tuple(frame.index for frame in video.descriptor.frames), (0, 3, 7, 11))
+        self.assertEqual(len(video.frames), 4)
+
+    async def test_host_resolved_video_path_must_stay_in_astrbot_temp(self):
+        with TemporaryDirectory(prefix="v2-video-trusted-") as trusted, TemporaryDirectory(prefix="v2-video-other-") as other:
+            inside = Path(trusted) / "clip.mp4"
+            outside = Path(other) / "clip.mp4"
+            inside.write_bytes(b"video")
+            outside.write_bytes(b"other")
+            with patch("astrbot.core.utils.astrbot_path.get_astrbot_temp_path", return_value=trusted), \
+                    patch("astrbot_host.video.loader.decode_video", AsyncMock(return_value="decoded")) as decode:
+                self.assertEqual(await load_host_resolved_video(str(inside), 2), "decoded")
+                decode.assert_awaited_once_with(b"video", 2)
+                with self.assertRaises(TaskError) as caught:
+                    await load_host_resolved_video(str(outside), 0)
+                self.assertEqual(caught.exception.code, "host_video_location_invalid")
+
     async def test_original_bytes_and_four_timed_samples_survive_worker(self):
         content = video_bytes()
         expected = inspect_video(content, 2)

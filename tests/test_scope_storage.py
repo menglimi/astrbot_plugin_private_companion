@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import closing
 from dataclasses import replace
+import json
+from pathlib import Path
 import sqlite3
 import unittest
 from unittest.mock import patch
@@ -120,12 +122,20 @@ class ScopeStorageTests(unittest.TestCase):
                                    (fixture.NOW.isoformat(),))
         self.assertEqual(runtime.read_all("PRAGMA foreign_key_check", ()), ())
 
-    def test_broken_old_reference_prevents_migration(self):
+    def test_broken_old_reference_is_quarantined_before_migration(self):
         self.mutate("UPDATE outbox SET operation_id = 'missing-operation'")
-        with self.assertRaises(StorageOpenError):
-            self.open_runtime()
-        with closing(sqlite3.connect(self.database)) as connection:
-            self.assertEqual(connection.execute("SELECT value FROM runtime_metadata WHERE key = 'schema_version'").fetchone()[0], SCHEMA_VERSION_V5)
+        runtime = self.open_runtime()
+        try:
+            self.assertEqual(runtime.read_all("PRAGMA foreign_key_check", ()), ())
+            self.assertEqual(runtime.read_one("SELECT COUNT(*) AS n FROM outbox", ())["n"], 0)
+            self.assertEqual(runtime.read_one(
+                "SELECT value FROM runtime_metadata WHERE key = 'schema_version'", ())["value"], SCHEMA_VERSION)
+            quarantined = sorted(Path(self.database).parent.glob("*.fk-repair-*.jsonl"))
+            self.assertEqual(len(quarantined), 1, quarantined)
+            record = json.loads(quarantined[0].read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual((record["table"], record["row"]["operation_id"]), ("outbox", "missing-operation"))
+        finally:
+            runtime.close()
 
     def test_partial_upgrade_is_not_silently_adopted(self):
         self.mutate("ALTER TABLE role_bindings ADD COLUMN bot_id TEXT NOT NULL DEFAULT ''")

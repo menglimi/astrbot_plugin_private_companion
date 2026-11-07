@@ -298,7 +298,11 @@ window.CompanionPerceptionOverviewPage = (() => {
     const fallback = modelStatus?.providers?.find(item => item?.id === fallbackId);
     if (!task || !providerId) return null;
     return {model:provider?.model || providerId, provider:providerId,
-      fallback:fallback ? fallback.model || fallback.id : ""};
+      fallback:fallback ? fallback.model || fallback.id : "",
+      source:fields.provider?.source || "default",
+      fallback_source:fields.fallback?.source || "default",
+      host:modelStatus?.host_route || null,
+      layer:modelStatus?.configuration_layer || "role"};
   }
   function providerSignal(id) {
     const provider = product.capability(id);
@@ -586,8 +590,10 @@ window.CompanionPerceptionOverviewPage = (() => {
         : weather.state === "unconfigured" ? "在下方环境配置设置角色地点。"
           : "实况读取失败时不会沿用旧数据冒充当前天气。";
     const routeLabel = (route, pending) => route?.model || (pending ? "正在读取模型路线" : "尚未分配");
+    const routeSourceLabel = source => ({default:"插件默认", host_conversation:"AstrBot 会话",
+      installation:"安装级", role:"角色默认", window:"当前窗口"}[source] || "上级配置");
     const detailForRoute = route => route
-      ? `Provider ${route.provider}${route.fallback ? ` · 备用 ${route.fallback}` : ""}`
+      ? `Provider ${route.provider}${route.fallback ? ` · 备用 ${route.fallback}` : " · 无备用"} · 来源 ${routeSourceLabel(route.source)}`
       : modelState === "error" ? "任务路由暂不可读" : "此任务当前没有可用路由";
     const voiceLanguage = voiceStatus?.languages?.find(item => /^(zh|zh[-_])|中文/i.test(item.k || item.n || ""))
       || voiceStatus?.languages?.[0];
@@ -714,9 +720,14 @@ window.CompanionPerceptionOverviewPage = (() => {
     const tabCalendar = "config-models:perception-detail-context";
     const tabHealth = "config-health:perception-detail-health";
 
-    channel("model-conversation", "models", {tab:tabModel, modelTab:"fn", icon:"cpu", title:"对话模型",
-      value:routeLabel(modelInfo, modelState === "loading"), detail:detailForRoute(modelInfo),
-      state:modelInfo ? "ready" : "pending", tag:modelInfo ? "当前路由" : modelStateLabel});
+    const hostRoute = modelInfo?.host || {};
+    const coreValue = hostRoute.model || routeLabel(modelInfo, modelState === "loading");
+    const coreDetail = modelInfo
+      ? `Provider ${modelInfo.provider}${modelInfo.fallback ? ` · 备用 ${modelInfo.fallback}` : " · 无备用"} · AstrBot 配置：${hostRoute.config?.name || "AstrBot 默认配置"}`
+      : detailForRoute(modelInfo);
+    channel("model-conversation", "models", {tab:tabModel, modelTab:"fn", icon:"cpu", title:"核心管理员对话",
+      value:coreValue, detail:coreDetail,
+      state:modelInfo ? "ready" : "pending", tag:modelInfo ? "实际路由" : modelStateLabel});
     channel("model-tts", "models", {tab:tabModel, modelTab:"voice", icon:"audio-lines", title:"语音模型",
       value:voiceValue,
       detail:voiceLanguage ? `${voiceLanguage.n || voiceLanguage.k} · ${modelAvailabilityLabel(voiceStatus?.catalog_state)}` : "按语种绑定，配置在模型与连接页。",
@@ -759,14 +770,16 @@ window.CompanionPerceptionOverviewPage = (() => {
         detail.push(`宜 ${cal.almanac.yi} · 忌 ${cal.almanac.ji}`);
       return {
         labels: labels.length ? labels.join(" · ") : "历法已启用",
-        detail: detail.length ? detail.join(" · ") : "服务端未产出更多历法明细；农历、节气与黄历各有独立开关。",
+        detail: detail.length ? detail.join(" · ") : "农历、节气与黄历各有独立开关；没有明细时先检查这几项。",
       };
     })();
     if (calendarView) channel("env-calendar", "environment", {tab:tabCalendar, icon:"calendar-days", title:"日期与历法",
       value:calendarView.labels, detail:calendarView.detail, state:"ready", tag:"服务端日历"});
     channel("env-location", "environment", {tab:tabPlace, icon:"map-pin", title:"所在地",
       value:locationName || (!ready ? `角色地点${configurationState}` : "尚未设置角色地点"),
-      detail:locationName ? "使用角色配置的区域；不显示经纬度。" : "在日程与规划中填写角色所在地。",
+      /* 已配置时不再补一句「用角色配置的区域、不显示经纬度」：值本身已经写着区域，
+         经纬度这件事属于「在哪里设置」的说明，点击后的预览卡里已经有用途与口径。 */
+      detail:locationName ? "" : "在下方环境配置里填写角色地点。",
       state:locationName ? "ready" : ready ? "off" : "pending", tag:locationName ? "已配置" : !ready ? configurationFailed ? "读取失败" : "读取中" : "待设置"});
     channel("env-weather", "environment", {tab:tabPlace, icon:"cloud-sun", title:"天气实况",
       value:weather.state === "available"
@@ -777,8 +790,8 @@ window.CompanionPerceptionOverviewPage = (() => {
       tag:weather.state === "available" ? "实况" : weather.state === "disabled" ? "未启用" : weather.state === "unconfigured" ? "待配置" : runtimeState === "loading" ? "读取中" : "读取失败"});
     if (alertList.length) channel("env-alert", "environment", {tab:tabPlace, icon:"triangle-alert", title:"天气预警",
       value:alertList[0].title || alertList[0].event_name || "有官方预警",
-      detail:`${alertList[0].severity || "级别待核对"}${alertList[0].ends_at ? ` · 至 ${new Date(alertList[0].ends_at).toLocaleString("zh-CN")}` : ""}${alertList.length > 1 ? ` · 另有 ${alertList.length - 1} 条` : ""}`,
-      state:"pending", tag:`${alertList.length} 条预警`});
+      detail:`${({minor:"蓝色 · 一般",moderate:"黄色 · 较重",severe:"橙色 · 严重",extreme:"红色 · 特别严重"}[alertList[0].severity] || alertList[0].severity || "级别待核对")}${alertList[0].ends_at ? ` · 至 ${new Date(alertList[0].ends_at).toLocaleString("zh-CN")}` : ""}${alertList.length > 1 ? ` · 另有 ${alertList.length - 1} 条` : ""}`,
+      state:"ready", tag:`${alertList.length} 条预警`});
     channel("ext-external", "external", {tab:"config-news:perception-detail-external", icon:"globe-2", title:"外部资讯",
       value:externalValue, detail:externalDetail + (news.failureCode ? ` · ${news.failureCode}` : ""),
       state:externalState,
@@ -791,7 +804,8 @@ window.CompanionPerceptionOverviewPage = (() => {
     const realityNeedsConsent = /capability_role_disabled|capability_consent_missing|consent/.test(realityResult.reason || "");
     channel("device-location", "devices", {tab:"config-screen:perception-detail-reality-access", icon:"smartphone", title:"当前定位",
       value:mobileValue,
-      detail:mobile.location?.available ? `最近读取 ${ageLabel(mobile.location.captured_at)} · 仅展示授权区域，不显示坐标`
+      /* 授权边界写在点开后的「使用边界」里；状态行只留时间，不再重复一遍隐私说明。 */
+      detail:mobile.location?.available ? `最近读取 ${ageLabel(mobile.location.captured_at)}`
         : realityNeedsConsent ? "手机读取一次授权后，定位和手机状态一起可用。" : "只回显对话已经读取的位置，不主动采集。",
       state:mobile.location?.available ? "ready" : realityResult.reason === "capability_role_disabled" ? "off" : "pending",
       tag:mobile.location?.available ? "已读取" : realityNeedsConsent ? "需手机读取" : runtimeState === "error" ? "读取失败" : runtimeState === "loading" ? "读取中" : "暂无快照"});
@@ -803,7 +817,8 @@ window.CompanionPerceptionOverviewPage = (() => {
       tag:screenResult.state === "available" ? "有结果" : runtimeState === "error" ? "读取失败" : runtimeState === "loading" ? "读取中" : screenResult.state === "blocked" ? "需授权" : "暂无结果"});
     channel("device-phone", "devices", {tab:"config-screen:perception-detail-reality-access", icon:"smartphone", title:"手机状态",
       value:phoneValue,
-      detail:realityNeedsConsent ? "与当前定位共用一次手机读取授权；不会主动采集。" : "展示最近已授权快照中的电量、运行状态与活动；刷新页面不会触发手机采集。",
+      /* 不再复述卡面里已经有的电量/状态字段，只回答「多久以前、刷新会不会重新采集」。 */
+      detail:realityNeedsConsent ? "与当前定位共用一次手机读取授权；不会主动采集。" : "最近一次授权上报 · 刷新不会触发采集",
       state:phoneAvailable ? "ready" : realityResult.reason === "capability_role_disabled" ? "off" : "pending",
       tag:phoneAvailable ? "有快照" : realityNeedsConsent ? "需手机读取" : runtimeState === "error" ? "读取失败" : runtimeState === "loading" ? "读取中" : "暂无快照"});
     const healthBlocked = /consent|capability_role_disabled|reality_provider|reality_tool/.test(realityResult.reason || "");
@@ -871,7 +886,12 @@ window.CompanionPerceptionOverviewPage = (() => {
     const destinationAttrs = (destination, modelTab="") => `data-board-goto="${esc(destination)}" aria-controls="${esc(destination.split(":")[0])}" aria-expanded="false"${modelTab ? ` data-board-model-tab="${esc(modelTab)}"` : ""}`;
     const singleAttrs = (destination, title, itemId="", modelTab="") => `${destinationAttrs(destination, modelTab)} data-board-single="true" data-perception-item="${esc(itemId)}" data-item-title="${esc(title)}"`;
     const customAttrs = (destination, title, itemId, modelTab="") => `id="perception-channel-${esc(itemId)}" ${singleAttrs(destination, title, itemId, modelTab)} title="${esc(title)}" aria-label="${esc(`${title}。打开这一项的设置`)}"`;
-    const channelAttrs = item => `id="perception-channel-${item.id}" ${singleAttrs(item.tab, item.title, item.id, item.modelTab)} title="${esc(`${item.tag} · ${item.value} · ${item.detail}`)}" aria-label="${esc(`${item.title}：${item.tag}。${item.value}。${item.detail}。打开这一项的设置`)}"`;
+    /* 标题与 aria 只拼接真正存在的读数：删掉一句说明后不该留下尾随的「 · 」。 */
+    const channelAttrs = item => {
+      const readout = [item.tag, item.value, item.detail].filter(Boolean).join(" · ");
+      const spoken = [item.tag, item.value, item.detail].filter(Boolean).join("。");
+      return `id="perception-channel-${item.id}" ${singleAttrs(item.tab, item.title, item.id, item.modelTab)} title="${esc(readout)}" aria-label="${esc(`${item.title}：${spoken}。打开这一项的设置`)}"`;
+    };
     const channelById = id => percepts.find(item => item.id === id);
     const timeMarkup = (value, fallback="") => {
       const date = typeof value === "number" ? new Date(value * 1000) : new Date(value || "");
@@ -966,7 +986,7 @@ window.CompanionPerceptionOverviewPage = (() => {
     const heroMarkup = ({state="off", iconName="circle", title, value="", valueHtml="", detail="", detailHtml="", tag="", attrs="", tone="generic"}) =>
       `<button type="button" class="perception-hero is-${esc(tone)} is-${esc(state)}" ${attrs}>
         <span class="perception-hero-icon">${icon(iconName)}</span>
-        <span class="perception-hero-copy"><small>${esc(title)}</small><strong>${valueHtml || esc(value)}</strong><span>${detailHtml || esc(detail)}</span></span>
+        <span class="perception-hero-copy"><small>${esc(title)}</small><strong>${valueHtml || esc(value)}</strong>${detail || detailHtml ? `<span>${detailHtml || esc(detail)}</span>` : ""}</span>
         ${boardBadgeMarkup(state, tag)}
         <span class="perception-hero-chevron">${icon("chevron-right")}</span>
       </button>`;

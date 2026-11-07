@@ -159,7 +159,11 @@ def _location(config) -> tuple[str, list[Difference], list[str]]:
                 "role.state.planning_weather_location", "needs_input",
                 "V1 没有可用的地点名称与经纬度，V2 需要显式地点才能启用天气观测。", "", ""))
         return "", differences, skipped
-    document = {"name": name[:64], "latitude": latitude, "longitude": longitude}
+    document = {"name": name[:64], "latitude": latitude, "longitude": longitude,
+                # V1's alert lane was city-level; keep that intent so migrated
+                # installations do not silently lose official warnings just
+                # because V2 now has explicit alert city/area fields.
+                "alert_city": name[:64], "alert_area": name[:64]}
     return json.dumps(document, ensure_ascii=False), differences, skipped
 
 

@@ -97,7 +97,8 @@ test("unrecognized lifecycle codes remain visible without exposing exception tex
 test("known role preparation failures show a specific recovery action", () => {
   const h = harness();
   assert.match(h.page.publicError({code: "host_mappings_required"}), /至少一个 Bot 账号与人格/);
-  assert.match(h.page.publicError({code: "host_provider_required"}), /保存共享启动模型/);
+  assert.match(h.page.publicError({code: "host_provider_required"}),
+    /暂无可用的文本模型.*启用 Provider/);
   assert.match(h.page.publicError({code: "host_store_in_use"}), /实例与数据目录/);
 });
 

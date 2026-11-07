@@ -11,7 +11,7 @@ from companion_v2.execution.runner import RunResult
 from companion_v2.identity_policy.models import AuthorizationTier
 from companion_v2.memory.management import MemoryManagement
 from companion_v2.memory.models import AtomRef, owner_key
-from companion_v2.memory.reflection import KIND, reflection_profile
+from companion_v2.memory.reflection import KIND, reflection_output_tokens, reflection_profile
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.model_gateway.routing import configuration_fields
 from tests.test_host_application import HostFixture
@@ -23,6 +23,13 @@ class MemoryReflectionTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         super().setUp()
         self.profiles += (reflection_profile("primary", max_output_tokens=100),)
         self.registry = FieldRegistry(version="memory-reflection-test.v1", fields=configuration_fields(self.profiles))
+
+    def test_reflection_output_budget_never_inherits_the_chat_reply_cap(self):
+        # A 2048-token reply cap truncates a 32-proposal extraction; every repair
+        # then resends the same material and truncates at the same place.
+        self.assertEqual(reflection_output_tokens(2048), 8192)
+        self.assertEqual(reflection_output_tokens(None), 8192)
+        self.assertEqual(reflection_output_tokens(16384), 16384)
 
     def enable_reflection(self, app, context):
         """把每日反思显式打开，作为调度类用例的前提。

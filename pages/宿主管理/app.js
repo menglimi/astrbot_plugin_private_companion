@@ -286,6 +286,38 @@
     return {...snapshot, personas: [...personas.values()]};
   }
 
+  /* A persona is one character even when several Bot accounts use it. When a
+     discovered window uses a persona that is already mapped to exactly one
+     role, that window belongs to the same role: add the implicit mapping so
+     the editor/topology show one persona under one role instead of a second
+     “未归入角色” copy. A persona explicitly mapped to different roles across
+     accounts is ambiguous and stays untouched. */
+  function expandPersonaRoles(data) {
+    const rows = Array.isArray(data?.personas) ? data.personas.map(row => ({...row})) : [];
+    const rolesByPersona = new Map();
+    for (const row of rows) {
+      const personaId = String(row.persona_id || "");
+      const roleId = String(row.role_id || "");
+      if (!personaId || !roleId) continue;
+      if (!rolesByPersona.has(personaId)) rolesByPersona.set(personaId, new Set());
+      rolesByPersona.get(personaId).add(roleId);
+    }
+    const uniqueRole = new Map([...rolesByPersona].filter(([, ids]) => ids.size === 1)
+      .map(([personaId, ids]) => [personaId, [...ids][0]]));
+    const seen = new Set(rows.map(row => nativePersonaKey(row.bot_id, row.persona_id)));
+    for (const target of data?.discovered?.targets || []) {
+      if (target?.native !== true || target.details_available === false) continue;
+      const personaId = String(target.persona_override || target.persona_id || "");
+      const botId = String(target.bot_id || "");
+      if (!personaId || !botId || !uniqueRole.has(personaId)) continue;
+      const key = nativePersonaKey(botId, personaId);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({bot_id: botId, persona_id: personaId, role_id: uniqueRole.get(personaId)});
+    }
+    return {...data, personas: rows};
+  }
+
   function makeTopologySnapshot() {
     const discovered = bindingConfig?.discovered || {};
     const inventory = Array.isArray(discovered.targets)
@@ -1543,6 +1575,7 @@
   }
   function renderBindingEditor(data) {
     if (!data) return;
+    data = expandPersonaRoles(data);
     bindingConfig = data;
     if (data.model) modelConfig = data.model;
     const discovered = data.discovered || {}, accounts = discovered.accounts || data.accounts || [];
@@ -1792,7 +1825,11 @@
     const accountBots = new Set(accounts.map(row => row.bot_id));
     const personaBots = new Set(mappings.map(row => row.bot_id));
     const personaKeys = mappings.map(row => nativePersonaKey(row.bot_id, row.persona_id));
-    const roleIds = roleCards.map(card => card.querySelector("[data-role-id]").value.trim()).filter(Boolean);
+    const roleIds = [...new Set(roleCards.map(card => card.querySelector("[data-role-id]").value.trim()).filter(Boolean))];
+    /* One AstrBot persona used by two Bot accounts is one character, not two
+       “人格”. Count distinct persona ids (and distinct roles) so the summary
+       matches the merged topology cards. */
+    const personaCount = new Set(mappings.map(row => String(row.persona_id || ""))).size;
     const cardAssignmentsValid = roleCards.every(card => {
       const roleId = card.querySelector("[data-role-id]").value.trim();
       const checked = card.querySelectorAll("[data-persona-choice]:checked").length;
@@ -1804,7 +1841,7 @@
       && new Set(roleCards.map(card => `${card.dataset.botId}\u0000${card.querySelector("[data-role-id]").value.trim()}`)).size === roleCards.length
       && accountBots.size === personaBots.size && [...accountBots].every(botId => personaBots.has(botId));
     const valid = accountsValid && mappingsValid;
-    $("binding-check").textContent = valid ? `${roleIds.length} 个角色 · ${mappings.length} 个人格${bindingsDirty ? " · 尚未保存" : ""}`
+    $("binding-check").textContent = valid ? `${roleIds.length} 个角色 · ${personaCount} 个人格${bindingsDirty ? " · 尚未保存" : ""}`
       : !mappingsValid ? "请将 AstrBot 人格归入唯一角色" : "请先读取已连接的 Bot 账号";
     $("save-bindings").disabled = !valid || busy;
   }
