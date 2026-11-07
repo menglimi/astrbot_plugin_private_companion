@@ -4267,6 +4267,12 @@ function allFeatureBoardGroups(){
     }
     if(rows.length)groups.push({domain:group.title,note:group.note||'',rows});
   }
+  const relayRows=allFeatureRows(allFeaturesState.sections?.relay).map(row=>({...row,name:'relay'}));
+  for(const row of relayRows)if(index[row.field]?.name==='relay')used.add(row.field);
+  groups.unshift({domain:'跨窗口与跨群递话',note:'',rows:[...relayRows,{
+    field:'relay-settings',name:'relay',label:'递话目标与规则',
+    help:'私聊目标、群聊白名单、确认、字数与成员权限',link:true,
+  }]});
   const extras=Object.keys(index).filter(key=>!used.has(key)).sort();
   if(extras.length)groups.push({domain:'其他功能',note:'来自配置但暂未归入固定分组的开关。',
     rows:extras.map(field=>{
@@ -4371,9 +4377,14 @@ function renderAllFeatureBoard(){
   const sections=board.map(({domain,note,rows:groupRows},index)=>{
     const id='all-feature-'+index;
     const rows=groupRows.map(row=>{
+      const search=normalizeSearchText([row.label,row.help,row.field,domain,row.name].join(' '));
+      if(row.link)return `<button type="button" class="all-feature-row all-feature-link" data-all-feature-search="${escapeHTML(search)}"
+        data-go="manage" data-manage="identity-access" data-page-anchor="identity-relay">
+        <span class="all-feature-link-icon">${I('arrow-up-right')}</span>
+        <span class="all-feature-copy"><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.help)}</small></span>
+        <span class="all-feature-scope">设置</span></button>`;
       const checked=Boolean(allFeaturesState.draft?.[row.name]?.[row.field]);
       const dirty=allFeatureDirty(row.name,row.field,checked);
-      const search=normalizeSearchText([row.label,row.help,row.field,domain,row.name].join(' '));
       return `<label class="all-feature-row${dirty?' is-dirty':''}" data-all-feature-search="${escapeHTML(search)}">
         <span class="all-feature-switch"><input type="checkbox" data-all-feature-toggle data-all-feature-group="${escapeHTML(row.name)}" data-all-feature-field="${escapeHTML(row.field)}" ${checked?'checked':''}></span>
         <span class="all-feature-copy"><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.help||row.field)}</small></span>
@@ -4532,10 +4543,12 @@ function renderIdentityGroupsPage(){
   return `<div class="identity-directory-page identity-groups-page">${renderIdentityWorkspacePage('groups')}</div>`;
 }
 function renderIdentityAccessPage(){
-  return pageSections('访问规则','管理新私聊成员的默认权限；逐人权限仍在用户页面的成员详情中调整。',[
+  return pageSections('访问规则','管理新私聊成员的默认权限，以及跨窗口与跨群递话。',[
     ['私聊默认权限','新用户进入目录时使用的默认准入规则。',configEditors('privateAccessWorkspace',['private_access'],'私聊默认权限'),'identity-access'],
     ['陌生号处理','没有绑定的账号使用插件安装全局设置。',configEditors('strangerAccessWorkspace',['private_access_installation'],'陌生号处理','', '/astrbot_plugin_private_companion/config',true),'identity-strangers'],
-  ],[['identity-access','shield-check','私聊默认权限'],['identity-strangers','user-x','陌生号处理']]);
+    ['跨窗口与跨群递话','设置递话目标、确认规则与成员权限。',configEditors('relayConfigWorkspace',['relay'],'跨窗口与跨群递话'),'identity-relay'],
+  ],[['identity-access','shield-check','私聊默认权限'],['identity-strangers','user-x','陌生号处理'],
+     ['identity-relay','corner-up-right','跨窗口递话']]);
 }
 function renderIdentityFeelingsPage(){
   const workspace=product.workspace('relationships');
@@ -4992,6 +5005,7 @@ function openDetailDialog(title,body){
 
 const searchIndex=[
   ['生活观察','日记、梦境、生活轨迹、状态与交互影响','scan-eye','home-section','observation'],['家具与能力','基础生活与拓展家具，启用状态和连接','armchair','home-section','furniture'],
+  ['跨窗口与跨群递话','私聊与群聊目标、确认和成员权限','corner-up-right','manage','identity-access'],
   ['首页与小屋','生活总览、观察与家具能力','house','life','home'],['日记与生活','日记、睡眠、阅读与作息配置','notebook-pen','life','diary'],['关系网','只查看用户与群聊之间的连接关系','network','manage','identity'],['用户','用户目录、逐人资料与私聊默认权限','users-round','manage','identity-people'],['群聊','群聊目录、群内成员与成员线索','messages-square','manage','identity-groups'],['共同经历','记录、原话、来源与记忆策略','orbit','manage','memory'],['作品与相册','原稿、照片与收藏','images','home-section','furniture'],['一起活动','共读、棋桌与通话','coffee','home-section','furniture'],['能力目录','可选拓展当前能不能用','blocks','home-section','furniture'],
   ['感知','环境、消息与媒体来源','scan-eye','manage','perception'],['决策','本轮上下文与群聊参与判断','brain','manage','decision'],['行动','生活行为与社交发布','play','manage','action'],['产出','图像生成与创作作品','shapes','manage','output'],['表达','文本、语音、表情与投递','message-square-more','manage','expression'],['自我','世界知识、角色设定与自身档案','user-round','manage','governance'],
   ['开始使用','首次连接、选择对象与决定是否发送','rocket','manage','setup'],['人格处理','规范人格、创建人格与拟人优化','notebook-pen','manage','persona'],['外观与设置','主题、密度、圆角、字号与动效','palette','manage','appearance'],['主动联系','主动契机、联系节奏与免打扰','heart-handshake','manage','contact'],['事实与经历','事实、原话与群词义','orbit','manage','memory'],['模型与连接','公共模型与任务路由','sliders-horizontal','manage','models'],['运行诊断','运行状态与排障','settings-2','manage','maintenance'],['便签','下次去书店，找一本植物随笔','sticky-note',null,'notes'],['窗边的一页','照片与相关经历','image',null,'photo-window'],['创作书架','Content 能力状态','library-big',null,'cap-content'],['现实触及','Reality 设备与授权','radio','manage','perception'],
@@ -5002,7 +5016,7 @@ const configSearchLocations={
   busy_gate:{next:'manage',tab:'contact',contactView:'gates',root:'#replyGateConfigWorkspace'},budget:{next:'manage',tab:'models',root:'#budgetConfigWorkspace'},
   recall:{next:'manage',tab:'perception',root:'#recallConfigWorkspace'},screen:{next:'manage',tab:'perception',root:'#screenConfigWorkspace'},
   person:{next:'manage',tab:'identity-people',identitySettings:'person',root:'#personConfigWorkspace'},private_access:{next:'manage',tab:'identity-people',identitySettings:'private-access',root:'#privateAccessWorkspace'},private_access_installation:{next:'manage',tab:'identity-people',identitySettings:'stranger-access',root:'#identityStrangerAccessSettingsWorkspace'},
-  relay:{next:'manage',tab:'identity-people',identitySettings:'private-access',root:'#relayConfigWorkspace'},
+  relay:{next:'manage',tab:'identity-access',root:'#relayConfigWorkspace'},
   role_growth:{next:'manage',tab:'identity-people',identitySettings:'person'},
   'role.growth.skills':{next:'manage',tab:'learning',subtab:'strategy',root:'#growthConfigWorkspace'},
   role_profile:{next:'manage',tab:'governance',root:'#roleProfileConfigWorkspace'},

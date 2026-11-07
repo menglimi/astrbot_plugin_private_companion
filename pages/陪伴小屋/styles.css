@@ -590,6 +590,9 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
 .all-feature-row:hover{background:var(--t-surface-sunken)}
 .all-feature-row.is-dirty{background:var(--t-accent-quiet)}
 .all-feature-row[hidden]{display:none}
+.all-feature-link{width:100%;border:0;border-top:1px solid var(--t-line);background:transparent;color:inherit;text-align:left;font:inherit}
+.all-feature-link:first-child{border-top:0}
+.all-feature-link-icon{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px}
 .all-feature-switch{display:flex;align-items:center;padding-top:2px}
 .all-feature-switch input{width:18px;height:18px;accent-color:var(--t-accent-ink);cursor:pointer}
 .all-feature-copy{display:grid;gap:3px;min-width:0}
