@@ -125,6 +125,14 @@ def test_clearing_laya_proxy_means_direct_connection(tmp_path):
     assert store.raw()["proxy"] == ""
 
 
+def test_empty_laya_proxy_ignores_process_proxy(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+    assert laya_module.ProxyHandler().proxies.get("https") == "http://127.0.0.1:7890"
+    direct_handlers = [handler for handler in laya_module._DIRECT_OPENER.handlers
+                       if isinstance(handler, laya_module.ProxyHandler)]
+    assert direct_handlers == []
+
+
 @pytest.mark.parametrize("proxy", [
     "localhost:7890",
     "127.0.0.1:7890",
