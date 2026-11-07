@@ -106,10 +106,12 @@ def lifecycle_role_identity(controller, *, role_id: str | None = None, target_id
     else:
         bot_id = _target_bot_id(settings, target_id)
         if bot_id is None:
-            matches = {item[0] for item in configured if item[1] == role_id}
-            if len(matches) != 1:
+            return None
+        if configured:
+            if (bot_id, role_id) not in configured:
                 return None
-            bot_id = next(iter(matches))
+        elif role_id != getattr(settings, "role_id", None):
+            return None
     return SubjectRef(runtime.installation_id, SubjectKind.BOT, role_id), bot_id
 
 

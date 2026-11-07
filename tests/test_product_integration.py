@@ -394,6 +394,27 @@ class MultiIntegrationTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         ).unwrap()
         self.assertTrue(projection.role_selection.enabled)
 
+    async def test_assemble_accepts_configured_chinese_role_and_rejects_stale_identity(self):
+        self.controller.config["multi_host"]["personas"][0]["role_id"] = "星珂"
+        self.controller.refresh_settings()
+        await self.start_host()
+        path = PREFIX + "/integration/lifecycle"
+        stale = await self.request(path, method="POST", body={
+            "extension_id": "companion.screen.native", "action": "assemble", "expected_revision": 0,
+            "operation_key": "screen.stale-role", "role_id": "星珂", "target_id": "missing",
+        })
+        self.assertEqual(stale["data"]["code"], "integration_identity_invalid")
+        self.assertEqual(CapabilityRepository(self.controller.runtime).installation(
+            extension_id="companion.screen.native").failure.code, "capability_not_installed")
+
+        response = await self.request(path, method="POST", body={
+            "extension_id": "companion.screen.native", "action": "assemble", "expected_revision": 0,
+            "operation_key": "screen.chinese-role", "role_id": "星珂", "target_id": "first",
+        })
+        self.assertEqual(response["status"], "ok", response)
+        selection = response["data"]["role_selection"]
+        self.assertEqual((selection["role"]["subject_id"], selection["bot_id"]), ("星珂", "bot-a"))
+
     async def test_bundled_lifecycle_rejects_non_core_dashboard_user(self):
         await self.controller.initialize_profile()
         operator = dashboard_operator(self.controller.runtime, "admin", at=support.NOW)
