@@ -467,6 +467,22 @@ test("global search opens a setting section and focuses the matching field", () 
   assert.equal(field.focused, true);
 });
 
+test("relay settings render in access rules and search focuses the requested field", () => {
+  const h = harness();
+  h.window.CompanionProduct.role = () => ({config_api: "/astrbot_plugin_private_companion/targets/first/roles/role/config"});
+  const html = h.run("renderIdentityAccessPage()");
+  assert.match(html, /id="relayConfigWorkspace"/);
+  const field = {dataset: {wbField: "allowed_targets"}, matches: () => true,
+    scrollIntoView() {this.scrolled = true;}, focus() {this.focused = true;}};
+  h.target("#relayConfigWorkspace", {querySelectorAll: selector =>
+    selector === "[data-wb-section]" ? [] : [field]});
+  const entry = {group: "relay", section: "relay", field: "allowed_targets"};
+  h.run("openSearchSetting({entry:" + JSON.stringify(entry) + ",location:configSearchLocation(" + JSON.stringify(entry) + ")})");
+  assert.equal(h.window.location.hash, "#manage/identity-access");
+  assert.equal(field.scrolled, true);
+  assert.equal(field.focused, true);
+});
+
 test("global search expands relationship network settings before focusing member clues", () => {
   const h = harness();
   const disclosure = {open: false};

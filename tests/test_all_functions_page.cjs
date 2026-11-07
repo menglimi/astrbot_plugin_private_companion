@@ -28,20 +28,27 @@ window.allFeatureTest = {state: allFeaturesState, render: renderAllFeatureBoard,
 test("真实布尔配置按领域分组，并带可保存的开关", () => {
   const testApi = context.window.allFeatureTest;
   testApi.state.sections = {
+    relay: {
+      group_id: "relay", scope: "role", edit_token: "token-relay",
+      settings: {enabled: true, require_confirm: true, allowed_targets: "1001"},
+      fields: {enabled: {kind: "boolean"}, require_confirm: {kind: "boolean"},
+        allowed_targets: {kind: "string"}},
+    },
     "expression.learning": {
       group_id: "expression.learning", scope: "role", edit_token: "token-a",
-      settings: {sample_review_enabled: true, style_review_enabled: false},
-      fields: {sample_review_enabled: {kind: "boolean"}, style_review_enabled: {kind: "boolean"}},
+      settings: {enable_expression_learning: true, style_review_enabled: false},
+      fields: {enable_expression_learning: {kind: "boolean"}, style_review_enabled: {kind: "boolean"}},
     },
     "group_participation": {
       group_id: "group_participation", scope: "role", edit_token: "token-b",
-      settings: {behavior_enabled: true},
-      fields: {behavior_enabled: {kind: "boolean"}},
+      settings: {enable_group_companion: true},
+      fields: {enable_group_companion: {kind: "boolean"}},
     },
   };
   testApi.state.draft = {
-    "expression.learning": {sample_review_enabled: true, style_review_enabled: false},
-    "group_participation": {behavior_enabled: true},
+    relay: {enabled: true, require_confirm: true},
+    "expression.learning": {enable_expression_learning: true, style_review_enabled: false},
+    "group_participation": {enable_group_companion: true},
   };
   testApi.state.loaded = true;
   testApi.state.loading = false;
@@ -52,7 +59,10 @@ test("真实布尔配置按领域分组，并带可保存的开关", () => {
   assert.match(html, /通用能力/);
   assert.match(html, /群聊功能/);
   assert.match(html, /data-all-feature-group="expression\.learning"/);
-  assert.match(html, /data-all-feature-field="sample_review_enabled"/);
+  assert.match(html, /data-all-feature-field="enable_expression_learning"/);
+  assert.match(html, /data-all-feature-group="relay"[^>]*data-all-feature-field="enabled"/);
+  assert.match(html, /data-manage="identity-access" data-page-anchor="identity-relay"/);
+  assert.match(html, /data-all-feature-search="[^"]*跨窗口与跨群递话/);
   assert.match(html, /保存更改/);
 });
 
