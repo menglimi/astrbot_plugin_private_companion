@@ -1201,7 +1201,12 @@ class AstrBotMultiController:
                 return None
             target = self.settings.private_target(meta.id, login, sender)
             platform = self.context.get_platform_inst(meta.id)
-            if target is None or platform is None or platform.get_client() is not event.bot:
+            if target is None or platform is None:
+                return None
+            # aiocqhttp / QQ Official hand us the same client object the event
+            # arrived on.  Lark (Feishu) exposes a websocket client instead, so
+            # object identity is not a usable liveness probe for it.
+            if meta.name != "lark" and platform.get_client() is not event.bot:
                 return None
             return self.settings.effective_private_target(target)
         except (ValueError, AttributeError, TypeError):
@@ -1323,13 +1328,11 @@ class AstrBotMultiController:
         except Exception:
             logger.warning("[CompanionV2] 私聊递话回执处理失败", exc_info=True)
 
-    async def group_reply_candidate(self, event, *, merged_event_ids=(), latest_native_text=None):
+    async def group_reply_candidate(self, event):
         session, target = self.session, self.target_for_event(event)
         if not self.claims(event) or session is None or not isinstance(target, GroupTarget):
             return Outcome.failed("host_not_claimed", "group reply candidate requires an active configured target")
-        return await session.prepare_group(event, target, reply_candidate=True,
-                                           merged_event_ids=merged_event_ids,
-                                           latest_native_text=latest_native_text)
+        return await session.prepare_group(event, target, reply_candidate=True)
 
     async def receive_group_repeat(self, event, admission, *, prepared=None):
         """Forward the two literal repeat actions without a model fallback."""
