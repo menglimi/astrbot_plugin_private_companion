@@ -21,7 +21,8 @@ from companion_v2.conversation.reply_settings import ReplySettings, voice_policy
 from companion_v2.conversation.segmentation import SegmentationPolicy, part_gap_seconds
 from companion_v2.conversation.text_processing import (TEXT_DEFAULTS, strip_internal_expression_protocol,
                                                        text_policy)
-from companion_v2.conversation.voice_reply import VoiceReplyPolicy, strip_voice_markup
+from companion_v2.conversation.voice_reply import (VoiceReplyPolicy, detected_speech_language,
+                                                    strip_voice_markup)
 from companion_v2.delivery.media import image_manifest, manifest_hash
 from companion_v2.delivery.plan import DeliveryContent, PokePlan, VoicePlan
 from companion_v2.delivery.service import DeliveryRequest
@@ -395,7 +396,9 @@ class ProactiveContacts:
             speech = re.sub(r"\s+", " ",
                 strip_voice_markup(strip_internal_expression_protocol(speech))).strip()
             if speech and len(speech) <= 2000:
-                voice = VoicePlan(speech, provider_id=policy.provider_for_language(context.scope.kind.value),
+                voice = VoicePlan(speech, provider_id=policy.provider_for_language(
+                        context.scope.kind.value,
+                        language=detected_speech_language(speech) or None),
                     timeout_seconds=policy.timeout_seconds, position=policy.position)
             else:
                 logger.info("V2 proactive voice omitted: speech unavailable or too long language=%s", policy.language)

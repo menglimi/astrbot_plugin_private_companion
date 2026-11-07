@@ -4,6 +4,7 @@ import asyncio
 import json
 import unittest
 from dataclasses import replace
+from types import SimpleNamespace
 
 from companion_v2.conversation.reply_management import ReplyManagement
 from companion_v2.conversation.reply_settings import (FORWARD_DEFAULTS, GROUP, GROUP_AIR_DEFAULTS,
@@ -478,6 +479,58 @@ class ReplyManagementTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.configure(self.core, self.request(current,
             {"voice_primary_mention_probability": 1.01}, "invalid-primary-voice-probability")).failure.code,
             "invalid_probability")
+
+    async def test_voice_language_is_a_window_override_with_a_role_default(self):
+        role_manager = ReplyManagement(self.app, self.context, layer=ConfigLayer.ROLE)
+        role_status = role_manager.status(self.core).unwrap()
+        role_manager.configure(self.core, self.request(role_status, {"voice_language": "ja"},
+                                                       "role-voice-language")).unwrap()
+        self.assertEqual(role_manager.status(self.core).unwrap()["settings"]["voice_language"], "ja")
+        self.assertEqual(self.manager.status(self.core).unwrap()["settings"]["voice_language"], "ja")
+
+        window_status = self.manager.status(self.core).unwrap()
+        self.assertEqual(window_status["fields"]["voice_language"]["write_layer"], "window")
+        self.manager.configure(self.core, self.request(window_status, {"voice_language": "en"},
+                                                       "window-voice-language")).unwrap()
+        self.assertEqual(self.manager.status(self.core).unwrap()["settings"]["voice_language"], "en")
+        self.assertEqual(role_manager.status(self.core).unwrap()["settings"]["voice_language"], "ja")
+
+    async def test_group_voice_language_command_writes_only_this_group_window(self):
+        from astrbot_host.functional_commands import execute_functional_command, parse_functional_command
+
+        group_scope = replace(self.context.scope, kind=ScopeKind.GROUP,
+                              native_scope_id="voice-command-group", conversation_id="voice-command-conversation",
+                              session_id="voice-command-session")
+        command_context = SimpleNamespace(key="voice-command-group-key", scope=group_scope,
+                                          role_binding=self.context.role_binding, actor=self.core)
+        command = parse_functional_command("陪伴群 切换语种 日语", channel="group")
+        receipt = execute_functional_command(command, application=self.app, context=command_context)
+        self.assertIn("已切换", receipt)
+        self.assertIn("本群", receipt)
+
+        target = ConfigTarget(group_scope.installation_id, ConfigLayer.WINDOW,
+                              self.context.role_binding.role, group_scope)
+        group_status = ReplyManagement(self.app, target=target).status(self.core).unwrap()
+        self.assertEqual(group_status["settings"]["voice_language"], "ja")
+        self.assertEqual(group_status["provenance"]["voice_language"]["layer"], "window")
+
+    async def test_group_voice_language_command_rejects_a_standard_member(self):
+        from astrbot_host.functional_commands import execute_functional_command, parse_functional_command
+
+        group_scope = replace(self.context.scope, kind=ScopeKind.GROUP,
+                              native_scope_id="voice-command-denied-group",
+                              conversation_id="voice-command-denied-conversation",
+                              session_id="voice-command-denied-session")
+        command_context = SimpleNamespace(key="voice-command-denied-key", scope=group_scope,
+                                          role_binding=self.context.role_binding, actor=self.standard)
+        command = parse_functional_command("陪伴群 切换语种 日语", channel="group")
+        receipt = execute_functional_command(command, application=self.app, context=command_context)
+        self.assertIn("未执行", receipt)
+
+        target = ConfigTarget(group_scope.installation_id, ConfigLayer.WINDOW,
+                              self.context.role_binding.role, group_scope)
+        group_status = ReplyManagement(self.app, target=target).status(self.core).unwrap()
+        self.assertEqual(group_status["settings"]["voice_language"], "zh")
 
     async def test_explicit_turn_language_uses_matching_tts_provider_without_changing_saved_language(self):
         status = self.manager.status(self.core).unwrap()

@@ -17,7 +17,7 @@ from companion_v2.adapters.astrbot.native import (
     platform_client_matches,
     supported_platform_name,
 )
-from companion_v2.adapters.astrbot.group import NativeGroupBridge
+from companion_v2.adapters.astrbot.group import NativeGroupBridge, _is_sticker_segment
 from companion_v2.adapters.astrbot.onebot import OneBotPrivateSender
 from companion_v2.adapters.astrbot.onebot_group import OneBotGroupSender
 from companion_v2.adapters.astrbot.platform_sender import AstrBotPlatformSender
@@ -185,9 +185,23 @@ class MultiPrivateBridge(NativePrivateBridge):
                 raise TaskError("host_client_mismatch", "private host account changed during persona lookup")
             self.client(scope)
             recipients = AudienceRef(scope, (actor.subject,))
-            text = "".join(part.text for part in getattr(message, "message", ())
-                           if getattr(getattr(part, "type", None), "value", getattr(part, "type", None)) == "Plain"
-                           and isinstance(getattr(part, "text", None), str))
+            pieces = []
+            for part in getattr(message, "message", ()):
+                kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
+                if kind == "Plain" and isinstance(getattr(part, "text", None), str):
+                    pieces.append(part.text)
+                elif kind in ("Face", "Mface"):
+                    # A sticker is an emotional expression, not an empty message:
+                    # keep a bounded marker so the model can answer the feeling
+                    # instead of seeing nothing (or refusing the whole turn).
+                    pieces.append("[表情]")
+            raw_message = getattr(message, "raw_message", None)
+            raw_segments = raw_message.get("message") if isinstance(raw_message, Mapping) else None
+            if isinstance(raw_segments, list):
+                for segment in raw_segments:
+                    if _is_sticker_segment(segment):
+                        pieces.append("[表情包]")
+            text = "".join(pieces)
             return Outcome.success(NativeConversationInput(
                 event_id, principal, ConversationRoute(scope, user=actor.subject), recipients,
                 text, at, role, instruction,

@@ -209,7 +209,7 @@ window.CompanionReplyPage = (() => {
       voice_trigger_mode: "决定这一轮要不要朗读，以及由谁挑句子。",
       voice_segment_mode: "整体朗读会等本轮所有文字段落准备完后合成一次，语气和上下文更完整；每一段会在每段发送前分别合成，出音更早但会切碎语义。",
       voice_delivery_mode: "仅语音只在语音完整覆盖文字时才会替代文字，否则仍发文字。",
-      voice_language: "明确要求用英语、日语或中文回复时，只覆盖本轮语音语种与对应 TTS Provider；配置页保存值不会改变。翻译请求不会被当成语种切换。",
+      voice_language: "本窗口默认朗读语种，切换后按该语种绑定选择默认 TTS 音色。私聊可发「陪伴 切换语种 日语」，群聊可发「陪伴群 切换语种 日语」；本轮明确要求换语种仍只覆盖当轮，不改保存值。",
       voice_probability: "按百分比编辑，后端按 0–1 的小数保存。",
       voice_trigger_keywords: "留空使用默认关键词。",
       voice_extra_prompt: "只补充朗读语气，不改变朗读内容。",

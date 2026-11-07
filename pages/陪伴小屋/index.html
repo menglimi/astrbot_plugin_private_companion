@@ -97,7 +97,7 @@
        其中相对地址；只有确认官方配置未开启性能模式后才由 performance-gate.js
        激活，低配置设备不会下载 3D 体素包和整套工作区脚本。 -->
   <template id="companion-full-assets">
-    <link rel="stylesheet" href="bundle.css?v=aa3ba5af14755b52">
+    <link rel="stylesheet" href="bundle.css?v=f08fa90fc3edcd96">
 
 
 
@@ -173,7 +173,7 @@
     <!-- app.js 先于 room-editor.js：体素在首屏就挂载，此时 room-editor 的
          顶层函数还不存在，mountStage 里的两处回调因此必须惰性解析（见
          app.js 的注释）。tests/test_voxel_mount_callbacks.cjs 守住这个顺序。 -->
-    <script defer src="app.js?v=video-capability-card-20261106"></script>
+    <script defer src="app.js?v=self-role-switch-20261107"></script>
     <script defer src="room-editor.js?v=transient-time-preview-20261029-r2"></script>
     <script defer src="memory-page.js?v=memory-repair-20261028"></script>
     <script defer src="contact-page.js?v=proactive-media-diagnostics-20261029"></script>

@@ -22,7 +22,7 @@ from .reply_settings import (group_safety_settings, validate as validate_setting
 from .reply_preparation import observed_statements, prepare_reply
 from .text_processing import text_policy
 from .voice_reply import (VoiceReplyPolicy, capability_instruction as voice_capability_instruction,
-                          eligible, voice_policy_for_turn)
+                          detected_speech_language, eligible, voice_policy_for_turn)
 from companion_v2.delivery.media import payload_hash
 from companion_v2.foundation.refs import ScopeKind
 
@@ -791,10 +791,13 @@ class LocalReplyGenerator:
                             "pending" if reason == "planned" else "not_applicable"))
                     if speech and speech[sequence - 1]:
                         policy = voice
+                        spoken = speech[sequence - 1]
                         connection.execute("""INSERT INTO conversation_voice_parts
                             (part_id, speech, provider_id, delivery_mode, position, timeout_seconds, cooldown_seconds)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)""", (part_id, speech[sequence - 1],
-                            policy.provider_for_language(run.task.spec.context.scope.kind.value), "voice_only" if action == "voice_only" else policy.delivery_mode,
+                            VALUES (?, ?, ?, ?, ?, ?, ?)""", (part_id, spoken,
+                            policy.provider_for_language(run.task.spec.context.scope.kind.value,
+                                                         language=detected_speech_language(spoken) or None),
+                            "voice_only" if action == "voice_only" else policy.delivery_mode,
                             policy.position,
                             policy.timeout_seconds, policy.cooldown(run.task.spec.context.scope.kind.value)))
                 if images:

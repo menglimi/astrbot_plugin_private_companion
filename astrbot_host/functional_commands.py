@@ -59,7 +59,9 @@ _ALIASES = {
         "解绑会话": "manage_contact", "绑定城市": "manage_life", "设置城市": "manage_life",
         "查看城市": "manage_life", "当前城市": "manage_life", "天气城市": "manage_life",
         "解绑城市": "manage_life", "清除城市": "manage_life", "tts语种": "voice_language",
-        "语音语种": "voice_language", "重置日程": "manage_life",
+        "语音语种": "voice_language", "切换语种": "voice_language", "语种切换": "voice_language",
+        "切换语言": "voice_language", "语言切换": "voice_language", "语种": "voice_language",
+        "语言": "voice_language", "重置日程": "manage_life",
         "生成日记": "manage_life", "刷新日记": "manage_life",
         "撤回消息": "manage_group", "防撤回": "manage_group", "重置当前人格": "manage_host",
         "撤回转述": "manage_group", "转述撤回": "manage_group",
@@ -86,6 +88,10 @@ _ALIASES = {
     },
     "group": {
         "帮助": "help", "help": "help",
+        "tts语种": "voice_language", "语音语种": "voice_language",
+        "切换语种": "voice_language", "语种切换": "voice_language",
+        "切换语言": "voice_language", "语言切换": "voice_language",
+        "语种": "voice_language", "语言": "voice_language",
         "状态": "group_context", "气氛": "group_context", "话题": "group_context", "线程": "group_context",
         "群友": "group_context", "成员": "group_context", "画像": "group_context",
         "黑话": "group_slang", "梗": "group_slang", "词": "group_slang",
@@ -133,6 +139,7 @@ _HELP = (
     "日记、梦境、画像；生成日程、刷新日程、重新生成日程；"
     "陪伴画图 <描述>、陪伴合照 <修改要求>；重要日期用 陪伴 日期列表、日期添加 <名称> <日期>、日期删除 <名称>；"
     "日期列表也会列出每日反思自动记下的互动纪念日。\n"
+    "语种：陪伴 切换语种 中文/日语/英语（只改当前私聊窗口）；群聊用 陪伴群 切换语种 日语。\n"
     "群聊：陪伴群 状态、话题、黑话 <词>、片段 <线索>、LLM状态；关闭LLM / 开启LLM 需安装管理员。\n"
     "查询依赖本轮实际授权工具；其他配置、权限、清理与重置请在陪伴小屋对应页面操作。"
 )
@@ -245,8 +252,9 @@ def _base_instruction(command: FunctionalCommand | None) -> str:
                 "有回执时只转述回执里的名称、日期与结果；自动纪念日以日期列表或删除回执为准，"
                 "不把日历计划或出生资料当成纪念日，也不声称主动问候开关已打开。")
     if intent == "voice_language":
-        return ("本轮语音语种由程序写入并附独立回执。没有回执就说明没有更改；有回执时只转述设定与"
-                "「语音回复开关是否开启」，不得声称已经用新语种说过话，也不把本轮普通回复当成语音。")
+        return ("本轮语音语种由程序写入当前私聊或群聊窗口并附独立回执。没有回执就说明没有更改；"
+                "有回执时只转述设定、当前窗口与「语音回复开关是否开启」，不得声称已经用新语种说过话，"
+                "也不把本轮普通回复当成语音。")
     if intent == "manage_hdsi":
         return ("用户输入的是 V1 HDSI 聊天开关/统计指令。V7 不执行旧版窗口实验开关或统计语法；"
                 "日程模式已迁到陪伴小屋 → 状态维护 → 日程模式。说明本条聊天指令没有更改设置，不要声称已切换。")
@@ -547,14 +555,15 @@ _VOICE_LANGUAGE_NAMES = {"zh": "中文", "ja": "日语", "en": "英语"}
 def _execute_voice_language(command, application, context):
     from companion_v2.conversation.reply_settings import GROUP, OWNER, target_for
     from companion_v2.execution.models import digest
-    from companion_v2.foundation.refs import OperationRef, ScopeKind, VersionRef
+    from companion_v2.foundation.refs import OperationRef, VersionRef
 
-    if command.surface != "private" or context.scope.kind is not ScopeKind.PRIVATE:
-        return "未执行：语音语种只在该私聊关系内设置。"
+    if command.surface not in ("private", "group"):
+        return "未执行：语音语种只能在当前私聊或群聊窗口内设置。"
     argument = " ".join((command.argument or "").split()).casefold()
     language = _VOICE_LANGUAGES.get(argument)
     if language is None:
-        return "未执行：语种可用 中文、日语、英语 或 默认，例如「陪伴 TTS语种 日语」。"
+        example = "陪伴群 切换语种 日语" if command.surface == "group" else "陪伴 切换语种 日语"
+        return f"未执行：语种可用 中文、日语、英语，例如「{example}」。"
     configuration = getattr(application, "configuration", None)
     if configuration is None:
         return "未执行：配置服务当前不可用。"
@@ -566,8 +575,9 @@ def _execute_voice_language(command, application, context):
     snapshot = read.unwrap()
     values = snapshot.values
     label = _VOICE_LANGUAGE_NAMES[language]
+    scope_label = "本群" if command.surface == "group" else "本窗口"
     if values.get(GROUP + ".voice_language") == language:
-        return f"没有更改：语音语种已经是{label}。"
+        return f"没有更改：{scope_label}语音语种已经是{label}。"
     identifier = "chat-voice-" + digest([context.key, language, snapshot.edit_token])
     operation = OperationRef(identifier, OWNER, target.authorization_scope, VersionRef(identifier, 1), identifier)
     receipt = configuration.patch(
@@ -576,7 +586,8 @@ def _execute_voice_language(command, application, context):
         changes={GROUP + ".voice_language": language}, observed_at=now)
     if receipt.failure is not None:
         return _failure_receipt(receipt.failure, "语音语种")
-    text = f"已设置：语音语种＝{label}。"
+    text = (f"已切换：{scope_label}语音语种＝{label}。"
+            "音色按该语种的默认 TTS 配置生效；未绑定则沿用当前会话 TTS。")
     if not values.get(GROUP + ".voice_enabled"):
         text += "语音回复开关当前关闭，开启后才会按该语种朗读。"
     return text
