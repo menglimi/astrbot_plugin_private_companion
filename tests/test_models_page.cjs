@@ -1951,7 +1951,8 @@ test('switching Laya out of remote resets a leftover request format', async () =
 
 function layaRemoteStatus(overrides) {
   return {enabled: true, mode: 'remote', endpoint: 'https://laya.test/v1', request_format: 'native',
-    remote_model: '', default_model: 'multilingual', api_key_set: true, timeout_seconds: 20,
+    remote_model: '', default_model: 'multilingual', api_key_set: true, proxy: '', proxy_set: false,
+    timeout_seconds: 20,
     followup_confidence_threshold: 0,
     decision_fields: {turn_state: true, action: true, reply_intent: true, reply_style: true,
       reply_form: true, segment_mode: true, tool_need: true},
@@ -1974,7 +1975,7 @@ async function openLayaPage() {
   return {page, node, requests};
 }
 
-test('Laya remote page offers an optional proxy without echoing the saved value', async () => {
+test('Laya remote page prefills the saved proxy and treats an empty field as direct', async () => {
   const {page, requests, root} = harness();
   const node = root();
   page.mount(node);
@@ -1982,33 +1983,51 @@ test('Laya remote page offers an optional proxy without echoing the saved value'
   await flush();
   node.click('[data-model-tab]', {modelTab: 'laya'});
   requests.find(item => item.method === 'GET' && item.route === 'model/laya')
-    .resolve(layaRemoteStatus({proxy_set: true, revision: 'laya-proxy'}));
+    .resolve(layaRemoteStatus({proxy: 'http://127.0.0.1:12450', proxy_set: true, revision: 'laya-proxy'}));
   requests.find(item => item.method === 'GET' && item.route === 'model/laya/logs').resolve({events: []});
   await flush();
 
   assert.match(node.innerHTML, /data-laya-field="proxy"/);
   assert.match(node.innerHTML, /可选，仅 Laya 判断请求使用/);
-  assert.match(node.innerHTML, /已配置；留空保留现有代理/);
-  assert.match(node.innerHTML, /<input type="text" data-laya-field="proxy" value=""[^>]*>/);
+  assert.match(node.innerHTML, /留空表示直连/);
+  assert.match(node.innerHTML, /示例 http:\/\/127\.0\.0\.1:7890/);
+  /* The saved address is prefilled, so the operator can tell whether Laya's
+     requests are actually tunnelled without opening settings.json. */
+  assert.match(node.innerHTML, /<input type="text" data-laya-field="proxy" value="http:\/\/127\.0\.0\.1:12450"[^>]*>/);
+  assert.match(node.innerHTML, /<span class="model-pill ok">经代理<\/span>/);
   assert.equal(page.isDirty(), false);
 
   node.change('[data-laya-field]', {layaField: 'mode', value: 'local'});
   assert.doesNotMatch(node.innerHTML, /data-laya-field="proxy"/);
   node.change('[data-laya-field]', {layaField: 'mode', value: 'remote'});
   assert.match(node.innerHTML, /data-laya-field="proxy"/);
+  assert.match(node.innerHTML, /value="http:\/\/127\.0\.0\.1:12450"/);
 
-  node.change('[data-laya-field]', {layaField: 'proxy', value: 'http://127.0.0.1:7890'});
+  /* Clearing the box is an explicit "direct connection" instruction, not
+     "keep the saved proxy"; the badge flips while the draft is unsaved. */
+  node.change('[data-laya-field]', {layaField: 'proxy', value: ''});
+  assert.match(node.innerHTML, /<span class="model-pill">直连<\/span>/);
   assert.equal(page.isDirty(), true);
   assert.ok(Array.from(page.changedFields()).includes('Laya · 代理地址'));
   node.click('[data-laya-save]');
   const save = requests.find(item => item.method === 'POST' && item.route === 'model/laya/save');
-  assert.equal(save.values.changes.proxy, 'http://127.0.0.1:7890');
-  save.resolve(layaRemoteStatus({proxy_set: true, revision: 'laya-proxy-saved'}));
+  assert.equal(save.values.changes.proxy, '');
+  save.resolve(layaRemoteStatus({proxy: '', proxy_set: false, revision: 'laya-proxy-cleared'}));
   await flush();
 
   assert.equal(page.isDirty(), false);
   assert.match(node.innerHTML, /<input type="text" data-laya-field="proxy" value=""[^>]*>/);
-  assert.doesNotMatch(node.innerHTML, /value="http:\/\/127\.0\.0\.1:7890"/);
+  assert.match(node.innerHTML, /<span class="model-pill">直连<\/span>/);
+
+  /* Every save carries the effective proxy, so "not submitted" can never be
+     mistaken for "keep the old value". */
+  node.change('[data-laya-field]', {layaField: 'remote_model', value: 'jev-1.14.0'});
+  node.click('[data-laya-save]');
+  const resend = requests.filter(item => item.method === 'POST' && item.route === 'model/laya/save').at(-1);
+  assert.equal(resend.values.changes.proxy, '');
+  assert.equal(resend.values.changes.remote_model, 'jev-1.14.0');
+  resend.resolve(layaRemoteStatus({proxy: '', proxy_set: false, revision: 'laya-proxy-r2'}));
+  await flush();
   page.unmount();
 });
 
