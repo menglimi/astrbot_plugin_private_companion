@@ -1314,9 +1314,13 @@ class ProactiveContacts:
                 if body is not None:
                     if not segments:
                         segments = (body,)
-                    for index, text in enumerate(segments):
-                        images = (reaction["manifest"],) if reaction is not None and index == len(segments) - 1 else ()
-                        part_documents.append({"text": text, "payload_hash": manifest_hash(text, images)})
+                    for text in segments:
+                        part_documents.append({"text": text, "payload_hash": manifest_hash(text, ())})
+                    # 表情图默认单独成条：正文保持纯文字，图片作为最后一段发出，
+                    # 不再和收尾那句挤在同一个气泡里。
+                    if reaction is not None:
+                        part_documents.append({
+                            "text": "", "payload_hash": manifest_hash("", (reaction["manifest"],))})
                 document["parts"] = part_documents
                 if deferred_reaction_intent is not None:
                     document["pending_reaction_intent"] = deferred_reaction_intent
@@ -1791,12 +1795,14 @@ class ProactiveContacts:
                 administrator_test=administrator_test):
             raise TaskError("contact_duplicate", "another confirmed or unresolved contact already uses this text")
         part_text = parts[request.sequence]["text"]
-        final_part = request.sequence == len(parts) - 1
-        # Delivery re-reads the sealed plan only. It never re-decides presentation,
-        # so a restart sends exactly what the original decision sealed.
+        last_index = len(parts) - 1
         reaction = data.get("reaction")
+        # 新草稿把表情图作为独立的空文本段放在最后；旧草稿仍把图挂在最后一段文字上，
+        # 因此两种封存记录都要能按原样投递。
+        legacy_attachment = reaction is not None and bool(parts[last_index]["text"].strip())
+        image_part = reaction is not None and not legacy_attachment and request.sequence == last_index
         if reaction is None:
-            if not final_part or (voice is None and poke is None):
+            if request.sequence != last_index or (voice is None and poke is None):
                 return part_text
             return DeliveryContent(part_text, (), voice=voice, poke=poke)
         if not self._reaction_available(request.context, row["contact_id"],
@@ -1806,9 +1812,15 @@ class ProactiveContacts:
             datetime.fromisoformat(reaction["issued_at"]), evidence=tuple(source_from_document(ref) for ref in data["sources"]))
         if image_manifest(image) != reaction["manifest"]:
             raise TaskError("reaction_changed", "selected proactive reaction no longer matches its original")
-        if not final_part:
-            return part_text
-        return DeliveryContent(part_text, (image,), voice=voice, poke=poke)
+        if legacy_attachment:
+            if request.sequence != last_index:
+                return part_text
+            return DeliveryContent(part_text, (image,), voice=voice, poke=poke)
+        if image_part:
+            return DeliveryContent("", (image,))
+        if request.sequence == last_index - 1 and (voice is not None or poke is not None):
+            return DeliveryContent(part_text, (), voice=voice, poke=poke)
+        return part_text
 
     def _draft(self, request, at, *, historical=False):
         require(self.tasks.authorize_context(request.context, action=GROUP, observed_at=at))

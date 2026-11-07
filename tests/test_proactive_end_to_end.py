@@ -835,33 +835,37 @@ class ProactiveDeliveryEndToEndTests(ProactiveEndToEndFixture, unittest.Isolated
         self.model_behavior = with_reaction
         self.sync(app, 60)
         app.contact_schedule.advance()
-        await self.delivered_parts(app, 1)
+        await self.delivered_parts(app, 2)
 
         sent = self.recorder.news_envelopes(app)
-        self.assertEqual(len(sent), 1)
-        record = sent[0]
+        self.assertEqual(len(sent), 2)
+        text_record, record = sent
         contacts = self.queued_contacts(app)
         self.assertEqual(len(contacts), 1)
         saved = json.loads(contacts[0]["record_json"])
+        # 默认分开：正文一条，表情图单独一条空文本段。
+        self.assertEqual(len(saved["parts"]), 2)
+        self.assertEqual(saved["parts"][0]["text"], contacts[0]["body"])
+        self.assertEqual(saved["parts"][1]["text"], "")
         self.assertEqual(saved["reaction"]["manifest"], record["images"][0])
+        self.assertEqual(text_record["images"], ())
+        self.assertEqual(text_record["render"]["kinds"], ("text",))
         self.assertEqual(record["images"][0]["descriptor"]["content_hash"], item["id"])
         self.assertIsInstance(record["envelope"], ImageDeliveryEnvelope)
         self.assertEqual(len(record["images"]), 1)
-        self.assertEqual(record["image_position"], "after_text")
-        # 渲染态：正文在先、原图在后，正文没有被隐藏。
-        self.assertEqual(record["render"]["kinds"], ("text", "image"))
-        self.assertEqual(record["render"]["components"][1][0], "image")
-        self.assertFalse(record["render"]["text_hidden"])
-        self.assertEqual(record["payload_hash"], payload_hash(record["text"], (record["envelope"].images)))
-        # 封存、投递行与回执指向同一份带图 payload。
-        row = self.delivery_rows(app)[0]
+        self.assertEqual(record["text"], "")
+        self.assertEqual(record["render"]["kinds"], ("image",))
+        self.assertEqual(record["payload_hash"], payload_hash("", (record["envelope"].images)))
+        # 封存、投递行与回执指向同一条图片 payload。
+        rows = self.delivery_rows(app)
+        row = rows[1]
         self.assertEqual(row["payload_hash"], record["payload_hash"])
         self.assertEqual(row["state"], "delivered")
         self.assertEqual(json.loads(app.runtime.read_one(
-            "SELECT receipt_json FROM background_delivery_receipts", ())["receipt_json"])["payload_hash"],
-            record["payload_hash"])
-        self.assertEqual(record["text"], contacts[0]["body"])
-        self.assertNotIn("来源：", record["text"])
+            "SELECT receipt_json FROM background_delivery_receipts WHERE delivery_id = ?",
+            (row["delivery_id"],))["receipt_json"])["payload_hash"], record["payload_hash"])
+        self.assertEqual(text_record["text"], contacts[0]["body"])
+        self.assertNotIn("来源：", text_record["text"])
         self.assertEqual(saved["news_provenance"]["source"], "示例媒体")
 
 
