@@ -3042,7 +3042,15 @@ def _validate_table_shapes(
                 actual_rows = [tuple(row) for row in connection.execute(query)]
                 if actual_rows != expected.execute(query).fetchall():
                     raise StorageOpenError(f"V2 table structure does not match: {table}")
-            if _index_shapes(connection, table) != _index_shapes(expected, table):
+            # Runtime owners may add optimization indexes after the schema is
+            # current (the native-conversation module indexes conversation_batches).
+            # An extra index cannot corrupt the declared shape, so require every
+            # declared index and tolerate additions; strict equality here made the
+            # plugin unable to reopen a database it had just written.
+            actual_indexes = _index_shapes(connection, table)
+            missing = [shape for shape in _index_shapes(expected, table)
+                       if shape not in actual_indexes]
+            if missing:
                 raise StorageOpenError(f"V2 table indexes do not match: {table}")
     finally:
         expected.close()

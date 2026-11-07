@@ -55,6 +55,29 @@ class StorageRuntimeTests(unittest.TestCase):
             finally:
                 runtime.close()
 
+    def test_runtime_added_indexes_do_not_block_reopening_the_database(self) -> None:
+        """Native conversation code adds optimization indexes at runtime.
+
+        Reopening must require the declared indexes, not reject the database for
+        carrying an extra one; strict equality left the plugin unable to start.
+        """
+        with TemporaryDirectory(prefix="companion-v2-storage-") as temporary:
+            root = Path(temporary) / "v2-data"
+            runtime = StorageRuntime.open(data_root=root, installation_id=INSTALLATION_ID)
+            database = runtime.database_path
+            runtime.close()
+
+            connection = sqlite3.connect(database)
+            try:
+                connection.execute("""CREATE INDEX conversation_batches_extra_idx
+                    ON conversation_batches(json_extract(context_json, '$.role_binding'))""")
+                connection.commit()
+            finally:
+                connection.close()
+
+            reopened = StorageRuntime.open(data_root=root, installation_id=INSTALLATION_ID)
+            reopened.close()
+
     def test_current_schema_reopen_skips_full_integrity_scan(self) -> None:
         with TemporaryDirectory(prefix="companion-v2-storage-") as temporary:
             root = Path(temporary) / "v2-data"

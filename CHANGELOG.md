@@ -8,6 +8,12 @@
 - 为主要陪伴对象的单人私聊判定补齐三张对话表的查询索引，避免表达规则逐条校验时反复全表扫描、拖住 AstrBot 事件循环。
 - 修复「表情配图」页把任何语义接口异常都提示成「语义模型调用失败，请核对嵌入模型配置」：这条文案原来挂在 `semantic_api` 的兜底 `except Exception` 上，连语义库 SQLite 忙锁、未预期的属性错误也会被说成嵌入模型的问题（模型测试却可能正常通过）。现在语义库忙返回 `semantic_store_busy`（稍后重试），其它未预期异常返回 `semantic_operation_failed`（看插件日志），并在日志里按 `action` 记录异常类型，不再误导去改模型配置。
 
+## 7.1.5 - 2026-11-07
+
+- 修复运行期新增优化索引导致数据库无法重开的问题：`conversation_batches` 的 `conversation_batches_private_participant_idx` 由原生会话模块在首次记录回合时创建，不在 `V68_SCHEMA_STATEMENTS` 内；7.1.4 的严格索引集合相等校验会把它判成结构不匹配，插件写过的库下次启动即 `StorageOpenError`。现在只要求声明过的索引存在，额外索引不再视为错误。
+- 新增回归用例 `test_runtime_added_indexes_do_not_block_reopening_the_database`：在真实库上加一条额外索引后重新打开，必须成功。
+- 版本号更新至 7.1.5，重建发布包。
+
 ## 7.1.4 - 2026-11-07
 
 ### xAI Grok Imagine 接入
