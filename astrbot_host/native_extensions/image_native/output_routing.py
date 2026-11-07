@@ -540,17 +540,20 @@ class OnlineImageBackend:
         secrets = _secrets(config, invocation.prompt, invocation.negative_prompt)
         timeout = aiohttp.ClientTimeout(total=config.get("timeout_seconds", 180))
         async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
-            await checked(before_dispatch)
             uploaded = ()
+            request_started = False
             try:
                 if platform == XAI_PLATFORM and invocation.operation == "edit":
                     # Upload every reference to xAI's Files API first; the edit
                     # request itself carries only the returned ids.
+                    await checked(getattr(before_dispatch, "read", before_dispatch))
                     uploaded = await self._xai_upload(session, references, headers, secrets)
                     if len(uploaded) == 1:
                         body["image"] = {"file_id": uploaded[0]}
                     else:
                         body["images"] = [{"file_id": file_id} for file_id in uploaded]
+                await checked(before_dispatch)
+                request_started = True
                 async with session.post(url, headers=headers, allow_redirects=False, **kwargs) as response:
                     if response.status >= 300:
                         raise await self._failure(response, secrets)
@@ -558,6 +561,11 @@ class OnlineImageBackend:
             except NativeImageError:
                 raise
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                if platform == XAI_PLATFORM and invocation.operation == "edit" and not request_started:
+                    raise Rejected("native_endpoint_rejected", endpoint_id=str(config.get("id", "")),
+                                   reason="upload_transport_error", detail=type(exc).__name__,
+                                   switchable=True, kind=REJECTED_UNAVAILABLE,
+                                   scope=SCOPE_ENDPOINT) from exc
                 # The fence is already crossed: the provider may have accepted the
                 # request even though no response reached us.  Never retried.
                 raise NativeImageError(
@@ -655,9 +663,19 @@ class OnlineImageBackend:
                 form = aiohttp.FormData()
                 form.add_field("file", reference.data, filename=f"reference-{index}.png",
                                content_type="image/png")
-                async with session.post(self._xai_files_url(), headers=headers, data=form) as response:
+                async with session.post(self._xai_files_url(), headers=headers, data=form,
+                                        allow_redirects=False) as response:
                     if response.status >= 300:
-                        raise await self._failure(response, secrets)
+                        failure = await self._failure(response, secrets)
+                        if isinstance(failure, Rejected):
+                            raise failure
+                        # A Files API failure cannot have generated an image,
+                        # even when the upload response itself is uncertain.
+                        diagnostic = failure.diagnostics[0]
+                        raise Rejected("native_endpoint_rejected", endpoint_id=str(self.config.get("id", "")),
+                                       status=response.status, reason="upload_unavailable",
+                                       detail=diagnostic.get("detail", ""), switchable=True,
+                                       kind=REJECTED_UNAVAILABLE, scope=SCOPE_ENDPOINT)
                     raw = await self._read(response)
                 try:
                     payload = json.loads(raw)
@@ -676,7 +694,8 @@ class OnlineImageBackend:
         """Best-effort deletion of uploaded references; never masks the result."""
         for file_id in file_ids:
             try:
-                async with session.delete(self._xai_files_url(file_id), headers=headers) as response:
+                async with session.delete(self._xai_files_url(file_id), headers=headers,
+                                          allow_redirects=False) as response:
                     reader = getattr(response, "read", None)
                     if callable(reader):
                         await reader()

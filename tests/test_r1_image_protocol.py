@@ -15,6 +15,8 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+import aiohttp
+
 from astrbot_host.native_extensions.discovery import declarations_for_manifest
 from astrbot_host.native_extensions.image_native import output_routing
 from astrbot_host.native_extensions.image_native.adapter import PLUGIN_ID
@@ -486,6 +488,38 @@ class XaiProtocolTests(HTTPBackedTest):
                                operation="edit", references=[reference()])
 
         self.assertEqual(self.http.call("POST")["url"], "https://api.x.ai/v1/files")
+
+    async def test_upload_transport_failure_does_not_cross_the_edit_dispatch_fence(self):
+        self.http.reply("POST", lambda url, kwargs: (_ for _ in ()).throw(aiohttp.ClientError()))
+        events = []
+
+        async def before_dispatch():
+            events.append("dispatch")
+
+        async def read_before_upload():
+            events.append("read")
+
+        before_dispatch.read = read_before_upload
+        backend = OnlineImageBackend(endpoint(platform="xai", model="grok-imagine-image",
+                                              base_url="https://api.x.ai/v1", max_reference_images=5))
+        with self.assertRaises(Rejected) as raised:
+            await backend.execute(invocation("edit"), (reference(),), before_dispatch)
+
+        self.assertTrue(raised.exception.switchable)
+        self.assertEqual(events, ["read"])
+        self.assertEqual(self.http.call("POST")["url"], "https://api.x.ai/v1/files")
+
+    async def test_upload_server_error_can_switch_without_retrying_an_edit(self):
+        self.http.reply("POST", lambda url, kwargs: FakeResponse(b'{"error":"unavailable"}', status=503))
+
+        with self.assertRaises(Rejected) as raised:
+            await self.execute(endpoint(platform="xai", model="grok-imagine-image",
+                                        base_url="https://api.x.ai/v1", max_reference_images=5),
+                               operation="edit", references=[reference()])
+
+        self.assertTrue(raised.exception.switchable)
+        self.assertEqual(raised.exception.status, 503)
+        self.assertEqual([call["url"] for call in self.http.calls], ["https://api.x.ai/v1/files"])
 
     async def test_xai_host_auto_detection_and_legacy_openai_projection(self):
         self.assertEqual(resolve_platform({"platform": "auto", "base_url": "https://api.x.ai/v1",
