@@ -8,6 +8,7 @@ from companion_v2.agenda.models import Schedule
 from companion_v2.agenda.service import AgendaService
 from companion_v2.foundation.refs import ScopeKind, ScopeRef, SubjectKind, SubjectRef
 from companion_v2.identity_policy.models import AuthorizationTier
+from companion_v2.identity_policy.personas import ConversationRoute, PersonaDirectory
 from tests import test_agenda as agenda_fixture
 from tests.test_agenda import INSTALLATION, NOW, PRINCIPAL, ROLE, SCOPE, TARGET, USER
 
@@ -107,6 +108,30 @@ class AgendaAccessTests(unittest.TestCase):
         self.assertEqual(len(self.service.list_memos(reader, target=TARGET, observed_at=NOW).unwrap()), 1)
         self.create(memo_id="not-shared").unwrap()
         self.assertFalse(self.service.read_memo(reader, target=TARGET, memo_id="not-shared", observed_at=NOW).is_success)
+
+    def test_verified_private_owner_reads_own_memos_without_a_window_grant(self):
+        scope = ScopeRef(INSTALLATION, "onebot", ScopeKind.PRIVATE, "person-a", "bot-a", "account-a",
+                         "conversation-a", "session-a")
+        target = replace(TARGET, scope=scope)
+        PersonaDirectory(self.runtime).register_route(ConversationRoute(scope, user=USER), observed_at=NOW)
+        self.identity.bind_role(scope=scope, role=ROLE, expected_revision=0)
+        admin = self.person("admin", AuthorizationTier.CORE)
+        operation = self.op("private-owner-memo")
+        operation = replace(operation, scope=scope)
+        self.service.create_memo(admin, target=target, memo_id="owner-only", title="私聊事项", body="仅本人可读",
+                                 operation=operation, expected_role_revision=1, observed_at=NOW).unwrap()
+        self.assertFalse(self.identity.authorize(self.actor, scope=scope, capability="memo.read",
+                                                 observed_at=NOW).is_success)
+        self.assertEqual(self.service.read_memo(self.actor, target=target, memo_id="owner-only",
+                                                observed_at=NOW).unwrap().body, "仅本人可读")
+        self.assertEqual(tuple(memo.memo_id for memo in self.service.list_memos(
+            self.actor, target=target, observed_at=NOW).unwrap()), ("owner-only",))
+        self.assertFalse(self.service.change_memo(self.actor, target=target, memo_id="owner-only", action="edit",
+            changes={"body": "未授权修改"}, expected_revision=1, expected_role_revision=1,
+            operation=replace(self.op("private-owner-edit"), scope=scope), observed_at=NOW).is_success)
+        other = self.person("other", AuthorizationTier.STANDARD)
+        self.assertFalse(self.service.read_memo(other, target=target, memo_id="owner-only", observed_at=NOW).is_success)
+        self.assertFalse(self.service.list_memos(other, target=target, observed_at=NOW).is_success)
 
     def test_expiring_share_and_other_connection_revocation_are_seen_without_reload(self):
         self.create().unwrap()

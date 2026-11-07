@@ -30,6 +30,21 @@ PREFIX = "/astrbot_plugin_private_companion"
 
 
 class GroupReplyHostAPITests(GroupFixture, unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def prompt_text(payload):
+        def readable(value):
+            if isinstance(value, str):
+                try:
+                    return readable(json.loads(value))
+                except ValueError:
+                    return value
+            if isinstance(value, dict):
+                return " ".join(readable(item) for item in value.values())
+            if isinstance(value, list):
+                return " ".join(readable(item) for item in value)
+            return str(value)
+        return " ".join(readable(message["content"]) for message in payload["messages"])
+
     def setUp(self):
         super().setUp()
         self.controller.register_routes()
@@ -115,7 +130,7 @@ class GroupReplyHostAPITests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(current["group_air_guard_enabled"])
         self.assertEqual(current["group_wakeup_direct_words"], '["小星", "星星"]')
         payload, _ = self.native.provider.client.state.calls[-1]
-        instruction = payload["messages"][1]["content"]
+        instruction = self.prompt_text(payload)
         self.assertNotIn("读空气参考", instruction)
         self.assertIn("小星", instruction)
         self.assertIn("观星", instruction)
@@ -130,7 +145,7 @@ class GroupReplyHostAPITests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.captured(after_disable)["group_wakeup_enabled"])
         self.assertTrue(self.captured(new)["group_wakeup_enabled"])
         payload, _ = self.native.provider.client.state.calls[-1]
-        self.assertNotIn("群唤醒参考", payload["messages"][1]["content"])
+        self.assertNotIn("群唤醒参考", self.prompt_text(payload))
 
     async def test_wakeup_preferences_use_original_speaker_and_preview_is_offline(self):
         await self.start_host()
@@ -152,19 +167,19 @@ class GroupReplyHostAPITests(GroupFixture, unittest.IsolatedAsyncioTestCase):
                    "group_wakeup_cold_group_enabled": True}
         self.assertEqual((await self.save(changes, key="wakeup"))["status"], "ok")
         await self.receive_group(sender="200")
-        ordinary = self.native.provider.client.state.calls[-1][0]["messages"][1]["content"]
+        ordinary = self.prompt_text(self.native.provider.client.state.calls[-1][0])
         self.assertIn("小星", ordinary)
         self.assertIn("最多 12 个", ordinary)
         self.assertIn("最多相对增加 20%", ordinary)
         self.assertNotIn("私有称呼", ordinary)
         await self.receive_group(sender="201")
-        primary = self.native.provider.client.state.calls[-1][0]["messages"][1]["content"]
+        primary = self.prompt_text(self.native.provider.client.state.calls[-1][0])
         self.assertIn("私有称呼", primary)
         self.assertIn("冷群参考间隔 25 分钟", primary)
         self.assertEqual((await self.save({"group_wakeup_bot_name_enabled": False},
                                           key="disable-name"))["status"], "ok")
         await self.receive_group(sender="200")
-        no_name = self.native.provider.client.state.calls[-1][0]["messages"][1]["content"]
+        no_name = self.prompt_text(self.native.provider.client.state.calls[-1][0])
         self.assertNotIn("小星", no_name)
 
     async def test_group_role_and_native_session_settings_are_separate(self):
@@ -351,7 +366,7 @@ class GroupReplyHostAPITests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         await wait_for_batch(self.controller.session, batch)
         await wait_for_batch(self.controller.session, other)
         payload = self.native.provider.client.state.calls[0][0]
-        self.assertIn("已合并当前成员 2 条输入", payload["messages"][1]["content"])
+        self.assertIn("已合并当前成员 2 条输入", self.prompt_text(payload))
         users = " ".join(material["text"] for message in payload["messages"] if message["role"] == "user"
                          for material in json.loads(message["content"])["materials"])
         self.assertIn("瓦", users)

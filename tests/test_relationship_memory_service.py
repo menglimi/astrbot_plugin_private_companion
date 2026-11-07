@@ -149,7 +149,17 @@ class RelationshipMemoryServiceTests(unittest.TestCase):
         self.identity.revoke_grant(f"grant:{HUMAN.subject_id}:relationship.memory.read",
             revoked_at=self.current_time, expected_revision=self.identity.revision)
         self.assertEqual(self.service.for_relationship(actor=self.actor, scope=SCOPE).failure.code,
-            "authorization_revoked")
+                         "source_expired")
+
+    def test_private_owner_reads_without_read_grant_but_cannot_borrow_another_route(self):
+        self.identity.revoke_grant(f"grant:{HUMAN.subject_id}:relationship.memory.read",
+            revoked_at=NOW, expected_revision=self.identity.revision)
+        self.assertTrue(self.service.for_relationship(actor=self.actor, scope=SCOPE).is_success)
+        self.identity.bind(binding_id="identity-b", principal=OTHER_PRINCIPAL, subject=OTHER_HUMAN,
+            valid_from=NOW - timedelta(minutes=1), expected_revision=self.identity.revision)
+        other = self.identity.resolve_authenticated(OTHER_PRINCIPAL, observed_at=NOW).unwrap()
+        self.assertFalse(self.service.for_relationship(actor=other, scope=SCOPE).is_success)
+        self.assertFalse(self.service.propose(self.proposal(), actor=other).is_success)
 
     def test_role_switch_and_another_private_participant_cannot_read_this_pair(self):
         proposed = self.service.propose(self.proposal(), actor=self.actor).unwrap()

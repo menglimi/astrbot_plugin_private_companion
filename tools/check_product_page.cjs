@@ -4,12 +4,12 @@ const fs = require('node:fs/promises');
 const http = require('node:http');
 const path = require('node:path');
 
-async function run({browser, outputDir, bridgePath, replyOnly=false, identityOnly=false}) {
+async function run({browser, outputDir, bridgePath, replyOnly=false, identityOnly=false, wildcardOnly=false}) {
   const root=path.resolve(__dirname,'../pages/陪伴小屋');
   await fs.mkdir(outputDir,{recursive:true});
   const sdk=await fs.readFile(bridgePath,'utf8');
   const HOST='astrbot_plugin_private_companion';
-  const qa={calls:[],posts:[],mode:'direct',catalogMode:'multi',initialized:true,deny:false,late:null,growthState:'proposed',semanticRevision:1,semanticReactions:true};
+  const qa={calls:[],posts:[],mode:'direct',catalogMode:wildcardOnly?'wildcard':'multi',initialized:true,deny:false,late:null,growthState:'proposed',semanticRevision:1,semanticReactions:true};
   const internalIdentity={installation_id:'synthetic-installation-internal',operator_id:'dashboard:qa-internal'};
   const replyDefaults={enabled:false,llm_controlled:true,rules_enabled:false,rule_mode:'sentences',threshold:120,min_segment_chars:12,max_segments:4,prompt:'',streaming:false,part_gap_ms:0,image_position:'after_text',
     voice_enabled:false,voice_trigger_mode:'always',voice_generation_mode:'plain',voice_segment_mode:'each',voice_delivery_mode:'voice_and_text',voice_position:'after_media',voice_language:'zh',voice_foreign_text_mode:'original',
@@ -31,7 +31,8 @@ async function run({browser, outputDir, bridgePath, replyOnly=false, identityOnl
       ...(qa.catalogMode==='single'?['a']:['a','b']).map((id,index)=>({target_id:id,scope_kind:'private',participant_id:'user-'+id,
         platform_id:'qq',account_id:'bot-'+id,bot_id:'bot-'+id,roles:[{role_id:index?'晚星':'晨星',
           ...Object.fromEntries(['life','state','growth','memory','relationships','reply'].map(name=>[name+'_api',full('host/targets/'+id+'/roles/role-'+id+'/'+name)]))}]})),
-      ...(qa.catalogMode==='single'?[]:[{target_id:'group',scope_kind:'group',group_id:'group-1',platform_id:'qq',account_id:'bot-a',roles:[{role_id:'晨星',life_api:null,state_api:null,growth_api:null,memory_api:null,relationships_api:null}]}])]};
+      ...(qa.catalogMode==='single'?[]:[{target_id:'group',scope_kind:'group',group_id:qa.catalogMode==='wildcard'?'*':'group-1',platform_id:'qq',account_id:'bot-a',bot_id:'bot-a',roles:[{role_id:'晨星',life_api:null,state_api:null,growth_api:null,memory_api:null,relationships_api:null,
+        ...(qa.catalogMode==='wildcard'?{reply_api:full('host/targets/group/roles/role-group/reply')}: {})}]}])]};
   }
   function accountDirectory() {
     const targets=catalog().targets.map(target=>({...target,bot_id:target.bot_id||target.account_id,
@@ -67,6 +68,7 @@ async function run({browser, outputDir, bridgePath, replyOnly=false, identityOnl
       return ok({...internalIdentity,profile_id:'测试运行实例',operator_name:'测试管理员',persons:[],groups:[],
         counts:{total:0,private_chat:0,group_member:0,both:0},page_managed_capabilities:[]});
     }
+    if(endpoint==='acquaintance/strangers')return ok({items:[]});
     if(/^host\/targets\/([ab])\/roles\/role-\1\/config$/.test(endpoint)){
       assert.equal(action,'api:get');
       assert.equal(typeof params.sections,'string');
@@ -85,6 +87,9 @@ async function run({browser, outputDir, bridgePath, replyOnly=false, identityOnl
         {capability_id:'live',extension_id:'live',owner:'companion_v2',label:'直播与表演',version:'2.1.0',enabled:true,runtime_ready:true,assembled:true,installed_revision:1,installed_package_version:'2.1.0',status_connected:true,integration_state:'connected',reason:'V2 原生模块已启用'}],
       providers:[], summary:{connected_count:6,extension_ready_count:6,unassembled_extension_count:0,installed_count:0,missing_count:0}});
     if(endpoint==='staging/status')return {status:'error',message:'未找到该路由',data:{}};
+    if(endpoint==='host/performance')return ok({enabled:false,mode:'standard'});
+    if(endpoint==='page/display-preferences')return ok({preferences:{}});
+    if(endpoint==='setup/status')return ok({});
     if(endpoint==='host/status')return ok({mode:'multi',enabled:true,...internalIdentity,state:'new',accepting:false,
       delivery_mode:'preview',group_delivery_mode:'preview',targets:accountDirectory().discovered.targets});
     if(endpoint==='accounts'){
@@ -105,6 +110,10 @@ async function run({browser, outputDir, bridgePath, replyOnly=false, identityOnl
         reactions_enabled:qa.semanticReactions,slang_enabled:false,slang_learning:false,vision_review:false,
         embedding_provider:'',rerank_provider:'',analysis_provider:'',timeout_seconds:10,batch_size:16,learning_interval_seconds:3600},
         providers:{embedding:[],rerank:[],analysis:[]},catalog:{reaction:{enabled:0},slang:{enabled:0}},sessions:[],items:[],next_after:null,errors:{}});
+    }
+    if(/^host\/targets\/group\/roles\/role-group\/groups\/300\/reply(?:\/.*)?$/.test(endpoint)){
+      assert.equal(action,'api:get');
+      return ok(replyStatus('a'));
     }
     const match=/^host\/targets\/([ab])\/roles\/role-[ab]\/(life|state|growth|memory|relationships|reply)(\/command|\/reflections|\/configure|\/preview)?$/.exec(endpoint);
     assert(match,'unexpected endpoint '+endpoint);
@@ -155,6 +164,7 @@ async function run({browser, outputDir, bridgePath, replyOnly=false, identityOnl
   const serverErrors=[];
   const server=http.createServer(async(req,res)=>{
     try {
+      res.setHeader('Access-Control-Allow-Origin','*');
       const url=new URL(req.url,'http://127.0.0.1');
       if(url.pathname==='/'){res.setHeader('Content-Type','text/html;charset=utf-8');res.end(wrapper);return;}
       if(url.pathname==='/bridge.js'){res.setHeader('Content-Type','text/javascript;charset=utf-8');res.end(sdk);return;}
@@ -164,7 +174,7 @@ async function run({browser, outputDir, bridgePath, replyOnly=false, identityOnl
       if(!file.startsWith(root+path.sep)){res.writeHead(404).end();return;}
       let body=await fs.readFile(file);
       if(path.extname(file)==='.html')body=Buffer.from(body.toString('utf8').replace('</body>','<script src="/bridge.js"></script></body>'));
-      res.setHeader('Content-Type',({'.html':'text/html;charset=utf-8','.js':'text/javascript;charset=utf-8','.css':'text/css;charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg'})[path.extname(file)]||'application/octet-stream');res.end(body);
+      res.setHeader('Content-Type',({'.html':'text/html;charset=utf-8','.js':'text/javascript;charset=utf-8','.css':'text/css;charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.webp':'image/webp'})[path.extname(file)]||'application/octet-stream');res.end(body);
     } catch(error){if(error.code!=='ENOENT')serverErrors.push(String(error.stack));res.writeHead(500).end();}
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -173,7 +183,12 @@ async function run({browser, outputDir, bridgePath, replyOnly=false, identityOnl
   const shell=()=>page.frameLocator('#cottage');
   const inner=()=>shell().frameLocator('.product-workspace-frame');
   const checks=[];
-  const ready=async()=>{await shell().locator('[data-host-badge].host-connected').waitFor({state:'attached'});};
+  const ready=async()=>{await shell().locator('body').evaluate(()=>new Promise((resolve,reject)=>{
+    const until=Date.now()+15000;
+    const inspect=()=>window.CompanionProduct?.connection().state==='connected'?resolve():
+      Date.now()>until?reject(Error('product directory timed out')):setTimeout(inspect,20);
+    inspect();
+  }));};
   const layout=async()=>assert.equal(await shell().locator('body').evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   const capture=async(name,fullPage=true)=>{await page.screenshot({path:path.join(outputDir,name+'.png'),fullPage});};
   const visit=async hash=>{
@@ -187,6 +202,45 @@ async function run({browser, outputDir, bridgePath, replyOnly=false, identityOnl
   };
   try {
     await page.goto('http://127.0.0.1:'+server.address().port);await ready();
+    if(wildcardOnly){
+      await shell().locator('body').evaluate(()=>{location.hash='#manage/identity';});
+      const directory=shell().frameLocator('[data-workspace="identity"] iframe');
+      await directory.locator('body').waitFor();
+      await directory.locator('body').evaluate(()=>parent.postMessage({channel:'companion-workspace',kind:'navigate',
+        target:{tab:'group-reply',platform_id:'qq',bot_id:'bot-a',account_id:'bot-a',group_id:'300',role_id:'晨星'}},'*'));
+      await shell().locator('body').evaluate(()=>new Promise((resolve,reject)=>{
+        const until=Date.now()+5000;
+        const inspect=()=>window.CompanionProduct.target()?.group_id==='300'?resolve():
+          Date.now()>until?reject(Error('wildcard group navigation timed out')):setTimeout(inspect,20);
+        inspect();
+      }));
+      assert.equal(await shell().locator('body').evaluate(()=>window.CompanionProduct.role().reply_api),
+        full('host/targets/group/roles/role-group/groups/300/reply'));
+      assert.equal(await shell().locator('body').evaluate(()=>location.hash),'#manage/decision');
+      assert(qa.calls.some(call=>call.endpoint==='host/targets/group/roles/role-group/groups/300/reply'));
+      const assets=await shell().locator('body').evaluate(async()=>{
+        const fonts=await Promise.all([400,600].map(async weight=>{
+          try{return (await document.fonts.load(`${weight} 16px MiSans`,'陪伴小屋')).length;}
+          catch(error){return error.name+': '+error.message;}
+        }));
+        const images=await Promise.all(['mug','tea-coffee'].map(async name=>{
+          try{
+            const image=new Image();image.src=`assets/room-loading-${name}.webp`;await image.decode();
+            return [image.naturalWidth,image.naturalHeight];
+          }catch(error){return error.name+': '+error.message;}
+        }));
+        return {fonts,images};
+      });
+      assert.deepEqual(assets,{fonts:[1,1],images:[[300,300],[300,300]]});
+      for(const [width,height] of [[1440,1050],[390,844],[320,720]]){
+        await page.setViewportSize({width,height});await layout();
+        await capture('wildcard-'+width,false);
+      }
+      assert.deepEqual(browserErrors,[]);assert.deepEqual(serverErrors,[]);
+      const report={checks:['wildcard group navigation reads the concrete group reply endpoint',
+        'subset fonts and animated WebP assets load at desktop and mobile widths'],passed:2,browserErrors,serverErrors};
+      await fs.writeFile(path.join(outputDir,'wildcard-results.json'),JSON.stringify(report,null,2)+'\n','utf8');return report;
+    }
     if(identityOnly){
       const directory=()=>shell().frameLocator('[data-workspace="identity"] iframe');
       const relationships=()=>shell().frameLocator('[data-workspace="relationships"] iframe');
@@ -451,4 +505,4 @@ async function run({browser, outputDir, bridgePath, replyOnly=false, identityOnl
   finally{await page.close();await new Promise(resolve=>server.close(resolve));}
 }
 module.exports={run};
-if(require.main===module)(async()=>{const browser=await require('playwright').chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH});try{console.log(JSON.stringify(await run({browser,outputDir:process.argv[2],bridgePath:process.argv[3],replyOnly:process.argv.includes('--reply-only'),identityOnly:process.argv.includes('--identity-only')}),null,2));}finally{await browser.close();}})().catch(error=>{console.error(error);process.exitCode=1;});
+if(require.main===module)(async()=>{const browser=await require('playwright').chromium.launch({headless:true,executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH});try{console.log(JSON.stringify(await run({browser,outputDir:process.argv[2],bridgePath:process.argv[3],replyOnly:process.argv.includes('--reply-only'),identityOnly:process.argv.includes('--identity-only'),wildcardOnly:process.argv.includes('--wildcard-only')}),null,2));}finally{await browser.close();}})().catch(error=>{console.error(error);process.exitCode=1;});

@@ -87,8 +87,8 @@
         ||(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches);
       if(reduceMotion)return;
       var choices=[
-        "assets/room-loading-tea-coffee.gif?v=boot-gif-once-20261001",
-        "assets/room-loading-mug.gif?v=boot-gif-once-20261001"
+        "assets/room-loading-tea-coffee.webp?v=boot-webp-20261107",
+        "assets/room-loading-mug.webp?v=boot-webp-20261107"
       ];
       root.dataset.roomBootGif=choices[Math.floor(Math.random()*choices.length)];
     })();
@@ -340,11 +340,11 @@
       <span class="room-boot-glow"></span>
       <img id="roomBootGif" class="room-boot-gif" alt="" hidden>
       <!-- template 内的静态 src 会由宿主改写；template 本身不会提前请求两张图。 -->
-      <template id="roomBootGifTea" data-room-boot-gif="assets/room-loading-tea-coffee.gif?v=boot-gif-once-20261001">
-        <img class="room-boot-gif" src="assets/room-loading-tea-coffee.gif?v=boot-gif-once-20261001" alt="">
+      <template id="roomBootGifTea" data-room-boot-gif="assets/room-loading-tea-coffee.webp?v=boot-webp-20261107">
+        <img class="room-boot-gif" src="assets/room-loading-tea-coffee.webp?v=boot-webp-20261107" alt="">
       </template>
-      <template id="roomBootGifMug" data-room-boot-gif="assets/room-loading-mug.gif?v=boot-gif-once-20261001">
-        <img class="room-boot-gif" src="assets/room-loading-mug.gif?v=boot-gif-once-20261001" alt="">
+      <template id="roomBootGifMug" data-room-boot-gif="assets/room-loading-mug.webp?v=boot-webp-20261107">
+        <img class="room-boot-gif" src="assets/room-loading-mug.webp?v=boot-webp-20261107" alt="">
       </template>
     </div>
     <span class="room-boot-text">正在打开小屋…</span>

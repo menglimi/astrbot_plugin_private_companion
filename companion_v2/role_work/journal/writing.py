@@ -8,6 +8,7 @@ or capacity-blocked requests are never silently replayed on restart.
 import asyncio
 from dataclasses import dataclass, replace
 from datetime import timedelta
+import logging
 
 from companion_v2.capabilities.memory_push import (DEFAULT_MEMORY_PUSH, PUSH_PERSONA_LIFE, MemoryPushRecord,
     push_memory, push_memory_id)
@@ -17,16 +18,19 @@ from companion_v2.execution.runner import ExactTaskRunner, RunResult
 from companion_v2.execution.service import outcome
 from companion_v2.conversation.models import InboundConversationEvent
 from companion_v2.foundation.outcome import Outcome
-from companion_v2.foundation.refs import RoleOwnerRef, SourceRef, VersionRef
+from companion_v2.foundation.refs import ReferenceValidationError, RoleOwnerRef, SourceRef, VersionRef
 from companion_v2.model_gateway.models import ModelTaskProfile
 
 from .materials import JournalMaterial, validate_materials
 from .models import JournalContext, JournalDraft, JournalKind, JournalRef, JournalState, revision
 from .prompts import dream_instruction, request_for
 from ..life.configuration import dream_settings
-from .writing_output import derivatives_output, draft_output
+from .writing_output import JournalOutputError, derivatives_output, draft_output
 from .selection import (selection_output, selection_request, selection_batches, material_size,
                         SELECTION_INPUT_BYTES)
+
+
+logger = logging.getLogger(__name__)
 
 
 DIARY_KIND = "role.journal.diary"
@@ -385,9 +389,14 @@ class RoleJournalWriter:
                 else:
                     material = (derivatives_output(completion.draft.text, parent) if parent is not None
                                 else draft_output(completion.draft.text, job))
+            except JournalOutputError as error:
+                raise TaskError(error.code, str(error)) from error
             except ValueError as error:
                 code = ("journal_selection_invalid" if isinstance(job, _SelectionJob)
                         else "journal_output_invalid")
+                if isinstance(error, ReferenceValidationError):
+                    logger.warning("[CompanionV2] 日记草稿校验失败 task=%s kind=%s reason=%s",
+                                   run.task.task_id, run.task.spec.kind, str(error))
                 raise TaskError(code, str(error) or "journal output is invalid") from error
             if isinstance(job, _SelectionJob):
                 run.validate()

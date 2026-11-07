@@ -113,7 +113,8 @@ class AgendaService:
         self, actor: ResolvedIdentity, target: AgendaTarget, action: str, now: datetime, object_key: str | None = None,
     ) -> int:
         access = self.policy.authorize(actor, scope=target.scope, action=action, owner=target.owner,
-                                       object_key=object_key, observed_at=now)
+                                       object_key=object_key, observed_at=now,
+                                       allow_private_owner=action == "memo.read")
         if access.failure is not None and access.failure.code.startswith("object_"):
             raise AgendaError("agenda_object_not_found", "object is unavailable in the authorized view")
         decision = require(access)
@@ -375,10 +376,11 @@ class AgendaService:
             if purpose not in (None, "note", "open_loop"):
                 raise AgendaError("invalid_memo_purpose", "unsupported memo purpose")
             with self.runtime.read_snapshot():
-                decision = require(self.policy.feature_access(actor, scope=target.scope, action="memo.list", observed_at=observed_at))
+                decision = require(self.policy.feature_access(actor, scope=target.scope, action="memo.list",
+                    observed_at=observed_at, allow_private_owner=True))
                 self._role_revision(target, decision.tier, observed_at)
                 visible = require(self.policy.permitted_object_keys(actor, scope=target.scope, action="memo.read",
-                                                                    owner=target.owner, observed_at=observed_at))
+                    owner=target.owner, observed_at=observed_at, allow_private_owner=True))
                 ids = tuple(key[len("agenda.memo:"):] for key in visible if key.startswith("agenda.memo:"))
                 rows = []
                 result = []

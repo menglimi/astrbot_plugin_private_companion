@@ -869,17 +869,38 @@ class ProactiveContacts:
         """
         plan = self.gateway.router.resolve(run, request)
         if not plan.providers:
-            return True
+            return True, None
+        provider = plan.providers[0]
         try:
             # Only the first route is reserved here. The fallback is a later
             # execution route with its own model override; preflighting it with
             # the primary envelope would reject a fitting primary for no reason.
-            plan.providers[0].reserve(plan.envelope)
-            return True
-        except Exception:
-            logger.debug("[CompanionV2] 主动联系提示超过模型档案 task=%s",
-                         run.task.task_id, exc_info=True)
-            return False
+            provider.reserve(plan.envelope)
+            return True, None
+        except TaskError as error:
+            if error.code not in ("host_model_limit_input", "host_model_limit_output"):
+                raise
+            detail = {"limit_code": error.code, "provider_id": provider.binding.provider,
+                      "requested_output_tokens": plan.envelope.max_output_tokens,
+                      "provider_max_output_tokens": provider.maximum_output_tokens,
+                      "provider_max_input_tokens": provider.maximum_input_estimate,
+                      **error.details}
+            return False, detail
+
+    @staticmethod
+    def _contact_profile_failure(run, detail):
+        detail = detail or {}
+        logger.warning("[CompanionV2] 主动联系模型档案预检失败 task=%s limit_code=%s "
+                       "estimated_input_tokens=%s provider_max_input_tokens=%s "
+                       "requested_output_tokens=%s provider_max_output_tokens=%s provider_id=%s",
+                       run.task.task_id, detail.get("limit_code", "unknown"),
+                       detail.get("estimated_input_tokens", "unknown"),
+                       detail.get("provider_max_input_tokens", "unknown"),
+                       detail.get("requested_output_tokens", "unknown"),
+                       detail.get("provider_max_output_tokens", "unknown"),
+                       detail.get("provider_id", "unknown"))
+        raise TaskError("contact_model_profile_exceeded",
+                        "contact request exceeds the selected model's input or output limit", details=detail)
 
     async def _plan_generate(self, run):
         job = self._pending[run.task.task_id]
@@ -906,11 +927,15 @@ class ProactiveContacts:
             role_state=None if job.administrator_test else role_state_for_prompt(
                 self._role_state_summary(job.context, at), job.intent.purpose))
         request = plan_request_for(base, job, records)
-        if not self._contact_request_fits(run, request):
+        fits, detail = self._contact_request_fits(run, request)
+        if not fits:
+            if detail["limit_code"] == "host_model_limit_output":
+                self._contact_profile_failure(run, detail)
             base = request_for(job, records, preferences, (), last_reply=None, dialogue=(), memory=())
             request = plan_request_for(base, job, records)
-            if not self._contact_request_fits(run, request):
-                raise TaskError("contact_model_profile_exceeded", "contact planning prompt exceeds the selected model")
+            fits, detail = self._contact_request_fits(run, request)
+            if not fits:
+                self._contact_profile_failure(run, detail)
         completion = None
         try:
             completion = await self.gateway.generate(run, request)
@@ -1036,7 +1061,11 @@ class ProactiveContacts:
                 request = write_request_for(request, job, records, preferences,
                     reactions_available=reactions_available, voice_available=voice_available,
                     poke_available=poke_available, extra_instruction=extra_instruction)
-            if (job.plan is None or job.plan["decision"] == "send") and not self._contact_request_fits(run, request):
+            fits, detail = self._contact_request_fits(run, request) if (
+                job.plan is None or job.plan["decision"] == "send") else (True, None)
+            if not fits:
+                if detail["limit_code"] == "host_model_limit_output":
+                    self._contact_profile_failure(run, detail)
                 # Optional memory and history are the first things a smaller
                 # context model must lose; the current event, source evidence
                 # and the role instruction remain authoritative.
@@ -1052,10 +1081,9 @@ class ProactiveContacts:
                     compact = write_request_for(compact, job, records, preferences,
                         reactions_available=reactions_available, voice_available=voice_available,
                         poke_available=poke_available, extra_instruction=extra_instruction)
-                if not self._contact_request_fits(run, compact):
-                    raise TaskError(
-                        "contact_model_profile_exceeded",
-                        "the proactive contact prompt exceeds the selected model input or output profile")
+                fits, detail = self._contact_request_fits(run, compact)
+                if not fits:
+                    self._contact_profile_failure(run, detail)
                 logger.warning("[CompanionV2] 主动联系上下文超过模型档案，已省略可选记忆/历史 task=%s",
                                run.task.task_id)
                 request = compact
