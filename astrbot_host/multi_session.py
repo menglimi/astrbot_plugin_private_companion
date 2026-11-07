@@ -14,6 +14,7 @@ from companion_v2.adapters.astrbot.memory_push import memory_push_provider
 from companion_v2.adapters.astrbot.native import (
     NativeConversationInput, NativePrivateBridge, bounded_native_lookup, event_account_id,
     event_peer_id, native_client_connected, native_id, native_user_subject_id,
+ platform_client_matches,
     supported_platform_name,
 )
 from companion_v2.adapters.astrbot.group import NativeGroupBridge
@@ -167,7 +168,7 @@ class MultiPrivateBridge(NativePrivateBridge):
                 raise TaskError("host_route_mismatch", "event fields do not identify one registered private route")
             event_client = event.bot
             platform = self.context.get_platform_inst(platform_id)
-            if (platform is None or platform.get_client() is not event_client
+            if (platform is None or not platform_client_matches(platform, event_client)
                     or not native_client_connected(platform, login, event_client)):
                 raise TaskError("host_client_mismatch", "private event did not originate from the connected account client")
 
@@ -180,7 +181,7 @@ class MultiPrivateBridge(NativePrivateBridge):
             conversation_id, role, instruction = await self._role(account, sender)
             scope = ScopeRef(self.installation_id, platform_id, ScopeKind.PRIVATE, sender,
                              account.bot_id, login, conversation_id, sender)
-            if event_client is not self.client(scope):
+            if meta.name != "lark" and event_client is not self.client(scope):
                 raise TaskError("host_client_mismatch", "private host account changed during persona lookup")
             recipients = AudienceRef(scope, (actor.subject,))
             text = "".join(part.text for part in getattr(message, "message", ())
@@ -216,7 +217,7 @@ class MultiPrivateBridge(NativePrivateBridge):
             account = self.accounts.get((meta.id, login))
             platform = self.context.get_platform_inst(meta.id)
             if (account is None or account.bot_id != target.bot_id or platform is None
-                    or platform.get_client() is not event.bot
+                    or (meta.name != "lark" and platform.get_client() is not event.bot)
                     or not native_client_connected(platform, login, event.bot)):
                 raise TaskError("host_client_mismatch", "private event did not originate from its registered Bot account")
             self.authority.ensure_actor(target)
@@ -782,8 +783,7 @@ class MultiHostSession:
             raise TaskError("core_reply_context_changed", "identity or character changed while creating the native conversation")
         return current
 
-    async def prepare_group(self, event, target, *, reply_candidate=False, merged_event_ids=(),
-                            latest_native_text=None):
+    async def prepare_group(self, event, target, *, reply_candidate=False):
         """Authenticate a group route before the normal inbound pipeline.
 
         AstrBot resolves the selected persona again while the V2 inbound
@@ -819,8 +819,7 @@ class MultiHostSession:
                                         "group_participation", None)
                 observe_early = getattr(participation, "observe_early", None)
                 if callable(observe_early):
-                    observe_early(context, text=(latest_native_text if isinstance(latest_native_text, str)
-                                                else captured.text),
+                    observe_early(context, text=captured.text,
                                   speaker_id=captured.principal.native_account_id,
                                   received_at=captured.at, event_id=captured.event_id)
                 self._record_platform_names(event, context)
@@ -841,7 +840,7 @@ class MultiHostSession:
                     reason = participation.admission.candidate(context, text=captured.text,
                         instruction=captured.instruction, at=captured.at, settings=settings, participation=values,
                         persona_name=projection.persona_id if projection is not None else "", event_id=captured.event_id,
-                        continuation=continuation, merged_event_ids=merged_event_ids, **facts)
+                        continuation=continuation, **facts)
                     from companion_v2.conversation import group_high_intensity
                     closeout = participation.high_intensity_state(
                         context, captured.instruction, at=captured.at, settings=settings)
@@ -887,8 +886,7 @@ class MultiHostSession:
                         },
                         "question_reference": participation.admission.question_reference(context,
                             text=captured.text, instruction=captured.instruction, at=captured.at,
-                            settings=settings, event_id=captured.event_id,
-                            merged_event_ids=merged_event_ids) if reason == "question" else None})
+                            settings=settings, event_id=captured.event_id) if reason == "question" else None})
                 return Outcome.success(context)
             except TaskError as error:
                 return Outcome.failed(error.code, str(error))
@@ -1018,8 +1016,7 @@ class MultiHostSession:
                     raw_text = "".join(part.text for part in getattr(event.message_obj, "message", ())
                         if getattr(getattr(part, "type", None), "value", getattr(part, "type", None)) == "Plain"
                         and isinstance(getattr(part, "text", None), str))
-                    captured = replace(captured, text=raw_text,
-                        merged_event_ids=tuple((group_admission or {}).get("debounced_event_ids", ())))
+                    captured = replace(captured, text=raw_text)
                 segmentation_settings, presentation_settings = None, None
                 group_tool_profile = "full"
                 captured_voice_policy, voice_settings_available = None, False
