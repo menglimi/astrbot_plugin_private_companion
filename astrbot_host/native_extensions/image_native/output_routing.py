@@ -16,13 +16,28 @@ import aiohttp
 
 from .backends import NativeTransportBackend
 from .nai_backend import NAIImageBackend
-from .output_configuration import accepted_request_fields
+from .output_configuration import XAI_PLATFORM, accepted_request_fields, is_xai_image_host
 from .owner import checked
 from .types import MAX_REFERENCE_IMAGES, BackendResult, NativeImageError, fingerprint
 
 OPENAI_COMPATIBLE_PLATFORMS = frozenset({"openai", "openrouter", "agnes", "sensenova", "doubao"})
 OPENAI_IMAGE_SUFFIXES = ("/images/generations", "/images/edits")
 MINIMAX_IMAGE_SUFFIX = "/image_generation"
+# Grok Imagine (xAI) sizes images with ``aspect_ratio``/``resolution`` and
+# rejects the OpenAI ``size`` field outright:
+#   400 {"code":"400","error":"Argument not supported: size"}
+# The ratios below are the provider's own enum.  A configured canvas that does
+# not reduce to one of them is left to the provider (no ratio is invented and
+# no neighbouring ratio is substituted).
+XAI_ASPECT_RATIOS = frozenset({
+    "1:1", "3:4", "4:3", "9:16", "16:9", "2:3", "3:2", "9:19.5", "19.5:9",
+    "9:20", "20:9", "1:2", "2:1", "21:9", "5:2",
+})
+XAI_RESOLUTIONS = frozenset({"1k", "1.5k", "2k"})
+# Grok Imagine edits accept at most five reference images (Files API ids or
+# URLs); the endpoint setting is clamped instead of failing a migrated config.
+XAI_MAX_REFERENCE_IMAGES = 5
+XAI_FILES_SUFFIX = "/files"
 
 # The dispatch fence is crossed before the POST is attempted, so ``dispatching``
 # only proves that a request *may* have left the process.  A 4xx response is a
@@ -284,6 +299,67 @@ def operation_url(base: str, operation: str, platform: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path + suffix, parsed.query, ""))
 
 
+def xai_aspect_ratio(width: int, height: int) -> str:
+    """The provider-supported output ratio for a canvas, or ``""`` when exact."""
+    divisor = math.gcd(width, height)
+    ratio = f"{width // divisor}:{height // divisor}"
+    return ratio if ratio in XAI_ASPECT_RATIOS else ""
+
+
+def effective_platform(config):
+    """The protocol that actually runs, including 7.1.x xAI compatibility.
+
+    A saved ``openai`` endpoint pointing at ``api.x.ai`` predates the dedicated
+    protocol; it keeps working because the host proves whose contract it is.
+    Any other gateway keeps the platform the administrator selected.
+    """
+    platform = resolve_platform(config)
+    if platform in OPENAI_COMPATIBLE_PLATFORMS and is_xai_image_host(config.get("base_url", "")):
+        return XAI_PLATFORM
+    return platform
+
+
+def xai_ratio(config) -> str:
+    """The output ratio for an endpoint: an explicit ratio, else the canvas."""
+    ratio = config.get("ratio")
+    if isinstance(ratio, str):
+        text = ratio.strip()
+        if text.lower() == "auto":
+            return "auto"
+        if text in XAI_ASPECT_RATIOS:
+            return text
+    width, height = config.get("width"), config.get("height")
+    if type(width) is not int or type(height) is not int or width <= 0 or height <= 0:
+        return ""
+    return xai_aspect_ratio(width, height)
+
+
+def xai_resolution(size_label) -> str:
+    """The optional Grok Imagine resolution carried by the endpoint's size label."""
+    text = str(size_label or "").strip().lower()
+    return text if text in XAI_RESOLUTIONS else ""
+
+
+def xai_reference_limit(config) -> int:
+    """The effective reference count: xAI accepts at most five edit references."""
+    value = config.get("max_reference_images", XAI_MAX_REFERENCE_IMAGES)
+    if type(value) is not int:
+        value = XAI_MAX_REFERENCE_IMAGES
+    return max(0, min(value, XAI_MAX_REFERENCE_IMAGES))
+
+
+def xai_files_url(base: str, file_id: str = "") -> str:
+    """The Files API URL derived from a root or complete images endpoint."""
+    parsed = urlsplit(base)
+    path = parsed.path.rstrip("/")
+    for suffix in OPENAI_IMAGE_SUFFIXES:
+        if path.endswith(suffix):
+            path = path[:-len(suffix)]
+            break
+    path = path + XAI_FILES_SUFFIX + ("/" + file_id if file_id else "")
+    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, ""))
+
+
 def resolve_platform(config):
     platform = config.get("platform", "auto")
     if platform != "auto":
@@ -291,6 +367,8 @@ def resolve_platform(config):
     base = config.get("base_url", "").lower()
     model = config.get("model", "").lower()
     host = urlsplit(base).hostname or ""
+    if host == "x.ai" or host.endswith(".x.ai"):
+        return XAI_PLATFORM
     if "minimax" in host or model in {"image-01", "image-01-live"}:
         return "minimax"
     if "openrouter.ai" in host:
@@ -369,9 +447,11 @@ class OnlineImageBackend:
                 or parsed.scheme not in {"http", "https"} or not parsed.hostname
                 or parsed.username or parsed.password or parsed.fragment):
             return ()
-        platform = resolve_platform(config)
+        platform = effective_platform(config)
         if platform == "minimax":
             return ("generate",)
+        if platform == XAI_PLATFORM:
+            return (("generate", "edit") if xai_reference_limit(config) > 0 else ("generate",))
         if platform in OPENAI_COMPATIBLE_PLATFORMS:
             return (("generate", "edit") if config.get("max_reference_images", MAX_REFERENCE_IMAGES) > 0
                     else ("generate",))
@@ -382,10 +462,10 @@ class OnlineImageBackend:
         base = config.get("base_url", "").rstrip("/")
         if not base or not config.get("model"):
             raise NativeImageError("native_endpoint_unconfigured", unconfirmed=False)
-        platform = resolve_platform(config)
+        platform = effective_platform(config)
         if invocation.operation == "mask_edit" or (platform == "minimax" and invocation.operation != "generate"):
             raise NativeImageError("unsupported_image_operation", unconfirmed=False)
-        if platform != "minimax" and platform not in OPENAI_COMPATIBLE_PLATFORMS:
+        if platform not in OPENAI_COMPATIBLE_PLATFORMS and platform not in {"minimax", XAI_PLATFORM}:
             raise NativeImageError("unsupported_image_platform", unconfirmed=False)
         url = operation_url(base, invocation.operation, platform)
         size = f"{config['width']}x{config['height']}"
@@ -400,7 +480,22 @@ class OnlineImageBackend:
                                            response_format=config.get("response_format", ""))
         request_prompt = (_prompt_with_reference_roles(invocation.prompt, references)
                           if invocation.operation == "edit" else invocation.prompt)
-        body = {"model": config["model"], "prompt": request_prompt, "n": 1, "size": size}
+        body = {"model": config["model"], "prompt": request_prompt, "n": 1}
+        if platform == XAI_PLATFORM:
+            # Grok Imagine rejects OpenAI's ``size`` field.  Generation takes a
+            # native ``aspect_ratio``/``resolution`` pair; an edit keeps the
+            # source image's framing instead of being cropped to the saved
+            # canvas.  An inexpressible canvas is left to the provider instead
+            # of guessing a neighbouring ratio.
+            if invocation.operation == "generate":
+                aspect_ratio = xai_ratio(config)
+                if aspect_ratio:
+                    body["aspect_ratio"] = aspect_ratio
+                resolution = xai_resolution(config.get("size_label"))
+                if resolution:
+                    body["resolution"] = resolution
+        else:
+            body["size"] = size
         if accepted["response_format"]:
             body["response_format"] = accepted["response_format"]
         if platform == "minimax":
@@ -412,7 +507,8 @@ class OnlineImageBackend:
         elif accepted["quality"]:
             body["quality"] = accepted["quality"]
         if invocation.operation == "edit":
-            max_reference_images = config.get("max_reference_images", MAX_REFERENCE_IMAGES)
+            max_reference_images = (xai_reference_limit(config) if platform == XAI_PLATFORM
+                                    else config.get("max_reference_images", MAX_REFERENCE_IMAGES))
             if (type(max_reference_images) is not int or max_reference_images < 1
                     or len(references) > max_reference_images):
                 # Per-endpoint configuration, rejected before any I/O: nothing was
@@ -421,14 +517,19 @@ class OnlineImageBackend:
                                reason="reference_limit",
                                detail=f"max={max_reference_images} provided={len(references)}",
                                switchable=True, kind=REJECTED_REQUEST, scope=SCOPE_ENDPOINT)
-            form = aiohttp.FormData()
-            for key, value in body.items():
-                form.add_field(key, str(value))
-            field_name = "image" if len(references) == 1 else "image[]"
-            for index, reference in enumerate(references, start=1):
-                form.add_field(field_name, reference.data, filename=f"reference-{index}.png",
-                               content_type="image/png")
-            kwargs = {"data":form}
+            if platform == XAI_PLATFORM:
+                # xAI edits take JSON ``image``/``images`` objects (Files API
+                # ids); they are filled in after the references are uploaded.
+                kwargs = {"json": body}
+            else:
+                form = aiohttp.FormData()
+                for key, value in body.items():
+                    form.add_field(key, str(value))
+                field_name = "image" if len(references) == 1 else "image[]"
+                for index, reference in enumerate(references, start=1):
+                    form.add_field(field_name, reference.data, filename=f"reference-{index}.png",
+                                   content_type="image/png")
+                kwargs = {"data":form}
         else:
             kwargs = {"json":body}
         headers = ({"Authorization": "Bearer " + config["api_key"]}
@@ -439,8 +540,20 @@ class OnlineImageBackend:
         secrets = _secrets(config, invocation.prompt, invocation.negative_prompt)
         timeout = aiohttp.ClientTimeout(total=config.get("timeout_seconds", 180))
         async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
-            await checked(before_dispatch)
+            uploaded = ()
+            request_started = False
             try:
+                if platform == XAI_PLATFORM and invocation.operation == "edit":
+                    # Upload every reference to xAI's Files API first; the edit
+                    # request itself carries only the returned ids.
+                    await checked(getattr(before_dispatch, "read", before_dispatch))
+                    uploaded = await self._xai_upload(session, references, headers, secrets)
+                    if len(uploaded) == 1:
+                        body["image"] = {"file_id": uploaded[0]}
+                    else:
+                        body["images"] = [{"file_id": file_id} for file_id in uploaded]
+                await checked(before_dispatch)
+                request_started = True
                 async with session.post(url, headers=headers, allow_redirects=False, **kwargs) as response:
                     if response.status >= 300:
                         raise await self._failure(response, secrets)
@@ -448,11 +561,19 @@ class OnlineImageBackend:
             except NativeImageError:
                 raise
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                if platform == XAI_PLATFORM and invocation.operation == "edit" and not request_started:
+                    raise Rejected("native_endpoint_rejected", endpoint_id=str(config.get("id", "")),
+                                   reason="upload_transport_error", detail=type(exc).__name__,
+                                   switchable=True, kind=REJECTED_UNAVAILABLE,
+                                   scope=SCOPE_ENDPOINT) from exc
                 # The fence is already crossed: the provider may have accepted the
                 # request even though no response reached us.  Never retried.
                 raise NativeImageError(
                     "backend_result_unconfirmed", unconfirmed=True,
                     diagnostics=(_diagnostic(config, 0, "transport_error", type(exc).__name__),)) from exc
+            finally:
+                if uploaded:
+                    await self._xai_release(session, uploaded, headers)
             try:
                 payload = json.loads(raw)
             except (ValueError, UnicodeError) as exc:
@@ -525,6 +646,61 @@ class OnlineImageBackend:
             if len(raw) > 32 * 1024 * 1024:
                 raise NativeImageError("backend_response_too_large")
         return bytes(raw)
+
+    def _xai_files_url(self, file_id=""):
+        return xai_files_url(str(self.config.get("base_url", "")).rstrip("/"), file_id)
+
+    async def _xai_upload(self, session, references, headers, secrets):
+        """Upload edit references to xAI's Files API and return their file ids.
+
+        Grok Imagine edits reference images either by URL or by Files API id and
+        reject multipart edit bodies, while this plugin holds the references as
+        bytes.  Uploading them first keeps the edit request JSON-only.
+        """
+        uploaded = []
+        try:
+            for index, reference in enumerate(references, start=1):
+                form = aiohttp.FormData()
+                form.add_field("file", reference.data, filename=f"reference-{index}.png",
+                               content_type="image/png")
+                async with session.post(self._xai_files_url(), headers=headers, data=form,
+                                        allow_redirects=False) as response:
+                    if response.status >= 300:
+                        failure = await self._failure(response, secrets)
+                        if isinstance(failure, Rejected):
+                            raise failure
+                        # A Files API failure cannot have generated an image,
+                        # even when the upload response itself is uncertain.
+                        diagnostic = failure.diagnostics[0]
+                        raise Rejected("native_endpoint_rejected", endpoint_id=str(self.config.get("id", "")),
+                                       status=response.status, reason="upload_unavailable",
+                                       detail=diagnostic.get("detail", ""), switchable=True,
+                                       kind=REJECTED_UNAVAILABLE, scope=SCOPE_ENDPOINT)
+                    raw = await self._read(response)
+                try:
+                    payload = json.loads(raw)
+                except (ValueError, UnicodeError) as exc:
+                    raise NativeImageError("backend_result_unconfirmed") from exc
+                file_id = payload.get("id") if isinstance(payload, dict) else None
+                if not isinstance(file_id, str) or not file_id.startswith("file_"):
+                    raise NativeImageError("backend_result_unconfirmed")
+                uploaded.append(file_id)
+        except BaseException:
+            await self._xai_release(session, uploaded, headers)
+            raise
+        return tuple(uploaded)
+
+    async def _xai_release(self, session, file_ids, headers):
+        """Best-effort deletion of uploaded references; never masks the result."""
+        for file_id in file_ids:
+            try:
+                async with session.delete(self._xai_files_url(file_id), headers=headers,
+                                          allow_redirects=False) as response:
+                    reader = getattr(response, "read", None)
+                    if callable(reader):
+                        await reader()
+            except Exception:
+                continue
 
 
 class OutputRoutingBackend:

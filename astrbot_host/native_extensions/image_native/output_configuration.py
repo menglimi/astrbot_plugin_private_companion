@@ -10,12 +10,19 @@ from urllib.parse import urlsplit
 from .types import MAX_REFERENCE_IMAGES, NativeImageError, fingerprint
 
 BACKENDS = {"auto", "online_api", "sd_webui", "comfyui", "nai"}
+# xAI's Grok Imagine is its own request contract: OpenAI's ``size`` is rejected
+# with 400 ("Argument not supported: size"), output dimensions come from
+# ``aspect_ratio``/``resolution``, and editing takes JSON ``image``/``images``
+# objects (a URL or a Files API ``file_id``) instead of a multipart upload.
+XAI_PLATFORM = "xai"
+XAI_QUALITY_MODEL = "grok-imagine-image-2.0"
+XAI_QUALITIES = frozenset({"auto", "low", "medium"})
 # Keep the complete V1 provider vocabulary in the persisted contract.  A saved
 # provider can be shown and edited even when its protocol adapter is not loaded;
 # routing reports it as unsupported instead of silently changing it to OpenAI.
 PLATFORMS = {
     "auto", "openai", "openrouter", "agnes", "sensenova", "minimax",
-    "bailian", "modelscope", "doubao", "gemini",
+    "bailian", "modelscope", "doubao", "gemini", "xai",
 }
 # ``quality`` and ``response_format`` are optional request fields: the empty
 # string means "omit the field and use the service default".  The previous
@@ -88,6 +95,26 @@ def image_model_family(model) -> str:
     return ""
 
 
+def is_xai_image_host(base) -> bool:
+    """Whether an OpenAI-compatible base URL targets xAI's Grok Imagine API.
+
+    Only the host is inspected: a gateway on another domain keeps the OpenAI
+    contract unless the administrator selects the ``xai`` protocol explicitly.
+    """
+    try:
+        host = (urlsplit(base).hostname or "").lower()
+    except (TypeError, ValueError):
+        return False
+    return host == "x.ai" or host.endswith(".x.ai")
+
+
+def xai_quality_capable(model) -> bool:
+    """Grok Imagine accepts ``quality`` only on the 2.0 family (auto/low/medium)."""
+    name = model.strip().lower() if isinstance(model, str) else ""
+    segments = [part for part in name.replace(":", "/").split("/") if part]
+    return any(part == XAI_QUALITY_MODEL for part in segments)
+
+
 def accepted_request_fields(platform, model, *, quality="", response_format=""):
     """The optional request fields this exact backend/model can accept.
 
@@ -104,6 +131,11 @@ def accepted_request_fields(platform, model, *, quality="", response_format=""):
         # MiniMax has its own fixed protocol; its request builder never
         # forwards the OpenAI quality/response_format vocabulary.
         return {"quality": "", "response_format": ""}
+    if platform == XAI_PLATFORM:
+        # Grok Imagine 1.0 rejects ``quality`` outright and 2.0 accepts only
+        # auto/low/medium, so the page and the wire share one decision here.
+        allowed = quality if (xai_quality_capable(model) and quality in XAI_QUALITIES) else ""
+        return {"quality": allowed, "response_format": response_format}
     if image_model_family(model) == "gpt-image":
         return {"quality": quality if quality in GPT_IMAGE_QUALITIES else "",
                 "response_format": ""}
@@ -231,6 +263,11 @@ def settings(plugin):
         result.setdefault("network", {})
         for endpoint in result.get("endpoints", []):
             if isinstance(endpoint, dict):
+                # 7.1.x saved xAI as an ordinary OpenAI-compatible endpoint.
+                # Project the dedicated protocol so the page offers xAI's own
+                # fields; the value is persisted on the next successful save.
+                if endpoint.get("platform") == "openai" and is_xai_image_host(endpoint.get("base_url", "")):
+                    endpoint["platform"] = XAI_PLATFORM
                 # Project the effective protocol values.  A 7.0.7 ``standard``
                 # on a GPT Image endpoint is its old default and is not sent;
                 # dall-e/unknown models keep the administrator's exact choice.

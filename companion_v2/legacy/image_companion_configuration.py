@@ -145,7 +145,8 @@ def convert_image_companion_configuration(raw, *, private_output=None, private_s
         differences.append({"field": "image.output.operation_routes", "kind": "incomplete_backend",
                             "explain": "旧 Image 插件没有可绑定的默认路线；连接和参数已保留，生图后端保持关闭。"})
     executable_online = any(item.get("enabled") and item.get("base_url") and item.get("model")
-        and item.get("platform") in {"auto", "openai", "openrouter", "agnes", "sensenova", "minimax", "doubao"}
+        and item.get("platform") in {"auto", "openai", "openrouter", "agnes", "sensenova",
+                                     "minimax", "doubao", "xai"}
         for item in changes.get("endpoints", []))
     active = raw.get("enabled") is True and prep.get("chat_enabled", True) is not False
     changes["backend"] = "auto"

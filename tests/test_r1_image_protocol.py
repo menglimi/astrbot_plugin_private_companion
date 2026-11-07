@@ -11,15 +11,21 @@ import base64
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 from unittest import mock
+
+import aiohttp
 
 from astrbot_host.native_extensions.discovery import declarations_for_manifest
 from astrbot_host.native_extensions.image_native import output_routing
 from astrbot_host.native_extensions.image_native.adapter import PLUGIN_ID
 from astrbot_host.native_extensions.image_native.extension import ImageExtensionAPI
-from astrbot_host.native_extensions.image_native.output_configuration import MAX_TASK_TIMEOUT_SECONDS
-from astrbot_host.native_extensions.image_native.output_routing import OnlineImageBackend, Rejected
+from astrbot_host.native_extensions.image_native.output_configuration import (
+    MAX_TASK_TIMEOUT_SECONDS, settings as output_settings)
+from astrbot_host.native_extensions.image_native.output_routing import (
+    XAI_MAX_REFERENCE_IMAGES, OnlineImageBackend, Rejected, effective_platform, resolve_platform,
+    xai_files_url)
 from astrbot_host.native_extensions.image_native.types import (MAX_REFERENCE_IMAGES as NATIVE_REFERENCE_IMAGES,
                                                               ImageInvocation, NativeImageError, ReferenceImage)
 from companion_v2.capabilities.native import parse_manifest
@@ -49,6 +55,9 @@ class FakeResponse:
         self.status = status
         self.payload = payload
         self.content = _Content(payload)
+
+    async def read(self):
+        return self.payload
 
 
 class _RequestCall:
@@ -118,6 +127,9 @@ class _FakeSession:
 
     def post(self, url, **kwargs):
         return _RequestCall(self.http._respond("POST", url, kwargs))
+
+    def delete(self, url, **kwargs):
+        return _RequestCall(self.http._respond("DELETE", url, kwargs))
 
     def get(self, url, **kwargs):
         return _RequestCall(self.http._respond("GET", url, kwargs))
@@ -242,6 +254,48 @@ class GeneratePayloadTests(HTTPBackedTest):
                                 "aspect_ratio": "1:1", "response_format": "base64"})
         self.assertEqual(self.http.call("POST")["url"], "https://api.minimax.chat/v1/image_generation")
 
+    async def test_xai_generation_replaces_the_openai_size_with_a_native_ratio(self):
+        self.http.reply("POST", lambda url, kwargs: b64_reply())
+
+        await self.execute(endpoint(platform="openai", model="grok-imagine-image",
+                                    base_url="https://api.x.ai/v1", width=1536, height=1024))
+
+        body = self.request_json()
+        self.assertEqual(body, {"model": "grok-imagine-image",
+                                "prompt": "A blue cup on a white table.",
+                                "n": 1, "aspect_ratio": "3:2"})
+        self.assertNotIn("size", body)
+        self.assertEqual(self.http.call("POST")["url"],
+                         "https://api.x.ai/v1/images/generations")
+
+    async def test_xai_regional_host_uses_the_same_native_protocol(self):
+        self.http.reply("POST", lambda url, kwargs: b64_reply())
+
+        await self.execute(endpoint(model="grok-imagine-image",
+                                    base_url="https://us.api.x.ai/v1"))
+
+        body = self.request_json()
+        self.assertEqual(body.get("aspect_ratio"), "1:1")
+        self.assertNotIn("size", body)
+
+    async def test_xai_canvas_without_an_exact_ratio_sends_no_dimensions(self):
+        self.http.reply("POST", lambda url, kwargs: b64_reply())
+
+        await self.execute(endpoint(model="grok-imagine-image",
+                                    base_url="https://api.x.ai/v1", width=1365, height=1024))
+
+        body = self.request_json()
+        self.assertNotIn("size", body)
+        self.assertNotIn("aspect_ratio", body)
+
+    async def test_lookalike_host_keeps_the_openai_size(self):
+        self.http.reply("POST", lambda url, kwargs: b64_reply())
+
+        await self.execute(endpoint(model="grok-imagine-image",
+                                    base_url="https://api.notx.ai/v1"))
+
+        self.assertIn("size", self.request_json())
+
     async def test_b64_json_and_url_responses_are_both_accepted(self):
         self.http.reply("POST", lambda url, kwargs: b64_reply())
         inline = await self.execute(endpoint())
@@ -299,6 +353,200 @@ class GeneratePayloadTests(HTTPBackedTest):
 
         with self.assertRaises(Rejected):
             await self.execute(endpoint())
+
+
+class XaiProtocolTests(HTTPBackedTest):
+    """Grok Imagine's native contract: no ``size``, Files API edits, capped refs."""
+
+    @staticmethod
+    def file_reply(file_id):
+        return FakeResponse(json.dumps({"id": file_id, "object": "file"}).encode("utf-8"))
+
+    async def test_generation_sends_native_ratio_and_resolution(self):
+        self.http.reply("POST", lambda url, kwargs: b64_reply())
+
+        result = await self.execute(endpoint(platform="xai", model="grok-imagine-image",
+                                             base_url="https://api.x.ai/v1",
+                                             width=1536, height=1024, size_label="2k"))
+
+        body = self.request_json()
+        self.assertEqual(body, {"model": "grok-imagine-image",
+                                "prompt": "A blue cup on a white table.",
+                                "n": 1, "aspect_ratio": "3:2", "resolution": "2k"})
+        self.assertNotIn("size", body)
+        self.assertEqual(self.http.call("POST")["url"],
+                         "https://api.x.ai/v1/images/generations")
+        self.assertEqual(result.images, (PNG_BYTES,))
+
+    async def test_canvas_without_an_exact_ratio_leaves_dimensions_to_the_provider(self):
+        self.http.reply("POST", lambda url, kwargs: b64_reply())
+
+        await self.execute(endpoint(platform="xai", model="grok-imagine-image",
+                                    base_url="https://api.x.ai/v1",
+                                    width=1365, height=1024, size_label="1024x1365"))
+
+        body = self.request_json()
+        self.assertNotIn("size", body)
+        self.assertNotIn("aspect_ratio", body)
+        self.assertNotIn("resolution", body)
+
+    async def test_quality_only_reaches_the_grok_imagine_2_model(self):
+        self.http.reply("POST", lambda url, kwargs: b64_reply())
+
+        await self.execute(endpoint(platform="xai", model="grok-imagine-image",
+                                    base_url="https://api.x.ai/v1", quality="low"))
+        self.assertNotIn("quality", self.request_json())
+
+        self.http.calls.clear()
+        await self.execute(endpoint(platform="xai", model="grok-imagine-image-2.0",
+                                    base_url="https://api.x.ai/v1", quality="low"))
+        self.assertEqual(self.request_json()["quality"], "low")
+
+    async def test_edit_uploads_references_then_posts_files_api_ids(self):
+        uploads, deletes = [], []
+
+        def responder(url, kwargs):
+            if url.endswith("/files"):
+                uploads.append({"url": url, "kwargs": kwargs})
+                return self.file_reply("file_primary")
+            return b64_reply()
+
+        self.http.reply("POST", responder)
+        self.http.reply("DELETE", lambda url, kwargs: deletes.append(url) or FakeResponse(b"{}"))
+
+        result = await self.execute(endpoint(platform="xai", model="grok-imagine-image",
+                                             base_url="https://api.x.ai/v1",
+                                             width=1536, height=1024,
+                                             max_reference_images=5),
+                                    operation="edit", references=[reference()])
+
+        self.assertEqual(uploads[0]["url"], "https://api.x.ai/v1/files")
+        self.assertIn("Authorization", uploads[0]["kwargs"]["headers"])
+        form = uploads[0]["kwargs"]["data"]
+        self.assertEqual(form.field_names(), ["file"])
+        self.assertEqual(form.fields[0]["content_type"], "image/png")
+        body = self.request_json()
+        self.assertEqual(body["image"], {"file_id": "file_primary"})
+        self.assertNotIn("size", body)
+        # Edits keep the source framing; the saved canvas is a generate-only hint.
+        self.assertNotIn("aspect_ratio", body)
+        self.assertEqual(self.http.call("POST")["url"], "https://api.x.ai/v1/images/edits")
+        self.assertEqual(deletes, ["https://api.x.ai/v1/files/file_primary"])
+        self.assertEqual(result.images, (PNG_BYTES,))
+
+    async def test_multi_reference_edit_uses_the_images_array(self):
+        ids = iter(("file_first", "file_second"))
+        uploads = []
+
+        def responder(url, kwargs):
+            if url.endswith("/files"):
+                uploads.append(url)
+                return self.file_reply(next(ids))
+            return b64_reply()
+
+        self.http.reply("POST", responder)
+        self.http.reply("DELETE", lambda url, kwargs: FakeResponse(b"{}"))
+        references = [reference(), ReferenceImage("ref-2", b"second-reference", "source-2", "1" * 64)]
+
+        await self.execute(endpoint(platform="xai", model="grok-imagine-image",
+                                    base_url="https://api.x.ai/v1", max_reference_images=5),
+                           operation="edit", references=references)
+
+        body = self.request_json()
+        self.assertEqual(body["images"], [{"file_id": "file_first"}, {"file_id": "file_second"}])
+        self.assertNotIn("image", body)
+        self.assertEqual(len(uploads), 2)
+
+    async def test_edit_reference_limit_is_five_even_when_sixteen_is_saved(self):
+        self.http.reply("POST", lambda url, kwargs: b64_reply())
+        references = [ReferenceImage(f"ref-{index}", b"reference", f"source-{index}", "0" * 64)
+                      for index in range(6)]
+
+        with self.assertRaises(Rejected):
+            await self.execute(endpoint(platform="xai", model="grok-imagine-image",
+                                        base_url="https://api.x.ai/v1", max_reference_images=16),
+                               operation="edit", references=references)
+
+        self.assertEqual(self.http.calls, [])
+        effective = endpoint(platform="xai", model="grok-imagine-image",
+                             base_url="https://api.x.ai/v1", max_reference_images=16)
+        self.assertEqual(OnlineImageBackend(effective).operations, ("generate", "edit"))
+        self.assertEqual(XAI_MAX_REFERENCE_IMAGES, 5)
+
+    async def test_zero_references_disables_the_edit_operation(self):
+        value = endpoint(platform="xai", model="grok-imagine-image",
+                         base_url="https://api.x.ai/v1", max_reference_images=0)
+
+        self.assertEqual(OnlineImageBackend(value).operations, ("generate",))
+
+    async def test_upload_refusal_is_a_definitive_endpoint_rejection(self):
+        self.http.reply("POST", lambda url, kwargs: FakeResponse(b'{"error":"bad file"}', status=400))
+
+        with self.assertRaises(Rejected):
+            await self.execute(endpoint(platform="xai", model="grok-imagine-image",
+                                        base_url="https://api.x.ai/v1", max_reference_images=5),
+                               operation="edit", references=[reference()])
+
+        self.assertEqual(self.http.call("POST")["url"], "https://api.x.ai/v1/files")
+
+    async def test_upload_transport_failure_does_not_cross_the_edit_dispatch_fence(self):
+        self.http.reply("POST", lambda url, kwargs: (_ for _ in ()).throw(aiohttp.ClientError()))
+        events = []
+
+        async def before_dispatch():
+            events.append("dispatch")
+
+        async def read_before_upload():
+            events.append("read")
+
+        before_dispatch.read = read_before_upload
+        backend = OnlineImageBackend(endpoint(platform="xai", model="grok-imagine-image",
+                                              base_url="https://api.x.ai/v1", max_reference_images=5))
+        with self.assertRaises(Rejected) as raised:
+            await backend.execute(invocation("edit"), (reference(),), before_dispatch)
+
+        self.assertTrue(raised.exception.switchable)
+        self.assertEqual(events, ["read"])
+        self.assertEqual(self.http.call("POST")["url"], "https://api.x.ai/v1/files")
+
+    async def test_upload_server_error_can_switch_without_retrying_an_edit(self):
+        self.http.reply("POST", lambda url, kwargs: FakeResponse(b'{"error":"unavailable"}', status=503))
+
+        with self.assertRaises(Rejected) as raised:
+            await self.execute(endpoint(platform="xai", model="grok-imagine-image",
+                                        base_url="https://api.x.ai/v1", max_reference_images=5),
+                               operation="edit", references=[reference()])
+
+        self.assertTrue(raised.exception.switchable)
+        self.assertEqual(raised.exception.status, 503)
+        self.assertEqual([call["url"] for call in self.http.calls], ["https://api.x.ai/v1/files"])
+
+    async def test_xai_host_auto_detection_and_legacy_openai_projection(self):
+        self.assertEqual(resolve_platform({"platform": "auto", "base_url": "https://api.x.ai/v1",
+                                           "model": "grok-imagine-image"}), "xai")
+        self.assertEqual(resolve_platform({"platform": "auto", "base_url": "https://us.api.x.ai/v1",
+                                           "model": "grok-imagine-image"}), "xai")
+        self.assertEqual(effective_platform({"platform": "openai", "base_url": "https://api.x.ai/v1",
+                                             "model": "grok-imagine-image"}), "xai")
+        self.assertEqual(effective_platform({"platform": "openai",
+                                             "base_url": "https://api.example.test/v1",
+                                             "model": "gpt-image-1"}), "openai")
+        plugin = SimpleNamespace(config={"native_v2": {"output": {
+            "enabled": True, "backend": "online_api",
+            "endpoints": [{"id": "grok", "enabled": True, "platform": "openai",
+                           "base_url": "https://api.x.ai/v1", "model": "grok-imagine-image",
+                           "width": 1024, "height": 1024}]}}})
+        self.assertEqual(output_settings(plugin)["endpoints"][0]["platform"], "xai")
+
+    def test_files_url_derives_from_a_root_or_a_complete_images_address(self):
+        self.assertEqual(xai_files_url("https://api.x.ai/v1"), "https://api.x.ai/v1/files")
+        self.assertEqual(xai_files_url("https://api.x.ai/v1/"), "https://api.x.ai/v1/files")
+        self.assertEqual(xai_files_url("https://api.x.ai/v1/images/generations"),
+                         "https://api.x.ai/v1/files")
+        self.assertEqual(xai_files_url("https://api.x.ai/v1/images/edits?api-version=3"),
+                         "https://api.x.ai/v1/files?api-version=3")
+        self.assertEqual(xai_files_url("https://api.x.ai/v1", "file_primary"),
+                         "https://api.x.ai/v1/files/file_primary")
 
 
 class EndpointUrlTests(HTTPBackedTest):

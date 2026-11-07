@@ -1395,17 +1395,21 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (selected === "nai") routes.push("nai");
     return {generate: [...routes], edit: [...routes]};
   };
-  const IMAGE_PLATFORMS = {auto: "自动识别", openai: "OpenAI 兼容", openrouter: "OpenRouter", agnes: "Agnes", sensenova: "商汤日日新", minimax: "MiniMax", bailian: "阿里云百炼", modelscope: "魔搭社区", doubao: "火山引擎 / 豆包", gemini: "Google Gemini"};
-  const IMAGE_PROTOCOL_SUPPORT = {auto: "根据地址识别协议", openai: "文生图 · 改图", openrouter: "文生图 · 改图", agnes: "文生图 · 改图", sensenova: "文生图 · 改图", minimax: "仅文生图", doubao: "文生图 · 改图", bailian: "已保留配置 · 需异步协议适配", modelscope: "已保留配置 · 需协议适配", gemini: "已保留配置 · 需协议适配"};
+  const IMAGE_PLATFORMS = {auto: "自动识别", openai: "OpenAI 兼容", openrouter: "OpenRouter", xai: "xAI Grok Imagine", agnes: "Agnes", sensenova: "商汤日日新", minimax: "MiniMax", bailian: "阿里云百炼", modelscope: "魔搭社区", doubao: "火山引擎 / 豆包", gemini: "Google Gemini"};
+  const IMAGE_PROTOCOL_SUPPORT = {auto: "根据地址识别协议", openai: "文生图 · 改图", openrouter: "文生图 · 改图", xai: "文生图 · 改图（最多 5 张参考图）", agnes: "文生图 · 改图", sensenova: "文生图 · 改图", minimax: "仅文生图", doubao: "文生图 · 改图", bailian: "已保留配置 · 需异步协议适配", modelscope: "已保留配置 · 需协议适配", gemini: "已保留配置 · 需协议适配"};
   const imageModelFamily = model => {
     const parts = String(model || "").trim().toLowerCase().split(/[/:]+/).filter(Boolean);
     return parts.some(part => part.startsWith("gpt-image-") || part.startsWith("chatgpt-image-")) ? "gpt-image"
       : parts.some(part => part.startsWith("dall-e") || part.startsWith("dalle")) ? "dall-e" : "";
   };
-  const imageQualityHelp = item => imageModelFamily(item.model) === "gpt-image"
+  const imageQualityHelp = item => imageEffectivePlatform(item) === "xai"
+    ? "xAI 仅 grok-imagine-image-2.0 接受 quality（自动/低/中）；1.0 或其它取值不会发送。"
+    : imageModelFamily(item.model) === "gpt-image"
     ? "GPT Image 只接受自动/低/中/高；升级前保存的「标准/高清」会按服务端默认处理，不会发送（保存一次即修正），返回格式也不会发送。"
     : "默认不发送 quality；standard/hd 只对 dall-e 系列有效。";
-  const imageResponseFormatHelp = item => imageModelFamily(item.model) === "gpt-image"
+  const imageResponseFormatHelp = item => imageEffectivePlatform(item) === "xai"
+    ? "xAI 默认返回图片 URL；也可选 b64_json 内联返回。"
+    : imageModelFamily(item.model) === "gpt-image"
     ? "GPT Image 不支持 response_format；升级前保存的 b64_json 会被忽略（保存一次即修正）。"
     : "默认不发送 response_format；base64 与图片 URL 都能读取。";
   const imageLegacyQualityNote = item => item.legacy_protocol_defaults
@@ -1416,6 +1420,10 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   function imageEffectivePlatform(endpoint) {
     if (endpoint?.platform !== "auto") return endpoint?.platform;
     const url = String(endpoint?.base_url || "").toLowerCase(), model = String(endpoint?.model || "").toLowerCase();
+    try {
+      const host = new URL(String(endpoint?.base_url || "")).hostname.toLowerCase();
+      if (host === "x.ai" || host.endsWith(".x.ai")) return "xai";
+    } catch { /* a partial address falls through to the substring rules */ }
     if (url.includes("minimax") || ["image-01", "image-01-live"].includes(model)) return "minimax";
     if (url.includes("openrouter.ai")) return "openrouter";
     if (url.includes("agnes-ai.com") || model.startsWith("agnes-image-")) return "agnes";
@@ -1693,7 +1701,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   }
   function imageEndpointConnectionFields(i, item, base, disabled) {
     const option = value => `<option value="${value}"${item.platform === value ? " selected" : ""}>${IMAGE_PLATFORMS[value]}</option>`;
-    const options = `<optgroup label="已接入协议">${["auto", "openai", "openrouter", "agnes", "sensenova", "minimax", "doubao"].map(option).join("")}</optgroup><optgroup label="待适配 · 可保留原配置">${["bailian", "modelscope", "gemini"].map(option).join("")}</optgroup>`;
+    const options = `<optgroup label="已接入协议">${["auto", "openai", "openrouter", "xai", "agnes", "sensenova", "minimax", "doubao"].map(option).join("")}</optgroup><optgroup label="待适配 · 可保留原配置">${["bailian", "modelscope", "gemini"].map(option).join("")}</optgroup>`;
     const headerKey = `headers.${item.id}`;
     const headerCount = item.custom_header_names?.length || 0;
     const headerPlaceholder = item.custom_headers_set ? `已保存 ${headerCount} 个请求头 · 留空保留` : "可选：填写服务商要求的自定义请求头";
@@ -1740,7 +1748,19 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       const testDisabled = disabled || imageConfigDirty(i) || !config.enabled || !item.enabled ||
         ["bailian", "modelscope", "gemini"].includes(imageEffectivePlatform(item));
       const connectionFields = imageEndpointConnectionFields(i, item, base, disabled);
-      const modelFields = `${imageConfigField("模型 ID", `${base}.model`, item.model, "text", 'maxlength="240" placeholder="服务商提供的模型 ID"', "")}${imageConfigField("尺寸标签", `${base}.size_label`, item.size_label || `${item.width}x${item.height}`, "text", 'maxlength="64" placeholder="如 1024x1024、1K、auto"', "服务商接受标签时保留原值；宽高用于通用协议")}${imageConfigField("宽度", `${base}.width`, item.width, "number", 'min="64" max="8192" step="64"', "像素")}${imageConfigField("高度", `${base}.height`, item.height, "number", 'min="64" max="8192" step="64"', "像素")}${item.platform === "minimax" ? "" : `<label class="model-img-field"><span>图片质量</span><select data-img-config-field="${base}.quality"${disabled ? " disabled" : ""}>${[["", "服务端默认（不发送）"], ["auto", "自动"], ["low", "低"], ["medium", "中"], ["high", "高"], ["standard", "标准（dall-e 专用）"], ["hd", "高清（dall-e 专用）"]].map(([value, label]) => `<option value="${value}"${item.quality === value ? " selected" : ""}>${label}</option>`).join("")}</select><small>${esc(imageQualityHelp(item))}</small>${imageLegacyQualityNote(item)}</label><label class="model-img-field"><span>返回格式</span><select data-img-config-field="${base}.response_format"${disabled ? " disabled" : ""}>${[["", "按服务端默认（推荐）"], ["b64_json", "b64_json（旧式 dall-e 兼容）"]].map(([value, label]) => `<option value="${value}"${item.response_format === value ? " selected" : ""}>${label}</option>`).join("")}</select><small>${esc(imageResponseFormatHelp(item))}</small></label>${imageConfigField("最多参考图", `${base}.max_reference_images`, item.max_reference_images, "number", 'min="0" max="16" step="1"', "0 = 仅文生图；GPT Image 最多 16 张，按服务商实际上限填写")}`}<label class="model-img-field model-img-inline"><span>启用模型</span><input type="checkbox" data-img-config-field="${base}.enabled"${item.enabled ? " checked" : ""}${disabled ? " disabled" : ""}></label>`;
+      const effectivePlatform = imageEffectivePlatform(item);
+      const xaiProtocol = effectivePlatform === "xai";
+      const qualityChoices = xaiProtocol
+        ? [["", "服务端默认（不发送）"], ["auto", "自动"], ["low", "低"], ["medium", "中"]]
+        : [["", "服务端默认（不发送）"], ["auto", "自动"], ["low", "低"], ["medium", "中"], ["high", "高"], ["standard", "标准（dall-e 专用）"], ["hd", "高清（dall-e 专用）"]];
+      const sizeLabelHelp = xaiProtocol
+        ? "xAI 可填 1k、1.5k、2k 控制分辨率；宽高用于换算 aspect_ratio，画布不能整除时不发送尺寸参数。"
+        : "服务商接受标签时保留原值；宽高用于通用协议";
+      const referenceHelp = xaiProtocol
+        ? "0 = 仅文生图；xAI 改图最多 5 张参考图。"
+        : "0 = 仅文生图；GPT Image 最多 16 张，按服务商实际上限填写";
+      const qualityField = effectivePlatform === "minimax" ? "" : `<label class="model-img-field"><span>图片质量</span><select data-img-config-field="${base}.quality"${disabled ? " disabled" : ""}>${qualityChoices.map(([value, label]) => `<option value="${value}"${item.quality === value ? " selected" : ""}>${label}</option>`).join("")}</select><small>${esc(imageQualityHelp(item))}</small>${imageLegacyQualityNote(item)}</label><label class="model-img-field"><span>返回格式</span><select data-img-config-field="${base}.response_format"${disabled ? " disabled" : ""}>${[["", "按服务端默认（推荐）"], ["b64_json", "b64_json（旧式 dall-e 兼容）"]].map(([value, label]) => `<option value="${value}"${item.response_format === value ? " selected" : ""}>${label}</option>`).join("")}</select><small>${esc(imageResponseFormatHelp(item))}</small></label>`;
+      const modelFields = `${imageConfigField("模型 ID", `${base}.model`, item.model, "text", 'maxlength="240" placeholder="服务商提供的模型 ID"', "")}${imageConfigField("尺寸标签", `${base}.size_label`, item.size_label || `${item.width}x${item.height}`, "text", 'maxlength="64" placeholder="如 1024x1024、1k、2k、auto"', sizeLabelHelp)}${imageConfigField("宽度", `${base}.width`, item.width, "number", 'min="64" max="8192" step="64"', "像素")}${imageConfigField("高度", `${base}.height`, item.height, "number", 'min="64" max="8192" step="64"', "像素")}${qualityField}${imageConfigField("最多参考图", `${base}.max_reference_images`, item.max_reference_images, "number", 'min="0" max="16" step="1"', referenceHelp)}<label class="model-img-field model-img-inline"><span>启用模型</span><input type="checkbox" data-img-config-field="${base}.enabled"${item.enabled ? " checked" : ""}${disabled ? " disabled" : ""}></label>`;
       const tone = IMAGE_ROUTE_TONES[index % IMAGE_ROUTE_TONES.length];
       const support = imageRouteAvailable(config, ref, imageCurrentOperation(i));
       return `<article class="model-img-route" data-img-route-card="${esc(ref)}" style="--route-tone:${tone}"><header><span class="model-img-priority">${index + 1}</span><div class="model-img-route-title"><span class="model-img-route-name-wrap" title="点击修改模型显示名称；留空时显示模型 ID"><input type="text" class="model-img-route-name" data-img-config-field="${base}.name" value="${esc(item.name || "")}" maxlength="240" placeholder="${esc(imageEndpointLabel(item, "自定义名称"))}" aria-label="自定义模型名称"${disabled ? " disabled" : ""}><i data-lucide="pencil" aria-hidden="true"></i></span><div class="model-img-route-meta"><span class="model-img-route-id" title="${esc(item.model || "")}">${esc(item.model || "未设置模型 ID")}</span><span class="model-img-route-kind">${esc(IMAGE_PLATFORMS[item.platform] || "自动识别")}</span><span class="model-img-route-host" title="${esc(item.base_url || "")}">${esc(imageRouteHost(item.base_url))}</span></div></div><span class="model-img-route-support ${imageRouteSupportTone(support)}">${esc(support)}</span>${controls}</header>
