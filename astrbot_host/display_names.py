@@ -156,7 +156,7 @@ class PlatformDisplayNames:
             fallback = ((platform_label(row.get("group_name"), native_id)
                          or platform_label(row.get("display_name"), native_id))
                         if kind == "group" else _name(row.get("display_name")))
-            resolved = platform_label(name, native_id) or fallback
+            resolved = (_name(row.get("remark")) if kind == "group" else "") or platform_label(name, native_id) or fallback
             row.update(display_name=resolved,
                        account_name=account_name or row.get("account_name") or "")
             if kind == "group":

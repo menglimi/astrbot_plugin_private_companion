@@ -452,6 +452,54 @@ class SinglePageTests(PageRequests, unittest.IsolatedAsyncioTestCase):
 
 
 class MultiPageTests(PageRequests, MultiFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_group_remark_is_scoped_and_visible_in_both_directories(self):
+        from astrbot_host.acquaintance_api import AcquaintanceWebAPI, GROUP_REMARK_PATH
+        from astrbot_host.group_remarks import GroupRemarks
+
+        route = {"platform_id": "qq-main", "bot_id": "bot-a", "account_id": "100",
+                 "group_id": "SYNTHETIC_GROUP_OPENID"}
+        self.controller = self.make_controller(multi_config(group_targets=[
+            {"target_id": "official-group", **route}]))
+        self.register()
+        (await self.controller.initialize_profile()).unwrap()
+        api = AcquaintanceWebAPI(self.controller)
+        self.assertIn((GROUP_REMARK_PATH, ("POST",)),
+                      {(path, tuple(methods)) for path, _, methods, _ in api.routes()})
+
+        async def save(remark, revision, username="admin"):
+            body = json.dumps({**route, "remark": remark, "expected_revision": revision},
+                              ensure_ascii=False).encode("utf-8")
+            with patch("astrbot_host.acquaintance_api.request", NS(
+                    username=username, query={}, body=AsyncMock(return_value=body))):
+                return await api.set_group_remark()
+
+        self.assertEqual((await save("未授权", 0, username=""))["data"]["code"],
+                         "dashboard_identity_required")
+        saved = await save("  测试群  ", 0)
+        self.assertEqual(saved["status"], "ok", saved)
+        self.assertEqual((saved["data"]["remark"], saved["data"]["remark_revision"]), ("测试群", 1))
+        self.assertEqual((await save("旧窗口覆盖", 0))["data"]["code"],
+                         "group_remark_revision_conflict")
+
+        with patch("astrbot_host.acquaintance_api.request", NS(username="admin", query={})), \
+                patch.object(self.controller.session_topology, "inventory", AsyncMock(return_value=[])):
+            directory = await api.directory()
+        self.assertEqual(directory["status"], "ok", directory)
+        group = next(item for item in directory["data"]["groups"] if item["group_id"] == route["group_id"])
+        self.assertEqual((group["display_name"], group["remark"], group["remark_revision"]),
+                         ("测试群", "测试群", 1))
+        self.assertEqual(group["group_id"], "SYNTHETIC_GROUP_OPENID")
+        targets = (await self.request())["data"]["targets"]
+        target = next(item for item in targets if item["scope_kind"] == "group")
+        self.assertEqual((target["display_name"], target["group_id"]),
+                         ("测试群", "SYNTHETIC_GROUP_OPENID"))
+        other = {**route, "account_id": "101"}
+        self.assertEqual(GroupRemarks(self.controller.runtime).apply([other])[0]["remark"], "")
+
+        cleared = await save("", 1)
+        self.assertEqual((cleared["status"], cleared["data"]["remark_revision"]), ("ok", 2))
+        self.assertEqual(GroupRemarks(self.controller.runtime).apply([route])[0]["remark"], "")
+
     async def test_setup_targets_publish_migration_paths_before_runtime_starts(self):
         from astrbot_host.role_paths import HOST_PREFIX, role_legacy_paths
         from astrbot_host.setup_api import PREFIX as SETUP_PREFIX

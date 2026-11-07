@@ -456,6 +456,47 @@ test("群名用于列表、图谱和搜索，历史群不会重复统计", async
   assert.equal(h.element("people-result-count").textContent, "1 人");
 });
 
+test("群聊备注优先显示并用原始平台 ID 保存与清除", async () => {
+  const group = {group_id: "SYNTHETIC_GROUP_OPENID", display_name: "平台群名", remark: "管理备注",
+    remark_revision: 2, platform_id: "qq-main", bot_id: "bot-a", account_id: "account-a",
+    configured: true, member_count: 0, msg_count: 0};
+  const h = harness({groups: [group], post: (request) => {
+    group.remark = request.body.remark;
+    group.remark_revision = request.body.expected_revision + 1;
+    return {status: "ok", data: {remark: group.remark, remark_revision: group.remark_revision}};
+  }});
+  await h.send();
+  assert.match(flat(h.element("groups-list")), /管理备注/);
+  assert.match(h.element("relationship-graph").innerHTML, /管理备注/);
+  findAll(h.element("groups-list"), "group-card")[0].handlers.click();
+  const detail = h.element("group-detail");
+  assert.match(flat(detail), /管理备注.*平台 ID SYNTHETIC_GROUP_OPENID/);
+  const form = findAll(detail, "group-remark-form")[0];
+  const input = form.children.find(item => item.tagName === "INPUT");
+  input.value = "新备注";
+  input.handlers.input();
+  form.handlers.submit({preventDefault() {}});
+  await h.send(request => request.method === "POST");
+  const write = h.requests.find(request => request.method === "POST");
+  assert.equal(write.route, "acquaintance/group-remark");
+  assert.deepEqual(JSON.parse(JSON.stringify(write.body)), {
+    platform_id: "qq-main", bot_id: "bot-a", account_id: "account-a",
+    group_id: "SYNTHETIC_GROUP_OPENID", remark: "新备注", expected_revision: 2,
+  });
+  await h.send(request => request.method === "GET" && request.route === endpoint);
+  assert.match(flat(h.element("group-detail")), /新备注/);
+  const clear = findControl(h.element("group-detail"), "清除备注");
+  clear.handlers.click();
+  const nextForm = findAll(h.element("group-detail"), "group-remark-form")[0];
+  nextForm.handlers.submit({preventDefault() {}});
+  await h.send(request => request.method === "POST" && !request.answered);
+  const writes = h.requests.filter(request => request.method === "POST");
+  assert.equal(writes[1].body.remark, "");
+  assert.equal(writes[1].body.expected_revision, 3);
+  await h.send(request => request.method === "GET" && request.route === endpoint);
+  assert.match(flat(h.element("group-detail")), /平台群名/);
+});
+
 test("关系网展示自动接入状态，待映射群前往账号与会话", async () => {
   const h = harness({groups: [
     {group_id: "450", display_name: "项目讨论群", platform_id: "qq-main", bot_id: "bot-a",
