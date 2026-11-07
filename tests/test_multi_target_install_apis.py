@@ -622,7 +622,6 @@ class SingleTargetLegacyApplyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(source_config.read_bytes(), original_v1_config,
                          "upgrade import must leave V1 source files untouched")
 
-        api = caller.routes[LEGACY_PREFIX].__self__
         before_restart = await caller.call(LEGACY_PREFIX)
         self.assertEqual(before_restart["data"]["install"]["phase"], "upgrade_restart_check")
         self.assertFalse(before_restart["data"]["install"]["restart_observed"])
@@ -632,7 +631,10 @@ class SingleTargetLegacyApplyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(premature["status"], "error", premature)
         self.assertEqual(premature["data"]["code"], "legacy_restart_required")
 
-        api._instance_token = "simulated-next-astrbot-process"
+        self.controller.lifecycle_token = "simulated-next-astrbot-process"
+        self.controller.unregister_routes()
+        self.controller.register_routes()
+        caller = RouteCaller(self.native, legacy_api)
         after_restart = await caller.call(LEGACY_PREFIX)
         self.assertTrue(after_restart["data"]["install"]["restart_observed"])
         confirmed = await caller.call(LEGACY_PREFIX + "/upgrade-confirm", payload={"confirmed": True})
