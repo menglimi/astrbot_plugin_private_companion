@@ -35,6 +35,8 @@
     person_nickname_revision_conflict: "成员资料刚刚被更新，正在读回最新版本。",
     person_nickname_operation_conflict: "这次称呼操作键已用于另一项修改，请重新保存。",
     person_nickname_operation_unresolved: "上一次称呼修改尚未完成，请刷新核对后重试。",
+    group_remark_command_invalid: "群聊备注或群聊路由无效，请刷新后重试。",
+    group_remark_revision_conflict: "群聊备注刚被其他管理窗口修改，已重新读取最新内容。",
     stranger_target_request_invalid: "这次添加缺少有效账号信息，请刷新页面后重试。",
     stranger_target_unavailable: "收到方不可用：无法核对这个账号的当前配置，记录已保留。",
     legacy_plan_stale: "配置刚被其他操作更新，页面已重新读取；请再确认一次。",
@@ -184,8 +186,8 @@
   }
   const groupRouteKey = (group) => JSON.stringify([groupBaseKey(group), personaIdsOf(group).length
     ? ["persona", personaIdsOf(group)] : ["role", group.role_id || ""]]);
-  const groupName = (group) => group.display_name || group.group_name || `群 ${groupKey(group)}`;
-  const groupLabel = (group) => group.display_name || group.group_name
+  const groupName = (group) => group.remark || group.display_name || group.group_name || `群 ${groupKey(group)}`;
+  const groupLabel = (group) => group.remark || group.display_name || group.group_name
     ? `${groupName(group)}（${groupKey(group)}）` : groupName(group);
   const groupRoleLabel = (group) => {
     const values = String(group?.role_name || "").split(/[、,，]/).map(value =>
@@ -321,6 +323,8 @@
       } else {
         previous.configured ||= Boolean(item.configured);
         previous.discovered ||= Boolean(item.discovered);
+        previous.remark ||= item.remark;
+        previous.remark_revision = Math.max(number(previous.remark_revision), number(item.remark_revision));
         previous.display_name ||= item.display_name || item.group_name;
         if (supplied) {
           previous.supplied = true;
@@ -948,6 +952,29 @@
     if (!preserveDetail || !selectedGroup) renderGroupDetail(selectedGroup);
   }
 
+  async function saveGroupRemark(group, input, button) {
+    button.disabled = true;
+    input.disabled = true;
+    try {
+      unwrap(await bridge.apiPost("acquaintance/group-remark", {
+        platform_id: group.platform_id, bot_id: group.bot_id,
+        account_id: group.account_id, group_id: groupKey(group),
+        remark: input.value, expected_revision: number(group.remark_revision),
+      }));
+      notice("群聊备注已保存");
+      await load({preserveNotice: true});
+    } catch (error) {
+      if (error?.code === "group_remark_revision_conflict") {
+        if (await load({preserveNotice: true})) notice(localized(error).message, true);
+      } else {
+        notice(localized(error).message, true);
+      }
+    } finally {
+      input.disabled = false;
+      button.disabled = input.value.trim() === (group.remark || "");
+    }
+  }
+
   function renderGroupDetail(group) {
     const panel = $("group-detail");
     panel.replaceChildren();
@@ -969,7 +996,7 @@
     const detail = node("div", undefined, "group-detail-inner");
     const head = node("header", undefined, "group-detail-head group-detail-hero");
     const title = node("div");
-    title.append(node("span", "GROUP SPACE", "eyebrow"), node("h3", groupName(group)), node("small", `群号 ${id}`),
+    title.append(node("span", "GROUP SPACE", "eyebrow"), node("h3", groupName(group)), node("small", `平台 ID ${id}`),
       node("small", `${groupDetailStatus(group)}${group.role_id ? ` · ${groupRoleLabel(group)}` : ""}`, "detail-subtitle"));
     const routeFacts = node("div", undefined, "group-route-facts");
     routeFacts.append(node("span", group.platform_id || group.platform || "平台待确认"),
@@ -986,7 +1013,37 @@
     metric("互动边", `${edges.length} 条`);
     metric("短时接话", `${number(network?.interaction_count)} 次`);
 
-    detail.append(head, metrics);
+    detail.append(head);
+    if (groupTargetRouteReady(group)) {
+      const form = node("form", undefined, "group-remark-form");
+      const label = node("label", "群聊备注", "group-remark-label");
+      label.htmlFor = "group-remark-input";
+      const input = node("input");
+      input.id = "group-remark-input";
+      input.type = "text";
+      input.maxLength = 64;
+      input.value = group.remark || "";
+      input.placeholder = "为这个群添加备注";
+      const save = node("button", "保存备注", "secondary group-access-button");
+      save.type = "submit";
+      save.disabled = true;
+      const clear = node("button", "清除备注", "secondary group-access-button");
+      clear.type = "button";
+      clear.hidden = !group.remark;
+      clear.addEventListener("click", () => {
+        input.value = "";
+        save.disabled = false;
+        input.focus();
+      });
+      input.addEventListener("input", () => { save.disabled = input.value.trim() === (group.remark || ""); });
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (!save.disabled) void saveGroupRemark(group, input, save);
+      });
+      form.append(label, input, save, clear);
+      detail.append(form);
+    }
+    detail.append(metrics);
     const access = node("section", undefined, "detail-section group-access-section");
       const accessHead = node("div", undefined, "group-members-head");
       accessHead.append(node("h4", "V2 群聊接入"), badge(group.configured ? "已接入" : "未接入",

@@ -16,6 +16,7 @@ from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 
 from .management_identity import dashboard_operator
 from .display_names import display_names
+from .group_remarks import GroupRemarks
 from .identity_derivation import role_display_name
 from .settings import HostControlError
 
@@ -315,7 +316,7 @@ class PageWebAPI:
                                      "config", "perception_native", "reality_access", "screen_access", "game_access", "persona", "legacy",
                                      "qzone_extension", "image_material")}}
                                  for role in target["roles"]]} for target in targets]
-            public = await display_names(controller).targets(public)
+            public = await display_names(controller).targets(GroupRemarks(runtime).apply(public))
             async with controller._control_lock:
                 if controller.runtime is not runtime or controller.settings is not settings_snapshot:
                     raise TaskError("staging_not_initialized", "the profile changed while reading display names")

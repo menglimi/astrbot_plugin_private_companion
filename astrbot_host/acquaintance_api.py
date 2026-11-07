@@ -40,6 +40,7 @@ from companion_v2.foundation.refs import OperationRef, VersionRef
 
 from .management_identity import dashboard_operator
 from .display_names import display_names, platform_label
+from .group_remarks import GroupRemarks, ROUTE_FIELDS as GROUP_REMARK_ROUTE_FIELDS
 from .multi_settings import MultiHostSettings
 from .settings import HostControlError
 
@@ -47,6 +48,7 @@ from .settings import HostControlError
 PREFIX = "/astrbot_plugin_private_companion/acquaintance"
 AUTHORIZATION_PATH = PREFIX + "/authorization"
 ADMIN_NAME_PATH = PREFIX + "/admin-name"
+GROUP_REMARK_PATH = PREFIX + "/group-remark"
 IDENTITY_PATH = PREFIX + "/identity"
 SETTINGS_PATH = PREFIX + "/settings"
 OPEN_LOOPS_PATH = PREFIX + "/open-loops"
@@ -419,6 +421,8 @@ class AcquaintanceWebAPI:
                  "Switch one page-managed capability for one person"),
                 (ADMIN_NAME_PATH, self.set_admin_name, ["POST"],
                  "Set a directory person's administrator-assigned display name"),
+                (GROUP_REMARK_PATH, self.set_group_remark, ["POST"],
+                 "Set a group route's dashboard display remark"),
                 (IDENTITY_PATH, self.set_identity, ["POST"], "Set one trusted person's management tier"),
                 (SETTINGS_PATH, self.member_settings, ["GET"], "Read one private member's settings"),
                 (SETTINGS_PATH, self.configure_member, ["POST"], "Save one private member's settings"),
@@ -637,6 +641,7 @@ class AcquaintanceWebAPI:
                     group.update(group_name=name, display_name=name)
             names = display_names(controller)
             name_options = {"cached_only": True} if stored_only else {}
+            groups = GroupRemarks(runtime).apply(groups)
             persons, groups = await asyncio.gather(names.persons(result["persons"], **name_options),
                                                   names.targets(groups, **name_options))
             async with controller._control_lock:
@@ -867,6 +872,35 @@ class AcquaintanceWebAPI:
         except (ValueError, TypeError, UnicodeError, RecursionError):
             return outcome_response(Outcome.failed("person_nickname_command_invalid",
                                                    "the name command is not valid JSON"))
+
+    async def set_group_remark(self):
+        from .web_api import outcome_response
+        try:
+            raw = await request.body()
+            if len(raw) > MAX_AUTHORIZATION_BODY or request.query:
+                raise TaskError("group_remark_command_invalid", "provide one bounded JSON body")
+
+            def unique(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise TaskError("group_remark_command_invalid", "the remark command repeats a field")
+                    result[key] = value
+                return result
+
+            command = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
+            if type(command) is not dict or set(command) != {*GROUP_REMARK_ROUTE_FIELDS, "remark", "expected_revision"}:
+                raise TaskError("group_remark_command_invalid", "the remark command does not match its contract")
+            async with self.controller._control_lock:
+                await self._operator()
+                result = GroupRemarks(self.controller.runtime).write(
+                    command, command["remark"], command["expected_revision"])
+                return outcome_response(Outcome.success(result))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, UnicodeError, RecursionError):
+            return outcome_response(Outcome.failed("group_remark_command_invalid",
+                                                   "the remark command is not valid JSON"))
 
     async def _command(self, *, expected):
         raw = await request.body()

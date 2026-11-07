@@ -217,6 +217,10 @@ h3 { margin: 0; font-size: 16px; line-height: 1.4; }
 .group-detail-head > div { min-width: 0; flex: 1; }
 .group-detail-head h3 { overflow-wrap: anywhere; }
 .group-detail-head .badge { flex: none; }
+.group-remark-form { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.group-remark-label { flex: none; color: var(--muted); font-size: 11px; }
+.group-remark-form input { flex: 1 1 180px; min-width: 0; min-height: 34px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; }
+.group-remark-form .group-access-button { margin-top: 0; }
 .group-detail-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
 .group-detail-metrics > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; padding: 9px; background: var(--surface-soft); }
 .group-detail-metrics span { color: var(--quiet); font-size: 10px; }
