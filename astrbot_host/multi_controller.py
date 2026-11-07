@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from companion_v2.adapters.astrbot.native import (
     HostPersona, NativePrivateBridge, bounded_native_lookup, event_account_id, event_peer_id,
-    native_client_connected, persona_instruction, supported_platform_name,
+    native_client_connected, persona_instruction, platform_client_matches, supported_platform_name,
 )
 from companion_v2.adapters.astrbot.group import group_event_route
 from companion_v2.adapters.astrbot.provider import provider_fingerprint
@@ -1201,7 +1201,9 @@ class AstrBotMultiController:
                 return None
             target = self.settings.private_target(meta.id, login, sender)
             platform = self.context.get_platform_inst(meta.id)
-            if target is None or platform is None or platform.get_client() is not event.bot:
+            if target is None or platform is None:
+                return None
+            if not platform_client_matches(platform, event.bot):
                 return None
             return self.settings.effective_private_target(target)
         except (ValueError, AttributeError, TypeError):

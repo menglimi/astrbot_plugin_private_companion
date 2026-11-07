@@ -15,6 +15,7 @@ from companion_v2.adapters.astrbot.native import (
     event_account_id,
     event_peer_id,
     native_client_connected,
+    platform_client_matches,
     route_id,
     supported_platform_name,
 )
@@ -425,13 +426,13 @@ class SessionTopology:
         if not supported_platform_name(meta.name):
             logger.debug("[CompanionV2] 跳过事件：平台 %s 不在支持名单", meta.name)
             return
-        if platform.get_client() is not event.bot:
+        if not platform_client_matches(platform, event.bot):
             logger.debug(
                 "[CompanionV2] 跳过事件：事件携带的 bot(%s) 不是平台当前的 client",
                 type(getattr(event, "bot", None)).__name__,
             )
             return
-        if not native_client_connected(platform, login, event.bot):
+        if not native_client_connected(platform, login):
             logger.debug("[CompanionV2] 跳过事件：账号 %s 没有可用的原生连接", login)
             return
         if kind == "group":
@@ -525,10 +526,8 @@ class SessionTopology:
     async def inventory_report(self, *, settings=None, scope_kind=None, include_unmanaged=False):
         # Discovery needs unbound windows even when normalized runtime settings
         # supply the account and persona mappings. Startup still limits its inventory.
-        discovery = include_unmanaged
-        managed_only = settings is not None and not discovery
-        accounts = self.accounts(None if discovery else settings)
-        configured = self.configured(settings)
+        managed_only = settings is not None and not include_unmanaged
+        accounts, configured = self.accounts(settings), self.configured(settings)
         if scope_kind is not None:
             configured = [row for row in configured if row["scope_kind"] == scope_kind]
         if managed_only:

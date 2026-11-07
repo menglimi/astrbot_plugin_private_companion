@@ -35,7 +35,7 @@ VERIFIED_SERIES = frozenset(("4.27", "4.28", "4.29"))
 # Native routing is verified for the OneBot reverse-WS adapter and the two
 # QQ Official adapter names AstrBot exposes.  Keeping the allow-list here
 # prevents an arbitrary adapter from inheriting route privileges by accident.
-SUPPORTED_PLATFORM_NAMES = frozenset(("aiocqhttp", "qq_official", "qq_official_webhook"))
+SUPPORTED_PLATFORM_NAMES = frozenset(("aiocqhttp", "qq_official", "qq_official_webhook", "lark"))
 OFFICIAL_PLATFORM_NAMES = frozenset(("qq_official", "qq_official_webhook"))
 _REPORTED_UNVERIFIED = set()
 NATIVE_LOOKUP_TIMEOUT_SECONDS = 20
@@ -198,6 +198,10 @@ def event_account_id(event):
         return route_id(event_platform_id(event))
     if name == "aiocqhttp":
         return account_number(getattr(message, "self_id", None))
+    if name == "lark":
+        # Lark (Feishu) has no stable numeric self id on the event; the
+        # configured platform instance id is the account key, same as QQ Official.
+        return route_id(event_platform_id(event))
     raise ValueError("unsupported native event platform")
 
 
@@ -216,8 +220,32 @@ def native_user_subject_id(platform_name, sender_id):
         return "onebot-user:" + sender_id
     if official_platform_name(platform_name):
         return "qq-official-user:" + sender_id
+    if platform_name == "lark":
+        return "lark-user:" + sender_id
     raise ValueError("unsupported native user platform")
 
+
+
+def platform_client_matches(platform, client):
+    """Whether ``client`` may represent the event account on ``platform``.
+
+    aiocqhttp and the two QQ Official adapters hand us the very client object
+    the event arrived on, so identity is a meaningful liveness probe.  Lark
+    (Feishu) exposes a ``lark.ws.Client`` instead. Its event carries the
+    platform's API client, which must still match the selected instance.
+    """
+    try:
+        current = platform.get_client()
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if client is not None and current is client:
+        return True
+    try:
+        if platform.meta().name == "lark":
+            return current is not None and client is not None and platform.lark_api is client
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return False
 
 def native_client_connected(platform, account_id, client=None):
     """Whether one configured account currently has a usable native client."""
@@ -872,8 +900,9 @@ class NativePrivateBridge:
             event_client = event.bot
             cid, role, instruction = await self._role(account, sender)
             scope = ScopeRef(self.installation_id, platform_id, ScopeKind.PRIVATE, sender, account.bot_id, login, cid, sender)
-            if event_client is not self.client(scope):
+            if not platform_client_matches(self.platform(scope), event_client):
                 raise TaskError("host_client_mismatch", "event did not originate from the registered account client")
+            self.client(scope)
             frozen_images, frozen_quotes, frozen_forwards = tuple(locators), tuple(quote_locators), tuple(forward_locators)
             frozen_audios, frozen_videos = tuple(audio_locators), tuple(video_locators)
             frozen_files = tuple(file_locators)
@@ -949,8 +978,10 @@ class NativePrivateBridge:
                     raise TaskError("host_persona_changed", "host role changed while preparing attachments")
                 fresh_actor = require(self.identities.resolve_authenticated(principal, observed_at=self.now()))
                 if (fresh_actor.subject, fresh_actor.binding_id, fresh_actor.binding_revision) != (
-                        actor.subject, actor.binding_id, actor.binding_revision) or event_client is not self.client(scope):
+                        actor.subject, actor.binding_id, actor.binding_revision) or not platform_client_matches(
+                            self.platform(scope), event_client):
                     raise TaskError("host_image_owner_changed", "original image sender or client changed")
+                self.client(scope)
             return Outcome.success(NativePrivateInput(event_id, principal, ConversationRoute(scope, user=actor.subject),
                 AudienceRef(scope, (actor.subject,)), text, at, role, instruction, tuple(images), quotes, forwards, audios, videos))
         except TaskError as error:

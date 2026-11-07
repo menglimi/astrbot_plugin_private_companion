@@ -14,6 +14,7 @@ from companion_v2.adapters.astrbot.memory_push import memory_push_provider
 from companion_v2.adapters.astrbot.native import (
     NativeConversationInput, NativePrivateBridge, bounded_native_lookup, event_account_id,
     event_peer_id, native_client_connected, native_id, native_user_subject_id,
+    platform_client_matches,
     supported_platform_name,
 )
 from companion_v2.adapters.astrbot.group import NativeGroupBridge
@@ -167,8 +168,8 @@ class MultiPrivateBridge(NativePrivateBridge):
                 raise TaskError("host_route_mismatch", "event fields do not identify one registered private route")
             event_client = event.bot
             platform = self.context.get_platform_inst(platform_id)
-            if (platform is None or platform.get_client() is not event_client
-                    or not native_client_connected(platform, login, event_client)):
+            if (platform is None or not platform_client_matches(platform, event_client)
+                    or not native_client_connected(platform, login)):
                 raise TaskError("host_client_mismatch", "private event did not originate from the connected account client")
 
             event_id = native_id(message.message_id)
@@ -180,8 +181,9 @@ class MultiPrivateBridge(NativePrivateBridge):
             conversation_id, role, instruction = await self._role(account, sender)
             scope = ScopeRef(self.installation_id, platform_id, ScopeKind.PRIVATE, sender,
                              account.bot_id, login, conversation_id, sender)
-            if event_client is not self.client(scope):
+            if not platform_client_matches(self.platform(scope), event_client):
                 raise TaskError("host_client_mismatch", "private host account changed during persona lookup")
+            self.client(scope)
             recipients = AudienceRef(scope, (actor.subject,))
             text = "".join(part.text for part in getattr(message, "message", ())
                            if getattr(getattr(part, "type", None), "value", getattr(part, "type", None)) == "Plain"
@@ -216,8 +218,8 @@ class MultiPrivateBridge(NativePrivateBridge):
             account = self.accounts.get((meta.id, login))
             platform = self.context.get_platform_inst(meta.id)
             if (account is None or account.bot_id != target.bot_id or platform is None
-                    or platform.get_client() is not event.bot
-                    or not native_client_connected(platform, login, event.bot)):
+                    or not platform_client_matches(platform, event.bot)
+                    or not native_client_connected(platform, login)):
                 raise TaskError("host_client_mismatch", "private event did not originate from its registered Bot account")
             self.authority.ensure_actor(target)
         except (ValueError, AttributeError, TypeError):
