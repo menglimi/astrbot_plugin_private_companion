@@ -16,7 +16,7 @@ import threading
 from time import perf_counter
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import ProxyHandler, Request, build_opener, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 import warnings
 
 from companion_v2.decision.contract import (CONFIGURABLE_DECISION_FIELDS, DECISION_DEFAULTS, LayaDecision,
@@ -29,6 +29,10 @@ from companion_v2.decision.store import (
 
 
 logger = logging.getLogger(__name__)
+# An empty Laya proxy means a direct route even if the AstrBot process has a
+# proxy in its environment. Keep this alias patchable by the client tests.
+_DIRECT_OPENER = build_opener(ProxyHandler({}))
+urlopen = _DIRECT_OPENER.open
 _LOCAL_ROUTER_LOCK = threading.Lock()
 _LOCAL_ROUTERS: dict[str, tuple[object, threading.Lock]] = {}
 _LOCAL_WARMUP_TASKS = {}
@@ -739,9 +743,7 @@ class LayaDecisionClient:
         def send() -> str:
             try:
                 if self.proxy:
-                    # Keep the proxy local to this request. AstrBot removes the
-                    # process proxy variables when its own http_proxy is empty,
-                    # so urllib must receive an explicit handler here.
+                    # Keep an explicitly configured proxy local to this request.
                     opener = build_opener(ProxyHandler({"http": self.proxy, "https": self.proxy}))
                     response = opener.open(request, timeout=self.timeout_seconds)
                 else:
