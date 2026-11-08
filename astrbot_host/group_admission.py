@@ -14,9 +14,11 @@ def group_trigger_facts(event, account_id):
         bot_ids.update(value for value in (
             str(getattr(message, "self_id", "") or ""), "qq_official") if value)
     elif platform_name == "telegram":
-        # Inbound Telegram At components carry usernames; the bot username is
-        # the only value that identifies this bot.
-        bot_ids.update(value for value in (str(getattr(message, "self_id", "") or ""),) if value)
+        # Inbound Telegram At components carry usernames, and the configured
+        # account key is the platform instance id -- not a username.  Only the
+        # bot username may identify this bot; matching the instance id here
+        # would misread a user whose username equals it as a bot mention.
+        bot_ids = {value for value in (str(getattr(message, "self_id", "") or ""),) if value}
     elif platform_name == "lark":
         # Lark inbound At components carry the bot open id on self_id.
         bot_ids.update(value for value in (str(getattr(message, "self_id", "") or ""),) if value)

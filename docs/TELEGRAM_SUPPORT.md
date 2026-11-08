@@ -62,7 +62,31 @@
 
 ---
 
-## 三、安装与配置
+## 三、身份识别：QQ 号 / QQ 群号 对应 Telegram id
+
+插件内部**只用数字 id 辨别用户和群**，昵称/username 只用于显示与 Telegram @ 渲染：
+
+| 原插件（QQ） | Telegram 对应 | 插件内部使用位置 |
+| --- | --- | --- |
+| QQ 号（用户） | `sender.user_id`（数字 Telegram user id） | `principal.native_account_id`、主体 id `telegram-user:<user_id>`、私聊 scope/会话 id、关系/记忆/权限/主动联系的键 |
+| QQ 群号（群） | `message.group.group_id` / `session_id`（超级群为负数组 id；论坛话题为 `群id#话题id`） | 群目标 `(platform_id, account_id, group_id)`、群 scope、群记忆、群 LLM 开关、群备注、群关系网 owner key |
+| Bot 账号 | AstrBot 平台实例 id（如 `telegram` / `telegram-2`） | 绑定、账号选择、投递 session；**不是** bot 用户名 |
+
+因此：
+
+- 两个昵称/username 相同的用户仍是两个不同主体（不同 `telegram-user:<id>`、不同私聊 scope），记忆与关系不会串线；
+- 用户改昵称或改 username 后身份不变（id 不变）；
+- 没有 username 的用户（昵称显示为 `Unknown`）仍按数字 id 区分；
+- 两个同名群仍是两个不同群（不同 group id），群配置/记忆/开关互不影响；
+- 论坛话题与父群是不同群路由（`群id#话题id`）。
+
+**降级说明**：Telegram 的 @ 只携带 username，Bot API 没有 username → user id 的反查接口，所以：
+
+- 「@核心用户」这类按 @ 识别核心用户的逻辑在 Telegram 上不会触发（不会退化为按昵称认人，只是不触发）；
+- 跨窗口递话的「@群友」在 Telegram 上明确失败（`host_relay_target_unsupported`）；
+- 群聊唤醒的 @bot 判定使用 bot 用户名（这是 bot 自身的唤醒信号，不参与用户身份）。
+
+## 四、安装与配置
 
 1. **在 AstrBot 中添加 Telegram 平台**
    - WebUI → 平台配置 → 新增 Telegram 适配器，填入 BotFather 给的 `telegram_token`。
@@ -78,7 +102,7 @@
 
 ---
 
-## 四、实现要点（维护者）
+## 五、实现要点（维护者）
 
 - 平台接入点：
   - `companion_v2/adapters/astrbot/native.py`：平台白名单、账号键（平台实例 id）、`telegram-user:` 主体前缀、事件 client 解析、媒体准备钩子、Telegram 引用 locator；
@@ -92,7 +116,7 @@
 
 ---
 
-## 五、排查
+## 六、排查
 
 | 现象 | 优先检查 |
 | --- | --- |

@@ -104,7 +104,7 @@ class FakeTelegramContext:
 
 class FakeTelegramEvent:
     def __init__(self, context, *, sender="123456789", text="你好", parts=None,
-                 group_id="", message_id="42"):
+                 group_id="", message_id="42", nickname="alice", group_name="Companion Group"):
         self.client = context.platform.client
         self.platform_meta = context.platform.meta()
         kind = NS(value="GroupMessage" if group_id else "FriendMessage")
@@ -113,12 +113,14 @@ class FakeTelegramEvent:
             type=kind,
             group_id=group_id,
             self_id="companion_bot",
-            sender=NS(user_id=sender, nickname="alice"),
+            sender=NS(user_id=sender, nickname=nickname),
             message_id=message_id,
             session_id=session_id,
             message=list(parts) if parts is not None else [Plain(text)],
             raw_message=NS(),
         )
+        if group_id:
+            self.message_obj.group = NS(group_id=group_id, group_name=group_name)
         self.session = NS(message_type=kind, platform_name=self.platform_meta.id,
                           platform_id=self.platform_meta.id, session_id=session_id)
         self.unified_msg_origin = f"{self.platform_meta.id}:{kind.value}:{session_id}"
