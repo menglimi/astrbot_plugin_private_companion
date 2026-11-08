@@ -43,6 +43,86 @@ def operation() -> OperationRef:
 
 
 class StorageRuntimeTests(unittest.TestCase):
+    def test_wal_reader_does_not_wait_for_writer_and_never_sees_uncommitted_data(self) -> None:
+        with TemporaryDirectory(prefix="companion-v2-storage-") as temporary:
+            runtime = StorageRuntime.open(data_root=Path(temporary) / "v2-data", installation_id=INSTALLATION_ID)
+            writer_entered = threading.Event()
+            release_writer = threading.Event()
+            reader_finished = threading.Event()
+            writer_errors = []
+            reader_values = []
+            try:
+                with runtime.transaction() as connection:
+                    connection.execute("INSERT INTO runtime_metadata(key, value) VALUES (?, ?)",
+                                       ("test.concurrent_read", "committed"))
+
+                def write_then_rollback():
+                    try:
+                        with runtime.transaction() as connection:
+                            connection.execute("UPDATE runtime_metadata SET value = ? WHERE key = ?",
+                                               ("uncommitted", "test.concurrent_read"))
+                            writer_entered.set()
+                            if not release_writer.wait(3):
+                                raise AssertionError("reader did not complete during the write")
+                            raise ValueError("rollback test")
+                    except ValueError:
+                        pass
+                    except BaseException as error:
+                        writer_errors.append(error)
+
+                def read_during_write():
+                    try:
+                        row = runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?",
+                                               ("test.concurrent_read",))
+                        reader_values.append(row["value"])
+                    except BaseException as error:
+                        writer_errors.append(error)
+                    finally:
+                        reader_finished.set()
+
+                writer = threading.Thread(target=write_then_rollback)
+                writer.start()
+                self.assertTrue(writer_entered.wait(1))
+                reader = threading.Thread(target=read_during_write)
+                reader.start()
+                completed_without_writer = reader_finished.wait(0.5)
+                release_writer.set()
+                writer.join(2)
+                reader.join(2)
+
+                self.assertTrue(completed_without_writer, "WAL read waited for the writer transaction")
+                self.assertFalse(writer.is_alive())
+                self.assertFalse(reader.is_alive())
+                self.assertEqual(writer_errors, [])
+                self.assertEqual(reader_values, ["committed"])
+                self.assertEqual(runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?",
+                                                  ("test.concurrent_read",))["value"], "committed")
+            finally:
+                release_writer.set()
+                runtime.close()
+
+    def test_reads_inside_writer_transaction_keep_uncommitted_visibility(self) -> None:
+        with TemporaryDirectory(prefix="companion-v2-storage-") as temporary:
+            runtime = StorageRuntime.open(data_root=Path(temporary) / "v2-data", installation_id=INSTALLATION_ID)
+            try:
+                with runtime.transaction() as connection:
+                    connection.execute("INSERT INTO runtime_metadata(key, value) VALUES (?, ?)",
+                                       ("test.transaction_read", "before"))
+                with runtime.transaction() as connection:
+                    connection.execute("UPDATE runtime_metadata SET value = ? WHERE key = ?",
+                                       ("after", "test.transaction_read"))
+                    self.assertEqual(runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?",
+                                                      ("test.transaction_read",))["value"], "after")
+                    with runtime.read_snapshot():
+                        self.assertEqual(runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?",
+                                                          ("test.transaction_read",))["value"], "after")
+                with runtime.read_snapshot():
+                    with self.assertRaises(StorageOpenError):
+                        with runtime.transaction():
+                            pass
+            finally:
+                runtime.close()
+
     def test_wal_checkpoints_run_outside_commits_without_weakening_durability(self) -> None:
         with TemporaryDirectory(prefix="companion-v2-storage-") as temporary:
             runtime = StorageRuntime.open(data_root=Path(temporary) / "v2-data", installation_id=INSTALLATION_ID)

@@ -264,6 +264,22 @@ class ExpressionStyleManagement:
             (owner_key, *keys, state, dimension, dimension, after_created,
              after_created, after_created, after_signal, limit + 1))
         items = []
+        evidence_cache = {}
+
+        def describe_once(handles, opened_at, closed_at, sample_context, source_kind):
+            key = (sample_context.key, source_kind, stamp(opened_at), stamp(closed_at), tuple(handles))
+            if key not in evidence_cache:
+                try:
+                    evidence_cache[key] = (True, self.samples.describe_handles(
+                        handles, opened_at, closed_at, sample_context, at,
+                        source_kind=source_kind, durable=True))
+                except TaskError as error:
+                    evidence_cache[key] = (False, error.code)
+            available, value = evidence_cache[key]
+            if not available:
+                raise TaskError(value, "stored expression evidence is unavailable")
+            return list(value)
+
         # Adopted rules rotate by how recently they were injected, so the
         # review view reports that ledger: a rule used on every turn while
         # others wait is exactly the distribution this page has to show.
@@ -356,8 +372,8 @@ class ExpressionStyleManagement:
                                     evidence = legacy_evidence(window, handles)
                                 elif source_kind != SHARE_PACK_SOURCE:
                                     sample_context = self._evidence_context(window, context)
-                                    evidence = self.samples.describe_handles(handles, opened_at, closed_at,
-                                        sample_context, at, source_kind=source_kind, durable=True)
+                                    evidence = describe_once(handles, opened_at, closed_at,
+                                                             sample_context, source_kind)
                                     reset_at = self.samples.evidence_reset_at(sample_context, closed_at)
                                     if source_kind == "conversation_input":
                                         for extra in rule_support.observations(self.runtime, row["signal_id"]):
@@ -366,9 +382,9 @@ class ExpressionStyleManagement:
                                                 extra_start, extra_end = self._window(extra_window, at)
                                                 extra_context = self._evidence_context(extra_window, context)
                                                 if self.samples.reviews.allows_handles(extra_context, extra_handles):
-                                                    evidence.extend(self.samples.describe_handles(extra_handles,
-                                                        extra_start, extra_end, extra_context, at,
-                                                        source_kind="conversation_input", durable=True))
+                                                    evidence.extend(describe_once(extra_handles,
+                                                        extra_start, extra_end, extra_context,
+                                                        "conversation_input"))
                                             except (TaskError, KeyError, TypeError, ValueError):
                                                 continue
                             except TaskError as error:

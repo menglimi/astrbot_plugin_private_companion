@@ -14,6 +14,7 @@ These tests drive the native-observation path the host actually writes
 import json
 import unittest
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 from astrbot_host.management_identity import dashboard_operator
 from companion_v2.conversation.native_observations import inbound_event
@@ -200,6 +201,32 @@ class ExpressionDurableEvidenceTests(GroupFixture, unittest.IsolatedAsyncioTestC
         self.assertIsNone(item["evidence_reset_at"])
         self.assertFalse(item["can_revise"])
         self.assertEqual(item["actions"], ["retire"])
+
+    async def test_list_reuses_evidence_reads_for_rules_from_the_same_window(self):
+        context, _, handle, _, closed_at = await self.adopted_rule()
+        second_id = SIGNAL_ID + ":same-window"
+        at = stamp(self.app.tasks.now())
+        with self.app.runtime.transaction() as connection:
+            connection.execute("""INSERT INTO expression_style_signals
+                (signal_id, run_id, owner_key, scope_key, dimension, observation, proposal,
+                 applicability_json, confidence, evidence_json, state, created_at, decided_at,
+                 decided_by, decision_key, ordinal)
+                VALUES (?, ?, ?, ?, 'punctuation', ?, ?, ?, 0.8, ?, 'adopted', ?, ?,
+                        'tester', ?, 1)""",
+                (second_id, RUN_ID, self.owner_key(context), digest(context.scope),
+                 OBSERVATION, PROPOSAL, encode(APPLICABILITY), encode([handle]), at, at,
+                 "tester:" + second_id))
+        rule_details.write(self.app.runtime, second_id, FORM, at=self.app.tasks.now(),
+                           actor="tester", operation_key="durable-form-same-window")
+
+        samples = self.app.expression_samples
+        with patch.object(samples, "describe_handles", wraps=samples.describe_handles) as describe:
+            page = self.page(context)
+
+        self.assertTrue(page.is_success, page.failure)
+        self.assertEqual(describe.call_count, 1)
+        self.assertEqual(len(page.unwrap()["items"]), 2)
+        self.assertEqual([item["evidence"] for item in page.unwrap()["items"]], [[SAMPLE], [SAMPLE]])
 
     async def test_retired_rule_with_unreadable_evidence_cannot_be_restored(self):
         context, event, handle, reference, closed_at = await self.adopted_rule()

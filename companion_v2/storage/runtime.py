@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -10,9 +10,10 @@ import logging
 from pathlib import Path
 import sqlite3
 import sys
-from threading import Lock, RLock, local
+from threading import Condition, Lock, RLock, current_thread, get_ident, local
 import time
 from typing import Iterator
+from weakref import WeakKeyDictionary
 
 from .schema import (
     SCHEMA_VERSION_V68, MIGRATION_V67_TO_V68_ID, MIGRATION_V67_TO_V68_FINGERPRINT,
@@ -304,6 +305,11 @@ class StorageRuntime:
         self._connection: sqlite3.Connection | None = None
         self._lock = RLock()
         self._read_snapshot_diagnostics = local()
+        self._read_connections = local()
+        self._reader_condition = Condition()
+        self._reader_connections = WeakKeyDictionary()
+        self._active_readers = 0
+        self._reader_closing = False
         self._savepoint_sequence = 0
         self._slow_operation_log_state: dict[tuple[str, str], _SlowOperationLogState] = {}
         # A plain Lock, not the connection RLock: _report_slow_operation runs
@@ -314,6 +320,7 @@ class StorageRuntime:
         # to advance it without patching the shared time module.
         self._slow_operation_clock = time.monotonic
         self._write_depth = 0
+        self._write_owner_thread_id: int | None = None
 
     @classmethod
     def open(cls, *, data_root: str | Path, installation_id: str) -> "StorageRuntime":
@@ -428,9 +435,18 @@ class StorageRuntime:
 
     def close(self) -> None:
         started = time.perf_counter()
+        with self._reader_condition:
+            self._reader_closing = True
+            while self._active_readers:
+                self._reader_condition.wait()
         self._lock.acquire()
         lock_acquired = time.perf_counter()
         try:
+            with self._reader_condition:
+                readers = tuple(self._reader_connections.values())
+                self._reader_connections.clear()
+            for reader in readers:
+                reader.close()
             if self._connection is not None:
                 self._connection.close()
                 self._connection = None
@@ -472,6 +488,12 @@ class StorageRuntime:
     def transaction(self, *, require_outermost: bool = False) -> Iterator[sqlite3.Connection]:
         """Compose repository writes; nested success is not an outer commit."""
 
+        diagnostic = getattr(self._read_snapshot_diagnostics, "current", None)
+        if diagnostic is not None and not diagnostic["writer_owned"]:
+            raise StorageOpenError("a read snapshot cannot be promoted to a write transaction")
+        with self._reader_condition:
+            if self._reader_closing:
+                raise StorageOpenError("V2 storage runtime is closing")
         started = time.perf_counter()
         self._lock.acquire()
         lock_acquired = time.perf_counter()
@@ -487,6 +509,8 @@ class StorageRuntime:
             savepoint = f"v2_write_{self._savepoint_sequence}"
             begin_started = time.perf_counter()
             connection.execute(f"SAVEPOINT {savepoint}" if nested else "BEGIN IMMEDIATE")
+            if not nested:
+                self._write_owner_thread_id = get_ident()
             begin_ms = round((time.perf_counter() - begin_started) * 1000)
             self._write_depth += 1
             try:
@@ -509,6 +533,8 @@ class StorageRuntime:
                 raise
             finally:
                 self._write_depth -= 1
+                if self._write_depth == 0:
+                    self._write_owner_thread_id = None
         finally:
             finished = time.perf_counter()
             self._lock.release()
@@ -521,15 +547,13 @@ class StorageRuntime:
     def read_only_snapshot(self) -> Iterator[sqlite3.Connection]:
         """A synchronous projection that cannot borrow or promote a write transaction."""
 
-        with self._lock:
-            connection = self._require_connection()
-            if self._write_depth:
-                raise StorageOpenError("a read-only projection cannot borrow a write transaction")
+        if self._write_owner_thread_id == get_ident():
+            raise StorageOpenError("a read-only projection cannot borrow a write transaction")
+        with self.read_snapshot() as connection:
             previous = connection.execute("PRAGMA query_only").fetchone()[0]
             connection.execute("PRAGMA query_only = ON")
             try:
-                with self.read_snapshot():
-                    yield connection
+                yield connection
             finally:
                 connection.execute("PRAGMA query_only = ON" if previous else "PRAGMA query_only = OFF")
 
@@ -538,49 +562,94 @@ class StorageRuntime:
         """Keep related reads on one SQLite snapshot, also inside an owned write."""
 
         started = time.perf_counter()
-        self._lock.acquire()
-        lock_acquired = time.perf_counter()
         diagnostic = getattr(self._read_snapshot_diagnostics, "current", None)
         owns_diagnostic = diagnostic is None
-        if owns_diagnostic:
-            diagnostic = {"slow_child": False}
-            self._read_snapshot_diagnostics.current = diagnostic
+        writer_owned = self._write_owner_thread_id == get_ident()
+        lock_acquired = started
         try:
-            connection = self._require_connection()
-            if connection.in_transaction:
-                yield connection
-                return
-            connection.execute("BEGIN")
-            try:
-                yield connection
-                connection.execute("COMMIT")
-            except BaseException:
-                if connection.in_transaction:
-                    connection.execute("ROLLBACK")
-                raise
+            with ExitStack() as stack:
+                if writer_owned:
+                    self._lock.acquire()
+                    stack.callback(self._lock.release)
+                    connection = self._require_connection()
+                else:
+                    connection = stack.enter_context(self._reader_connection())
+                lock_acquired = time.perf_counter()
+                if owns_diagnostic:
+                    diagnostic = {"slow_child": False, "writer_owned": writer_owned}
+                    self._read_snapshot_diagnostics.current = diagnostic
+                with self._snapshot_on(connection):
+                    yield connection
         finally:
             finished = time.perf_counter()
-            self._lock.release()
-            if owns_diagnostic:
+            if owns_diagnostic and diagnostic is not None:
                 try:
                     if not diagnostic["slow_child"]:
                         self._report_slow_operation("read_snapshot", started, lock_acquired, finished)
                 finally:
                     del self._read_snapshot_diagnostics.current
 
+    @contextmanager
+    def _reader_connection(self) -> Iterator[sqlite3.Connection]:
+        with self._reader_condition:
+            if self._reader_closing or self._connection is None:
+                raise StorageOpenError("V2 storage runtime is closed")
+            self._active_readers += 1
+        try:
+            connection = getattr(self._read_connections, "connection", None)
+            if connection is None:
+                try:
+                    connection = sqlite3.connect(
+                        str(self._database_path), timeout=5.0, isolation_level=None,
+                        check_same_thread=False)
+                    connection.row_factory = sqlite3.Row
+                    connection.execute("PRAGMA foreign_keys = ON")
+                    connection.execute("PRAGMA synchronous = FULL")
+                    connection.execute("PRAGMA busy_timeout = 5000")
+                    connection.execute("PRAGMA wal_autocheckpoint = 0")
+                    connection.execute("PRAGMA query_only = ON")
+                except sqlite3.Error as error:
+                    if connection is not None:
+                        connection.close()
+                    raise StorageOpenError("unable to read V2 SQLite store") from error
+                self._read_connections.connection = connection
+                with self._reader_condition:
+                    self._reader_connections[current_thread()] = connection
+            yield connection
+        finally:
+            with self._reader_condition:
+                self._active_readers -= 1
+                if self._active_readers == 0:
+                    self._reader_condition.notify_all()
+
+    @contextmanager
+    def _snapshot_on(self, connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+        if connection.in_transaction:
+            yield connection
+            return
+        connection.execute("BEGIN")
+        try:
+            yield connection
+            connection.execute("COMMIT")
+        except BaseException:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+
     def read_one(self, statement: str, parameters: tuple[object, ...]) -> sqlite3.Row | None:
         started = time.perf_counter()
-        self._lock.acquire()
-        lock_acquired = time.perf_counter()
+        lock_acquired = started
         finished = None
         try:
-            result = self._require_connection().execute(statement, parameters).fetchone()
+            with ExitStack() as stack:
+                connection = self._read_connection(stack)
+                lock_acquired = time.perf_counter()
+                result = connection.execute(statement, parameters).fetchone()
             finished = time.perf_counter()
             return result
         finally:
             if finished is None:
                 finished = time.perf_counter()
-            self._lock.release()
             diagnostic = getattr(self._read_snapshot_diagnostics, "current", None)
             if diagnostic is not None and finished - started >= self.SLOW_OPERATION_SECONDS:
                 diagnostic["slow_child"] = True
@@ -589,22 +658,30 @@ class StorageRuntime:
 
     def read_all(self, statement: str, parameters: tuple[object, ...]) -> tuple[sqlite3.Row, ...]:
         started = time.perf_counter()
-        self._lock.acquire()
-        lock_acquired = time.perf_counter()
+        lock_acquired = started
         finished = None
         try:
-            result = tuple(self._require_connection().execute(statement, parameters).fetchall())
+            with ExitStack() as stack:
+                connection = self._read_connection(stack)
+                lock_acquired = time.perf_counter()
+                result = tuple(connection.execute(statement, parameters).fetchall())
             finished = time.perf_counter()
             return result
         finally:
             if finished is None:
                 finished = time.perf_counter()
-            self._lock.release()
             diagnostic = getattr(self._read_snapshot_diagnostics, "current", None)
             if diagnostic is not None and finished - started >= self.SLOW_OPERATION_SECONDS:
                 diagnostic["slow_child"] = True
             self._report_slow_operation("read_all", started, lock_acquired, finished,
                                         statement=statement)
+
+    def _read_connection(self, stack: ExitStack) -> sqlite3.Connection:
+        if self._write_owner_thread_id == get_ident():
+            self._lock.acquire()
+            stack.callback(self._lock.release)
+            return self._require_connection()
+        return stack.enter_context(self._reader_connection())
 
     def _open_connection(self) -> None:
         connection: sqlite3.Connection | None = None

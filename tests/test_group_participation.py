@@ -114,6 +114,24 @@ class GroupParticipationTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(item["speaker_id"], item["text"]) for item in self.history(b, replied)], [("200", "周末想去河边走走")])
         self.assertEqual(len(self.sent), 1)
 
+    async def test_failed_skip_choice_still_finishes_silently(self):
+        await self.setup_delivery()
+        with patch.object(self.choices, "execute",
+                          side_effect=TaskError("group_participation_started", "participation already started")):
+            context, batch, _ = await self.receive(
+                commands=((ACTION, {"mode": "skip", "reason": "这轮继续旁听"}),))
+
+        rows = self.app.tools._rows(batch)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["state"], "failed")
+        self.assertEqual(json.loads(rows[0]["result_json"])["code"], "group_participation_started")
+        self.assertEqual(self.choices.decision(context, batch)["mode"], "skip")
+        self.assertEqual((self.app.flow.row(batch)["state"], self.app.flow.row(batch)["reason"]),
+                         ("complete", SKIPPED))
+        self.assertEqual(self.parts(batch), ())
+        self.assertEqual(self.sent, [])
+        self.assertEqual(len(self.native.provider.client.state.calls), 1)
+
     async def test_laya_wait_completes_as_silence_without_model_call_or_platform_ack(self):
         await self.setup_delivery()
 
