@@ -7,7 +7,7 @@ import re
 from types import MappingProxyType
 
 from companion_v2.conversation.foreground import ClaimKind, DraftClaim, ModelDraft
-from companion_v2.execution.models import digest, encode
+from companion_v2.execution.models import digest, encode, encode_prompt
 from companion_v2.model_gateway.models import MAX_TOOL_CATALOG, ToolCall
 from companion_v2.model_gateway.perception import capability_instruction
 from companion_v2.model_gateway.prompt_composer import compose_prompt
@@ -111,7 +111,7 @@ class ModelWire:
             messages.append(message)
         # Media reservations use declared per-image/per-second estimates,
         # separate from base64 transport bytes and actual provider usage.
-        return (len(encode([messages, self.tools]).encode("utf-8")) + 1024 + 64 * len(messages)
+        return (len(encode_prompt([messages, self.tools]).encode("utf-8")) + 1024 + 64 * len(messages)
                 + 16384 * self.image_count + 256 * ((self.audio_duration_ms + 999) // 1000))
 
 
@@ -182,7 +182,7 @@ def build_wire(envelope, *, model_name=""):
             "subjective/question 的 evidence 为 null。" + stream_contract
             if request.output_format == "conversation" else BACKGROUND_OUTPUT_NOTES.get(request.output_format, "")))
     messages = [*composition.system_messages,
-                {"role": "user", "content": encode({"materials": materials,
+                {"role": "user", "content": encode_prompt({"materials": materials,
                     "deferred": [{"owner": c.owner, "purpose": c.purpose} for c in request.context.deferred],
                     "unavailable": [{"owner": c.owner, "purpose": c.purpose} for c in request.context.unavailable]})}]
     if request.images:
@@ -206,7 +206,7 @@ def build_wire(envelope, *, model_name=""):
                         duration_ms=frame.duration_ms, frame_count=original.descriptor.frame_count,
                         animation_coverage=original.descriptor.coverage)
                 content.extend((
-                    {"type": "text", "text": encode(metadata)},
+                    {"type": "text", "text": encode_prompt(metadata)},
                     {"type": "image_url", "image_url": {"url": "data:" + image.descriptor.mime_type + ";base64," + image.data_base64,
                                                           "detail": "auto"}},
                 ))
@@ -219,7 +219,7 @@ def build_wire(envelope, *, model_name=""):
             handle = "e_" + digest(audio.source)
             if evidence.get(handle) != audio.source:
                 raise ValueError("audio is missing its original evidence material")
-            content.extend(({"type": "text", "text": encode({"audio_evidence": handle,
+            content.extend(({"type": "text", "text": encode_prompt({"audio_evidence": handle,
                 "parent_source_id": audio.parent.source_id, "component_position": audio.descriptor.position,
                 "coverage": "complete_attachment", "duration_ms": audio.descriptor.duration_ms,
                 "representation": "pcm_s16le_mono_wav"})},
@@ -238,7 +238,7 @@ def build_wire(envelope, *, model_name=""):
                 "declared_audio_tracks": video.descriptor.declared_audio_tracks,
                 "coverage": "original_video", "mime_type": video.descriptor.mime_type}
             if request.native_video_input:
-                content.extend(({"type": "text", "text": encode(metadata)},
+                content.extend(({"type": "text", "text": encode_prompt(metadata)},
                     {"type": "video_data", "video_data": {"mime_type": video.descriptor.mime_type,
                         "data": base64.b64encode(video.content).decode("ascii")}}))
             else:
@@ -246,7 +246,7 @@ def build_wire(envelope, *, model_name=""):
                     handle = "e_" + digest(image.source)
                     if evidence.get(handle) != image.source:
                         raise ValueError("video frame is missing its original evidence material")
-                    content.extend(({"type": "text", "text": encode({**metadata,
+                    content.extend(({"type": "text", "text": encode_prompt({**metadata,
                         "image_evidence": handle, "frame_index": frame.index,
                         "start_ms": frame.start_ms, "timing": video.descriptor.timing,
                         "frame_count": video.descriptor.frame_count, "coverage": video.descriptor.coverage,

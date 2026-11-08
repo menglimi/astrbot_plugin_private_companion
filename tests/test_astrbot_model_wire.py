@@ -6,7 +6,7 @@ import httpx
 from openai import APIConnectionError
 
 from companion_v2.adapters.astrbot.model_wire import (REPLY_CONTRACT, REPLY_CONTRACT_EXAMPLE,
-    build_wire, decode_response, decode_text_response, tool_alias)
+    ModelWire, build_wire, decode_response, decode_text_response, tool_alias)
 from companion_v2.conversation.foreground import PromptMaterial
 from companion_v2.execution.models import TaskError, encode
 from companion_v2.model_gateway.failures import ModelFailure
@@ -36,6 +36,16 @@ class CompatTextProvider:
 
 
 class NativeModelTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_prompt_encoding_preserves_cjk_and_avoids_escaped_input_inflation(self):
+        envelope = await self.envelope()
+        wire = build_wire(envelope)
+        self.assertIn("你好", wire.messages[-1]["content"])
+
+        text = "中" * 5000
+        estimate_wire = ModelWire(messages=[{"role": "user", "content": text}], tools=(),
+                                  aliases={}, evidence={})
+        self.assertLess(estimate_wire.input_estimate(), len(text) * 4)
+
     async def test_public_text_chat_provider_uses_compat_transport(self):
         self.native.provider = CompatTextProvider()
         self.native_model = self.make_model(provider_type=NS)
