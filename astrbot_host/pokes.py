@@ -112,8 +112,9 @@ def _spawn_context_stream(controller, route, context, instruction, event_key, ha
     """Schedule the bounded context stream B after a configurable delay.
 
     Stream A stays exactly on the release path.  Stream B never raises: a
-    failed or skipped context reply is silently dropped without touching the
-    poke receipt, the stream A outcome, or the native acknowledgement.
+    skipped context reply is dropped, and a failed one is logged with its stable
+    code, without touching the poke receipt, the stream A outcome, or the native
+    acknowledgement.
     """
     policy = controller.poke_policy
     if (not policy.context_reply_enabled or route.kind is not ScopeKind.GROUP
@@ -144,7 +145,7 @@ async def _poke_context_stream(controller, route, context, instruction, event_ke
             context, instruction, event_key, mode="context",
             recent_context=recent_lines)
         if not generated or not generated.strip():
-            logger.info("[CompanionV2][poke-context] 模型判断无需接话（[SKIP] 或空），保持安静")
+            logger.info("[CompanionV2][poke-context] 模型判断无需接话（[SKIP]），保持安静")
             return
         api = _transport(controller, route)
         try:
@@ -158,7 +159,8 @@ async def _poke_context_stream(controller, route, context, instruction, event_ke
     except asyncio.CancelledError:
         return
     except TaskError as stream_error:
-        logger.warning("[CompanionV2][poke-context] 流B 未完成: %s", stream_error)
+        logger.warning("[CompanionV2][poke-context] 流B 未完成 code=%s reason=%s",
+                       stream_error.code, stream_error)
         return
     except Exception:
         logger.warning("[CompanionV2][poke-context] 流B 异常退出", exc_info=True)
