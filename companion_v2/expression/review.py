@@ -7,6 +7,7 @@ from datetime import timedelta
 import json
 import logging
 
+from companion_v2.execution.models import encode_prompt
 from companion_v2.conversation.foreground import (
     BackgroundPromptTrigger, PromptMaterial, PromptRequest, SealedForegroundContext,
 )
@@ -143,7 +144,7 @@ class ExpressionDraftReview:
                     "rules": [rule.payload for rule in job["rules"]]}
         request = PromptRequest(BackgroundPromptTrigger(digest([run.task.task_id, "review"]),
             context.actor.principal, context.scope, self.tasks.now()), job["request"].role_instruction,
-            SealedForegroundContext((PromptMaterial(OWNER, "expression_review_input", encode(material)),), (), ()),
+            SealedForegroundContext((PromptMaterial(OWNER, "expression_review_input", encode_prompt(material)),), (), ()),
             PROMPT, context.role_binding, output_format="role_expression_review")
         completion = None
         try:

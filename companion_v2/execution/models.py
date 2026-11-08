@@ -48,7 +48,7 @@ def stamp(value: datetime) -> str:
     return normalize_utc(value, field="task timestamp").isoformat(timespec="microseconds")
 
 
-def encode(value: object) -> str:
+def _dump(value: object, *, ensure_ascii: bool) -> str:
     def default(item):
         if is_dataclass(item):
             return {descriptor.name: getattr(item, descriptor.name) for descriptor in fields(item)
@@ -56,7 +56,23 @@ def encode(value: object) -> str:
         if isinstance(item, datetime):
             return stamp(item)
         raise TypeError("unsupported task record value")
-    return json.dumps(value, default=default, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+    return json.dumps(value, default=default, sort_keys=True, ensure_ascii=ensure_ascii,
+                      separators=(",", ":"), allow_nan=False)
+
+
+def encode(value: object) -> str:
+    return _dump(value, ensure_ascii=True)
+
+
+def encode_prompt(value: object) -> str:
+    """Canonical prompt material keeps CJK text literal.
+
+    ``encode`` stays ASCII-only because it feeds persisted records, digests and
+    byte comparisons. Prompt material is different: it is concatenated into the
+    model input as text, so escaping every Chinese character to ``\\uXXXX`` only
+    inflates the request. JSON semantics are identical.
+    """
+    return _dump(value, ensure_ascii=False)
 
 
 def digest(value: object) -> str:

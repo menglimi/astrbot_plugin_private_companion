@@ -6,6 +6,7 @@ import json
 import logging
 from zoneinfo import ZoneInfo
 
+from companion_v2.execution.models import encode_prompt
 from companion_v2.conversation.foreground import BackgroundPromptTrigger, PromptMaterial, PromptRequest, SealedForegroundContext
 from companion_v2.execution.models import (Lane, ProviderBinding, SideEffect, TaskContext, TaskDefinition,
     TaskError, TaskRegistration, TaskResult, TaskSpec, digest, encode, require)
@@ -365,9 +366,9 @@ class CalendarPlanning:
         if ":review:" in job["slot"]:
             prompt_instruction += ("\n当前是新时段对剩余一天的重新观察：按 now 之后的最新日历与角色状态重新考虑，"
                 "跳过已经过去的时段和已存在安排，不补写旧请求、不补造完成记录。")
-        materials = [PromptMaterial(OWNER, "planning_material", encode(job["material"]))]
+        materials = [PromptMaterial(OWNER, "planning_material", encode_prompt(job["material"]))]
         if job.get("intervention"):
-            materials.append(PromptMaterial("conversation.native", "intervention_dialogue", encode({
+            materials.append(PromptMaterial("conversation.native", "intervention_dialogue", encode_prompt({
                 "conversation": job.get("intervention_dialogue", ()),
                 "basis": "validated_private_native_dialogue",
                 "assistant_reply_returned": any(

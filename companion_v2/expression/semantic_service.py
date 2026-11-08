@@ -6,6 +6,7 @@ import json
 import logging
 import time
 
+from companion_v2.execution.models import encode_prompt
 from companion_v2.execution.models import TaskContext, TaskError, digest, encode, require
 from companion_v2.foundation.refs import RoleOwnerRef, ScopeKind
 from companion_v2.model_gateway.embedding import EmbeddingGateway
@@ -500,7 +501,7 @@ class SemanticService:
                     current_items.append(item)
                 if current_items:
                     request = replace(request, context=replace(request.context, materials=request.context.materials + (
-                        PromptMaterial("group.slang", "contextual_word_meanings", encode({**payload, "items": current_items})),)))
+                        PromptMaterial("group.slang", "contextual_word_meanings", encode_prompt({**payload, "items": current_items})),)))
             request = replace(request, instruction=request.instruction + "\n" + SLANG_INSTRUCTION)
         return request
 
