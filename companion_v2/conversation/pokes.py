@@ -37,10 +37,22 @@ CONTEXT_STREAM_PROMPT = (
 )
 
 
+# One ceiling, two derived layers -- the same shape role.state.maintain uses.  The
+# declared budget bounds the whole poke task, queueing behind another background
+# owner included; the model round expires first so the text it returns can still be
+# parsed and sent before the task deadline.  15 s was below this provider's normal
+# latency: in 48 h 20 of 38 poke rounds stopped at exactly 15.0-15.3 s while
+# role.state.maintain (22.8 s average) and proactive.compose (28.4 s average)
+# finished on the same provider.
+POKE_BUDGET_SECONDS = 60
+POKE_MARGIN_SECONDS = 15
+POKE_PROVIDER_TIMEOUT_SECONDS = POKE_BUDGET_SECONDS - POKE_MARGIN_SECONDS
+
+
 def poke_reply_profile(provider, *, max_output_tokens=1024):
     return ModelTaskProfile(MODEL_REPLY_KIND, Lane.BACKGROUND, provider,
         "依据已配置角色身份回应当前戳一戳互动。", max_output_tokens=max_output_tokens,
-        capabilities=("text",), timeout_seconds=15)
+        capabilities=("text",), timeout_seconds=POKE_PROVIDER_TIMEOUT_SECONDS)
 
 
 @dataclass(frozen=True)
@@ -130,7 +142,7 @@ class PokeReplyModel:
         self.closed = False
         self.registrations = (TaskRegistration(TaskDefinition(
             MODEL_REPLY_KIND, MODEL_REPLY_OWNER, "conversation.reply", Lane.BACKGROUND,
-            timeout_seconds=20, max_attempts=1, concurrency=4), self.validate),)
+            timeout_seconds=POKE_BUDGET_SECONDS, max_attempts=1, concurrency=4), self.validate),)
 
     def attach(self, app):
         if app.runtime is not self.runtime:
@@ -171,7 +183,7 @@ class PokeReplyModel:
         try:
             now = self.tasks.now()
             submitted = require(self.tasks.submit(TaskSpec(task_id, context, MODEL_REPLY_KIND, digest(job),
-                event_key, now, now + timedelta(seconds=20))))
+                event_key, now, now + timedelta(seconds=POKE_BUDGET_SECONDS))))
             if submitted.state != "created":
                 # The deterministic task id already owns this poke attempt (for
                 # example a row left by a host restart). The ledger is
