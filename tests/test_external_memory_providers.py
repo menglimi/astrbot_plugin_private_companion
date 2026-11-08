@@ -294,5 +294,18 @@ class ExternalMemoryHostTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(material)
 
 
+    async def test_second_facade_does_not_orphan_registered_providers(self):
+        from astrbot_host.integration_registry import UnifiedCompanionExtensionAPI
+
+        self.register()
+        # 宿主内其他模块（如 native 扩展服务）懒构造第二个公开 facade 时，
+        # 不得顶掉第一个 facade 已注册的第三方回调。
+        another = UnifiedCompanionExtensionAPI(self.controller)
+        prepared = await self.prepared("external-two-facades")
+        self.assertIn("你喜欢听雨声。", prepared["prompt_instruction"])
+        self.assertEqual(len(self.reads), 1)
+        self.assertEqual(another.list_memory_providers()[0]["provider_id"], "third_party")
+
+
 if __name__ == "__main__":
     unittest.main()
