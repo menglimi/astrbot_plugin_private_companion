@@ -14,7 +14,8 @@ from companion_v2.product import CORE_COMPONENTS, PRODUCT_DISPLAY_NAME, PRODUCT_
 from companion_v2.capabilities.models import CapabilityDesiredState
 from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
-from companion_v2.adapters.astrbot.memory_providers import ExternalMemoryProviderRegistry, PROVIDER_API_VERSION
+from companion_v2.adapters.astrbot.memory_providers import (
+    ExternalMemoryProviderRegistry, PROVIDER_API_VERSION, memory_provider_registry)
 from companion_v2.diagnostics.readonly_status import read_p6_readonly_status
 from .memory_page_api import MemoryPageAPI
 from .integration_catalog import BUNDLED_EXTENSIONS, EXTERNAL_PROVIDERS
@@ -235,8 +236,15 @@ class UnifiedCompanionExtensionAPI:
         from .native_extensions.reality.host_delivery import RealityHostDelivery
         self._reality_context = RealityHostContext(controller, self._mobile_together)
         self._reality_delivery = RealityHostDelivery(self._reality_context)
-        self._memory_providers = ExternalMemoryProviderRegistry(controller.context,
-            host_active=lambda: not getattr(controller, "_terminated", False))
+        self._memory_providers = self._memory_provider_registry()
+
+    def _memory_provider_registry(self):
+        """Resolve the context-shared registry used by all facades on this host."""
+        registry = memory_provider_registry(self.controller.context)
+        if registry is None or getattr(registry, "_closed", False):
+            registry = ExternalMemoryProviderRegistry(self.controller.context,
+                host_active=lambda: not getattr(self.controller, "_terminated", False))
+        return registry
 
     def register_memory_provider(self, provider_id, *, plugin, read=None, write=None, summary=None,
                                  display_name="", priority=0, handles_model_memory=False,
@@ -244,17 +252,18 @@ class UnifiedCompanionExtensionAPI:
         """Register callbacks owned by a live Star; return an opaque removal token."""
         if getattr(self.controller, "_terminated", False):
             raise ValueError("memory provider host is stopped")
-        return self._memory_providers.register(provider_id, plugin=plugin, read=read, write=write,
-            summary=summary, display_name=display_name, priority=priority,
+        return self._memory_provider_registry().register(provider_id, plugin=plugin, read=read,
+            write=write, summary=summary, display_name=display_name, priority=priority,
             handles_model_memory=handles_model_memory, is_active=is_active, timeout_seconds=timeout_seconds)
 
     def unregister_memory_provider(self, registration_id):
-        return self._memory_providers.unregister(registration_id)
+        return self._memory_provider_registry().unregister(registration_id)
 
     def list_memory_providers(self):
-        return self._memory_providers.snapshot()
+        return self._memory_provider_registry().snapshot()
 
     def close_memory_providers(self):
+        # A stale facade may shut down after a replacement registry is installed.
         self._memory_providers.close()
 
     async def generate_reality_touch_text(self, prompt, **kwargs):

@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from companion_v2.adapters.astrbot.memory_owner import read_memory_owner
-from companion_v2.adapters.astrbot.memory_providers import ExternalMemoryProviderRegistry
+from companion_v2.adapters.astrbot.memory_providers import ExternalMemoryProviderRegistry, memory_provider_registry
 from companion_v2.adapters.astrbot.memory_push import memory_push_provider
 from companion_v2.capabilities.memory_push import MemoryPushRecord, push_memory
 from companion_v2.execution.models import TaskError
@@ -292,6 +292,35 @@ class ExternalMemoryHostTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         with patch.object(access, "policy_for", side_effect=lambda _: current_policy):
             material = await prepare_external_memory(self.native, self.app, context, prepared["native_input"])
         self.assertIsNone(material)
+
+    async def test_second_facade_does_not_orphan_registered_providers(self):
+        from astrbot_host.integration_registry import UnifiedCompanionExtensionAPI
+
+        self.register()
+        another = UnifiedCompanionExtensionAPI(self.controller)
+        prepared = await self.prepared("external-two-facades")
+        self.assertIn("你喜欢听雨声。", prepared["prompt_instruction"])
+        self.assertEqual(len(self.reads), 1)
+        self.assertEqual(another.list_memory_providers()[0]["provider_id"], "third_party")
+
+    async def test_stale_facade_close_does_not_close_replacement_registry(self):
+        from astrbot_host.integration_registry import UnifiedCompanionExtensionAPI
+
+        old_api = self.api
+        old_registry = old_api._memory_providers
+        old_api.close_memory_providers()
+
+        replacement_api = UnifiedCompanionExtensionAPI(self.controller)
+        self.addCleanup(replacement_api.close_memory_providers)
+        replacement_registry = replacement_api._memory_providers
+        self.assertIsNot(replacement_registry, old_registry)
+        replacement_api.register_memory_provider("replacement", plugin=self.plugin, read=self.read)
+
+        old_api.close_memory_providers()
+
+        self.assertIs(memory_provider_registry(self.controller.context), replacement_registry)
+        self.assertFalse(replacement_registry._closed)
+        self.assertEqual(replacement_registry.snapshot()[0]["provider_id"], "replacement")
 
 
 if __name__ == "__main__":
