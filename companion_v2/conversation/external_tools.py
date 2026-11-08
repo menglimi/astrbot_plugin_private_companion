@@ -18,7 +18,7 @@ from types import MappingProxyType
 from typing import Awaitable, Callable
 
 from companion_v2.capabilities.models import CapabilityPackageDescriptor
-from companion_v2.capabilities.privacy import PRIVACY_ACTIONS, is_core
+from companion_v2.capabilities.privacy import CORE_GROUP_ACTIONS, PRIVACY_ACTIONS, is_core
 from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.execution.models import (
     Lane, ProviderBinding, SideEffect, TaskClaim, TaskContext, TaskDefinition, TaskError,
@@ -313,13 +313,18 @@ class ExternalToolExecutor:
         privacy = action in PRIVACY_ACTIONS
         actor = getattr(context, "actor", None)
         core_admin = actor is not None and is_core(self.runtime, actor.subject)
+        core_group = action in CORE_GROUP_ACTIONS
         core = core_admin if privacy else False
+        # 现实设备工具对群聊保持常驻挂载，避免按发言人增删工具导致提示词缓存
+        # 反复失效；真正执行前由 _require_group_admin 只放行核心管理员。
+        if context.scope.kind is ScopeKind.GROUP and core_group:
+            core = True
         # 隐私能力不再按会话范围拦截：群聊和私聊使用同一份授权判定。
         if (context.scope.kind is ScopeKind.GROUP and action not in GROUP_IMAGE_ACTIONS
-                and not privacy):
+                and not privacy and not core_group):
             raise TaskError("tool_not_available", "this external action is not exposed to a group conversation")
         provider, current = self._provider(descriptor)
-        if provider.admit is not None:
+        if provider.admit is not None and not (context.scope.kind is ScopeKind.GROUP and core_group):
             require(self.tasks.authorize_context(context, action="conversation.reply", observed_at=at))
             return require(provider.admit(context, at))
         # 核心管理员默认可用：不再要求该会话的 extension.tool.invoke 授权。
@@ -344,6 +349,13 @@ class ExternalToolExecutor:
             return package
         return require(self.capabilities.authorize(extension_id=package.extension_id,
                        capability_id=current.binding.capability, subject=context.actor.subject, scope=context.scope))
+
+    def _require_group_admin(self, action, context):
+        if context.scope.kind is not ScopeKind.GROUP or action not in CORE_GROUP_ACTIONS:
+            return
+        actor = getattr(context, "actor", None)
+        if actor is None or not is_core(self.runtime, actor.subject):
+            raise TaskError("reality_admin_only", "现实设备操作只允许核心管理员使用")
 
     def catalog_for(self, context):
         return self.catalog_with_diagnostics(context)[0]
@@ -406,6 +418,7 @@ class ExternalToolExecutor:
         if (spec.task_id, spec.kind) != (row["task_id"], descriptor.kind):
             raise TaskError("external_task_mismatch", "child task does not match its original invocation")
         self._admit(descriptor, spec.context, at)
+        self._require_group_admin(descriptor.tool.action, spec.context)
         batch = self.messages.batch(row["batch_id"])
         if batch["origin_key"] != spec.context.key or batch["generation_task_id"] != row["parent_task_id"]:
             raise TaskError("external_task_mismatch", "invocation belongs to a different original conversation")
@@ -460,6 +473,7 @@ class ExternalToolExecutor:
 
     async def execute(self, run, call):
         descriptor = self.providers[call.action].descriptor
+        self._require_group_admin(call.action, run.task.spec.context)
         with self.runtime.transaction() as connection:
             run.validate()
             plan = connection.execute("SELECT plan_json FROM model_requests WHERE task_id = ?", (run.task.task_id,)).fetchone()
