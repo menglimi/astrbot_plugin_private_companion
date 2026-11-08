@@ -883,6 +883,31 @@ class CompanionApplication:
             self._mark_reaction_sent(result.result_ref)
         return result
 
+    async def _reclaim_expired_reservations(self):
+        """Return expired model reservations without owning the event loop.
+
+        The pass reads every unconfirmed model call and follows its task and
+        request rows, so on a long-lived store it is seconds of SQLite work in one
+        transaction. It is maintenance, and the events, timers and page reads
+        behind it must keep running, which is the same reason ``checkpoint_passive``
+        already runs on a worker thread. ``StorageRuntime`` opens its connection
+        with ``check_same_thread=False`` and serialises every statement on one
+        RLock, so a worker thread is the supported shape; the driver awaits it
+        rather than leaving it behind, which keeps the pass ordered with the rest
+        of the loop and makes its fence check and released holds one transaction.
+
+        A failed pass is never a reason to stop the companion: the holds it would
+        have returned stay held until the next pass or the next startup, which is
+        the state a superseded controller already leaves them in.
+        """
+
+        try:
+            await asyncio.to_thread(self.gateway.ledger.reclaim_expired, self.tasks)
+        except TaskError as error:
+            logger.debug("[CompanionV2] 模型过期预留回收跳过 code=%s", error.code)
+        except Exception as error:
+            logger.warning("[CompanionV2] 模型过期预留回收失败 error_type=%s", type(error).__name__)
+
     async def _drive(self):
         try:
             loop = asyncio.get_running_loop()
@@ -975,10 +1000,7 @@ class CompanionApplication:
                 if loop.time() >= next_budget_reclaim:
                     # Maintenance, not a request path: a superseded or shutting-down
                     # controller simply leaves reclamation to the next startup.
-                    try:
-                        self.gateway.ledger.reclaim_expired(self.tasks)
-                    except TaskError as error:
-                        logger.debug("[CompanionV2] 模型过期预留回收跳过 code=%s", error.code)
+                    await self._reclaim_expired_reservations()
                     next_budget_reclaim = loop.time() + self.BUDGET_RECLAIM_INTERVAL_SECONDS
                 delivery_deadline = self.background.next_wake()
                 if delivery_deadline is not None:
