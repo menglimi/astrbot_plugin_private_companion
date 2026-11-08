@@ -271,10 +271,10 @@ class UnifiedCompanionExtensionAPI:
         return self._memory_provider_registry().snapshot()
 
     def close_memory_providers(self):
-        # 只关闭当前共享表；不要经由 _memory_provider_registry() 新建一张再关。
-        registry = memory_provider_registry(self.controller.context)
-        if registry is not None:
-            registry.close()
+        # 只关闭本 facade 构造时捕获的注册表：宿主被替换后 context 上的当前表属于
+        # 新宿主，旧 facade 迟到的 terminate 无权触碰；close() 幂等，且其 delattr
+        # 自带身份 fencing，重复关闭旧表无害。
+        self._memory_providers.close()
 
     async def generate_reality_touch_text(self, prompt, **kwargs):
         return await self._reality_context.generate(prompt, **kwargs)

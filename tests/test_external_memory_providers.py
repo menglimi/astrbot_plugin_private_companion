@@ -306,6 +306,23 @@ class ExternalMemoryHostTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.reads), 1)
         self.assertEqual(another.list_memory_providers()[0]["provider_id"], "third_party")
 
+    async def test_old_facade_close_does_not_close_replacement_registry(self):
+        from companion_v2.adapters.astrbot.memory_providers import (
+            ExternalMemoryProviderRegistry, memory_provider_registry)
+
+        self.register()
+        # 模拟 reload 时序：旧注册表随旧宿主关闭并从 context 摘除，
+        # 新宿主在“同一 context”上装好自己的替换注册表。
+        memory_provider_registry(self.native).close()
+        replacement = ExternalMemoryProviderRegistry(self.native)
+        self.addCleanup(replacement.close)
+        replacement.register("third_party", plugin=self.plugin, read=self.read)
+        # 旧 facade 迟到的 terminate 关闭，不得波及替换注册表。
+        self.api.close_memory_providers()
+        self.assertIs(memory_provider_registry(self.native), replacement)
+        self.assertEqual(replacement.snapshot()[0]["provider_id"], "third_party")
+        self.assertIsNotNone(replacement.select())
+
 
 if __name__ == "__main__":
     unittest.main()
