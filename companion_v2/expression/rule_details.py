@@ -26,6 +26,24 @@ def read(runtime, signal_id):
     return json.loads(row["value"]) if row else None
 
 
+def read_many(runtime, signal_ids):
+    """Read a whole page of stored forms in one statement.
+
+    A review page holds up to fifty rules and each row needs its own form. Asking
+    for them one at a time costs one statement per row, and every statement waits
+    on the storage runtime's single write lock, so the page cost grew with the
+    number of rules rather than with the page. The missing-key result stays
+    ``None`` in the caller, exactly as :func:`read` reports it.
+    """
+    keys = {PREFIX + digest(signal_id): signal_id for signal_id in signal_ids}
+    if not keys:
+        return {}
+    rows = runtime.read_all(
+        "SELECT key, value FROM runtime_metadata WHERE key IN (" + ",".join("?" * len(keys)) + ")",
+        tuple(keys))
+    return {keys[row["key"]]: json.loads(row["value"]) for row in rows}
+
+
 def write(runtime, signal_id, form, *, at, actor, operation_key, legacy=None):
     form = normalize(form)
     previous = read(runtime, signal_id)

@@ -113,9 +113,9 @@ class SelfReviewManagement:
         try:
             descriptions = self.evidence.describe_handles(handles, opened_at, closed_at, context, at)
         except TaskError as error:
-            # ``TaskError`` keeps its reason in ``args[0]``; it has no ``.reason``
-            # attribute, so reading one turned this degradation into an
-            # ``AttributeError`` that escaped both ``list`` and the route layer.
+            # ``TaskError`` exposes its human-readable reason through ``str(error)``;
+            # it has no ``.reason`` attribute, so this row degrades instead of
+            # raising an ``AttributeError`` that would fail the whole page.
             raise TaskError("self_review_evidence_changed", str(error)) from None
         return run, handles, descriptions
 

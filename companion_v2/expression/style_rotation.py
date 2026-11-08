@@ -69,21 +69,39 @@ def metadata_key(owner_key, scope_key, signal_id):
 
 def usage(runtime, owner_key, scope_key):
     """One read of every counter for a scope, keyed by signal identifier."""
-    result = {}
-    rows = runtime.read_all("SELECT key, value FROM runtime_metadata WHERE key LIKE ?", (PREFIX + "%",))
+    return usage_many(runtime, owner_key, (scope_key,))[scope_key]
+
+
+def usage_many(runtime, owner_key, scope_keys):
+    """One read for every scope of one owner, keyed by scope then signal identifier.
+
+    The counters are stored under a hashed key, so a scope cannot be filtered out
+    in SQL: the prefix scan returns the whole ledger and the hash decides which
+    scope an entry belongs to. The review page reads one family of scopes at
+    once, so scanning once for all of them instead of once per scope removes a
+    statement per window without changing what any scope reports.
+    """
+    wanted = tuple(scope_keys)
+    result = {scope_key: {} for scope_key in wanted}
+    rows = runtime.read_all("SELECT key, value FROM runtime_metadata WHERE key LIKE ?",
+                            (PREFIX + "%",))
     for row in rows:
         try:
-            identifier = json.loads(row["value"])["signal_id"]
-        except (TypeError, ValueError, KeyError):
+            document = json.loads(row["value"])
+        except (TypeError, ValueError):
             continue
+        identifier = document.get("signal_id") if type(document) is dict else None
         if type(identifier) is not str:
+            continue
+        entry = _entry(row["value"])
+        if entry is None:
+            continue
+        scope_key = entry[0]
+        if scope_key not in result:
             continue
         if not row["key"].endswith(digest([owner_key, scope_key, identifier])):
             continue
-        entry = _entry(row["value"])
-        if entry is None or entry[0] != scope_key:
-            continue
-        result[identifier] = (entry[1], entry[2])
+        result[scope_key][identifier] = (entry[1], entry[2])
     return result
 
 

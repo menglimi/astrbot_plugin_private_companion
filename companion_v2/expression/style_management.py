@@ -37,6 +37,9 @@ from .window_scope import active_rule_count, row_usable, rule_reason, rule_scope
 
 
 SHARE_PACK_SOURCE = "shared_pack"
+# ``_run`` needs "the caller already looked this row up" to be distinguishable
+# from "the lookup found nothing": the latter must still raise.
+_UNREAD = object()
 
 
 def _exported_form_identity(dimension, observation, proposal):
@@ -144,10 +147,21 @@ class ExpressionStyleManagement:
             raise TaskError("expression_signal_unavailable", "style signal is unavailable in this role")
         return row
 
-    def _run(self, row, owner, context):
-        run = self.runtime.read_one("""SELECT * FROM expression_style_runs
-            WHERE run_id = ? AND owner_key = ? AND scope_key = ?""",
-            (row["run_id"], digest(owner), row["scope_key"]))
+    def _page_runs(self, page_rows, owner_key):
+        """Every stored run window one page cites, in one statement."""
+        run_ids = tuple({row["run_id"] for row in page_rows})
+        if not run_ids:
+            return {}
+        rows = self.runtime.read_all("""SELECT * FROM expression_style_runs
+            WHERE owner_key = ? AND run_id IN (""" + ",".join("?" * len(run_ids)) + ")",
+            (owner_key, *run_ids))
+        return {(row["run_id"], row["scope_key"]): row for row in rows}
+
+    def _run(self, row, owner, context, *, run=_UNREAD):
+        if run is _UNREAD:
+            run = self.runtime.read_one("""SELECT * FROM expression_style_runs
+                WHERE run_id = ? AND owner_key = ? AND scope_key = ?""",
+                (row["run_id"], digest(owner), row["scope_key"]))
         if run is None:
             raise TaskError("expression_signal_unavailable", "style run is unavailable in this role")
         try:
@@ -257,9 +271,10 @@ class ExpressionStyleManagement:
         # ledger, so pending rules report it too instead of reading as new.
         usage_map = {}
         if state in ("pending", "adopted", "retired"):
+            # One scan answers every window of the family, not one scan per window.
+            rotation = style_rotation.usage_many(self.runtime, owner_key, keys)
             for scope_key in keys:
-                for signal_id, (injections, last) in style_rotation.usage(
-                        self.runtime, owner_key, scope_key).items():
+                for signal_id, (injections, last) in rotation[scope_key].items():
                     previous = usage_map.get(signal_id, (0, None))
                     latest = max((item for item in (previous[1], last) if item is not None),
                                  default=None)
@@ -285,7 +300,14 @@ class ExpressionStyleManagement:
         # enabled rule. Its row count stays visible as ``rotated_rules``.
         for name in ("pending", "adopted"):
             counts[name] = usable_counts.get(name, 0)
-        for row in rows[:limit]:
+        # Everything below is per row, so the lookups a whole page shares are read
+        # once: the stored run window and the stored form. Each of them used to be
+        # its own statement per rule, and every statement waits on the one storage
+        # lock, so the page cost grew with the number of rules instead of the page.
+        page_rows = rows[:limit]
+        runs = self._page_runs(page_rows, owner_key)
+        forms = rule_details.read_many(self.runtime, [row["signal_id"] for row in page_rows])
+        for row in page_rows:
             unavailable, evidence = None, []
             applicability = None
             source_kind = "confirmed_reply"
@@ -308,7 +330,8 @@ class ExpressionStyleManagement:
                     unavailable = "expression_applicability_invalid"
                 if unavailable is None:
                     try:
-                        run, window, handles = self._run(row, owner, context)
+                        run, window, handles = self._run(row, owner, context,
+                            run=runs.get((row["run_id"], row["scope_key"])))
                         source_kind = window.get("source_kind", "confirmed_reply")
                         opened_at, closed_at = self._window(window, at)
                     except TaskError as error:
@@ -369,7 +392,7 @@ class ExpressionStyleManagement:
                 actions = [] if unavailable is not None else ["reconsider"]
             injections, last = usage_map.get(row["signal_id"], (0, None))
             feedback = feedback_map.get(row["signal_id"], {})
-            detail = rule_details.read(self.runtime, row["signal_id"])
+            detail = forms.get(row["signal_id"])
             legacy = rule_details.legacy_counts(detail)
             injections += legacy["use_count"]
             # A rule whose window moved on or whose approval was withdrawn
