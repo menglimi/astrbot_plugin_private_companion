@@ -335,7 +335,7 @@ class UnifiedCompanionExtensionAPI:
         return self._reality_context.cron()
 
     async def delete_reality_touch_cron_job(self, job_id):
-        return await self._reality_delivery.delete_job(job_id)
+        return await self._reality_context.delete_job(job_id)
 
     async def synthesize_realtime_voice(self, text, **kwargs):
         return await self._reality_context.synthesize(text, **kwargs)
