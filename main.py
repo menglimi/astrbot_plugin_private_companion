@@ -148,6 +148,21 @@ CORE_REPLY_SEND_DENIAL_HINTS = {
 }
 
 
+def _is_button_interaction_event(event):
+    """Whether this event is an AstrBot 4.29+ button click, not a chat turn.
+
+    AstrBot 4.29 added portable ``Button``/``ActionRow`` components and delivers
+    a click as a message event carrying ``ButtonInteraction``.  Buttons belong
+    to whichever plugin created them; the companion must leave the event alone
+    instead of treating the action id as user text or suppressing the handler.
+    """
+    for part in getattr(getattr(event, "message_obj", None), "message", ()) or ():
+        kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
+        if kind == "ButtonInteraction":
+            return True
+    return False
+
+
 def _can_continue_astrbot_core_reply(code):
     if isinstance(code, str) and code.startswith(CORE_REPLY_IDENTITY_FAILURE_PREFIXES):
         return False
@@ -604,7 +619,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         failure cannot prevent the group route from being established for the
         same event; this hook never sends or invokes a model.
         """
-        if is_notice_event(event):
+        if is_notice_event(event) or _is_button_interaction_event(event):
             return
         # AstrBot has already resolved command filters before invoking adapter
         # handlers.  Let another plugin's explicit group command continue down
@@ -774,7 +789,7 @@ class PrivateCompanionV2StagingPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE | filter.EventMessageType.GROUP_MESSAGE,
                                priority=COMPANION_INTAKE_PRIORITY)
     async def receive_companion_message(self, event: AstrMessageEvent):
-        if is_notice_event(event):
+        if is_notice_event(event) or _is_button_interaction_event(event):
             return
         competing = competing_command_handler(event, own_module=__name__)
         if competing is not None:
