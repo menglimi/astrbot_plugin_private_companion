@@ -49,6 +49,9 @@ from .astrbot_host.core_reply_closing import prepare_private_closing_decision
 from .astrbot_host.native import warm_session_settings
 from .astrbot_host.core_reply_tool_dispatch import observe_core_tool_dispatch_begin, restore_core_tool_dispatch
 from .astrbot_host.core_reply_turn_gate import close_core_reply_turn, install_core_reply_turn
+from .astrbot_host.core_reply_tool_guard import (
+    close_core_reply_tool_guard, install_core_reply_tool_guard, mark_managed_turn,
+)
 from .astrbot_host.core_reply_native_send import inject_core_reply_send_tool
 from .astrbot_host.core_reply_perception import (
     inject_core_reply_perception_context, inject_core_reply_perception_policy,
@@ -815,6 +818,13 @@ class PrivateCompanionV2StagingPlugin(Star):
         origin_key = self._origin_key_for_event(event)
         kind = getattr(getattr(getattr(event, "message_obj", None), "type", None), "value", None)
         channel = "private" if kind == "FriendMessage" else "group" if kind == "GroupMessage" else "unknown"
+        if channel != "unknown":
+            # This turn belongs to a conversation the plugin serves, even when V2
+            # later declines it and AstrBot's own pipeline writes the reply. The
+            # request-history and tool guards need that answer before any decision
+            # is made, because a declined turn is exactly where the model echoes a
+            # companion tool name our own history taught it.
+            mark_managed_turn(event, channel=channel, event_ref=event_ref)
         if channel == "private" and self._private_delivery_duplicate(event, target):
             # AstrBot can surface one platform message twice (adapter reconnect,
             # duplicate file acknowledgement).  The first delivery already owns
@@ -1583,6 +1593,10 @@ class PrivateCompanionV2StagingPlugin(Star):
         # and the send-side net still applies.
         observe_core_tool_dispatch_begin(event, run_context)
         install_core_reply_turn(event, run_context)
+        # Outside the turn gate on purpose: a turn V2 declined has no gate, and it
+        # is the turn where the model can still ask for a tool this request never
+        # declared. Installed last so it sees a round before the dispatch observer.
+        install_core_reply_tool_guard(event, run_context)
         observe_core_agent_begin(event, run_context)
 
     @filter.on_agent_done()
@@ -1591,6 +1605,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         self._private_reply_followups().finish(event)
         restore_core_voice_authoring(event)
         await close_core_reply_turn(event, response, release=True)
+        close_core_reply_tool_guard(event, run_context)
         restore_core_tool_dispatch(event, run_context)
         observe_core_agent_done(event, run_context, response)
         state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)

@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import dataclass
 from datetime import timedelta
+from logging import getLogger
 from math import isfinite
 
 from companion_v2.conversation.foreground import BackgroundPromptTrigger, PromptMaterial, PromptRequest, SealedForegroundContext
@@ -13,6 +14,7 @@ from companion_v2.execution.service import outcome
 from companion_v2.model_gateway.models import ModelTaskProfile
 
 
+logger = getLogger(__name__)
 DEFAULT_REPLIES = ("在呢，怎么啦？", "收到你的戳戳啦。", "我在这里。")
 MAX_BACK_TIMES = 5
 MODEL_REPLY_KIND = "conversation.poke_reply"
@@ -35,10 +37,22 @@ CONTEXT_STREAM_PROMPT = (
 )
 
 
+# One ceiling, two derived layers -- the same shape role.state.maintain uses.  The
+# declared budget bounds the whole poke task, queueing behind another background
+# owner included; the model round expires first so the text it returns can still be
+# parsed and sent before the task deadline.  15 s was below this provider's normal
+# latency: in 48 h 20 of 38 poke rounds stopped at exactly 15.0-15.3 s while
+# role.state.maintain (22.8 s average) and proactive.compose (28.4 s average)
+# finished on the same provider.
+POKE_BUDGET_SECONDS = 60
+POKE_MARGIN_SECONDS = 15
+POKE_PROVIDER_TIMEOUT_SECONDS = POKE_BUDGET_SECONDS - POKE_MARGIN_SECONDS
+
+
 def poke_reply_profile(provider, *, max_output_tokens=1024):
     return ModelTaskProfile(MODEL_REPLY_KIND, Lane.BACKGROUND, provider,
         "依据已配置角色身份回应当前戳一戳互动。", max_output_tokens=max_output_tokens,
-        capabilities=("text",), timeout_seconds=15)
+        capabilities=("text",), timeout_seconds=POKE_PROVIDER_TIMEOUT_SECONDS)
 
 
 @dataclass(frozen=True)
@@ -128,7 +142,7 @@ class PokeReplyModel:
         self.closed = False
         self.registrations = (TaskRegistration(TaskDefinition(
             MODEL_REPLY_KIND, MODEL_REPLY_OWNER, "conversation.reply", Lane.BACKGROUND,
-            timeout_seconds=20, max_attempts=1, concurrency=4), self.validate),)
+            timeout_seconds=POKE_BUDGET_SECONDS, max_attempts=1, concurrency=4), self.validate),)
 
     def attach(self, app):
         if app.runtime is not self.runtime:
@@ -147,6 +161,14 @@ class PokeReplyModel:
         return True
 
     async def reply(self, context, role_instruction, event_key, *, mode: str = "reply", recent_context: str = ""):
+        """Run one supervised poke reply attempt and return its text.
+
+        The empty string means the model deliberately chose not to join a
+        context stream (``[SKIP]``).  A failed attempt raises its stable
+        ``TaskError`` code instead of returning ``None``: the owners would read
+        ``None`` as "nothing to say" or as a preset fallback, and the code would
+        never reach their logs.
+        """
         if self.closed or self.runner is None:
             raise TaskError("poke_model_unavailable", "the supervised poke model is unavailable")
         if mode not in ("reply", "context"):
@@ -161,13 +183,25 @@ class PokeReplyModel:
         try:
             now = self.tasks.now()
             submitted = require(self.tasks.submit(TaskSpec(task_id, context, MODEL_REPLY_KIND, digest(job),
-                event_key, now, now + timedelta(seconds=20))))
+                event_key, now, now + timedelta(seconds=POKE_BUDGET_SECONDS))))
             if submitted.state != "created":
-                return None
-            result = await self.runner.run(context, task_id)
-            if (not result.is_success or result.unwrap().task is None
-                    or result.unwrap().task.state != "succeeded"):
-                return None
+                # The deterministic task id already owns this poke attempt (for
+                # example a row left by a host restart). The ledger is
+                # authoritative and a second submission cannot run, so say that
+                # instead of reporting an empty reply.
+                raise TaskError("poke_model_already_submitted",
+                                "the original poke attempt is already recorded")
+            outcome = await self.runner.run(context, task_id)
+            if outcome.failure is not None:
+                raise TaskError(outcome.failure.code, outcome.failure.reason)
+            attempt = outcome.unwrap()
+            code = attempt.stop_code
+            if code is not None:
+                # A failed attempt is not "nothing to say": hand its stable code
+                # to the owner instead of collapsing it into an empty reply.
+                raise TaskError(code, "the poke model attempt did not produce a reply")
+            if task_id not in self.results:
+                raise TaskError("poke_model_result_missing", "the poke model attempt produced no result")
             return self.results.pop(task_id, None)
         finally:
             self.pending.pop(task_id, None)
@@ -211,10 +245,23 @@ class PokeReplyModel:
             SealedForegroundContext((material,), (), ()), prompt_text, job.context.role_binding)
         try:
             completion = await self.gateway.generate(run, request)
-        except TaskError:
-            # Reasoning models occasionally ignore the JSON wire contract; one
-            # immediate retry keeps the stream usable without weakening it.
-            completion = await self.gateway.generate(run, request)
+        except TaskError as error:
+            # One model session per task: ``LocalModelGateway.open_session``
+            # records the task's single ``model_requests`` row in the same
+            # transaction that adopts the plan, and no code path releases it.
+            # A second ``generate`` for this run therefore cannot reach a
+            # provider; it can only raise ``model_request_already_started``
+            # (open_session's own sentinel check) before the first attempt's
+            # cause is ever inspected. Retrying here used to replace the true
+            # failure -- ``model_usage_unknown`` after a transport failure,
+            # ``model_timeout``, a wire-contract rejection -- with that
+            # sentinel and hid it from every owner log. Keep the first, honest
+            # failure and let the owner fall back. The retries that are sound
+            # (one contract fallback to another provider, one raised ceiling)
+            # already live inside the gateway and stay bounded there.
+            logger.warning("[CompanionV2] 戳一戳模型回复失败，不重试同一任务 mode=%s task=%s kind=%s code=%s",
+                           job.mode, run.task.task_id, MODEL_REPLY_KIND, error.code)
+            raise
         draft = completion.draft
         text = draft.text.strip() if draft is not None and draft.action == "text" else ""
         if context_mode and (text == "[SKIP]" or text.upper() == "SKIP"):

@@ -288,6 +288,12 @@ class StorageRuntime:
     # bite on call sites added by extensions; past it the oldest window is
     # dropped, which at worst costs one extra warning line for that key.
     SLOW_OPERATION_LOG_MAX_KEYS = 2048
+    # The audit behind this file could name ``read_all`` but not the statement
+    # inside a 26 s stall, because the warning carried no SQL: finding the query
+    # meant re-deriving the call sites by hand. The statement is code, never its
+    # parameters, so it is safe to log and it is what makes the next stall name
+    # itself. Truncated so one slow event stays one line.
+    SLOW_OPERATION_STATEMENT_CHARS = 160
 
     def __init__(self, *, data_root: Path, installation_id: str) -> None:
         if not installation_id or installation_id != installation_id.strip():
@@ -372,7 +378,8 @@ class StorageRuntime:
             return True, suppressed, max_elapsed_ms
 
     def _report_slow_operation(self, operation: str, started: float, lock_acquired: float,
-                               finished: float, *, details: str = "") -> None:
+                               finished: float, *, details: str = "",
+                               statement: str = "") -> None:
         elapsed_ms = round((finished - started) * 1000)
         if elapsed_ms < self.SLOW_OPERATION_SECONDS * 1000:
             return
@@ -397,6 +404,11 @@ class StorageRuntime:
         if not emit:
             return
         detail_suffix = " " + details if details else ""
+        if statement:
+            collapsed = " ".join(statement.split())
+            if len(collapsed) > self.SLOW_OPERATION_STATEMENT_CHARS:
+                collapsed = collapsed[:self.SLOW_OPERATION_STATEMENT_CHARS] + "…"
+            detail_suffix += f" sql={collapsed!r}"
         if not suppressed:
             logger.warning(
                 "V2 SQLite slow operation=%s elapsed_ms=%d lock_wait_ms=%d held_ms=%d caller=%s%s",
@@ -572,7 +584,8 @@ class StorageRuntime:
             diagnostic = getattr(self._read_snapshot_diagnostics, "current", None)
             if diagnostic is not None and finished - started >= self.SLOW_OPERATION_SECONDS:
                 diagnostic["slow_child"] = True
-            self._report_slow_operation("read_one", started, lock_acquired, finished)
+            self._report_slow_operation("read_one", started, lock_acquired, finished,
+                                        statement=statement)
 
     def read_all(self, statement: str, parameters: tuple[object, ...]) -> tuple[sqlite3.Row, ...]:
         started = time.perf_counter()
@@ -590,7 +603,8 @@ class StorageRuntime:
             diagnostic = getattr(self._read_snapshot_diagnostics, "current", None)
             if diagnostic is not None and finished - started >= self.SLOW_OPERATION_SECONDS:
                 diagnostic["slow_child"] = True
-            self._report_slow_operation("read_all", started, lock_acquired, finished)
+            self._report_slow_operation("read_all", started, lock_acquired, finished,
+                                        statement=statement)
 
     def _open_connection(self) -> None:
         connection: sqlite3.Connection | None = None

@@ -101,6 +101,36 @@ class PokeContextStreamTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
             "data": {"text": "来了来了，锅底我都想好了。"}}])
 
 
+    async def test_failed_context_reply_is_reported_instead_of_looking_like_a_skip(self):
+        """A failed stream B must not be logged as "[SKIP] or empty".
+
+        ``PokeReplyModel.reply`` used to collapse every failed attempt into
+        ``None``, and the gateway's impossible retry used to replace the real
+        code with ``model_request_already_started``. Both hid the failure.
+        """
+        self.configure(context_reply=True, delay=0)
+        await self.start_host()
+        await self.seed_group_observation(text="今晚吃什么", speaker="201", identifier="seed-1")
+
+        async def model_behavior(payload, tools):
+            raise RuntimeError("provider transport failed")
+
+        self.native.provider.client.state.behavior = model_behavior
+        with self.assertLogs(level="INFO") as captured:
+            result = (await self.controller.receive_notice(
+                poke_notice(self.group_event(identifier="701")))).unwrap()
+            self.assertEqual(result["state"], "delivered")
+            await self.wait_context_tasks()
+        text = "\n".join(captured.output)
+        self.assertNotIn("model_request_already_started", text)
+        self.assertIn("[poke-context] 流B 未完成", text)
+        self.assertIn("code=model_usage_unknown", text)
+        self.assertNotIn("模型判断无需接话", text)
+        # One dispatch only: the sentinel must never be provoked by a retry.
+        self.assertEqual(len(self.native.provider.client.state.calls), 1)
+        api = self.native.platform.client._api._wsr_api
+        self.assertEqual([action for action, _ in api.calls], ["send_group_msg"])  # stream A's preset
+
     async def test_zero_delay_stream_reads_context_and_sends(self):
         """End-to-end: enabled + delay=0 must actually read the bounded
         context and deliver the model reply (the instant-snapshot mode)."""

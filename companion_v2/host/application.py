@@ -169,6 +169,7 @@ from companion_v2.memory.person.configuration import (AcquaintanceSettings,
 from companion_v2.role_work.awareness import RoleAwareness
 from companion_v2.conversation.awareness_context import ConversationAwarenessContext
 from companion_v2.host.role_attention import RoleAttention
+from companion_v2.host.tick_budget import TickScheduler, TickUnit
 from companion_v2.proactive.configuration import ContactConfigurationOwner, GROUP as CONTACT_GROUP, with_contact_fields
 from companion_v2.proactive.service import ProactiveContacts
 from companion_v2.proactive.scheduling import ContactSchedule
@@ -196,6 +197,17 @@ class ShutdownReport:
 class CompanionApplication:
     WAL_CHECKPOINT_INTERVAL_SECONDS = 30.0
     CONTACT_SCHEDULE_INTERVAL_SECONDS = 2.0
+    CONTACT_DELIVERY_INTERVAL_SECONDS = 1.0
+    # How long one drive pass may occupy the loop before the rest of the
+    # maintenance rotation moves to the next pass. The units are small reads, so a
+    # healthy pass finishes well inside this; a pass that reaches it already has a
+    # backlog, and the user is waiting on intake, timers and page reads behind it.
+    # 60 ms is far below the 1 s the runtime already calls a slow operation, and far
+    # above what the rotation needs when the store is healthy.
+    TICK_BUDGET_SECONDS = 0.06
+    # Names of the units whose result means "this owner has more ready pages". The
+    # sleep calculation reads their results by prefix.
+    BACKGROUND_UNIT_PREFIX = "background-"
     # Expired model reservations only become eligible after twice their task
     # timeout, so a one-minute maintenance pass never competes with live work.
     BUDGET_RECLAIM_INTERVAL_SECONDS = 60.0
@@ -537,6 +549,10 @@ class CompanionApplication:
         self._wake = asyncio.Event()
         self._driver = None
         self._wal_checkpoint_worker = None
+        # Built by the first drive pass, once every component exists and the loop
+        # that will time the slices is running.
+        self._maintenance = None
+        self._next_contact_delivery_check = 0.0
         self._workers = {}
         self._storage_closed = False
         self._closing = asyncio.Lock()
@@ -883,10 +899,90 @@ class CompanionApplication:
             self._mark_reaction_sent(result.result_ref)
         return result
 
+    def _maintenance_rotation(self, loop) -> TickScheduler:
+        """The ordered maintenance units of one drive pass, and its slice bound.
+
+        These are exactly the calls this loop used to make unconditionally, in the
+        same order and with the same deferred yields between them; only the bound
+        is new. Units whose result means "more pages are ready right now" are named
+        with ``BACKGROUND_UNIT_PREFIX`` so the sleep calculation still finds them.
+        """
+
+        def bound_activity() -> None:
+            self.memory.activity.advance_bound(self.state_maintenance.bindings.values())
+
+        def bound_game() -> None:
+            if self.memory.game is not None:
+                self.memory.game.advance_bound(self.state_maintenance.bindings.values())
+
+        def advance_reflection() -> None:
+            tools = self.messages.tools
+            participation = getattr(tools, "group_participation", None) if tools is not None else None
+            if participation is not None:
+                participation.advance_reflection()
+
+        def advance_presence() -> None:
+            if self.presence is not None:
+                self.presence.advance()
+
+        def advance_contact_deliveries():
+            # One second is the cadence the unconditional call already had; keeping
+            # the gate inside the unit means a deferred slice delays it, not skips it.
+            now = loop.time()
+            if now < self._next_contact_delivery_check:
+                return None
+            self._next_contact_delivery_check = now + self.CONTACT_DELIVERY_INTERVAL_SECONDS
+            return self.proactive.advance_deliveries()
+
+        return TickScheduler((
+            TickUnit(self.BACKGROUND_UNIT_PREFIX + "planners",
+                     lambda: self.background.advance(planners=False)),
+            TickUnit("memory-schedule", self.memory_schedule.advance),
+            TickUnit("life-runtime", self.life_runtime.advance),
+            TickUnit("state-maintenance", self.state_maintenance.advance),
+            TickUnit("memory-activity", bound_activity),
+            TickUnit("memory-game", bound_game),
+            TickUnit("calendar-planning", self.calendar_planning.advance),
+            TickUnit("growth-progress", self.growth_progress.advance),
+            TickUnit("self-review", self.self_review.advance),
+            TickUnit("group-participation", advance_reflection),
+            TickUnit("expression-style", self.expression_style.advance),
+            TickUnit("presence", advance_presence),
+            TickUnit("proactive-deliveries", advance_contact_deliveries),
+            TickUnit("journal-schedule", self.journal_schedule.advance),
+            TickUnit(self.BACKGROUND_UNIT_PREFIX + "deliveries", self.background.advance),
+        ), budget_seconds=self.TICK_BUDGET_SECONDS, clock=loop.time)
+
+    async def _reclaim_expired_reservations(self):
+        """Return expired model reservations without owning the event loop.
+
+        The pass reads every unconfirmed model call and follows its task and
+        request rows, so on a long-lived store it is seconds of SQLite work in one
+        transaction. It is maintenance, and the events, timers and page reads
+        behind it must keep running, which is the same reason ``checkpoint_passive``
+        already runs on a worker thread. ``StorageRuntime`` opens its connection
+        with ``check_same_thread=False`` and serialises every statement on one
+        RLock, so a worker thread is the supported shape; the driver awaits it
+        rather than leaving it behind, which keeps the pass ordered with the rest
+        of the loop and makes its fence check and released holds one transaction.
+
+        A failed pass is never a reason to stop the companion: the holds it would
+        have returned stay held until the next pass or the next startup, which is
+        the state a superseded controller already leaves them in.
+        """
+
+        try:
+            await asyncio.to_thread(self.gateway.ledger.reclaim_expired, self.tasks)
+        except TaskError as error:
+            logger.debug("[CompanionV2] 模型过期预留回收跳过 code=%s", error.code)
+        except Exception as error:
+            logger.warning("[CompanionV2] 模型过期预留回收失败 error_type=%s", type(error).__name__)
+
     async def _drive(self):
         try:
             loop = asyncio.get_running_loop()
-            next_contact_delivery_check = 0.0
+            self._next_contact_delivery_check = 0.0
+            self._maintenance = self._maintenance_rotation(loop)
             next_contact_schedule_check = 0.0
             next_wal_checkpoint = loop.time()
             next_budget_reclaim = loop.time() + self.BUDGET_RECLAIM_INTERVAL_SECONDS
@@ -922,42 +1018,26 @@ class CompanionApplication:
                         worker.add_done_callback(lambda done: self.notify())
                 # Receipt notifications first release completed delivery workers
                 # and admit due parts. Planners run below, after send work starts.
-                more_background = self.background.advance(planners=False)
-                await asyncio.sleep(0)
+                # The whole maintenance rotation is one bounded slice: the units and
+                # their order are unchanged, but a pass that runs long leaves the
+                # rest for the next one instead of holding the loop (see
+                # ``companion_v2.host.tick_budget``). Every deadline below is read
+                # from durable state, so it can be computed even when the unit that
+                # would refresh that state was deferred.
+                maintenance = await self._maintenance.advance()
                 excluded = tuple(work.batch_id for work, _ in self._workers.values())
                 deadline = self.flow.next_wake(excluded=excluded) if len(self._workers) < self.worker_limit else None
-                self.memory_schedule.advance()
                 memory_deadline = self.memory_schedule.next_wake()
                 if memory_deadline is not None:
                     deadline = min(deadline, memory_deadline) if deadline else memory_deadline
-                self.life_runtime.advance()
-                await asyncio.sleep(0)
-                self.state_maintenance.advance()
-                await asyncio.sleep(0)
-                self.memory.activity.advance_bound(self.state_maintenance.bindings.values())
-                if self.memory.game is not None:
-                    self.memory.game.advance_bound(self.state_maintenance.bindings.values())
-                self.calendar_planning.advance()
-                await asyncio.sleep(0)
-                self.growth_progress.advance()
-                self.self_review.advance()
-                await asyncio.sleep(0)
-                tools = self.messages.tools
-                participation = getattr(tools, "group_participation", None) if tools is not None else None
-                if participation is not None:
-                    participation.advance_reflection()
-                self.expression_style.advance()
-                await asyncio.sleep(0)
-                if self.presence is not None:
-                    self.presence.advance()
-                if loop.time() >= next_contact_delivery_check:
-                    self.proactive.advance_deliveries()
-                    next_contact_delivery_check = loop.time() + 1.0
-                self.journal_schedule.advance()
                 journal_deadline = self.journal_schedule.next_wake()
                 if journal_deadline is not None:
                     deadline = min(deadline, journal_deadline) if deadline else journal_deadline
-                more_background = self.background.advance() or more_background
+                # A slice that ran out of budget has work ready right now, and so has
+                # a background unit that reported more pages; both mean "do not sleep".
+                more_background = not maintenance.completed or any(
+                    bool(value) for name, value in maintenance.results.items()
+                    if name.startswith(self.BACKGROUND_UNIT_PREFIX))
                 await asyncio.sleep(0)
                 if loop.time() >= next_contact_schedule_check:
                     await self.contact_schedule.advance_async()
@@ -975,10 +1055,7 @@ class CompanionApplication:
                 if loop.time() >= next_budget_reclaim:
                     # Maintenance, not a request path: a superseded or shutting-down
                     # controller simply leaves reclamation to the next startup.
-                    try:
-                        self.gateway.ledger.reclaim_expired(self.tasks)
-                    except TaskError as error:
-                        logger.debug("[CompanionV2] 模型过期预留回收跳过 code=%s", error.code)
+                    await self._reclaim_expired_reservations()
                     next_budget_reclaim = loop.time() + self.BUDGET_RECLAIM_INTERVAL_SECONDS
                 delivery_deadline = self.background.next_wake()
                 if delivery_deadline is not None:

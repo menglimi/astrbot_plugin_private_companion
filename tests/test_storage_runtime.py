@@ -100,12 +100,17 @@ class StorageRuntimeTests(unittest.TestCase):
             runtime.SLOW_OPERATION_SECONDS = 0
             try:
                 with self.assertLogs("companion_v2.storage.runtime", level="WARNING") as captured:
-                    runtime.read_one("SELECT 1", ())
+                    runtime.read_one("SELECT ? AS value", ("row-value-that-stays-out",))
                 message = captured.output[0]
                 self.assertIn("operation=read_one", message)
                 self.assertIn("lock_wait_ms=", message)
                 self.assertIn("caller=test_storage_runtime.py:", message)
-                self.assertNotIn("SELECT 1", message)
+                # The statement names the query that was slow; the parameters are
+                # the stored data and never reach the log. Without the statement a
+                # stall report can only say "read_one", which is what made the
+                # 30-second stalls so expensive to attribute.
+                self.assertIn("sql='SELECT ? AS value'", message)
+                self.assertNotIn("row-value-that-stays-out", message)
 
                 with self.assertLogs("companion_v2.storage.runtime", level="WARNING") as captured:
                     with runtime.read_snapshot():
@@ -449,6 +454,18 @@ class SlowOperationLogRateLimitTests(unittest.TestCase):
         self.assertIn("caller=test_storage_runtime.py:", first)
         self.assertNotIn("suppressed=", first)
         self.assertNotIn("max_elapsed_ms=", first)
+
+    def test_a_long_statement_is_collapsed_and_truncated_to_one_line(self) -> None:
+        runtime = self._runtime()
+        statement = "SELECT c.call_id\n    FROM model_calls c\n    WHERE " + "x" * 400
+        with self.assertLogs("companion_v2.storage.runtime", level="WARNING") as captured:
+            runtime._report_slow_operation("read_all", 0.0, 0.0, 0.002, statement=statement)
+        line = captured.output[0]
+        self.assertEqual(len(captured.output), 1)
+        self.assertNotIn("\n", line)
+        self.assertIn("sql=", line)
+        self.assertLess(len(line), 400)
+        self.assertTrue(line.endswith("…'"), line)
 
     def test_expired_window_reports_suppressed_count_and_max_elapsed(self) -> None:
         runtime = self._runtime()

@@ -250,9 +250,12 @@ class PresenceCoordinator:
             JOIN conversation_batches b USING(batch_id)
             WHERE f.state IN ('collecting','generating','delivering') ORDER BY f.sequence LIMIT 64""", ())
         from companion_v2.conversation.native_turns import context_rows
-        native = context_rows(self.runtime, kind="private")
+        # Only an in-flight turn can be typing, and this runs on every drive pass.
+        # Asking for the open turns first keeps the pass off the finished ones
+        # instead of walking the whole turn table once per second.
+        native = context_rows(self.runtime, kind="private", open_only=True)
         rows = (*rows, *({"context_json": row["context_json"], "batch_id": row["turn_id"]}
-                        for row in native if row["generation_state"] in ("prepared", "running")),
+                        for row in native),
                 *({"context_json": encode(lease["context"]), "batch_id": turn["batch_id"]}
                   for lease in self.native_replies.values() for turn in lease["turns"].values()))
         active = {}

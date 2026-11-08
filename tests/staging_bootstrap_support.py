@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import replace
+from datetime import datetime
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -44,17 +45,30 @@ def database_contents(runtime):
             for table in sorted(REQUIRED_TABLES)}
 
 
-async def wait_for_batch(session, batch, *, timeout_seconds=20):
-    """Wait for the running session to settle a batch, without timing the machine.
+async def wait_for_batch(session, batch, *, timeout_seconds=20, clock=None):
+    """Wait for a terminal batch state, driving capacity retries on a frozen clock.
 
-    The driver loop produces this state on its own wall-clock schedule, so only
-    polling can observe it; the budget exists to bound a hang, not to measure how
-    fast the behaviour under test is.
+    Other scheduled waits remain under the caller's control. The real-time budget
+    bounds a hang; capacity retries use the injected clock and never pass the
+    batch deadline.
     """
+    application = session.application
+
     async def wait():
-        while session.application.flow.row(batch)["state"] not in ("complete", "blocked", "closed"):
-            if session.application.state == "faulted":
-                raise AssertionError(session.application.failure_code)
+        while True:
+            row = application.flow.row(batch)
+            if row["state"] in ("complete", "blocked", "closed"):
+                return
+            if application.state == "faulted":
+                raise AssertionError(application.failure_code)
+            if clock is not None and row["reason"] == "capacity_wait":
+                due_at = datetime.fromisoformat(row["due_at"])
+                deadline_at = datetime.fromisoformat(row["deadline_at"])
+                if due_at > deadline_at:
+                    raise AssertionError("capacity retry exceeds batch deadline")
+                if due_at > clock.now():
+                    clock.set(due_at)
+                    application.notify()
             await asyncio.sleep(0.005)
     await asyncio.wait_for(wait(), timeout_seconds)
 
