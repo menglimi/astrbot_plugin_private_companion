@@ -152,9 +152,10 @@ class ContactRhythm:
             purpose = json.loads(row["record_json"]).get("purpose")
         except (TypeError, ValueError):
             return None
-        reference_at = datetime.fromisoformat(row["delivered_at"] or row["created_at"])
+        delivered_at = (datetime.fromisoformat(row["delivered_at"])
+                        if row["delivered_at"] else None)
         return {"contact_id": row["contact_id"], "created_at": datetime.fromisoformat(row["created_at"]),
-                "delivered_at": reference_at,
+                "delivered_at": delivered_at,
                 "purpose": purpose if isinstance(purpose, str) else ""}
 
     @staticmethod
@@ -176,10 +177,13 @@ class ContactRhythm:
             return None
         if interaction and interaction.get("unresolved_contacts"):
             return None
-        if last_contact is None or last_contact["purpose"] not in BURST_ORIGIN_PURPOSES:
+        if (last_contact is None or last_contact.get("delivered_at") is None
+                or last_contact["purpose"] not in BURST_ORIGIN_PURPOSES):
+            # A sealed candidate that never got a delivered receipt must not
+            # authorise a follow-up burst: its created_at is not a send time.
             return None
         gap = self.burst_gap(context, preferences, last_contact["contact_id"])
-        anchor_at = last_contact.get("delivered_at") or last_contact["created_at"]
+        anchor_at = last_contact["delivered_at"]
         opened = anchor_at + timedelta(seconds=gap)
         expires = opened + min(timedelta(seconds=gap), SLOT_WINDOW)
         if at < opened or at >= expires:
@@ -223,16 +227,15 @@ class ContactRhythm:
             return False
         if purpose not in BURST_ORIGIN_PURPOSES:
             return False
+        if row["delivered_at"] is None:
+            return False
         gap = self.burst_gap(context, preferences, row["contact_id"])
         if gap != marker["gap_seconds"]:
             return False
-        for base_iso in {row["delivered_at"] or row["created_at"], row["created_at"]}:
-            opened = datetime.fromisoformat(base_iso) + timedelta(seconds=gap)
-            expires = opened + min(timedelta(seconds=gap), SLOT_WINDOW)
-            if (stamp(opened) == marker["opened_at"]
-                    and stamp(expires) == marker["expires_at"] and opened <= at < expires):
-                return True
-        return False
+        opened = datetime.fromisoformat(row["delivered_at"]) + timedelta(seconds=gap)
+        expires = opened + min(timedelta(seconds=gap), SLOT_WINDOW)
+        return (stamp(opened) == marker["opened_at"]
+                and stamp(expires) == marker["expires_at"] and opened <= at < expires)
 
     # ---- closing silence -------------------------------------------------
     def closing_hold(self, preferences, at, *, interaction, last_contact):
