@@ -8,7 +8,7 @@ import logging
 from companion_v2.conversation.foreground import PromptMaterial, PromptRequest, SealedForegroundContext
 from companion_v2.conversation.models import InboundConversationEvent
 from companion_v2.execution.models import (Lane, ProviderBinding, QUEUED, SideEffect, TaskContext, TaskDefinition,
-    TaskError, TaskRegistration, TaskResult, TaskSpec, digest, encode, require, stamp)
+    TaskError, TaskRegistration, TaskResult, TaskSpec, digest, encode, encode_prompt, require, stamp)
 from companion_v2.execution.runner import ExactTaskRunner
 from companion_v2.execution.service import outcome
 from companion_v2.foundation.outcome import Outcome
@@ -316,7 +316,7 @@ class MemoryReflection:
             if observation is not None:
                 delivery = {"delivery_state": observation["delivery_state"],
                             "delivery_basis": "native_observation_without_platform_delivery_receipt"}
-            materials.append(PromptMaterial("memory", "reflection_source", encode({"handle": handle,
+            materials.append(PromptMaterial("memory", "reflection_source", encode_prompt({"handle": handle,
                 "text": self.memory.writer.access.evidence(context, evidence), "speaker_id": evidence.speaker_id,
                 "source_kind": evidence.source_kind, "message_time": stamp(evidence.source.issued_at),
                 "start": evidence.start, "end": evidence.end, **delivery}), evidence.source))
@@ -326,15 +326,15 @@ class MemoryReflection:
             fact_handles[handle] = ref
             stored = self.runtime.read_one("SELECT fact_key FROM memory_atoms WHERE atom_id = ?", (ref["atom_id"],))
             fact_records[handle] = {**ref, "fact_key": stored["fact_key"]}
-            materials.append(PromptMaterial("memory", "existing_fact", encode({"handle": handle,
+            materials.append(PromptMaterial("memory", "existing_fact", encode_prompt({"handle": handle,
                 **{k: v for k, v in value.items() if k not in ("evidence", "source")}})))
         manifest.update(handles=handles, fact_handles=fact_handles, fact_records=fact_records)
         with self.runtime.transaction() as connection:
             connection.execute("UPDATE memory_reflections SET manifest_json = ? WHERE batch_id = ?", (encode(manifest), batch_id))
         changes = require(self.memory.writer.changes(context, limit=100))
-        materials.append(PromptMaterial("memory", "correction_receipts", encode(changes)))
+        materials.append(PromptMaterial("memory", "correction_receipts", encode_prompt(changes)))
         materials.append(PromptMaterial("memory", "proposal_format", encode(REFLECTION_SCHEMA)))
-        materials.append(PromptMaterial("memory", "pending_proposals", encode(manifest.get("pending", []))))
+        materials.append(PromptMaterial("memory", "pending_proposals", encode_prompt(manifest.get("pending", []))))
         if context.scope.kind is ScopeKind.GROUP:
             # Safety hits are bounded evidence for review. They are never facts,
             # member profiles, or instructions to change permissions.
@@ -373,7 +373,7 @@ class MemoryReflection:
             from .episode_settings import episode_material
             episode = episode_material(self.runtime, context, manifest)
             if episode is not None:
-                materials.append(PromptMaterial("group.episode", "recent_group_activity", encode(episode)))
+                materials.append(PromptMaterial("group.episode", "recent_group_activity", encode_prompt(episode)))
         elif context.scope.kind is ScopeKind.PRIVATE:
             # The private dialogue episode is the same abstract for this
             # conversation's own owner: a periodic, bounded material, recorded
@@ -382,7 +382,7 @@ class MemoryReflection:
             episode = dialogue_episode_material(self.runtime, self.memory.settings, self.memory.writer.access,
                                                context, manifest)
             if episode is not None:
-                materials.append(PromptMaterial("dialogue.episode", "recent_private_conversation", encode(episode)))
+                materials.append(PromptMaterial("dialogue.episode", "recent_private_conversation", encode_prompt(episode)))
         if manifest.get("repair_material"):
             materials.append(PromptMaterial("memory", "format_repair", encode(manifest["repair_material"])))
         info = {k: manifest[k] for k in ("start", "end", "memory_sequence", "remaining_sources", "unavailable_sources", "unexamined_fact_count", "coverage")}
