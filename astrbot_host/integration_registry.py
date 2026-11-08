@@ -14,7 +14,8 @@ from companion_v2.product import CORE_COMPONENTS, PRODUCT_DISPLAY_NAME, PRODUCT_
 from companion_v2.capabilities.models import CapabilityDesiredState
 from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
-from companion_v2.adapters.astrbot.memory_providers import ExternalMemoryProviderRegistry, PROVIDER_API_VERSION
+from companion_v2.adapters.astrbot.memory_providers import (
+    ExternalMemoryProviderRegistry, PROVIDER_API_VERSION, memory_provider_registry)
 from companion_v2.diagnostics.readonly_status import read_p6_readonly_status
 from .memory_page_api import MemoryPageAPI
 from .integration_catalog import BUNDLED_EXTENSIONS, EXTERNAL_PROVIDERS
@@ -235,8 +236,23 @@ class UnifiedCompanionExtensionAPI:
         from .native_extensions.reality.host_delivery import RealityHostDelivery
         self._reality_context = RealityHostContext(controller, self._mobile_together)
         self._reality_delivery = RealityHostDelivery(self._reality_context)
-        self._memory_providers = ExternalMemoryProviderRegistry(controller.context,
-            host_active=lambda: not getattr(controller, "_terminated", False))
+        # 注册表按宿主 context 共享：native 模块的懒加载入口等也会构造 facade；
+        # 若每个 facade 自建注册表，后建者会顶掉 context 上的引用，使 Star 公开
+        # 入口的注册永远落在被 fencing 的旧表上（第三方注册必然失败）。
+        self._memory_providers = self._memory_provider_registry()
+
+    def _memory_provider_registry(self):
+        """Resolve the context-shared registry, creating it on first use.
+
+        The registry lives on the AstrBot context so every facade on this host
+        (the Star's public extension_api and lazily built native-module facades)
+        registers into the same table; the registry's own replacement fencing
+        keeps stale hosts out."""
+        registry = memory_provider_registry(self.controller.context)
+        if registry is None or getattr(registry, "_closed", False):
+            registry = ExternalMemoryProviderRegistry(self.controller.context,
+                host_active=lambda: not getattr(self.controller, "_terminated", False))
+        return registry
 
     def register_memory_provider(self, provider_id, *, plugin, read=None, write=None, summary=None,
                                  display_name="", priority=0, handles_model_memory=False,
@@ -244,18 +260,21 @@ class UnifiedCompanionExtensionAPI:
         """Register callbacks owned by a live Star; return an opaque removal token."""
         if getattr(self.controller, "_terminated", False):
             raise ValueError("memory provider host is stopped")
-        return self._memory_providers.register(provider_id, plugin=plugin, read=read, write=write,
-            summary=summary, display_name=display_name, priority=priority,
+        return self._memory_provider_registry().register(provider_id, plugin=plugin, read=read,
+            write=write, summary=summary, display_name=display_name, priority=priority,
             handles_model_memory=handles_model_memory, is_active=is_active, timeout_seconds=timeout_seconds)
 
     def unregister_memory_provider(self, registration_id):
-        return self._memory_providers.unregister(registration_id)
+        return self._memory_provider_registry().unregister(registration_id)
 
     def list_memory_providers(self):
-        return self._memory_providers.snapshot()
+        return self._memory_provider_registry().snapshot()
 
     def close_memory_providers(self):
-        self._memory_providers.close()
+        # 只关闭当前共享表；不要经由 _memory_provider_registry() 新建一张再关。
+        registry = memory_provider_registry(self.controller.context)
+        if registry is not None:
+            registry.close()
 
     async def generate_reality_touch_text(self, prompt, **kwargs):
         return await self._reality_context.generate(prompt, **kwargs)
@@ -316,7 +335,7 @@ class UnifiedCompanionExtensionAPI:
         return self._reality_context.cron()
 
     async def delete_reality_touch_cron_job(self, job_id):
-        return await self._reality_context.delete_job(job_id)
+        return await self._reality_delivery.delete_job(job_id)
 
     async def synthesize_realtime_voice(self, text, **kwargs):
         return await self._reality_context.synthesize(text, **kwargs)
