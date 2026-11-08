@@ -1,5 +1,28 @@
 # 更新日志
 
+## 7.1.7 - 2026-11-08
+
+### 记忆画板联动
+
+- `MemoryPageAPI.export_snapshot()` 不再固定返回空快照：读取 `calendar_records` 投影 `plan.items`（按 `schedule.anchor` 的本地时区取时间），读取 `role_state_records` 投影 `daily_state`，读取 `role_journals` 投影 `diaries`；`available_dates` 合并日程与日记日期并按契约降序返回（#603）。
+- 用运行档真实库验证：2026-10-26 / 2026-11-08 各返回 2 条日程，快照通过记忆插件的 `validate_memory_page_snapshot`。
+
+### 主动联系
+
+- 修复 Burst 把未投递候选的 `created_at` 当作 `delivered_at`：`last_contact()` 不再用创建时间冒充投递时间，`burst_slot()` / `validate_burst()` 都要求真实投递记录，未投递候选不会再触发后续 Burst 模型调用（#601、#605）。
+- 新增 3 项回归用例覆盖未投递候选。
+
+### 提示材料体积
+
+- 新增 `encode_prompt()`：提示材料保留原始中文（`ensure_ascii=False`），持久化记录、digest 与字节比较继续使用 ASCII-only 的 `encode()`，不改变既有哈希与幂等语义（#609）。
+- 反思、日程计划、议程工具结果、表达回查/语义/样本改用新编码；中文样本实测提示材料长度约降至原来的 1/5.9。
+
+### 修复与测试
+
+- 宿主尚未初始化（`runtime=None`）时防骚扰守卫直接放行，不再把启动路径变成 `AttributeError`（#604）。
+- 群号规范校验：十进制群号必须无前导零，QQ 官方 openid 仍按不透明字符串接受（#604）。
+- 全部功能页测试改为当前表格契约，目录导航静态预览首页链接断言改为 `./#life`（#604）。
+
 ## 7.1.6 - 2026-11-08
 
 - 修复表情/表情包被当成「无法读取的媒体」：群里任何一条带 QQ 表情的消息都会让整轮捕获失败（`host_group_media_unsupported`），插件退回 AstrBot 核心、丢掉 V2 的分段/语音/Laya；私聊核心回复则得到空文本，模型只能当没说话。现在 `Face`/`Mface` 折成有界的 `[表情]` 并算作成员的一条消息，贴纸图片（`sub_type=1` 或表情摘要）折成 `[表情包]`；当轮感知另附 `emoji_expression` 指引：按情绪回应，不要问「你发了什么」、不要要求对方改用文字。补 `tests/test_group_face_capture.py` 6 项。
