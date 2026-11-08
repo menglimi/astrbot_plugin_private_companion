@@ -42,7 +42,10 @@ class TelegramVoiceRecord(Record):
 
     def __init__(self, file, *, path, text=None):
         super().__init__(file=file, text=text)
-        self._telegram_voice_path = path
+        # AstrBot 4.29+ components are pydantic models; bypass validation for
+        # this plugin-private attribute so the subclass works on both the old
+        # plain classes and the new pydantic ones.
+        object.__setattr__(self, "_telegram_voice_path", path)
 
     async def convert_to_file_path(self):
         return self._telegram_voice_path
