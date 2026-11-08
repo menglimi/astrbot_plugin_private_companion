@@ -92,7 +92,11 @@ class SelfReviewManagement:
         try:
             descriptions = self.evidence.describe_handles(handles, opened_at, closed_at, context, at)
         except TaskError as error:
-            raise TaskError("self_review_evidence_changed", error.reason) from None
+            # ``TaskError`` carries the stable code and the human reason in the
+            # exception message; there is no ``reason`` attribute. Reaching for one
+            # raised ``AttributeError`` out of the list, so the whole bucket became
+            # an HTTP 500 instead of one row the page can explain and reject.
+            raise TaskError("self_review_evidence_changed", str(error)) from None
         return run, handles, descriptions
 
     def _cursor(self, value):

@@ -1,5 +1,6 @@
 """Authenticated commands for the pinned profile's role growth records."""
 
+import asyncio
 import json
 from datetime import datetime
 
@@ -78,9 +79,16 @@ class GrowthWebAPI:
                 elif self_review_request:
                     manager = SelfReviewManagement(session.application)
                     method = method.removeprefix("self_review_")
-                result = getattr(manager, method)(operator=operator, context=session.profile.target, **arguments)
+                # These managers read SQLite synchronously on the calling thread.
+                # Leaving them here ran the whole page read on the event loop, so a
+                # slow bucket stalled every other request in the process instead of
+                # only this one; the reply routes already read through a thread for
+                # the same reason.
+                result = await asyncio.to_thread(getattr(manager, method), operator=operator,
+                    context=session.profile.target, **arguments)
                 if result.is_success and method == "list" and not self_review_request:
-                    settings = access.read(operator=operator, context=session.profile.target)
+                    settings = await asyncio.to_thread(access.read, operator=operator,
+                        context=session.profile.target)
                     if not settings.is_success:
                         return outcome_response(settings)
                     result.unwrap()["access"] = settings.unwrap()
@@ -88,7 +96,8 @@ class GrowthWebAPI:
                     service = getattr(session.application, "self_review", None)
                     if service is not None:
                         try:
-                            result.unwrap()["status"] = service.status(session.profile.target)
+                            result.unwrap()["status"] = await asyncio.to_thread(
+                                service.status, session.profile.target)
                         except (TaskError, ValueError, TypeError):
                             pass
                 response = outcome_response(result)

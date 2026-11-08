@@ -176,6 +176,12 @@ class ExpressionSampleCatalog:
             event = inbound_event(row)
             rows.append({"input_sequence": row["input_sequence"], "event_key": event.scoped_key,
                          "event_json": encode(event), "context_json": row["context_json"],
+                         # Carried so a caller that only wants a few named samples can
+                         # skip the ones it cannot be looking for. Re-reading one
+                         # observation costs several source checks, and the review
+                         # page asked for every message in the window to match a
+                         # handful of handles.
+                         "sample_handle": self.input_handle(event),
                          "native_observation": row})
         rows.sort(key=lambda row: (json.loads(row["event_json"])["received_at"], row["input_sequence"]), reverse=True)
         return tuple(rows[:limit])
@@ -364,6 +370,14 @@ class ExpressionSampleCatalog:
                         descriptions[sample.handle] = sample.text
                         known.discard(sample.handle)
                 for row in self._input_rows(context, opened_at, closed_at, limit=512):
+                    # ``sample_handle`` is the identifier this row would resolve to,
+                    # computed without re-reading the message behind it. A row that
+                    # cannot be one of the requested samples is skipped instead of
+                    # paying a source recheck per message in the window. Legacy rows
+                    # carry no identifier and keep the exact old path.
+                    reported = row["sample_handle"] if "sample_handle" in row.keys() else None
+                    if reported is not None and reported not in known:
+                        continue
                     try:
                         event, text = self._input_text(row, context, at, durable=durable)
                     except TaskError:
@@ -372,6 +386,8 @@ class ExpressionSampleCatalog:
                     if handle in known:
                         descriptions[handle] = text
                         known.discard(handle)
+                    if not known:
+                        break
                 if known:
                     raise TaskError("expression_sample_changed", "original conversation samples are no longer available")
                 return [descriptions[handle] for handle in requested]
