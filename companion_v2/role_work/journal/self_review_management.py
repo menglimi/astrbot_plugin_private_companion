@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
+from logging import getLogger
 
 from companion_v2.execution.models import TaskError, digest, stamp
 from companion_v2.execution.service import outcome
 
 from ..growth.management import RoleGrowthManagement
+
+
+logger = getLogger(__name__)
 
 
 # A page cursor names the ``(created_at, item_id)`` of the last row of the page.
@@ -29,6 +33,23 @@ RETAINED_AT_LEAST = timedelta(days=300)
 
 def cursor_text(row) -> str:
     return row["created_at"] + CURSOR_SEPARATOR + row["item_id"]
+
+
+def retainable(expires_at, at) -> bool:
+    """Whether one accepted row may still be kept long-term from this page.
+
+    ``expires_at`` is compared as text and parsed, so a stored value that no longer
+    parses is answered with "no action" rather than failing the page that renders
+    every other row.
+    """
+
+    if expires_at is None:
+        return False
+    try:
+        current = datetime.fromisoformat(expires_at)
+    except (TypeError, ValueError):
+        return False
+    return expires_at > stamp(at) and current < at + RETAINED_AT_LEAST
 
 
 class SelfReviewManagement:
@@ -92,7 +113,10 @@ class SelfReviewManagement:
         try:
             descriptions = self.evidence.describe_handles(handles, opened_at, closed_at, context, at)
         except TaskError as error:
-            raise TaskError("self_review_evidence_changed", error.reason) from None
+            # ``TaskError`` keeps its reason in ``args[0]``; it has no ``.reason``
+            # attribute, so reading one turned this degradation into an
+            # ``AttributeError`` that escaped both ``list`` and the route layer.
+            raise TaskError("self_review_evidence_changed", str(error)) from None
         return run, handles, descriptions
 
     def _cursor(self, value):
@@ -157,14 +181,18 @@ class SelfReviewManagement:
                     run_summary = run["summary"]
                 except TaskError as error:
                     unavailable = error.code
+                except Exception:
+                    # A row that cannot be projected is this row's problem, not the
+                    # page's: an unexpected failure here must not turn the whole
+                    # bucket into a failed read that hides every other row.
+                    logger.exception("self-review item projection failed: %s", row["item_id"])
+                    unavailable = "self_review_evidence_changed"
                 if expires_at is not None and expires_at <= stamp(at):
                     expired += 1
                 if row["state"] != "pending":
-                    actions = []
-                    if (row["state"] == "accepted" and unavailable is None and expires_at is not None
-                            and expires_at > stamp(at)
-                            and datetime.fromisoformat(expires_at) < at + RETAINED_AT_LEAST):
-                        actions = ["retain"]
+                    keepable = (row["state"] == "accepted" and unavailable is None
+                                and retainable(expires_at, at))
+                    actions = ["retain"] if keepable else []
                 elif (unavailable is not None or expires_at is None or expires_at <= stamp(at)
                       or row["kind"] != "ask_user"):
                     actions = ["reject"]
