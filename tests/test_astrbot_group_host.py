@@ -66,6 +66,14 @@ class GroupHostTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(current['persona_id'], 'original')
         self.assertEqual(current['account_id'], context.scope.account_id)
 
+    def test_group_role_reuses_its_private_role_config_route(self):
+        self.controller = self.make_controller(group_config())
+        inventory = self.controller.web_api.target_inventory()
+        group = next(target for target in inventory
+                     if target["scope_kind"] == "group" and target["bot_id"] == "bot-a")
+        role = next(item for item in group["roles"] if item["role_id"] == "role-a")
+        self.assertRegex(role["config_api"], r"/targets/first/roles/[0-9a-f]+/config$")
+
     async def test_group_only_installation_and_configuration_conflicts(self):
         config = group_config(targets=[], accounts=[
             dict(platform_id="qq-main", account_id="100", bot_id="bot-a"),
