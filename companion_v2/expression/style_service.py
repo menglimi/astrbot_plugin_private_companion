@@ -51,6 +51,7 @@ import json
 from logging import getLogger
 from time import perf_counter
 
+from companion_v2.execution.models import encode_prompt
 from companion_v2.conversation.foreground import (BackgroundPromptTrigger, PromptMaterial, PromptRequest,
     SealedForegroundContext)
 from companion_v2.conversation.scope_family import scope_family_keys
@@ -1234,7 +1235,7 @@ class ExpressionStyleService:
                     "existing_rules": rules, "output_schema": learning.schema(limit)}
         return PromptRequest(BackgroundPromptTrigger(job["request_key"], context.actor.principal,
             context.scope, job["at"]), job["instruction"], SealedForegroundContext(
-                (PromptMaterial(OWNER, "role_expression_samples", encode(material)),), (), ()),
+                (PromptMaterial(OWNER, "role_expression_samples", encode_prompt(material)),), (), ()),
             learning_instruction(job["policy"].learning_mode, limit),
             context.role_binding, output_format="role_expression_learning")
 
