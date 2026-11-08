@@ -1,5 +1,10 @@
 """Optional native conversation observations, independent of V2 reply batches."""
 
+# The two phases in which an admitted turn is still using its window. They appear
+# as literals below and in the query that reads them, because SQLite only applies
+# a partial index when it can prove the statement implies the index predicate, and
+# a bound parameter cannot be proven. Keep the three spellings identical.
+OPEN_TURN_STATES = ("prepared", "running")
 
 TABLE = "conversation_native_observations"
 STATEMENTS = (
@@ -24,6 +29,28 @@ STATEMENTS = (
         phase_at TEXT NOT NULL, last_sent_at TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS conversation_native_turn_context_idx ON conversation_native_turns(context_key, observed_at DESC, turn_id)",
+    # Latest-turn-per-context probes must prove no newer row exists for the same
+    # context, so their cost is the whole table unless the caller can cut the
+    # candidate set first. In-flight turns are the per-pass case (presence asks
+    # which private windows are still typing on every drive pass), so the open
+    # rows get their own index and a finished turn is never read for that answer.
+    # The leading expression is the audience kind: callers that also narrow to one
+    # scope kind are served by the same entry, which is why a plain kind index is
+    # deliberately absent — it would win the planner and lose the state filter.
+    "CREATE INDEX IF NOT EXISTS conversation_native_open_turn_idx ON conversation_native_turns("
+    "json_extract(context_json, '$.audience.scope.kind'), context_key, observed_at) "
+    "WHERE generation_state IN ('prepared', 'running')",
+    # ``latest_scope`` probes seven scope fields and then orders by observed_at.
+    # Without this index the probe is a full table scan per call, and presence
+    # calls it once per active window on every pass.
+    "CREATE INDEX IF NOT EXISTS conversation_native_scope_idx ON conversation_native_turns("
+    "json_extract(context_json, '$.audience.scope.installation_id'), "
+    "json_extract(context_json, '$.audience.scope.platform'), "
+    "json_extract(context_json, '$.audience.scope.kind'), "
+    "json_extract(context_json, '$.audience.scope.native_scope_id'), "
+    "json_extract(context_json, '$.audience.scope.bot_id'), "
+    "json_extract(context_json, '$.audience.scope.account_id'), "
+    "json_extract(context_json, '$.audience.scope.session_id'), observed_at DESC)",
     """CREATE TABLE IF NOT EXISTS conversation_native_sends (
         observation_id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, sent_at TEXT NOT NULL
     )""",
