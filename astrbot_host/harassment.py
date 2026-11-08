@@ -59,7 +59,10 @@ class HarassmentGuard:
         """Return {"blocked": bool, "action": str, "reasons": [...], ...} for one message."""
         now = time() if now is None else float(now)
         scope, user_id = str(scope or ""), str(user_id or "")
-        if not scope or not user_id:
+        if not scope or not user_id or runtime is None:
+            # Before the host runtime exists (early message or a host that never
+            # initialized) there is no blacklist to read; the guard must not turn
+            # a startup path into an exception.
             return {"blocked": False}
         active = harassment.entry_for(runtime, scope, user_id, at=now)
         if active is not None:
