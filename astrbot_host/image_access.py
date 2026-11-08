@@ -104,3 +104,50 @@ def _ensure_invocation_grant(runtime, context, observed_at):
         scope=scope, capability="extension.tool.invoke", tier=AuthorizationTier.STANDARD,
         valid_from=observed_at, expires_at=latest.expires_at if latest is not None else None,
         expected_revision=identities.revision)
+
+
+def provision_private_image_consent(runtime: StorageRuntime, context: TaskContext, *,
+                                    observed_at: datetime) -> bool:
+    """Last-resort consent provisioning for the current private conversation.
+
+    ``ensure_image_access`` normally does this before the catalogue is built, but
+    a conversation switch can still leave the exact-scope rows absent. This
+    fallback only creates rows that are missing; an explicit revocation is never
+    overwritten, and group windows keep their own role/consent gate.
+    """
+    if getattr(getattr(context, "scope", None), "kind", None) is not ScopeKind.PRIVATE:
+        return False
+    from companion_v2.capabilities.models import CapabilityAuthorizationState, CapabilityDesiredState
+    try:
+        repository = CapabilityRepository(runtime)
+        installed = repository.installation(extension_id=IMAGE_EXTENSION)
+        if not installed.is_success:
+            return False
+        if installed.unwrap().desired_state is not CapabilityDesiredState.ACTIVE:
+            return False
+        role, scope, subject = context.role_binding.role, context.scope, context.actor.subject
+        projection = repository.projection(extension_id=IMAGE_EXTENSION, role=role, scope=scope)
+        if not projection.is_success:
+            return False
+        selection = projection.unwrap().role_selection
+        if selection is not None and not selection.enabled:
+            return False
+        created = False
+        with runtime.transaction():
+            for capability in IMAGE_CAPABILITIES:
+                consent = repository.consent(extension_id=IMAGE_EXTENSION, capability_id=capability,
+                                             subject=subject, scope=scope)
+                if consent.is_success or consent.failure.code != "capability_consent_missing":
+                    continue
+                result = repository.set_authorization(
+                    extension_id=IMAGE_EXTENSION, capability_id=capability, subject=subject, scope=scope,
+                    state=CapabilityAuthorizationState.ACTIVE, expected_revision=0, observed_at=observed_at)
+                if result.is_success:
+                    created = True
+                else:
+                    logger.warning("[CompanionV2] 生图会话授权补齐失败 capability=%s code=%s",
+                                   capability, result.failure.code)
+        return created
+    except Exception as error:
+        logger.warning("[CompanionV2] 生图会话授权补齐异常 error_type=%s", type(error).__name__)
+        return False
