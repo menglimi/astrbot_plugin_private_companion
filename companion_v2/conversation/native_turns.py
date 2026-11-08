@@ -8,7 +8,7 @@ from datetime import datetime
 import json
 
 from companion_v2.execution.models import TaskContext, TaskError, digest, encode, stamp
-from companion_v2.storage.native_conversation_schema import STATEMENTS
+from companion_v2.storage.native_conversation_schema import OPEN_TURN_STATES, STATEMENTS
 
 from .messages import source_from_document
 from .models import InboundConversationEvent
@@ -70,15 +70,37 @@ def latest_input(runtime, context_key):
         ORDER BY observed_at DESC, rowid DESC LIMIT 1""", (context_key,)))
 
 
-def context_rows(runtime, *, kind=None):
+def context_rows(runtime, *, kind=None, open_only=False):
+    """The newest turn of every context, optionally only while it is still open.
+
+    ``open_only`` exists because a caller that acts only on in-flight turns must
+    not pay for a latest-per-context answer over the whole table: restricting the
+    outer scan to the open phases leaves a handful of rows, and
+    ``conversation_native_open_turn_idx`` serves that filter without reading a
+    finished turn. The predicate is the same question in both spellings — a row is
+    the newest of its context exactly when no newer row shares its ``context_key``
+    — so filtering first and filtering after the probe return the same turns.
+
+    The phases are written as literals on purpose: SQLite only applies a partial
+    index when the statement provably implies the index predicate, and a bound
+    parameter cannot be proven. ``OPEN_TURN_STATES`` is the single source for both
+    spellings.
+    """
     if not turns_available(runtime):
         return ()
-    where = "WHERE json_extract(n.context_json, '$.audience.scope.kind') = ? AND " if kind else "WHERE "
+    where = "WHERE "
+    parameters: tuple[object, ...] = ()
+    if open_only:
+        phases = ", ".join(f"'{state}'" for state in OPEN_TURN_STATES)
+        where += f"n.generation_state IN ({phases}) AND "
+    if kind:
+        where += "json_extract(n.context_json, '$.audience.scope.kind') = ? AND "
+        parameters = (kind,)
     rows = runtime.read_all("SELECT n.* FROM conversation_native_turns n " + where + """
         NOT EXISTS (SELECT 1 FROM conversation_native_turns newer
             WHERE newer.context_key = n.context_key
             AND (newer.observed_at > n.observed_at OR newer.observed_at = n.observed_at AND newer.rowid > n.rowid))
-        ORDER BY n.observed_at DESC, n.rowid DESC""", (kind,) if kind else ())
+        ORDER BY n.observed_at DESC, n.rowid DESC""", parameters)
     return tuple(project(row) for row in rows)
 
 
@@ -167,5 +189,5 @@ class NativeConversationTurns:
     def latest(self, context_key):
         return latest(self.runtime, context_key)
 
-    def contexts(self, *, kind=None):
-        return context_rows(self.runtime, kind=kind)
+    def contexts(self, *, kind=None, open_only=False):
+        return context_rows(self.runtime, kind=kind, open_only=open_only)
