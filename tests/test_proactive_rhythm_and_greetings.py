@@ -322,3 +322,46 @@ class RhythmSchedulingTests(ContactScheduleFixture, unittest.IsolatedAsyncioTest
         rest_gate.save(app.runtime, context, rest_gate.mark_awake(
             rest_gate.document(app.runtime, context), now=now, settings=settings, sleep=sleep.activity_id))
         self.assertIsNone(app.contact_schedule._sleep_hold(context, {}, now))
+
+class RhythmUndeliveredCandidateTests(unittest.TestCase):
+    """A sealed candidate without a delivered receipt must never open a burst."""
+
+    class Runtime:
+        def read_one(self, statement, parameters):
+            return {"contact_id": "contact-1",
+                    "created_at": "2026-09-21T00:00:00+00:00",
+                    "record_json": json.dumps({"purpose": "chat"}),
+                    "delivered_at": None}
+
+    def policy(self):
+        return stub_preferences(enable_proactive_burst=True, proactive_burst_max_messages=2,
+                                proactive_burst_gap_min_seconds=60, proactive_burst_gap_max_seconds=60,
+                                enabled=True, quiet_enabled=False, pause_until=None,
+                                quiet_start="00:00", quiet_end="00:00",
+                                **{"chat.enabled": True, "chat.pause_until": None})
+
+    def test_undelivered_candidate_keeps_no_delivery_time(self):
+        instance = rhythm.ContactRhythm(self.Runtime())
+        last = instance.last_contact(StubContext())
+        self.assertIsNotNone(last)
+        self.assertIsNone(last["delivered_at"])
+
+    def test_undelivered_candidate_does_not_open_a_burst_slot(self):
+        instance = rhythm.ContactRhythm(self.Runtime())
+        last = instance.last_contact(StubContext())
+        at = datetime(2026, 9, 21, 0, 0, 30, tzinfo=timezone.utc)
+        self.assertIsNone(instance.burst_slot(
+            StubContext(), self.policy(), at,
+            interaction={"contacts_since_last_input": 1, "unresolved_contacts": 0},
+            last_contact=last))
+
+    def test_undelivered_candidate_cannot_validate_a_burst_marker(self):
+        instance = rhythm.ContactRhythm(self.Runtime())
+        marker = {"index": 1, "limit": 2, "gap_seconds": 60,
+                  "opened_at": "2026-09-21T00:01:00+00:00",
+                  "expires_at": "2026-09-21T00:02:00+00:00",
+                  "origin_contact_id": "contact-1"}
+        at = datetime(2026, 9, 21, 0, 1, 30, tzinfo=timezone.utc)
+        self.assertFalse(instance.validate_burst(
+            StubContext(), self.policy(), marker, at,
+            interaction={"contacts_since_last_input": 1, "unresolved_contacts": 0}))
