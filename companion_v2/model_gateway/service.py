@@ -166,6 +166,16 @@ class LocalModelGateway:
 
     async def generate(self, run: TaskRun, request: PromptRequest, *,
                        allow_ceiling_retry: bool | None = None) -> ModelCompletion:
+        """Open this task's one model session and generate its first round.
+
+        ``open_session`` records the task's single ``model_requests`` row before
+        any dispatch and never releases it, so this method may be called at most
+        once per task: a second call fails with ``model_request_already_started``
+        rather than re-dispatching an invocation whose outcome may already be
+        unknown. An owner that wants a bounded retry gets it inside the provider
+        chain (one contract fallback, one raised ceiling), never by calling
+        ``generate`` again for the same run.
+        """
         session = self.open_session(run, request)
         # open_session may replace the captured persona with the task role
         # reference. Continue with the exact request frozen into the plan so

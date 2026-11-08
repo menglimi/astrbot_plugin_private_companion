@@ -147,6 +147,46 @@ class MultiHostPokeTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(api.calls[1][1]["message"], [{"type": "text", "data": {"text": "在呢。"}}])
         self.assertEqual(len(self.native.provider.client.state.calls), 2)
 
+    async def test_model_failure_keeps_the_real_code_instead_of_the_session_sentinel(self):
+        """A failed poke reply names its real cause and is never replayed.
+
+        ``LocalModelGateway.open_session`` writes the task's single
+        ``model_requests`` row before the first dispatch and keeps it, so a second
+        ``generate`` for the same run can only raise
+        ``model_request_already_started``. Retrying there replaced
+        ``model_usage_unknown`` (provider failure ``provider_request_failed``)
+        with that sentinel and suppressed every owner warning.
+        """
+        self.configure(private="onebot_private", model_reply=True, model_probability=1.0)
+        await self.start_host()
+
+        async def model_behavior(payload, tools):
+            raise RuntimeError("provider transport failed")
+
+        self.native.provider.client.state.behavior = model_behavior
+        api = self.native.platform.client._api._wsr_api
+        with self.assertLogs(level="INFO") as captured:
+            result = (await self.controller.receive_notice(poke_notice(self.event(identifier="701")))).unwrap()
+        self.assertEqual(result["response_kind"], "preset")
+        self.assertEqual(api.calls[0][1]["message"], [{"type": "text", "data": {"text": "在呢。"}}])
+        # One dispatch only: the sentinel must never be provoked by a retry.
+        self.assertEqual(len(self.native.provider.client.state.calls), 1)
+        text = "\n".join(captured.output)
+        self.assertNotIn("model_request_already_started", text)
+        pokes_logs = [record.getMessage() for record in captured.records
+                      if record.name == "companion_v2.conversation.pokes"]
+        self.assertTrue(pokes_logs, "the poke owner must record the failed attempt")
+        self.assertTrue(any("code=model_usage_unknown" in item for item in pokes_logs), pokes_logs)
+        # The pre-existing fallback warning finally fires, with the true code.
+        self.assertIn("戳一戳模型回复未完成，使用预设短句", text)
+        self.assertIn("code=model_usage_unknown", text)
+        app = self.controller.session.application
+        rows = app.runtime.read_all("""SELECT c.state AS state, f.code AS code FROM model_calls c
+            JOIN execution_tasks t USING(task_id) LEFT JOIN model_call_failures f USING(call_id)
+            WHERE t.kind = 'conversation.poke_reply' ORDER BY c.started_at""", ())
+        self.assertEqual([(row["state"], row["code"]) for row in rows],
+                         [("unknown", "provider_request_failed")])
+
     async def test_lost_ack_during_repeated_poke_is_unknown_and_not_replayed(self):
         self.configure(private="onebot_private", back=1.0, back_times=3)
         await self.start_host()
