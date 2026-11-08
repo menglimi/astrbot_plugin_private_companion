@@ -11,6 +11,7 @@ from datetime import datetime
 import json
 from typing import Callable, Mapping
 
+from companion_v2.execution.models import encode_prompt
 from companion_v2.agenda.models import AgendaError, AgendaReceipt, AgendaTarget, MemoCursor, Schedule, encode, fingerprint, opaque
 from companion_v2.agenda.service import AgendaService, require
 from companion_v2.foundation.outcome import Outcome
@@ -219,7 +220,7 @@ class AgendaRoleSession:
                 visible.append(result)
             context = SealedForegroundContext(
                 materials=(*self.request.context.materials,
-                           PromptMaterial("agenda", "actual_operation_results", encode(visible))),
+                           PromptMaterial("agenda", "actual_operation_results", encode_prompt(visible))),
                 deferred=self.request.context.deferred, unavailable=self.request.context.unavailable,
             )
             request = replace(self.request, context=context, instruction=self.request.instruction + "\n" + CONTINUATION_INSTRUCTION)
