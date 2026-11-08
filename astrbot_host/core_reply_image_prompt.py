@@ -75,6 +75,15 @@ def core_image_tools(session, offered):
     """Keep role-disabled image tools out of this request's private ToolSet."""
     present = [item.spec.action for item in offered if item.spec.action in IMAGE_ACTIONS]
     if not present:
+        # A conversation switch can create an exact scope the normal provisioning
+        # missed. Provision only missing rows, then re-read the catalogue once;
+        # explicit revocations are still respected by the repository consent read.
+        from .image_access import provision_private_image_consent
+        if provision_private_image_consent(session.application.runtime, session.context,
+                                           observed_at=session.application.tasks.now()):
+            offered = tuple(session.catalog())
+            present = [item.spec.action for item in offered if item.spec.action in IMAGE_ACTIONS]
+    if not present:
         filtered = []
         diagnostics = getattr(getattr(session.application, "tools", None), "catalog_for_with_diagnostics", None)
         if callable(diagnostics):
