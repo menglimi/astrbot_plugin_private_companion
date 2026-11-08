@@ -562,6 +562,21 @@ class GroupParticipation:
                     raise TaskError("group_participation_changed", "the original participation choice cannot be replaced")
                 if selected is None:
                     selected = {"mode": mode, "basis": "role_choice", "call_id": row["model_call_id"]}
+            elif row["state"] == "failed" and selected is None:
+                arguments = json.loads(row["arguments_json"])
+                if arguments.get("mode") != "skip":
+                    continue
+                if row["effect"] != "none" or row["operation_id"] is not None:
+                    raise TaskError("group_participation_changed", "a failed silent choice cannot carry an effect")
+                try:
+                    result = self._proof(row, context)
+                except TaskError as error:
+                    if error.code == "group_participation_mixed":
+                        continue
+                    raise
+                if result["payload"]["mode"] == "skip":
+                    selected = {"mode": "skip", "basis": "failed_role_choice",
+                                "call_id": row["model_call_id"]}
         return selected or {"mode": "pending", "basis": "no_decision"}
 
     def decision(self, context, batch_id):
@@ -572,7 +587,7 @@ class GroupParticipation:
         final = self.runtime.read_one("SELECT call_id FROM model_rounds WHERE task_id = ? AND state = 'final' ORDER BY round_no LIMIT 1",
                                       (batch["generation_task_id"],))
         if final:
-            if selected["mode"] == "skip":
+            if selected["mode"] == "skip" and selected["basis"] != "failed_role_choice":
                 raise TaskError("group_participation_changed", "an original skip cannot contain a final reply")
             if selected["mode"] == "pending":
                 selected = {"mode": "reply", "basis": "final_reply", "call_id": final["call_id"]}

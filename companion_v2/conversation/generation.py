@@ -649,6 +649,9 @@ class LocalReplyGenerator:
                 # another owner command or a sendable manifest can be created.
                 current = self.messages.request(run)
                 if completion.draft is not None:
+                    if participation is not None and participation.finish_if_skipped(
+                            run.task.spec.context, run.task.spec.request_ref):
+                        return TaskResult("succeeded", result_ref=run.task.spec.request_ref)
                     if participation is not None:
                         participation.allow_reply(run.task.spec.context, run.task.spec.request_ref)
                     break
