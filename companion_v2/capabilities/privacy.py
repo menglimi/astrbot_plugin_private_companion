@@ -16,6 +16,17 @@ PRIVACY_ACTIONS = frozenset((
     "reality.camera.observe",
 ))
 
+# 设备控制不是隐私读取，但核心管理员在群聊里也应保留与私聊相同的现实设备
+# 权限；其他人仍会被 Reality 的 admin_only 与逐窗口授权挡住。
+CORE_GROUP_ACTIONS = frozenset((
+    "reality.device.list",
+    "reality.device.status",
+    "reality.device.inspect",
+    "reality.device.control",
+    "reality.device.action",
+    "reality.operation.lookup",
+))
+
 
 def subject_tier(runtime, subject) -> AuthorizationTier:
     """Read the subject's current access tier without mutating identity state."""
