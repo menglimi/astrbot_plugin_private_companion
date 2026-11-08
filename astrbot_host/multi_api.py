@@ -154,6 +154,15 @@ class MultiHostWebAPI:
         settings = self.controller.settings
         if settings is None:
             return []
+        # 角色级配置路由只在私聊目标上注册；群目标打开角色档案/系统提示词时，
+        # 借同一个角色同一个 Bot 的私聊路由，不能给一个永远 404 的群路径。
+        private_roles = {}
+        for candidate in settings.all_targets:
+            if isinstance(candidate, GroupTarget):
+                continue
+            for persona in settings.personas:
+                if persona.bot_id == candidate.bot_id:
+                    private_roles.setdefault((candidate.bot_id, persona.role_id), candidate.target_id)
         inventory = [{**vars(target), "scope_kind": "group" if isinstance(target, GroupTarget) else "private",
             "delivery_mode": settings.delivery_mode_for(target),
             "group_delivery_authorization": (self.controller.authority.group_delivery.status(target)
@@ -169,8 +178,12 @@ class MultiHostWebAPI:
              "state_api": (None if isinstance(target, GroupTarget) else
                            PREFIX + "/targets/" + target.target_id + "/roles/" + digest(role) + "/state"),
              "reply_api": PREFIX + "/targets/" + target.target_id + "/roles/" + digest(role) + "/reply",
-             "config_api": (None if isinstance(target, GroupTarget) else
-                            PREFIX + "/targets/" + target.target_id + "/roles/" + digest(role) + "/config"),
+             "config_api": ((PREFIX + "/targets/" + (
+                                private_roles[(target.bot_id, role)] if isinstance(target, GroupTarget)
+                                else target.target_id)
+                            + "/roles/" + digest(role) + "/config")
+                           if (not isinstance(target, GroupTarget)
+                               or (target.bot_id, role) in private_roles) else None),
              "role_config_api": None,
              "model_api": PREFIX + "/targets/" + target.target_id + "/roles/" + digest(role) + "/model",
              "perception_native_api": (None if isinstance(target, GroupTarget) else
