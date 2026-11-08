@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta
 import json
+from types import SimpleNamespace
 import unittest
 from urllib.parse import urlencode
 
@@ -20,13 +21,37 @@ from companion_v2.conversation.participation import (ACTION, CONFIG_GROUP as PAR
     group_participation_settings)
 from companion_v2.expression.configuration import GROUP_SCOPE_GROUP
 from companion_v2.foundation.refs import RoleOwnerRef, ScopeKind, ScopeRef
+from companion_v2.foundation.clock import DeterministicClock
 from tests.group_host_support import GroupFixture, group_config
 from tests.native_adapter_support import completion
 from tests.test_group_participation import command
 from tests.staging_bootstrap_support import wait_for_batch
+from tests.test_management_access import NOW
 
 
 PREFIX = "/astrbot_plugin_private_companion"
+
+
+class CapacityClockWaitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_only_capacity_wait_advances_the_injected_clock(self):
+        clock = DeterministicClock.at(NOW)
+        due_at = clock.now() + timedelta(milliseconds=250)
+        row = {"state": "generating", "reason": "capacity_wait", "due_at": due_at.isoformat(),
+               "deadline_at": (due_at + timedelta(minutes=3)).isoformat()}
+        application = SimpleNamespace(state="running", flow=SimpleNamespace(row=lambda batch: row))
+
+        def notify():
+            row["state"] = "complete"
+
+        application.notify = notify
+        session = SimpleNamespace(application=application)
+        await wait_for_batch(session, "batch", clock=clock, timeout_seconds=0.1)
+        self.assertEqual(clock.now(), due_at)
+
+        row.update(state="collecting", reason="fragment_wait")
+        with self.assertRaises(TimeoutError):
+            await wait_for_batch(session, "batch", clock=clock, timeout_seconds=0.02)
+        self.assertEqual(clock.now(), due_at)
 
 
 class GroupReplyHostAPITests(GroupFixture, unittest.IsolatedAsyncioTestCase):
@@ -71,14 +96,15 @@ class GroupReplyHostAPITests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         return await self.request("/configure", target=target, role=role, query=query,
             data={"operation_key": key, "edit_token": status["data"]["edit_token"], "changes": changes})
 
-    async def receive_group(self, *, target="group-a", unique=False, sender="200"):
+    async def receive_group(self, *, target="group-a", unique=False, sender="200", drive_capacity_wait=False):
         self.sequence += 1
         event = self.group_event(target=target, unique=unique, sender=sender,
                                  identifier="reply-settings-" + str(self.sequence))
         result = await self.controller.receive_claimed(event)
         self.assertTrue(result.is_success, result.failure)
         batch = result.unwrap()
-        await wait_for_batch(self.controller.session, batch)
+        await wait_for_batch(self.controller.session, batch,
+                             clock=self.clock if drive_capacity_wait else None)
         return batch
 
     def captured(self, batch):
@@ -415,13 +441,13 @@ class GroupReplyHostAPITests(GroupFixture, unittest.IsolatedAsyncioTestCase):
     async def test_participation_diagnostics_limit_modes_and_exact_target_isolation(self):
         await self.start_host()
         self.assertEqual((await self.save({"group_wakeup_log_limit": 10}))["status"], "ok")
-        replied = [await self.receive_group() for _ in range(11)]
+        replied = [await self.receive_group(drive_capacity_wait=True) for _ in range(11)]
 
         async def skip(payload, tools):
             return completion(tools=[command(ACTION, {"mode": "skip", "reason": "private diagnostic reason"})])
 
         self.native.provider.client.state.behavior = skip
-        skipped = await self.receive_group()
+        skipped = await self.receive_group(drive_capacity_wait=True)
         pending = (await self.controller.receive_claimed(self.group_event(identifier="pending-fragment", text="瓦"))).unwrap()
         status = (await self.request())["data"]
         self.assertEqual(status["participation_limit"], 10)
@@ -439,7 +465,7 @@ class GroupReplyHostAPITests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.request(role="role-b"))["data"]["participation_recent"], [])
         self.clock.advance(timedelta(seconds=15))
         self.controller.session.application.notify()
-        await wait_for_batch(self.controller.session, pending)
+        await wait_for_batch(self.controller.session, pending, clock=self.clock)
 
     async def test_style_list_without_a_group_session_is_an_empty_page_but_commands_still_fail(self):
         await self.start_host()
