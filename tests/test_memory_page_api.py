@@ -89,5 +89,55 @@ class MemoryPageAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["selected_date"], "2026-10-28")
 
 
+class _FakeRuntime:
+    def __init__(self, records, states, journals=()):
+        self.records = records
+        self.states = states
+        self.journals = list(journals)
+
+    def read_all(self, statement, parameters):
+        if "role_state_records" in statement:
+            return self.states
+        if "role_journals" in statement:
+            return self.journals if "DISTINCT" not in statement else self.journals
+        return self.records
+
+
+class MemoryPageSnapshotDataTests(unittest.IsolatedAsyncioTestCase):
+    async def test_calendar_plans_and_state_are_projected_into_the_snapshot(self):
+        from types import SimpleNamespace
+        record = {
+            "kind": "role_plan", "state": "accepted", "title": "画一幅小画",
+            "detail": "找一张空白画纸，慢慢画。",
+            "planning": {"slot": "daily:Asia/Shanghai:2026-10-28:settings:abc"},
+            "schedule": {"anchor": "2026-10-28T02:30:00+00:00", "timezone_name": "Asia/Shanghai"},
+        }
+        state = {"values": {"energy": 77, "sleep": "已休息", "presence": "休息中",
+                            "mood": {"baseline": 6}}}
+        runtime = _FakeRuntime(
+            [{"record_json": json.dumps(record, ensure_ascii=False)}],
+            [{"record_json": json.dumps(state, ensure_ascii=False)}],
+            [{"content_json": json.dumps({"body": "今天画了一幅画。", "summary": "画画",
+                                          "afterglow": "心里很安静。"}, ensure_ascii=False),
+              "kind": "diary", "local_date": "2026-10-28"}])
+        adapter = MemoryPageAPI(SimpleNamespace(runtime=runtime))
+        snapshot = await adapter.export_snapshot(
+            target_plugin_id="astrbot_plugin_memory_companion", selected_date="2026-10-28")
+        self.assertEqual(snapshot["available_dates"], ["2026-10-28"])
+        plan = snapshot["day"]["plan"]
+        self.assertEqual((plan["date"], plan["source"]), ("2026-10-28", "history"))
+        self.assertEqual(plan["items"][0]["index"], 0)
+        self.assertEqual(plan["items"][0]["time"], "10:30")
+        self.assertEqual(plan["items"][0]["activity"], "画一幅小画")
+        self.assertEqual(snapshot["day"]["daily_state"]["energy"], 77)
+        self.assertEqual(snapshot["day"]["daily_state"]["sleep"], "已休息")
+        self.assertTrue(snapshot["features"]["daily_plan_enabled"])
+        diaries = snapshot["day"]["diaries"]
+        self.assertEqual(len(diaries), 1)
+        self.assertEqual(diaries[0]["date"], "2026-10-28")
+        self.assertEqual(diaries[0]["summary"], "画画")
+        self.assertEqual(diaries[0]["share_seed"], "心里很安静。")
+
+
 if __name__ == "__main__":
     unittest.main()
