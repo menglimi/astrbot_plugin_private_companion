@@ -47,6 +47,12 @@ def parse_group_targets(values):
             HostAccount(target.platform_id, target.account_id, target.bot_id)
             if target.group_id != "*":
                 route_id(target.group_id)
+                # OneBot 群号是十进制数字，必须去掉前导零；QQ 官方 openid 是
+                # 不透明字符串，交给 route_id 校验即可。
+                if (target.group_id.isdecimal()
+                        and (not target.group_id.isascii()
+                             or str(int(target.group_id)) != target.group_id)):
+                    raise ValueError()
             if not PROFILE_PATTERN.fullmatch(target.target_id) or target.route_key in routes:
                 raise ValueError()
         except ValueError:

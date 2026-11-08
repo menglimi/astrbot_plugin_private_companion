@@ -67,11 +67,12 @@ class GroupHostTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(current['account_id'], context.scope.account_id)
 
     async def test_group_only_installation_and_configuration_conflicts(self):
-        config = group_config(targets=[])
+        config = group_config(targets=[], accounts=[
+            dict(platform_id="qq-main", account_id="100", bot_id="bot-a"),
+            dict(platform_id="qq-second", account_id="101", bot_id="bot-b"),
+        ])
         self.controller = self.make_controller(config)
         self.assertEqual(self.controller.settings.targets, ())
-        await self.start_host()
-        await self.accept_group()
         for change in (lambda c: c["group_targets"][0].update(target_id="first"),
                        lambda c: c["group_targets"][0].update(bot_id="different"),
                        lambda c: c["group_targets"][0].update(group_id="0300"),

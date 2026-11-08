@@ -65,5 +65,5 @@ test("catalog leaves a visible recovery path when token refresh fails", async ()
 test("catalog static preview keeps its direct home link", async () => {
   const page = openCatalog(undefined, "");
   assert.equal(await page.click("backHome"), false);
-  assert.equal(page.node("backHome").href, "index.html#life");
+  assert.equal(page.node("backHome").href, "./#life");
 });
