@@ -161,6 +161,24 @@ def window_active(windows, *, minutes):
                for candidate in (minutes, minutes + 24 * 60))
 
 
+def window_wake_at(settings, *, now):
+    """End of the configured rest window containing ``now``, or ``None``.
+
+    Only used to keep the rest-reply gate useful for windows that already run
+    role sleep; a role that has no sleep receipt can still rest through the
+    explicit window without pretending an execution receipt exists.
+    """
+    windows = settings.windows()
+    if not windows:
+        return None
+    minutes = local_minutes(now, settings.sleep_timezone)
+    for start, end in windows:
+        for candidate in (minutes, minutes + 24 * 60):
+            if start <= candidate < end:
+                return now + timedelta(minutes=end - candidate)
+    return None
+
+
 def local_minutes(now, timezone):
     """Local minute of day for the configured sleep timezone; bad zones fall back."""
     try:
@@ -214,11 +232,14 @@ class Settings:
     enable_rest_backlog_reply: bool
     rest_backlog_max_messages: int
     sleep_timezone: str = DEFAULT_TIMEZONE
+    sleep_enabled: bool = False
 
     def __post_init__(self):
         for name in BOOLEAN_FIELDS:
             if type(getattr(self, name)) is not bool:
                 raise ConfigurationError("rest_gate_settings_invalid", f"{name} must be a boolean")
+        if type(self.sleep_enabled) is not bool:
+            raise ConfigurationError("rest_gate_settings_invalid", "sleep_enabled must be a boolean")
         for name, (minimum, maximum) in LIMITS.items():
             value = getattr(self, name)
             if type(value) is not int or not minimum <= value <= maximum:
@@ -250,6 +271,7 @@ class Settings:
             rest_backlog_max_messages=values.get(
                 "rest_backlog_max_messages", DEFAULTS["rest_backlog_max_messages"]),
             sleep_timezone=str(values.get("sleep_timezone") or DEFAULT_TIMEZONE),
+            sleep_enabled=values.get("sleep_enabled", False),
         )
 
     def windows(self):
@@ -322,7 +344,26 @@ def sleep_context(runtime, context, *, now, settings=None):
     except Exception:
         receipts = ()
     if not receipts:
+        # Sleep may be disabled while the operator still expects the explicit
+        # rest windows to hold replies. That is not a fake sleep receipt: the
+        # window itself is the durable rest bound, and it only applies when the
+        # operator enabled the rest-reply simulation and configured windows.
+        if settings.enable_rest_reply_simulation:
+            window_wake = window_wake_at(settings, now=now)
+            if window_wake is not None:
+                return {"resting": True, "reason": "rest_window", "sleep": None,
+                        "wake_at": window_wake,
+                        "until_seconds": max(0.0, (window_wake - now).total_seconds())}
         return {"resting": False, "reason": "not_sleeping", "sleep": None, "wake_at": None, "until_seconds": None}
+    active = [receipt for receipt in receipts if receipt.state is ActivityState.ACTIVE]
+    if not active and not settings.sleep_enabled and settings.enable_rest_reply_simulation:
+        # Older interrupted receipts must not make a disabled sleep schedule
+        # permanently immune to the operator's explicit rest windows.
+        window_wake = window_wake_at(settings, now=now)
+        if window_wake is not None:
+            return {"resting": True, "reason": "rest_window", "sleep": None,
+                    "wake_at": window_wake,
+                    "until_seconds": max(0.0, (window_wake - now).total_seconds())}
     activity = receipts[-1]
     wake_at = activity.work.due_at if activity.work else None
     if activity.state is ActivityState.PAUSED:
@@ -389,11 +430,14 @@ def judgement(settings, *, now, sleep, text="", grace=None, judge=None):
         return result
     score, reason = boundary_score(text)
     result["score"], result["boundary"] = score, reason
-    threshold = max(1, settings.rest_reply_llm_threshold)
+    threshold = settings.rest_reply_llm_threshold
     if score < 0:
         result.update(action="hold", reason=reason, defer=hold_defer(sleep, now=now))
         return result
-    if score >= threshold:
+    # 0 表示关闭“评分捷径”：明确叫醒/在吗这类文本不再直接放行，交给
+    # 概率或模型判定。否则 0 会被 max(1, …) 变成“任何正分都放行”，
+    # 概率调到 0 也照样一叫就醒（用户实际遇到的语义）。
+    if threshold > 0 and score >= threshold:
         result["reason"] = reason
         return result
     if settings.rest_reply_mode == "llm":
@@ -519,7 +563,7 @@ def deferral(runtime, context, *, text="", now, event_key="", source=None, capab
     settings = settings or read_settings(runtime, context)
     sleep = sleep_context(runtime, context, now=now, settings=settings)
     if not settings.enable_rest_reply_simulation:
-        if body_clock is not None and sleep.get("resting"):
+        if body_clock is not None and sleep.get("resting") and sleep.get("sleep"):
             body_clock.interrupt(context, sleep["sleep"], observed_at=now,
                                  grace_minutes=settings.rest_reply_awake_grace_minutes)
         return 0.0
@@ -535,7 +579,7 @@ def deferral(runtime, context, *, text="", now, event_key="", source=None, capab
                                entry=backlog_entry(now=now, reason=decision["reason"], source=source,
                                                    capability=capability, sleep=sleep.get("sleep")))
     else:
-        if body_clock is not None and sleep.get("resting"):
+        if body_clock is not None and sleep.get("resting") and sleep.get("sleep"):
             body_clock.interrupt(context, sleep["sleep"], observed_at=now,
                                  grace_minutes=settings.rest_reply_awake_grace_minutes)
         if decision["reason"] != "awake_grace":

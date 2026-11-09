@@ -144,6 +144,19 @@ class RestGateJudgementTests(unittest.TestCase):
                                rest_reply_llm_threshold=90)
         self.assertEqual(rest_gate.judgement(strict, now=NOW, sleep=sleeping, text="睡了吗")["action"], "hold")
 
+    def test_zero_threshold_disables_the_score_shortcut(self):
+        sleeping = {"resting": True, "reason": "sleep_window", "sleep": "sleep-1", "until_seconds": 600.0}
+        closed = gate_settings(enable_rest_reply_simulation=True, rest_reply_probability=0,
+                               rest_reply_llm_threshold=0)
+        for text in ("快醒醒", "在吗", "睡了吗", NEUTRAL):
+            decided = rest_gate.judgement(closed, now=NOW, sleep=sleeping, text=text)
+            self.assertEqual((decided["action"], decided["reason"]),
+                             ("hold", "probability_miss"), text)
+        open_draw = gate_settings(enable_rest_reply_simulation=True, rest_reply_probability=100,
+                                  rest_reply_llm_threshold=0)
+        self.assertEqual(rest_gate.judgement(open_draw, now=NOW, sleep=sleeping,
+                                             text="在吗")["action"], "reply")
+
     def test_model_judgement_is_off_by_default_and_unknown_never_replies(self):
         sleeping = {"resting": True, "reason": "sleep_window", "sleep": "sleep-1", "until_seconds": 600.0}
         self.assertEqual(rest_gate.DEFAULTS["rest_reply_mode"], "probability")
@@ -449,6 +462,17 @@ class RestGateHostTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((outside["resting"], outside["reason"]), (False, "outside_active_window"))
         self.assertEqual(rest_gate.deferral(app.runtime, context, text="在吗", now=self.clock.now(),
                                             settings=settings), 0.0)
+
+    async def test_configured_rest_window_holds_without_a_sleep_receipt(self):
+        _, app, context = await self.ready()
+        self.rest(app, context, {"enable_rest_reply_simulation": True,
+                                 "rest_reply_active_windows": "07:00-09:00"})
+        settings = rest_gate.read_settings(app.runtime, context)
+        sleep = rest_gate.sleep_context(app.runtime, context, now=self.clock.now(), settings=settings)
+        self.assertEqual((sleep["resting"], sleep["reason"]), (True, "rest_window"))
+        self.assertIsNone(sleep["sleep"])
+        self.assertGreater(rest_gate.deferral(app.runtime, context, text=NEUTRAL,
+                                              now=self.clock.now(), settings=settings), 0.0)
 
     async def test_a_sleep_receipt_that_stops_answering_keeps_the_ordinary_window(self):
         _, app, context = await self.ready()
