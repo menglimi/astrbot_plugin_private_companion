@@ -1,5 +1,14 @@
 # 更新日志
 
+## 7.1.9 - 2026-11-09
+
+### 现实设备与群聊
+
+- 米家设备工具（`reality.device.list/status/inspect/control/action` 与 `reality.operation.lookup`）在群聊中改为**常驻挂载**，不再按当前发言人增删，避免工具目录频繁变化导致提示词缓存失效；
+- 执行前新增核心管理员门：只有 tier=core 的主体可以操作设备，其他群成员会收到 `reality_admin_only`，不会执行；
+- 米家自身的 `control_tool.admin_only` 仍保留为第二道门；
+- 摄像头、屏幕、快照等隐私读取仍按原有隐私能力处理，不随设备工具常驻。
+
 ## 7.1.8 - 2026-11-09
 
 ### 稳定性与后台任务
