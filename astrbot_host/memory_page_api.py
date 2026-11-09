@@ -12,9 +12,11 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from companion_v2.agenda.models import AgendaError, Schedule
 
 
 COMPANION_PLUGIN_ID = "astrbot_plugin_private_companion"
@@ -138,14 +140,102 @@ def _record_date(record: dict[str, Any]) -> str:
             return date.fromisoformat(token).isoformat()
         except ValueError:
             continue
+    schedule = record.get("schedule") or {}
+    anchor = str(schedule.get("anchor") or "")
+    try:
+        moment = datetime.fromisoformat(anchor)
+    except (TypeError, ValueError):
+        return ""
+    zone = str(schedule.get("timezone_name") or "")
+    if moment.tzinfo is not None and zone:
+        try:
+            moment = moment.astimezone(ZoneInfo(zone))
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
+    return moment.date().isoformat()
+
+
+def _plan_item(record: dict[str, Any], *, clock: str, detail: Any) -> dict[str, Any]:
+    return {
+        "time": clock,
+        "activity": _short(record.get("title"), 180),
+        "mood": "",
+        "message_seed": _short(detail, 220),
+    }
+
+
+def _anchor_item(record: dict[str, Any], schedule: Schedule) -> dict[str, Any]:
     anchor = str((record.get("schedule") or {}).get("anchor") or "")
     try:
-        return datetime.fromisoformat(anchor).date().isoformat()
-    except ValueError:
-        return ""
+        moment = datetime.fromisoformat(anchor)
+        clock = moment.astimezone(schedule.zone()).strftime("%H:%M") if moment.tzinfo else ""
+    except (TypeError, ValueError, AgendaError):
+        clock = ""
+    return _plan_item(record, clock=clock, detail=record.get("detail"))
 
 
-def _calendar_plans(records: Any) -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
+def _day_occurrences(record: dict[str, Any], schedule: Schedule, day: str) -> list[dict[str, Any]]:
+    """Expand one recurrence into the selected local day, exceptions included.
+
+    The memory page must show the occurrence the chat prompt is working from,
+    not the recurrence anchor: a weekly plan only lands on its own weekday and a
+    moved or cancelled occurrence must disappear here too.
+    """
+    try:
+        start = datetime.combine(date.fromisoformat(day), time(), schedule.zone())
+    except (TypeError, ValueError, AgendaError):
+        return []
+    end = start + timedelta(days=1)
+    try:
+        duration = timedelta(minutes=max(0, int(record.get("duration_minutes") or 0)))
+    except (TypeError, ValueError):
+        duration = timedelta(0)
+    exceptions = record.get("exceptions") if isinstance(record.get("exceptions"), dict) else {}
+    details = record.get("details") if isinstance(record.get("details"), dict) else {}
+    items: list[dict[str, Any]] = []
+    try:
+        sequence = schedule.first_at_or_after(start - duration)
+        while sequence is not None and len(items) < 32:
+            due = schedule.at(sequence)
+            if due is None:
+                break
+            if str(sequence) in exceptions:
+                moved = exceptions[str(sequence)]
+                try:
+                    due = datetime.fromisoformat(str(moved)) if moved else None
+                except (TypeError, ValueError):
+                    due = None
+            if due is None:
+                sequence += 1
+                continue
+            if due >= end:
+                break
+            if due + duration > start:
+                items.append(_plan_item(
+                    record, clock=due.astimezone(schedule.zone()).strftime("%H:%M"),
+                    detail=details.get(str(sequence)) or record.get("detail")))
+            sequence += 1
+    except (AgendaError, ValueError, TypeError, OverflowError):
+        return []
+    return items
+
+
+def _restore_schedule(record: dict[str, Any]) -> Schedule | None:
+    """Read a full recurrence record, or a legacy anchor-only shape as ``once``."""
+    try:
+        return Schedule.restore(record.get("schedule"))
+    except (AgendaError, ValueError, TypeError, KeyError):
+        pass
+    data = record.get("schedule") if isinstance(record.get("schedule"), dict) else {}
+    try:
+        anchor = datetime.fromisoformat(str(data.get("anchor")))
+        zone = str(data.get("timezone_name") or "Asia/Shanghai")
+        return Schedule(anchor, zone)
+    except (AgendaError, ValueError, TypeError):
+        return None
+
+
+def _calendar_plans(records: Any, selected_date: str = "") -> tuple[dict[str, list[dict[str, Any]]], set[str]]:
     plans: dict[str, list[dict[str, Any]]] = {}
     dates: set[str] = set()
     for row in records:
@@ -157,23 +247,24 @@ def _calendar_plans(records: Any) -> tuple[dict[str, list[dict[str, Any]]], set[
             continue
         if str(record.get("state") or "") not in ("accepted", "planned"):
             continue
-        day = _record_date(record)
-        if not day:
-            continue
-        anchor = str((record.get("schedule") or {}).get("anchor") or "")
-        zone = str((record.get("schedule") or {}).get("timezone_name") or "Asia/Shanghai")
         try:
-            moment = datetime.fromisoformat(anchor).astimezone(ZoneInfo(zone))
-            clock = moment.strftime("%H:%M")
-        except (ValueError, TypeError):
-            clock = ""
-        plans.setdefault(day, []).append({
-            "time": clock,
-            "activity": _short(record.get("title"), 180),
-            "mood": "",
-            "message_seed": _short(record.get("detail"), 220),
-        })
-        dates.add(day)
+            schedule = _restore_schedule(record)
+        except (AgendaError, ValueError, TypeError, KeyError):
+            schedule = None
+        day = _record_date(record)
+        if not day and schedule is None:
+            continue
+        if day:
+            dates.add(day)
+        if schedule is None:
+            continue
+        if selected_date:
+            items = _day_occurrences(record, schedule, selected_date)
+            if items:
+                plans.setdefault(selected_date, []).extend(items)
+                dates.add(selected_date)
+        elif day:
+            plans.setdefault(day, []).append(_anchor_item(record, schedule))
     for items in plans.values():
         items.sort(key=lambda item: (item["time"], item["activity"]))
         for index, item in enumerate(items):
@@ -265,27 +356,39 @@ class MemoryPageAPI:
     ) -> dict[str, Any]:
         if target_plugin_id != MEMORY_PLUGIN_ID:
             raise MemoryPageUnavailable("memory_page_snapshot_state_unavailable")
-        selected = _date(selected_date) or _local_today()
+        requested = _date(selected_date)
         runtime = getattr(self.controller, "runtime", None)
         if runtime is None:
-            return _empty_snapshot(generation=self.instance_generation, selected_date=selected)
+            return _empty_snapshot(generation=self.instance_generation,
+                                   selected_date=requested or _local_today())
         try:
             records = runtime.read_all("SELECT record_json FROM calendar_records", ())
             states = runtime.read_all(
                 "SELECT record_json FROM role_state_records ORDER BY updated_at DESC LIMIT 1", ())
+            journal_dates = runtime.read_all(
+                "SELECT DISTINCT local_date FROM role_journals WHERE state = 'active'", ())
+            plans, dates = _calendar_plans(records, "")
+            today = _local_today()
+            today_items = _calendar_plans(records, today)[0].get(today, []) if today else []
+            if today_items:
+                dates.add(today)
+            for row in journal_dates:
+                text = str(row["local_date"] or "")
+                if len(text) == 10:
+                    dates.add(text)
+            # 无指定日期时，selected_date 必须落在 available_dates 内，并与最新
+            # 可用日期一致；否则记忆插件会以 memory_page_snapshot_malformed 拒绝。
+            selected = requested or (max(dates) if dates else "")
+            plans, selected_dates = _calendar_plans(records, selected) if selected else ({}, set())
+            dates.update(selected_dates)
+            items = plans.get(selected, [])
+            if items:
+                dates.add(selected)
             journals = runtime.read_all(
                 "SELECT content_json, kind, local_date FROM role_journals "
                 "WHERE local_date = ? AND state = 'active'", (selected,))
-            journal_dates = runtime.read_all(
-                "SELECT DISTINCT local_date FROM role_journals WHERE state = 'active'", ())
         except Exception as error:
             raise MemoryPageUnavailable("memory_page_snapshot_state_unavailable") from error
-        plans, dates = _calendar_plans(records)
-        for row in journal_dates:
-            text = str(row["local_date"] or "")
-            if len(text) == 10:
-                dates.add(text)
-        items = plans.get(selected, [])
         state = _daily_state(states, selected)
         diaries = _diaries(journals)
         payload = {

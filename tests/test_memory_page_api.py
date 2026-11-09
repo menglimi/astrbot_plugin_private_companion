@@ -104,6 +104,62 @@ class _FakeRuntime:
 
 
 class MemoryPageSnapshotDataTests(unittest.IsolatedAsyncioTestCase):
+    def test_anchor_date_and_clock_follow_the_schedule_timezone(self):
+        from astrbot_host.memory_page_api import _calendar_plans, _record_date
+        record = {"kind": "role_plan", "state": "accepted", "title": "夜读",
+                  "detail": "读两页就睡。",
+                  "schedule": {"anchor": "2026-10-27T16:30:00+00:00",
+                               "timezone_name": "Asia/Shanghai"}}
+        self.assertEqual(_record_date(record), "2026-10-28")
+        plans, _dates = _calendar_plans([{"record_json": json.dumps(record)}], "2026-10-28")
+        self.assertEqual([item["time"] for item in plans["2026-10-28"]], ["00:30"])
+
+    def test_weekly_plan_lands_on_its_weekday_and_moved_exception(self):
+        from astrbot_host.memory_page_api import _calendar_plans
+        record = {
+            "kind": "role_plan", "state": "accepted", "title": "周会",
+            "detail": "复盘一周。", "duration_minutes": 60,
+            "schedule": {"anchor": "2026-10-07T02:00:00+00:00",
+                         "timezone_name": "Asia/Shanghai", "frequency": "weekly",
+                         "interval": 1, "count": None, "fold": 0, "gap_policy": "reject"},
+            # 第 3 次期次（10-28）被改到 13:30。
+            "exceptions": {"3": "2026-10-28T05:30:00+00:00"},
+        }
+        row = {"record_json": json.dumps(record)}
+        wednesday, dates = _calendar_plans([row], "2026-10-28")
+        self.assertEqual([item["time"] for item in wednesday["2026-10-28"]], ["13:30"])
+        self.assertIn("2026-10-07", dates)
+        tuesday, _ = _calendar_plans([row], "2026-10-27")
+        self.assertEqual(tuesday, {})
+
+    async def test_missing_requested_date_falls_back_to_latest_available_date(self):
+        from types import SimpleNamespace
+        record = {
+            "kind": "role_plan", "state": "accepted", "title": "夜读",
+            "detail": "读两页就睡。",
+            "schedule": {"anchor": "2026-10-28T02:30:00+00:00", "timezone_name": "Asia/Shanghai"},
+        }
+        runtime = _FakeRuntime(
+            [{"record_json": json.dumps(record, ensure_ascii=False)}],
+            [],
+            [{"content_json": json.dumps({"body": "昨天读了两页。"}, ensure_ascii=False),
+              "kind": "diary", "local_date": "2026-10-28"}])
+        adapter = MemoryPageAPI(SimpleNamespace(runtime=runtime))
+        snapshot = await adapter.export_snapshot(
+            target_plugin_id="astrbot_plugin_memory_companion")
+        self.assertEqual(snapshot["available_dates"], ["2026-10-28"])
+        self.assertEqual(snapshot["selected_date"], "2026-10-28")
+        self.assertEqual(snapshot["day"]["date"], "2026-10-28")
+
+    async def test_empty_history_keeps_selected_date_inside_available_dates(self):
+        from types import SimpleNamespace
+        adapter = MemoryPageAPI(SimpleNamespace(runtime=_FakeRuntime([], [])))
+        snapshot = await adapter.export_snapshot(
+            target_plugin_id="astrbot_plugin_memory_companion")
+        self.assertEqual(snapshot["available_dates"], [])
+        self.assertEqual(snapshot["selected_date"], "")
+        self.assertEqual(snapshot["day"]["date"], "")
+
     async def test_calendar_plans_and_state_are_projected_into_the_snapshot(self):
         from types import SimpleNamespace
         record = {
