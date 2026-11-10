@@ -30,7 +30,7 @@
 | 显示名 | 我会永远陪着你 |
 | 当前版本 | `7.1.14`（7.x 架构线，内部领域标识 `private_companion.v2`） |
 | AstrBot 版本 | `>= 4.27.2` |
-| 声明支持平台 | `aiocqhttp`（OneBot v11）、`qq_official`、`qq_official_webhook` |
+| 声明支持平台 | `aiocqhttp`（OneBot v11）、`qq_official`、`qq_official_webhook`、`weixin_oc`（个人微信） |
 | 管理入口 | AstrBot 插件扩展页「陪伴小屋」（支持低配设备开启「性能模式」切换为轻量状态页） |
 | 数据存储 | 独立 SQLite 运行库（覆盖升级自动隔离于 `companion-7` 子目录，支持备份快照与跨盘迁移） |
 | 内置原生扩展 | `Content`、`Image`、`Screen`、`Reality`、`Together`、`Game`、`Live` 七项能力随包内置 |
@@ -140,7 +140,7 @@ https://github.com/menglimi/astrbot_plugin_private_companion
 
 ### 3.2 首次使用（「陪伴小屋 → 开始使用」八步引导）
 
-首次安装后，先在 AstrBot 中准备好可用的平台适配器（`aiocqhttp` 或 QQ 官方机器人）、聊天模型和人格，再打开插件扩展页 **「陪伴小屋 → 开始使用」**，按页面左侧分组步骤树完成 **第 1–8 步** 配置：
+首次安装后，先在 AstrBot 中准备好可用的平台适配器（`aiocqhttp`、QQ 官方机器人或 `weixin_oc` 个人微信）、聊天模型和人格，再打开插件扩展页 **「陪伴小屋 → 开始使用」**，按页面左侧分组步骤树完成 **第 1–8 步** 配置：
 
 > 从零开始的完整操作清单（含绑定指令、测试失败码处理）见 [首次使用：从零到跑通](docs/FIRST_RUN_FROM_ZERO.md)。
 

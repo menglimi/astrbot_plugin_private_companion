@@ -29,4 +29,5 @@ support_platforms:
   - aiocqhttp
   - qq_official
   - qq_official_webhook
+  - weixin_oc
 astrbot_version: ">=4.27.2"
