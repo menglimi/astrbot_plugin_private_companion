@@ -214,6 +214,10 @@ window.CompanionConfigEditors = (() => {
     {id: "throttle", title: "发布节流",
      help: "总闸与「允许发说说」都打开后才生效。这几项限制的是频率与条数，不放宽任何一项能力开关。",
      fields: ["action_min_interval_minutes", "max_actions_per_tick", "publish_max_daily"]},
+    {id: "life", title: "生活说说",
+     help: "低频把角色自己的生活发到空间。检查到点时先记一次尝试，再写草稿、走和手动发说说完全相同的发布链路与审计；失败或结果未知都不会立刻重来。",
+     fields: ["life_publish_enabled", "life_publish_probability", "life_publish_min_interval_hours",
+              "life_publish_max_daily", "life_publish_style_prompt"]},
     {id: "topics", title: "主题判定",
      help: "一条说说在写出正文之前必须先定主题与场景：这里决定谁来定、要不要人工确认，以及给模型的补充指引。",
      fields: ["topic_auto_enabled", "topic_require_confirmation", "topic_prompt_guidance"]},
@@ -577,7 +581,14 @@ window.CompanionConfigEditors = (() => {
         cross_window_group_identity_enabled: "群内识别私聊关系",
         cross_window_peer_minutes: "群互动回看分钟",
         cross_window_peer_reply_minutes: "接话回看分钟",
+        private_group_context_mode: "群聊引用私聊上下文",
+        private_group_context_minutes: "私聊回看分钟",
+        private_group_context_chars: "私聊摘要字数",
       },
+      choices: {private_group_context_mode: {
+        base: "基础（熟人卡摘要）", summary: "私聊摘要", transparent: "通透",
+      }},
+      segmentedChoices: ["private_group_context_mode"],
       helps: {
         acquaintance_card_chars: "卡片过长会挤占上下文，建议只留关键内容。",
         cross_window_awareness_enabled: "关闭后不记录也不注入跨窗口在场；关闭熟人卡会一并关闭。",
@@ -590,12 +601,16 @@ window.CompanionConfigEditors = (() => {
         cross_window_group_identity_enabled: "群聊中仅告诉角色“这个成员也和你私聊过”，不暴露私聊内容。",
         cross_window_peer_minutes: "统计“群里还有几个人在说话”的短窗口。",
         cross_window_peer_reply_minutes: "统计“有人接你之前的话”的回看窗口。",
+        private_group_context_mode: "只对当前群发言人本人生效；基础档只给熟人卡摘要，私聊摘要/通透档才读取该用户私聊历史。",
+        private_group_context_minutes: "只读取这段时间内的私聊；超出部分不进入群聊上下文。",
+        private_group_context_chars: "摘要总字数上限；越长越占上下文，也越容易暴露私密细节。",
       },
       order: ["acquaintance_enabled", "acquaintance_card_chars", "cross_window_awareness_enabled",
         "cross_window_continuity_enabled", "cross_window_continuity_minutes",
         "cross_window_private_group_hours", "cross_window_max_items", "cross_window_attention_minutes",
         "cross_window_attention_wait_seconds", "cross_window_group_identity_enabled",
-        "cross_window_peer_minutes", "cross_window_peer_reply_minutes"],
+        "cross_window_peer_minutes", "cross_window_peer_reply_minutes",
+        "private_group_context_mode", "private_group_context_minutes", "private_group_context_chars"],
     },
     private_access: {
       title: "新用户默认权限",
@@ -959,7 +974,7 @@ window.CompanionConfigEditors = (() => {
         enable_rest_reply_simulation: "启用休息时段回复判定",
         rest_reply_mode: "判定方式",
         rest_reply_probability: "概率判定放行率（%）",
-        rest_reply_llm_threshold: "模型判定放行分阈值",
+        rest_reply_llm_threshold: "叫醒评分阈值（0=关闭评分捷径）",
         rest_reply_active_windows: "生效时段",
         rest_reply_awake_grace_minutes: "被唤醒后免重判（分钟）",
         enable_rest_backlog_reply: "记录休息期未回消息",
@@ -984,6 +999,7 @@ window.CompanionConfigEditors = (() => {
         dream_afterglow_mode: "决定醒后余韵写得多明显；自动按上下文决定。",
         enable_rest_reply_simulation: "关闭时休息时段不额外判定，按正常流程回复。",
         rest_reply_mode: "概率判定按下面的百分比放行；模型判定按边界分与模型分决定。",
+        rest_reply_llm_threshold: "评分达到该值就直接叫醒：100 是「快醒/起床/救命」这类明确请求，72 是「在吗/睡了吗/想你」。阈值越低越容易被叫醒；设为 0 关闭这条捷径，概率判定只按百分比放行，模型判定只看模型分。",
         rest_reply_active_windows: "形如 23:00-08:30,12:20-13:40；结束时间早于开始时间视为跨零点。留空表示全天生效。",
         rest_reply_awake_grace_minutes: "被叫醒后的这段时间里不再重新判定，避免又被当成在睡。",
         enable_rest_backlog_reply: "开启后会记录休息期间收到的消息，醒来时作为补看材料；不会逐条补发。",
@@ -1598,6 +1614,11 @@ window.CompanionConfigEditors = (() => {
         topic_auto_enabled: "允许模型自行发布",
         topic_require_confirmation: "主题必须人工确认",
         topic_prompt_guidance: "补充表达指引",
+        life_publish_enabled: "启用生活说说",
+        life_publish_probability: "每次检查的发布概率",
+        life_publish_min_interval_hours: "两条生活说说最短间隔（小时）",
+        life_publish_max_daily: "生活说说每日上限",
+        life_publish_style_prompt: "生活说说风格补充",
         ...Object.fromEntries(QZONE_TOPIC_SECTIONS.flatMap(({prefix, title}) => [
           [prefix + "_enabled", title + " · 启用"],
           [prefix + "_scenes", title + " · 允许的场景"],
@@ -1619,6 +1640,11 @@ window.CompanionConfigEditors = (() => {
         topic_auto_enabled: "开启后才允许模型在无需人工确认的情况下自行发布；默认关闭，关着时模型提出的主题必须有人确认。",
         topic_require_confirmation: "开启时模型提出的主题必须有人确认才能发布；默认开启，只有上面那项打开且这一项关闭，模型才可能不经过确认就发。",
         topic_prompt_guidance: "给模型的补充表达指引（例如口吻、篇幅、不要写什么）；只影响怎么写，不改主题目录、场景放行与任何授权。",
+        life_publish_enabled: "开启后按下面的间隔与概率把角色自己的生活写成说说；还需要「启用 QQ 空间」和「允许发说说」同时打开，发布时仍会再查一次主题门槛与额度。",
+        life_publish_probability: "每次到点检查时的发布概率，0 到 1 之间；0 表示永不自动发，1 表示每次到点都发。",
+        life_publish_min_interval_hours: "两条生活说说之间至少隔多少小时，1 到 168；失败或结果未知也算一次尝试，会按这个间隔推迟下一次。",
+        life_publish_max_daily: "生活说说每天最多发几条，1 到 10；与「每日说说上限」同时生效时，先撞到哪条算哪条。",
+        life_publish_style_prompt: "只影响生活说说的语气与写法（例如更口语、少用感叹号）；不改变主题、授权、间隔与任何事实边界。",
         ...Object.fromEntries(QZONE_TOPIC_SECTIONS.flatMap(({prefix, title, scenes}) => [
           [prefix + "_enabled", "关闭后这个主题的说说一律不发，模型提出的该主题会被拒；不影响其他主题。"],
           [prefix + "_scenes", `这个主题允许出现在哪些场景，用半角逗号分隔，只能填该主题自己的场景：${qzoneSceneWords(scenes)}。留空、重复或写了别的场景会被后端拒绝；多个场景之间没有优先级。`],
@@ -1842,10 +1868,17 @@ window.CompanionConfigEditors = (() => {
     let batchPrimed = false;
     if (canBatchRead) {
       const sectionNames = names.join(",");
+      const configBus = endpoint.endsWith("/config");
       batchRead = () => {
         if (!batchRead.promise) {
+          /* The shared /config route resolves the page's selected target; other
+             endpoints identify their role in the path and reject extra fields. */
+          const selection = configBus ? (product?.selection?.() || {}) : {};
+          const query = {sections: sectionNames,
+            ...(selection.target_id ? {target_id: selection.target_id} : {}),
+            ...(selection.role_id ? {role_id: selection.role_id} : {})};
           batchRead.promise = Promise.resolve(product.request("GET", endpoint,
-            {sections: sectionNames})).then(payload => {
+            query)).then(payload => {
               if (!payload || typeof payload !== "object" || typeof payload.sections !== "object") {
                 throw new Error("batch configuration response is invalid");
               }

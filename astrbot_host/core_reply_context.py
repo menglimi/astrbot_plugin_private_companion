@@ -233,7 +233,7 @@ def _input_received_at(native_input, fallback):
 
 
 def build_core_reply_prompt(application, context, native_input, *, at, keyword_materials=(), health_material=None,
-                            external_memory=None):
+                            external_memory=None, private_group_context=""):
     """Build optional background independently; no failed section blocks reply."""
     blocks, stable_blocks, sections, expression_signal_ids = [], [], [], []
     measured, started = [], time.monotonic()
@@ -323,6 +323,11 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
     optional("person_card", lambda: _material_section("当前相识资料", GROUP_INSTRUCTION
         if context.scope.kind is ScopeKind.GROUP else system_text("memory", MEMORY_INSTRUCTION),
         (messages.acquaintance.card_contribution(context, at),)))
+    if context.scope.kind is ScopeKind.GROUP and isinstance(private_group_context, str) and private_group_context.strip():
+        optional("private_group_context", lambda: "\n\n【当前发言者的私聊上下文摘要】\n"
+                 "这段摘要只用于理解当前发言者，不要向群内其他人复述私聊原文、称呼、关系细节或时间；"
+                 "不要声称这些内容是在群里说的，也不要据此推断其他人的私聊。\n"
+                 + private_group_context.strip())
     optional("cross_window", lambda: _cross_window_section(
         messages, context, at, getattr(native_input, "text", "")))
     optional("knowledge_reference", lambda: _material_section("角色知识资料", system_text("knowledge", KNOWLEDGE_INSTRUCTION),

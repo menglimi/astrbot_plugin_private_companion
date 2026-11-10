@@ -45,6 +45,15 @@ def configuration_fields():
         FieldDefinition("person.cross_window_peer_reply_minutes", GROUP, "person", ValueKind.INTEGER, 60,
                         layers=(ConfigLayer.ROLE, ConfigLayer.RELATIONSHIP), minimum=1, maximum=720,
                         apply_mode=ApplyMode.IMMEDIATE, core_only=True),
+        FieldDefinition("person.private_group_context_mode", GROUP, "person", ValueKind.TEXT, "base",
+                        layers=(ConfigLayer.ROLE, ConfigLayer.RELATIONSHIP), maximum_chars=24,
+                        apply_mode=ApplyMode.IMMEDIATE, core_only=True),
+        FieldDefinition("person.private_group_context_minutes", GROUP, "person", ValueKind.INTEGER, 120,
+                        layers=(ConfigLayer.ROLE, ConfigLayer.RELATIONSHIP), minimum=5, maximum=1440,
+                        apply_mode=ApplyMode.IMMEDIATE, core_only=True),
+        FieldDefinition("person.private_group_context_chars", GROUP, "person", ValueKind.INTEGER, 600,
+                        layers=(ConfigLayer.ROLE, ConfigLayer.RELATIONSHIP), minimum=100, maximum=2000,
+                        apply_mode=ApplyMode.IMMEDIATE, core_only=True),
     )
 
 
