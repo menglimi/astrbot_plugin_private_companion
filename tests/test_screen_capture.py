@@ -169,6 +169,34 @@ class ScreenCaptureTests(G6Fixture):
         self.assertEqual(self.screens.read_image(captured.unwrap().capture.reference,
             resolved=self.resolved, observed_at=NOW).unwrap(), IMAGE)
 
+    def make_core(self):
+        with self.runtime.transaction() as connection:
+            connection.execute(
+                """INSERT INTO subject_access_tiers (subject_kind, subject_id, tier, revision, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(subject_kind, subject_id) DO UPDATE SET tier = excluded.tier""",
+                ("human", self.subject.subject_id, "core", 1, NOW.isoformat()),
+            )
+
+    def revoke_screen_read(self):
+        self.capabilities.set_authorization(extension_id=SCREEN_EXTENSION,
+            capability_id=SCREEN_READ, subject=self.subject, scope=self.scope,
+            state=CapabilityAuthorizationState.REVOKED, expected_revision=1,
+            observed_at=NOW).unwrap()
+
+    def test_core_explicit_revocation_blocks_capture_before_device_io(self):
+        self.make_core()
+        self.revoke_screen_read()
+        self.assertEqual(self.capture().failure.code, "capability_consent_revoked")
+        self.assertEqual(self.device.calls, 0)
+
+    def test_core_revocation_during_capture_blocks_publication(self):
+        self.make_core()
+        self.device.callback = self.revoke_screen_read
+        self.assertEqual(self.capture().failure.code, "capability_consent_revoked")
+        self.assertEqual(self.device.calls, 1)
+        self.assertEqual(self.runtime.read_one("SELECT count(*) AS n FROM screen_captures", ())["n"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

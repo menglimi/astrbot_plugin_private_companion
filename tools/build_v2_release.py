@@ -14,7 +14,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE_ID = "astrbot_plugin_private_companion"
-VERSION = "7.1.14"
+VERSION = "7.1.15"
 RELEASE_SCHEMA = "companion.v2.release.v2"
 MARKET_MAX_BYTES = 16_000_000
 NATIVE_EXTENSION_FILES = {
@@ -80,7 +80,8 @@ NATIVE_HASH_GLOBS = {
     "together": "companion_v2/together",
 }
 NATIVE_HASH_FILES = {
-    "screen": ("astrbot_host/native_extensions/screen_provider.py",),
+    "screen": ("astrbot_host/native_extensions/screen_provider.py",
+               "astrbot_host/native_extensions/screen_source.py"),
     "game": (
         "companion_v2/games/native/provider.py", "companion_v2/games/tictactoe.py",
         "companion_v2/games/gomoku.py", "companion_v2/games/pig_dice.py",
@@ -173,7 +174,7 @@ def native_artifact_hashes(files):
         missing = sorted(set(names).difference(files))
         if missing:
             raise ValueError("native capability source files missing: " + ", ".join(missing))
-        if capability == "game":
+        if capability in ("game", "screen"):
             result[capability] = digest(b"".join(files[name] for name in names))
         else:
             result[capability] = digest(files[names[0]])

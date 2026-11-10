@@ -27,6 +27,7 @@ window.CompanionScreenAccess = (() => {
     staging_screen_upgrade_invalid:"当前安装版本不能直接升级，请检查 V2 屏幕陪伴包版本。",
     staging_screen_upgrade_failed:"屏幕陪伴升级未完成，请重新读取状态后再试。",
     bridge_timeout:"连接超时。可用同一个操作编号核对原请求。",
+    screen_source_invalid:"截图来源保存失败，请核对设备地址与连接密钥；若设置已变化，请先重新读取。",
   };
   let node = null, path = "", status = null, pending = null, busy = false, notice = "", generation = 0;
   const pendingByScope = new Map();
@@ -56,6 +57,26 @@ window.CompanionScreenAccess = (() => {
     return "";
   }
   function escapeHTML(value) { return String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;", "'":"&#39;"}[char])); }
+  function sourceForm(canManage) {
+    const source = status?.capture_source, settings = source?.settings;
+    if (!canManage || !settings) return "";
+    const disabled = busy ? "disabled" : "";
+    return `<style>
+      .screen-source-form summary{cursor:pointer}
+      .screen-source-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:14px;margin:16px 0}
+      .screen-source-fields label{display:grid;gap:6px;min-width:0;font-size:var(--fs-small,13px)}
+      .screen-source-fields input,.screen-source-fields select{box-sizing:border-box;width:100%;min-width:0;padding:8px 10px;font:inherit;color:var(--t-text-strong);background:var(--t-surface);border:1px solid var(--t-line);border-radius:var(--r-xs,6px)}
+      </style><details class="reality-consent-panel screen-source-form"><summary>截图来源 · ${settings.mode === "remote" ? escapeHTML(settings.device_id || "远端电脑") : "本机桌面"}</summary>
+      <p>此安装共用一个采集来源。私聊授权、主动观察和日记设置继续分别生效；更换来源不会开启这些功能。</p>
+      <div class="screen-source-fields">
+      <label class="config-field"><span>采集方式</span><select name="screen-source-mode" ${disabled}><option value="local" ${settings.mode === "local" ? "selected" : ""}>AstrBot 所在电脑</option><option value="remote" ${settings.mode === "remote" ? "selected" : ""}>远端电脑</option></select></label>
+      <label class="config-field"><span>远端截图地址</span><input name="screen-source-url" type="url" value="${escapeHTML(settings.remote_url)}" placeholder="http://127.0.0.1:6191/capture" ${disabled}></label>
+      <label class="config-field"><span>设备名称</span><input name="screen-source-device" value="${escapeHTML(settings.device_id)}" placeholder="与采集端的设备名称一致" ${disabled}></label>
+      <label class="config-field"><span>连接密钥</span><input name="screen-source-token" type="password" autocomplete="new-password" value="" placeholder="${source.token_configured ? "已设置，留空保留" : "填写采集端密钥"}" ${disabled}></label>
+      <label class="config-field"><span>等待截图（秒）</span><input name="screen-source-timeout" type="number" min="1" max="20" value="${settings.timeout_seconds}" ${disabled}></label>
+      </div><div class="dialog-actions"><button type="button" class="button small primary" data-screen-access-action="save-source" ${disabled}>保存截图来源</button></div>
+      </details>`;
+  }
   function render() {
     if (!node?.isConnected) return;
     const ready = status?.invokable === true;
@@ -102,7 +123,7 @@ window.CompanionScreenAccess = (() => {
           ? `<button class="button small" type="button" disabled>${unavailable}</button>`
           : action ? `<button class="button small ${status?.consented ? "secondary" : "primary"}" type="button" data-screen-access-action="${action}" ${busy ? "disabled" : ""}>${busy ? "正在保存…" : label}</button>` : ""}
           ${!issue && canManage && status?.upgrade_available ? `<button class="button small primary" type="button" data-screen-access-action="upgrade" ${busy ? "disabled" : ""}>升级屏幕陪伴</button>` : ""}</div>
-      </article>`;
+      </article>${sourceForm(canManage)}`;
     window.lucide?.createIcons({attrs:{"aria-hidden":"true"}});
   }
   function nonce() { return crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`; }
@@ -168,6 +189,25 @@ window.CompanionScreenAccess = (() => {
       if (current(ticket)) notice = errorText(error);
     } finally { if (current(ticket)) { busy = false; render(); } }
   }
+  async function saveSource() {
+    if (!current(generation) || busy || !status?.capture_source) return;
+    const value = name => node.querySelector(`[name="screen-source-${name}"]`)?.value ?? "";
+    const command = {revision:status.capture_source.revision, updates:{mode:value("mode"),
+      remote_url:value("url").trim(), device_id:value("device").trim(), remote_token:value("token"),
+      timeout_seconds:Number(value("timeout"))}};
+    const ticket = generation;
+    busy = true; notice = ""; render();
+    try {
+      const result = await product.request("POST", path + "/capture-source", command);
+      if (!current(ticket)) return;
+      if (result?.saved !== true || !result?.capture_source?.settings) throw {code:"invalid_response"};
+      status.capture_source = result.capture_source;
+      statusByScope.set(statusKey(product.scopeKey(), path), status);
+      notice = "截图来源已保存，下次采集生效；授权和主动联系设置保持原样。";
+    } catch (error) {
+      if (current(ticket)) notice = errorText(error);
+    } finally { if (current(ticket)) { busy = false; render(); } }
+  }
   async function upgrade() {
     if (!current(generation) || busy || !status?.upgrade_available || !status.can_manage
         || typeof status.installed_package_version !== "string"
@@ -214,6 +254,7 @@ window.CompanionScreenAccess = (() => {
     const action = event.target.closest("[data-screen-access-action]")?.dataset.screenAccessAction;
     if (!action) return;
     if (action === "refresh") { void load(); return; }
+    if (action === "save-source") { void saveSource(); return; }
     if (action === "retry") { void save(pending?.enabled); return; }
     if (action === "upgrade") { void upgrade(); return; }
     if (action === "role-enable") { void saveRole(true); return; }
