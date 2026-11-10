@@ -4,7 +4,7 @@ import asyncio
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 
@@ -47,6 +47,7 @@ from companion_v2.screen.interpretation import screen_interpretation_profile
 from companion_v2.reality.model_profile import reality_text_profile
 from .settings import HostControlError
 from .display_names import event_person_names
+from .group_standing import group_sender_standing
 from .huawei_health.service import get_huawei_health_service_for_root
 from companion_v2.conversation.voice_reply import VoiceReplyDelivery
 from companion_v2.execution.models import Lane, ProviderBinding, TaskContext, TaskError, digest, require, stamp
@@ -719,7 +720,7 @@ class MultiHostSession:
                 self.application.require_running()
                 # Admission, active-role fencing and input publication are one
                 # transaction. Rejected inputs cannot change another task's role.
-                with self.runtime.transaction():
+                with self.runtime.transaction() as connection:
                     context = (self.authority.groups.select(target, captured) if captured.route.scope.kind is ScopeKind.GROUP
                                else self.authority.select(target, captured.route.scope, captured.role))
                     if context.scope.kind is ScopeKind.PRIVATE:
@@ -729,6 +730,10 @@ class MultiHostSession:
                             raise PrivateDialogueDenied(context)
                     else:
                         require(self.application.tasks.check_context_access(context, action="conversation.reply", observed_at=self.now()))
+                        # Standing must be on record before this turn's prompt is
+                        # composed, otherwise the very message that says "群主"
+                        # is answered with the role still unknown.
+                        self._record_group_standing(event, context, connection=connection)
                     def admitted(original, batch_id, *, replayed):
                         if original.scope.kind is ScopeKind.GROUP:
                             self.authority.group_delivery.admit(target, original, batch_id,
@@ -767,6 +772,91 @@ class MultiHostSession:
                                  target.target_id, type(error).__name__)
                     return Outcome.failed("host_group_receive_failed", "group input could not be admitted")
                 raise
+
+    async def _private_group_context(self, context, captured):
+        """Bounded private-dialogue material for the current group speaker only.
+
+        The setting is per relationship and the private conversation is looked up
+        from AstrBot's own conversation manager by the speaker's native account.
+        Other group members and other private contacts are never queried.
+        """
+        from companion_v2.foundation.refs import ScopeKind
+        if context.scope.kind is not ScopeKind.GROUP:
+            return ""
+        settings = getattr(getattr(self.application, "messages", None), "acquaintance", None)
+        settings = getattr(settings, "settings", None)
+        if settings is None:
+            return ""
+        try:
+            values = settings.read(context)
+        except Exception:
+            return ""
+        mode = str(values.get("person.private_group_context_mode") or "base").strip().lower()
+        if mode not in ("summary", "transparent"):
+            return ""
+        native = str(getattr(context.actor.principal, "native_account_id", "") or "").strip()
+        platform = str(context.scope.platform or "default")
+        if not native:
+            return ""
+        manager = getattr(getattr(self, "bridge", None), "context", None)
+        manager = getattr(manager, "conversation_manager", None)
+        if manager is None:
+            return ""
+        umo = f"{platform}:FriendMessage:{native}"
+        try:
+            cid = await bounded_native_lookup(manager.get_curr_conversation_id(umo),
+                                              operation="private_group_context_conversation")
+            if not cid:
+                return ""
+            conversation = await bounded_native_lookup(manager.get_conversation(umo, cid),
+                                                      operation="private_group_context_history")
+            raw = conversation.history if conversation is not None else []
+            history = raw if isinstance(raw, list) else json.loads(raw or "[]")
+        except Exception:
+            return ""
+        if not isinstance(history, list):
+            return ""
+        limit = int(values.get("person.private_group_context_chars") or 600)
+        limit = max(100, min(2000, limit))
+        if mode == "transparent":
+            limit = max(limit, 1200)
+        minutes = int(values.get("person.private_group_context_minutes") or 120)
+        minutes = max(5, min(1440, minutes))
+        cutoff = self.now() - timedelta(minutes=minutes)
+        rows = []
+        for item in history[-48 if mode == "transparent" else -24:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "")
+            if role not in ("user", "assistant"):
+                continue
+            moment = item.get("timestamp") or item.get("created_at") or item.get("time")
+            if moment is not None:
+                try:
+                    when = (datetime.fromtimestamp(float(moment), timezone.utc) if isinstance(moment, (int, float))
+                            else datetime.fromisoformat(str(moment).replace("Z", "+00:00")))
+                    if when < cutoff:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            content = item.get("content")
+            if isinstance(content, list):
+                content = " ".join(str(part.get("text") or "") if isinstance(part, dict) else str(part or "")
+                                   for part in content)
+            text = " ".join(str(content or "").split())
+            if not text:
+                continue
+            rows.append(("用户" if role == "user" else "角色", text[:300]))
+        lines = []
+        used = 0
+        for label, text in reversed(rows):
+            line = f"{label}：{text}"
+            if used + len(line) > limit:
+                break
+            lines.append(line)
+            used += len(line) + 1
+        return "\n".join(reversed(lines))
+
 
     async def _materialize_core_conversation(self, event, target, captured):
         """Fix the first native CID before V2 seals any optional turn background."""
@@ -840,6 +930,7 @@ class MultiHostSession:
                                   speaker_id=captured.principal.native_account_id,
                                   received_at=captured.at, event_id=captured.event_id)
                 self._record_platform_names(event, context)
+                self._record_group_standing(event, context)
                 if reply_candidate:
                     from companion_v2.conversation.reply_settings import GROUP
                     snapshot = self.application.reply_settings.snapshot(context.actor, context, self.now())
@@ -1111,6 +1202,7 @@ class MultiHostSession:
                         external_memory = await prepare_external_memory(
                             self.bridge.context, self.application, context, captured)
                         prompt_at = self.now()
+                        private_group_context = await self._private_group_context(context, captured)
                         # 组装提示词要遍历来源依赖并逐节点读库；放在事件循环上会
                         # 让整条消息（以及同进程的群聊）一起卡住十几秒。
                         # 这一步是纯读：放到工作线程，锁仍是同一把，顺序不变。
@@ -1118,7 +1210,8 @@ class MultiHostSession:
                             build_core_reply_prompt, self.application, context, captured, at=prompt_at,
                             keyword_materials=keyword_entries,
                             health_material=health_material,
-                            external_memory=external_memory)
+                            external_memory=external_memory,
+                            private_group_context=private_group_context)
                         prompt_instruction = getattr(prompt, "context_instruction", prompt.instruction)
                         stable_prompt_instruction = getattr(prompt, "stable_instruction", "")
                         context_sections = prompt.sections
@@ -1370,6 +1463,32 @@ class MultiHostSession:
                 # identity proof.
                 self.application.messages.group_network.record_names(
                     context, nickname=nickname, card=card, at=self.now())
+        except Exception:
+            pass
+
+    def _record_group_standing(self, event, context, connection=None):
+        """Remember the sender's platform standing for later group prompts.
+
+        OneBot already reports whether the speaker is the group owner or an
+        administrator. Without it the prompt only sees a display name, so a
+        mention of "群主" reads like an unrelated third person. Optional
+        derivation: any failure costs only the label, never intake.
+        """
+        if context.scope.kind is not ScopeKind.GROUP:
+            return
+        try:
+            standing = group_sender_standing(event)
+            if standing is None or standing["group_id"] not in ("", context.scope.native_scope_id):
+                return
+            from companion_v2.conversation.group_roles import GroupRoleStore
+            store = GroupRoleStore(self.runtime)
+            if connection is not None:
+                store.remember(connection, context, account_id=standing["account_id"],
+                               role=standing["role"], at=self.now())
+                return
+            with self.runtime.transaction() as own:
+                store.remember(own, context, account_id=standing["account_id"],
+                               role=standing["role"], at=self.now())
         except Exception:
             pass
 
