@@ -18,6 +18,15 @@ from tools.build_v2_release import (
 
 
 class NativeReleaseVersionGuardTests(unittest.TestCase):
+    def test_screen_baseline_covers_remote_transport_and_matches_runtime(self):
+        from astrbot_host.native_extensions.screen_provider import screen_package_hash
+        files = native_artifact_source_files(ROOT)
+        self.assertEqual(native_artifact_hashes(files)["screen"], screen_package_hash())
+        changed = dict(files)
+        name = "astrbot_host/native_extensions/screen_source.py"
+        changed[name] += b"\n# transport change\n"
+        self.assertNotEqual(native_artifact_hashes(changed)["screen"], screen_package_hash())
+
     def source_tree(self, root):
         names = {name for group in NATIVE_HASH_FILES.values() for name in group}
         names.update(directory + "/package.py" for directory in NATIVE_HASH_GLOBS.values())

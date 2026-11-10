@@ -80,7 +80,8 @@ NATIVE_HASH_GLOBS = {
     "together": "companion_v2/together",
 }
 NATIVE_HASH_FILES = {
-    "screen": ("astrbot_host/native_extensions/screen_provider.py",),
+    "screen": ("astrbot_host/native_extensions/screen_provider.py",
+               "astrbot_host/native_extensions/screen_source.py"),
     "game": (
         "companion_v2/games/native/provider.py", "companion_v2/games/tictactoe.py",
         "companion_v2/games/gomoku.py", "companion_v2/games/pig_dice.py",
@@ -173,7 +174,7 @@ def native_artifact_hashes(files):
         missing = sorted(set(names).difference(files))
         if missing:
             raise ValueError("native capability source files missing: " + ", ".join(missing))
-        if capability == "game":
+        if capability in ("game", "screen"):
             result[capability] = digest(b"".join(files[name] for name in names))
         else:
             result[capability] = digest(files[names[0]])

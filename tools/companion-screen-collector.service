@@ -1,0 +1,14 @@
+[Unit]
+Description=Companion desktop screenshot collector
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.local/share/companion-screen/remote_screen_collector.py --config %h/.config/companion-screen/collector.json
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=graphical-session.target

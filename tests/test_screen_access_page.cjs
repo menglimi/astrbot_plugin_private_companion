@@ -11,7 +11,7 @@ const prefix = "/astrbot_plugin_private_companion";
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const settle = async () => { for (let i = 0; i < 10; i += 1) await flush(); };
 
-function harness({kind = "private", route = true, request, targets = [], confirm = async () => true} = {}) {
+function harness({kind = "private", route = true, request, targets = [], fields = {}, confirm = async () => true} = {}) {
   const calls = [];
   const choices = [];
   const target = {scope_kind: kind, target_id: "window-a", bot_id: "bot-a"};
@@ -19,6 +19,10 @@ function harness({kind = "private", route = true, request, targets = [], confirm
     innerHTML: "", isConnected: true, listeners: {},
     addEventListener(name, fn) { this.listeners[name] = fn; },
     removeEventListener(name) { delete this.listeners[name]; },
+    querySelector(selector) {
+      const name = selector.match(/screen-source-([a-z]+)/)?.[1];
+      return Object.hasOwn(fields, name) ? {value: fields[name]} : null;
+    },
     fire(action) {
       this.listeners.click({target: {closest: () => ({dataset: {screenAccessAction: action}})}});
     },
@@ -210,4 +214,33 @@ test("已确认的屏幕授权在路由返回时先保留，再重新核对", as
   assert.equal(calls.filter(call => call.method === "GET").length, 2);
   assert.match(node.innerHTML, /已授权/);
   page.unmount();
+});
+
+test("截图来源单独保存，不提交私聊授权或主动设置，不显示密钥", async () => {
+  const source = {revision: "source-a", token_configured: true, settings: {
+    mode: "remote", remote_url: "http://127.0.0.1:6191/capture", device_id: "windows-desktop", timeout_seconds: 10}};
+  const {node, calls} = harness({fields: {mode: "remote", url: "http://127.0.0.1:6191/capture",
+    device: "windows-desktop", token: "", timeout: "15"}, request: async (method) => method === "GET"
+      ? {invokable: true, consented: true, can_manage: true, edit_token: "edit-a", capture_source: source}
+      : {saved: true, capture_source: {...source, revision: "source-b"}}});
+  await settle();
+  assert.match(node.innerHTML, /截图来源/);
+  assert.match(node.innerHTML, /已设置，留空保留/);
+  assert.match(node.innerHTML, /type="password"[^>]*value=""/);
+  node.fire("save-source");
+  await settle();
+  const posts = calls.filter(call => call.method === "POST");
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].path, "/screen-access/capture-source");
+  assert.equal(JSON.stringify(posts[0].body), JSON.stringify({revision: "source-a", updates: {
+    mode: "remote", remote_url: "http://127.0.0.1:6191/capture", device_id: "windows-desktop",
+    remote_token: "", timeout_seconds: 15}}));
+  assert.match(node.innerHTML, /下次采集生效/);
+});
+
+test("只读账号不显示截图来源或设备地址", async () => {
+  const {node} = harness({request: async () => ({invokable: false, consented: false,
+    can_manage: false, edit_token: "edit-a"})});
+  await settle();
+  assert.doesNotMatch(node.innerHTML, /screen-source-|保存截图来源/);
 });

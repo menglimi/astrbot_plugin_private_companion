@@ -11,11 +11,19 @@ import json
 from pathlib import Path
 import sqlite3
 
+from .screen_source import ScreenSourceSettings, capture_remote
+
 
 SCHEMA = "companion.native-provider.v1"
 PLUGIN_ID = "astrbot_plugin_private_companion.screen"
 ACTION = "screen.capture"
 MAX_BYTES = 5 * 1024 * 1024
+
+
+def screen_package_hash():
+    root = Path(__file__).parent
+    return hashlib.sha256(b"".join((root / name).read_bytes()
+        for name in ("screen_provider.py", "screen_source.py"))).hexdigest()
 
 
 def _json(value):
@@ -47,9 +55,10 @@ class NativeScreenProvider:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.database = self.root / "operations.sqlite3"
+        self.source = ScreenSourceSettings(self.root)
         self._lock = asyncio.Lock()
         self._closed = False
-        self.artifact_hash = _hash(Path(__file__).read_bytes())
+        self.artifact_hash = screen_package_hash()
         self.generation = _hash(_json([self.artifact_hash, self.version]).encode("utf-8"))
         with self._connect() as connection:
             connection.execute("""CREATE TABLE IF NOT EXISTS operations (
@@ -83,7 +92,7 @@ class NativeScreenProvider:
                             "dataset_owners": ["screen"]},
                 "tools": [{"action": ACTION, "capability": "screen.process",
                            "source_owner": "screen", "description":
-                           "按需采集一次本机桌面屏幕，返回当前画面供本轮观察；仅在当前问题需要看屏幕时调用。",
+                           "按需采集一次已配置设备的桌面屏幕，返回当前画面供本轮观察；仅在当前问题需要看屏幕时调用。",
                            "parameters": {"type": "object", "properties": {},
                                           "required": [], "additionalProperties": False},
                            "side_effect": "external_device", "timeout_seconds": 30}]}
@@ -139,16 +148,22 @@ class NativeScreenProvider:
                 connection.execute("INSERT INTO operations VALUES (?, ?, 'pending', NULL, NULL)",
                                    (request["invocation_id"], original))
             try:
+                # Pin the source before admission; failures never select another device.
+                settings = self.source.read()
                 before_dispatch()
-                content = await asyncio.to_thread(self.capture)
+                remote = (await asyncio.to_thread(capture_remote, settings, request["invocation_id"], now=self.now())
+                          if settings["mode"] == "remote" else None)
+                content = remote.content if remote is not None else await asyncio.to_thread(self.capture)
                 if type(content) is not bytes or not 0 < len(content) <= MAX_BYTES:
                     raise ValueError("screen_native_image_invalid")
-                captured_at = self.now().astimezone(timezone.utc).isoformat()
+                captured_at = remote.captured_at if remote is not None else self.now().astimezone(timezone.utc).isoformat()
                 result = self._result(request, "succeeded", content=content,
-                    result={"device_id": "local-desktop", "surface": "desktop",
+                    result={"device_id": remote.device_id if remote is not None else "local-desktop",
+                            "surface": remote.surface if remote is not None else "desktop",
                             "captured_at": captured_at, "clock_quality": "client_reported",
-                            "window_title": None,
-                            "gaps": ["other displays or obscured areas may be unseen"]})
+                            "window_title": remote.window_title if remote is not None else None,
+                            "gaps": remote.gaps if remote is not None else
+                                ["other displays or obscured areas may be unseen"]})
                 with self._connect() as connection:
                     connection.execute("UPDATE operations SET state='succeeded', result_json=?, content=? WHERE invocation_id=?",
                                        (_json(result), content, request["invocation_id"]))

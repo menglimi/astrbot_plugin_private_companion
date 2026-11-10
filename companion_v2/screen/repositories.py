@@ -13,7 +13,7 @@ from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.execution.models import digest
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import (
-    AssetRef, AudienceRef, ReferenceValidationError, ScopeKind, ScopeRef, SourceRef, SubjectRef, VersionRef,
+    AssetRef, AudienceRef, ReferenceValidationError, ScopeRef, SourceRef, SubjectRef, VersionRef,
 )
 from companion_v2.identity_policy.models import AuthorizationTier, AuthorizedAccess, ResolvedIdentity
 from companion_v2.identity_policy.ports import IdentityAuthorizationPort
@@ -542,19 +542,19 @@ class ScreenRepository:
         if not role_selection.is_success:
             return Outcome(failure=role_selection.failure)
         stamps: list[object] = []
-        core_group = (reference.source.scope.kind is ScopeKind.GROUP
-                      and is_core(self._runtime, resolved.subject))
-        if core_group:
-            # Core administrators are the default audience for privacy
-            # capabilities and do not need a per-window consent row.  Re-resolve
-            # the binding so a mid-capture rebind still invalidates the stamp.
+        if is_core(self._runtime, resolved.subject):
+            # 私聊与群聊沿用同一默认授权规则；重新确认身份和显式撤销状态，
+            # 防止采集期间改绑或撤销后仍然发布画面。
             fresh = self._authorizer.resolve_authenticated(resolved.principal, observed_at=observed_at)
             if not fresh.is_success:
                 return Outcome(failure=fresh.failure)
             identity = fresh.unwrap()
             if identity.subject != resolved.subject or not is_core(self._runtime, identity.subject):
                 return Outcome.failed("screen_core_changed", "core administrator identity changed")
-            stamps.append(("core-group", identity.subject.kind.value, identity.subject.subject_id,
+            blocked = self._core_access_failure(identity, reference.source.scope, observed_at)
+            if blocked is not None:
+                return Outcome(failure=blocked)
+            stamps.append(("core", identity.subject.kind.value, identity.subject.subject_id,
                            identity.binding_id, identity.binding_revision))
         else:
             for capability in (SCREEN_READ, SCREEN_PROCESS):

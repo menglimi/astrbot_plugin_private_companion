@@ -16,7 +16,7 @@ from .discovery import declarations_for_manifest
 from .image_native.adapter import PLUGIN_ID as IMAGE_PACKAGE_ID
 from .image_native.extension import ImageExtensionAPI
 from .image_native.package import package_hash as image_package_hash
-from .screen_provider import NativeScreenProvider, PLUGIN_ID as SCREEN_PACKAGE_ID
+from .screen_provider import NativeScreenProvider, PLUGIN_ID as SCREEN_PACKAGE_ID, screen_package_hash
 from .settings import ExtensionSettings
 
 
@@ -140,8 +140,9 @@ def create_bundled_extension(data_root, name, *, now=None, context=None, control
             package_version=version,
             furniture=FurnitureDescriptor(name, IMAGE_EXTENSION_ID, "画面工作室", name))
     if name == "screen":
-        port = NativeScreenProvider(root / "extensions" / name, version=PRODUCT_VERSION, now=now)
-        return BundledNativeLease(SCREEN_PACKAGE_ID, port, factory=factory,
+        version = PRODUCT_VERSION + "+screen." + screen_package_hash()[:12]
+        port = NativeScreenProvider(root / "extensions" / name, version=version, now=now)
+        return BundledNativeLease(SCREEN_PACKAGE_ID, port, factory=factory, package_version=version,
             furniture=FurnitureDescriptor(name, SCREEN_EXTENSION_ID, "屏幕台", name))
     from importlib import import_module
     labels = {"reality": "现实设备台", "together": "共处电话", "game": "游戏棋桌", "live": "直播与表演"}
