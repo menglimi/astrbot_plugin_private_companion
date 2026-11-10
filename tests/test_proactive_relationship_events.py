@@ -149,12 +149,20 @@ class RelationshipContactEventTests(ContactScheduleFixture, unittest.IsolatedAsy
         plan = app.contact_schedule._plan(row, self.clock.now())
 
         self.assertIsNotNone(plan)
-        self.assertEqual([intent.purpose for intent in plan[2]], ["chat", "care"])
+        # One slot is one opening: rotate to exactly one enabled purpose instead
+        # of paying for chat + every enabled relationship purpose at once.
+        self.assertEqual(len(plan[2]), 1)
+        purpose = plan[2][0].purpose
+        self.assertIn(purpose, {"chat", "care"})
         self.assertTrue(all(intent.thought.opportunity == plan[1] for intent in plan[2]))
         self.assertTrue(plan[1].opportunity_id.startswith("automatic-"))
-        self.assertEqual(plan[4]["relationship_event"]["mode"], "slot")
-        self.assertIn("角色自己的想法", plan[2][0].thought.summary)
-        self.assertIn("不要求依赖最近某条消息", plan[2][0].thought.summary)
+        if purpose == "care":
+            self.assertEqual(plan[4]["relationship_event"]["mode"], "slot")
+            self.assertIn("关心", plan[2][0].thought.summary)
+        else:
+            self.assertNotIn("relationship_event", plan[4])
+            self.assertIn("角色自己的想法", plan[2][0].thought.summary)
+            self.assertIn("不要求依赖最近某条消息", plan[2][0].thought.summary)
 
     async def test_relationship_diagnostic_uses_real_neutral_turn_and_leaves_fit_to_prompt(self):
         host = await self.start(self.host(policy=ConversationPolicy(0, 0, 180, 0)))

@@ -721,17 +721,16 @@ class ContactSchedule:
             return None
         relationship_candidate = self.relationship_events.prompt_candidates(
             context, preferences, event, at, opportunity=opportunity)
-        intents = []
+        candidates = []
         if chat_reason is None:
             thought = Thought("conversation-check-in", opportunity, ThoughtKind.CONVERSATION,
                 "这是一次低压力的主动联系机会。可以从角色自己的想法、兴趣或真实对话里自然开口；不要求依赖最近某条消息或具体事件。先找一个此刻想分享的小念头、具体感想或轻问题，简短说到位，不要求对方立即回复。自己的主观想法不需要活动完成回执；涉及刚做过的事、共同经历或用户状态时仍以材料为据。候选不贴切时可从人格兴趣换个独立切口；确实无话可说、只是重述旧话或越过明确边界时跳过。",
                 EvidenceSnapshot(context.scope, at, (event.source,)), 1.0)
-            intents.append(ContactIntent("chat", thought))
+            candidates.append(("chat", ContactIntent("chat", thought), None))
         if relationship_candidate is not None:
             _relationship_opportunity, relationship_intents, marker = relationship_candidate
-            intents.extend(relationship_intents)
-            origin = {**origin, "relationship_event": marker}
-        if not intents:
+            candidates.extend(("relationship", intent, marker) for intent in relationship_intents)
+        if not candidates:
             reason_code = {
                 "proactive_disabled": "contact_settings_disabled" if not preferences.values["enabled"]
                 else "chat_purpose_disabled",
@@ -740,7 +739,14 @@ class ContactSchedule:
             }.get(chat_reason, "contact_conditions_blocked")
             self._note_window(context, row, at, "settings", "skipped", reason_code, purpose="chat")
             return None
-        return context, opportunity, tuple(intents), batch["role_instruction"], origin
+        # One slot is one opening. Do not turn it into a batch of chat + five
+        # relationship purposes; rotate deterministically so the next slot can
+        # use another purpose without paying several model calls for this one.
+        selection = int(digest([opportunity.opportunity_id, "slot-purpose"])[:8], 16) % len(candidates)
+        _kind, intent, selected_marker = candidates[selection]
+        if selected_marker is not None:
+            origin = {**origin, "relationship_event": selected_marker}
+        return context, opportunity, (intent,), batch["role_instruction"], origin
 
     def _share_candidate(self, context, preferences, candidate):
         """Apply the configured share probability to a role-share candidate only."""

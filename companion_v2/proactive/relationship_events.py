@@ -12,6 +12,19 @@ from .models import EvidenceSnapshot, Opportunity, Thought, ThoughtKind
 
 RELATIONSHIP_PURPOSES = ("affection", "care", "play", "repair", "invitation")
 
+# One slot is one conversational opening. Give the model a purpose-specific
+# direction instead of the same generic paragraph for every purpose, so a skip
+# means "this specific opening is not natural", not "the template did not fit".
+SLOT_PURPOSE_BRIEFS = {
+    "affection": "关系窗口：可以表达一点具体的想念、亲近或撒娇；不把对方的沉默、旧情绪或未发生的事写成事实。",
+    "care": "关系窗口：从角色自己注意到的小事或对方已知近况表达关心；不推断对方没吃饭、没睡好、生病或正在忙。",
+    "play": "关系窗口：可以发起一个具体的轻松玩法、玩笑或小挑战；不假装已经一起做过，也不催促对方接梗。",
+    "repair": "关系窗口：只有近期确有摩擦、误解或未收尾的话时才接住并修复；没有具体摩擦就换个独立切口或跳过。",
+    "invitation": "关系窗口：可以提出一个具体、低压力的一起做某事；不写成已经约好，也不把邀约当成对方必须答应。",
+}
+SLOT_FALLBACK_BRIEF = ("关系窗口：由角色带来一个具体的小念头、观察或轻问题；不要求重大事件，"
+                       "不把沉默、旧情绪或推测写成事实，没有合适内容就跳过。")
+
 # Only needed to finish validating short-lived candidates written by older versions.
 _LEGACY_PURPOSE_CUES = {
     "affection": re.compile(r"想你|喜欢你|爱你|在乎你|抱抱|miss you|love you|care about you", re.I),
@@ -49,9 +62,20 @@ class RelationshipContactEvents:
                                opportunity=opportunity, source=event.source)
 
     def prompt_candidates(self, context, preferences, event, at, *, opportunity=None):
-        """Use the slot as the cause; recent wording is not a prerequisite for reaching out."""
+        """Use the slot as the cause; one slot rotates through one enabled purpose.
+
+        Opening five relationship purposes for one otherwise generic slot produced
+        five near-identical model calls and five near-identical skipped records.
+        The slot is one conversational opening, so choose one purpose by a stable
+        seed and let the next slot rotate to another.
+        """
         purposes = tuple(purpose for purpose in RELATIONSHIP_PURPOSES if not preferences.reason(purpose))
-        return self._candidate(context, preferences, event, purposes, at, mode="slot", opportunity=opportunity)
+        if not purposes:
+            return None
+        seed = digest([context.key, opportunity.opportunity_id if opportunity is not None else "",
+                       "relationship-slot-purpose"])
+        chosen = purposes[int(seed[:8], 16) % len(purposes)]
+        return self._candidate(context, preferences, event, (chosen,), at, mode="slot", opportunity=opportunity)
 
     def _candidate(self, context, preferences, event, purposes, at, *, mode, opportunity, source=None):
         if not purposes:
@@ -64,10 +88,7 @@ class RelationshipContactEvents:
             return None
         marker = {"mode": mode, "purposes": list(purposes), "event_key": event.scoped_key,
                   "event_hash": event.input_hash, "expires_at": stamp(opportunity.expires_at)}
-        summary = ("这是一次按私聊节律开放的关系主动联系窗口；联系目的只表示表达方向，不表示用户最近说过对应的话。"
-                   "由角色带来自己的具体感想、亲近表达、轻问题或邀请，不需要等用户先表达同样的情绪，也不需要先有重大事件。"
-                   "结合关系距离与近期交流决定怎样开口；候选不合适时可换个同样符合本轮目的的切口，确实重复或越界时再跳过。"
-                   "不得把沉默、旧情绪、推测的感受或未发生的约定写成事实。"
+        summary = (SLOT_PURPOSE_BRIEFS.get(purposes[0], SLOT_FALLBACK_BRIEF)
                    if mode == "slot" else
                    "这是已确认私聊窗口中的关系主动联系机会；真实私聊只作背景，由角色自己发起自然表达，不当成刚收到的新输入，也不把用途标签当成事实。")
         sources = (source,) if source is not None else ()
