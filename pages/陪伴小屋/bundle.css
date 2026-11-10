@@ -6036,6 +6036,14 @@ body.state-connected{min-width:320px}
 .wb-fields{grid-template-columns:minmax(0,1fr);gap:0;max-width:1040px}
 .wb-field{grid-template-columns:12px minmax(0,1fr) auto;align-items:center;
   gap:var(--sp-2) var(--sp-4);padding:14px var(--sp-2) 14px 0}
+/* journal 形态不渲染左侧轨道，若仍让 main 自动落位，它会挤进 12px 轨道，
+   标题被压成一字一行、控件跑到最右侧。显式把 main 放到内容列。 */
+.wb-field>.wb-field-main{grid-column:2}
+@media (min-width:721px){
+  .wb-field>.wb-field-side{grid-column:3}
+}
+/* 自我页的 journal 是单列卡片，不能沿用工作台的第 2 列。 */
+.self-page .wb-journal .wb-field>.wb-field-main{grid-column:1}
 .wb-field-main{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,360px);
   align-items:center;column-gap:var(--sp-5);row-gap:var(--sp-1)}
 .wb-field-main>.wb-label{grid-column:1;grid-row:1;align-self:end}
