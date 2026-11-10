@@ -16,6 +16,8 @@ from companion_v2.capabilities.qzone_access import QzoneAccess
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.qzone.comment_scan import candidate_for
+from companion_v2.qzone.images import (MAX_PUBLISH_BODY, PublishImage, album_images, candidate_image,
+                                      image_batch)
 
 from .management_identity import dashboard_operator
 
@@ -55,6 +57,7 @@ class QzoneWebAPI:
             (PREFIX + "/like", self.like, ["POST"], "Like a scanned post"),
             (PREFIX + "/comment", self.comment, ["POST"], "Reply to a scanned post"),
             (PREFIX + "/publish", self.publish, ["POST"], "Publish a post to the role's Zone"),
+            (PREFIX + "/album", self.album, ["GET"], "Select a governed album image for a Zone post"),
             (PREFIX + "/refresh-credentials", self.refresh, ["POST"], "Refresh the QQ Zone session"),
             (PREFIX + "/scan-comments", self.scan_comments, ["GET"],
              "Read which comments this round may answer"),
@@ -97,7 +100,12 @@ class QzoneWebAPI:
             text=str(command.get("text") or ""), operation_key=_operation_key(command)))
 
     async def publish(self):
-        command = await self._command()
+        try:
+            command = await self._command(max_bytes=MAX_PUBLISH_BODY)
+        except TaskError as error:
+            return await self._failed(error.code, str(error))
+        except (ValueError, TypeError, UnicodeError):
+            return await self._failed("qzone_request_invalid", "发布参数无效")
 
         async def publish(access, service, at):
             context = self._context()
@@ -107,23 +115,53 @@ class QzoneWebAPI:
             refs = [str(item) for item in (command.get("source_refs") or ())]
             candidate_id = str(command.get("share_candidate_id") or "").strip()
             image_id = str(command.get("share_image_id") or "").strip()
-            if candidate_id and image_id:
+            image_ids = command.get("image_ids", [])
+            if not isinstance(image_ids, list) or (image_id and image_ids):
+                raise TaskError("qzone_request_invalid", "相册选图参数无效")
+            if candidate_id and (image_id or image_ids):
                 raise TaskError("qzone_request_invalid", "引用相册图只能用 share_image_id 或 share_candidate_id 之一")
+            uploads = command.get("images", [])
+            if not isinstance(uploads, list) or len(uploads) > 9:
+                raise TaskError("qzone_image_invalid", "每条说说最多选择 9 张图片")
+            images = []
+            session = self.controller.session or self.controller.last_session
+            for upload in uploads:
+                if not isinstance(upload, dict) or set(upload) - {"data_url", "name", "image_id"}:
+                    raise TaskError("qzone_image_invalid", "图片参数无效")
+                if upload.get("image_id"):
+                    if upload.get("data_url"):
+                        raise TaskError("qzone_image_invalid", "单张图片不能同时指定相册与本地文件")
+                    selected, _ = album_images(session.application, context, at, [upload["image_id"]], planner=self._planner())
+                    images.extend(selected)
+                else:
+                    images.append(PublishImage.from_data_url(upload.get("data_url")))
             if candidate_id:
-                # 备好候选、稍后发布：发布前**再复检一次**，撤销过的素材当场拒绝。
-                refs.append(self._recheck_share(candidate_id, context, at))
-            elif image_id:
-                source_id, candidate_id = self._share_source(image_id, context, at)
-                refs.append(source_id)
+                images.append(candidate_image(session.application, context, at, candidate_id, self._planner()))
+            elif image_id or image_ids:
+                selected, candidates = album_images(session.application, context, at,
+                    [image_id] if image_id else image_ids, planner=self._planner())
+                images.extend(selected)
+                candidate_id = candidates[0] if len(candidates) == 1 else ""
+            images = image_batch(images)
+            refs.extend(image.source_id for image in images if image.source_id)
             receipt = await service.publish(
                 context, text=str(command.get("text") or ""),
                 topic=str(command.get("topic") or ""), scene=str(command.get("scene") or ""),
                 confidence=command.get("confidence", 1.0), topic_confirmed=True,
                 source_refs=tuple(refs),
+                images=images,
                 agenda_proposal=command.get("agenda_proposal"),
                 operation_key=_operation_key(command))
             return {"candidate_id": candidate_id, "source_refs": tuple(refs), "receipt": receipt}
         return await self._run(publish)
+
+    async def album(self):
+        def read_album(access, service, at):
+            from companion_v2.references.management import ReferenceMaterialManagement
+            session = self.controller.session or self.controller.last_session
+            return ReferenceMaterialManagement(session.application).album(
+                self._operator(at), self._context(), at=at, cursor=request.query.get("cursor"))
+        return await self._run(read_album)
 
     async def refresh(self):
         async def refresh_credentials(access, service, at):
@@ -233,43 +271,6 @@ class QzoneWebAPI:
                                                catalog=ShareCatalog())
         return self._share_planner
 
-    def _recheck_share(self, candidate_id, context, at):
-        """发布前复检一个先前备好的候选：素材被撤销/过期就当场拒绝。
-
-        候选是"稍后发布"的凭据，不是通行证：``follow_up_material`` 会重新读源仓库与
-        素材仓库，所以页面停留期间被撤销的图不会因为"刚才备过案"而发出去。
-        """
-        from companion_v2.execution.models import require
-        from companion_v2.qzone.capability import PUBLISH_ACTION
-
-        session = self.controller.session or self.controller.last_session
-        material = require(self._planner().follow_up_material(
-            candidate_id, resolved=context.actor, capability=PUBLISH_ACTION, observed_at=at,
-            authorizer=session.application.tasks.identity, role_owner=self._role_owner(context)))
-        return material.source.source_id
-
-    def _share_source(self, image_id, context, at):
-        """把"发说说时要配的那张相册图"折成它的**受治理来源**（经 SharePlanner 复检）。
-
-        **不做上传**：这里只是把来源标注带进发布参数——``publish`` 本来就收 ``source_refs``，
-        而相册图在生成时就已经登记为受治理的 source。图片本体留在相册里；真上传是一次
-        外部效果，要按"结果未知不重放"的纪律单独做。
-
-        复检用的能力是**公开发布**那一项：要公开引用一张图，就得先持有公开说话的授权，
-        这一点由 ``SharePlanner`` 去读源仓库时真实校验，不是这里自己声明的。
-        """
-        from companion_v2.execution.models import require
-        from companion_v2.qzone.capability import PUBLISH_ACTION
-
-        session = self.controller.session or self.controller.last_session
-        application = session.application
-        generated = application.messages.generated_images
-        item = generated.album_image(context, at, image_id)
-        candidate = require(generated.album_share_candidate(
-            item, context, planner=self._planner(), capability=PUBLISH_ACTION, at=at,
-            authorizer=application.tasks.identity))
-        return candidate.material.source.source_id, candidate.candidate_id
-
     @staticmethod
     def _role_owner(context):
         from companion_v2.foundation.refs import RoleOwnerRef
@@ -277,9 +278,9 @@ class QzoneWebAPI:
         return RoleOwnerRef(context.scope.installation_id, context.scope.bot_id,
                             context.role_binding.role.subject_id)
 
-    async def _command(self):
+    async def _command(self, *, max_bytes=MAX_BODY_BYTES):
         raw = await request.body()
-        if len(raw) > MAX_BODY_BYTES:
+        if len(raw) > max_bytes:
             raise TaskError("qzone_request_invalid", "QQ Zone request is too large")
         command = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique,
                              parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("nonfinite value")))

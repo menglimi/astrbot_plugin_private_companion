@@ -10,11 +10,13 @@ matching ``g_tk`` per operation, nothing invented from a uin and a tid alone.
 from __future__ import annotations
 
 import json
+import base64
 import logging
 import re
 from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
 from typing import Any
+from urllib.parse import parse_qs, urlsplit, unquote
 
 from companion_v2.execution.models import TaskError
 logger = logging.getLogger(__name__)
@@ -27,8 +29,10 @@ H5_INDEX_URL = "https://h5.qzone.qq.com/mqzone/index"
 FEED_LIST_URL = "https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msglist_v6"
 FEED_LEGACY_URL = "https://user.qzone.qq.com/proxy/domain/ic2.qzone.qq.com/cgi-bin/feeds/feeds3_html_more"
 LIKE_URL = "https://user.qzone.qq.com/proxy/domain/w.qzone.qq.com/cgi-bin/likes/internal_dolike_app"
+LIKE_LIST_URL = "https://user.qzone.qq.com/proxy/domain/users.qzone.qq.com/cgi-bin/likes/get_like_list_app"
 COMMENT_URL = "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_re_feeds"
 PUBLISH_URL = "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_publish_v6"
+IMAGE_UPLOAD_URL = "https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image"
 
 COOKIE_DOMAINS = ("user.qzone.qq.com", "qzone.qq.com", "h5.qzone.qq.com", "mobile.qzone.qq.com",
                   "taotao.qzone.qq.com", "qun.qzone.qq.com", "ti.qq.com", "qq.com")
@@ -427,6 +431,7 @@ class QzoneRequest:
     data: dict = field(default_factory=dict)
     headers: dict = field(default_factory=dict)
     description: str = ""
+    credential: QzoneCredential | None = field(default=None, repr=False, compare=False)
 
     @property
     def effectful(self):
@@ -450,7 +455,7 @@ def feed_request(credential, *, uin=0, pos=0, num=10, detail=False):
         params["need_comment"] = 1
         params["need_private_comment"] = 1
     return QzoneRequest("GET", FEED_LIST_URL, params=params, headers={"Referer": credential.referer()},
-                        description="feed.list")
+                        description="feed.list", credential=credential)
 
 
 def friends_feed_request(credential, *, page=1, count=10):
@@ -471,16 +476,41 @@ def h5_index_request(credential):
     }, description="credential.qzonetoken")
 
 
+def post_like_key(post):
+    """Keep QQ's original ticket, or use its canonical shuoshuo resource key."""
+    return post.unikey or post.curkey or f"http://user.qzone.qq.com/{post.author_uin}/mood/{post.post_id}.1"
+
+
+def like_list_request(credential, post):
+    return QzoneRequest("GET", LIKE_LIST_URL, params={
+        "uin": credential.uin, "unikey": post_like_key(post), "begin_uin": 0,
+        "query_count": 60, "if_first_page": 1, "g_tk": credential.g_tk,
+    }, headers={"Referer": f"{REFERER_ROOT}/{post.author_uin}/mood/{post.post_id}"},
+        description="post.likes", credential=credential)
+
+
+def like_list_has_self(payload, uin):
+    """Only the caller's explicit flag or roster entry proves an existing like."""
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    for key in ("is_dolike", "isliked", "is_like", "if_like", "selflike"):
+        if data.get(key) in (1, "1", True, "true"):
+            return True
+    members = data.get("like_uin_info")
+    return isinstance(members, list) and any(
+        isinstance(member, dict) and str(member.get("uin") or "").lstrip("oO") == str(uin)
+        for member in members)
+
+
 def like_request(credential, post):
     """Like one post using the tickets that came with the scan, never a guess."""
-    reference = credential.referer(f"/{post.author_uin}/mood/{post.post_id}")
+    reference = f"{REFERER_ROOT}/{post.author_uin}/mood/{post.post_id}"
     data = {"qzreferrer": credential.referer(), "opuin": credential.uin,
-            "unikey": post.unikey or reference, "curkey": post.curkey or reference,
+            "unikey": post_like_key(post), "curkey": post.curkey or post_like_key(post),
             "appid": post.appid or "311", "from": 1, "typeid": post.typeid or "0",
             "abstime": post.abstime or "0", "fid": post.fid or post.post_id, "active": 0,
             "format": "json", "fupdate": 1}
     return QzoneRequest("POST", LIKE_URL, params={"g_tk": credential.g_tk}, data=data,
-                        headers=_form_headers(reference), description="post.like")
+                        headers=_form_headers(reference), description="post.like", credential=credential)
 
 
 def comment_request(credential, post, text):
@@ -488,17 +518,86 @@ def comment_request(credential, post, text):
             "hostUin": post.author_uin, "feedsType": 100, "inCharset": "utf-8", "outCharset": "utf-8",
             "plat": "qzone", "source": "ic", "platformid": 52, "format": "fs", "ref": "feeds",
             "content": text}
-    reference = credential.referer(f"/{post.author_uin}/mood/{post.post_id}")
+    reference = f"{REFERER_ROOT}/{post.author_uin}/mood/{post.post_id}"
     return QzoneRequest("POST", COMMENT_URL, params={"g_tk": credential.g_tk}, data=data,
-                        headers=_form_headers(reference), description="post.comment")
+                        headers=_form_headers(reference), description="post.comment", credential=credential)
 
 
-def publish_request(credential, text):
+def upload_image_request(credential, image, *, qzonetoken=""):
+    """QQ's shuoshuo album upload; bytes are sent once as a base64 form field."""
+    fields = parse_cookie_text(credential.header)
+    extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"}[image.mime_type]
+    data = {"filename": f"{image.content_hash[:16]}.{extension}", "uin": credential.uin,
+            "skey": fields.get("skey") or credential.secret,
+            "p_skey": fields.get("p_skey") or credential.secret,
+            "zzpaneluin": credential.uin, "p_uin": credential.uin,
+            "qzonetoken": qzonetoken or credential.qzonetoken, "zzpanelkey": "",
+            "uploadtype": "1", "albumtype": "7", "exttype": "0", "refer": "shuoshuo",
+            "output_type": "json", "charset": "utf-8", "output_charset": "utf-8",
+            "upload_hd": "1", "hd_width": "2048", "hd_height": "10000", "hd_quality": "96",
+            "url": f"{IMAGE_UPLOAD_URL}?g_tk={credential.g_tk}", "base64": "1",
+            "picfile": base64.b64encode(image.content).decode("ascii"),
+            "qzreferrer": credential.referer()}
+    return QzoneRequest("POST", IMAGE_UPLOAD_URL, params={"g_tk": credential.g_tk}, data=data,
+        headers=_form_headers(credential.referer(), ajax=True), description="image.upload", credential=credential)
+
+
+@dataclass(frozen=True)
+class UploadedImage:
+    richval: str
+    pic_bo: str
+    lloc: str
+    sloc: str
+
+
+def image_location_ids(value):
+    """QQ's /psc?/album/photo/b stores its photo path inside the query string."""
+    value = str(value or "").strip()
+    if not value:
+        return ()
+    parsed = urlsplit(value)
+    if parsed.scheme or value.startswith("/"):
+        route = parsed.query.split("&", 1)[0] if parsed.query.startswith("/") else parsed.path
+        parts = [part for part in unquote(route).split("/") if part]
+        if len(parts) >= 3 and parts[0].startswith("V"):
+            return (parts[1],)
+        if parts and parts[-1] in ("b", "m", "s", "l", "0"):
+            parts.pop()
+        return (parts[-1],) if parts else ()
+    return (value,)
+
+
+def uploaded_image(payload):
+    """Require the attachment receipt; HTTP success alone cannot attach a photo."""
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    def value(*keys):
+        return next((str(data[key]).strip() for key in keys if data.get(key) not in (None, "")), "")
+    album, lloc, sloc = value("albumid", "album_id"), value("lloc"), value("sloc")
+    bo = value("pic_bo", "picbo", "bo")
+    if not bo:
+        query = parse_qs(urlsplit(value("url", "origin_url", "pre", "raw_url")).query)
+        bo = next((query[key][0] for key in ("bo", "pic_bo", "picbo") if query.get(key)), "")
+    width, height = value("width", "w"), value("height", "h")
+    if (not all((album, lloc, sloc, bo)) or not width.isdigit() or not height.isdigit()
+            or int(width) < 1 or int(height) < 1
+            or any(char in album + lloc + sloc for char in ",\t\r\n")):
+        raise TaskError("qzone_image_upload_failed", "图片上传回执缺少附件标识，未发布说说")
+    richval = ",".join(("", album, lloc, sloc, value("type", "phototype", "image_type") or "1",
+                        height, width, "", height, width))
+    return UploadedImage(richval, bo, lloc, sloc)
+
+
+def publish_request(credential, text, images=()):
     data = {"syn_tweet_verson": 1, "paramstr": 1, "who": 1, "con": text, "feedversion": 1, "ver": 1,
             "ugc_right": 1, "to_sign": 0, "hostuin": credential.uin, "code_version": 1,
             "issyncweibo": 0, "format": "json", "qzreferrer": credential.referer()}
+    if images:
+        data.update(richtype="1", subrichtype="1", richval="\t".join(image.richval for image in images),
+                    pic_bo=",".join(image.pic_bo for image in images), pic_template="")
+        data["con"] = text or " "
     return QzoneRequest("POST", PUBLISH_URL, params={"g_tk": credential.g_tk}, data=data,
-                        headers=_form_headers(credential.referer(), ajax=True), description="post.publish")
+                        headers=_form_headers(credential.referer(), ajax=True), description="post.publish",
+                        credential=credential)
 
 
 def clean_text(value, *, limit, field="text"):

@@ -67,6 +67,10 @@ window.CompanionStoragePage = (() => {
         <section class="storage-panel"><h4>备份清理策略</h4><fieldset class="storage-retention"><label>每个运行档最多保留<input name="retention_count" type="number" min="1" max="200" step="1" value="${text(state.form.retention_count)}">份</label><label>保留最近<input name="retention_days" type="number" min="1" max="3650" step="1" value="${text(state.form.retention_days)}">天</label><small>新建快照时自动清理，始终保留最新一份。</small></fieldset>
           ${cleanup}<div class="storage-actions"><button class="button primary small" type="submit"${state.busy ? " disabled" : ""}>保存存储设置</button><button class="button small" type="button" data-storage-refresh${state.busy ? " disabled" : ""}>重新读取</button></div>
         </section>
+        <section class="storage-panel"><h4>运行缓存</h4>
+          <p class="storage-cache-note">图片转述、失败冷却和诊断报告都可以随时重建；清理只释放当前进程里的缓存，不会删除对话、记忆、日记或已发送的图片。</p>
+          <div class="storage-actions"><button class="button small" type="button" data-storage-cache-clear${state.busy ? " disabled" : ""}>清理运行缓存</button></div>
+        </section>
       </form>
       ${message}
     </div>`;
@@ -124,13 +128,18 @@ window.CompanionStoragePage = (() => {
     try {
       const result = await call("POST", body);
       if (!live(ticket)) return;
-      state.status = result;
-      state.form = {path: result.selected_path || "",
-        backup_path: result.selected_backup_path || "",
-        retention_count: result.policy?.retention_count ?? state.form.retention_count,
-        retention_days: result.policy?.retention_days ?? state.form.retention_days};
+      if (result.inventory) {
+        state.status = result;
+        state.form = {path: result.selected_path || "",
+          backup_path: result.selected_backup_path || "",
+          retention_count: result.policy?.retention_count ?? state.form.retention_count,
+          retention_days: result.policy?.retention_days ?? state.form.retention_days};
+      }
+      const cache = result.cache_result || {};
       state.message = body.action === "clean"
         ? `已清理 ${result.cleanup_result?.removed_count || 0} 份快照，释放 ${formatBytes(result.cleanup_result?.removed_bytes)}。`
+        : body.action === "cache"
+        ? `已清理运行缓存：图片转述 ${Number(cache.image_narration) || 0} 条、失败记录 ${Number(cache.image_narration_failures) || 0} 条、诊断报告 ${Number(cache.diagnostics) || 0} 条。`
         : result.restart_required ? "设置已保存，运行资料位置将在重启后切换。" : "存储设置已保存。";
       state.error = false;
       state.confirming = false;
@@ -175,6 +184,7 @@ window.CompanionStoragePage = (() => {
       const button = event.target?.closest("button");
       if (!button || state.busy) return;
       if (button.hasAttribute("data-storage-refresh")) load(ticket);
+      else if (button.hasAttribute("data-storage-cache-clear")) update({action: "cache"}, ticket);
       else if (button.hasAttribute("data-storage-clean-review")) { state.confirming = true; render(); }
       else if (button.hasAttribute("data-storage-clean-cancel")) { state.confirming = false; render(); }
       else if (button.hasAttribute("data-storage-clean-confirm")) update({action: "clean"}, ticket);

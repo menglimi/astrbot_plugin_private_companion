@@ -6,6 +6,7 @@ only a confirmed successful image operation does.
 """
 
 from datetime import timezone
+import logging
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
@@ -20,6 +21,8 @@ from companion_v2.foundation.refs import ScopeKind
 # Kept as the stable persisted parent-task kind; importing it from proactive
 # would make the conversation package depend on the proactive package.
 PROACTIVE_COMPOSE_KIND = "proactive.compose"
+
+logger = logging.getLogger(__name__)
 
 GROUP = "conversation.media_quota"
 OWNER = "conversation.media_quota"
@@ -69,6 +72,12 @@ class ImageQuotaGate:
         if scope != "proactive":
             denial = image_request_denial(self.runtime, context, settings)
             if denial is not None:
+                # This is the only place where a denial means "someone actually
+                # tried to generate or edit an image and was refused", so it is
+                # the one worth surfacing. Turn-level probes stay at DEBUG.
+                logger.info("[CompanionV2] 生图请求被拒 code=%s scope=%s subject=%s group=%s",
+                            denial[0], scope, context.actor.subject.subject_id,
+                            context.scope.native_scope_id)
                 raise TaskError(*denial)
         limit = self._limit(context, scope)
         if limit < 0:

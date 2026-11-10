@@ -168,7 +168,7 @@ class ExternalProviderCatalogTests(unittest.TestCase):
         self.assertEqual(entry["capability_id"], "video_vision")
         self.assertEqual(entry["label"], "基米看得见视频")
         self.assertEqual(entry["description"],
-            "普通聊天的原生视频理解由该插件提供（含引用视频与体积压缩）。")
+            "可选的外部视频扩展；普通聊天的视频理解已由本插件原生提供，不需要安装它。")
         self.assertEqual(set(entry["furniture"]), {"id", "name", "panel_id"})
         self.assertTrue(all(isinstance(value, str) and value
                             for value in entry["furniture"].values()))

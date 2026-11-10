@@ -1,0 +1,26 @@
+.qzone-image-picker { margin: 12px 0; }
+.qzone-file-button { position: relative; overflow: hidden; cursor: pointer; }
+.qzone-file-button input { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }
+.qzone-file-button:focus-within { outline: 2px solid currentColor; outline-offset: 3px; }
+.qzone-file-button:has(input:disabled) { opacity: .55; cursor: default; }
+.qzone-selected-images,.qzone-album-images,.qzone-photos {
+  display: grid; grid-template-columns: repeat(auto-fill,minmax(112px,1fr)); gap: 10px; margin: 10px 0;
+}
+.qzone-selected-images:empty,.qzone-photos:empty { display: none; }
+.qzone-selected-images figure { margin: 0; min-width: 0; max-width: 200px; }
+.qzone-selected-images img,.qzone-album-images img,.qzone-photos img {
+  display: block; width: 100%; aspect-ratio: 1; object-fit: contain; border-radius: 8px;
+  background: color-mix(in srgb,currentColor 5%,transparent);
+}
+.qzone-selected-images figcaption { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 5px 0; font-size: 12px; }
+.qzone-album-images button { min-width: 0; padding: 5px; border: 1px solid currentColor; border-radius: 8px; background: transparent; color: inherit; cursor: pointer; }
+.qzone-album-images button:disabled { opacity: .55; cursor: default; }
+.qzone-album-images button:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.qzone-photos { grid-template-columns: repeat(3,minmax(0,180px)); }
+.qzone-photos a { min-width: 0; }
+.qzone-photos:has(> a:only-child) { grid-template-columns: minmax(0,1fr); max-width: 280px; }
+.qzone-photos a:only-child img { aspect-ratio: auto; max-height: 260px; }
+@media(max-width: 520px) {
+  .qzone-selected-images,.qzone-album-images { grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
+  .qzone-image-picker .action-qzone-row { flex-wrap: wrap; }
+}

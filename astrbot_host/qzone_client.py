@@ -339,7 +339,7 @@ class QzoneHttpClient:
         transport failure comes back as an outcome whose ``delivery_unknown``
         flag tells the caller whether replaying it is allowed.
         """
-        credential = await self.credential()
+        credential = request.credential or await self.credential()
         outcome = await self._exchange(request, credential,
                                        timeout=_seconds(timeout, self._request_timeout))
         self._note(request.description, outcome.status, effectful=request.effectful,
@@ -393,7 +393,7 @@ class QzoneHttpClient:
     # -- H5 token --------------------------------------------------------------------
 
     async def qzonetoken(self, credential: QzoneCredential) -> str:
-        """Best effort: an empty token only means publish stays text-only."""
+        """Best effort H5 token; callers still check the upload response."""
         try:
             uin = int(getattr(credential, "uin", 0) or 0)
         except (TypeError, ValueError):

@@ -12,7 +12,7 @@ from companion_v2.sources.models import SourceRecord
 from companion_v2.sources.privacy import redact_text, redact_fields
 
 from . import codec
-from .models import AtomRef, Evidence, owner_key, text
+from .models import AtomRef, Evidence, Proposal, owner_key, text
 from .writer import MemoryWriter
 from .configuration import GROUP, role_target_for, target_for, validate_schedule
 
@@ -294,6 +294,52 @@ class MemoryManagement:
                 "object": proposal.object, "predicate": proposal.predicate, "polarity": proposal.polarity,
                 "retention": proposal.retention, "context_mode": proposal.context_mode,
                 "observed_at": document.get("observed_at"), "attribution": proposal.attribution}
+
+    def add(self, context, *, operation_key, subject, predicate, object, representation="",
+            retention="durable"):
+        """Record one administrator-authored fact about the current user.
+
+        This is the manual counterpart to automatic extraction: the text is
+        stored as the administrator's own statement, with a published source so
+        later reads can show where it came from.  It never impersonates a user
+        message, never stores a role self-description and never overwrites an
+        existing fact.
+        """
+        self.writer.access.check(context)
+        text(operation_key, "operation_key", 512)
+        # 关系记忆的 subject=self 专指「当前已认证用户」；角色自我认知属于角色档案，
+        # 第三方实体必须带来源引用，这里的自由文本只能记录关于对方的事实。
+        if subject != "self":
+            raise ValueError("manual memory records facts about the current user only")
+        if type(predicate) is not str or not predicate.strip() or len(predicate) > 8192:
+            raise ValueError("manual memory predicate is invalid")
+        if type(object) is not str or not object.strip() or len(object) > 8192:
+            raise ValueError("manual memory object is invalid")
+        if type(representation) is not str or len(representation) > 8192:
+            raise ValueError("manual memory representation is invalid")
+        if retention not in ("durable", "protected"):
+            retention = "durable"
+        with self.writer.runtime.transaction():
+            now = self.writer.tasks.now()
+            body = json.dumps({"action": "add", "subject": subject, "predicate": predicate,
+                "object": object, "representation": representation or object,
+                "operator_id": self.operator.subject.subject_id}, ensure_ascii=False)
+            body = redact_text(body)
+            source_id = "memory-management-" + digest([owner_key(context), self.operator.subject,
+                                                      operation_key, digest(body)])
+            source = SourceRef(source_id, "management.memory", context.scope, VersionRef(source_id, 1), now)
+            require(self.writer.sources.publish(
+                SourceRecord(source, context.audience, digest(body), body), observed_at=now))
+            evidence = Evidence(source, digest(body), 0, len(body), digest(body),
+                                self.operator.subject.subject_id, "source")
+            proposal = Proposal(operation="add", subject=subject, predicate=predicate, object=object,
+                representation=representation or object, retention=retention,
+                attribution="third_party", evidence=(evidence,), reason="Manual memory entry")
+            result = self.writer.submit(context, proposal, operation_key=operation_key)
+            if not result.is_success:
+                # 失败时抛出以回滚本事务：否则已经发布的 management 来源会留成孤儿。
+                raise TaskError(result.failure.code, result.failure.reason)
+            return result
 
     @outcome
     def command(self, context, *, atom_id, expected_revision, view_token, operation_key, action, value=None):

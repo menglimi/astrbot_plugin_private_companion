@@ -245,13 +245,28 @@ class CoreReplyDecisionTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         await self.controller.observe_group_early(self.incoming("same-group-history", "这是本群当前讨论"))
         event = self.incoming("addressed-question", "有没有好玩的插件？")
         event.message_obj.message.insert(0, NS(type="At", qq="100"))
-        await self.intake(event)
-        facts = self.calls[0][0]
+        prepared = await self.intake(event)
+        self.assertEqual(self.calls, [])
+        self.assertTrue(prepared["group_admission"]["mentioned"])
+        facts = core_decision_facts(event, prepared, self.app, at=self.clock.now())
         self.assertTrue(facts["mentioned"])
         bodies = [item["text"] for item in facts["recent_group_messages"]]
         self.assertIn("这是本群当前讨论", bodies)
         self.assertNotIn("别群私密内容", bodies)
         self.assertNotIn("有没有好玩的插件？", bodies)
+
+    async def test_explicit_at_mention_bypasses_laya_silence(self):
+        self.prediction = laya_result({"action": "silent"})
+        event = self.incoming("explicit-at", "怎么让 Laya 必回 @")
+        event.message_obj.message.insert(0, NS(type="At", qq="100"))
+        prepared = await self.intake(event)
+        self.assertEqual(self.calls, [])
+        self.assertTrue(event.is_at_or_wake_command)
+        self.assertFalse(prepared["laya_decision"]["suppress_reply"])
+        self.assertEqual(prepared["laya_decision"]["status"], "skipped")
+        self.assertEqual(prepared["laya_decision"]["reason"], "explicit_mention")
+        self.assertEqual(prepared["laya_decision"]["applied_decision"], {"action": "reply"})
+        self.assert_no_provider_or_send(event)
 
     async def test_group_decision_reads_recent_bot_question_from_send_return_history(self):
         target = self.controller.settings.target("group-a")

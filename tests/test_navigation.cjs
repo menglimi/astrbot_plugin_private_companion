@@ -700,7 +700,7 @@ test("the video understanding card opens its external provider detail", () => {
   assert.equal(card.group, undefined, "外部提供方不是基础生活家具");
   /* 行内说明与搜索都消费 text：缺了它会渲染成 undefined，卡片看起来像坏了一半。 */
   const row = h.run("renderDirectory()");
-  assert.match(row, /观影机[\s\S]{0,200}?视频理解插件的安装状态与入口/);
+  assert.match(row, /观影机[\s\S]{0,200}?可选外部视频扩展；本插件已原生理解视频/);
   assert.doesNotMatch(row, /undefined/, "卡片被消费的字段必须都有值");
   h.run("openFurniture('video-vision')");
   assert.equal(h.dialog.open, true, "the card opens a detail dialog");

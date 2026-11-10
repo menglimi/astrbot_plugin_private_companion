@@ -90,7 +90,6 @@ class GroupImageDeliveryTests(GroupImageDeliveryFixture, unittest.IsolatedAsynci
     async def test_exact_group_account_and_member_session_choose_image_transport(self):
         await self.with_delivery()
         for index, target in enumerate(("group-a", "group-b", "group-c")):
-            (await self.controller.authorize_group_delivery(target)).unwrap()
             context, batch = await self.receive_parts([sdk_image()], target=target, unique=True, sender=str(701 + index))
             configured = self.controller.settings.target(target)
             sent = self.sends(configured.platform_id)[-1]
@@ -142,7 +141,6 @@ class GroupImageDeliveryTests(GroupImageDeliveryFixture, unittest.IsolatedAsynci
             self.assertNotEqual(prior, offered_images(payload))
             return image_reply(payload, handles=prior)
         self.native.provider.client.state.behavior = foreign
-        (await self.controller.authorize_group_delivery("group-b")).unwrap()
         batch = (await self.controller.receive_claimed(self.media_event([sdk_image()], target="group-b"))).unwrap()
         await wait_for_batch(self.controller.session, batch)
         self.assertEqual(self.app.flow.row(batch)["state"], "blocked")

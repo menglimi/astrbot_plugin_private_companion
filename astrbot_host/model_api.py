@@ -524,7 +524,7 @@ class ModelWebAPI:
                         and ((set(data.get("changes") or {}) | set(data.get("reset") or []))
                              & set(CORE_MANAGED_FIELDS))):
                     raise TaskError("model_configuration_host_managed",
-                                    "普通回复模型由 AstrBot 当前会话管理；此处只保存对话附加提示。")
+                                    "普通回复模型由 AstrBot 当前会话管理；这里只保存对话附加提示和时段替换规则。")
             layer = data.get("layer", "role") if data is not None else request.query.get("layer", "role")
             # Capture the lifecycle-bound references under the control lock, but
             # never run synchronous SQLite/projection work on the event loop.

@@ -5,7 +5,7 @@ from .core_reply_context import BACKGROUND_INSTRUCTION, GROUP_INSTRUCTION, MEMOR
 
 CORE_MANAGED_FIELDS = (
     "provider", "fallback", "max_output_tokens", "timeout_seconds",
-    "replacement_rules", "fallback_on_refusal", "refusal_terms", "replacement_scope",
+    "fallback_on_refusal", "refusal_terms", "replacement_scope",
 )
 
 
@@ -21,8 +21,9 @@ def project_core_reply_task(task):
         **task,
         "execution_path": "astrbot_core",
         "core_managed_fields": list(CORE_MANAGED_FIELDS),
-        "editable_fields": ["prompt"],
-        "routing_note": "普通私聊与群聊由 AstrBot 当前会话选择模型、回退与超时；在 AstrBot 设置中调整。",
+        "editable_fields": ["prompt", "replacement_rules"],
+        "routing_note": ("普通私聊与群聊由 AstrBot 当前会话选择模型；保存的纯时段替换规则会在命中时段内"
+                         "按轮临时切换到替代 Provider，不修改会话模型。"),
         "prompt_layers": [
             {"key": "host_persona", "label": "AstrBot 人格与会话历史", "editable": False,
              "description": "核心构造当前人格、对话历史、原始图片与音视频；在 AstrBot 中管理。"},

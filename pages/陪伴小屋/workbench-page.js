@@ -49,6 +49,9 @@ window.CompanionWorkbench = (() => {
   const errors = {
     configuration_revision_conflict: "配置已经更新。草稿已保留，读取新版本后再核对。",
     configuration_request_invalid: "请求格式有误，请刷新后重试。",
+    configuration_target_unavailable: "所选会话当前不可用，请在账号与会话中重新选择。",
+    configuration_target_inactive: "所选私聊与当前配置上下文不一致，请重新选择账号与会话。",
+    configuration_target_changed: "所选会话或角色已经变化，请重新读取后再操作。",
     invalid_configuration_value: "请核对数值类型与范围。",
     invalid_precision: "数值精度超出允许范围。",
     dashboard_identity_required: "请从已登录的 AstrBot 管理界面打开陪伴小屋。",
@@ -2364,7 +2367,14 @@ window.CompanionWorkbench = (() => {
         }
         for (let retries = 0; !cached; retries += 1) {
           try {
-            payload = await api("GET", endpoint, null, query || undefined);
+            /* /config multiplexes sections for the page's selected target; without
+               this the server would edit the active private profile while the page
+               shows a group. Other workbench routes identify their group in the path. */
+            const selection = requestSection ? (window.CompanionProduct?.selection?.() || {}) : {};
+            const targetQuery = selection.target_id
+              ? {target_id: selection.target_id, ...(selection.role_id ? {role_id: selection.role_id} : {})} : null;
+            payload = await api("GET", endpoint, null,
+              targetQuery ? {...(query || {}), ...targetQuery} : (query || undefined));
             writeCache(cacheKey, payload);
             break;
           } catch (problem) {
@@ -2552,6 +2562,11 @@ window.CompanionWorkbench = (() => {
            reply/expression/memory routes identify their group in the path and
            reject unknown body keys. Keep the discriminator opt-in. */
         if (requestSection) body.section = request.section || requestSection;
+        if (requestSection) {
+          const selection = window.CompanionProduct?.selection?.() || {};
+          if (selection.target_id) body.target_id = selection.target_id;
+          if (selection.role_id) body.role_id = selection.role_id;
+        }
         const result = await api("POST", endpoint + savePath, body);
         const receipt = result.result ?? result;
         if (typeof receipt?.operation_id !== "string" || typeof receipt?.replayed !== "boolean") {

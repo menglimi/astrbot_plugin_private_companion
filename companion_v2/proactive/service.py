@@ -29,7 +29,7 @@ from companion_v2.delivery.service import DeliveryRequest
 from companion_v2.delivery.history import HistoricalText, VERSION as HISTORY_VERSION
 from companion_v2.execution.models import (Lane, ProviderBinding, SideEffect, TaskDefinition, TaskError,
     TaskRegistration, TaskResult, TaskSpec, digest, encode, require, stamp)
-from companion_v2.execution.runner import ExactTaskRunner, RunResult
+from companion_v2.execution.runner import CAPACITY_REFUSALS, ExactTaskRunner, RunResult
 from companion_v2.execution.service import outcome
 from companion_v2.expression.configuration import read_settings as expression_settings
 from companion_v2.foundation.outcome import Outcome
@@ -60,6 +60,13 @@ from .official_alert_events import SOURCE_OWNER as OFFICIAL_ALERT_SOURCE_OWNER, 
 CONTACT_KIND = "proactive.compose"
 PLAN_KIND = "proactive.plan"
 JUDGE_TIMEOUT_SECONDS = 90
+# A manual diagnostic composes on the same single background lane as automatic
+# contact work. Wait for a free slot instead of reporting the collision as an
+# admission denial; the bound keeps the operator's test from hanging on a long
+# automatic composition.
+CONTACT_SLOT_WAIT_SECONDS = 20.0
+_CONTACT_SLOT_POLL_SECONDS = 0.2
+CONTACT_LANE_BUSY = "proactive_lane_busy"
 _SEGMENTATION_DEFAULTS = asdict(SegmentationPolicy())
 _SEGMENTATION_KEYS = frozenset(_SEGMENTATION_DEFAULTS)
 _SEGMENTATION_SETTINGS_KEYS = _SEGMENTATION_KEYS | frozenset((
@@ -165,8 +172,10 @@ class ProactiveContacts:
         self.gateway, self.delivery, self.tasks = gateway, delivery, gateway.tasks
         self.require_running, self.notify = require_running, notify
         self.preferences = ProactivePreferences(self.configuration, self.tasks)
-        self.runner = ExactTaskRunner(self.tasks, frozenset({CONTACT_KIND}), self._generate)
-        self.plan_runner = ExactTaskRunner(self.tasks, frozenset({PLAN_KIND}), self._plan_generate)
+        self.runner = ExactTaskRunner(self.tasks, frozenset({CONTACT_KIND}), self._generate,
+                                      retain_refusals=True)
+        self.plan_runner = ExactTaskRunner(self.tasks, frozenset({PLAN_KIND}), self._plan_generate,
+                                           retain_refusals=True)
         self.judge_runner = ExactTaskRunner(self.tasks, frozenset({JUDGE_KIND}), self._judge_generate)
 
     def attach_semantics(self, semantics):
@@ -762,7 +771,11 @@ class ProactiveContacts:
                 raise
             try:
                 if plan_task_id is not None:
-                    plan_attempt = require(await self.plan_runner.run(context, plan_task_id))
+                    planning = await self._run_exact(self.plan_runner, context, plan_task_id, task_deadline,
+                        wait_seconds=CONTACT_SLOT_WAIT_SECONDS if administrator_test else 0.0)
+                    if planning.failure is not None:
+                        return planning
+                    plan_attempt = planning.unwrap()
                     if plan_attempt.stop_code:
                         return Outcome.failed(plan_attempt.stop_code, "contact planning did not complete")
                     result_data = self._plan_results.pop(plan_task_id, None)
@@ -779,8 +792,11 @@ class ProactiveContacts:
                         self._pending[task_id] = planned_job
                         require(self.tasks.submit(TaskSpec(task_id, context, CONTACT_KIND, request_hash, task_id,
                             opportunity.opened_at, task_deadline)))
-                result = await self.runner.run(context, task_id)
-                if administrator_test and result.is_success and result.unwrap().failure_code:
+                result = await self._run_exact(self.runner, context, task_id, task_deadline,
+                    wait_seconds=CONTACT_SLOT_WAIT_SECONDS if administrator_test else 0.0)
+                if result.failure is not None:
+                    return result
+                if administrator_test and result.unwrap().failure_code:
                     return Outcome.failed(result.unwrap().failure_code,
                                           "administrator diagnostic task failed before delivery")
                 if result.is_success and (result.unwrap().task is None or result.unwrap().task.state in ("created", "retry_scheduled")):
@@ -795,6 +811,46 @@ class ProactiveContacts:
                 self._invocations.discard(invocation)
         except (TaskError, ConfigurationError) as error:
             return Outcome.failed(error.code, str(error))
+
+    async def _run_exact(self, runner, context, task_id, deadline, *, wait_seconds):
+        """Run one exact task, waiting for a free shared background slot.
+
+        ``task_lane_full`` names physical capacity, not this task's authority:
+        the submitted row is still exactly what the owner handed over, and the
+        runner keeps it queued (``retain_refusals``). A manual diagnostic must
+        not turn that transient collision into an admission denial, so it keeps
+        re-claiming the same row by id while its own deadline allows. A row that
+        never got a slot is retired with its real cause instead of staying
+        queued for an attempt nobody will run.
+        """
+        if type(wait_seconds) not in (int, float) or not 0 <= wait_seconds:
+            raise ValueError("capacity wait must be a bounded non-negative number")
+        loop = asyncio.get_running_loop()
+        ends_at = loop.time() + wait_seconds
+        result = await runner.run(context, task_id)
+        try:
+            while result.failure is None and result.unwrap().refused in CAPACITY_REFUSALS:
+                remaining = min(ends_at - loop.time(), (deadline - self.tasks.now()).total_seconds())
+                if self._closed or remaining <= 0:
+                    break
+                await asyncio.sleep(min(_CONTACT_SLOT_POLL_SECONDS, remaining))
+                result = await runner.run(context, task_id)
+        except BaseException:
+            # The caller's prepared inputs die with this invocation, so a
+            # reservation nobody will honour must not stay queued. Cleanup must
+            # never mask the original cancellation or error.
+            try:
+                self.tasks.discard_queued(task_id, reason="owner_unavailable", code=CONTACT_LANE_BUSY)
+            except Exception:
+                pass
+            raise
+        if result.failure is None and result.unwrap().refused in CAPACITY_REFUSALS:
+            code = CONTACT_LANE_BUSY if wait_seconds else result.unwrap().refused
+            retired = self.tasks.discard_queued(task_id, reason="owner_unavailable", code=code)
+            if retired.failure is not None:
+                return retired
+            return Outcome.failed(code, "the shared background lane stayed occupied before this task could start")
+        return result
 
     def record_delivery_receipt(self, request, receipt):
         if request.owner != GROUP or request.context.scope.account_id is None:

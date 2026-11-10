@@ -672,3 +672,40 @@
   .wb-quote-remove{grid-column:2;justify-self:end;margin-top:calc(-1 * var(--sp-1))}
   .wb-tag-form input[type=text]{min-width:0}
 }
+
+/* 2026-11 视觉校准：配置项回到「标题在左、控件在右」的舒展行距，
+   参考 7.1.8 redesign 的 row 节奏，但保留当前工作台的分层轨道。 */
+.wb-fields{grid-template-columns:minmax(0,1fr);gap:0;max-width:1040px}
+.wb-field{grid-template-columns:12px minmax(0,1fr) auto;align-items:center;
+  gap:var(--sp-2) var(--sp-4);padding:14px var(--sp-2) 14px 0}
+.wb-field-main{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,360px);
+  align-items:center;column-gap:var(--sp-5);row-gap:var(--sp-1)}
+.wb-field-main>.wb-label{grid-column:1;grid-row:1;align-self:end}
+.wb-field-main>.wb-help{grid-column:1;grid-row:2;align-self:start}
+.wb-field-main>.wb-control{grid-column:2;grid-row:1 / span 2;justify-self:stretch;
+  display:flex;align-items:center;justify-content:flex-end;min-width:0;max-width:420px;width:100%}
+.wb-field-main>.wb-field-error{grid-column:1/-1;grid-row:3}
+.wb-field:has(textarea),.wb-field:has(.wb-word-editor),.wb-field:has(.wb-keywords),
+.wb-field:has(.wb-source-picker),.wb-field:has(.wb-order-editor),.wb-field:has(.wb-date){align-items:start}
+.wb-field:has(textarea) .wb-field-main,.wb-field:has(.wb-word-editor) .wb-field-main,
+.wb-field:has(.wb-keywords) .wb-field-main,.wb-field:has(.wb-source-picker) .wb-field-main,
+.wb-field:has(.wb-order-editor) .wb-field-main,.wb-field:has(.wb-date) .wb-field-main{grid-template-columns:minmax(0,1fr)}
+.wb-field:has(textarea) .wb-field-main>.wb-control,.wb-field:has(.wb-word-editor) .wb-field-main>.wb-control,
+.wb-field:has(.wb-keywords) .wb-field-main>.wb-control,.wb-field:has(.wb-source-picker) .wb-field-main>.wb-control,
+.wb-field:has(.wb-order-editor) .wb-field-main>.wb-control,.wb-field:has(.wb-date) .wb-field-main>.wb-control{
+  grid-column:1;grid-row:auto;justify-self:stretch;max-width:none;justify-content:flex-start}
+.wb-field:hover{background:color-mix(in srgb,var(--t-surface-soft) 68%,transparent)}
+.wb-field:has(textarea):hover,.wb-field:has(.wb-word-editor):hover,.wb-field:has(.wb-date):hover{background:transparent}
+.wb-label{font-size:var(--fs-body);font-weight:600;letter-spacing:.01em;line-height:1.45}
+.wb-help{max-width:62ch;font-size:var(--fs-tiny);line-height:1.65}
+.wb-control input[type=number],.wb-control input[type=text],.wb-control input[type=time],.wb-control select{max-width:none;width:100%}
+.wb-field:has(textarea) .wb-control>*,.wb-field:has(.wb-word-editor) .wb-control>*{width:100%}
+@media (max-width:720px){
+  .wb-field{grid-template-columns:10px minmax(0,1fr);align-items:start}
+  .wb-field-main{grid-template-columns:minmax(0,1fr)}
+  .wb-field-main>.wb-control{grid-column:1;grid-row:auto;justify-self:stretch;max-width:none}
+  .wb-control{justify-content:flex-start}
+}
+@media (max-width:760px){
+  .wb-control .wb-segmented-option span{width:100%}
+}

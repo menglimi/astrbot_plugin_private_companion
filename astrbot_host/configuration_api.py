@@ -11,6 +11,7 @@ remain on their user, device or relationship routes.
 import asyncio
 import json
 import logging
+from types import SimpleNamespace
 
 from astrbot.api.web import request
 from companion_v2.configuration.management import (AcquaintanceManagement, BusyGateManagement,
@@ -34,8 +35,9 @@ from companion_v2.configuration.management import (AcquaintanceManagement, BusyG
                                                    RelayManagement,
                                                    ScreenManagement, WardrobeManagement)
 from companion_v2.configuration.models import ConfigurationError
-from companion_v2.execution.models import TaskError
+from companion_v2.execution.models import TaskError, digest
 from companion_v2.foundation.outcome import Outcome
+from companion_v2.foundation.refs import ScopeKind, ScopeRef
 from companion_v2.knowledge.configuration import KnowledgeSettings
 from companion_v2.storage.runtime import StorageOpenError
 
@@ -148,6 +150,56 @@ class ConfigurationWebAPI:
     async def behavior_command(self):
         return await self._run_behavior(command=True)
 
+    async def _management_context(self, controller, session, target_id, role_id):
+        """Resolve the page's selected target instead of always the private profile."""
+        active = session.profile.target
+        # TargetControllerView already resolves and validates the role route.
+        # TaskContext has no target_id; compare the page selection with the
+        # scoped controller instead of reinterpreting it as a different window.
+        route_target = getattr(controller, "target_id", None)
+        if route_target:
+            if ((target_id and target_id != route_target)
+                    or (role_id and role_id != controller.role_id)):
+                raise TaskError("configuration_target_changed",
+                                "the selected target or role differs from the configuration route")
+            return active
+        if not target_id or target_id == getattr(active, "target_id", None):
+            return active
+        # Installation-only editors run under a synthetic SYSTEM scope. They have
+        # no per-window target to switch to; a page selection must not turn their
+        # save into a group/private window write.
+        if getattr(getattr(active, "scope", None), "kind", None) is ScopeKind.SYSTEM:
+            return active
+        from .group_settings import GroupTarget
+        try:
+            target = controller.settings.target(target_id)
+        except (KeyError, AttributeError):
+            raise TaskError("configuration_target_unavailable",
+                            "the selected target is unavailable") from None
+        if target is None:
+            raise TaskError("configuration_target_unavailable", "the selected target is unavailable")
+        if not isinstance(target, GroupTarget):
+            raise TaskError("configuration_target_inactive",
+                            "only the active private conversation can edit its settings")
+        bridge = session.bridge.groups
+        account = bridge.accounts.get((target.platform_id, target.account_id))
+        if account is None:
+            raise TaskError("configuration_target_unavailable", "the selected group account is unavailable")
+        conversation_id, role, _instruction = await bridge._role(account, target.group_id)
+        if role_id and role.subject_id != role_id:
+            raise TaskError("configuration_target_changed", "the selected group now uses another role")
+        scope = ScopeRef(controller.runtime.installation_id, target.platform_id, ScopeKind.GROUP,
+                         target.group_id, target.bot_id, target.account_id, conversation_id, target.group_id)
+        if bridge.target_for_scope(scope) != target:
+            raise TaskError("configuration_target_changed", "the selected group route changed")
+        resolved = session.application.tasks.identity.resolve_role(scope, observed_at=controller.now())
+        binding = resolved.unwrap() if resolved.is_success else SimpleNamespace(role=role, revision=0)
+        if binding.role != role:
+            raise TaskError("configuration_target_changed", "the group role binding changed")
+        return SimpleNamespace(scope=scope, role_binding=binding,
+            key=digest(["group-config-context.v1", scope.document(), binding.revision]),
+            management_scope="group")
+
     async def _run(self, action):
         from .web_api import outcome_response
         try:
@@ -155,7 +207,8 @@ class ConfigurationWebAPI:
             if type(username) is not str or not username.strip() or username.startswith("api_key:"):
                 raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
             query = request.query
-            if set(query.keys()) - {"sections"} or any(len(query.getlist(key)) != 1 for key in query.keys()):
+            if (set(query.keys()) - {"sections", "target_id", "role_id"}
+                    or any(len(query.getlist(key)) != 1 for key in query.keys())):
                 raise TaskError("configuration_request_invalid", "unexpected configuration query")
             data = None
             if action == "configure":
@@ -163,7 +216,7 @@ class ConfigurationWebAPI:
                 if len(raw) > 32768:
                     raise ValueError("configuration request is too large")
                 data = _document(raw, expected={"section", "operation_key", "edit_token", "changes"},
-                                 optional=("reset",))
+                                 optional=("reset", "target_id", "role_id"))
                 if data["section"] not in self.sections:
                     raise TaskError("configuration_request_invalid", "unknown configuration section")
                 reset = data.get("reset", [])
@@ -186,7 +239,11 @@ class ConfigurationWebAPI:
             if session is None or controller.runtime is None:
                 raise TaskError("staging_not_initialized", "load the V2 profile first")
             runtime = controller.runtime
-            application, context = session.application, session.profile.target
+            application = session.application
+            context = await self._management_context(
+                controller, session,
+                data.get("target_id", "") if isinstance(data, dict) else query.get("target_id", ""),
+                data.get("role_id", "") if isinstance(data, dict) else query.get("role_id", ""))
             observed_at = controller.now()
             if action == "status":
                 operator = await asyncio.to_thread(dashboard_operator, runtime, username, at=observed_at)

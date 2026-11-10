@@ -114,10 +114,11 @@ async def write_memory(self, record):
 - `context` 与读取请求使用同一身份格式，宿主原生生产者会提供它。手动构造的旧记录可能为 `None`，provider 可拒收无法归属的记录。
 - 日记是角色级资料，按 `context.scope.installation_id`、`context.scope.bot_id` 和 `context.role` 归属；其 `scope` 可为 `unknown`。不要把日记的合成 `session_id` 当作某位用户的私聊身份。
 - `memory_id` 在同一记录重放时保持稳定。provider 应以 `source_plugin + memory_id` 幂等写入，保留时间、来源、归属和否定条件。通用接口不使用旧桥的 4000 字符截断。
+- 推送的是**副本**：陪伴插件自己的库仍保存日记（含修订号）与主动消息正文，provider 不应把这条推送当成唯一记录，也不应据此宣称宿主不存正文。
 - 成功返回非空记忆 ID，未保存返回 `None`。异常、超时或停用不会撤销已完成的宿主动作；宿主不缓存、不自动重试、不尝试第二个 writer。同步回调在线程中执行，超时不保证线程中的写入已停止。
 
 ## 统计与记忆归属
 
-可选 `summary(request)` 接收 `purpose="summary"` 的同身份请求，返回 `{"counts": {"profile": 2, "preference": 3, "relationship": 1, "private_conversation": 4, "other": 0, "total": 10}}`。统计页面只接收这些计数，其余正文或调试字段会丢弃。读取失败显示不可用，不伪装成零条记录。
+可选 `summary(request)` 接收 `purpose="summary"` 的同身份请求，返回 `{"counts": {"profile": 2, "preference": 3, "relationship": 1, "private_conversation": 4, "other": 0, "total": 10}}`。统计页面只接收这些计数，其余正文或调试字段会丢弃。读取失败显示不可用，不伪装成零条记录。统计只针对请求里的这一份身份（当前私聊对象与角色），不是跨用户汇总；分类键固定为上述六项。
 
 默认 `handles_model_memory=False`：宿主调用 `read` 注入补充资料，内置记忆及其工具继续工作。只有第三方已经通过 AstrBot 自行完成记忆上下文注入和模型工具读写时，才注册 `handles_model_memory=True`。这表示第三方负责模型侧记忆，宿主不再自动调用它的 `read`，并按现有归属机制让内置记忆注入和工具让位；`write` 和 `summary` 仍可使用。该 provider 停用或注销后，归属会在下次查询时恢复到旧桥或内置记忆。

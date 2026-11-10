@@ -252,7 +252,6 @@ class MultiHostRecallTests(RecallAssertions, GroupFixture, unittest.IsolatedAsyn
     async def test_group_recall_of_confirmed_bot_reply_retains_delivery_receipt(self):
         self.controller = self.make_controller(group_config(group_delivery_mode="onebot_group"))
         app = await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         self.native.platform.client._api._wsr_api.result = {"message_id": -456}
         batch = await self.admit(self.group_event(identifier="701"))
         part = app.runtime.read_one("SELECT * FROM conversation_parts WHERE batch_id = ?", (batch,))

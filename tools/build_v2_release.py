@@ -14,7 +14,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE_ID = "astrbot_plugin_private_companion"
-VERSION = "7.1.13"
+VERSION = "7.1.14"
 RELEASE_SCHEMA = "companion.v2.release.v2"
 MARKET_MAX_BYTES = 16_000_000
 NATIVE_EXTENSION_FILES = {
@@ -122,6 +122,10 @@ EXCLUDED_FILES = {
     "docs/INTEGRATION_ACCEPTANCE_V2_0.md",
     # The migration acceptance note contains counts from a real private data set.
     "docs/V670_TO_V700_MIGRATION_20261019.md",
+    # Historical configuration inventories: useful in git, not in the runtime ZIP.
+    "docs/V1_V2_CONFIG_RESOLVED_20260928.csv",
+    "docs/V1_V2_CONFIG_VERIFIED_20260927.csv",
+    "docs/V2_CONFIG_SURFACE_20260928.csv",
     "fixtures/reply_efficiency_preview.json",
     # This standalone mini-game is not part of the companion plugin release.
     "tests/bubble_bonbon_smoke.mjs",

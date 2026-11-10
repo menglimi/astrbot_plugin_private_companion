@@ -240,7 +240,7 @@ function harness({configEditorsCreatable = true} = {}) {
     queueMicrotask, structuredClone,
     requestAnimationFrame: window.requestAnimationFrame, cancelAnimationFrame() {},
     matchMedia: window.matchMedia, getComputedStyle: window.getComputedStyle,
-    Intl, URL, URLSearchParams, TextEncoder, TextDecoder,
+    Intl, URL, URLSearchParams, TextEncoder, TextDecoder, crypto: require("node:crypto").webcrypto,
   });
   let loadFailure = null;
   try { vm.runInContext(APP, context, {filename: "app.js"}); }
@@ -280,6 +280,18 @@ async function enterActionPage(page, {warm = false} = {}) {
     await page.settle();
   }
 }
+
+test("已安装但尚未授权时显示授权入口，并阻止读取和发布动作", async () => {
+  const page = loadPage();
+  await enterActionPage(page);
+
+  const body = page.document.getElementById("actionQzoneBody").innerHTML;
+  assert.match(body, /data-qzone-action="authorize"/);
+  assert.match(body, /授权四项能力/);
+  assert.equal(page.run("qzoneGate('feed').ok"), false);
+  assert.equal(page.run("qzoneGate('publish').ok"), false);
+  assert.match(page.run("qzoneGate('feed').reason"), /尚未授权/);
+});
 
 function assertSingleEditorOnCurrentHost(page) {
   const host = page.host();
@@ -481,4 +493,89 @@ test("刷新后仍是 unknown：提示语不冒充「已刷新」", async () => 
   assert.equal(notice.error, true);
   assert.match(notice.text, /还没有被读取/);
   assert.doesNotMatch(notice.text, /凭据已刷新/);
+});
+
+for (const wrapped of [true, false]) {
+  for (const outcome of ["done", "accepted", "unknown"]) {
+    test(`发布回执 ${outcome}（${wrapped ? "receipt 包装" : "旧版直接返回"}）决定提示与草稿保留`, async () => {
+      const page = loadPage();
+      page.status.catalogue = {topics: [{id: "casual", label: "随笔", scenes: ["conversation"]}], scenes: {}};
+      await enterActionPage(page);
+      page.run("qzoneState.publishDraft = '测试正文'");
+      const calls = [];
+      page.product.request = async (method, route) => {
+        calls.push({method, route});
+        const receipt = {status: outcome, verified: outcome === "done", operation_id: "test-publish"};
+        return method === "POST" ? (wrapped ? {candidate_id: "", source_refs: [], receipt} : receipt) : page.status;
+      };
+
+      await page.run("qzonePublish()");
+
+      assert.equal(calls.filter(call => call.method === "POST").length, 1);
+      assert.equal(page.run("qzoneState.publishDraft"), outcome === "unknown" ? "测试正文" : "");
+      assert.equal(page.run("qzoneState.notice.text"), {done: "已发布", accepted: "待同步", unknown: "结果未知"}[outcome]);
+      assert.equal(calls.filter(call => call.method === "GET").length, outcome === "unknown" ? 0 : 1);
+    });
+  }
+}
+
+test("本人动态回读评论详情并渲染返回评论，不发送公开动作", async () => {
+  const page=loadPage();
+  await enterActionPage(page);
+  const calls=[];
+  page.product.request=async(method,route,body)=>{
+    calls.push({method,route,body});
+    return {scope:'own',items:[{post_ref:'post',author:'我',excerpt:'测试动态',comments:[{author:'我',text:'测试评论'}]}]};
+  };
+  await page.run("qzoneScan('own')");
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].method,'GET');
+  assert.equal(calls[0].body.detail,1);
+  assert.match(page.run("qzonePostMarkup(qzoneState.feeds.own.items[0],0)"),/测试评论/);
+});
+
+test("带图发布保留选择顺序，纯图片可提交，结果未知不会丢草稿或自动重发", async () => {
+  const page=loadPage();
+  page.status.invoke_granted=true;
+  page.status.consented={'qzone.post.publish':true};
+  page.status.catalogue={topics:[{id:'casual',label:'随笔',scenes:['conversation']}],scenes:{}};
+  await enterActionPage(page);
+  page.run("qzoneState.publishImages=[{image_id:'generated-image:one:0',thumbnail:'data:image/png;base64,AA=='},{data_url:'data:image/png;base64,BB==',name:'test.png'}]");
+  assert.doesNotMatch(page.run("qzonePublishBlockMarkup({ok:true})").match(/<button[^>]*data-qzone-action="publish"[^>]*>/)[0],/disabled/);
+  const calls=[];
+  page.product.request=async(method,route,body,options)=>{
+    calls.push({method,route,body,options});
+    if(method==='POST')throw Object.assign(new Error('timeout'),{code:'bridge_timeout'});
+    return page.status;
+  };
+  await page.run('qzonePublish()');
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].options.timeoutMs,300000);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].body.images)),[
+    {image_id:'generated-image:one:0'},{data_url:'data:image/png;base64,BB==',name:'test.png'}]);
+  assert.equal(page.run('qzoneState.publishImages.length'),2);
+  assert.equal(page.run('qzoneState.notice.error'),true);
+});
+
+test("选择本地图片只预览，移除和切换角色会清掉图片，动态渲染拒绝脚本URL", async () => {
+  const page=loadPage();
+  await enterActionPage(page);
+  page.context.FileReader=class {
+    readAsDataURL(){this.result='data:image/png;base64,AA==';this.onload();}
+  };
+  const before=page.requests.length;
+  await page.run("qzoneChooseImages([{type:'image/png',name:'test.png',size:100}])");
+  assert.equal(page.requests.length,before,'选图不能触发上传');
+  assert.equal(page.run('qzoneState.publishImages.length'),1);
+  assert.match(page.run('qzoneImagePickerMarkup()'),/移除第 1 张图片/);
+  page.run("qzoneClick({dataset:{qzoneAction:'image-remove',qzoneImage:'0'}})");
+  assert.equal(page.run('qzoneState.publishImages.length'),0);
+  await page.run("qzoneChooseImages([{type:'image/png',name:'test.png',size:100}])");
+  page.product.role=()=>({...ROLE,qzone_extension_api:'/astrbot_plugin_private_companion/targets/other/qzone-extension'});
+  page.run('qzoneImageScope()');
+  assert.equal(page.run('qzoneState.publishImages.length'),0);
+  const markup=page.run("qzonePhotosMarkup([{url:'javascript:alert(1)'},{url:'https://photo.store.qq.com/a/photo'}])");
+  assert.doesNotMatch(markup,/javascript:/);
+  assert.match(markup,/referrerpolicy="no-referrer"/);
+  assert.match(markup,/动态配图 2/);
 });

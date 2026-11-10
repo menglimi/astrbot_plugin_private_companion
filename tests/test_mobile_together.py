@@ -260,6 +260,17 @@ class MobileTogetherBridgeTests(unittest.IsolatedAsyncioTestCase):
                                              operation="create", arguments={"mode": "call"})
         self.assertEqual(retry["request_id"], unknown["request_id"])
 
+    def test_failed_operation_reads_its_recorded_error_code(self):
+        store = SimpleNamespace(find=lambda operation_id: {"error": "together_public_access_unavailable"})
+        registry = SimpleNamespace(active_service=lambda name: SimpleNamespace(
+            _native_provider=SimpleNamespace(store=store)))
+        self.assertEqual(MobileTogetherBridge._native_error(registry, "together-op-1"),
+                         "together_public_access_unavailable")
+        self.assertEqual(MobileTogetherBridge._native_error(registry, ""), "")
+        missing = SimpleNamespace(active_service=lambda name: SimpleNamespace(
+            _native_provider=SimpleNamespace(store=SimpleNamespace(find=lambda operation_id: None))))
+        self.assertEqual(MobileTogetherBridge._native_error(missing, "together-op-2"), "")
+
     async def test_android_confirmed_failure_can_retry_with_a_new_identity(self):
         callback = AsyncMock(return_value={"matched": True, "state": "failed", "effect": "not_committed"})
         with patch.object(self.bridge, "_invoke_native", callback):

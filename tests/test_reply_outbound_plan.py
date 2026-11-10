@@ -1,4 +1,4 @@
-"""T45/T51: the sealed outbound plan, its configuration, encoding and delivery."""
+﻿"""T45/T51: the sealed outbound plan, its configuration, encoding and delivery."""
 
 import asyncio
 from dataclasses import replace
@@ -219,7 +219,6 @@ class GroupQuoteDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
     async def setup_delivery(self):
         self.controller = self.make_controller(group_config(group_delivery_mode="onebot_group"))
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
 
     async def settle(self, batch):
         await wait_for_batch(self.controller.session, batch)

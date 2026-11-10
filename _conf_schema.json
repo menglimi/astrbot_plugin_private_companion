@@ -818,7 +818,7 @@
       "background_slots": {
         "description": "后台任务槽",
         "type": "int",
-        "default": 1
+        "default": 3
       },
       "queued_per_lane": {
         "description": "每通道排队上限",

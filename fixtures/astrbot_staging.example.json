@@ -73,7 +73,7 @@
   },
   "limits": {
     "foreground_slots": 2,
-    "background_slots": 2,
+    "background_slots": 3,
     "queued_per_lane": 64,
     "retained_tasks": 2048
   },

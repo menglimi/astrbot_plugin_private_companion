@@ -777,6 +777,7 @@ class MobileGatewayMixin:
         together_status = {'available': available, 'enabled': bool(status.get('enabled', status.get('available'))),
                            'running': available and bool(status.get('running')),
                            'execution': 'v2_native', 'ready': room_ready,
+                           'modes': [item for item in modes if isinstance(item, str)],
                            'reason': status.get('reason'), 'blockers': room_blockers, 'capabilities': together_capabilities}
         return {'ok': True, 'data': {'api_version': MOBILE_API_VERSION, 'paired': not bool(auth.get('pairing')), 'user_id': user_id, 'connections': self._mobile_connection_status(user_id), 'reality': self._mobile_reality_status(), 'location': self._mobile_location_snapshot(user_id), 'device': self._mobile_device_snapshot(user_id), 'activity': self._mobile_activity_snapshot(user_id), 'telemetry': self._mobile_telemetry_snapshot(user_id), 'screen': self._mobile_screen_status(user_id), 'together': together_status, 'games': game_status, 'capabilities': {'room': room_ready, 'call': room_ready and 'call' in modes, 'watch': room_ready and 'watch' in modes, 'novel': together_capabilities['novel']['available'], 'work': together_capabilities['work']['available'], 'invite': together_capabilities['invite']['available'], 'join': together_capabilities['join']['available'], 'location': True, 'telemetry': self._mobile_telemetry_enabled(), 'activity': self._mobile_activity_enabled(), 'screen_upload': self._mobile_screen_upload_enabled(), 'games': bool(game_status.get('ready'))}}}
 
@@ -990,10 +991,16 @@ class MobileGatewayMixin:
             request_id = result.get('request_id', request_id)
             if result.get('state') != 'succeeded':
                 uncertain = result.get('state') == 'unknown'
+                native_code = _clean(result.get('code'), 100)
                 body, status = self._mobile_json_error('建房结果还在确认中，再点一次会继续检查这次请求' if uncertain else 'V2 房间服务未能完成建房', 409)
-                body['code'] = 'mobile_together_result_unknown' if uncertain else 'mobile_together_create_failed'
+                body['code'] = ('mobile_together_result_unknown' if uncertain
+                                else native_code or 'mobile_together_create_failed')
                 body['data'] = {'request_id': request_id, 'execution_path': 'v2_native', 'capability': 'together.room.create',
                     **{key: result[key] for key in ('state', 'operation_id', 'receipt_ref', 'effect') if key in result}}
+                if native_code:
+                    body['data']['error_code'] = native_code
+                    logger.warning('[CompanionV2] 手机建房未完成 code=%s operation=%s state=%s',
+                                   native_code, result.get('operation_id'), result.get('state'))
                 body['uncertain'] = uncertain
                 return (body, status)
             room = result.get('result', {}).get('room', {})

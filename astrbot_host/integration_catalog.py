@@ -21,7 +21,7 @@ EXTERNAL_PROVIDERS: tuple[dict[str, Any], ...] = (
         "plugin_id": "astrbot_plugin_video_vision",
         "capability_id": "video_vision",
         "label": "基米看得见视频",
-        "description": "普通聊天的原生视频理解由该插件提供（含引用视频与体积压缩）。",
+        "description": "可选的外部视频扩展；普通聊天的视频理解已由本插件原生提供，不需要安装它。",
         "furniture": {"id": "video-vision", "name": "观影机", "panel_id": "video-vision"},
     },
 )

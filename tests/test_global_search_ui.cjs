@@ -9,6 +9,16 @@ const styles = fs.readFileSync(path.join(root, 'pages/陪伴小屋/styles.css'),
 const html = fs.readFileSync(path.join(root, 'pages/陪伴小屋/index.html'), 'utf8');
 const catalogPath = path.join(root, 'pages/陪伴小屋/catalog.html');
 
+test('page title and navigation labels preserve UTF-8 text and complete attributes', () => {
+  assert.match(html, /<title>我会永远陪着你 · 陪伴小屋<\/title>/);
+  assert.match(html, /id="railBrand" aria-label="陪伴小屋，回到小屋">/);
+  assert.match(html, /id="searchButton" aria-label="搜索功能与内容" title="搜索 · Ctrl \/ ⌘ K">/);
+  assert.match(html, /data-open-navigation[^>]+title="全部功能"[^>]*><i[^>]*><\/i><span>全部功能<\/span>/);
+  assert.match(html, /id="globalSearch"[^>]*placeholder="搜索设置名称、用途或字段键…" aria-label="搜索功能与设置"/);
+  assert.match(html, /id="confirmationSave"[^>]*>保存并切换<\/button>/);
+  assert.doesNotMatch(html, /[\uE000-\uF8FF\uFFFD]|鎼滅储|鍏ㄩ儴|闄即/);
+});
+
 test('config search batches input and caches the field index', () => {
   assert.match(app, /SEARCH_INPUT_DELAY_MS\s*=\s*90/);
   assert.match(app, /SEARCH_ENTRY_CACHE_MS\s*=\s*1500/);

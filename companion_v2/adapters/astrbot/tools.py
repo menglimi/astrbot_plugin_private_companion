@@ -160,10 +160,15 @@ class QzoneToolPort:
                 # The model proposes the topic; whether that proposal may go out
                 # without a human is decided by the configured gates, so it never
                 # confirms itself here.
+                from companion_v2.qzone.images import album_images
+                images, _ = album_images(self.application, invocation.context, service.now(),
+                                          arguments.get("image_ids", ()))
+                source_refs = list(arguments.get("source_refs", ()))
+                source_refs.extend(image.source_id for image in images if image.source_id)
                 result = await service.publish(invocation.context, text=arguments["text"],
                                               topic=arguments["topic"], scene=arguments["scene"],
                                               confidence=arguments["confidence"], topic_confirmed=False,
-                                              source_refs=arguments.get("source_refs", ()),
+                                              source_refs=source_refs, images=images,
                                               agenda_proposal=arguments.get("agenda_proposal"),
                                               operation_key=operation_key)
             else:

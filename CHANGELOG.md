@@ -1,5 +1,29 @@
 # 更新日志
 
+## 未发布
+
+- 普通聊天视频理解明确为原生内置：支持视频输入的 Gemini 类模型直接读取整段原视频，其他模型用宿主 ffmpeg 抽帧后作为图片送入同一轮请求；回复设置页、家具目录和设计文档不再声称依赖「基米看得见视频」，外部扩展只保留可选状态卡。
+- 修复 NapCat/AstrBot 已登录仍报 `host_account_unavailable`：aiocqhttp 的 `_wsr_api_clients` 在不同版本用 int 或 str 作为 `self_id` 键，现按文本比较。
+- 修复直接升级后运行库已有文件但缺共享 manifest 时启动直接中止：`load_existing` 现在回落到正常初始化流程。
+- 初始化遇到运行库被外部删除/替换导致的 `unable to open database file` 时，关闭旧连接、按配置目录重新打开并重试一次。
+
+## 7.1.14 - 2026-11-10
+
+### 完整同步
+
+- 补齐 7.1.12 / 7.1.13 发布包遗漏的运行档文件：`companion_v2/content/catalogue.py`、`astrbot_host/config_port_api.py`、`astrbot_host/group_standing.py`、`astrbot_host/qzone_life_publish.py`、`companion_v2/configuration/portability.py`、`companion_v2/conversation/group_roles.py`、`companion_v2/qzone/images.py`、`companion_v2/qzone/life_publish.py`、`companion_v2/together/mobile/origin.py` 及对应页面/测试；
+- 修复 7.1.13 仍有风险的 Content works 目录依赖：`works_api.py` 现在能完整导入 `companion_v2.content.catalogue`；
+- 同步运行档中已有的配置移植、群常驻、Qzone 图片/生活发布、手机 Together、记忆 Provider 等改动；
+- 同步配置页与自我页的排版优化、缓存参数与页面构建产物。
+
+### 已包含
+
+- 7.1.13：`works_api.py` 漏包、日历 `Schedule.restore()` 默认值、`fold` 布尔兼容、中文输入估算、群聊参与分段转发；
+- 7.1.12：治理与维护日志页；
+- 7.1.11：休息窗口；
+- 7.1.10：记忆画板日期一致性；
+- 7.1.9：群聊现实设备工具。
+
 ## 7.1.13 - 2026-11-10
 
 ### 加载修复

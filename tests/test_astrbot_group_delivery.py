@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 from astrbot_host.account_session_api import AccountSessionWebAPI
 from astrbot_host.group_authority import GroupAuthority
-from astrbot_host.group_delivery import GRANT_PREFIX, INTENT_PREFIX
+from astrbot_host.group_delivery import INTENT_PREFIX
 from astrbot_host.multi_api import PREFIX
 from astrbot_host.multi_settings import MultiHostSettings
 from astrbot_host.settings import HostControlError
@@ -35,11 +35,6 @@ class GroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         batch = result.unwrap()
         await wait_for_batch(self.controller.session, batch)
         return self.controller.preview(self.controller.target_for_event(event).target_id, batch).unwrap()
-
-    async def grant(self, target="group-a"):
-        result = await self.controller.authorize_group_delivery(target)
-        self.assertTrue(result.is_success, result.failure)
-        return result.unwrap()
 
     async def test_relationship_group_target_control_changes_only_the_selected_group(self):
         api = AccountSessionWebAPI(self.controller)
@@ -169,7 +164,7 @@ class GroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
             with self.subTest(mode=mode), self.assertRaises(HostControlError):
                 MultiHostSettings.parse(group_config(group_delivery_mode=mode))
 
-    async def test_dashboard_group_grants_are_separate_from_private_and_other_groups(self):
+    async def test_configured_groups_need_no_delivery_grant_and_private_routes_reject_them(self):
         self.controller = self.make_controller(group_config(delivery_mode="onebot_private", group_delivery_mode="onebot_group"))
         self.controller.register_routes()
         routes = {path: handler for path, handler, _, _ in self.native.registered_web_apis}
@@ -177,24 +172,16 @@ class GroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         with patch("astrbot_host.multi_api.request", request):
             for action in ("probe", "initialize", "start"):
                 self.assertEqual((await routes[PREFIX + "/" + action]())["status"], "ok")
+            # 逐群投递授权已经移除：旧路由不再注册，配置里的群目标直接可发。
+            for legacy in ("authorize-group-delivery", "revoke-group-delivery"):
+                self.assertNotIn(PREFIX + "/" + legacy, routes)
             before = database_contents(self.controller.runtime)
-            for username in ("", "api_key:group-admin"):
-                request.username = username
-                request.query = Query(target_id="group-a")
-                self.assertEqual((await routes[PREFIX + "/authorize-group-delivery"]())["data"]["code"],
-                                 "dashboard_identity_required")
-            request.username = "dashboard-admin"
-            request.query = Query(target_id="first")
-            self.assertEqual((await routes[PREFIX + "/authorize-group-delivery"]())["data"]["code"], "host_group_target_required")
             request.query = Query(target_id="group-a")
             self.assertEqual((await routes[PREFIX + "/authorize-delivery"]())["data"]["code"], "host_group_authorization_required")
             self.assertEqual((await routes[PREFIX + "/revoke-delivery"]())["data"]["code"], "host_group_authorization_required")
             self.assertEqual(database_contents(self.controller.runtime), before)
-            self.assertEqual((await routes[PREFIX + "/authorize-group-delivery"]())["status"], "ok")
             self.assertEqual((await routes[PREFIX + "/status"]())["data"]["group_delivery_mode"], "onebot_group")
-            inventory = self.controller.web_api.target_inventory()
-            self.assertEqual([t["target_id"] for t in inventory if t["group_delivery_authorization"]
-                and t["group_delivery_authorization"]["authorized"]], ["group-a", "group-b", "group-c"])
+            self.assertNotIn("group_delivery_authorization", self.controller.web_api.target_inventory()[0])
             self.assertTrue((await self.reply())["sent"])
             for target in ("group-b", "group-c"):
                 # A configured group target is eligible without a separate grant;
@@ -209,9 +196,6 @@ class GroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
             self.assertEqual([action for action, _ in self.native.platforms["qq-second"].client._api._wsr_api.calls
                               if action.startswith("send_")],
                              ["send_group_msg"])
-            request.query = Query(target_id="group-a")
-            self.assertEqual((await routes[PREFIX + "/revoke-group-delivery"]())["status"], "ok")
-            self.assertTrue((await self.reply(identifier="revoked"))["sent"])
             request.query = Query(target_id="first")
             self.assertEqual((await routes[PREFIX + "/authorize-delivery"]())["status"], "ok")
             await self.accepted(identifier="authorized-private")
@@ -222,7 +206,6 @@ class GroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
     async def test_original_account_group_and_member_session_select_exact_transport(self):
         await self.start_host()
         for index, target in enumerate(("group-a", "group-b", "group-c")):
-            await self.grant(target)
             result = await self.reply(target=target, unique=True, sender=str(700 + index))
             configured = self.controller.settings.target(target)
             api = self.native.platforms[configured.platform_id].client._api._wsr_api
@@ -235,7 +218,6 @@ class GroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_delivery_admission_failure_rolls_back_identity_source_and_input(self):
         await self.start_host()
-        await self.grant()
         authority = self.controller.authority
         before = database_contents(authority.runtime)
         with patch.object(authority.group_delivery, "admit", side_effect=TaskError("synthetic_admission_failure", "rollback")):
@@ -244,56 +226,20 @@ class GroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(database_contents(authority.runtime), before)
         self.assertEqual(self.native.platform.client._api._wsr_api.calls, [])
 
-    async def test_group_grants_are_compatibility_records_and_do_not_gate_sending(self):
-        await self.start_host()
-        authority = self.controller.authority
-        for span in (timedelta(0), timedelta(seconds=-1), timedelta(minutes=16)):
-            with self.subTest(span=span):
-                self.assertTrue(authority.group_delivery.authorize("group-a", self.clock.now() + span)["authorized"])
-        self.clock.advance(timedelta(minutes=15))
-        self.assertTrue(authority.group_delivery.status(self.controller.settings.target("group-a"))["authorized"])
-        self.assertTrue((await self.reply())["sent"])
-        await self.controller.terminate()
-        self.controller = self.make_controller(group_config())
-        self.assertTrue((await self.controller.initialize_profile()).is_success)
-        self.assertTrue((await self.controller.authorize_group_delivery("group-a")).is_success)
-
-    async def test_absent_or_replaced_group_grant_does_not_block_configured_delivery(self):
-        app = await self.start_host()
-        for index, initial_grant in enumerate((False, True)):
-            if initial_grant:
-                await self.grant()
-            original = app.delivery.sender
-            async def reauthorize(envelope):
-                await self.grant()
-                return await original.send(envelope)
-            app.delivery.sender = LocalSender(original.binding, reauthorize)
-            result = await self.reply(identifier="no-upgrade-" + str(index))
-            app.delivery.sender = original
-            self.assertTrue(result["sent"])
-            self.assertEqual(result["parts"][0]["state"], "delivered")
-        self.assertEqual(len(self.native.platform.client._api._wsr_api.calls), 2)
-
     async def test_revocation_persona_source_and_connection_races_prevent_dispatch(self):
         app = await self.start_host()
         api = self.native.platform.client._api._wsr_api
         original_client = self.native.platform.client
         original_connections = dict(original_client._wsr_api_clients)
-        for index, mutation in enumerate(("revoke", "renew", "persona", "prompt", "disconnect", "client", "withdraw", "grant")):
+        for index, mutation in enumerate(("persona", "prompt", "disconnect", "client", "withdraw", "grant")):
             with self.subTest(mutation=mutation):
                 api.calls.clear()
-                await self.grant()
                 original = app.delivery.sender
                 original_prompt = self.native.persona_records["original"]["prompt"]
                 async def guarded(envelope):
                     async def during_role_lookup(_):
                         scope = envelope.context.scope
-                        if mutation == "revoke":
-                            (await self.controller.revoke_group_delivery("group-a")).unwrap()
-                        elif mutation == "renew":
-                            (await self.controller.revoke_group_delivery("group-a")).unwrap()
-                            await self.grant()
-                        elif mutation == "persona":
+                        if mutation == "persona":
                             self.native.selections[f"qq-main:GroupMessage:{scope.session_id}"] = "second"
                         elif mutation == "prompt":
                             self.native.persona_records["original"]["prompt"] = "改变后的提示词"
@@ -320,7 +266,7 @@ class GroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
                 await wait_for_batch(self.controller.session, batch)
                 parts = app.runtime.read_all("SELECT state FROM conversation_parts WHERE batch_id = ?", (batch,))
                 self.assertTrue(parts)
-                should_send = mutation in ("revoke", "renew")
+                should_send = False
                 self.assertEqual(any(part["state"] == "delivered" for part in parts), should_send)
                 self.assertEqual(bool(api.calls), should_send)
                 app.delivery.sender = original
@@ -332,7 +278,6 @@ class GroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_original_ack_and_unknown_survive_restart_without_replay(self):
         app = await self.start_host()
-        await self.grant()
         api = self.native.platform.client._api._wsr_api
         api.result = {"message_id": 123}
         delivered_event = self.group_event(identifier="delivered")
@@ -391,12 +336,11 @@ class GroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.native.platform.client._api._wsr_api.calls), 2)
         self.assertTrue((await self.reply(identifier="new-authorized", unique=True))["sent"])
 
-    async def test_pending_authorized_input_recovers_only_under_original_grant(self):
+    async def test_pending_admitted_input_recovers_after_restart(self):
         config = group_config(group_delivery_mode="onebot_group")
         config["runtime"].update(quiet_seconds=2, maximum_wait_seconds=5)
         self.controller = self.make_controller(config)
         await self.start_host()
-        grant = await self.grant()
         event = self.group_event()
         batch = (await self.controller.receive_claimed(event)).unwrap()
         await self.controller.terminate()
@@ -407,13 +351,11 @@ class GroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.controller.session.application.notify()
         await wait_for_batch(self.controller.session, batch)
         self.assertTrue(self.controller.preview("group-a", batch).unwrap()["sent"])
-        self.assertEqual(self.controller.authority.read(GRANT_PREFIX + "group-a")["revision"], grant["revision"])
         self.assertEqual((await self.controller.receive_claimed(event)).unwrap(), batch)
         self.assertEqual(len(self.native.platform.client._api._wsr_api.calls), 1)
 
     async def test_sender_rejects_wrong_audience_session_missing_fence_and_invalid_ack(self):
         await self.start_host()
-        await self.grant()
         session = self.controller.session
         captured = (await session.bridge.capture(self.group_event(unique=True))).unwrap()
         context = self.controller.authority.groups.select(self.controller.settings.target("group-a"), captured)

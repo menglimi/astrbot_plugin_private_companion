@@ -257,7 +257,7 @@ class MobileTogetherBridge:
                 "modes": [item for item in modes if type(item) is str],
                 "reason": reason}
 
-    async def invoke(self, session_token, *, request_id, operation, arguments):
+    async def invoke(self, session_token, *, request_id, operation, arguments, via_mobile_gateway=False):
         legacy_create = operation == "create" and (request_id is None or request_id == "")
         if not legacy_create and (type(request_id) is not str or not REQUEST_ID.fullmatch(request_id)):
             raise TaskError("mobile_request_id_required", "a stable request_id is required for this room operation")
@@ -291,7 +291,8 @@ class MobileTogetherBridge:
                 room_available=lambda original: room_request_available(service, context, original))
         try:
             response = await self._invoke_native(session_token, user_id, session, application, context,
-                                                  registry, declaration, request_id, arguments)
+                                                  registry, declaration, request_id, arguments,
+                                                  via_mobile_gateway=via_mobile_gateway)
         except TaskError as error:
             error.request_id = request_id
             raise
@@ -300,7 +301,7 @@ class MobileTogetherBridge:
         return {**response, "request_id": request_id}
 
     async def _invoke_native(self, session_token, user_id, session, application, context,
-                             registry, declaration, request_id, arguments):
+                             registry, declaration, request_id, arguments, *, via_mobile_gateway=False):
         action = declaration.descriptor.tool.action
         stable = digest(["mobile-together.v1", action, request_id, context.key])
         invocation = ExternalToolInvocation(
@@ -310,27 +311,33 @@ class MobileTogetherBridge:
             before_dispatch=lambda: self._recheck(session_token, user_id, context, application,
                                                    registry, declaration),
         )
+        from companion_v2.together.mobile.origin import MOBILE_ROOM_CALL
+        marker = MOBILE_ROOM_CALL.set(bool(via_mobile_gateway))
         try:
-            response = await asyncio.wait_for(
-                registry.invoke(declaration.host_tool_id, invocation),
-                timeout=declaration.descriptor.timeout_seconds + 2,
-            )
-        except asyncio.TimeoutError as error:
-            raise TaskError("mobile_together_result_unknown", "the room operation result is not confirmed; do not submit a new request") from error
-        except Exception as error:
-            # The provider persists the original invocation identity. Reusing
-            # a request_id with different arguments is a known client error,
-            # not an unknown room outcome and must never be retried as a new
-            # operation.
-            if getattr(error, "code", None) == "native_original_invocation_mismatch":
-                raise TaskError(
-                    "mobile_together_request_conflict",
-                    "the request_id was already used with different room arguments",
-                ) from error
-            raise
+            try:
+                response = await asyncio.wait_for(
+                    registry.invoke(declaration.host_tool_id, invocation),
+                    timeout=declaration.descriptor.timeout_seconds + 2,
+                )
+            except asyncio.TimeoutError as error:
+                raise TaskError("mobile_together_result_unknown", "the room operation result is not confirmed; do not submit a new request") from error
+            except Exception as error:
+                # The provider persists the original invocation identity. Reusing
+                # a request_id with different arguments is a known client error,
+                # not an unknown room outcome and must never be retried as a new
+                # operation.
+                if getattr(error, "code", None) == "native_original_invocation_mismatch":
+                    raise TaskError(
+                        "mobile_together_request_conflict",
+                        "the request_id was already used with different room arguments",
+                    ) from error
+                raise
+        finally:
+            MOBILE_ROOM_CALL.reset(marker)
         if response.state != "succeeded":
             return {"matched": True, "state": response.state, "effect": response.effect,
-                    "operation_id": response.operation_id, "receipt_ref": response.receipt_ref}
+                    "operation_id": response.operation_id, "receipt_ref": response.receipt_ref,
+                    "code": self._native_error(registry, response.operation_id)}
         if response.source is None or response.source.state is not GovernanceState.ACTIVE:
             raise TaskError("mobile_together_result_unavailable", "the operation completed but its result is no longer authorized")
         metadata = json.loads(response.source.payload).get("native", {})
@@ -341,6 +348,27 @@ class MobileTogetherBridge:
         return {"matched": True, "state": "succeeded", "effect": response.effect,
                 "operation_id": response.operation_id, "receipt_ref": response.receipt_ref,
                 "result": result}
+
+    @staticmethod
+    def _native_error(registry, operation_id):
+        """Read the provider's recorded error for one failed room operation.
+
+        The native response contract carries no error field, so without this the
+        phone only ever sees the generic mobile_together_create_failed.  The
+        provider journals the code; read it back instead of guessing.
+        """
+        if not operation_id:
+            return ""
+        try:
+            getter = getattr(registry, "active_service", None)
+            service = getter("together") if callable(getter) else None
+            store = getattr(getattr(service, "_native_provider", None), "store", None)
+            finder = getattr(store, "find", None)
+            found = finder(operation_id) if callable(finder) else None
+        except Exception:
+            return ""
+        error = found.get("error") if isinstance(found, dict) else None
+        return error[:100] if isinstance(error, str) and error else ""
 
     @staticmethod
     def mobile_result(operation, response):

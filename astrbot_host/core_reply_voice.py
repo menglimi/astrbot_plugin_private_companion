@@ -126,8 +126,9 @@ def _plain_text(message):
 
 
 def _clean_plain_runs(message, policy):
+    from companion_v2.conversation.text_processing import unwrap_text_emit_calls
     if isinstance(message, str):
-        visible, spans = separate_spoken(message, policy)
+        visible, spans = separate_spoken(unwrap_text_emit_calls(message), policy)
         return visible, spans, visible
 
     chain = getattr(message, "chain", None)
@@ -144,7 +145,7 @@ def _clean_plain_runs(message, policy):
         while index < len(chain) and isinstance(chain[index], Plain):
             run.append(chain[index].text)
             index += 1
-        run_visible, run_spans = separate_spoken("".join(run), policy)
+        run_visible, run_spans = separate_spoken(unwrap_text_emit_calls("".join(run)), policy)
         offset = sum(map(len, visible_parts))
         spans.extend((offset + position, speech) for position, speech in run_spans)
         visible_parts.append(run_visible)

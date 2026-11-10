@@ -70,6 +70,13 @@
         "_special": "select_persona",
         "hint": "V2 原生房间使用创建房间时 AstrBot 当前选中的人格；此项仅用于旧式本机房间。"
       },
+      "chat_provider_id": {
+        "description": "房间对话模型",
+        "type": "string",
+        "default": "",
+        "_special": "select_provider",
+        "hint": "留空时跟随私伴主配置 model.provider_id。选中的模型会用于房间对话与语音通话，必须是 AstrBot 里存在且支持文本对话的 Provider。"
+      },
       "history_turns": {
         "description": "房间上下文轮数",
         "type": "int",

@@ -78,3 +78,16 @@ test("cleanup presents an explicit confirmation before issuing the destructive r
   assert.equal(JSON.stringify(calls.at(-1)), JSON.stringify(["POST", "storage", {action: "clean"}]));
   assert.match(root.innerHTML, /已清理 0 份快照/);
 });
+
+test("runtime cache cleanup posts only the cache action and keeps the page data", async () => {
+  const {root, handlers, calls} = setup();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match(root.innerHTML, /运行缓存/);
+  assert.match(root.innerHTML, /data-storage-cache-clear/);
+  handlers.click({target: {closest: () => button(["data-storage-cache-clear"])}});
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(JSON.stringify(calls.at(-1)), JSON.stringify(["POST", "storage", {action: "cache"}]));
+  assert.match(root.innerHTML, /已清理运行缓存/);
+  // The cache response carries no storage inventory; the measured usage stays.
+  assert.match(root.innerHTML, /插件资料占用/);
+});

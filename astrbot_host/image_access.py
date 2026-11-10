@@ -46,16 +46,29 @@ def _ensure_image_access(runtime, context, observed_at):
         from companion_v2.conversation.media.output_settings import effective_settings, image_request_denial
         denial = image_request_denial(runtime, context, effective_settings(runtime, context))
         if denial is not None:
+            # This runs on every group turn (turn resolution, catalogue build and
+            # reply tools all call it), whether or not anyone asked for an image,
+            # so it must stay out of the INFO stream: operators read
+            # "群聊生图未授权" as a failed request and go hunting for a bug. The
+            # actionable denial is logged where an image action is actually
+            # dispatched (``ImageQuotaGate._admit``), and the reason also lands in
+            # the catalogue diagnostics for the 治理与维护 page.
+            logger.debug("[CompanionV2] 群聊生图策略未放行 reason=%s subject=%s group=%s conversation=%s",
+                         denial[0], subject.subject_id, scope.native_scope_id, scope.conversation_id)
             return
         capabilities = GROUP_IMAGE_CAPABILITIES
     projected = repository.projection(extension_id=IMAGE_EXTENSION, role=role, scope=scope)
     if not projected.is_success:
+        logger.info("[CompanionV2] 生图能力投影不可用 code=%s role=%s kind=%s",
+                    projected.failure.code, role.subject_id, scope.kind.value)
         return
     projection = projected.unwrap()
     if projection.installation.desired_state is not CapabilityDesiredState.ACTIVE:
         return
     if projection.role_selection is not None:
         if not projection.role_selection.enabled:
+            logger.info("[CompanionV2] 生图能力未对角色启用 role=%s bot=%s",
+                        role.subject_id, scope.bot_id)
             return
     else:
         result = repository.set_role_enabled(

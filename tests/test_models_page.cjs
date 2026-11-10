@@ -248,8 +248,8 @@ test('core reply uses AstrBot routing and saves only its effective extra prompt'
   post.resolve({replayed: false, task: core});
   await flush();
   node.click('[data-model-sub]', {modelSub: 'pol'});
-  assert.doesNotMatch(node.innerHTML, /<option value="conversation.reply"/);
-  assert.match(node.innerHTML, /<option value="memory.reflect"/);
+  assert.match(node.innerHTML, /<option value="conversation\.reply"/);
+  assert.match(node.innerHTML, /<option value="memory\.reflect"/);
   h.page.unmount();
 });
 
@@ -1496,7 +1496,7 @@ test('the refusal switch saves fallback_on_refusal for the task', async () => {
   assert.match(node.innerHTML, /已保存 1 项/);
 });
 
-test('replacement policy keeps ordinary AstrBot replies out of the task selector', async () => {
+test('the replacement policy includes the core reply for time-window provider switches', async () => {
   const {page, requests, root} = harness();
   const node = root();
   page.mount(node);
@@ -1508,7 +1508,7 @@ test('replacement policy keeps ordinary AstrBot replies out of the task selector
   const selectorStart = node.innerHTML.indexOf('<select data-model-pol-task');
   const selectorEnd = node.innerHTML.indexOf('</select>', selectorStart);
   const selector = selectorStart >= 0 && selectorEnd >= 0 ? node.innerHTML.slice(selectorStart, selectorEnd + 9) : '';
-  assert.doesNotMatch(selector, /conversation\.reply/);
+  assert.match(selector, /conversation\.reply/);
   assert.match(selector, /memory\.reflect/);
 });
 

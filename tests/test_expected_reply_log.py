@@ -274,7 +274,6 @@ class GroupReplyLogTests(ReplyLogAssertions, GroupFixture, unittest.IsolatedAsyn
     async def setup_delivery(self):
         self.controller = self.make_controller(group_config(group_delivery_mode="onebot_group"))
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
 
     async def settle(self, batch):
         await wait_for_batch(self.controller.session, batch)

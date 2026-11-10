@@ -63,7 +63,6 @@ class GroupParticipationTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
     async def setup_delivery(self):
         self.controller = self.make_controller(group_config(group_delivery_mode="onebot_group"))
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
 
     async def receive(self, text="两位成员还在继续讨论", *, commands=(), behavior=None, sender="200", **options):
         async def respond(payload, tools):
@@ -362,7 +361,6 @@ class GroupParticipationTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         await self.controller.terminate()
         self.controller = self.make_controller(group_config(group_delivery_mode="onebot_group"))
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         self.assertEqual((await self.controller.receive_claimed(event)).unwrap(), batch)
         self.clock.advance(timedelta(seconds=3))
         self.app.notify()

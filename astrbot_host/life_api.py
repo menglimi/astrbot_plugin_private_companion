@@ -73,6 +73,7 @@ class LifeWebAPI:
             fields = {
                 "configure": {"changes", "edit_token"}, "add_text": {"title", "text"}, "sleep": {"minutes"},
                 "read": {"activity_id"}, "wake": {"activity_id"}, "cancel": {"activity_id"}, "withdraw": {"activity_id"},
+                "remove": {"activity_id"},
                 "diary": {"local_date", "retry_of"}, "dream": {"activity_id", "retry_of"},
                 "edit": {"kind", "local_date", "body", "afterglow", "timezone"},
                 "delete": {"kind", "local_date", "timezone"},

@@ -71,7 +71,6 @@ class NativeGroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         from aiocqhttp.api_impl import ResultStore
         await self.start_host()
         for target in ("group-a", "group-b", "group-c"):
-            (await self.controller.authorize_group_delivery(target)).unwrap()
             preview = await self.reply(target)
             configured = self.controller.settings.target(target)
             socket = self.sockets[configured.platform_id][configured.account_id]
@@ -108,7 +107,6 @@ class NativeGroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         with patch("astrbot_host.voice.get_astrbot_temp_path", return_value=str(audio_root)):
             await self.start_host()
             for target, identifier in (("group-a", "851"), ("group-c", "852")):
-                (await self.controller.authorize_group_delivery(target)).unwrap()
                 report = await self.reply(target, identifier)
                 self.assertTrue(report["sent"], report)
                 configured = self.controller.settings.target(target)
@@ -122,7 +120,6 @@ class NativeGroupDeliveryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
     async def test_native_failed_and_missing_ack_remain_unknown_without_retry(self):
         from aiocqhttp.api_impl import ResultStore
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         socket = self.sockets["qq-main"]["100"]
         for index, status in enumerate(("failed", "timeout")):
             socket.status = status

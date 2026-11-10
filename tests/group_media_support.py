@@ -87,4 +87,3 @@ class GroupMediaFixture(GroupFixture):
         self.config = group_config(group_delivery_mode="onebot_group")
         self.controller = self.make_controller(self.config)
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()

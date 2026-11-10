@@ -3474,6 +3474,55 @@ window.CompanionMaintenancePage = (() => {
       (recentMarkup || emptyMarkup) + '</section></div>';
   }
 
+  function logsMarkup() {
+    const records = Array.isArray(state.logs) ? state.logs : [];
+    const levels = [["", "全部级别"], ["DEBUG", "DEBUG"], ["INFO", "INFO"], ["WARNING", "WARNING"], ["ERROR", "ERROR"]];
+    const controls = '<div class="maint-log-controls">' +
+      '<select data-log-level aria-label="筛选日志级别">' + levels.map(([value, label]) =>
+        '<option value="' + value + '"' + (state.logLevel === value ? " selected" : "") + '>' + label + '</option>').join("") + '</select>' +
+      '<input type="search" data-log-query aria-label="搜索日志" placeholder="搜索消息或 logger" value="' + escapeHtml(state.logQuery) + '">' +
+      '<button type="button" class="maint-text-action" data-log-search>搜索</button>' +
+      '<button type="button" class="maint-refresh" data-log-refresh ' + (state.logsLoading ? "disabled" : "") + '><i data-lucide="refresh-cw"></i><span>' + (state.logsLoading ? "读取中" : "刷新") + '</span></button></div>';
+    const body = state.logsError ? '<div class="maint-error" role="alert"><i data-lucide="cloud-off"></i><div><strong>日志暂不可用</strong><p>' + escapeHtml(state.logsError) + '</p></div></div>'
+      : !records.length ? '<div class="maint-log-empty">当前筛选下没有日志。插件运行后再刷新即可看到最近记录。</div>'
+        : '<div class="maint-log-list" role="log">' + records.map(row =>
+          '<div class="maint-log-row" data-level="' + escapeHtml(row.level || "INFO") + '">' +
+          '<span class="maint-log-time">' + escapeHtml(time(row.at)) + '</span>' +
+          '<span class="maint-log-level">' + escapeHtml(row.level || "INFO") + '</span>' +
+          '<code class="maint-log-logger">' + escapeHtml(row.logger || "") + '</code>' +
+          '<span class="maint-log-message">' + escapeHtml(row.message || "") + '</span></div>').join("") + '</div>';
+    return '<section class="maint-log-panel" aria-labelledby="maint-log-heading">' +
+      '<div class="maint-panel-heading"><div><span class="maint-eyebrow">追踪 / 04</span><h3 id="maint-log-heading">最近日志</h3>' +
+      '<p class="maint-scope-note"><i data-lucide="shield-check"></i>仅当前插件进程的内存缓冲，最多 2000 条，不读取 AstrBot 全局日志文件。</p></div></div>' +
+      controls + body + '<p class="maint-log-foot">显示 ' + number(records.length) + ' 条 · 日志只在本次插件进程中保留，重启后清空。</p></section>';
+  }
+
+  async function loadLogs() {
+    if (!state || state.logsLoading) return;
+    const current = state, ticket = generation;
+    current.logsLoading = true;
+    current.logsError = "";
+    render();
+    try {
+      const params = new URLSearchParams({limit: "300"});
+      if (current.logLevel) params.set("level", current.logLevel);
+      if (current.logQuery.trim()) params.set("q", current.logQuery.trim());
+      const data = await api("GET", "/logs?" + params.toString());
+      if (ticket !== generation || state !== current) return;
+      current.logs = Array.isArray(data?.records) ? data.records : [];
+      current.logsLoaded = true;
+    } catch (error) {
+      if (ticket !== generation || state !== current) return;
+      current.logs = [];
+      current.logsError = error?.message || "无法读取日志。";
+    } finally {
+      if (ticket === generation && state === current) {
+        current.logsLoading = false;
+        render();
+      }
+    }
+  }
+
   function render() {
     if (!root || !state) return;
     const samples = root.querySelectorAll?.("details[data-reply-sample]");
@@ -3528,13 +3577,15 @@ window.CompanionMaintenancePage = (() => {
     const navItems = [
       ["overview", "Token 统计"], ["diagnostics", "排障"], ["cache", "缓存诊断"],
       ["efficiency", "回复效率"], ["recent", "最近调用"], ["prompts", "任务提示词"], ["system-prompts", "系统提示词"],
+      ["logs", "日志"],
     ];
     const navMarkup = '<nav class="maint-subnav" aria-label="治理与维护二级导航">' + navItems.map(item =>
       '<button type="button" data-maint-nav="' + item[0] + '" aria-current="' + (state.activeMaintenanceNav === item[0] ? "page" : "false") + '">' + item[1] + '</button>').join("") + '</nav>';
     const boardTitles = {overview: "Token 管理", diagnostics: "运行排障", cache: "缓存诊断", efficiency: "近期回复效率",
-      recent: "最近调用", prompts: "任务提示词", "system-prompts": "系统提示词"};
+      recent: "最近调用", prompts: "任务提示词", "system-prompts": "系统提示词", logs: "最近日志"};
     const boardDescriptions = {efficiency: "近 7 日 · 核心发送耗时与历史投递耗时",
-      "system-prompts": "核心回复固定规则 · 修改前请阅读风险说明"};
+      "system-prompts": "核心回复固定规则 · 修改前请阅读风险说明",
+      logs: "当前插件进程的最近日志 · 排障时可搜索、按级别筛选"};
     const boardTitle = boardTitles[state.activeMaintenanceNav] || "运行态势";
     root.innerHTML = '<div class="maint-board"><header class="maint-board-head"><div class="maint-board-copy"><span class="maint-eyebrow">陪伴 / 信号室</span><h2>' + boardTitle + '</h2><p>' +
       (boardDescriptions[state.activeMaintenanceNav] || "运行态势 · 当前角色用量、预算与调用构成。") + '</p></div>' +
@@ -3558,7 +3609,9 @@ window.CompanionMaintenancePage = (() => {
       (state.traceFilter ? '<button type="button" class="maint-text-action" data-clear-trace>清除排行筛选</button>' : "") + '<button type="button" class="maint-text-action" data-toggle-calls>' + (state.showAllCalls ? "收起" : "查看更多") +
       '</button></div></div>' + (state.traceFilter ? '<div class="maint-trace-filter-note">已按排行筛选：' + escapeHtml(state.traceFilter.kind === "tasks" ? taskName(state.traceFilter.key) : state.traceFilter.key) + '</div>' : "") +
       (state.selectedHour ? '<div class="maint-trace-filter-note">已聚焦时段：' + escapeHtml(state.selectedHour.replace("T", " ") + ":00") + ' <button type="button" class="maint-text-action" data-clear-hour>清除时段</button></div>' : "") +
-      recentView + '</section></section><footer class="maint-board-footer"><span>当前角色 / ' + escapeHtml(role) + '</span><span>' + escapeHtml(ledgerNote) + '</span></footer></div>';
+      recentView + '</section></section>' +
+      '<section class="maint-view" data-maint-view="logs"' + (state.activeMaintenanceNav === "logs" ? "" : " hidden") + '>' + logsMarkup() + '</section>' +
+      '<footer class="maint-board-footer"><span>当前角色 / ' + escapeHtml(role) + '</span><span>' + escapeHtml(ledgerNote) + '</span></footer></div>';
     if (!state.provider && data.providers?.[0]) state.provider = data.providers[0].id;
     if (!state.voiceProvider && state.integrations?.voice?.providers?.[0]) state.voiceProvider = state.integrations.voice.providers[0].id;
     if (!state.imageAction && state.integrations?.image?.actions?.[0]) state.imageAction = state.integrations.image.actions[0].action;
@@ -3890,13 +3943,14 @@ window.CompanionMaintenancePage = (() => {
 
   function setMaintenanceView(view) {
     if (!state) return;
-    const views = ["overview", "diagnostics", "cache", "efficiency", "recent", "prompts", "system-prompts"];
+    const views = ["overview", "diagnostics", "cache", "efficiency", "recent", "prompts", "system-prompts", "logs"];
     const next = views.includes(view) ? view : "overview";
     const changed = state.activeMaintenanceNav !== next;
     if (changed && next !== "diagnostics" && state.memoryRunning) {
       stopMemoryDiagnostic("已离开排障页，采样已停止", {render: false});
     }
     state.activeMaintenanceNav = next;
+    if (next === "logs" && !state.logsLoaded && !state.logsLoading) void loadLogs();
     if (changed) state.onViewChange?.(next);
   }
 
@@ -3907,6 +3961,17 @@ window.CompanionMaintenancePage = (() => {
       const requestedView = sectionNav.dataset.maintNav || "overview";
       setMaintenanceView(requestedView);
       render();
+      return;
+    }
+    if (target.closest("[data-log-refresh]") && state) {
+      state.logsLoaded = false;
+      void loadLogs();
+      return;
+    }
+    if (target.closest("[data-log-search]") && state) {
+      state.logQuery = root?.querySelector?.("[data-log-query]")?.value || "";
+      state.logsLoaded = false;
+      void loadLogs();
       return;
     }
     const systemPromptItem = target.closest("[data-system-prompt]");
@@ -4073,6 +4138,12 @@ window.CompanionMaintenancePage = (() => {
   function change(event) {
     const target = event.target;
     if (!state) return;
+    if (target.matches("[data-log-level]")) {
+      state.logLevel = target.value;
+      state.logsLoaded = false;
+      void loadLogs();
+      return;
+    }
     if (target.matches("[data-prompt-section]")) {
       if (state.promptSaving || state.promptReloading) return;
       if (promptDirty()) {
@@ -4104,6 +4175,7 @@ window.CompanionMaintenancePage = (() => {
   function input(event) {
     const target = event.target;
     if (!state) return;
+    if (target.matches("[data-log-query]")) { state.logQuery = target.value || ""; return; }
     if (target.matches("[data-prompt-search]")) {
       const selection = [target.selectionStart, target.selectionEnd];
       state.promptQuery = target.value || "";
@@ -4197,7 +4269,7 @@ window.CompanionMaintenancePage = (() => {
       memorySamples: [], memoryRunning: false, memorySampling: false, memoryComplete: false,
       memoryError: "", memoryStopReason: "", memoryTimer: null, memoryStartedAt: 0,
       tokenSource: "companion", tokenTrendMode: "daily", tokenBreakdown: "providers", tokenDetailView: "daily",
-      activeMaintenanceNav: ["overview", "diagnostics", "cache", "efficiency", "recent", "prompts", "system-prompts"].includes(options.activeView) ? options.activeView : "overview",
+      activeMaintenanceNav: ["overview", "diagnostics", "cache", "efficiency", "recent", "prompts", "system-prompts", "logs"].includes(options.activeView) ? options.activeView : "overview",
       onViewChange: typeof options.onViewChange === "function" ? options.onViewChange : null,
       period: "today", selectedDate: localDay(), selectedHour: "", category: "all", severity: "all", callFilter: "all",
       callQuery: "", traceFilter: null, showAllCalls: false, modelStatus: null, openReplySamples: new Set(),
@@ -4209,7 +4281,8 @@ window.CompanionMaintenancePage = (() => {
       systemPrompts: null, systemPromptsLoading: false, systemPromptsError: "",
       systemPromptKey: "voice_rules", systemPromptDraft: "", systemPromptInitial: "", systemPromptToken: "",
       systemPromptMessage: "", systemPromptMessageKind: "", systemPromptSaving: false,
-      systemPromptOperationKey: "", systemPromptOperationKind: ""};
+      systemPromptOperationKey: "", systemPromptOperationKind: "",
+      logs: null, logsLoaded: false, logsLoading: false, logsError: "", logLevel: "", logQuery: ""};
     const cached = maintenanceCache.get(maintenanceScope);
     if (cached) Object.assign(state, cached);
     state.onViewChange?.(state.activeMaintenanceNav);

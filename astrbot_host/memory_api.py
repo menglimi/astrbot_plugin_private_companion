@@ -25,6 +25,7 @@ class MemoryWebAPI:
 
     def routes(self):
         return [(PREFIX, self.list, ["GET"], "Read V2 memory facts"),
+                (PREFIX + "/add", self.add, ["POST"], "Add one manually authored memory fact"),
                 (PREFIX + "/command", self.command, ["POST"], "Correct, pin or forget V2 memory facts"),
                 (PREFIX + "/revisions", self.revisions, ["GET"], "Review authorized memory fact revisions"),
                 (PREFIX + "/clear/preview", self.preview_clear, ["GET"], "Preview clearing this private relationship's facts"),
@@ -269,6 +270,30 @@ class MemoryWebAPI:
         except ValueError:
             return outcome_response(Outcome.failed("memory_request_invalid", "invalid memory page size"))
         return await self._run({"after_id": request.query.get("after_id", ""), "limit": limit})
+
+    async def add(self):
+        from .web_api import outcome_response
+        try:
+            raw = await request.body()
+            if len(raw) > 16384 or request.query:
+                raise ValueError()
+            def unique(pairs):
+                values = {}
+                for key, value in pairs:
+                    if key in values:
+                        raise ValueError()
+                    values[key] = value
+                return values
+            arguments = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
+            required = {"operation_key", "subject", "predicate", "object"}
+            allowed = required | {"representation"}
+            if (type(arguments) is not dict or not required.issubset(arguments)
+                    or set(arguments) - allowed):
+                raise ValueError()
+            arguments.setdefault("representation", "")
+        except (ValueError, UnicodeError, RecursionError):
+            return outcome_response(Outcome.failed("memory_request_invalid", "invalid memory add command"))
+        return await self._run(arguments, mutation=True, method="add")
 
     async def command(self):
         from .web_api import outcome_response

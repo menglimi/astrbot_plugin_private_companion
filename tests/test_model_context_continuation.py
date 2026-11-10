@@ -121,7 +121,6 @@ class GroupDerivedContinuationTests(GroupFixture, unittest.IsolatedAsyncioTestCa
     async def test_new_group_observations_do_not_rewrite_the_participation_turn(self):
         self.controller = self.make_controller(group_config(group_delivery_mode="onebot_group"))
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         app = self.controller.session.application
         captured = []
 

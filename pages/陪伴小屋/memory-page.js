@@ -137,6 +137,7 @@ window.CompanionMemoryPage = (() => {
       /* 记忆归属：null = 还没读到；{owner:"self"} 读到但没读全。归属是安装级的事实，
          所以它不进 load() 的轮询——那些轮询只刷数据，不该让这句话闪。 */
       ownership:null,
+      addOpen:false, addText:"",
       pending:null, pendingMutation:null, busy:false, loading:false, notice:"", error:false, ready:false};
   }
   function current() { return data?.catalog?.targets[data.target]; }
@@ -222,7 +223,7 @@ window.CompanionMemoryPage = (() => {
     stopTimer();
     /* 只在「整理与修复」里轮询：那是有后台任务的视图。事实流是被动数据，
        用户自己在看，8 秒刷一次只会把筛选与滚动位置晃掉。 */
-    if (data?.ready && role()?.memory_api && !document.hidden && ["reflections","facts"].includes(data.area)) {
+    if (data?.ready && role()?.memory_api && !document.hidden && !data.addOpen && ["reflections","facts"].includes(data.area)) {
       // Poll only reads. Neither a timer nor a page reload can queue a model call.
       const quiet = data.area === "facts" && (data.search || data.filter !== "all");
       timer = setTimeout(() => { if (!data.busy && !data.loading && !quiet) load(); else schedule(); }, 8000);
@@ -559,9 +560,20 @@ window.CompanionMemoryPage = (() => {
     ${data.factDetail.sources?.length?`<p class="mem-plain">关联 ${data.factDetail.sources.length} 份原始来源</p>`:""}`;
   }
 
+  function addFormMarkup() {
+    return `<form class="mem-add-form" id="memory-add-form" aria-label="手动新增记忆">
+      <label class="mem-add-field"><span>记忆内容（关于当前私聊对象）</span><textarea id="memory-add-text" rows="3" maxlength="2000"
+        placeholder="例如：她喜欢在下雨天听旧歌。">${e(data.addText)}</textarea></label>
+      <p class="mem-plain">以管理员身份记录，来源标注为手动记录，不会伪装成对方说过的话；角色自己的设定请到角色档案维护。</p>
+      <div class="mem-actions">${button("memory-add-submit","保存记忆",data.busy||data.loading,"primary")}${button("memory-add-cancel","取消",data.busy||data.loading)}</div>
+    </form>`;
+  }
+
   function factsMarkup() {
     return `${overviewMarkup()}${vitalsMarkup()}
       <section class="mem-block">
+        <div class="mem-add-row">${button("memory-add-open","手动新增一条记忆",data.busy||data.loading)}</div>
+        ${data.addOpen?addFormMarkup():""}
         <div class="mem-split">
           <div>
             ${filtersMarkup()}
@@ -1045,6 +1057,28 @@ window.CompanionMemoryPage = (() => {
     finally { if (live(ticket)) { data.loading = false; render(); schedule(); } }
   }
 
+  /* 手动新增：管理员明确登记一条事实，来源标成 management.memory，
+     不冒充用户说过的话，也不覆盖已有事实。 */
+  async function addMemory() {
+    if (data.busy || data.loading) return;
+    const body = (root.querySelector("#memory-add-text")?.value || "").trim();
+    data.addText = body;
+    if (!body) { notice("先写点要记住的内容。", true); render(); return; }
+    data.busy = true; render();
+    try {
+      const result = await api("POST", endpoint() + "/add", {
+        operation_key: "memory-add-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10),
+        subject: "self", predicate: "手动记录", object: body, representation: body,
+      });
+      data.addOpen = false; data.addText = "";
+      notice(`已新增一条记忆${Number.isInteger(result?.revision) ? "（修订 " + result.revision + "）" : ""}。`);
+      data.busy = false;
+      await load();
+      return;
+    } catch (error) { notice(reason(error.code), true); }
+    data.busy = false; render();
+  }
+
   /* 条目移出的可见过渡。用户按下「撤回/遗忘」后那条从列表消失，
      直接重绘会让它凭空不见——先播 260ms 的塌陷动画，再做真正的重绘。
      reduced-motion 下 CSS 把时长压到 0.001ms，这里照常走完同一个 await，
@@ -1479,6 +1513,9 @@ window.CompanionMemoryPage = (() => {
     if (id === "memory-fact-pin") { mutateFact(data.factDetail?.item?.context_mode==="pinned"?"unpin":"pin"); return; }
     if (id === "memory-fact-retract") { mutateFact("retract"); return; }
     if (id === "memory-fact-forget") { mutateFact("forget"); return; }
+    if (id === "memory-add-open") { data.addOpen = true; render(); return; }
+    if (id === "memory-add-cancel") { data.addOpen = false; render(); return; }
+    if (id === "memory-add-submit") { addMemory(); return; }
     if (id === "memory-revisions") { loadRevisions(); return; }
     if (id === "memory-clear-preview") { loadClearPreview(); return; }
     if (id === "memory-clear-confirm") { clearMemory(); return; }
@@ -1518,6 +1555,7 @@ window.CompanionMemoryPage = (() => {
      这是「整块重绘」架构下唯一必须开的口子。 */
   let searchTimer = null;
   function input(event) {
+    if (event.target.id === "memory-add-text") { data.addText = event.target.value; return; }
     if (event.target.id !== "memory-search") return;
     data.search = event.target.value;
     clearTimeout(searchTimer);
@@ -1545,6 +1583,7 @@ window.CompanionMemoryPage = (() => {
     else if(event.target.id==="memory-archive-form") {event.preventDefault();loadArchivePreview();}
     else if(event.target.id==="memory-archive-restore-form") {event.preventDefault();restoreArchive();}
     else if(event.target.id==="memory-import-form") {event.preventDefault();previewImport();}
+    else if(event.target.id==="memory-add-form") {event.preventDefault();addMemory();}
   }
 
   /* 滚动到底自动续读：语料超出预读窗口时，用户滚到底就该继续拿到更早的条目，

@@ -272,6 +272,32 @@ class GroupHostTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual([action for action, _ in self.native.platform.client._api._wsr_api.calls],
                          ["send_group_msg", "send_private_msg"])
 
+    async def test_group_core_admin_keeps_image_tools_without_window_consent(self):
+        from companion_v2.identity_policy.models import AuthorizationTier
+        from companion_v2.identity_policy.object_access import ObjectAccessPolicy
+
+        app = await self.start_host()
+        repository = CapabilityRepository(app.runtime)
+        for _ in range(100):
+            if repository.projection(extension_id="image").is_success:
+                break
+            await asyncio.sleep(0.02)
+        else:
+            self.fail("image capability did not finish installing")
+        context, _ = await self.accept_group()
+        policy = ObjectAccessPolicy(app.runtime)
+        policy.set_tier(context.actor.subject, AuthorizationTier.CORE,
+                        expected_revision=policy.revision, observed_at=self.clock.now())
+        # A rotated window can lose its per-window consent rows; the operator's
+        # own group turn must still see the image tools (and keep the tool
+        # schema stable instead of toggling it per turn).
+        with app.runtime.transaction() as connection:
+            connection.execute("DELETE FROM capability_authorizations "
+                               "WHERE extension_id = 'image' AND scope_kind = 'group'")
+        offered = {tool.action for tool in app.tools.external.catalog_for(context)}
+        self.assertIn("image.generate", offered)
+        self.assertIn("image.edit", offered)
+
     async def test_group_admission_provisions_group_scoped_image_consent(self):
         app = await self.start_host()
         repository = CapabilityRepository(app.runtime)

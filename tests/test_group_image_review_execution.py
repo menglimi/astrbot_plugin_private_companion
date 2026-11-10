@@ -26,7 +26,6 @@ class GroupImageReviewExecutionTests(GroupImageDeliveryFixture, unittest.Isolate
     async def asyncSetUp(self):
         self.controller = self.make_controller(group_config(group_delivery_mode="onebot_group"))
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         self.settings = {**DEFAULTS, "enable_group_nsfw_private_fallback": True}
         self.app.image_review._settings_reader = lambda: self.settings
         self.review_calls = []

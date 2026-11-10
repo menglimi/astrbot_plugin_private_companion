@@ -192,7 +192,7 @@ class HostSettings:
             ),
             limits=SupervisorLimits(
                 _integer(runtime.get("foreground_slots", 2), minimum=1, maximum=32),
-                _integer(runtime.get("background_slots", 1), minimum=1, maximum=32),
+                _integer(runtime.get("background_slots", 3), minimum=1, maximum=32),
                 _integer(runtime.get("queued_per_lane", 64), minimum=1, maximum=10_000),
                 _integer(runtime.get("retained_tasks", 10_000), minimum=1, maximum=100_000),
             ),

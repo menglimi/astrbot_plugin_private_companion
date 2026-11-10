@@ -25,6 +25,7 @@ from companion_v2.qzone.capability import (COMMENT_ACTION, EXTENSION, LIKE_ACTIO
 from companion_v2.qzone.policy import (QzoneRuntimeStore, action_reason, block_reason, clear_failure,
     note_action, note_failure, note_publish, publish_reason)
 from companion_v2.qzone.references import COMMENT, LIKE, QzoneReferenceStore
+from companion_v2.qzone.images import image_batch
 from companion_v2.qzone.agenda_link import (APPLIED, DISMISSED, MAX_PENDING, SuggestionStore)
 from companion_v2.qzone.topics import (AgendaProposal, QzoneScene, QzoneTopic, normalize_scene,
     normalize_topic, topic_spec, validate_confidence)
@@ -387,10 +388,13 @@ class QzoneService:
         by_id = {post.post_id: reference for post, reference in zip(posts, references)}
         items = [reference.summary() for reference in references]
         targets = [post for post in posts if post.own][:3] or list(posts[:1])
+        details = {}
         for post in targets:
-            outcome = await self.transport.send(P.feed_request(credential, uin=int(post.author_uin), num=limit,
-                                                              detail=True), timeout=READ_TIMEOUT)
-            payload = self._answer(outcome, context, at, source="feed.detail")
+            if post.author_uin not in details:
+                outcome = await self.transport.send(P.feed_request(credential, uin=int(post.author_uin), num=limit,
+                                                                  detail=True), timeout=READ_TIMEOUT)
+                details[post.author_uin] = self._answer(outcome, context, at, source="feed.detail")
+            payload = details[post.author_uin]
             entry = feed_reader.msglist_entry(payload, post.post_id)
             if entry is None:
                 continue
@@ -398,7 +402,18 @@ class QzoneService:
             for item in items:
                 if item["post_ref"] == by_id[post.post_id].token:
                     item["comments"] = list(comments)
+                    if post.liked or await self._read_like(credential, post, at=at, context=context):
+                        item["liked"] = True
+                        self.references.mark_liked(by_id[post.post_id])
         return items
+
+    async def _read_like(self, credential, post, *, at, context):
+        try:
+            outcome = await self.transport.send(P.like_list_request(credential, post), timeout=READ_TIMEOUT)
+            payload = self._answer(outcome, context, at, source="post.likes")
+        except TaskError:
+            return False
+        return P.like_list_has_self(payload, credential.uin)
 
     async def like(self, context, *, post_ref, operation_key):
         at = self.now()
@@ -445,7 +460,10 @@ class QzoneService:
                 return False
             for candidate in posts:
                 if candidate.post_id == post.post_id or (post.fid and candidate.post_id == post.fid):
-                    return bool(candidate.liked)
+                    if candidate.liked:
+                        return True
+            if await self._read_like(credential, post, at=at, context=context):
+                return True
         return False
 
     async def comment(self, context, *, post_ref, text, operation_key):
@@ -477,7 +495,7 @@ class QzoneService:
                 "operation_id": operation.operation_id, "receipt_ref": operation.operation_id}
 
     async def publish(self, context, *, text, topic, scene, confidence, topic_confirmed, operation_key,
-                      source_refs=(), agenda_proposal=None):
+                      source_refs=(), agenda_proposal=None, images=()):
         """Publish only after a source-guided topic decision has been attached.
 
         Classification is deliberately a contract boundary rather than a local
@@ -488,7 +506,10 @@ class QzoneService:
         at = self.now()
         settings = self._settings_gate(context, at)
         self._require_capability(context, PUBLISH_ACTION)
-        body = P.clean_text(text, limit=P.MAX_PUBLISH_CHARS, field="说说正文")
+        images = image_batch(images)
+        body = "" if images and isinstance(text, str) and not text.strip() else P.clean_text(
+            text, limit=P.MAX_PUBLISH_CHARS, field="说说正文")
+        media_key = digest([body, [image.content_hash for image in images]]) if images else ""
         refs = _source_refs(source_refs)
         code, message = publish_topic_reason = (None, None)
         try:
@@ -517,7 +538,7 @@ class QzoneService:
         if code:
             raise TaskError(code, message)
         state = self.state(context)
-        reason = publish_reason(state, settings, text=body, at=at, day=local_day(at),
+        reason = publish_reason(state, settings, text=body, media_key=media_key, at=at, day=local_day(at),
                                 topic=normalized_topic, scene=normalized_scene,
                                 confidence=normalized_confidence, topic_confirmed=topic_confirmed)
         if reason:
@@ -527,6 +548,8 @@ class QzoneService:
                       "confidence": normalized_confidence, "topic_confirmed": topic_confirmed,
                       "source_refs": list(refs),
                       "agenda_proposal": proposal.document() if proposal else None}
+        if images:
+            parameters["image_hashes"] = [image.content_hash for image in images]
         operation, replayed = self._reserve(context, action=PUBLISH_ACTION, operation_key=operation_key,
                                             parameters=parameters, at=at)
         if replayed is False and proposal is not None:
@@ -538,6 +561,13 @@ class QzoneService:
                                     intent=proposal.intent, source_refs=proposal.source_refs,
                                     topic=normalized_topic.value, scene=normalized_scene.value, at=at)
         if replayed:
+            saved = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key=?",
+                                          ("qzone.publish.receipt:" + operation.operation_id,))
+            if saved:
+                result = json.loads(saved["value"])
+                if result.get("verified"):
+                    result.update(status="replayed", message="这条说说此前已经确认发布")
+                return result
             result = {"status": "replayed", "verified": True, "message": "这条说说此前已经确认发布",
                       "operation_id": operation.operation_id, "receipt_ref": operation.operation_id,
                       "topic": normalized_topic.value, "scene": normalized_scene.value,
@@ -546,12 +576,32 @@ class QzoneService:
             if proposal:
                 result["agenda_proposal"] = proposal.document()
             return result
-        outcome = await self.transport.send(P.publish_request(credential, body), timeout=WRITE_TIMEOUT)
+        uploaded = []
+        if images:
+            try:
+                token = credential.qzonetoken or await self.transport.qzonetoken(credential)
+                for image in images:
+                    answer = await self.transport.send(P.upload_image_request(credential, image, qzonetoken=token),
+                                                       timeout=WRITE_TIMEOUT)
+                    payload = self._answer(answer, context, at, source="image.upload")
+                    uploaded.append(P.uploaded_image(payload))
+            except BaseException:
+                # The reservation covers the whole upload+publish operation.
+                # Even an interrupted upload must never be replayed implicitly.
+                self._unknown(operation, at)
+                if proposal is not None:
+                    self._drop_suggestion(context, operation, proposal)
+                raise
+        try:
+            outcome = await self.transport.send(P.publish_request(credential, body, uploaded), timeout=WRITE_TIMEOUT)
+        except BaseException:
+            self._unknown(operation, at)
+            raise
         if outcome.delivery_unknown:
             self._unknown(operation, at)
             raise TaskError("qzone_delivery_unknown", "说说是否发出未知；不会自动重发，请到空间确认后再决定")
         try:
-            self._answer(outcome, context, at, source="post.publish")
+            payload = self._answer(outcome, context, at, source="post.publish")
         except TaskError as error:
             # A known failure means the question was never asked in public, so the
             # suggestion must not stay open. An unknown result keeps it: the post
@@ -559,10 +609,11 @@ class QzoneService:
             if proposal is not None and error.code != "qzone_delivery_unknown":
                 self._drop_suggestion(context, operation, proposal)
             raise
-        verified = await self._verify_publish(credential, body, at=at, context=context)
-        self._complete(operation, at)
+        published_id = str(payload.get("tid") or payload.get("id") or "")
+        verified = await self._verify_publish(credential, body, at=at, context=context,
+                                               images=uploaded, post_id=published_id)
         updated = note_action(state, kind="publish", at=at)
-        self.store.write(owner_key(context), note_publish(updated, text=body, at=at, day=local_day(at),
+        self.store.write(owner_key(context), note_publish(updated, text=body, media_key=media_key, at=at, day=local_day(at),
                                                           topic=normalized_topic), at=at)
         result = {"status": "done" if verified else "accepted", "verified": verified,
                   "message": "说说已发布" if verified else "说说已提交，等待 QQ 空间同步",
@@ -570,12 +621,20 @@ class QzoneService:
                   "topic": normalized_topic.value, "scene": normalized_scene.value,
                   "confidence": normalized_confidence, "topic_confirmed": topic_confirmed,
                   "source_refs": list(refs)}
+        if images:
+            result.update(image_count=len(images), images_verified=verified)
+            result["message"] = (f"说说及 {len(images)} 张图片已发布并回读确认" if verified else
+                                  "带图说说已提交，尚未回读确认全部图片；请刷空间核对，不要重复发布")
         if proposal:
             result["agenda_proposal"] = proposal.document()
             result["message"] += "；日程提案仍待确认"
+        with self.runtime.transaction() as connection:
+            connection.execute("INSERT INTO runtime_metadata(key,value) VALUES (?,?)",
+                ("qzone.publish.receipt:" + operation.operation_id, json.dumps(result, ensure_ascii=False)))
+            self._complete(operation, at)
         return result
 
-    async def _verify_publish(self, credential, text, *, at, context):
+    async def _verify_publish(self, credential, text, *, at, context, images=(), post_id=""):
         needle = _compact(text)
         for delay in self.publish_verify_delays:
             if delay:
@@ -586,7 +645,24 @@ class QzoneService:
             except TaskError:
                 return False
             for post in posts:
-                if needle and needle in _compact(post.excerpt):
+                if not post.own or (post_id and post.post_id != post_id):
+                    continue
+                if _compact(post.excerpt) != needle:
+                    continue
+                if images:
+                    remaining = list(post.images)
+                    if len(remaining) != len(images):
+                        continue
+                    for image in images:
+                        expected_ids = {*P.image_location_ids(image.lloc), *P.image_location_ids(image.sloc)}
+                        matched = next((photo for photo in remaining
+                                        if expected_ids.intersection(photo.identities)), None)
+                        if matched is None:
+                            break
+                        remaining.remove(matched)
+                    else:
+                        return True
+                elif needle:
                     return True
         return False
 

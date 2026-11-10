@@ -494,12 +494,12 @@ class MultiAuthority:
         """正式版：不再需要投递授权，这里只回报"无需授权"。"""
         target = self.target(target_id)
         if isinstance(target, GroupTarget):
-            raise TaskError("host_group_authorization_required", "use the independent group delivery authorization")
+            raise TaskError("host_group_authorization_required", "group delivery no longer uses per-target authorization")
         return {"target_id": target_id, "authorized": True, "expires_at": None, "required": False}
 
     def revoke_delivery(self, target_id):
         if isinstance(self.target(target_id), GroupTarget):
-            raise TaskError("host_group_authorization_required", "use the independent group delivery revocation")
+            raise TaskError("host_group_authorization_required", "group delivery no longer uses per-target authorization")
         return {"target_id": target_id, "authorized": True, "required": False}
 
     def delivery_access(self, target):

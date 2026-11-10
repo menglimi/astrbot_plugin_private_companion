@@ -1,4 +1,4 @@
-from types import SimpleNamespace
+﻿from types import SimpleNamespace
 import unittest
 
 from astrbot_host.bootstrap_provider import resolve_bootstrap_provider, text_provider_catalog

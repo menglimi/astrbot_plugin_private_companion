@@ -64,6 +64,34 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
                     and "/targets/" + target_id + "/" in route][0]
         return handlers, editor("first"), editor("second")
 
+    async def test_scoped_qzone_config_accepts_matching_page_selection(self):
+        handlers, first, _ = await self.routes()
+        selection = {"target_id": "first", "role_id": handlers[first].__self__.controller.role_id}
+        try:
+            response = await call(handlers[first], query={"sections": "qzone", **selection})
+            self.assertEqual(response["status"], "ok", response)
+            section = response["data"]["sections"]["qzone"]
+            saved = await call(handlers[first + "/configure"], {
+                "section": "qzone", "operation_key": "qzone-selected-private",
+                "edit_token": section["edit_token"], "changes": {"like_enabled": False},
+                **selection,
+            })
+            self.assertEqual(saved["status"], "ok", saved)
+        finally:
+            self.controller.unregister_routes()
+
+    async def test_scoped_configuration_rejects_conflicting_page_selection(self):
+        handlers, first, _ = await self.routes()
+        role_id = handlers[first].__self__.controller.role_id
+        try:
+            for selection in ({"target_id": "second", "role_id": role_id},
+                              {"target_id": "first", "role_id": "another-role"}):
+                response = await call(handlers[first], query={"sections": "qzone", **selection})
+                self.assertEqual(response["status"], "error", response)
+                self.assertEqual(response["message"], "configuration_target_changed", response)
+        finally:
+            self.controller.unregister_routes()
+
     async def test_official_catalogue_and_saved_missing_sources_are_visible(self):
         handlers, first, _ = await self.routes()
         official = NS(list_sources=AsyncMock(return_value=[{

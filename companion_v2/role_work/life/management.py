@@ -406,6 +406,36 @@ class RoleLifeManagement:
                             self.app.role_life.transition_activity(identifier, owner=self.owner, expected_revision=revision,
                                 state=State.CANCELLED, operation_id=op_id + ":cancel", observed_at=self.app.now())
                     self.app.life_runtime.cancel_activity(identifier)
+                elif action == "remove":
+                    a = self._activity(identifier, current=False)
+                    if a.revision != revision:
+                        raise TaskError("life_revision_conflict", "activity changed")
+                    if a.work.kind != "reading" or a.state not in (State.COMPLETED, State.CANCELLED):
+                        raise TaskError("life_activity_not_removable",
+                                        "only completed or cancelled reading records can be removed")
+                    source = a.work.source
+                    if source is not None:
+                        row = self.runtime.read_one("SELECT governance_revision FROM sources WHERE source_id = ?",
+                                                    (source.source_id,))
+                        if row is not None:
+                            try:
+                                self.app.role_journal.sources.revoke(
+                                    source, expected_governance_revision=row["governance_revision"],
+                                    observed_at=self.app.now())
+                            except TaskError:
+                                # An already-revoked original still lets the test card go.
+                                pass
+                        for related in self._activities():
+                            if (related.activity_id != identifier and related.work.source == source
+                                    and related.state not in (State.COMPLETED, State.CANCELLED)):
+                                self.app.role_life.transition_activity(
+                                    related.activity_id, owner=self.owner, expected_revision=related.revision,
+                                    state=State.CANCELLED,
+                                    operation_id=op_id + ":" + digest(related.activity_id),
+                                    observed_at=self.app.now())
+                                self.app.life_runtime.cancel_activity(related.activity_id)
+                    self.app.role_life.delete_activity(identifier, owner=self.owner)
+                    result = {"removed": identifier}
                 elif action in ("edit", "delete", "restore"):
                     old = self._journal(journal_target.key, operator, access)
                     if old is None or old["revision"] != revision:

@@ -233,7 +233,10 @@ class TaskRegistration:
 @dataclass(frozen=True)
 class SupervisorLimits:
     foreground_slots: int = 2
-    background_slots: int = 2
+    # One slot made automatic proactive work, persona review, delivery, memory
+    # reflection and expression learning contend for the same lane, so an
+    # operator's diagnostic could be refused before it ever started.
+    background_slots: int = 3
     queued_per_lane: int = 64
     retained_tasks: int = 10000
 
