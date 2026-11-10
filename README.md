@@ -6,6 +6,10 @@
 
 将一切串联成角色的生活，一站式互联拟人化插件。普通对话沿用 AstrBot 核心回复管线，融合连续会话、记忆、生活与主动联系；随包内置 Content 创作、Image 生图、Screen 识屏、Reality 现实触及、Together 共同陪伴、Game 游戏、Live 直播七项能力，并由「陪伴小屋」统一管理。角色可设全局默认，私聊用户与群聊独立细调。
 
+> **维护状态**
+>
+> 新版本的主要更新已经完成，当前进入打磨阶段。后续会抽空对稳定版本做兼容性、性能与体验优化，优先保证已有功能稳定；除必要修复外，不频繁变更版本号。
+
 > ## 📚 **使用前请先阅读 Wiki**
 >
 > **👉 [打开插件 Wiki](https://vue.syuan.org)**
@@ -37,7 +41,7 @@
 - 使用说明：[插件 Wiki](https://vue.syuan.org)
 - 开发者入口：[开发文档索引](docs/README.md) · [贡献指南](CONTRIBUTING.md) · [第三方扩展开发规范](docs/extension-development.md)
 - 源代码：[GitHub 仓库](https://github.com/menglimi/astrbot_plugin_private_companion)
-- 6.7.0 源码备份：[只读备份仓库](https://github.com/menglimi/astrbot_plugin_private_companion_legacy_6_7_0)
+- 6.7.x 稳定版备份：[只读备份仓库](https://github.com/menglimi/astrbot_plugin_private_companion_v2)
 - 问题反馈/交流群：QQ 群 `1097283005`
 - 自愿支持：[爱发电](https://ifdian.net/a/xuhaun)
 
