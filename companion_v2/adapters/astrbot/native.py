@@ -260,7 +260,13 @@ def native_client_connected(platform, account_id, client=None):
         return False
     if meta.name == "aiocqhttp":
         clients = getattr(client, "_wsr_api_clients", None)
-        return isinstance(clients, dict) and bool(clients.get(str(account_id)))
+        if not isinstance(clients, dict):
+            return False
+        # AstrBot/OneBot builds this map from the login's ``self_id``.  Depending
+        # on the adapter version the key is an int or a string; compare textually
+        # so a connected account is not reported unavailable after an upgrade.
+        wanted = str(account_id)
+        return any(bool(value) and str(key) == wanted for key, value in clients.items())
     if getattr(client, "is_shutting_down", False):
         return False
     try:
@@ -626,9 +632,14 @@ class NativePrivateBridge:
                     if selected != "[%None]" and not selected:
                         selected = configured_default_persona_id(self.context, umo)
             if selected not in projected_ids and not (follows_window_persona and selected not in (None, "[%None]")):
+                # Name both sides: the operator needs to know which persona this
+                # window actually uses and which ones this Bot has mapped before
+                # they can repair the mapping.
                 raise TaskError(
                     "host_persona_window_unbound",
-                    "AstrBot's selected persona is not mapped to this V2 Bot; refresh the window snapshot",
+                    "这个窗口在 AstrBot 里使用的人格 " + repr(selected) + " 没有映射到这台 Bot"
+                    "（已映射：" + "、".join(repr(item) for item in projected_ids) + "）；"
+                    "请在「账号与会话」的角色映射里补上它，或在 AstrBot 里改回已映射的人格。",
                 )
 
         if selected == "[%None]":

@@ -678,9 +678,13 @@ window.CompanionStatePage = (() => {
     if(featureButton) {
       if(editor&&!editor.discardIfPristine())return;
       const feature=featureButton.dataset.stateFeature;
-      activeFeature=activeFeature===feature?null:feature;
+      /* A card means "show this feature"; closing is the back/X button.
+         生活日历 mounts 状态页 with feature=planning already open, so the old
+         toggle made the first click on the same card collapse it. */
+      if(activeFeature===feature)return;
+      activeFeature=feature;
       render();schedule();
-      if(activeFeature)root?.querySelector("#state-feature-detail")?.scrollIntoView({
+      root?.querySelector("#state-feature-detail")?.scrollIntoView({
         behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"nearest"});
       return;
     }
@@ -775,5 +779,6 @@ window.CompanionStatePage = (() => {
   function unmount() { rememberState();++version;stopTimer();root?.querySelector("#state-home-settings")?.close();settingsOpen=false;settingsReturnFeature=settingsReturnFocus=null;editor?.destroy();editor=null;calendarEditor=null;root?.removeEventListener("click",click);root?.removeEventListener("keydown",keydown);root?.removeEventListener("change",change);root?.removeEventListener("input",input);root?.removeEventListener("submit",submit);root=null;data=null;bridge=null;activeFeature=null;stateScopeKey="";syncSettingsButton();setChrome(false); }
   document.addEventListener("visibilitychange",()=>{if(!data?.ready)return;if(document.hidden)stopTimer();else if(!data.loading&&!editor?.interacting)load();});
   window.addEventListener?.("beforeunload",event=>{if(editor?.dirty){event.preventDefault();event.returnValue="";}});
-  return {mount,unmount,openSettings,openEditor,openFeature,canLeave:()=>editor?.discardIfPristine()??true};
+  return {mount,unmount,openSettings,openEditor,openFeature,currentFeature:()=>activeFeature,
+    canLeave:()=>editor?.discardIfPristine()??true};
 })();

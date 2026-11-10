@@ -1004,6 +1004,7 @@ function mountPanelWorkspaces(){
      不存在就不挂——与上面几行同一个做法。 */
   if($('#backupWorkspace'))guarded('备份与还原',()=>window.CompanionBackupPage?.mount($('#backupWorkspace')));
   if($('#storageWorkspace'))guarded('插件存储管理',()=>window.CompanionStoragePage?.mount($('#storageWorkspace')));
+ if($('#configPortWorkspace'))guarded('配置导入导出',()=>window.CompanionConfigPortPage?.mount($('#configPortWorkspace')));
   guarded('配置分区',()=>renderConfigEditors());
   guarded('产出预览',()=>mountOutputPreviewImage());
   guarded('产出后端',()=>$('.output-page')?window.CompanionOutputPage?.mount($('.output-page')):window.CompanionOutputPage?.unmount());
@@ -1336,6 +1337,7 @@ function render(){
   unmountSetupGuide();
   window.CompanionBackupPage?.unmount();
   window.CompanionStoragePage?.unmount();
+ window.CompanionConfigPortPage?.unmount();
   /* Release editor registrations before replacing their DOM. */
   unmountConfigEditors();
   if(arrangementDraft)finishRoomEditor(false);
@@ -1541,9 +1543,10 @@ const directory=[
   {id:'screen',station:'ext-000000000000000000000001',model:'monitor',accent:'#7e91b5',icon:'monitor',name:'屏幕台',text:'屏幕来源与观察范围',detail:'cap-screen',cap:'screen'},
   {id:'reality',station:'ext-000000000000000000000002',model:'pedestal',accent:'#84a091',icon:'radio-tower',name:'现实设备台',text:'真实设备、场所与动作结果',detail:'cap-reality',cap:'reality',color:'green'},
   {id:'live',icon:'mic-vocal',name:'直播与表演',text:'节目、场景与角色呈现',detail:'cap-live',cap:'live'},
-  /* 视频理解由外部插件执行，这里只放一张状态与入口卡：不写 tab（点开走详情而不是切换页签）、
-     不写 group（不是基础家具）、不写 station（插件在房间里没有体素模型）。 */
-  {id:'video-vision',icon:'video',name:'观影机',text:'视频理解插件的安装状态与入口',detail:'cap-video_vision',cap:'video_vision'},
+  /* 外部视频插件只作为可选状态卡保留；普通聊天的视频理解已由本插件原生完成，
+     不依赖它。不写 tab（点开走详情而不是切换页签）、不写 group（不是基础家具）、
+     不写 station（外部插件在房间里没有体素模型）。 */
+  {id:'video-vision',icon:'video',name:'观影机',text:'可选外部视频扩展；本插件已原生理解视频',detail:'cap-video_vision',cap:'video_vision'},
 ];
 const furnitureFilters=[['all','全部'],['base','基础生活'],['extensions','拓展能力'],['attention','待检查']];
 const furnitureNeedsAttention=item=>furnitureUnavailable(item)
@@ -2409,6 +2412,8 @@ const QZONE_ERRORS={
   bridge_timeout:'等待超时，没有收到结果。结果未知，页面不会自动重发；请先刷新状态并到 QQ 空间核对。',
   bridge_unavailable:'页面连接暂不可用，请重新读取。',
   invalid_response:'服务返回的数据不完整，请刷新核对。',
+  qzone_image_invalid:'图片无效、已不可用或超过大小限制。支持 PNG、JPEG、WebP、GIF，最多 9 张、合计 12 MiB。',
+  qzone_image_upload_failed:'没有收到完整的图片上传回执，说说未发布。请稍后核对空间。',
   dashboard_identity_required:'当前登录状态不可用，请重新打开陪伴小屋。',
   core_access_required:'当前账号没有管理权限。',
   staging_not_initialized:'角色数据尚未加载，请重新读取。',
@@ -2421,7 +2426,8 @@ const qzoneState={phase:'idle',status:null,feeds:{},scope:'friends',notice:null,
   /* 发说说的主题与场景由人在界面上选，所以它们和草稿一样留在模块级状态里：
      动作结束后整块重画，选择不该跟着丢。目录本身不缓存——每份都从最近一次
      status 里取，宿主换了目录（升级、改配置）下次读取就会跟上。 */
-  publishTopic:'',publishScene:'',confirmDisable:false,
+  publishTopic:'',publishScene:'',confirmDisable:false,publishImages:[],album:null,albumOpen:false,
+  imageScope:'',imageLoading:false,
   /* 日程建议的处理态。回执框一次只开在一条建议上，输入留在这里而不是留在
      节点上——动作结束后整块重画，重画时填了一半的回执不该跟着丢。
      confirmSuggestionFor 与它互斥：同一条建议上不会同时开着回执框和忽略确认。 */
@@ -2440,6 +2446,13 @@ function qzoneSettings(){
 }
 function qzoneUsable(status){
   return Boolean(status)&&status.installed===true&&status.active===true&&status.role_enabled===true;
+}
+function qzoneCapabilityGranted(status,capability){
+  const consented=status?.consented&&typeof status.consented==='object'?status.consented:{};
+  return status?.invoke_granted===true&&consented[capability]===true;
+}
+function qzoneAuthorizationComplete(status){
+  return QZONE_CAPABILITIES.every(([capability])=>qzoneCapabilityGranted(status,capability));
 }
 /* 主题与场景的目录来自 status 的 catalogue，**不写死在页面里**：
  * 后端才是那份目录的持有者（主题、场景、每个主题放行哪些场景都随配置变），
@@ -2516,7 +2529,8 @@ function qzoneRoute(suffix){
  * 同一套信封解包、15 秒上限与错误码翻译，不在这里另写一份。 */
 async function qzoneRequest(method,suffix,body){
   if(!product.bridgeNow())await product.bridgeFor();
-  return await product.request(method,qzoneRoute(suffix),body);
+  const timeoutMs=suffix==='publish'?300000:['like','comment','feed'].includes(suffix)?180000:undefined;
+  return await product.request(method,qzoneRoute(suffix),body,timeoutMs?{timeoutMs}:undefined);
 }
 /* 请求一律不抛：调用方拿到 {ok,data,error,text} 再决定说什么、画什么。 */
 async function qzoneFetch(method,suffix,body,write){
@@ -2566,6 +2580,10 @@ function qzoneActing(action,index){
 function qzoneGate(kind){
   const status=qzoneStatus();
   if(!status)return {ok:false,reason:'还没有读到 QQ 空间的当前状态。'};
+  const capability={feed:'qzone.feed.read',like:'qzone.post.like',
+    comment:'qzone.post.comment',publish:'qzone.post.publish'}[kind];
+  if(capability&&!qzoneCapabilityGranted(status,capability))
+    return {ok:false,reason:'当前私聊目标尚未授权这项 QQ 空间能力，请先授权。'};
   const runtime=status.runtime&&typeof status.runtime==='object'?status.runtime:null;
   const settings=runtime?.settings&&typeof runtime.settings==='object'?runtime.settings:{};
   if(!Object.keys(settings).length){
@@ -2701,7 +2719,7 @@ function qzoneStart(acting,work){
   }
 }
 async function qzoneScan(scope){
-  const result=await qzoneFetch('GET','feed',{scope,limit:10,detail:0},false);
+  const result=await qzoneFetch('GET','feed',{scope,limit:10,detail:scope==='own'?1:0},false);
   if(!result.ok){qzoneNotice(result.text,true);return;}
   const data=result.data&&typeof result.data==='object'?result.data:{};
   const items=(Array.isArray(data.items)?data.items:[])
@@ -2771,7 +2789,8 @@ function qzoneAgendaNote(data){
 }
 async function qzonePublish(){
   const text=qzoneState.publishDraft.trim();
-  if(!text){qzoneNotice('说说正文是空的，没有发布。',true);return;}
+  qzoneImageScope();
+  if(!text&&!qzoneState.publishImages.length){qzoneNotice('请写正文或选择图片。',true);return;}
   if(text.length>QZONE_PUBLISH_LIMIT){qzoneNotice(`说说最多 ${QZONE_PUBLISH_LIMIT} 字，这条没有发布。`,true);return;}
   /* 发布接口现在必须带主题判定。没读完目录就别说「你还没选」——
      那是两回事：目录没读到是页面的问题，选没选是用户的操作。 */
@@ -2784,17 +2803,24 @@ async function qzonePublish(){
   /* 人手选择就是明确判断，所以 topic_confirmed 送 true、confidence 送 1：
      界面上的选择比模型的置信度更强，而置信度门槛约束的是自动判定那一路。
      evidence_refs 留空——页面上的正文是人写的，没有「材料引用」可按。 */
+  const selected=[...qzoneState.publishImages];
   const result=await qzoneFetch('POST','publish',{operation_key:crypto.randomUUID(),text,
-    topic,scene,confidence:1,topic_confirmed:true},true);
+    topic,scene,confidence:1,topic_confirmed:true,
+    images:selected.map(item=>item.image_id?{image_id:item.image_id}:{data_url:item.data_url,name:item.name})},true);
   if(!result.ok){
     /* 失败（包括结果未知）都把正文留着：要不要用新的操作重发由用户决定。 */
     qzoneNotice(result.text,true);
     return;
   }
-  const data=result.data&&typeof result.data==='object'?result.data:{};
+  const payload=result.data&&typeof result.data==='object'?result.data:{};
+  // The publish API wraps its action receipt alongside optional share metadata.
+  // Keep accepting direct receipts from older hosts.
+  const data=payload.receipt&&typeof payload.receipt==='object'&&!Array.isArray(payload.receipt)
+    ?payload.receipt:payload;
   const outcome=qzoneOutcome(data.status,data.verified);
   if(['done','accepted','replayed'].includes(outcome)){
     qzoneState.publishDraft='';
+    qzoneState.publishImages=[];
     /* 发布与受理都会推进当日计数：把状态重读一次，让上限显示对得上。
        顺序要紧——重读失败会写一条错误提示，而这条说说到底有没有发出去
        是屏幕上更重要的一句话，所以它在最后说，不被重读盖掉。 */
@@ -2879,7 +2905,7 @@ async function qzoneConfigure(enabled){
   const data=result.data&&typeof result.data==='object'?result.data:{};
   const applied=qzoneApplyStatus(data.status);
   if(!applied)await qzoneLoadStatus();
-  qzoneNotice(enabled?'QQ 空间已安装并启用。':'QQ 空间已停用：这个对象不再接入空间动态。',false);
+  qzoneNotice(enabled?'QQ 空间已启用。':'QQ 空间已停用：这个对象不再接入空间动态。',false);
   if(!enabled){
     qzoneState.feeds={};
     qzoneState.replyFor=-1;
@@ -3010,6 +3036,14 @@ function qzoneInstallMarkup(installed){
     </div>
   </div>`;
 }
+function qzoneAuthorizationMarkup(){
+  return `<div class="action-qzone-empty">
+    <p class="action-qzone-empty-copy">${I('shield-check')}<span>当前私聊目标尚未授权 QQ 空间能力。授权会开放读取动态、点赞、回复和发说说；公开动作仍受下方开关控制。</span></p>
+    <div class="action-qzone-row">
+      <button class="button small primary" type="button" data-qzone-action="authorize" ${qzoneState.busy?'disabled':''}>${I('shield-check')}<span>${qzoneActing('authorize')?'正在授权…':'授权四项能力'}</span></button>
+    </div>
+  </div>`;
+}
 /* 配置分区只有「已安装」时才出现；未安装时上面那句已经说了安装后可调。 */
 function qzoneConfigMarkup(){
   return `<div class="action-qzone-block">${configEditors('qzoneConfigWorkspace',['qzone'],'QQ 空间设置')}</div>`;
@@ -3123,6 +3157,7 @@ function qzonePostMarkup(item,index){
       ${time?`<time>${escapeHTML(time)}</time>`:''}
     </header>
     <p class="action-qzone-excerpt">${escapeHTML(item.excerpt||'这条动态没有可显示的正文。')}</p>
+    ${qzonePhotosMarkup(item.images)}
     ${comments.length?`<ul class="action-qzone-comments">${comments.slice(0,4).map(entry=>
       `<li><strong>${escapeHTML(qzoneAuthor(entry.author))}</strong><span>${escapeHTML(entry.text||'')}</span></li>`).join('')}</ul>`:''}
     <div class="action-qzone-post-actions">
@@ -3178,11 +3213,82 @@ function qzonePublishTopicMarkup(){
 /* 发布按钮现在要同时满足三件事：能力开关放行、目录读到、主题与场景都选好。
  * 提成一个函数是因为计数时（qzoneCounts）也要判同一份条件——两处各写一遍，
  * 迟早会出现「按钮看着能点、点下去被本地拦下」这种不一致。 */
+function qzoneImageScope(){
+  const scope=qzoneRoute('publish');
+  if(qzoneState.imageScope!==scope){
+    qzoneState.publishImages=[];qzoneState.album=null;qzoneState.albumOpen=false;
+    qzoneState.imageScope=scope;
+  }
+  return scope;
+}
+function qzonePhotoURL(value){
+  try{
+    const url=new URL(value);
+    return ['https:','http:'].includes(url.protocol)&&!url.username&&!url.password?url.href:'';
+  }catch{return '';}
+}
+function qzonePhotosMarkup(images){
+  if(!Array.isArray(images))return '';
+  return `<div class="qzone-photos">${images.slice(0,9).map((item,index)=>{
+    const url=qzonePhotoURL(item?.url);if(!url)return '';
+    return `<a href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHTML(url)}" alt="动态配图 ${index+1}" loading="lazy" referrerpolicy="no-referrer"></a>`;
+  }).join('')}</div>`;
+}
+async function qzoneChooseImages(files){
+  if(qzoneState.busy||qzoneState.imageLoading)return;
+  const scope=qzoneImageScope(),chosen=Array.from(files||[]);
+  if(!chosen.length)return;
+  if(chosen.length+qzoneState.publishImages.length>9){qzoneNotice('每条说说最多选择 9 张图片。',true);paintQzone();return;}
+  const total=chosen.reduce((n,file)=>n+file.size,0)+qzoneState.publishImages.reduce((n,item)=>n+(item.size||0),0);
+  if(total>12*1024*1024){qzoneNotice('所选本地图片合计不能超过 12 MiB，请缩小图片后再选。',true);paintQzone();return;}
+  if(chosen.some(file=>!['image/png','image/jpeg','image/webp','image/gif'].includes(file.type))){
+    qzoneNotice('请选择 PNG、JPEG、WebP 或 GIF 图片。',true);paintQzone();return;
+  }
+  qzoneState.imageLoading=true;paintQzone();
+  try{
+    const items=await Promise.all(chosen.map(file=>new Promise((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve({data_url:reader.result,name:file.name,size:file.size});
+      reader.onerror=()=>reject(new Error('image_read_failed'));
+      reader.readAsDataURL(file);
+    })));
+    if(scope===qzoneImageScope())qzoneState.publishImages.push(...items);
+  }catch{qzoneNotice('图片读取失败，请重新选择。',true);}
+  finally{qzoneState.imageLoading=false;paintQzone();}
+}
+async function qzoneLoadAlbum(cursor){
+  const scope=qzoneImageScope();
+  const result=await qzoneFetch('GET','album',cursor?{cursor}:undefined,false);
+  if(scope!==qzoneImageScope())return;
+  if(!result.ok){qzoneNotice(result.text,true);return;}
+  const data=result.data;
+  if(!Array.isArray(data?.items)){qzoneNotice('没有读到相册图片，请重新读取。',true);return;}
+  qzoneState.album={items:cursor?[...(qzoneState.album?.items||[]),...data.items]:data.items,next_cursor:data.next_cursor};
+  qzoneState.albumOpen=true;
+}
+function qzoneImagePickerMarkup(){
+  const disabled=qzoneState.busy||qzoneState.imageLoading;
+  const pictures=qzoneState.publishImages;
+  const preview=item=>/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(item.data_url||item.thumbnail||'')
+    ?item.data_url||item.thumbnail:'';
+  return `<div class="qzone-image-picker">
+    <div class="action-qzone-row"><label class="button small qzone-file-button">${I('image-plus')}<span>选择本地图片</span>
+      <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple data-qzone-images aria-label="选择说说图片" ${disabled?'disabled':''}></label>
+      <button type="button" class="button small" data-qzone-action="album-open" ${disabled?'disabled':''}>从相册选择</button>
+      <span class="action-qzone-meta">${qzoneState.imageLoading?'正在读取图片…':`${pictures.length} / 9 张 · 合计最多 12 MiB · 可在正文框粘贴图片 · 点击发布才上传`}</span></div>
+    <div class="qzone-selected-images">${pictures.map((item,index)=>`<figure><img src="${escapeHTML(preview(item))}" alt="${escapeHTML(item.name||'说说配图')}">
+      <figcaption>${escapeHTML(item.name||'相册图片')}</figcaption><button type="button" class="button small" data-qzone-action="image-remove" data-qzone-image="${index}" aria-label="移除第 ${index+1} 张图片" ${disabled?'disabled':''}>移除</button></figure>`).join('')}</div>
+    ${qzoneState.albumOpen?`<section aria-label="选择相册图片"><div class="action-qzone-row"><strong>当前角色相册</strong><button type="button" class="button small" data-qzone-action="album-close" ${disabled?'disabled':''}>收起</button></div>
+      <div class="qzone-album-images">${(qzoneState.album?.items||[]).map((item,index)=>`<button type="button" data-qzone-action="album-select" data-qzone-image="${index}" aria-label="选择相册图片 ${index+1}" ${disabled||pictures.some(p=>p.image_id===item.image_id)?'disabled':''}><img src="${escapeHTML(preview(item))}" alt="相册图片 ${index+1}"><span>${pictures.some(p=>p.image_id===item.image_id)?'已选择':'选择'}</span></button>`).join('')||'<p>相册里还没有图片，可先选择本地图片。</p>'}</div>
+      ${qzoneState.album?.next_cursor?`<button type="button" class="button small" data-qzone-action="album-next" ${disabled?'disabled':''}>加载更多</button>`:''}</section>`:''}
+  </div>`;
+}
 function qzonePublishBlocked(){
-  return Boolean(!qzoneGate('publish').ok||!qzoneCatalogue()||!qzoneState.publishTopic
+  return Boolean(qzoneState.imageLoading||!qzoneGate('publish').ok||!qzoneCatalogue()||!qzoneState.publishTopic
     ||!qzoneState.publishScene);
 }
 function qzonePublishBlockMarkup(gate){
+  qzoneImageScope();
   const draft=qzoneState.publishDraft;
   const reasons=[gate.ok?'':gate.reason,
     qzoneCatalogue()?'':'没有读到主题与场景目录，读不到时不能发布：请先点上面的「重新读取」。'].filter(Boolean);
@@ -3194,8 +3300,9 @@ function qzonePublishBlockMarkup(gate){
     ${qzonePublishTopicMarkup()}
     <label class="action-qzone-field"><span>以角色的口吻写一条说说</span>
       <textarea data-qzone-draft="publish" maxlength="${QZONE_PUBLISH_LIMIT}" rows="3" placeholder="今天想说点什么…" aria-label="说说正文">${escapeHTML(draft)}</textarea></label>
+    ${qzoneImagePickerMarkup()}
     <div class="action-qzone-row">
-      <button class="button small primary" type="button" data-qzone-action="publish" ${qzoneState.busy||blocked||!draft.trim()?'disabled':''}>${I('send')}<span>${qzoneActing('publish')?'正在发布…':'发布说说'}</span></button>
+      <button class="button small primary" type="button" data-qzone-action="publish" ${qzoneState.busy||blocked||(!draft.trim()&&!qzoneState.publishImages.length)?'disabled':''}>${I('send')}<span>${qzoneActing('publish')?'正在上传并确认发布…':'发布说说'}</span></button>
       <span class="action-qzone-meta">发布是公开动作：只有确认过的结果才算成功，未确认的结果不会自动重发。主题与场景按这里的选报送，并受该主题自己的开关、置信度门槛、每日上限与冷却约束。</span>
     </div>
   </div>`;
@@ -3232,7 +3339,7 @@ function qzoneBody(){
   return `${qzoneNoticeMarkup()}
     ${qzoneBlockedMarkup()}
     ${qzoneStatusMarkup(status,usable||installed)}
-    ${usable?'':qzoneInstallMarkup(installed)}
+    ${usable?(qzoneAuthorizationComplete(status)?'':qzoneAuthorizationMarkup()):qzoneInstallMarkup(installed)}
     ${installed?qzoneSuggestionBlockMarkup():''}
     ${installed?qzoneConfigMarkup():''}
     ${usable?qzoneFeedBlockMarkup(qzoneGate('feed'),qzoneGate('like'),qzoneGate('comment')):''}
@@ -3303,7 +3410,7 @@ function qzoneCounts(){
     const counter=document.querySelector('#actionQzoneBody [data-qzone-count="publish"]');
     if(counter)counter.textContent=`${publish.value.length} / ${QZONE_PUBLISH_LIMIT}`;
     const button=document.querySelector('#actionQzoneBody [data-qzone-action="publish"]');
-    if(button)button.disabled=qzoneState.busy||qzonePublishBlocked()||!publish.value.trim();
+    if(button)button.disabled=qzoneState.busy||qzonePublishBlocked()||(!publish.value.trim()&&!qzoneState.publishImages.length);
   }
   const reply=document.querySelector('#actionQzoneBody [data-qzone-draft="reply"]');
   if(reply){
@@ -3329,7 +3436,22 @@ function qzoneClick(el){
   /* 在途期间不接第二次点击：这样 operation_key 也绝不可能被同一个动作复用。 */
   if(qzoneState.busy)return;
   const action=el.dataset.qzoneAction;
+  if(action==='image-remove'){
+    qzoneState.publishImages.splice(Number(el.dataset.qzoneImage),1);paintQzone();return;
+  }
+  if(action==='album-open'){qzoneStart('album',()=>qzoneLoadAlbum());return;}
+  if(action==='album-next'){qzoneStart('album',()=>qzoneLoadAlbum(qzoneState.album?.next_cursor));return;}
+  if(action==='album-close'){qzoneState.albumOpen=false;paintQzone();return;}
+  if(action==='album-select'){
+    const item=qzoneState.album?.items?.[Number(el.dataset.qzoneImage)];
+    if(item&&!qzoneState.publishImages.some(image=>image.image_id===item.image_id)){
+      if(qzoneState.publishImages.length>=9){qzoneNotice('每条说说最多选择 9 张图片。',true);paintQzone();return;}
+      qzoneState.publishImages.push({...item,name:'相册图片'});
+    }
+    paintQzone();return;
+  }
   if(action==='install'){qzoneStart('install',()=>qzoneConfigure(true));return;}
+  if(action==='authorize'){qzoneStart('authorize',()=>qzoneConfigure(true));return;}
   if(action==='disable'){qzoneState.confirmDisable=true;paintQzone();return;}
   if(action==='disable-cancel'){qzoneState.confirmDisable=false;paintQzone();return;}
   if(action==='disable-confirm'){qzoneStart('disable',()=>qzoneConfigure(false));return;}
@@ -4853,6 +4975,7 @@ function renderDataOriginal(){
     ['storage','01','database','存储位置与清理策略'],
     ['backup','02','archive','备份与还原'],
     ['migration','03','arrow-right-left','旧版资料迁入'],
+    ['port','04','archive','配置导入导出'],
   ];
   const navigation=`<nav class="data-page-nav" aria-label="资料与维护子页面">${pages.map(([id,index,icon,label])=>
     `<a href="#manage/data/${id}"${dataPane===id?' aria-current="page"':''}><span class="data-page-nav-index">${index}</span>${I(icon)}<span class="data-page-nav-label">${label}</span></a>`).join('')}</nav>`;
@@ -4863,6 +4986,8 @@ function renderDataOriginal(){
     /* 迁入工作区自带页面抬头；这里保留一份仅供读屏与路由锚点的标题，
        避免视觉上出现「03 旧版资料迁入」和抬头标题两份。 */
     content=`<section class="data-page-view" aria-labelledby="data-page-title"><header class="data-page-view-head sr-only"><span>03</span><h3 id="data-page-title">旧版资料迁入</h3></header><div id="legacyMigrationWorkspace"></div></section>`;
+  }else if(dataPane==='port'){
+    content=`<div id="configPortWorkspace"></div>`;
   }else{
     content=`<section class="data-page-view" aria-labelledby="data-page-title"><header class="data-page-view-head"><span>01</span><h3 id="data-page-title">存储位置与清理策略</h3></header><div id="storageWorkspace">${consoleLoading('正在读取插件存储…')}</div></section>`;
   }
@@ -4935,7 +5060,23 @@ function contentWorkspaceSurface(){
   const surface=bundledCapabilitySurface('content');
   const open=button('打开 Content 作品库','data-go="manage" data-manage="output" data-output-target="creation"','small');
   if(!surface)return `<p>能力目录暂未读到，先到「模型与连接」核对 Content 内置能力。</p><div class="dialog-actions">${open}${button('模型与连接','data-go="manage" data-manage="models"','small')}</div>`;
-  return surface+`<section class="extension-live-panel"><h3>作品库</h3><p>装配后可打开原稿、作品与续写候选；未装配时仍保留已有数据。</p><div class="dialog-actions">${open}</div></section>`;
+  return surface+`<section class="extension-live-panel"><h3>作品列表</h3><p>只列出当前角色仍在架的作品标题与类型，不读取正文。</p><div id="contentWorksList">${button('读取作品列表','data-content-works','small')}</div></section><section class="extension-live-panel"><h3>作品库</h3><p>装配后可打开原稿、作品与续写候选；未装配时仍保留已有数据。</p><div class="dialog-actions">${open}</div></section>`;
+}
+async function loadContentWorks(){
+  const host=$('#contentWorksList');
+  if(!host)return;
+  host.innerHTML='<p class="muted-text">正在读取作品列表…</p>';
+  try{
+    const selection=product.selection?.()||{};
+    if(!selection.target_id||!selection.role_id)throw Object.assign(new Error('works_request_invalid'),{code:'works_request_invalid'});
+    const data=await product.request('GET','works',{target_id:selection.target_id,role_id:selection.role_id});
+    if(!data||typeof data!=='object')throw Object.assign(new Error('works_unavailable'),{code:'works_unavailable'});
+    if(!data.available){host.innerHTML='<p class="muted-text">还没有可读的作品库，或 Content 拓展尚未装配。</p>';return;}
+    if(!data.works?.length){host.innerHTML='<p class="muted-text">这个角色还没有在架作品。</p>';return;}
+    host.innerHTML=`<dl class="definition-list">${data.works.map(work=>`<div class="definition-row"><dt>${escapeHTML(work.title)}</dt><dd>${escapeHTML(work.work_type)} · 修订 ${Number(work.revision)||0}</dd></div>`).join('')}</dl>`;
+  }catch(error){
+    host.innerHTML=`<p class="muted-text">作品列表读取失败${error?.code?`（${escapeHTML(error.code)}）`:''}。</p>`;
+  }
 }
 function contentAssembleButton(){
   const item=product.extension('content');
@@ -5445,6 +5586,7 @@ document.addEventListener('click',event=>{
     event.preventDefault();setProfileAvatar('');toast('头像已移除，保存角色档案后生效');return;
   }
   if(el.hasAttribute('data-state-open-home-settings')){window.CompanionStatePage?.openSettings?.(el);return;}
+  if(el.hasAttribute('data-content-works')){loadContentWorks();return;}
   if(el.hasAttribute('data-maint-open-patrol')){navigate('manage','maintenance','patrol');return;}
   if(el.dataset.identitySettings){
     event.preventDefault();
@@ -5670,6 +5812,7 @@ document.addEventListener('change',event=>{
   /* 发说说的主题与场景：都是「选择」而不是「输入」，所以走 change。
      换主题后当前场景可能不属于新主题，这里重新对齐一次（不合法就自动选第一个），
      再重画——重画是这个页面唯一的出口，界面必须等于状态。 */
+  if(el.matches('[data-qzone-images]')){void qzoneChooseImages(el.files);return;}
   if(el.dataset.qzoneTopic==='publish'){
     const topic=qzoneTopicTopics().find(item=>item.id===el.value);
     if(topic){
@@ -5691,6 +5834,12 @@ document.addEventListener('change',event=>{
     else state.scene=el.value;
     syncEnvironment();if(!persist())toast('时段偏好已切换；此环境仅保留至页面关闭');
   }
+});
+document.addEventListener('paste',event=>{
+  if(!event.target.closest?.('#actionQzoneBody'))return;
+  const files=Array.from(event.clipboardData?.files||[]).filter(file=>file.type.startsWith('image/'));
+  if(!files.length)return;
+  event.preventDefault();void qzoneChooseImages(files);
 });
 document.addEventListener('input',event=>{
   const el=event.target;

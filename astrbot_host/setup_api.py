@@ -84,6 +84,13 @@ PROACTIVE_TEST_SUGGESTIONS = {
     "delivery_failed": "检查 OneBot 私聊连接、机器人在线状态和平台返回错误；确认没有收到后，再用新的验收尝试重测。",
     "setup_core_window_ambiguous": "检查已配置私聊目标的核心用户身份；主动测试只会发送到唯一且当前有效的核心管理员私聊窗口。",
     "host_persona_binding_changed": "绑定已按当前窗口自动修复；若反复出现，请在「开始使用」重新确认管理员私聊窗口。",
+    "host_account_unavailable": "在 AstrBot 的账号设置里确认该 Bot 已登录并在线，然后重新测试；错误详情里带着具体的平台与账号。",
+    "host_platform_unavailable": "确认 AstrBot 里仍存在这条平台实例；改名或重建平台后，回「账号与会话」重新核对映射。",
+    "host_persona_window_unbound": "打开「账号与会话」，在角色映射里给这个私聊窗口补上它现在使用的人格；或在 AstrBot 里把该会话的人格改回已映射的那个，保存后重新测试。",
+    "host_persona_unmapped": "这台 Bot 还没有任何人格映射；先在「账号与会话」把角色人格绑定到当前 Bot，再重新测试。",
+    "task_lane_full": "本次测试没有抢到后台任务通道，还没开始生成。稍等几十秒再测；同一通道也被自动主动消息、人格复核、记忆反思共用，bot 较忙时可把「运行环境 → 后台任务槽」调到 2 以上。",
+    "task_concurrency_limited": "同一私聊已有主动消息任务在排队或执行，本次测试没有开始。等它结束后再测，不要连续点击测试。",
+    "proactive_lane_busy": "后台任务通道持续被占用（通常是自动主动消息正在生成），本次测试没有开始，也没有发出任何消息。等它结束后再测，或把「运行环境 → 后台任务槽」调到 2 以上。",
 }
 
 PROACTIVE_TEST_FAILURE_LABELS = {
@@ -125,6 +132,13 @@ PROACTIVE_TEST_FAILURE_LABELS = {
     "model_generation_failed": ("model_generation", "主动联系模型生成失败"),
     "model_budget_exhausted": ("model_generation", "主动消息模型每日硬额度已用完"),
     "model_budget_soft_deferred": ("model_generation", "主动消息模型生成被每日软限额暂缓"),
+    "task_lane_full": ("runtime", "本机后台任务通道已满，本次测试未开始"),
+    "task_concurrency_limited": ("runtime", "同类主动任务已达并发上限，本次测试未开始"),
+    "proactive_lane_busy": ("runtime", "后台任务通道持续被占用，本次测试未开始"),
+    "host_account_unavailable": ("runtime", "配置的 Bot 账号当前未连接 AstrBot"),
+    "host_platform_unavailable": ("runtime", "配置的平台实例不在当前 AstrBot 中"),
+    "host_persona_window_unbound": ("binding", "当前窗口的人格没有绑定到这台 Bot"),
+    "host_persona_unmapped": ("binding", "这台 Bot 还没有人格映射"),
     "persona_review_denied": ("persona_review", "人格复核未放行"),
     "delivery_result_unknown": ("delivery", "平台投递结果未知"),
     "delivery_failed": ("delivery", "平台投递失败"),
@@ -193,9 +207,54 @@ PROACTIVE_TEST_STAGE_BY_CODE = {
     "model_provider_unavailable": "model_route",
     "model_budget_exhausted": "model_generation",
     "model_budget_soft_deferred": "model_generation",
+    "task_lane_full": "runtime",
+    "task_concurrency_limited": "runtime",
+    "proactive_lane_busy": "runtime",
+    "host_account_unavailable": "runtime",
+    "host_platform_unavailable": "runtime",
+    "host_persona_window_unbound": "binding",
+    "host_persona_unmapped": "binding",
     "delivery_result_unknown": "delivery",
     "delivery_failed": "delivery",
 }
+
+
+# A model choice is saved even when the shared installation cannot be created
+# yet: these codes mean "this Bot is not connected right now", which the host's
+# own start loop keeps retrying, so the setup step reports a deferral instead of
+# a failure. Every other code is a configuration problem the operator must fix.
+INIT_DEFERRED_CODES = frozenset(("host_account_unavailable", "host_platform_unavailable"))
+
+
+def deferred_initialization(failure):
+    """Describe a saved model whose shared installation waits for its Bot.
+
+    Choosing a provider needs no live account; creating the installation reads
+    the real windows and does. ``None`` means "not a deferral", so the caller
+    keeps its normal failure path. The returned payload tells the page that the
+    provider is saved and only the account connection is missing.
+    """
+    code = getattr(failure, "code", None)
+    if code not in INIT_DEFERRED_CODES:
+        return None
+    return {"prepared": False, "init_deferred": True, "init_code": code,
+            "init_reason": getattr(failure, "reason", "") or ""}
+
+
+def _fail_stage(stages, stage):
+    """Mark one stage failed without listing the same stage twice.
+
+    A capacity refusal belongs to a stage the flow already recorded as passed
+    (``runtime``). Appending it again would show "运行环境 通过" and
+    "运行环境 失败" on the same card, so the existing row is upgraded instead.
+    """
+    for item in stages:
+        if item["stage"] == stage:
+            item["state"] = "failed"
+            return item
+    item = {"stage": stage, "state": "failed"}
+    stages.append(item)
+    return item
 
 
 class SetupWebAPI:
@@ -603,6 +662,18 @@ class SetupWebAPI:
                 raise TaskError(settings_error.code, str(settings_error))
             stage = "profile_initialization"
             initialized = await self.controller.initialize_profile()
+            deferred = deferred_initialization(initialized.failure)
+            if deferred is not None:
+                # Choosing a model does not need a connected Bot; creating the
+                # shared installation does. The provider is already saved, so
+                # report the deferral instead of claiming the step failed, and
+                # let the host create the installation once the account is back
+                # (its own start loop retries, and this button can be pressed
+                # again at any time).
+                logger.info("[CompanionV2] 模型已保存，宿主初始化等待账号连接 code=%s",
+                            deferred["init_code"])
+                return self._response(Outcome.success({
+                    "provider_id": provider_id, **deferred, "status": self._status_document()}))
             if initialized.failure is not None:
                 if initialized.failure.code != "host_must_stop":
                     raise TaskError(initialized.failure.code, initialized.failure.reason)
@@ -1115,7 +1186,7 @@ class SetupWebAPI:
                         error.code, ("trusted_candidate", "当前来源生产器未能生成有效候选"))[0]
                     stages = [{"stage": name, "state": "passed"} for name in
                         ("authorization", "binding", "runtime", "settings", "purpose")]
-                    stages.append({"stage": failure_stage, "state": "failed"})
+                    _fail_stage(stages, failure_stage)
                     return self._response(Outcome.success(self._diagnostic_failure(
                         purpose, route_hint, failure_stage, error.code, str(error),
                         stages=stages, route=route_hint)))
@@ -1136,7 +1207,7 @@ class SetupWebAPI:
                         ("authorization", "binding", "runtime", "settings", "purpose")]
                     stages.extend(candidate.get("stages", []))
                     stages.append({"stage": "trusted_candidate", "state": "passed"})
-                    stages.append({"stage": failure_stage, "state": "failed"})
+                    _fail_stage(stages, failure_stage)
                     budget_usage = self._diagnostic_attempt_usage(
                         session, context, failure.code)
                     return self._response(Outcome.success(self._diagnostic_failure(
@@ -1399,7 +1470,7 @@ class SetupWebAPI:
             if result.failure is not None:
                 failed_stage = PROACTIVE_TEST_FAILURE_LABELS.get(
                     result.failure.code, ("model_route", "主动联系准入检查失败"))[0]
-                stages.append({"stage": failed_stage, "state": "failed"})
+                _fail_stage(stages, failed_stage)
                 self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
                 self.progress.finish_proactive_test(outcome="failed",
                     finished_at=datetime.now(timezone.utc).isoformat(), error_code=result.failure.code,

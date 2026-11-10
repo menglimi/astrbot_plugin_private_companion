@@ -41,6 +41,13 @@ DEFAULTS = {
     "topic_auto_enabled": False,
     "topic_require_confirmation": True,
     "topic_prompt_guidance": "",
+    # V1 的「生活说说」：低频率、按概率把角色自己的生活发到空间。它不替代
+    # 上面的 publish_enabled（总闸），也不绕过 policy 的间隔/每日上限/去重。
+    "life_publish_enabled": False,
+    "life_publish_probability": 0.18,
+    "life_publish_min_interval_hours": 24,
+    "life_publish_max_daily": 1,
+    "life_publish_style_prompt": "",
 }
 for _topic in TOPIC_SPECS:
     _key = _topic.topic.value
@@ -57,6 +64,8 @@ LIMITS = {
     "max_actions_per_tick": (1, 5),
     "comment_recent_posts": (1, 20),
     "publish_max_daily": (1, 10),
+    "life_publish_min_interval_hours": (1, 168),
+    "life_publish_max_daily": (1, 10),
 }
 for _topic in TOPIC_SPECS:
     _key = _topic.topic.value
@@ -65,11 +74,13 @@ for _topic in TOPIC_SPECS:
         f"{_key}_cooldown_minutes": (0, 1440),
     })
 BOOLEAN_FIELDS = ("enabled", "like_enabled", "comment_enabled", "publish_enabled",
-                  "topic_auto_enabled", "topic_require_confirmation") + tuple(
+                  "topic_auto_enabled", "topic_require_confirmation", "life_publish_enabled") + tuple(
                       f"{item.topic.value}_enabled" for item in TOPIC_SPECS)
 INTEGER_FIELDS = tuple(LIMITS)
-PROBABILITY_FIELDS = tuple(f"{item.topic.value}_min_confidence" for item in TOPIC_SPECS)
-TEXT_FIELDS = ("topic_prompt_guidance",) + tuple(f"{item.topic.value}_scenes" for item in TOPIC_SPECS)
+PROBABILITY_FIELDS = ("life_publish_probability",) + tuple(
+    f"{item.topic.value}_min_confidence" for item in TOPIC_SPECS)
+TEXT_FIELDS = ("topic_prompt_guidance", "life_publish_style_prompt") + tuple(
+    f"{item.topic.value}_scenes" for item in TOPIC_SPECS)
 
 
 def validate(values):
@@ -88,6 +99,8 @@ def validate(values):
             raise ConfigurationError("qzone_configuration_invalid", f"{name} must be a confidence from 0 to 1")
     if type(values["topic_prompt_guidance"]) is not str or len(values["topic_prompt_guidance"]) > 4000:
         raise ConfigurationError("qzone_configuration_invalid", "topic_prompt_guidance is too long")
+    if type(values["life_publish_style_prompt"]) is not str or len(values["life_publish_style_prompt"]) > 512:
+        raise ConfigurationError("qzone_configuration_invalid", "life_publish_style_prompt is too long")
     for item in TOPIC_SPECS:
         name = f"{item.topic.value}_scenes"
         try:

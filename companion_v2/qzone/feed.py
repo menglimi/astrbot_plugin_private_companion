@@ -3,7 +3,7 @@
 Two answer families exist: the JSON ``msglist`` of one person's timeline and the
 H5/legacy friend timeline, which arrives as HTML with the tickets in ``data-*``
 attributes. Both are read here into the same record, and anything without an
-author, an identity or any text is dropped instead of being guessed at.
+author, an identity or any text/image content is dropped instead of being guessed at.
 """
 
 from __future__ import annotations
@@ -11,10 +11,11 @@ from __future__ import annotations
 import html as html_module
 import json
 import re
+from urllib.parse import urlsplit
 
 from companion_v2.execution.models import TaskError
-from companion_v2.qzone.protocol import MAX_FEED_TEXT, response_code
-from companion_v2.qzone.references import QzonePost
+from companion_v2.qzone.protocol import MAX_FEED_TEXT, response_code, image_location_ids
+from companion_v2.qzone.references import QzonePost, QzonePhoto
 
 
 MAX_COMMENTS = 30
@@ -88,6 +89,60 @@ def _first(mapping, keys, *, nested=()):
     return None
 
 
+def image_url(value):
+    value = html_module.unescape(str(value or "").strip())
+    if value.startswith("//"):
+        value = "https:" + value
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme not in ("https", "http") or not parsed.hostname or parsed.username
+                or parsed.password or len(value) > 4096 or any(ord(c) < 32 for c in value)):
+            return ""
+    except ValueError:
+        return ""
+    return value
+
+
+def photo_from_mapping(value):
+    if isinstance(value, str):
+        value = {"url": value}
+    if not isinstance(value, dict):
+        return None
+    candidates = [value.get(key) for key in ("url3", "origin_url", "raw_url", "url2", "url1", "url", "pic_url", "src")]
+    candidates += [child.get("url") for child in value.values() if isinstance(child, dict)]
+    urls = tuple(url for candidate in candidates if (url := image_url(candidate)))
+    if not urls:
+        return None
+    identities = {token for key in ("lloc", "sloc", "pic_id", "picid")
+                  for token in image_location_ids(value.get(key))}
+    for url in urls:
+        identities.update(image_location_ids(url))
+    def dimension(key):
+        raw = str(value.get(key) or 0)
+        return int(raw) if raw.isdigit() and len(raw) < 8 else 0
+    return QzonePhoto(urls[0], dimension("width"), dimension("height"), tuple(sorted(identities)))
+
+
+def images_from_mapping(item):
+    entries = []
+    for container in (item, item.get("raw") if isinstance(item.get("raw"), dict) else {}):
+        for key in ("pic", "pics", "images", "photos", "pic_list"):
+            raw = container.get(key)
+            if isinstance(raw, dict):
+                raw = [raw] if any(k in raw for k in ("url", "url1", "url2", "url3")) else list(raw.values())
+            if isinstance(raw, list):
+                entries.extend(raw)
+    found, seen = [], set()
+    for entry in entries:
+        photo = photo_from_mapping(entry)
+        if photo and photo.url not in seen:
+            found.append(photo)
+            seen.add(photo.url)
+            if len(found) == 9:
+                break
+    return tuple(found)
+
+
 def _post_from_mapping(item, *, my_uin):
     if not isinstance(item, dict):
         return None
@@ -97,7 +152,8 @@ def _post_from_mapping(item, *, my_uin):
         return None
     raw = item.get("raw") if isinstance(item.get("raw"), dict) else item
     text = plain_text(_first(item, _TEXT_KEYS, nested=("raw", "summary")))
-    if not text:
+    images = images_from_mapping(item)
+    if not text and not images:
         return None
     name = display_name(_first(item, _NAME_KEYS, nested=("userinfo", "user", "raw")), author)
     return QzonePost(post_id=post_id, author_uin=author, author_name=name, excerpt=text,
@@ -106,8 +162,8 @@ def _post_from_mapping(item, *, my_uin):
         abstime=str(_first(item, _TIME_KEYS, nested=("raw",)) or ""),
         fid=str(_first(raw, ("fid", "feeds_key")) or ""),
         created_at=str(_first(item, _TIME_KEYS) or "")[:40],
-        liked=bool(_first(item, _LIKED_KEYS) in (1, "1", True, "true")),
-        own=author == str(my_uin))
+        liked=bool(_first(item, _LIKED_KEYS, nested=("like", "raw")) in (1, "1", True, "true")),
+        own=author == str(my_uin), images=images)
 
 
 def posts_from_msglist(payload, *, my_uin, limit):
@@ -160,7 +216,8 @@ def posts_from_html(text, *, my_uin, limit):
             continue
         info = _INFO_BLOCK.search(block)
         excerpt = plain_text(info.group(1) if info else block)
-        if not excerpt:
+        images = tuple(photo_from_mapping(url) for url in image_urls_from_html(block))
+        if not excerpt and not images:
             continue
         name = display_name(attributes.get("nickname"), author)
         if name.strip().casefold() in _OFFICIAL_AUTHORS:
@@ -173,7 +230,7 @@ def posts_from_html(text, *, my_uin, limit):
             unikey=str(attributes.get("unikey") or ""), curkey=str(attributes.get("curkey") or ""),
             appid=str(attributes.get("appid") or ""), typeid=str(attributes.get("typeid") or ""),
             abstime=str(attributes.get("abstime") or ""), fid=str(attributes.get("fid") or ""),
-            own=author == str(my_uin)))
+            own=author == str(my_uin), images=images))
         if len(posts) >= limit:
             break
     return tuple(posts)
@@ -244,14 +301,19 @@ def image_urls_from_html(text, *, limit=9):
     found = []
     for match in re.finditer(r'<img[^>]{0,2000}?>', str(text or ""), re.I):
         tag = match.group(0)
+        if re.search(r'''(?:class|id)=["'][^"']*(?:avatar|head-pic|emoji|emoticon)''', tag, re.I):
+            continue
         source = ""
         for attribute in ("data-original", "data-original-url", "data-bigurl", "data-rawurl", "origsrc",
                           "original", "data-url", "data-src", "src"):
-            hit = re.search(attribute + r'="([^"]{0,600})"', tag, re.I)
-            if hit and hit.group(1).startswith("http"):
-                source = hit.group(1)
+            hit = re.search(r'(?<![\w-])' + attribute + r'''\s*=\s*(["'])(.{0,4096}?)\1''', tag, re.I)
+            if hit and image_url(hit.group(2)):
+                source = image_url(hit.group(2))
                 break
         if not source or _IMAGE_PLACEHOLDER in source or source in found:
+            continue
+        host = urlsplit(source).hostname or ""
+        if host == "qlogo.cn" or host.endswith(".qlogo.cn"):
             continue
         found.append(source)
         if len(found) >= limit:

@@ -215,6 +215,25 @@ class LifeRuntimeTests(LifeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(status["journals"][0]["body"])
         self.assertEqual(status["journals"][0]["unavailable_reason"], "source_revoked")
 
+    async def test_completed_reading_test_record_can_be_removed_from_the_shelf(self):
+        await self.setup_life()
+        book = (await self.add_text())[0]
+        (await self.command("read", book)).unwrap()
+        await self.settle()
+        activity = self.status()["activities"][0]
+        self.assertEqual(activity["state"], "completed")
+        removed = await self.command("remove", activity)
+        self.assertTrue(removed.is_success, removed.failure)
+        self.assertEqual(self.status()["activities"], [])
+
+    async def test_unfinished_reading_record_cannot_be_removed(self):
+        await self.setup_life()
+        book = (await self.add_text())[0]
+        result = await self.command("remove", book)
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.failure.code, "life_activity_not_removable")
+        self.assertEqual(len(self.status()["activities"]), 1)
+
     async def test_read_failure_does_not_complete_and_requires_explicit_retry(self):
         await self.setup_life()
         book = (await self.add_text())[0]

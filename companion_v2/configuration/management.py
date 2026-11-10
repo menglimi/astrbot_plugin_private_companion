@@ -139,14 +139,23 @@ class GroupEditor:
         if target_layer is ConfigLayer.WINDOW:
             # A window-scoped group belongs to one original participant; the
             # binding is re-read here so a stale page cannot write to a new role.
-            if context.scope.kind is not ScopeKind.PRIVATE or context.audience.recipients != (context.actor.subject,):
-                raise TaskError(self._code("scope_invalid"), "select one original private participant")
-            current = require(self.app.tasks.identity.resolve_authenticated(context.actor.principal, observed_at=now))
-            binding = require(self.app.tasks.identity.resolve_role(context.scope, observed_at=now))
-            if (current.subject != context.actor.subject or current.binding_id != context.actor.binding_id
-                    or current.binding_revision != context.actor.binding_revision or binding != context.role_binding):
-                raise TaskError(self._code("target_changed"), "the selected participant or role binding changed")
-            self.app.tasks._context(context, now)
+            if (getattr(context, "management_scope", "") == "group"
+                    and context.scope.kind is ScopeKind.GROUP):
+                # The group management API builds this context from the selected
+                # configured group and verifies its route before the editor runs.
+                # Re-resolve the binding only when the group already has one.
+                binding = self.app.tasks.identity.resolve_role(context.scope, observed_at=now)
+                if binding.is_success and binding.unwrap() != context.role_binding:
+                    raise TaskError(self._code("target_changed"), "the group role binding changed")
+            else:
+                if context.scope.kind is not ScopeKind.PRIVATE or context.audience.recipients != (context.actor.subject,):
+                    raise TaskError(self._code("scope_invalid"), "select one original private participant")
+                current = require(self.app.tasks.identity.resolve_authenticated(context.actor.principal, observed_at=now))
+                binding = require(self.app.tasks.identity.resolve_role(context.scope, observed_at=now))
+                if (current.subject != context.actor.subject or current.binding_id != context.actor.binding_id
+                        or current.binding_revision != context.actor.binding_revision or binding != context.role_binding):
+                    raise TaskError(self._code("target_changed"), "the selected participant or role binding changed")
+                self.app.tasks._context(context, now)
         target = self._target()
         scope = (target.authorization_scope if target_layer is ConfigLayer.INSTALLATION else
                  target.scope if target.scope is not None else context.scope)

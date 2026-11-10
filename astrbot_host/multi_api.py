@@ -12,6 +12,7 @@ from .memory_api import MemoryWebAPI, PREFIX as MEMORY_PREFIX
 from .state_api import StateWebAPI, PREFIX as STATE_PREFIX
 from .reply_api import ReplyWebAPI, PREFIX as REPLY_PREFIX
 from .configuration_api import ConfigurationWebAPI, PREFIX as CONFIGURATION_PREFIX, SECTIONS
+from .config_port_api import ConfigPortWebAPI
 from .model_api import ModelWebAPI, PREFIX as MODEL_PREFIX
 from .life_api import LifeWebAPI, PREFIX as LIFE_PREFIX
 from .relationships_api import RelationshipWebAPI, MANAGEMENT_PREFIX as RELATIONSHIP_PREFIX
@@ -343,6 +344,7 @@ class MultiHostWebAPI:
         routes += BackupWebAPI(self.controller).routes()
         routes += HostOptionsWebAPI(self.controller).routes()
         routes += StorageWebAPI(self.controller).routes()
+        routes += ConfigPortWebAPI(self.controller).routes()
         routes += WorksWebAPI(self.controller).routes()
         # Installation-owned groups stay on one route, away from selected chats.
         routes += ConfigurationWebAPI(InstallationControllerView(self.controller),

@@ -7,7 +7,7 @@
     host_not_running: "请先启动当前 V2 配置。", life_not_bound: "请先启动当前 V2 配置，以载入原角色。", authorization_revoked: "执行权限已关闭或撤销，请确认生活日程设置。",
     authorization_missing: "请先启用生活日程与执行权限。", life_view_stale: "记录或权限已经变化，请刷新后重新确认。", life_reading_unresolved: "原阅读结果尚未确定，不能重复调用。",
     life_reading_active: "当前片段仍在阅读，请完成或取消后再入睡。", life_sleeping: "角色正在睡眠，请先醒来再阅读。", life_command_invalid: "生活记录或操作信息已变化，请刷新后重新尝试。", journal_trigger_unresolved: "原书写仍在进行、结果未知或已经成功，不能重复执行。",
-    configuration_revision_conflict: "设置已变化，请刷新后重新保存。", core_access_required: "当前账号没有本体管理权限。", source_revoked: "原文已撤回，依赖它的内容已停止使用。" };
+    configuration_revision_conflict: "设置已变化，请刷新后重新保存。", core_access_required: "当前账号没有本体管理权限。", source_revoked: "原文已撤回，依赖它的内容已停止使用。", life_activity_not_removable: "只有已完成或已取消的阅读记录可以删除。" };
   let bridge, state, selected, dialogAction, dialogItem, busy = false, dirty = false, tab = "archive";
   let datePages = [null], datePage = 0, activityCursor = null, polling = null;
   const pending = new Map();
@@ -146,6 +146,7 @@
         if (type === "sleep" && item.state === "completed") actions.append(actionButton("记录 / 重试梦境", "dream", item));
         if (["planned", "active", "paused"].includes(item.state)) actions.append(actionButton("取消", "cancel", item));
         if (type === "reading" && !item.unavailable_reason) actions.append(actionButton("撤回原文", "withdraw", item));
+        if (type === "reading" && ["completed", "cancelled"].includes(item.state)) actions.append(actionButton("删除", "remove", item));
         card.append(actions); list.append(card);
       }
     }
@@ -232,9 +233,9 @@
   }
   function open(action, item = null) {
     dialogAction = action; dialogItem = item;
-    const titles = { add_text: "添加阅读原文", sleep: "开始睡眠", edit: "更正正文", restore: "主动恢复正文", delete: "删除这篇书写", cancel: "取消活动", withdraw: "撤回阅读原文", wake: "结束这段睡眠", dream: "记录或重试梦境" };
+    const titles = { add_text: "添加阅读原文", sleep: "开始睡眠", edit: "更正正文", restore: "主动恢复正文", delete: "删除这篇书写", cancel: "取消活动", withdraw: "撤回阅读原文", remove: "删除阅读记录", wake: "结束这段睡眠", dream: "记录或重试梦境" };
     $("dialog-title").textContent = titles[action];
-    $("dialog-description").textContent = { withdraw: "整份原文及其所有片段将停止使用，依赖它的私人书写也将隐藏。", delete: "删除后自动书写不会覆盖此记录，恢复需要主动填写正文。", wake: "确认醒来后，会独立记录这段睡眠的梦境。", add_text: "保存完整原文，较长资料会拆为连续阅读片段。收存不会标记已读。" }[action] || "确认当前记录后保存。";
+    $("dialog-description").textContent = { withdraw: "整份原文及其所有片段将停止使用，依赖它的私人书写也将隐藏。", remove: "这条阅读记录会从书架移除；原文与依赖它的私人书写也会停止使用，删除后无法恢复。", delete: "删除后自动书写不会覆盖此记录，恢复需要主动填写正文。", wake: "确认醒来后，会独立记录这段睡眠的梦境。", add_text: "保存完整原文，较长资料会拆为连续阅读片段。收存不会标记已读。" }[action] || "确认当前记录后保存。";
     $("title-field").hidden = action !== "add_text";
     $("body-field").hidden = !["add_text", "edit", "restore"].includes(action);
     $("glow-field").hidden = !["edit", "restore"].includes(action) || item?.kind !== "dream";

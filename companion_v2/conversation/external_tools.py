@@ -319,6 +319,13 @@ class ExternalToolExecutor:
         # 反复失效；真正执行前由 _require_group_admin 只放行核心管理员。
         if context.scope.kind is ScopeKind.GROUP and core_group:
             core = True
+        # The core administrator's own group turn keeps the same image tools as
+        # a private turn: the per-window consent enrolled for other members is
+        # not a second gate on the operator's account, and keeping the tools
+        # present avoids a per-turn tool-schema change (provider prompt-cache
+        # churn). Non-core members still need the window consent.
+        if core_admin and action in GROUP_IMAGE_ACTIONS:
+            core = True
         # 隐私能力不再按会话范围拦截：群聊和私聊使用同一份授权判定。
         if (context.scope.kind is ScopeKind.GROUP and action not in GROUP_IMAGE_ACTIONS
                 and not privacy and not core_group):

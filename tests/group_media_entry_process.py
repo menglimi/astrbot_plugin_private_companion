@@ -153,7 +153,6 @@ def run(*, deliver_images=False):
                 await plugin.initialize()
                 ctrl = plugin.staging
                 assert ctrl.session is not None and ctrl.session.application.state == "running"
-                (await ctrl.authorize_group_delivery("group-a")).unwrap()
                 app = ctrl.session.application
                 config = deepcopy(DEFAULT_CONFIG)
                 config["t2i"] = False

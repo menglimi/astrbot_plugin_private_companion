@@ -98,6 +98,30 @@ class StorageApiTests(unittest.IsolatedAsyncioTestCase):
         self.config.clear()
         self.config.update(candidate)
 
+    async def test_cache_action_clears_only_regenerable_caches(self):
+        cleared = []
+
+        class Application:
+            def clear_caches(self):
+                cleared.append(True)
+                return {"image_narration": 2, "diagnostics": 1}
+
+        self.controller.session = NS(application=Application())
+        self.request.payload = json.dumps({"action": "cache"}).encode("utf-8")
+        with patch("astrbot_host.storage_api.request", self.request):
+            response = await self.api.update()
+        self.assertEqual(response["status"], "ok")
+        self.assertEqual(response["data"]["cache_result"],
+                         {"image_narration": 2, "diagnostics": 1})
+        self.assertEqual(cleared, [True])
+
+    async def test_cache_action_rejects_storage_fields(self):
+        self.controller.session = NS(application=NS(clear_caches=lambda: {}))
+        self.request.payload = json.dumps({"action": "cache", "path": "D:\\elsewhere"}).encode("utf-8")
+        with patch("astrbot_host.storage_api.request", self.request):
+            response = await self.api.update()
+        self.assertEqual(response["status"], "error")
+
     async def test_status_reports_current_usage_and_policy(self):
         with patch("astrbot_host.storage_api.request", self.request):
             response = await self.api.status()

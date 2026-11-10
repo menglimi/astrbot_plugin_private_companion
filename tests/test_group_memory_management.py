@@ -163,7 +163,6 @@ class GroupMemoryManagementTests(GroupMemoryManagementFixture, unittest.Isolated
         self.config = group_config(group_delivery_mode="onebot_group")
         self.controller = self.make_controller(self.config)
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         context, _, _ = await self.conversation(remember=True)
         later, batch, _ = await self.conversation("接着聊", sender="202")
         old_request = self.app.messages._request(self.app.messages.batch(batch), later, self.clock.now())
@@ -185,7 +184,6 @@ class GroupMemoryManagementTests(GroupMemoryManagementFixture, unittest.Isolated
         self.config = group_config(group_delivery_mode="onebot_group")
         self.controller = self.make_controller(self.config)
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         context, _, _ = await self.conversation(remember=True)
         manager, target = self.manager(), self.target(context)
 

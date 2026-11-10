@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
+import sqlite3
 import traceback
 from uuid import uuid4
 
@@ -560,7 +561,8 @@ class AstrBotMultiController:
                   str(error) if code.split("__", 1)[0] == "host_native_lookup_timeout"
                   or code in ("host_binding_changed", "account_config_save_failed", "account_config_persistence_unavailable",
                               "backup_restore_rollback_incomplete", "backup_restore_journal_unreadable",
-                              "backup_restore_startup_blocked", "setup_binding_missing") else
+                              "backup_restore_startup_blocked", "setup_binding_missing",
+                              "host_account_unavailable", "host_platform_unavailable") else
                   "shared host configuration, native route or authority could not be verified")
         if code == "host_control_failed":
             # 把“在哪一层炸的”带回来：只有位置，不含任何配置值或会话内容。
@@ -596,10 +598,14 @@ class AstrBotMultiController:
         conversations = {}
         for account in settings.accounts:
             platform = self.context.get_platform_inst(account.platform_id)
-            client = bridge.platforms[account.platform_id][1]
-            if (platform is None or platform.get_client() is not client
-                    or not bridge.account_connected(account, client)):
-                raise TaskError("host_account_unavailable", "a configured account is not connected")
+            if platform is None:
+                raise TaskError("host_platform_unavailable",
+                    f"配置的平台实例 {account.platform_id} 不在当前 AstrBot 中；请先在宿主平台设置里恢复它。")
+            client = bridge.platforms.get(account.platform_id, (None, None))[1]
+            if platform.get_client() is not client or not bridge.account_connected(account, client):
+                raise TaskError("host_account_unavailable",
+                    f"配置的 Bot 账号 {account.platform_id}:{account.self_id} 当前未连接 AstrBot；"
+                    "请确认这个账号已登录，再重试初始化。")
         for target in (settings.all_targets if include_conversations else ()):
             account = bridge.accounts[(target.platform_id, target.account_id)]
             peer = target.participant_id if hasattr(target, "participant_id") else target.group_id
@@ -871,7 +877,23 @@ class AstrBotMultiController:
 
     async def _initialize_manifest_locked(self, manifest, conversations):
         await self._open_async()
-        receipt = await asyncio.to_thread(self._initialize_manifest_storage, manifest, conversations)
+        try:
+            receipt = await asyncio.to_thread(self._initialize_manifest_storage, manifest, conversations)
+        except sqlite3.OperationalError as error:
+            if "unable to open database file" not in str(error).lower():
+                raise
+            # The connection was opened before its profile directory or database
+            # file disappeared (an operator may have removed the runtime while the
+            # plugin kept running). Reopen once from the configured root instead of
+            # surfacing an opaque SQLite error on the initialization page.
+            old_runtime = self.runtime
+            path = str(getattr(old_runtime, "database_path", "") or "")
+            logger.warning("[CompanionV2] 运行库无法写入，重新打开存储后重试初始化 path=%s", path)
+            if old_runtime is not None:
+                old_runtime.close()
+            self.runtime = self.authority = None
+            await self._open_async()
+            receipt = await asyncio.to_thread(self._initialize_manifest_storage, manifest, conversations)
         await self._assemble(manifest)
         return receipt
 
@@ -1048,6 +1070,11 @@ class AstrBotMultiController:
                     try:
                         await asyncio.to_thread(self.authority.require_manifest, probed)
                     except TaskError as error:
+                        if error.code == "host_not_initialized":
+                            # A runtime database from a direct upgrade can exist
+                            # without a shared manifest. Let the caller take the
+                            # explicit initialize path instead of aborting startup.
+                            return Outcome.success({"loaded": False, "started": False})
                         if error.code != "host_binding_changed":
                             raise
                         saved = self.authority.require_manifest()
@@ -1494,26 +1521,6 @@ class AstrBotMultiController:
                 return Outcome.success(self.authority.authorize_delivery(target_id, self.now() + DELIVERY_AUTHORIZATION_TTL))
             except Exception as error:
                 return self._failure(error)
-
-    async def _group_delivery_control(self, target_id, *, authorize):
-        async with self._control_lock:
-            try:
-                self._settings()
-                if self.authority is None:
-                    raise TaskError("host_not_initialized", "initialize the shared installation first")
-                self.authority.require_manifest()
-                groups = self.authority.group_delivery
-                result = (groups.authorize(target_id, self.now() + DELIVERY_AUTHORIZATION_TTL) if authorize
-                          else groups.revoke(target_id))
-                return Outcome.success(result)
-            except Exception as error:
-                return self._failure(error)
-
-    async def authorize_group_delivery(self, target_id):
-        return await self._group_delivery_control(target_id, authorize=True)
-
-    async def revoke_group_delivery(self, target_id):
-        return await self._group_delivery_control(target_id, authorize=False)
 
     def preview(self, target_id, batch_id):
         try:

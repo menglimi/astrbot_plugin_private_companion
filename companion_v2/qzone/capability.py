@@ -76,6 +76,9 @@ def _topic_catalogue():
     lines.append("confidence 是你对这次主题判断的把握（0 到 1）。"
                  "材料不足、无法去掉私密细节或事实不确定时不要调用本工具。"
                  "求助类可以带一个待确认的日程提案，但不能声称已经修改日程。")
+    lines.append("配图请用当前相册真实返回的 image_id 填入 image_ids；不要编造图片标识，"
+                 "source_refs 只是文字材料来源，不会自动变成配图。只有回执 verified=true "
+                 "且 images_verified=true 才能说配图已发布；accepted 或结果未知时先读空间核对，不要重发。")
     return "\n".join(lines)
 
 
@@ -125,9 +128,11 @@ def tool_descriptors():
                      "confidence": {"type": "number", "description": "主题判断的把握，0 到 1。"},
                      "source_refs": {"type": "array", "items": {"type": "string"},
                                      "description": "本次正文实际用到的材料引用（来自材料清单里的 handle）。"},
+                     "image_ids": {"type": "array", "items": {"type": "string"},
+                                   "description": "选自当前角色相册的真实 image_id；会实际上传并附到说说，最多 9 张。"},
                      "agenda_proposal": _agenda_proposal_schema()},
                     ("text", "topic", "scene", "confidence")),
-            SideEffect.EXTERNAL_NETWORK, 30),
+            SideEffect.EXTERNAL_NETWORK, 300),
     )
 
 

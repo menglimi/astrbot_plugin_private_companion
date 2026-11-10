@@ -73,7 +73,6 @@ with tempfile.TemporaryDirectory(prefix='v2-group-memory-native-') as temporary:
             await plugin.initialize()
             ctrl = plugin.staging
             (await ctrl.initialize_profile()).unwrap()
-            (await ctrl.authorize_group_delivery('group-a')).unwrap()
             (await ctrl.start()).unwrap()
             app = ctrl.session.application
             batches = []

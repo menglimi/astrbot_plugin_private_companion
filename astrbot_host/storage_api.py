@@ -187,10 +187,29 @@ class StorageWebAPI:
             if type(document) is not dict:
                 raise ValueError("object required")
             action = document.get("action")
-            if action not in ("clean", "save"):
+            if action not in ("clean", "save", "cache"):
                 raise ValueError("unexpected action")
 
             async with storage_request_lock(controller):
+                if action == "cache":
+                    if set(document) != {"action"}:
+                        raise ValueError("unexpected fields")
+                    async with controller._control_lock:
+                        self._operator()
+                        if getattr(controller, "_terminated", False):
+                            raise TaskError("staging_host_terminated", "plugin is stopped")
+                        session = controller.session or controller.last_session
+                        if session is None:
+                            raise TaskError("staging_not_initialized", "load the V2 profile first")
+                        application = session.application
+                    # 缓存是进程内的小对象，直接在事件循环里清；丢到工作线程会和
+                    # 正在写入的转述/诊断缓存并发修改同一个字典。
+                    clear = getattr(application, "clear_caches", None)
+                    if not callable(clear):
+                        raise TaskError("storage_cache_unavailable", "runtime caches are unavailable")
+                    cleared = clear()
+                    return {"status": "ok", "data": {"cache_result": cleared}}
+
                 if action == "clean":
                     if set(document) != {"action"}:
                         raise ValueError("unexpected fields")

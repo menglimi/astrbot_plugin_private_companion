@@ -3843,7 +3843,10 @@ window.CompanionSetup = (() => {
       } else if (action === "save-model") {
         const saved = await api("POST", "/model", {provider_id: modelDraft});
         modelTaskDrafts = {};
-        notice = saved?.restart_required || saved?.data?.restart_required
+        const deferred = saved?.init_deferred === true || saved?.data?.init_deferred === true;
+        notice = deferred
+          ? `模型已保存。${(saved?.init_reason || saved?.data?.init_reason) || "配置的 Bot 账号当前未连接 AstrBot。"}账号连上后回到这一步再点一次即可完成初始化。`
+          : saved?.restart_required || saved?.data?.restart_required
           ? "模型已保存；当前宿主仍在运行，重载插件后使用新模型。"
           : "已初始化模型；任务路由可直接选择 AstrBot 当前已加载的 Provider。";
       } else if (action.startsWith("save-task:")) {

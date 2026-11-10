@@ -163,7 +163,6 @@ def run(*, quoted=False):
                 await plugin.initialize()
                 ctrl = plugin.staging
                 (await ctrl.initialize_profile()).unwrap()
-                (await ctrl.authorize_group_delivery("group-a")).unwrap()
                 (await ctrl.start()).unwrap()
                 app, batches = ctrl.session.application, []
                 turns = [("777", "4601", direct_parts)]

@@ -64,6 +64,19 @@ class PersistentRoleLifeLedger:
             raise ReferenceValidationError("activity identity does not match its owner index")
         return activity
 
+    def delete_activity(self, activity_id: str, *, owner: RoleOwnerRef) -> RoleActivity:
+        """Remove one role-owned activity and every historical revision it owns."""
+        key = self._owner_key(owner)
+        activity = self.activity(activity_id, owner=owner)
+        with self.runtime.transaction() as connection:
+            connection.execute("DELETE FROM role_artifacts WHERE owner_key = ? AND activity_id = ?",
+                               (key, activity_id))
+            connection.execute("DELETE FROM role_activity_revisions WHERE owner_key = ? AND activity_id = ?",
+                               (key, activity_id))
+            connection.execute("DELETE FROM role_activities WHERE owner_key = ? AND activity_id = ?",
+                               (key, activity_id))
+        return activity
+
     def _remember_revision(self, connection, activity, operation_id=None):
         key = self._owner_key(activity.owner)
         previous = connection.execute("""SELECT record_json FROM role_activity_revisions

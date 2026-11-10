@@ -88,7 +88,7 @@ async def assert_core_reply_prompt_roundtrip(test, prefix):
     task = next(item for item in listed["data"]["tasks"] if item["kind"] == "conversation.reply")
     test.assertEqual(task["configuration_layer"], "role")
     test.assertEqual(task["execution_path"], "astrbot_core")
-    test.assertEqual(task["editable_fields"], ["prompt"])
+    test.assertEqual(task["editable_fields"], ["prompt", "replacement_rules"])
     test.assertIn("provider", task["core_managed_fields"])
     test.assertNotIn("output_contract", {layer["key"] for layer in task["prompt_layers"]})
     payload = {"kind": task["kind"], "operation_key": "core-prompt-route", "edit_token": task["edit_token"],

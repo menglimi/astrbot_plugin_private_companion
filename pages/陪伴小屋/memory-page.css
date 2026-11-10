@@ -652,3 +652,10 @@
   }
   .mem-card.is-leaving,.mem-batch.is-leaving{display:none}
 }
+
+/* ===== 手动新增记忆 ===== */
+.mem-add-row{display:flex;justify-content:flex-end;padding:0 0 var(--sp-2)}
+.mem-add-form{display:grid;gap:var(--sp-3);margin-bottom:var(--sp-3);padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
+.mem-add-field{display:grid;gap:var(--sp-1)}
+.mem-add-field span{font-size:var(--fs-micro);color:var(--t-text-faint)}
+.mem-add-field select,.mem-add-field textarea{width:100%;box-sizing:border-box;font:inherit;color:var(--t-text);background:var(--t-bg);border:1px solid var(--t-line);border-radius:var(--r-sm);padding:var(--sp-2)}

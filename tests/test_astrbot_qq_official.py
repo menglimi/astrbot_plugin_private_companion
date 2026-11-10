@@ -1,4 +1,4 @@
-"""QQ Official account, route and AstrBot-session adaptation."""
+﻿"""QQ Official account, route and AstrBot-session adaptation."""
 
 from copy import deepcopy
 from dataclasses import replace

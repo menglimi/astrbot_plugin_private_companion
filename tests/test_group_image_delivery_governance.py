@@ -35,9 +35,8 @@ class GroupImageGovernanceTests(GroupImageDeliveryFixture, unittest.IsolatedAsyn
     async def test_changed_authority_or_original_during_role_await_prevents_whole_send(self):
         await self.with_delivery()
         for index, mode in enumerate(("asset", "frame", "source", "manifest", "corrupt_manifest",
-                                      "missing_manifest", "bytes", "group_grant", "withdraw")):
+                                      "missing_manifest", "bytes", "withdraw")):
             with self.subTest(mode=mode):
-                (await self.controller.authorize_group_delivery("group-a")).unwrap()
                 original_sender = self.app.delivery.sender
                 changed = False
 
@@ -60,8 +59,6 @@ class GroupImageGovernanceTests(GroupImageDeliveryFixture, unittest.IsolatedAsyn
                                 "manifest": (self.app.messages.sources, manifest),
                             }[mode]
                             owner.revoke(reference, expected_governance_revision=1, observed_at=self.clock.now()).unwrap()
-                        elif mode == "group_grant":
-                            (await self.controller.revoke_group_delivery("group-a")).unwrap()
                         elif mode == "withdraw":
                             self.app.withdraw(envelope.context, event.scoped_key).unwrap()
                         else:
@@ -151,7 +148,6 @@ class GroupImageGovernanceTests(GroupImageDeliveryFixture, unittest.IsolatedAsyn
         self.config["runtime"]["part_gap_seconds"] = 3
         self.controller = self.make_controller(self.config)
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         self.app.generator.split = lambda text: tuple(text.splitlines(keepends=True))
         body = animation_bytes()
         batch = (await self.controller.receive_claimed(self.media_event([sdk_image(body)]))).unwrap()
@@ -184,7 +180,6 @@ class GroupImageGovernanceTests(GroupImageDeliveryFixture, unittest.IsolatedAsyn
         self.config = group_config(group_delivery_mode="onebot_group")
         self.controller = self.make_controller(self.config)
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         self.assertEqual((await self.controller.receive_claimed(event)).unwrap(), batch)
         self.clock.advance(timedelta(seconds=3))
         self.app.notify()
@@ -221,7 +216,6 @@ class GroupImageGovernanceTests(GroupImageDeliveryFixture, unittest.IsolatedAsyn
             bot_id="bot-a", participant_id="201"))
         self.controller = self.make_controller(self.config)
         app = await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         app.image_review._settings_reader = lambda: {
             **DEFAULTS, "enable_group_nsfw_private_fallback": True,
         }
@@ -281,7 +275,6 @@ class GroupImageGovernanceTests(GroupImageDeliveryFixture, unittest.IsolatedAsyn
             bot_id="bot-a", participant_id="201"))
         self.controller = self.make_controller(self.config)
         app = await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         app.image_review._settings_reader = lambda: {
             **DEFAULTS, "enable_group_nsfw_private_fallback": True,
             "group_nsfw_image_review_failure_action": "private",
@@ -345,7 +338,6 @@ class GroupImageGovernanceTests(GroupImageDeliveryFixture, unittest.IsolatedAsyn
             bot_id="bot-a", participant_id="201"))
         self.controller = self.make_controller(self.config)
         app = await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         app.image_review._settings_reader = lambda: {
             **DEFAULTS, "enable_group_nsfw_private_fallback": True,
         }

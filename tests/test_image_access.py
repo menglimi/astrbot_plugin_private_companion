@@ -127,11 +127,15 @@ class ImageAccessTests(G6Fixture):
         self.install_image()
         group = self.group_context()
         self.set_image_output(group_enabled=False)
-        self.ensure(group)
+        # The turn-level probe runs on every group message; it must not tell the
+        # operator that an image request was refused when nobody asked for one.
+        with self.assertNoLogs("astrbot_host.image_access", level="INFO"):
+            self.ensure(group)
         self.assertEqual(self.consent("image.generate", context=group).failure.code,
                          "capability_consent_missing")
         self.set_image_output(group_enabled=True, request_permission="core_only")
-        self.ensure(group)
+        with self.assertNoLogs("astrbot_host.image_access", level="INFO"):
+            self.ensure(group)
         for capability in GROUP_IMAGE_CAPABILITIES:
             self.assertEqual(self.consent(capability, context=group).failure.code,
                              "capability_consent_missing")

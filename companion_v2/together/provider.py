@@ -6,6 +6,7 @@ import copy
 import hashlib
 import inspect
 import json
+import logging
 import os
 import threading
 import time
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
+logger = logging.getLogger(__name__)
 SCHEMA = "companion.native-provider.v1"
 PLUGIN_ID = "astrbot_plugin_private_companion.together"
 PROVIDER_ID = "together.native"
@@ -193,6 +195,22 @@ class OperationStore:
             if not isinstance(operation, dict):
                 raise NativeTogetherError("native_operation_not_found")
             return copy.deepcopy(operation)
+
+    def find(self, operation_id: str) -> dict[str, Any] | None:
+        """Return one operation by id without knowing its scope.
+
+        Transport layers only see the operation id (the scope hash is internal
+        to this provider), so a failed room still needs a supported way to read
+        back its error code for diagnostics.
+        """
+        if not isinstance(operation_id, str) or not operation_id:
+            return None
+        with self._lock:
+            for bucket in self._data["operations"].values():
+                operation = bucket.get(operation_id) if isinstance(bucket, dict) else None
+                if isinstance(operation, dict):
+                    return copy.deepcopy(operation)
+        return None
 
     def latest(self, scope: str, action: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
@@ -489,7 +507,7 @@ class NativeTogetherProvider:
         read_only = request["action"] in _READ_ACTIONS
         if isinstance(result, dict):
             result.pop("closed_ticket_token", None)
-        return {
+        response = {
             "schema": SCHEMA, "invocation_id": request["invocation_id"],
             "origin_key": request["origin_key"], "arguments_hash": request["arguments_hash"],
             "binding": request["binding"], "state": state,
@@ -498,6 +516,12 @@ class NativeTogetherProvider:
             "receipt_ref": f"{PROVIDER_ID}.operation:{operation.get('id')}",
             "result": result, "artifacts": [],
         }
+        if state != "succeeded" and not read_only:
+            # 失败在 V2 里是一个正常返回的回执，外层不应该只看到 HTTP 409 而
+            # 不知道是哪一步拒绝的；把原始 operation 错误留在这条日志里。
+            logger.warning("[TogetherCompanion] 房间操作未完成 action=%s operation=%s state=%s error=%s",
+                           request["action"], operation.get("id"), state, operation.get("error"))
+        return response
 
     def _open_tokens(self, scope: str) -> set[str]:
         closed = {
@@ -839,9 +863,25 @@ class NativeTogetherProvider:
         access = {"tunnel_started": False, "tunnel_ready": False, "fixed_public_url": False}
         prepare = getattr(self.plugin, "_ensure_mobile_room_access", None)
         if callable(prepare):
+            from .mobile.origin import MOBILE_ROOM_CALL
+            # 手机网关建房已经由网关自己准备好了房间访问（代理模式直接走
+            # local_base_url）。这里再无条件准备一次会重新尝试公网隧道，在没配
+            # 公网地址的机器上直接失败成 together_public_access_unavailable。
+            via_mobile_gateway = bool(MOBILE_ROOM_CALL.get())
             try:
-                access = await prepare()
-            except Exception:
+                try:
+                    access = await prepare(via_mobile_gateway=via_mobile_gateway)
+                except TypeError as exc:
+                    # Older host APIs exposed this helper without the keyword;
+                    # only retry when the call itself rejected the keyword.
+                    message = str(exc).lower()
+                    if "via_mobile_gateway" not in message and "unexpected keyword" not in message:
+                        raise
+                    access = await prepare()
+            except Exception as exc:
+                logger.warning(
+                    "[TogetherCompanion] 建房准备房间访问失败 via_mobile_gateway=%s error_type=%s",
+                    via_mobile_gateway, type(exc).__name__)
                 raise NativeTogetherError("together_public_access_unavailable") from None
         self.store.update(scope, operation["id"], state="dispatching", effect="unknown")
         persona = value["host_persona"]

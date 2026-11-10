@@ -37,7 +37,7 @@ class QzoneTransport(Protocol):
         """Perform exactly one request; never retry, never invent partial success."""
 
     async def qzonetoken(self, credential: QzoneCredential) -> str:
-        """Best-effort H5 token; an empty string means publish stays text-only."""
+        """Best-effort H5 token; the upload response remains authoritative."""
 
 
 __all__ = ["QzoneTransport", "TransportOutcome"]

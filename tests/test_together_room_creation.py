@@ -26,10 +26,12 @@ class FakePlugin:
             "tunnel_ready": True, "fixed_public_url": False}
         self._access_fails = access_fails
         self.prepared = 0
+        self.via_mobile_gateway = []
         self.tickets = []
 
-    async def _ensure_mobile_room_access(self):
+    async def _ensure_mobile_room_access(self, *, via_mobile_gateway=False):
         self.prepared += 1
+        self.via_mobile_gateway.append(via_mobile_gateway)
         if self._access_fails:
             raise RuntimeError("tunnel unavailable")
         return dict(self._access)
@@ -76,6 +78,22 @@ class RoomCreationTests(unittest.TestCase):
         self.assertTrue(operation["result"]["access"]["tunnel_started"])
         self.assertTrue(operation["result"]["access"]["tunnel_ready"])
         self.assertEqual(plugin.tickets[0]["user_id"], "u1")
+
+    def test_mobile_gateway_room_uses_the_already_prepared_local_access(self):
+        from companion_v2.together.mobile.origin import MOBILE_ROOM_CALL
+        plugin = FakePlugin(access={"url": "http://127.0.0.1:6321", "tunnel_started": False,
+                                    "tunnel_ready": True, "fixed_public_url": False,
+                                    "mobile_gateway": True})
+        provider = provider_with(plugin)
+        token = MOBILE_ROOM_CALL.set(True)
+        try:
+            operation = asyncio.run(provider._create_room(request(), "scope-1", {"id": "op"}, user_id="u1"))
+        finally:
+            MOBILE_ROOM_CALL.reset(token)
+        self.assertEqual(plugin.via_mobile_gateway, [True])
+        self.assertEqual(operation["state"], "succeeded")
+        self.assertFalse(operation["result"]["access"]["tunnel_started"])
+        self.assertTrue(operation["result"]["access"]["tunnel_ready"])
 
     def test_fixed_public_url_is_not_an_auto_tunnel(self):
         plugin = FakePlugin(access={"url": "https://together.example.com", "tunnel_started": False,

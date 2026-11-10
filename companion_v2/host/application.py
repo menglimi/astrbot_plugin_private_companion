@@ -564,6 +564,30 @@ class CompanionApplication:
             raise TaskError("host_not_running", "host intake is not active")
         require(self.tasks.check_generation())
 
+    def clear_caches(self):
+        """Drop regenerable in-process caches; stored data is never touched.
+
+        The maintenance page exposes this as the only safe "clear cache"
+        action: image descriptions, failed description attempts and diagnostic
+        reports are rebuilt on demand, while conversations, memories, journals
+        and sent media stay exactly as they were.
+        """
+        cleared = {}
+        narration = getattr(self, "image_narration", None)
+        cache = getattr(narration, "cache", None)
+        if cache is not None:
+            cleared["image_narration"] = len(cache)
+            cache.clear()
+        failures = getattr(narration, "failures", None)
+        if failures is not None:
+            cleared["image_narration_failures"] = len(failures)
+            failures.clear()
+        reports = getattr(getattr(self, "diagnostics", None), "_reports", None)
+        if isinstance(reports, dict):
+            cleared["diagnostics"] = len(reports)
+            reports.clear()
+        return cleared
+
     def _record_failure(self, error, fallback):
         self.failure_code = error.code if isinstance(error, TaskError) else fallback
         frames = traceback.extract_tb(error.__traceback__)[-10:]

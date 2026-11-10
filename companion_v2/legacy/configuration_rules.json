@@ -2944,7 +2944,7 @@
     "runtime.turn_timeout_seconds": 300,
     "runtime.part_gap_seconds": 0,
     "runtime.foreground_slots": 2,
-    "runtime.background_slots": 1,
+    "runtime.background_slots": 3,
     "runtime.queued_per_lane": 64,
     "runtime.retained_tasks": 10000,
     "runtime.forward_max_nodes": 32,

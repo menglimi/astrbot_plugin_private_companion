@@ -230,9 +230,12 @@ class ImageQuotaTests(MessageFixture):
     def test_core_only_image_permission_blocks_standard_requesters_and_allows_core(self):
         self.set_output(request_permission="core_only")
         gate = self.messages.image_quota
-        with self.assertRaises(TaskError) as caught:
+        with self.assertRaises(TaskError) as caught, \
+                self.assertLogs("companion_v2.conversation.media.quota", level="INFO") as logs:
             gate.admit(self.parent(), NOW)
         self.assertEqual(caught.exception.code, "image_requests_core_only")
+        # A real dispatch attempt is the one place worth an INFO notice.
+        self.assertTrue(any("生图请求被拒" in line for line in logs.output))
         core_context = self.context_for(self.core)
         gate.admit(self.parent("quota-core-image-permission", context=core_context), NOW)
 

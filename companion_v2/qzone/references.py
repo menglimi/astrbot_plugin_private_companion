@@ -21,6 +21,17 @@ COMMENT = "comment"
 
 
 @dataclass(frozen=True)
+class QzonePhoto:
+    url: str
+    width: int = 0
+    height: int = 0
+    identities: tuple[str, ...] = ()
+
+    def summary(self):
+        return {"url": self.url, "width": self.width, "height": self.height}
+
+
+@dataclass(frozen=True)
 class QzonePost:
     """One scanned post with the original tickets a later action must resend."""
 
@@ -37,6 +48,7 @@ class QzonePost:
     created_at: str = ""
     liked: bool = False
     own: bool = False
+    images: tuple[QzonePhoto, ...] = ()
 
     def __post_init__(self):
         if type(self.post_id) is not str or not self.post_id.strip():
@@ -64,7 +76,7 @@ class QzonePostReference:
         """The model-facing and page-facing view: no session tickets."""
         return {"post_ref": self.token, "author": self.post.author_name, "excerpt": self.post.excerpt,
                 "at": self.post.created_at or self.issued_at.isoformat(), "liked": self.post.liked,
-                "own_post": self.post.own}
+                "own_post": self.post.own, "images": [photo.summary() for photo in self.post.images]}
 
 
 class QzoneReferenceStore:

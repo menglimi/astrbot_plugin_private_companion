@@ -113,7 +113,7 @@ window.CompanionModelsPage = (() => {
   };
   const snapshot = s => s?.status?.tasks || [];
   const coreReply = task => task?.execution_path === "astrbot_core";
-  const taskFields = task => coreReply(task) ? ["prompt"] : fields;
+  const taskFields = task => coreReply(task) ? ["prompt", "replacement_rules"] : fields;
   const fallbackFor = task => {
     if (coreReply(task)) return "";
     const field = task.fields.fallback;
@@ -323,7 +323,7 @@ window.CompanionModelsPage = (() => {
     if (Object.hasOwn(p.changes, "fallback_on_refusal") && typeof p.changes.fallback_on_refusal !== "boolean") return false;
     if (Object.hasOwn(p.changes, "replacement_rules") && (typeof p.changes.replacement_rules !== "string" || p.changes.replacement_rules.length > 24000)) return false;
     if (Object.hasOwn(p.changes, "refusal_terms") && (typeof p.changes.refusal_terms !== "string" || p.changes.refusal_terms.length > 4096)) return false;
-    if (coreReply(task)) return Object.keys(p.changes).concat(p.reset).every(name => name === "prompt");
+    if (coreReply(task)) return Object.keys(p.changes).concat(p.reset).every(name => name === "prompt" || name === "replacement_rules");
     const primary = projected(task, p, "provider"), fallback = projected(task, p, "fallback"), limit = projected(task, p, "max_output_tokens");
     const picked = [primary, ...(fallback ? [fallback] : [])], providers = picked.map(id => state.status.providers.find(provider => provider.id === id));
     const fallbackExplicit = Object.hasOwn(p.changes, "fallback")
@@ -2202,9 +2202,10 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   function timeText(rule) { const window = rule.time_window; if (!window || typeof window !== "object") return "";
     return `${window.start || ""}-${window.end || ""}`; }
   /* ---------- replacement policy: markup ---------- */
-  /* The policy pane always has an active task: the explicit pick, else the first. */
-  const policyTask = s => snapshot(s).filter(task => !coreReply(task)).find(task => task.kind === s.pol)
-    || snapshot(s).find(task => !coreReply(task)) || null;
+  /* The policy pane always has an active task: the explicit pick, else the first.
+     对话回复也在列表里：纯时段规则由宿主在核心管线按轮临时切换 Provider。 */
+  const policyTask = s => snapshot(s).find(task => task.kind === s.pol)
+    || snapshot(s)[0] || null;
   function ruleCard(s, task, rule, index) {
     const info = taskName(task.kind), draft = s.drafts.get(task.kind), locked = s.loading || s.busy || s.denied || draft?.pending;
     const providers = available(s, task), picked = typeof rule.provider_id === "string" ? rule.provider_id : "";
@@ -2247,7 +2248,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       </div>
       ${Array.isArray(rule.keywords) && rule.keywords.length ? `<div class="model-chips">${rule.keywords.map(word => `<span class="model-kchip">${esc(word)}</span>`).join("")}</div>` : ""}
       <p class="model-rule-src">${esc(info.label)} · ${esc(task.kind)}</p></li>`; }
-  function policyTaskOptions(s, picked) { return snapshot(s).filter(task => !coreReply(task)).map(task => {
+  function policyTaskOptions(s, picked) { return snapshot(s).map(task => {
     const info = taskName(task.kind), count = ruleOf(s, task.kind).length;
     return `<option value="${esc(task.kind)}" ${task.kind === picked?.kind ? "selected" : ""}>${esc(info.label)} · ${esc(task.kind)}${count ? " · ${count} 条规则" : ""}</option>`;
   }).join(""); }
@@ -2317,11 +2318,12 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       <div class="model-policy-foot">命中后使用备用模型重试一次</div></article>`; }
   function replacementPolicy(s) { const task = policyTask(s), draft = task && s.drafts.get(task.kind);
     const rules = task ? ruleOf(s, task.kind) : [];
-    const modes = [["kw", "关键词换模"], ["peak", "高价时段替代"], ["refuse", "拒答替代"]];
+    const modes = coreReply(task) ? [["kw", "关键词换模"], ["peak", "高价时段替代"]]
+      : [["kw", "关键词换模"], ["peak", "高价时段替代"], ["refuse", "拒答替代"]];
     const scope = task && draft ? effective(task, draft, "replacement_scope") : "all";
     const locked = !task || s.busy || s.loading || s.denied || draft?.pending;
     const scopes = [["plugin", "仅插件调用"], ["conversation", "仅普通对话模型"], ["all", "全部生效"]];
-    const panel = s.pm === "peak" ? peakPolicy(s) : s.pm === "refuse" ? refusalPolicy(s) : keywordPolicy(s);
+    const panel = s.pm === "peak" ? peakPolicy(s) : s.pm === "refuse" && !coreReply(task) ? refusalPolicy(s) : keywordPolicy(s);
     const status = s.loading || (s.notice && s.notice !== "已读取当前任务配置。") ? notice(s) : "";
     return `<div class="model-subpane model-policy">
       <div class="model-policy-bar">
@@ -2348,7 +2350,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   const ruleTarget = ref => { const [kind, index] = String(ref || "").split(":"); return { kind, index: Number(index) }; };
   /* Every rule edit funnels through here so the JSON the gateway reads stays canonical. */
   function editRules(s, kind, mutate) { const task = taskOf(s, kind), draft = s.drafts.get(kind);
-    if (!task || coreReply(task) || !draft || draft.pending || s.busy || s.loading) return;
+    if (!task || !draft || draft.pending || s.busy || s.loading) return;
     const rules = ruleOf(s, kind).slice(); if (mutate(rules) === false) return;
     draft.values.replacement_rules = serializeRules(rules); draft.inherited.replacement_rules = false; draft.touched = true;
     s.bad = false; s.notice = `${taskName(kind).label} 的替换规则已改动，保存本任务后生效。`; render(); }

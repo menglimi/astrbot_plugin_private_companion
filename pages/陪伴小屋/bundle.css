@@ -1888,6 +1888,13 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
   .mem-card.is-leaving,.mem-batch.is-leaving{display:none}
 }
 
+/* ===== 手动新增记忆 ===== */
+.mem-add-row{display:flex;justify-content:flex-end;padding:0 0 var(--sp-2)}
+.mem-add-form{display:grid;gap:var(--sp-3);margin-bottom:var(--sp-3);padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
+.mem-add-field{display:grid;gap:var(--sp-1)}
+.mem-add-field span{font-size:var(--fs-micro);color:var(--t-text-faint)}
+.mem-add-field select,.mem-add-field textarea{width:100%;box-sizing:border-box;font:inherit;color:var(--t-text);background:var(--t-bg);border:1px solid var(--t-line);border-radius:var(--r-sm);padding:var(--sp-2)}
+
 /* workspace-loading.css */
 .product-workspace{
   position:relative;
@@ -6022,6 +6029,43 @@ body.state-connected{min-width:320px}
   .wb-quote{grid-template-columns:auto minmax(0,1fr)}
   .wb-quote-remove{grid-column:2;justify-self:end;margin-top:calc(-1 * var(--sp-1))}
   .wb-tag-form input[type=text]{min-width:0}
+}
+
+/* 2026-11 视觉校准：配置项回到「标题在左、控件在右」的舒展行距，
+   参考 7.1.8 redesign 的 row 节奏，但保留当前工作台的分层轨道。 */
+.wb-fields{grid-template-columns:minmax(0,1fr);gap:0;max-width:1040px}
+.wb-field{grid-template-columns:12px minmax(0,1fr) auto;align-items:center;
+  gap:var(--sp-2) var(--sp-4);padding:14px var(--sp-2) 14px 0}
+.wb-field-main{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,360px);
+  align-items:center;column-gap:var(--sp-5);row-gap:var(--sp-1)}
+.wb-field-main>.wb-label{grid-column:1;grid-row:1;align-self:end}
+.wb-field-main>.wb-help{grid-column:1;grid-row:2;align-self:start}
+.wb-field-main>.wb-control{grid-column:2;grid-row:1 / span 2;justify-self:stretch;
+  display:flex;align-items:center;justify-content:flex-end;min-width:0;max-width:420px;width:100%}
+.wb-field-main>.wb-field-error{grid-column:1/-1;grid-row:3}
+.wb-field:has(textarea),.wb-field:has(.wb-word-editor),.wb-field:has(.wb-keywords),
+.wb-field:has(.wb-source-picker),.wb-field:has(.wb-order-editor),.wb-field:has(.wb-date){align-items:start}
+.wb-field:has(textarea) .wb-field-main,.wb-field:has(.wb-word-editor) .wb-field-main,
+.wb-field:has(.wb-keywords) .wb-field-main,.wb-field:has(.wb-source-picker) .wb-field-main,
+.wb-field:has(.wb-order-editor) .wb-field-main,.wb-field:has(.wb-date) .wb-field-main{grid-template-columns:minmax(0,1fr)}
+.wb-field:has(textarea) .wb-field-main>.wb-control,.wb-field:has(.wb-word-editor) .wb-field-main>.wb-control,
+.wb-field:has(.wb-keywords) .wb-field-main>.wb-control,.wb-field:has(.wb-source-picker) .wb-field-main>.wb-control,
+.wb-field:has(.wb-order-editor) .wb-field-main>.wb-control,.wb-field:has(.wb-date) .wb-field-main>.wb-control{
+  grid-column:1;grid-row:auto;justify-self:stretch;max-width:none;justify-content:flex-start}
+.wb-field:hover{background:color-mix(in srgb,var(--t-surface-soft) 68%,transparent)}
+.wb-field:has(textarea):hover,.wb-field:has(.wb-word-editor):hover,.wb-field:has(.wb-date):hover{background:transparent}
+.wb-label{font-size:var(--fs-body);font-weight:600;letter-spacing:.01em;line-height:1.45}
+.wb-help{max-width:62ch;font-size:var(--fs-tiny);line-height:1.65}
+.wb-control input[type=number],.wb-control input[type=text],.wb-control input[type=time],.wb-control select{max-width:none;width:100%}
+.wb-field:has(textarea) .wb-control>*,.wb-field:has(.wb-word-editor) .wb-control>*{width:100%}
+@media (max-width:720px){
+  .wb-field{grid-template-columns:10px minmax(0,1fr);align-items:start}
+  .wb-field-main{grid-template-columns:minmax(0,1fr)}
+  .wb-field-main>.wb-control{grid-column:1;grid-row:auto;justify-self:stretch;max-width:none}
+  .wb-control{justify-content:flex-start}
+}
+@media (max-width:760px){
+  .wb-control .wb-segmented-option span{width:100%}
 }
 
 /* console.css */
@@ -13795,6 +13839,7 @@ body.room-editing .product-scope{display:none}
 .storage-cleanup-preview>div span,.storage-cleanup-empty{color:var(--t-text-faint);font-size:var(--fs-micro)}
 .storage-cleanup-preview button.danger{color:var(--t-risk-ink)}
 .storage-cleanup-empty{margin:0}
+.storage-cache-note{margin:0;color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.6}
 .storage-actions{display:flex;flex-wrap:wrap;gap:var(--sp-2);padding-top:var(--sp-2)}
 .storage-message{margin:0;padding:var(--sp-2) var(--sp-3);border-radius:var(--r-sm);background:var(--t-ok-quiet);color:var(--t-ok-ink);font-size:var(--fs-tiny);overflow-wrap:anywhere}
 .storage-message.is-error{background:var(--t-risk-quiet);color:var(--t-risk-ink)}
@@ -16732,6 +16777,25 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
   .maint-prompt-catalog { position:static; }
 }
 
+.maint-log-controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:12px 0; }
+.maint-log-controls select, .maint-log-controls input { min-height:32px; padding:0 10px; border:1px solid var(--t-line); border-radius:var(--r-xs); background:var(--t-surface); color:var(--t-text); font:inherit; font-size:var(--fs-tiny); }
+.maint-log-controls input { flex:1 1 220px; min-width:0; }
+.maint-log-list { max-height:62vh; overflow:auto; border:1px solid var(--t-line); border-radius:var(--r-xs); background:var(--t-surface); }
+.maint-log-row { display:grid; grid-template-columns:72px 64px minmax(120px,180px) minmax(0,1fr); gap:8px; padding:7px 10px; border-bottom:1px solid color-mix(in srgb, var(--t-line) 70%, transparent); font-size:var(--fs-micro); line-height:1.5; }
+.maint-log-row:last-child { border-bottom:0; }
+.maint-log-time { color:var(--t-text-faint); font-variant-numeric:tabular-nums; }
+.maint-log-level { font-weight:650; color:var(--t-text-soft); }
+.maint-log-row[data-level="WARNING"] .maint-log-level { color:var(--t-warn-ink); }
+.maint-log-row[data-level="ERROR"] .maint-log-level, .maint-log-row[data-level="CRITICAL"] .maint-log-level { color:var(--t-danger-ink, var(--t-warn-ink)); }
+.maint-log-logger { color:var(--t-text-faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.maint-log-message { color:var(--t-text); white-space:pre-wrap; overflow-wrap:anywhere; }
+.maint-log-empty { padding:28px 16px; border:1px dashed var(--t-line); border-radius:var(--r-xs); color:var(--t-text-faint); text-align:center; font-size:var(--fs-tiny); }
+.maint-log-foot { margin:8px 0 0; color:var(--t-text-faint); font-size:var(--fs-micro); }
+@media (max-width:760px) {
+  .maint-log-row { grid-template-columns:64px 56px minmax(0,1fr); }
+  .maint-log-logger { display:none; }
+}
+
 /* navigation.css */
 /* 左栏宽度由 shell.css 的栅格列决定（--shell-rail: 220px）。
    这里曾写 width:158px，而栅格列仍是 220px：栅格项的宽度一旦确定，
@@ -18547,6 +18611,39 @@ body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
 .humanize-summary span{color:var(--t-accent);font-size:var(--fs-body)}
 .humanize-list{margin:0;padding-left:20px;display:grid;gap:8px;color:var(--t-ink);font-size:var(--fs-body);line-height:1.65}
 .humanize-note{margin:12px 0 0;color:var(--t-muted);font-size:var(--fs-micro);line-height:1.6}
+
+/* 2026-11 视觉校准：自我页以一张安静的档案卡开场，信息层级向 7.1.8 的 hero 靠拢。 */
+.self-page{max-width:1180px;gap:var(--sp-5)}
+.journal-cover{position:relative;padding:var(--sp-4) var(--sp-5);border:1px solid var(--t-line);
+  border-radius:var(--r-lg);background:linear-gradient(120deg,var(--t-surface-raised),var(--t-surface) 70%);
+  box-shadow:0 18px 36px -30px color-mix(in srgb,var(--t-text-strong) 45%,transparent)}
+.journal-cover::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;border-radius:var(--r-lg) 0 0 var(--r-lg);
+  background:linear-gradient(var(--t-accent),color-mix(in srgb,var(--t-accent) 30%,transparent))}
+.portrait{width:76px;border-radius:var(--r-md);box-shadow:0 8px 20px -14px color-mix(in srgb,var(--t-text-strong) 60%,transparent)}
+.journal-name-row h2{font-size:clamp(21px,2.2vw,27px);letter-spacing:.02em}
+.journal-id{gap:var(--sp-2)}
+.deck-tabs{background:var(--t-surface-soft);border-radius:var(--r-md);padding:4px;border:1px solid var(--t-line)}
+.deck-tab{min-height:38px;border-radius:calc(var(--r-md) - 3px)}
+.deck-panels{min-height:520px}
+.section-chips{top:12px;padding-bottom:var(--sp-1)}
+@media (max-width:720px){
+  .journal-cover{padding:var(--sp-3);grid-template-columns:auto minmax(0,1fr)}
+  .journal-side{grid-column:1/-1;justify-content:flex-start}
+  .portrait{width:56px}
+}
+.deck-tabs{max-width:760px}
+@media (max-width:720px){
+  .deck-tabs{max-width:none}
+}
+/* 自我页档案行：标签列略放宽，控件从统一左边界起排，避免长昵称/日期组被挤到右边缘。 */
+.self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:96px minmax(0,1fr);column-gap:var(--sp-4)}
+.self-page .wb-journal .wb-identity-rows .wb-control{justify-content:flex-start}
+.self-page .wb-journal .wb-identity-rows .wb-chip-opts{gap:calc(var(--sp-1) * 1.5)}
+.self-page .wb-journal .wb-identity-rows .wb-date{width:100%}
+@media (max-width:720px){
+  .self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:minmax(0,1fr);row-gap:var(--sp-1)}
+  .self-page .wb-journal .wb-identity-rows .wb-control{width:100%}
+}
 
 /* theme-skins.css */
 /* 主题的结构语言：页面基底、标题、导航、面板边界和常用控件共用一组皮肤令牌。 */

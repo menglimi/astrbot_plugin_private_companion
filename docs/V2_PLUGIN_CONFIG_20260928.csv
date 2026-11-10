@@ -24,7 +24,7 @@ poke.back_probability,float,0.0,反戳概率
 poke.enabled,bool,False,启用戳一戳回应
 poke.replies,list,"['在呢，怎么啦？', '收到你的戳戳啦。', '我在这里。']",预设短句
 poke.trigger_probability,float,1.0,回应概率
-runtime.background_slots,int,1,后台任务槽
+runtime.background_slots,int,3,后台任务槽
 runtime.budget_cost_microusd,int,100000000,各层费用预算（microUSD）
 runtime.budget_tokens,int,1000000,各层 Token 预算
 runtime.daily_token_soft_deferred_kinds,text,,软限额延后的任务类型

@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 
 from companion_v2.legacy.migration_scope import (
     AUTO_SAME_ID, REVIEW_ACCOUNT_DIFFERS, REVIEW_AMBIGUOUS, REVIEW_GROUP_MISSING,

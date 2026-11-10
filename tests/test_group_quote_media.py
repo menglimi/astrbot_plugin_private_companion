@@ -28,7 +28,6 @@ class GroupQuoteMediaTests(GroupQuoteMediaFixture, unittest.IsolatedAsyncioTestC
         self.config["runtime"]["budget_tokens"] = 10000000
         self.controller = self.make_controller(self.config)
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         a, original_batch = await self.original(parts=[Plain("原资料"), FakeRecord(silk_bytes()), FakeVideo(),
             Forward(id="group-quoted-forward")], nodes=[node_raw("外层", sender="888", nested=[
                 node_raw("节点资料", sender="999", audios=(audio_bytes(),), videos=(video_bytes(tint=40),))])])

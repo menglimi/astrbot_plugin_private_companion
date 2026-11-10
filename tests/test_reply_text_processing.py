@@ -116,6 +116,22 @@ class ReplyTextProcessingTests(unittest.TestCase):
         ))
         self.assertEqual(visible, "正文。后续正文。")
 
+    def test_provider_text_emit_call_is_unwrapped_instead_of_leaking(self):
+        """网关把 newapi_emit_text 调用当普通文本返回时，保留正文、去掉外壳。"""
+        self.assertEqual(
+            strip_internal_expression_protocol(
+                "<call:default_api:newapi_emit_text_v1>{content:当然是打游戏啦，玩什么都行。}</call>"),
+            "当然是打游戏啦，玩什么都行。")
+        self.assertEqual(
+            strip_internal_expression_protocol("前缀<call:x:y>{content:中间}</call>后缀"),
+            "前缀中间后缀")
+        self.assertEqual(
+            strip_internal_expression_protocol("<call:x:y>{content:只有开头"),
+            "只有开头")
+        # 不是发射调用时，普通提到的标签保持原样。
+        self.assertEqual(strip_internal_expression_protocol("他说 <call:x> 是个标签"),
+                         "他说 <call:x> 是个标签")
+
     def test_paired_control_blocks_are_removed_without_eating_delivery_sentinels(self):
         reaction = ('<pc_reaction_expression>{"purpose":"轻吐槽","emotion":"无奈",'
                     '"intensity":2}</pc_reaction_expression>')

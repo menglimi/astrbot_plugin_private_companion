@@ -46,11 +46,12 @@ class MemoryProviderRegistration:
 class ExternalMemoryProviderRegistry:
     """Callbacks are leased to one live Star instance and one host lifetime."""
 
-    def __init__(self, context, *, host_active=lambda: True):
+    def __init__(self, context, *, host_active=lambda: True, owner=None):
         self.context = context
         self._host_active = host_active
         self._entries = {}
         self._closed = False
+        self.owner = owner
         setattr(context, REGISTRY_ATTRIBUTE, self)
 
     def register(self, provider_id, *, plugin, read=None, write=None, summary=None,
@@ -115,6 +116,16 @@ class ExternalMemoryProviderRegistry:
     def _ordered(self):
         return sorted(tuple(self._entries.values()), key=lambda entry: (-entry.priority, entry.provider_id))
 
+    @property
+    def closed(self):
+        return self._closed
+
+    def host_active(self):
+        try:
+            return bool(self._host_active())
+        except Exception:
+            return False
+
     def select(self, capability=None, *, handles_model_memory=None):
         for entry in self._ordered():
             if capability is not None and getattr(entry, capability, None) is None:
@@ -166,5 +177,28 @@ class ExternalMemoryProviderRegistry:
             delattr(self.context, REGISTRY_ATTRIBUTE)
 
 
+def shared_memory_provider_registry(context, *, host_active=lambda: True, owner=None):
+    """Return the one live registry for this host context, creating it if needed.
+
+    The public facade is constructed more than once on the same AstrBot context
+    (the plugin's ``extension_api``, the native-extension service and the
+    manifest route). Each construction used to install a fresh registry, so a
+    third-party registration made through the public facade failed with
+    "memory provider registry is closed" as soon as one of the other facades
+    existed. Sharing the live registry keeps those facades interchangeable.
+
+    ``owner`` is the controller that owns the registry. A registry from another
+    owner is a previous host lifetime: after a reload the new controller must
+    not reuse it, or the old instance's shutdown would close the new one.
+    """
+    existing = memory_provider_registry(context)
+    if (isinstance(existing, ExternalMemoryProviderRegistry)
+            and not existing.closed and existing.host_active()
+            and (owner is None or existing.owner is owner)):
+        return existing
+    return ExternalMemoryProviderRegistry(context, host_active=host_active, owner=owner)
+
+
 __all__ = ["ExternalMemoryProviderRegistry", "MemoryProviderRegistration",
-           "PROVIDER_API_VERSION", "memory_context_document", "memory_provider_registry"]
+           "PROVIDER_API_VERSION", "memory_context_document", "memory_provider_registry",
+           "shared_memory_provider_registry"]

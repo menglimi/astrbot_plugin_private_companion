@@ -27,7 +27,6 @@ class GroupContextTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
             config["segmentation"] = segmentation
         self.controller = self.make_controller(config)
         app = await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         return app
 
     async def receive(self, text, *, sender="200", identifier=None, nickname=None, **options):

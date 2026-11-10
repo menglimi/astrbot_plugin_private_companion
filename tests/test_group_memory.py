@@ -94,7 +94,6 @@ class GroupMemoryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
     async def test_only_original_member_can_revise_or_retract_and_receipts_keep_identity(self):
         self.controller = self.make_controller(group_config(group_delivery_mode="onebot_group"))
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         a, first, receipt = await self.save()
         args = {"input_handle": "group-input-1", "memory_id": receipt["memory_id"], "expected_revision": 1}
         for action, extras in (("group.memory.remember", {"statement": "替别人改成周日"}), ("group.memory.retract", {})):
@@ -144,7 +143,6 @@ class GroupMemoryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
     async def test_source_withdrawal_hides_memory_and_derived_replies_keeps_send_receipts(self):
         self.controller = self.make_controller(group_config(group_delivery_mode="onebot_group"))
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         a, first, receipt = await self.save()
         b, second = await self.receive(sender="201", commands=[("group.memory.query", {})])
         receipts = [tuple(r) for r in self.app.runtime.read_all("SELECT * FROM conversation_delivery_receipts", ())]
@@ -179,7 +177,6 @@ class GroupMemoryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
     async def test_restarts_keep_memory_and_do_not_repeat_unknown_delivery_or_writes(self):
         self.controller = self.make_controller(group_config(group_delivery_mode="onebot_group"))
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         api = self.native.platform.client._api._wsr_api
         api.error = TimeoutError()
         a, first, receipt = await self.save()
@@ -211,7 +208,6 @@ class GroupMemoryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
     async def test_recalled_statement_can_be_cited_as_evidence_in_a_real_model_wire(self):
         self.controller = self.make_controller(group_config(group_delivery_mode="onebot_group"))
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         await self.save()
         async def grounded(payload, tools):
             materials = json.loads(next(m["content"] for m in payload["messages"] if m["role"] == "user"))["materials"]
@@ -226,7 +222,6 @@ class GroupMemoryTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
     async def test_withdrawal_during_model_use_blocks_delivery_and_preserves_memory_receipt(self):
         self.controller = self.make_controller(group_config(group_delivery_mode="onebot_group"))
         await self.start_host()
-        (await self.controller.authorize_group_delivery("group-a")).unwrap()
         a, first, receipt = await self.save()
         source_key = self.app.runtime.read_one("SELECT event_key FROM conversation_inputs WHERE batch_id = ?", (first,))[0]
         async def revoked(payload, tools):

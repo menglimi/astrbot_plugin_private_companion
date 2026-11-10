@@ -54,3 +54,12 @@ test("尚未读取真实状态时不会创建编辑草稿", () => {
   assert.deepEqual(h.editorOpens, []);
   h.page.unmount();
 });
+
+test("功能卡只负责展开，预置展开后再次点击不会收起", () => {
+  const h = harness();
+  h.click("planning");
+  assert.equal(h.page.currentFeature(), "planning");
+  h.click("planning");
+  assert.equal(h.page.currentFeature(), "planning");
+  h.page.unmount();
+});

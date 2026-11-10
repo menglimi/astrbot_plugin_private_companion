@@ -532,9 +532,34 @@ def strip_tool_call_protocol(text):
     return visible
 
 
+_TEXT_EMIT_CALL = re.compile(
+    r"<\s*call\s*:[^<>]*>\s*\{\s*content\s*:\s*(?P<content>.*?)\}\s*<\s*/\s*call\s*>",
+    re.IGNORECASE | re.DOTALL)
+_UNCLOSED_EMIT_CALL = re.compile(
+    r"^\s*<\s*call\s*:[^<>]*>\s*\{\s*content\s*:\s*(?P<content>.*?)\}?\s*$",
+    re.IGNORECASE | re.DOTALL)
+
+
+def unwrap_text_emit_calls(text):
+    """Restore a provider's text-emit tool markup to the text it carries.
+
+    Some gateways let a model "call" a synthetic text tool by writing
+    ``<call:…>{content:…}</call>``.  When the host hands that back as plain
+    text, deleting the markup would delete the reply, so keep the payload.
+    """
+    if type(text) is not str or "<" not in text:
+        return text
+    visible = _TEXT_EMIT_CALL.sub(lambda match: match.group("content").strip(), text)
+    if "<" in visible and re.search(r"<\s*call\s*:", visible, re.IGNORECASE):
+        match = _UNCLOSED_EMIT_CALL.match(visible)
+        if match is not None:
+            visible = match.group("content").strip()
+    return visible
+
+
 def strip_internal_expression_protocol(text):
     """Remove internal control blocks and unparsed tool-call syntax."""
-    return strip_tool_call_protocol(strip_paired_control_blocks(text))
+    return strip_tool_call_protocol(strip_paired_control_blocks(unwrap_text_emit_calls(text)))
 
 
 def _partial_protocol_match(pattern, text):
