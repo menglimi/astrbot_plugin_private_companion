@@ -35,7 +35,7 @@ VERIFIED_SERIES = frozenset(("4.27", "4.28", "4.29"))
 # Native routing is verified for the OneBot reverse-WS adapter and the two
 # QQ Official adapter names AstrBot exposes.  Keeping the allow-list here
 # prevents an arbitrary adapter from inheriting route privileges by accident.
-SUPPORTED_PLATFORM_NAMES = frozenset(("aiocqhttp", "qq_official", "qq_official_webhook", "lark"))
+SUPPORTED_PLATFORM_NAMES = frozenset(("aiocqhttp", "qq_official", "qq_official_webhook", "lark", "weixin_oc"))
 OFFICIAL_PLATFORM_NAMES = frozenset(("qq_official", "qq_official_webhook"))
 _REPORTED_UNVERIFIED = set()
 NATIVE_LOOKUP_TIMEOUT_SECONDS = 20
@@ -202,6 +202,10 @@ def event_account_id(event):
         # Lark (Feishu) has no stable numeric self id on the event; the
         # configured platform instance id is the account key, same as QQ Official.
         return route_id(event_platform_id(event))
+    if name == "weixin_oc":
+        # Personal WeChat exposes an openid/wxid instead of a numeric self id;
+        # the configured adapter instance is the stable account projection.
+        return route_id(event_platform_id(event))
     raise ValueError("unsupported native event platform")
 
 
@@ -222,6 +226,8 @@ def native_user_subject_id(platform_name, sender_id):
         return "qq-official-user:" + sender_id
     if platform_name == "lark":
         return "lark-user:" + sender_id
+    if platform_name == "weixin_oc":
+        return "weixin-user:" + sender_id
     raise ValueError("unsupported native user platform")
 
 

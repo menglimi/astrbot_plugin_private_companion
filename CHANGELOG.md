@@ -4,6 +4,7 @@
 
 ## 未发布
 
+- 新增个人微信平台 `weixin_oc`：纳入原生路由白名单，账号键使用平台实例 ID，用户 subject 使用 `weixin-user:` 命名空间；开始使用页可直接填写 `target_platform: weixin_oc`。
 - 普通聊天视频理解明确为原生内置：支持视频输入的 Gemini 类模型直接读取整段原视频，其他模型用宿主 ffmpeg 抽帧后作为图片送入同一轮请求；回复设置页、家具目录和设计文档不再声称依赖「基米看得见视频」，外部扩展只保留可选状态卡。
 - 修复 NapCat/AstrBot 已登录仍报 `host_account_unavailable`：aiocqhttp 的 `_wsr_api_clients` 在不同版本用 int 或 str 作为 `self_id` 键，现按文本比较。
 - 修复直接升级后运行库已有文件但缺共享 manifest 时启动直接中止：`load_existing` 现在回落到正常初始化流程。
