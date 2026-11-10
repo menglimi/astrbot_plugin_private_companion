@@ -188,8 +188,16 @@ class Schedule:
     def restore(cls, data: dict | None) -> Schedule | None:
         if data is None:
             return None
-        return cls(datetime.fromisoformat(data["anchor"]), data["timezone_name"], Frequency(data["frequency"]),
-                   data["interval"], data["count"], data["fold"], GapPolicy(data["gap_policy"]))
+        if type(data) is not dict:
+            raise AgendaError("invalid_schedule", "schedule must be an object")
+        fold = data.get("fold", 0)
+        # JSON false/true is a common calendar-tool spelling for fold 0/1; keep
+        # the stored contract integer-only but accept the boolean spelling.
+        if type(fold) is bool:
+            fold = int(fold)
+        return cls(datetime.fromisoformat(data["anchor"]), data["timezone_name"],
+                   Frequency(data.get("frequency", "once")), data.get("interval", 1),
+                   data.get("count"), fold, GapPolicy(data.get("gap_policy", "reject")))
 
 
 @dataclass(frozen=True)
