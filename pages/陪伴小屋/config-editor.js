@@ -2021,6 +2021,9 @@ window.CompanionConfigEditors = (() => {
           .map(instance => instance.refresh()));
       },
       selectSection(id) { for (const instance of instances) instance.selectSection(id); },
+      setVisibleGroups(ids, preferredId) {
+        for (const instance of instances) instance.setVisibleGroups?.(ids, preferredId);
+      },
       saveField(kind, field, value) {
         const instance = instances.find(item => item.group === kind);
         return instance ? instance.saveField(field, value) : Promise.resolve({state: "unavailable"});
