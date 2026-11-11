@@ -10,6 +10,18 @@
 - 修复直接升级后运行库已有文件但缺共享 manifest 时启动直接中止：`load_existing` 现在回落到正常初始化流程。
 - 初始化遇到运行库被外部删除/替换导致的 `unable to open database file` 时，关闭旧连接、按配置目录重新打开并重试一次。
 
+## 7.1.15 - 2026-11-11
+
+### 宿主兼容
+
+- 修复 `_route_core_peak_provider` 读取 `Outcome.fields` 导致的 `AttributeError`，时段替换规则重新生效（#654）；
+- AstrBot 4.27.60 等旧宿主缺少 `_clear_third_party_agent_runner_state` 时，重置标记桥接降级为 no-op，插件不再启动崩溃（#662）。
+
+### 页面与平台
+
+- 修复 journal 配置项标题竖排、控件错位；
+- 个人微信平台名支持 `weixin_oc` 与 `weixin_personal_sqco`。
+
 ## 7.1.14 - 2026-11-10
 
 ### 完整同步
