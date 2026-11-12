@@ -291,7 +291,16 @@ class _DeveloperRequestTrace:
 
 def provider_fingerprint(native):
     """Read-only identity of the selected configuration, without returning secrets."""
-    return digest([native.provider_config, native.get_model(),
+    config = getattr(native, "provider_config", None)
+    if not isinstance(config, dict):
+        config = {}
+    # ``modalities`` is host capability metadata that AstrBot rewrites when it
+    # refreshes its provider registry.  It is not model identity; including it
+    # made every background task fail with host_provider_changed after the host
+    # materialised/changed this key.
+    config = {key: value for key, value in config.items()
+              if key not in VOLATILE_PROVIDER_CONFIG_KEYS}
+    return digest([config, native.get_model(),
                    sorted(getattr(native, "default_params", {}))])
 
 
@@ -314,6 +323,8 @@ def provider_config_drift(expected, provider, auto_resolved=None):
     snapshot = {**expected, **(auto_resolved or {})}
     drifted = []
     for key, value in snapshot.items():
+        if key in VOLATILE_PROVIDER_CONFIG_KEYS:
+            continue
         if key not in config:
             drifted.append(key)
         elif (not _same_config_value(config[key], value)
@@ -366,6 +377,9 @@ def _same_config_value(left, right):
 #: 供应商实际的窗口大小。这不是“模型配置被替换”，只是自动补全，不能据此拦住
 #: 主动联系等后台任务。超出这个集合的字段仍按原规则比较。
 AUTO_FILLED_CONFIG_KEYS = frozenset({"max_context_tokens"})
+# Host-derived capability metadata, not model identity. AstrBot rewrites this
+# field whenever it refreshes/merges provider registrations.
+VOLATILE_PROVIDER_CONFIG_KEYS = frozenset({"modalities"})
 
 
 def _is_auto_value(value):
@@ -558,6 +572,8 @@ class AstrBotTextProvider:
         expected = {**self.config, **self._auto_resolved}
         drifted = []
         for key, value in expected.items():
+            if key in VOLATILE_PROVIDER_CONFIG_KEYS:
+                continue
             if key not in config:
                 drifted.append(key)
             elif (not _same_config_value(config[key], value)
