@@ -282,7 +282,11 @@ window.CompanionStatePage = (() => {
     if(result?.state==="blocked") {
       const stage=({binding:"等待角色绑定",authorization:"权限检查",settings:"设置检查",schedule_refresh:"计划检查",budget:"预算检查"})[result.stage];
       const detail=CODE.test(code||"")?`（${code}）`:"";
-      return {label:`状态维护预检未通过${stage?` · ${stage}`:""}${detail}`,tone:"is-warning",scheduled:true};
+      const hint=result.stage==="authorization"&&code==="authorization_denied"
+        ?(status.settings?.maintenance_grant_scope==="role"
+          ?"；请在本窗口把后台状态维护关掉再打开并保存"
+          :"；请在本窗口把后台状态维护关掉再打开并保存，或把授权范围改为整个角色"):"";
+      return {label:`状态维护预检未通过${stage?` · ${stage}`:""}${detail}${hint}`,tone:"is-warning",scheduled:true};
     }
     if(result?.state==="deferred")return {
       label:"状态维护等待本地预算"+(result.retry_at?` · ${when(result.retry_at)} 自动检查恢复`:" · 本地限制解除后自动恢复"),

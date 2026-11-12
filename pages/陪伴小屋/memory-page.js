@@ -653,6 +653,10 @@ window.CompanionMemoryPage = (() => {
         <button type="button" data-reflection-view="pending" aria-pressed="${!data.history}">待处理 <b>${num(pendingCount)}</b></button>
         <button type="button" data-reflection-view="history" aria-pressed="${data.history}">全部批次 <b>${num(data.overview?.local?.reflections?.total || 0)}</b></button>
       </div>
+      <div class="mem-filters" style="justify-content:space-between">
+        <span style="font-size:11.5px;color:var(--t-text-faint)">持续失败时可以先停掉定时整理，已存在的批次不会自动重试。</span>
+        ${button("memory-disable-reflection","关闭定时整理",data.busy||data.loading)}
+      </div>
       <div class="mem-split">
         <div>
           <div class="mem-filters" style="justify-content:space-between">
@@ -1079,6 +1083,37 @@ window.CompanionMemoryPage = (() => {
     data.busy = false; render();
   }
 
+  /* 用户明确要求停掉“整理与修复”时，只关闭自动整理和自动修复；
+     已有批次和事实保留，随时可以在「记忆策略」里重新打开。 */
+  async function disableReflection() {
+    if (data.busy || data.loading) return;
+    data.busy = true; render();
+    try {
+      const settings = await api("GET", endpoint() + "/settings", {layer: "role"});
+      if (!settings || typeof settings !== "object") throw problem("invalid_response");
+      if (settings.values?.reflection_enabled === false) {
+        data.busy = false;
+        notice("定时整理已经是关闭状态。");
+        render();
+        return;
+      }
+      await api("POST", endpoint() + "/settings/command", {
+        operation_key: "memory-disable-reflection-" + Date.now().toString(36),
+        expected_edit_token: settings.edit_token,
+        layer: "role",
+        changes: {"memory.reflection_enabled": false, "memory.reflection_auto_repair": false},
+      });
+      data.busy = false;
+      notice("已关闭定时整理和自动修复；已有批次仍可手动处理。");
+      render();
+      await load();
+    } catch (error) {
+      data.busy = false;
+      notice(reason(error.code), true);
+      render();
+    }
+  }
+
   /* 条目移出的可见过渡。用户按下「撤回/遗忘」后那条从列表消失，
      直接重绘会让它凭空不见——先播 260ms 的塌陷动画，再做真正的重绘。
      reduced-motion 下 CSS 把时长压到 0.001ms，这里照常走完同一个 await，
@@ -1488,6 +1523,7 @@ window.CompanionMemoryPage = (() => {
     if (!el || !root.contains(el) || el.disabled) return;
     const id = el.id;
     if (id === "memory-directory-refresh") { directory(); return; }
+    if (id === "memory-disable-reflection") { disableReflection(); return; }
     if (id === "memory-refresh" || id === "memory-detail-refresh") {
       if (id === "memory-detail-refresh" && data.area === "reflections" && data.detailId) selectBatch(data.detailId); else load();
       return;

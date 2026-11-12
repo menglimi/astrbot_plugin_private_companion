@@ -882,7 +882,8 @@ window.CompanionMaintenancePage = (() => {
       risk: "改错可能让模型把摘要当证据、把旧记忆套到别人，或反复背诵时间戳。"},
   ];
   const SYSTEM_PROMPT_LIMIT = 8000;
-  const CONFIG_PREFIX = "/astrbot_plugin_private_companion/config";
+  const PLUGIN_PREFIX = "/astrbot_plugin_private_companion";
+  const CONFIG_PREFIX = PLUGIN_PREFIX + "/config";
   const SYSTEM_PROMPT_OPERATION = "maintenance-system-prompt";
 
   function systemPromptEntry(key) {
@@ -890,9 +891,20 @@ window.CompanionMaintenancePage = (() => {
   }
 
   function configEndpoint() {
-    const endpoint = window.CompanionProduct?.role?.()?.config_api;
-    if (typeof endpoint !== "string" || !endpoint.startsWith(CONFIG_PREFIX)
-        || /[?#%\\:]/.test(endpoint)
+    const role = window.CompanionProduct?.role?.();
+    /* Older inventories exposed only config_api, and a group-only role used to
+       have none. role_config_api is the role-owned fallback for exactly that
+       case; prefer the target-scoped route when both exist. */
+    const endpoint = role?.config_api || role?.role_config_api;
+    /* Single-host exposes the installation route `/config`; a multi-host role
+       exposes `/targets/<id>/roles/<hash>/config`. Both end in `/config`, so do
+       not require the single-host prefix literally. */
+    if (typeof endpoint !== "string"
+        || !(endpoint === CONFIG_PREFIX
+             || endpoint.startsWith(PLUGIN_PREFIX + "/host/targets/")
+             || endpoint.startsWith(PLUGIN_PREFIX + "/targets/"))
+        || !endpoint.endsWith("/config")
+        || /[?#%\\:\s]/.test(endpoint)
         || endpoint.split("/").slice(1).some(part => !part || part === "." || part === "..")) {
       throw new Error("当前对象没有配置管理接口。请先选择已初始化的会话角色。");
     }
