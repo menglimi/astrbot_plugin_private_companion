@@ -65,6 +65,17 @@ def video_state(request):
 
 
 class CoreReplyPerceptionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_group_without_mentions_retains_wake_name_restoration(self):
+        event = Event()
+        event.is_at_or_wake_command = True
+        turn = prepared(options=(False, False, False))
+        turn["native_input"] = NS(text="星缘黑先吧", group_message_text="星缘黑先吧")
+        event.extra[CORE_REPLY_CONTEXT_EXTRA] = {"prepared": turn}
+        context = NS(get_config=lambda **_: {"wake_prefix": ["星缘"]})
+        request = NS(prompt="黑先吧", extra_user_content_parts=[])
+        await inject_core_reply_perception_context(event, request, native_context=context)
+        self.assertEqual(request.prompt, "星缘黑先吧")
+
     async def test_configured_wake_name_restores_primary_provider_prompt(self):
         event = Event()
         event.is_at_or_wake_command = True

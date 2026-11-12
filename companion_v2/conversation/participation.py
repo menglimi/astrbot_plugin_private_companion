@@ -28,7 +28,7 @@ from .group_interjection import (INTERJECTION, REPEAT_FOLLOW, REPEAT_INTERRUPT, 
                                  openings, repeat_state)
 from .group_observation import GroupPresenceStore, parse_moment, history_items, observe
 from .group_admission import GroupReplyAdmission, REASONS
-from .group_timing import ADDRESS_MARKER, RepeatPolicy, clean_group_text
+from .group_timing import ADDRESS_MARKERS, RepeatPolicy, clean_group_text
 from .participation_prompts import (group_hints, interjection_instruction, observation_instruction,
                                     repeat_instruction)
 from .reply_settings import (group_air_settings, group_safety_settings,
@@ -41,7 +41,7 @@ VERSION = "conversation.group_participation.v1"
 SKIPPED = "group_participation_skipped"
 logger = logging.getLogger(__name__)
 INSTRUCTION = """以原人格旁听群聊，收到消息不等于有人在问你。结合话题、发言对象、已有回答和最近参与情况，判断此刻接话是否自然、有内容；他人之间的交流可以安静听着，不依赖固定关键词或回复配额。
-明确 @ 你时正常回应；未被明确 @ 而准备接话时，先调用 group.participation.choose，mode=reply，reason 简短说明参与缘由（称呼、引用、求助、补话等），只记录原因，不向群里发判断过程。随后按需使用工具与回复。
+明确 @ 你时结合原句判断你是回答者、听众还是被谈论对象；需要你回答时正常回应；未被明确 @ 而准备接话时，先调用 group.participation.choose，mode=reply，reason 简短说明参与缘由（称呼、引用、求助、补话等），只记录原因，不向群里发判断过程。随后按需使用工具与回复。
 不适合参与时调用 choose，mode=skip，reason 可省略。本轮到此结束，不发空消息、占位或“我选择不回复”。可以同时记录已授权的互动学习或反馈，不能先做业务操作再旁听，也不能用 skip 撤销已发生的操作。这个决定只针对本轮，不建立长期拒绝规则，不在无新消息时另起对话。
 未点名、专名不明或缺少媒体内容时可以 skip；明确向你求助但材料不足时简短问清。若本轮有合适表情原图且足够表达即时态度，可先 reply 再只发图；表情不能代替问题答案。"""
 
@@ -350,7 +350,7 @@ class GroupParticipation:
         hints += repeat_instruction(repeat)
         act, signature = self._act_for(repeat, facts)
         return {"hints": hints, "owner": owner, "observation": observation["records"], "speech": resolved["record"],
-                "mentioned": any(ADDRESS_MARKER in text for text in texts),
+                "mentioned": any(marker in text for text in texts for marker in ADDRESS_MARKERS),
                 "day": day_key(at, self.messages.timezone_name), "act": act, "act_signature": signature}
 
     def observe_early(self, context, *, text, speaker_id, received_at, event_id=None):

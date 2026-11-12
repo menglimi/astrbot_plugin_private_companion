@@ -466,7 +466,9 @@ async def inject_core_reply_perception_context(event, request, *, native_context
         except Exception:
             # Optional chronological evidence must not block the ordinary reply.
             pass
-    original_text = getattr(original, "text", None)
+    from .core_reply_mentions import restore_group_mentions
+    restore_group_mentions(event, request, original, native_context)
+    original_text = getattr(original, "group_message_text", None) or getattr(original, "text", None)
     if isinstance(original_text, str) and "[表情" in original_text:
         # Stickers are how people send a feeling without words. Tell the model
         # explicitly, or it treats the turn as empty text and asks "你发了什么".
@@ -523,7 +525,8 @@ async def inject_core_reply_perception_context(event, request, *, native_context
         # components intact. Preserve that original without undoing commands,
         # rewriting another plugin's prompt or guessing what a name refers to.
         details["original_current_message"] = {"text": original_text}
-        _restore_wake_prefix(event, request, original_text, prompt_text, native_context)
+        if getattr(original, "group_message_text", None) in (None, getattr(original, "text", None)):
+            _restore_wake_prefix(event, request, original_text, prompt_text, native_context)
     turn_context = prepared.get("prompt_instruction")
     if isinstance(turn_context, str) and turn_context.strip():
         details["companion_background"] = turn_context.strip()

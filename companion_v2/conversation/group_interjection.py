@@ -29,7 +29,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import re
 
 from .group_observation import GroupPresenceStore, parse_moment
-from .group_timing import ADDRESS_MARKER, clean_group_text, repeat_burst, repeat_decision, repeat_signature
+from .group_timing import ADDRESS_MARKERS, clean_group_text, repeat_burst, repeat_decision, repeat_signature
 
 
 SPEECH_KIND = "speech"
@@ -103,7 +103,7 @@ def addresses_role(text, words):
     compact = clean_group_text(text)
     if not compact:
         return False
-    if ADDRESS_MARKER in compact:
+    if any(marker in compact for marker in ADDRESS_MARKERS):
         return True
     return any(word in compact for word in words)
 

@@ -19,6 +19,8 @@ REPEAT_VERSION = "group_repeat.v1"
 MAX_SIGNATURE_CHARS = 30
 MAX_BURST_SPEAKERS = 20
 ADDRESS_MARKER = "[提及机器人]"
+SELF_MENTION = "<提及自己>"
+ADDRESS_MARKERS = (ADDRESS_MARKER, SELF_MENTION)
 WEIGHT_CEILING = 0.85
 MAX_INTERRUPT_CHARS = 80
 MEDIA_PLACEHOLDERS = frozenset((
@@ -34,6 +36,12 @@ def clean_group_text(text):
     """Remove adapter media labels before deriving any group text signal."""
     compact = " ".join(MEDIA_PLACEHOLDER_PATTERN.sub(" ", str(text or "")).split())
     return "" if TRAILING_MARKS.sub("", compact).strip() in MEDIA_PLACEHOLDERS else compact
+
+
+def strip_address_markers(text):
+    for marker in ADDRESS_MARKERS:
+        text = text.replace(marker, " ")
+    return text
 
 
 @dataclass(frozen=True)
@@ -76,7 +84,7 @@ def repeat_signature(text):
     placeholder, so those never accumulate under one signature. Trailing
     punctuation is dropped, because "哈哈" and "哈哈！" are the same repeat.
     """
-    compact = clean_group_text(str(text or "").replace(ADDRESS_MARKER, " "))
+    compact = clean_group_text(strip_address_markers(str(text or "")))
     if not compact or compact in MEDIA_PLACEHOLDERS:
         return ""
     compact = clean_group_text(TRAILING_MARKS.sub("", compact).strip())
@@ -170,7 +178,7 @@ def short_input_wait(event, text, values):
     settings = group_wakeup_settings(values)
     if not settings["group_wakeup_enabled"]:
         return 0
-    compact = "".join(text.replace("[提及机器人]", "").split())
+    compact = "".join(strip_address_markers(text).split())
     if not 1 <= len(compact) <= 2 or compact[-1] in "?？。.!！~～…":
         return 0
     # All admitted fragments may need a follow-up; participation stays with the role.

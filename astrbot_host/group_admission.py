@@ -1,6 +1,7 @@
 """Group trigger facts from the authenticated native message components."""
 
 from collections.abc import Mapping
+from companion_v2.adapters.astrbot.group_mentions import bot_mention_ids, official_mention_targets
 
 
 def group_trigger_facts(event, account_id):
@@ -8,11 +9,7 @@ def group_trigger_facts(event, account_id):
     raw = getattr(message, "raw_message", None)
     segments = raw.get("message") if isinstance(raw, Mapping) else None
     parts = segments if isinstance(segments, list) else getattr(message, "message", ())
-    platform_name = str(getattr(getattr(event, "platform_meta", None), "name", "") or "")
-    bot_ids = {str(account_id)}
-    if platform_name in {"qq_official", "qq_official_webhook"}:
-        bot_ids.update(value for value in (
-            str(getattr(message, "self_id", "") or ""), "qq_official") if value)
+    bot_ids = bot_mention_ids(event, account_id)
     mentioned, mentions_others, mentions_all, has_image, replies = False, False, False, False, []
     for part in parts:
         if isinstance(part, Mapping):
@@ -34,6 +31,13 @@ def group_trigger_facts(event, account_id):
             replies.append(str(identifier))
         elif kind in ("image", "Image"):
             has_image = True
+    for target in official_mention_targets(event):
+        if target in bot_ids:
+            mentioned = True
+        elif target == "all":
+            mentions_all = True
+        else:
+            mentions_others = True
     quoted_bot = any(
         getattr(getattr(part, "type", None), "value", getattr(part, "type", None)) == "Reply"
         and str(getattr(part, "id", "")) in replies

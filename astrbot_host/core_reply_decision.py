@@ -101,6 +101,7 @@ def core_decision_facts(event, prepared, application, *, at):
     account = str(getattr(scope, "account_id", "") or "")
     sender = str(getattr(getattr(native, "principal", None), "native_account_id", "") or "")
     text = str(prepared.get("text", getattr(native, "text", getattr(event, "message_str", ""))) or "")
+    text = getattr(native, "group_message_text", None) or text
     trigger = prepared.get("group_trigger")
     if trigger is None:
         trigger = group_trigger_facts(event, account)

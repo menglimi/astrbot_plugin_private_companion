@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import json
 
 from .reply_settings import group_air_settings, group_safety_settings, group_wakeup_settings
-from .group_timing import ADDRESS_MARKER
+from .group_timing import ADDRESS_MARKERS, strip_address_markers
 from . import group_high_intensity
 
 
@@ -99,8 +99,8 @@ def mention_attribution_instruction(text, *, group_trigger=None):
     compact = str(text or "")
     if group_trigger is None:
         prefix = ""
-        mentioned, others = ADDRESS_MARKER in compact, "[提及账号 " in compact
-        bare = not compact.replace(ADDRESS_MARKER, "").strip()
+        mentioned, others = any(marker in compact for marker in ADDRESS_MARKERS), "[提及账号 " in compact
+        bare = not strip_address_markers(compact).strip()
     else:
         prefix = "\n群聊本轮提及事实（来自原生消息组件）：" + json.dumps(
             {key: group_trigger[key] for key in ("mentioned", "mentions_others", "mentions_all")},
@@ -108,8 +108,8 @@ def mention_attribution_instruction(text, *, group_trigger=None):
         mentioned, others = group_trigger["mentioned"], group_trigger["mentions_others"]
         bare = group_trigger.get("bare_mention", False)
     if mentioned:
-        instruction = (prefix + "\n群聊提及归因：本轮明确 @ 了本角色，这是直接称呼的强证据；"
-                       "同时提及其他账号不取消对本角色的直接称呼。仍要结合句子判断对方是在叫角色，还是在谈论角色。")
+        instruction = (prefix + "\n群聊提及归因：本轮明确 @ 了本角色，说明本角色被提及；"
+                       "同时提及其他账号不取消这一事实，但不代表要求本角色回答。按提及在原句中的位置和完整句意，区分回答者、听众与被谈论对象；若是在让别人向你介绍或让你了解，可以旁听，不要自动认领“咱们”等关系指代。")
         # A bare mention invites a short acknowledgement; attached media or
         # quoted messages are content even when the plain text is empty.
         if bare:
@@ -123,7 +123,7 @@ def mention_attribution_instruction(text, *, group_trigger=None):
                 "不要认领别人的称呼；按旁听或自然接话题处理。")
     return (prefix + "\n群聊提及归因：本轮没有明确 @ 本角色。文本里出现角色名、人格名、别名、旧昵称、"
             "“小天使”等称呼，或第三人称谈论这个角色，都不等于在叫本角色；"
-            "只有第二人称明确呼唤、直接提问或 @ 本角色才算直呼。没有这些证据时不要声称对方在叫你。")
+            "按完整句意判断第二人称呼唤和直接提问的对象，没有这些证据时不要声称对方在叫你。")
 
 
 def group_hints(request, context, settings, recent, reply_batches, *, native=False, current_text="", group_trigger=None):

@@ -33,7 +33,7 @@ from companion_v2.conversation.delivery import DeliveryReceipt, LocalSender
 from companion_v2.conversation.messages import REPLY_KIND
 from companion_v2.conversation.pokes import poke_reply_profile
 from companion_v2.conversation.participation import group_participation_settings
-from companion_v2.conversation.group_timing import ADDRESS_MARKER
+from companion_v2.conversation.group_timing import strip_address_markers
 from companion_v2.conversation.reply_settings import (
     GROUP, expression_prompt_sections, private_debounce_settings,
 )
@@ -1132,7 +1132,7 @@ class MultiHostSession:
                     # The captured skeleton retains mentions and media placeholders;
                     # the memory text below intentionally contains only plain words.
                     group_trigger["bare_mention"] = (group_trigger["mentioned"]
-                        and not captured.text.replace(ADDRESS_MARKER, "").strip())
+                        and not strip_address_markers(captured.text).strip())
                     # Native media fallbacks carry placeholders; only original
                     # Plain components may become a member's memory evidence.
                     raw_text = "".join(part.text for part in getattr(event.message_obj, "message", ())

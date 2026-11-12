@@ -47,6 +47,7 @@ class CoreGroupMentionTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
             ("all", "看看", [At(qq="all"), Plain("看看")], False, False, True),
             ("none", "看看", [Plain("看看")], False, False, False),
             ("literal", "[提及机器人] 看看", [Plain("[提及机器人] 看看")], False, False, False),
+            ("literal-self", "<提及自己> 看看", [Plain("<提及自己> 看看")], False, False, False),
         )
         for name, text, parts, mentioned, others, everyone in cases:
             with self.subTest(name=name):
