@@ -71,12 +71,14 @@ class ExpressionDurableEvidenceTests(GroupFixture, unittest.IsolatedAsyncioTestC
         return digest(RoleOwnerRef(context.scope.installation_id, context.scope.bot_id,
                                    context.role_binding.role.subject_id))
 
-    def write_rule(self, context, *, handle, characters, closed_at, state="adopted"):
+    def write_rule(self, context, *, handle, characters, closed_at, state="adopted", texts=None):
         at = stamp(self.app.tasks.now())
         owner_key, scope_key = self.owner_key(context), digest(context.scope)
         window = {"opened_at": stamp(closed_at - timedelta(hours=1)), "closed_at": stamp(closed_at),
                   "handles": [handle], "characters": characters,
                   "context_key": context.key, "source_kind": "conversation_input"}
+        if texts is not None:
+            window["texts"] = texts
         with self.app.runtime.transaction() as connection:
             connection.execute("""INSERT INTO expression_style_runs
                 (run_id, owner_key, scope_key, sample_json, material_hash, summary, state,
@@ -227,6 +229,36 @@ class ExpressionDurableEvidenceTests(GroupFixture, unittest.IsolatedAsyncioTestC
         self.assertEqual(describe.call_count, 1)
         self.assertEqual(len(page.unwrap()["items"]), 2)
         self.assertEqual([item["evidence"] for item in page.unwrap()["items"]], [[SAMPLE], [SAMPLE]])
+
+    async def test_saved_evidence_excerpt_survives_source_cleanup(self):
+        context = await self.observed()
+        event, handle, _reference = self.native_sample(context)
+        closed_at = self.app.tasks.now()
+        self.write_rule(context, handle=handle, characters=len(SAMPLE), closed_at=closed_at,
+                        state="pending", texts={handle: SAMPLE})
+        # Simulate retention cleaning both the legacy input table and native
+        # observations. The bounded excerpt on the run is now the only evidence.
+        with self.app.runtime.transaction() as connection:
+            connection.execute("DELETE FROM conversation_native_observations WHERE context_key = ?",
+                               (context.key,))
+            connection.execute("DELETE FROM conversation_batches WHERE origin_key = ?",
+                               (context.key,))
+
+        page = self.page(context, state="pending")
+        self.assertTrue(page.is_success, page.failure)
+        item = page.unwrap()["items"][0]
+        self.assertIsNone(item["unavailable_reason"])
+        self.assertEqual(item["evidence"], [SAMPLE])
+        self.assertTrue(item["evidence_snapshot"])
+        self.assertEqual(item["actions"], ["adopt", "reject"])
+
+        manager = ExpressionStyleManagement(self.app)
+        adopted = manager.command(
+            operator=dashboard_operator(self.app.runtime, "tester", at=self.app.tasks.now()),
+            context=context, signal_id=item["signal_id"], action="adopt",
+            view_token=item["view_token"], operation_key="snapshot-adopt")
+        self.assertTrue(adopted.is_success, adopted.failure)
+        self.assertEqual(adopted.unwrap()["state"], "adopted")
 
     async def test_retired_rule_with_unreadable_evidence_cannot_be_restored(self):
         context, event, handle, reference, closed_at = await self.adopted_rule()

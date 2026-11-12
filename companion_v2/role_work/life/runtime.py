@@ -34,12 +34,30 @@ class RoleLifeRuntime:
         self._closed = False
         self._retired = False
 
+    @staticmethod
+    def _route(context):
+        scope = context.scope
+        return (scope.installation_id, scope.platform, scope.bot_id, scope.account_id,
+                scope.native_scope_id, context.role_binding.role.subject_id)
+
     def bind(self, context, role_instruction, *, guard=None):
         # Unrelated grant changes advance policy_revision without changing the
         # original principal, binding, role or audience represented by this key.
-        if self.context is not None and (self.context.key != context.key or self.instruction not in (None, role_instruction)):
-            raise TaskError("life_binding_changed", "a live routine cannot change its authority")
-        self.context, self.instruction, self.guard = context, role_instruction, guard
+        if self.context is not None:
+            if self.instruction not in (None, role_instruction):
+                raise TaskError("life_binding_changed", "a live routine cannot change its authority")
+            if self.context.key != context.key and self._route(self.context) != self._route(context):
+                raise TaskError("life_binding_changed", "a live routine cannot change its authority")
+            if self.context.key == context.key:
+                # Refresh the same context's policy/audience snapshot.
+                self.context = context
+        else:
+            self.context = context
+        # The Dashboard target and native intake can name the same private route
+        # with different conversation IDs.  Keep the first context (and the
+        # activities/grants created under it) so a later native bind does not
+        # turn that live routine into a different, unbound window.
+        self.instruction, self.guard = role_instruction, guard
         self._retired = False
 
     @property
@@ -172,6 +190,10 @@ class RoleLifeRuntime:
     def wake(self, identifier, *, expected_revision, operation_id):
         self.authorize()
         a = self.activity(identifier)
+        if a.state in (State.COMPLETED, State.CANCELLED):
+            # A retry after a successful/failed transition must not turn into a
+            # generic "command invalid"; the sleep is already over.
+            return a
         if a.work.kind != "sleep" or self.app.now() <= a.started_at:
             raise TaskError("life_sleep_invalid", "sleep must actually have started before waking")
         saved = self.app.role_state.body_clock.finish(self.context, a, operation_id=operation_id,

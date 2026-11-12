@@ -747,6 +747,22 @@ class ProviderRouteTests(unittest.IsolatedAsyncioTestCase):
             conflict = await self.call(model_api.PREFIX + "/image/output/save", payload=conflict_payload)
             self.assertEqual(conflict["data"]["code"], "model_image_output_conflict")
 
+    async def test_image_output_save_reports_missing_backend_separately(self):
+        (await self.controller.initialize_profile()).unwrap()
+        import astrbot_host.model_api as model_api
+
+        class UnconfiguredImageAPI(FakeImageExtensionAPI):
+            def save_output_configuration(self, revision, changes):
+                error = RuntimeError("native_endpoint_unconfigured")
+                error.code = "native_endpoint_unconfigured"
+                raise error
+
+        with patch.object(model_api.ModelWebAPI, "_image_extension_api", lambda self: UnconfiguredImageAPI()):
+            payload = json.dumps({"revision": "a" * 64, "changes": {"enabled": True}}).encode("utf-8")
+            response = await self.call(model_api.PREFIX + "/image/output/save", payload=payload)
+        self.assertEqual(response["status"], "error")
+        self.assertEqual(response["data"]["code"], "model_image_output_unconfigured")
+
 
 class MultiCoreReplyConfigurationTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
     call = ProviderRouteTests.call

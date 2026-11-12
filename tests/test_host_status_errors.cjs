@@ -61,6 +61,18 @@ test("a successful status read identifies an earlier startup failure", () => {
   assert.equal(h.notices.at(-1).message, "");
 });
 
+test("invalid legacy policy fields show the exact backend reason", () => {
+  const h = harness();
+  let failure;
+  try {
+    h.page.unwrap({status: "error", message: "staging_settings_invalid",
+      reason: "reply segmentation settings are invalid: segmentation switches must be booleans",
+      data: {code: "staging_settings_invalid"}});
+  } catch (error) { failure = error; }
+  assert.match(h.page.publicError(failure), /回复分段设置无效/);
+  assert.match(h.page.publicError(failure), /segmentation switches must be booleans/);
+});
+
 test("older timeout codes and pinned configuration reasons remain readable", () => {
   const h = harness();
   assert.match(h.page.publicError({code: "host_native_lookup_timeout"}), /原生状态超时/);

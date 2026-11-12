@@ -507,7 +507,11 @@ window.CompanionStatePage = (() => {
       :maintenanceOff?"前往设置":"立即更新";
     const maintainIcon=maintenanceOff?"settings-2":"sparkles";
     const noticeText=data.notice||(maintenanceOff?"状态维护已关闭，启用后才会生成新的状态记录。":"");
-    root.innerHTML=`<div class="state-page-heading"><div><span class="state-badge">${contactView?"联系安排":weatherView?"天气感知":patrolView?"维护设置":"角色状态"}</span></div><div class="state-page-actions">${section==="state"?`<button type="button" class="memory-button state-maintain-button" id="state-maintain" ${maintainDisabled?"disabled":""} ${maintenanceOff?`title="在状态设置中启用后台状态维护"`:""}><i data-lucide="${maintainIcon}" aria-hidden="true"></i><span>${maintainLabel}</span></button>`:""}<button type="button" class="memory-button" id="state-refresh" title="重新读取当前状态" ${data.loading||editor?.busy?"disabled":""}>${contactView?"刷新联系设置":weatherView?"刷新天气设置":patrolView?"刷新巡视设置":"刷新状态"}</button></div></div>
+    const pageHint=contactView?"设置当前会话的联系频率与打扰边界。"
+      :weatherView?"设置天气来源与时效，日程会参考所在地实况。"
+      :patrolView?"设置每日巡视的时刻与保留时长。"
+      :"点按任意状态查看设置；下方入口可调整 QQ 展示、日程、天气与时间。";
+    root.innerHTML=`<div class="state-page-heading"><div><span class="state-badge">${contactView?"联系安排":weatherView?"天气感知":patrolView?"维护设置":"角色状态"}</span><p class="state-page-hint">${e(pageHint)}</p></div><div class="state-page-actions">${section==="state"?`<button type="button" class="memory-button state-maintain-button" id="state-maintain" ${maintainDisabled?"disabled":""} ${maintenanceOff?`title="在状态设置中启用后台状态维护"`:""}><i data-lucide="${maintainIcon}" aria-hidden="true"></i><span>${maintainLabel}</span></button>`:""}<button type="button" class="memory-button" id="state-refresh" title="重新读取当前状态" ${data.loading||editor?.busy?"disabled":""}>${contactView?"刷新联系设置":weatherView?"刷新天气设置":patrolView?"刷新巡视设置":"刷新状态"}</button></div></div>
       ${scopeMarkup}<div class="memory-notice ${data.error?"error":""}" id="state-notice" role="status" aria-live="polite" ${noticeText?"":"hidden"}>${e(noticeText)}</div>${content}${settingsOpen?homeSettingsMarkup():""}`;
     root.querySelectorAll(".state-receipt-reference").forEach(item=>{item.open=expanded.has(item.dataset.receipt);});
     const settingsDialog=root.querySelector("#state-home-settings");

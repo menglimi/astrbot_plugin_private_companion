@@ -1,6 +1,7 @@
 """Incremental, durable memory extraction through the shared task/model services."""
 
 import asyncio
+from dataclasses import replace
 from datetime import timedelta
 import json
 import logging
@@ -97,7 +98,7 @@ class MemoryReflection:
         return max(180, 2 * timeout + 30)
 
     @outcome
-    def prepare(self, context, *, request_id, start, end, role_instruction, maximum_sources=32, maximum_chars=24000, schedule_ref=None,
+    def prepare(self, context, *, request_id, start, end, role_instruction, maximum_sources=16, maximum_chars=24000, schedule_ref=None,
                 retry_of=None):
         try:
             return self._prepare(context, request_id=request_id, start=start, end=end, role_instruction=role_instruction,
@@ -518,6 +519,17 @@ class MemoryReflection:
                     continue
                 proposal = codec.proposal(entry["proposal"])
                 result = self.memory.writer.submit(context, proposal, operation_key=batch_id + ":" + entry["item_id"])
+                if (not result.is_success and result.failure.code == "memory_target_mismatch"
+                        and proposal.operation == "correct"):
+                    # The model naturally treats "this fact changed" as a correction
+                    # even when its predicate/qualifiers differ from the target.  A
+                    # separate fact preserves the new information instead of burning
+                    # the whole item on a wording mismatch.
+                    fallback = replace(proposal, operation="add", target=None)
+                    retry = self.memory.writer.submit(context, fallback,
+                        operation_key=batch_id + ":" + entry["item_id"] + ":add")
+                    if retry.is_success:
+                        result = retry
                 receipts["items"][entry["item_id"]] = ({"state": "rejected", "code": result.failure.code}
                     if not result.is_success else result.unwrap())
                 if not result.is_success:
@@ -611,6 +623,7 @@ class MemoryReflection:
         return {"batch_id": batch_id, "state": row["state"], "summary": summary,
                 "state_label": {"selecting": "正在分批准备材料", "prepared": "待整理", "running": "调用结果待核对", "received": "已收到，待解析",
                     "modelled": "待写入", "failed": "整理失败，待处理", "partial": "部分已保存，仍有待处理项",
+                    "abandoned": "本次整理已放弃",
                     "complete": "整理完成", "empty": "本批次无可整理材料"}.get(row["state"], "待核对"),
                 "receipts": json.loads(row["receipts_json"])["items"], "remaining_sources": manifest["remaining_sources"],
                 "coverage": manifest["coverage"], "unavailable_sources": manifest["unavailable_sources"],

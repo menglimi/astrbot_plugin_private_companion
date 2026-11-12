@@ -41,6 +41,8 @@ class ReplyWebAPI:
                  "Import expression rules into the review queue"),
                 (PREFIX + "/style/command", self.style_command, ["POST"],
                  "Decide a learned expression signal"),
+                (PREFIX + "/style/cleanup", self.style_cleanup, ["POST"],
+                 "Reject pending expression candidates whose evidence is gone"),
                 (PREFIX + "/recalls", self.recalls, ["GET"],
                  "Read this window's withdrawn messages within the configured bound"),
                 (PREFIX + "/harassment", self.harassment, ["GET"],
@@ -203,6 +205,9 @@ class ReplyWebAPI:
         except (ValueError, TypeError, UnicodeError, RecursionError, OverflowError):
             return outcome_response(Outcome.failed("expression_command_invalid", "invalid UTF-8 style decision"))
         return await self._style(data, "command")
+
+    async def style_cleanup(self):
+        return await self._sample_action({"operation_key"}, "cleanup_unreadable")
 
     async def style_samples(self):
         from .web_api import outcome_response

@@ -29,6 +29,8 @@ import json
 from companion_v2.execution.models import digest
 from companion_v2.foundation.refs import ScopeKind
 
+from .style_evidence import evidence_snapshot
+
 
 NAMED_SOURCES = ("shared_pack", "legacy_expression")
 
@@ -81,6 +83,18 @@ def rule_reason(context, scope_key, window, handles, *, samples=None, at=None):
         return None
     if type(handles) is not list or any(type(value) is not str for value in handles):
         return SAMPLE_CHANGED
+    snapshot = evidence_snapshot(window, handles)
+    if snapshot is not None:
+        # A saved evidence excerpt keeps the reviewed rule usable after the
+        # conversation input itself was cleaned; it is bounded review material,
+        # not a new conversation source. The approval gate still applies.
+        if kind == "conversation_input":
+            try:
+                if not samples.reviews.allows_handles(context, handles):
+                    return REVIEW_REVOKED
+            except Exception:
+                return SAMPLE_CHANGED
+        return None
     try:
         source = samples.evidence_context(window, context)
     except Exception:

@@ -145,10 +145,11 @@ class RoleSleepConfigurationTests(MultiLifeFixture, unittest.IsolatedAsyncioTest
         # Recreate the durable shape written by the pre-partition owner.  The
         # result is copied verbatim, so the compatibility check exercises the
         # real configuration receipt path rather than a special test branch.
-        change = app.runtime.read_one("SELECT * FROM configuration_changes WHERE operation_id = ?", (current_id,))
+        store = app.configuration.store
+        change = store.read_one("SELECT * FROM configuration_changes WHERE operation_id = ?", (current_id,))
         result = json.loads(change["result_json"])
         result["operation_id"] = legacy_id
-        with app.runtime.transaction() as connection:
+        with store.transaction() as connection:
             connection.execute(
                 """INSERT INTO operations(
                     operation_id, owner, installation_id, platform, scope_kind, native_scope_id,

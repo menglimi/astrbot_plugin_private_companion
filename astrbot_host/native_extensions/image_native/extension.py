@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
 from uuid import uuid4
 
 from .bootstrap import build_provider
@@ -42,7 +42,24 @@ class ImageConfig(dict):
                 stream.write(json.dumps(self, ensure_ascii=False, allow_nan=False,
                                         sort_keys=True, separators=(",", ":")))
                 stream.write("\n")
-            os.replace(temporary, self.path)
+            # Windows 上配置文件偶尔会被同步盘、杀毒或编辑器短暂占用，
+            # os.replace 会抛 PermissionError（WinError 32/5）。这里做几次
+            # 很短的退避重试；仍失败才交给上层报“写不回数据目录”。
+            last_error = None
+            for attempt in range(5):
+                try:
+                    os.replace(temporary, self.path)
+                    break
+                except OSError as error:
+                    # EACCES/EPERM，以及 Windows 的 5/32/33（拒绝访问、共享冲突、
+                    # 文件被占用）。其它 OSError（磁盘满等）直接抛出。
+                    if (error.errno not in {13, 26}
+                            and getattr(error, "winerror", None) not in {5, 32, 33}):
+                        raise
+                    last_error = error
+                    sleep(0.05 * (attempt + 1))
+            else:
+                raise NativeImageError("configuration_store_unavailable") from last_error
         finally:
             temporary.unlink(missing_ok=True)
 

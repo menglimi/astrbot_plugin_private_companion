@@ -115,7 +115,12 @@ PROACTIVE_TEST_FAILURE_LABELS = {
     "contact_quiet_hours": ("settings", "当前处于免打扰时段"),
     "model_task_unregistered": ("model_route", "主动联系模型任务未配置"),
     "contact_diagnostic_source_required": ("trusted_candidate", "当前用途没有可核验的测试机会"),
+    "contact_diagnostic_source_changed": ("trusted_candidate", "诊断来源凭据已变化"),
     "contact_diagnostic_variant_invalid": ("trusted_candidate", "测试来源选择无效"),
+    "contact_conversation_changed": ("trusted_candidate", "诊断来源会话在测试期间发生变化"),
+    "contact_input_changed": ("trusted_candidate", "诊断来源原文已变化"),
+    "contact_input_unavailable": ("trusted_candidate", "诊断来源原文不可用"),
+    "contact_context_mismatch": ("trusted_candidate", "诊断来源与原窗口不一致"),
     "contact_weather_unavailable": ("trusted_candidate", "天气观测来源不可用"),
     "contact_weather_change_unavailable": ("trusted_candidate", "天气变化来源不可用"),
     "contact_official_alert_unavailable": ("trusted_candidate", "官方预警来源不可用"),
@@ -151,6 +156,7 @@ PROACTIVE_TEST_STAGE_SUGGESTIONS = {
     "settings": "检查主动联系总开关、目的开关及角色/关系/窗口各层的有效配置。",
     "purpose": "检查该用途是否启用、暂停时间是否结束，以及当前权限是否覆盖该私聊。",
     "trusted_candidate": "检查所选用途的测试条件；事件类等待当前有效来源，关系表达类确认私聊窗口和用途开关。不要手工补造事件。",
+    "contact_admission": "检查诊断来源会话是否在测试期间被新消息取代；若刚发过消息，等待该轮完成后再测。",
     "news_fetch": "检查当前配置的真实资讯源是否可访问、是否返回带日期的有效条目。",
     "weather_fetch": "检查已配置的角色所在地与真实天气接口；测试会即时获取观测。",
     "screen_capture": "检查已授权的截图设备及本次任务记录；未知结果不能重拍。",
@@ -169,7 +175,7 @@ PROACTIVE_TEST_STAGE_SUGGESTIONS = {
 PROACTIVE_TEST_STAGE_ORDER = (
     "authorization", "binding", "runtime", "settings", "purpose", "news_fetch", "weather_fetch",
     "screen_capture", "screen_interpretation", "mobile_location_fetch", "image_attachment", "trusted_candidate",
-    "attempt_budget", "delivery_budget",
+    "contact_admission", "attempt_budget", "delivery_budget",
     "model_route", "model_generation", "persona_review", "delivery", "receipt",
 )
 
@@ -198,7 +204,12 @@ PROACTIVE_TEST_STAGE_BY_CODE = {
     "contact_purpose_paused": "purpose",
     "contact_quiet_hours": "purpose",
     "contact_diagnostic_source_required": "trusted_candidate",
+    "contact_diagnostic_source_changed": "trusted_candidate",
     "contact_diagnostic_variant_invalid": "trusted_candidate",
+    "contact_conversation_changed": "trusted_candidate",
+    "contact_input_changed": "trusted_candidate",
+    "contact_input_unavailable": "trusted_candidate",
+    "contact_context_mismatch": "trusted_candidate",
     "reality_location_unavailable": "mobile_location_fetch",
     "reality_location_not_authorized": "mobile_location_fetch",
     "reality_location_label_unavailable": "mobile_location_fetch",
@@ -255,6 +266,29 @@ def _fail_stage(stages, stage):
     item = {"stage": stage, "state": "failed"}
     stages.append(item)
     return item
+
+
+def _settle_failed_stages(stages, stage):
+    """Mark one stage failed and close every later running/pending placeholder.
+
+    The setup runner pre-creates the generation/review/delivery/receipt rows with
+    ``running``/``pending`` before calling the producer.  If admission fails before
+    generation starts, leaving those rows untouched makes the page look stuck on
+    "模型生成中" even though the terminal error is already known.  A failed test
+    has no future work in this attempt, so every unfinished placeholder becomes
+    ``skipped``; the failed stage is kept exactly once.
+    """
+    existing = next((item for item in stages if item["stage"] == stage), None)
+    # ``unknown`` is a real terminal result for a side-effecting step (for
+    # example a screenshot was captured but interpretation is uncertain).  Do
+    # not turn it into a hard failure merely because the overall test failed.
+    failed = existing if existing is not None and existing.get("state") == "unknown" else _fail_stage(stages, stage)
+    for item in stages:
+        if item is failed:
+            continue
+        if item["state"] in ("running", "pending"):
+            item["state"] = "skipped"
+    return failed
 
 
 class SetupWebAPI:
@@ -471,9 +505,11 @@ class SetupWebAPI:
             try:
                 # The runtime may already share one persona role across Bot
                 # accounts; use the same normalized mapping in the setup picker.
+                parsed = getattr(self.controller, "settings", None)
+                if parsed is None or not hasattr(parsed, "personas"):
+                    parsed = MultiHostSettings.parse(self.controller.config)
                 mapping_rows = [{"bot_id": item.bot_id, "persona_id": item.persona_id,
-                                 "role_id": item.role_id}
-                                for item in MultiHostSettings.parse(self.controller.config).personas]
+                                 "role_id": item.role_id} for item in parsed.personas]
             except (HostControlError, ValueError):
                 mapping_rows = self.controller.config.get("multi_host", {}).get("personas", [])
             choices = []
@@ -1186,7 +1222,7 @@ class SetupWebAPI:
                         error.code, ("trusted_candidate", "当前来源生产器未能生成有效候选"))[0]
                     stages = [{"stage": name, "state": "passed"} for name in
                         ("authorization", "binding", "runtime", "settings", "purpose")]
-                    _fail_stage(stages, failure_stage)
+                    _settle_failed_stages(stages, failure_stage)
                     return self._response(Outcome.success(self._diagnostic_failure(
                         purpose, route_hint, failure_stage, error.code, str(error),
                         stages=stages, route=route_hint)))
@@ -1207,7 +1243,7 @@ class SetupWebAPI:
                         ("authorization", "binding", "runtime", "settings", "purpose")]
                     stages.extend(candidate.get("stages", []))
                     stages.append({"stage": "trusted_candidate", "state": "passed"})
-                    _fail_stage(stages, failure_stage)
+                    _settle_failed_stages(stages, failure_stage)
                     budget_usage = self._diagnostic_attempt_usage(
                         session, context, failure.code)
                     return self._response(Outcome.success(self._diagnostic_failure(
@@ -1368,6 +1404,8 @@ class SetupWebAPI:
             stages = ([{"stage": name, "state": "passed"}
                        for name in PROACTIVE_TEST_STAGE_ORDER[:failed_index]]
                       + [{"stage": stage, "state": "failed"}])
+        else:
+            _settle_failed_stages(stages, stage)
         return {"state": state, "purpose": purpose,
             "purpose_label": PURPOSES.get(purpose) if purpose else None,
             "variant": (variant if isinstance(variant, dict) else
@@ -1469,8 +1507,8 @@ class SetupWebAPI:
                 diagnostic_origin=candidate["diagnostic_origin"])
             if result.failure is not None:
                 failed_stage = PROACTIVE_TEST_FAILURE_LABELS.get(
-                    result.failure.code, ("model_route", "主动联系准入检查失败"))[0]
-                _fail_stage(stages, failed_stage)
+                    result.failure.code, ("contact_admission", "主动联系准入检查失败"))[0]
+                _settle_failed_stages(stages, failed_stage)
                 self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
                 self.progress.finish_proactive_test(outcome="failed",
                     finished_at=datetime.now(timezone.utc).isoformat(), error_code=result.failure.code,
@@ -1478,7 +1516,7 @@ class SetupWebAPI:
                 return
             task = result.unwrap().task
             if task is None:
-                stage_state("model_generation", "failed")
+                _settle_failed_stages(stages, "model_generation")
                 self._restore_test_contact_permission_with_context(username, attempt_id, app, context)
                 self.progress.finish_proactive_test(outcome="failed",
                     finished_at=datetime.now(timezone.utc).isoformat(), error_code="setup_contact_not_started",
