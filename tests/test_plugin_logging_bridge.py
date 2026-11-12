@@ -4,6 +4,8 @@ import logging
 import unittest
 from unittest.mock import patch
 
+from astrbot_host.log_buffer import install_log_buffer, snapshot
+
 from astrbot_host.logging_bridge import (
     PLUGIN_NAME, PluginLogBridge, install_logging_bridge, retire_logging_bridge,
 )
@@ -63,3 +65,41 @@ class PluginLoggingBridgeTests(unittest.TestCase):
         retire_logging_bridge(self.entry)
         self.assertEqual((source.level, source.propagate), (level, propagate))
         self.assertFalse(any(isinstance(handler, PluginLogBridge) for handler in source.handlers))
+
+    def test_bridged_and_direct_plugin_logs_reach_the_builtin_buffer_once(self):
+        install_log_buffer()
+        install_logging_bridge(self.entry)
+        install_logging_bridge(self.entry)
+        logging.getLogger("companion_v2.tests.bridge_buffer").warning("bridge-buffer-domain")
+        self.sink.warning("bridge-buffer-direct")
+        self.assertEqual([row["message"] for row in snapshot(query="bridge-buffer-", limit=20)["records"]],
+                         ["bridge-buffer-domain", "bridge-buffer-direct"])
+        self.assertEqual(len(self.capture.records), 2)
+
+    def test_builtin_buffer_respects_live_plugin_level_and_excludes_other_plugins(self):
+        install_logging_bridge(self.entry)
+        self.sink.setLevel(logging.ERROR)
+        source = logging.getLogger("astrbot_host.tests.bridge_buffer")
+        source.warning("bridge-level-hidden")
+        source.error("bridge-level-shown")
+        logging.getLogger("astrbot.plugin.other_plugin").error("bridge-level-other")
+        self.assertEqual([row["message"] for row in snapshot(query="bridge-level-", limit=20)["records"]],
+                         ["bridge-level-shown"])
+        self.sink.setLevel(logging.DEBUG)
+        source.debug("bridge-level-debug")
+        self.assertEqual(snapshot(query="bridge-level-debug")["records"][-1]["level"], "DEBUG")
+
+    def test_reinstall_retires_only_stale_buffer_handlers(self):
+        root = logging.getLogger()
+        stale = logging.NullHandler()
+        setattr(stale, "_private_companion_log_buffer", True)
+        self.sink.addHandler(stale)
+        root.addHandler(stale)
+        self.addCleanup(root.removeHandler, stale)
+        install_logging_bridge(self.entry)
+        self.assertNotIn(stale, self.sink.handlers)
+        self.assertNotIn(stale, root.handlers)
+        self.assertIn(self.capture, self.sink.handlers)
+        for logger in (root, self.sink):
+            self.assertEqual(sum(bool(getattr(handler, "_private_companion_log_buffer", False))
+                                 for handler in logger.handlers), 1)
