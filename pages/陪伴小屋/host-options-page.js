@@ -79,7 +79,7 @@ window.CompanionHostOptionsPage = (() => {
     };
     return `<section class="host-options-panel" aria-label="语音默认值">
       <header class="host-options-heading"><div><h3>语音回复 · 开关与概率</h3>
-        <p>这一页只管“发不发语音、多大概率发”。发音人、音色、语速与试听在「模型与连接 → 语音」，分段与发送位置在「表达 → 语音」。</p></div></header>
+        <p>这一页只管“发不发语音、多大概率发”。本页默认值保存后需重启陪伴插件才会应用到新回复。发音人、音色、语速与试听在「模型与连接 → 语音」，分段与发送位置在「表达 → 语音」。</p></div></header>
       <nav class="host-options-jumps" aria-label="语音的其他配置位置">
         <a class="button small" href="#manage/models">发音人与音色 · 模型与连接</a>
         <a class="button small" href="#manage/models">试听与语种 · 同上（语音配置）</a>

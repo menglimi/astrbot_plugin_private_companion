@@ -418,6 +418,7 @@ def configuration_fields(segmentation, streaming, gap, voice=None):
               "reply_diagnostic_limit": (10, 300),
               **GROUP_AIR_LIMITS, **GROUP_CONTINUATION_LIMITS, **PRIVATE_CLOSING_LIMITS,
               **PRIVATE_DEBOUNCE_LIMITS, **GROUP_WAKEUP_LIMITS, **OUTBOUND_LIMITS}
+    limits.update({"voice_probability": (0, 1), "voice_primary_mention_probability": (0, 1)})
     limits["context_image_caption_max_items"] = (0, 8)
     limits.update(UNDERSTANDING_LIMITS)
     limits.update({"private_image_vision_cache_max_items": (0, 2000),
