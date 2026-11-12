@@ -33,6 +33,7 @@ from companion_v2.conversation.delivery import DeliveryReceipt, LocalSender
 from companion_v2.conversation.messages import REPLY_KIND
 from companion_v2.conversation.pokes import poke_reply_profile
 from companion_v2.conversation.participation import group_participation_settings
+from companion_v2.conversation.group_timing import ADDRESS_MARKER
 from companion_v2.conversation.reply_settings import (
     GROUP, expression_prompt_sections, private_debounce_settings,
 )
@@ -987,6 +988,7 @@ class MultiHostSession:
                     wakeup = group_wakeup_settings(settings)
                     return Outcome.success({"admitted": bool(reason), "reason": reason,
                         "continuation": continuation,
+                        "trigger_facts": facts,
                         "mentioned": facts["mentioned"], "context_key": context.key, "event_id": captured.event_id,
                         "participation_policy": {
                             "question_enabled": wakeup["group_wakeup_enabled"] and wakeup["group_wakeup_question_enabled"],
@@ -1122,7 +1124,15 @@ class MultiHostSession:
                     typing_context, typing_turn = context, turn_id
                     presence.begin_native_reply(context, turn_id)
                 # The core request hook re-captures identity before provider dispatch.
+                group_trigger = None
                 if context.scope.kind is ScopeKind.GROUP:
+                    trigger = (group_admission or {}).get("trigger_facts")
+                    group_trigger = dict(trigger if trigger is not None else
+                                         group_trigger_facts(event, context.scope.account_id))
+                    # The captured skeleton retains mentions and media placeholders;
+                    # the memory text below intentionally contains only plain words.
+                    group_trigger["bare_mention"] = (group_trigger["mentioned"]
+                        and not captured.text.replace(ADDRESS_MARKER, "").strip())
                     # Native media fallbacks carry placeholders; only original
                     # Plain components may become a member's memory evidence.
                     raw_text = "".join(part.text for part in getattr(event.message_obj, "message", ())
@@ -1214,6 +1224,7 @@ class MultiHostSession:
                             keyword_materials=keyword_entries,
                             health_material=health_material,
                             external_memory=external_memory,
+                            group_trigger=group_trigger,
                             private_group_context=private_group_context)
                         prompt_instruction = getattr(prompt, "context_instruction", prompt.instruction)
                         stable_prompt_instruction = getattr(prompt, "stable_instruction", "")
@@ -1306,6 +1317,7 @@ class MultiHostSession:
                     "expression_signal_ids": expression_signal_ids,
                     "turn_id": turn_id,
                     "native_input": captured,
+                    "group_trigger": group_trigger,
                     "native_source_future": source_future,
                     "segmentation_settings": segmentation_settings,
                     "presentation_settings": presentation_settings,

@@ -170,6 +170,8 @@ https://github.com/menglimi/astrbot_plugin_private_companion
 
 7.x 继续使用原仓库和插件名 `astrbot_plugin_private_companion`，通过现有安装原地更新即可，**不要并行安装第二份同名插件，也不要先删除原数据目录**。
 
+离线替换插件代码后须完整重启 AstrBot。仅重新启用已禁用的插件可能复用进程中已导入的旧模块，不能据此确认新版代码已加载。
+
 #### 升级六步流程
 
 供执行迁移和首次配置的 Agent 使用的操作顺序、确认边界和回执核验步骤见 [Agent 首次配置与旧版迁移手册](docs/AGENT_MIGRATION_AND_SETUP.md)。

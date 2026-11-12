@@ -313,6 +313,36 @@ class OfficialMultiHostTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         )
         self.controller = self.make_controller(self.config)
 
+    async def test_native_group_prompt_keeps_bot_mentions_with_other_bot_markup(self):
+        self.config["multi_host"]["group_targets"] = [dict(target_id="official-group",
+            platform_id=ACCOUNT, account_id=ACCOUNT, bot_id="bot-test", group_id=GROUP_OPENID)]
+        self.window_personas[f"{ACCOUNT}:GroupMessage:{GROUP_OPENID}"] = "original"
+        self.controller = self.make_controller(self.config)
+        await self.start_host()
+        for name, self_id, mentioned in (("openid", "BOT_OPENID", True),
+                                        ("legacy", "qq_official", True),
+                                        ("other-only", "qq_official", False)):
+            with self.subTest(name=name):
+                text = "<@OTHER_BOT_OPENID> 来看图"
+                event = OfficialEvent(self.native.platform, group=True, text=text)
+                event.created_at = self.clock.now().timestamp()
+                event.message_obj.message_id = "official-mention-" + name
+                event.message_obj.self_id = self_id
+                event.message_obj.message = ([At(qq=self_id)] if mentioned else []) + [Plain(text)]
+                admission = (await self.controller.group_reply_candidate(event)).unwrap()
+                result = await self.controller.prepare_core_reply(
+                    event, group_admission=admission if admission["admitted"] else None)
+                self.assertTrue(result.is_success, result.failure)
+                prepared = result.unwrap()
+                self.assertEqual(prepared["native_input"].text, text)
+                self.assertEqual(prepared["group_trigger"]["mentioned"], mentioned)
+                expected = "本轮明确 @ 了本角色" if mentioned else "本轮没有明确 @ 本角色"
+                self.assertIn(expected, prepared["prompt_instruction"])
+                if mentioned:
+                    self.assertNotIn("本轮没有明确 @ 本角色", prepared["prompt_instruction"])
+        self.assertEqual(self.native.platform.sent, [])
+        self.assertEqual(self.native.provider.client.state.calls, [])
+
     async def _check_name_upgrade(self, *, group):
         if group:
             self.config["multi_host"]["group_targets"] = [dict(target_id="official-group",
