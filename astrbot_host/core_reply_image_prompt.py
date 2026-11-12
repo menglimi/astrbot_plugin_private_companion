@@ -288,5 +288,5 @@ def inject_core_image_prompt(session, request, offered, values):
                     if route_guidance:
                         instruction += "\n" + route_guidance
             except Exception as error:
-                logger.warning("[CompanionV2] 核心生图参考资料暂不可用 error_type=%s", type(error).__name__)
+                logger.warning("[CompanionV2] 核心生图参考资料暂不可用 error_type=%s code=%s", type(error).__name__, getattr(error, "code", "unknown"))
     set_system_instruction(request, "image_output", instruction)

@@ -110,12 +110,24 @@ class WardrobeConfigurationOwner(SparseConfigurationOwner):
 class WardrobeSettings:
     """Read one role's wardrobe options without inventing a second scope."""
 
-    def __init__(self, configuration):
+    def __init__(self, configuration, *, target_resolver=None):
         self.configuration = configuration
+        self.target_resolver = target_resolver
+
+    def target(self, context):
+        return self.target_resolver(context) if self.target_resolver else target_for(context)
 
     def read(self, context, at):
         snapshot = require(self.configuration.read(context.actor, target=target_for(context),
                                                   group_id=GROUP, observed_at=at))
+        target = self.target(context)
+        if target != target_for(context):
+            # Authorize the original actor above; share only role material.
+            owner = WardrobeConfigurationOwner(self.configuration.runtime)
+            with self.configuration.runtime.read_snapshot():
+                shared = owner.read(target, configuration_fields())
+            return validate({key.removeprefix(GROUP + '.'): item.value
+                             for key, item in shared.fields.items()})
         return validate({key.removeprefix(GROUP + "."): value for key, value in snapshot.values.items()})
 
 

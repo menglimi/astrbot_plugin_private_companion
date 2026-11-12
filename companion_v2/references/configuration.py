@@ -12,6 +12,7 @@ exactly as it did before this group existed.
 from __future__ import annotations
 
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget, ConfigurationError
+from companion_v2.foundation.refs import RoleOwnerRef
 from companion_v2.configuration.owners import SparseConfigurationOwner
 from companion_v2.configuration.registry import FieldDefinition, ValueKind
 
@@ -85,14 +86,30 @@ class ReferenceConfigurationOwner(SparseConfigurationOwner):
 class ReferenceSettings:
     """Read the role-owned switches after the reference service authorizes use."""
 
-    def __init__(self, owner):
+    def __init__(self, owner, *, owner_resolver=None):
         if not isinstance(owner, ReferenceConfigurationOwner):
             raise TypeError("reference settings require their registered configuration owner")
         self.owner = owner
+        self.owner_resolver = owner_resolver
+
+    def role_owner(self, context):
+        original = RoleOwnerRef(context.scope.installation_id, context.scope.bot_id,
+                                context.role_binding.role.subject_id)
+        selected = self.owner_resolver(context) if self.owner_resolver is not None else original
+        if (not isinstance(selected, RoleOwnerRef)
+                or selected.installation_id != original.installation_id
+                or selected.persona_id != original.persona_id):
+            raise ConfigurationError('reference_owner_invalid', 'reference material must retain its installation and role')
+        return selected
+
+    def target(self, context):
+        owner = self.role_owner(context)
+        return ConfigTarget(owner.installation_id, ConfigLayer.ROLE,
+                            context.role_binding.role, bot_id=owner.bot_id)
 
     def read(self, context, at):
         with self.owner.runtime.read_snapshot():
-            snapshot = self.owner.read(target_for(context), configuration_fields())
+            snapshot = self.owner.read(self.target(context), configuration_fields())
         return validate({key.removeprefix(GROUP + "."): item.value
                          for key, item in snapshot.fields.items()})
 

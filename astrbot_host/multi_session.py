@@ -548,7 +548,9 @@ class MultiHostSession:
         registry_ids = {item.field_id for item in registry_fields}
         registry_fields += tuple(field for field in relay_configuration_fields()
                                  if field.field_id not in registry_ids)
+        from .role_reference_owner import RoleReferenceOwnerResolver
         self.host = AstrBotCompanionHost(runtime, event_port=self.bridge.ports, identity_port=self.bridge.ports,
+            reference_owner_resolver=RoleReferenceOwnerResolver(runtime, self.bridge),
             role_port=self.bridge.ports, runtime_identity=RuntimeIdentity("companion", runtime_instance_id, "astrbot", HOST_ID),
             registry=FieldRegistry(version="astrbot-multi.v1", fields=registry_fields),
             profiles=profiles, providers=tuple(model.local_provider() for model in self.models), budget=common.budget,

@@ -15,7 +15,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from PIL import Image, ImageOps
 
-from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.conversation.media.models import ImageDescriptor
 from companion_v2.conversation.media.output_settings import effective_settings as image_settings, parse_scene_presets
 from companion_v2.execution.models import TaskContext, TaskError, digest, require
@@ -39,7 +38,7 @@ from companion_v2.references.models import (
     WardrobeItem,
 )
 from companion_v2.references.repositories import ReferenceAssetRepository
-from companion_v2.references.service import OWNED_REFERENCE_PREFIX, owner_key
+from companion_v2.references.service import OWNED_REFERENCE_PREFIX
 from companion_v2.references.wardrobe import (
     GROUP as WARDROBE_GROUP,
     WardrobeConfigurationOwner,
@@ -103,13 +102,13 @@ class ReferenceMaterialManagement:
         if (route is None or route.scene_kind is not ScopeKind.PRIVATE
                 or route.user != context.actor.subject or binding != context.role_binding):
             raise TaskError("reference_target_changed", "the configured role or private target has changed")
-        return owner_key(context)
+        return self.application.references.owner(context)
 
     def _settings(self, context):
-        target = ConfigTarget(context.scope.installation_id, ConfigLayer.ROLE,
-                              context.role_binding.role, bot_id=context.scope.bot_id)
-        references = ReferenceConfigurationOwner(self.runtime).read(target, reference_fields())
-        wardrobe = WardrobeConfigurationOwner(self.runtime).read(target, wardrobe_fields())
+        references = ReferenceConfigurationOwner(self.runtime).read(
+            self.application.reference_settings.target(context), reference_fields())
+        wardrobe = WardrobeConfigurationOwner(self.runtime).read(
+            self.application.wardrobe_settings.target(context), wardrobe_fields())
         return (
             {key.removeprefix(REFERENCE_GROUP + "."): item.value for key, item in references.fields.items()},
             {key.removeprefix(WARDROBE_GROUP + "."): item.value for key, item in wardrobe.fields.items()},
