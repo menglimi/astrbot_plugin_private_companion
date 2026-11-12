@@ -70,8 +70,14 @@ def prepare_core_reply_outbound_message(event, prepared, message, *, segment_ind
             # A directed interaction answers its selected member. Do not also
             # quote or ping the unrelated member who happened to open the turn.
             settings = {**settings, "reply_quote_enabled": False, "reply_mention_speaker_enabled": False}
+        native_ids = getattr(getattr(event, "platform_meta", None), "name", "") == "wechat_native"
+        # The persisted OutboundPlan is a OneBot-number contract. WeChat's
+        # original event owns opaque IDs; add its headers only at this native
+        # send boundary instead of changing the shared storage contract.
+        plan_settings = ({**settings, "reply_quote_enabled": False, "reply_mention_speaker_enabled": False}
+                         if native_ids else settings)
         plan = outbound_plan(
-            settings=settings,
+            settings=plan_settings,
             scope_kind=prepared.get("channel", "private"),
             sequence=max(1, int(segment_index) + 1),
             first_text_sequence=max(1, int(first_text_segment) + 1),
@@ -83,9 +89,20 @@ def prepare_core_reply_outbound_message(event, prepared, message, *, segment_ind
     except (TypeError, ValueError):
         logger.warning("[CompanionV2] 核心回复出站设置无效，保留宿主消息")
         return message
+    native_quote, native_mentions = "", ()
+    inputs = _trusted_inputs(prepared)
+    if (native_ids and inputs and prepared.get("channel") == "group" and text.strip()
+            and (segment_index == first_text_segment or not settings.get("reply_quote_first_part_only", True))):
+        threshold = settings.get("reply_quote_skip_chars", 0)
+        if (settings.get("reply_quote_enabled", False) and settings.get("reply_quote_group_enabled", True)
+                and (not threshold or len("".join(text.split())) > threshold)):
+            native_quote = inputs[0][0]
+        if settings.get("reply_mention_speaker_enabled", False):
+            native_mentions = (inputs[0][1],)
+    quote_id = native_quote or (plan.quote if plan else "")
     output = list(chain)
-    quote = bool(plan and plan.quote) and not any(isinstance(component, Reply) for component in output)
-    mentions = [account for account in (behavior_mentions or (plan.mentions if plan else ()))
+    quote = bool(quote_id) and not any(isinstance(component, Reply) for component in output)
+    mentions = [account for account in (behavior_mentions or native_mentions or (plan.mentions if plan else ()))
                 if not any(isinstance(component, At)
                            and str(getattr(component, "qq", "")) == account for component in output)]
     mention_components = [At(qq=account) for account in mentions]
@@ -115,7 +132,7 @@ def prepare_core_reply_outbound_message(event, prepared, message, *, segment_ind
             output[insert_at:insert_at] = images
 
     if quote:
-        output.insert(0, Reply(id=plan.quote))
+        output.insert(0, Reply(id=quote_id))
     if output == list(chain):
         return message
     return _derive(message, output)

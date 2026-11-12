@@ -82,6 +82,9 @@
     || person?.admin_nickname || ["core", "important"].includes(person?.identity_tier));
   const personFilter = person => isPrivateUser(person) ? "stable"
     : person?.group_member ? "temporary" : person ? "discovered" : null;
+  const peerLabel = item => (item.platform_name === "wechat_native" ? "微信" :
+    item.platform_name === "weixin_oc" ? "微信" : /^\d+$/.test(String(item.native_account_id || "")) ? "QQ" : "账号")
+    + " " + (item.native_account_id || "未知");
   const accountLabel = (item) => item.account_name || (/^\d+$/.test(String(item.account_id || ""))
     ? `QQ ${item.account_id}` : "当前 Bot 账号");
   const groupsOf = (person) => person.groups && typeof person.groups === "object" ? person.groups : {};
@@ -521,7 +524,7 @@
      title.append(badges);
     head.append(title);
     const meta = node("span", undefined, "card-meta");
-    meta.append(node("span", `QQ ${person.native_account_id || "未知"}`),
+    meta.append(node("span", peerLabel(person)),
       node("span", personaDisplayLabel(person)),
       node("span", accountLabel(person)));
     if (person.display_route_count > 1) meta.append(node("span", `${person.display_route_count} 个内部归属`, "route-count"));

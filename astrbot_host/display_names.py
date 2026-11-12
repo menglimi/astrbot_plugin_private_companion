@@ -47,6 +47,8 @@ def event_person_names(event):
         username = author.get("username") if isinstance(author, Mapping) else getattr(author, "username", None)
         nickname = platform_label(username, peer) if str(author_id or "") == peer else ""
         return nickname or normalized_name, ""
+    if getattr(getattr(event, "platform_meta", None), "name", "") == "wechat_native":
+        return normalized_name, ""
     sender_data = raw.get("sender") if isinstance(raw, Mapping) else None
     if not isinstance(sender_data, Mapping):
         return "", ""
@@ -141,10 +143,20 @@ class PlatformDisplayNames:
         except TimeoutError:
             return ""
 
+    def _platform_family(self, row, platform_id):
+        try:
+            platform = self.context.get_platform_inst(platform_id)
+            if platform.meta().name == "wechat_native" and platform.meta().id == platform_id:
+                row["platform_name"] = "wechat_native"
+        except (AttributeError, TypeError, ValueError):
+            pass
+
     async def targets(self, targets, *, cached_only=False):
         async def enrich(target):
             row = dict(target)
             platform, account = row.get("platform_id"), row.get("account_id")
+            if not cached_only:
+                self._platform_family(row, platform)
             kind = "group" if row.get("scope_kind") == "group" or row.get("group_id") else "private"
             native_id = row.get("group_id") if kind == "group" else row.get("participant_id")
             name, account_name = await asyncio.gather(
@@ -167,6 +179,8 @@ class PlatformDisplayNames:
     async def persons(self, persons, *, cached_only=False):
         async def enrich(person):
             row = dict(person)
+            if not cached_only:
+                self._platform_family(row, row.get("platform"))
             if (row.get("admin_nickname") or row.get("name_basis") == "administrator"
                     or row.get("name_basis") == "legacy" and row.get("legacy_maintained")):
                 return row

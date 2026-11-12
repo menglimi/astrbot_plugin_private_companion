@@ -19,7 +19,7 @@ from companion_v2.conversation.quotes.models import CapturedQuote, event_images,
 from companion_v2.conversation.quotes.forward_models import CapturedQuoteMedia, CapturedForwardQuote, CapturedForwardQuoteMedia
 from .native import (NativeAudioLocator, NativeConversationInput, NativePrivateBridge, NativeVideoLocator,
                      MEDIA_PREPARE_TIMEOUT, account_number, event_account_id, event_group_id,
-                     event_peer_id, native_client_connected, native_id, native_user_subject_id,
+                     event_peer_id, event_session_id, event_native_client, native_client_connected, native_id, native_user_subject_id,
                      route_id, supported_platform_name)
 from .quotes import NativeQuoteLocator, image_locator
 from .forwards import NativeForwardLocator, resource_id
@@ -78,6 +78,8 @@ def group_event_route(event):
                 or sender == login):
             raise TaskError("host_group_identity_mismatch", "group sender and route must match the original OneBot message")
         valid_sessions = (group, sender + "_" + group)
+    elif meta.name == "wechat_native":
+        valid_sessions = (event_session_id(event),)
     else:
         # QQ Official group openids are not OneBot envelopes.  AstrBot's
         # adapter already verified the websocket payload before creating the
@@ -85,7 +87,7 @@ def group_event_route(event):
         valid_sessions = (group,)
     if (session.platform_id != meta.id or session.platform_name != meta.id
             or session.session_id not in valid_sessions
-            or message.session_id != group
+            or message.session_id != (session.session_id if meta.name == "wechat_native" else group)
             or event.unified_msg_origin != f"{meta.id}:GroupMessage:{session.session_id}"):
         raise TaskError("host_route_mismatch", "group fields do not identify one native conversation")
     return GroupEventRoute(meta.id, login, sender, group, session.session_id, event_id, meta.name)
@@ -101,6 +103,10 @@ class NativeGroupBridge(NativePrivateBridge):
     @staticmethod
     def _umo(platform_id, session_id):
         return f"{platform_id}:GroupMessage:{session_id}"
+
+    async def _role(self, account, session_id):
+        conversation_id, role, instruction = await self._role_for_umo(account, self._umo(account.platform_id, session_id))
+        return self._role_conversation_id(conversation_id, role), role, instruction
 
     @staticmethod
     def _connection(client, account_id):
@@ -247,7 +253,8 @@ class NativeGroupBridge(NativePrivateBridge):
             original_parts = raw.get("message") if isinstance(raw, Mapping) else None
             self._validate_quote_components(original_parts, parts)
             text = self._text_only_parts(event, route)
-            at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event.bot
+            at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event_native_client(
+                self.context.get_platform_inst(route.platform_id), event)
             principal = AuthenticatedHostPrincipal(self.installation_id, self.host_id, route.platform_id,
                 route.sender_id, account.bot_id, route.account_id)
             cid, role, instruction = await self._role(account, route.session_id)
@@ -309,6 +316,12 @@ class NativeGroupBridge(NativePrivateBridge):
         return super().client(scope)
 
     def _session_matches_group(self, account, session_id, group_id):
+        if self.platform_name(account) == "wechat_native":
+            from .wechat_native import session_target
+            try:
+                return session_target(self.platforms[account.platform_id][0], session_id) == group_id
+            except ValueError:
+                return False
         if self.platform_name(account) == "aiocqhttp":
             parts = session_id.split("_")
             return (len(parts) in (1, 2)
@@ -453,7 +466,8 @@ class NativeGroupBridge(NativePrivateBridge):
                                  if allow_text_fallback else None)
             except TaskError:
                 fallback_text = None
-            at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event.bot
+            at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event_native_client(
+                self.context.get_platform_inst(route.platform_id), event)
             principal = AuthenticatedHostPrincipal(self.installation_id, self.host_id, route.platform_id,
                 route.sender_id, account.bot_id, route.account_id)
             # All mutable native fields above are frozen before host I/O. Identity

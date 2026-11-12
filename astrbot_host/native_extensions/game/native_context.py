@@ -22,19 +22,20 @@ class GameRoomContext:
     persona_prompt: str = ""
 
 
-def _room_route(room):
+def _room_route(room, topology=None):
     if (getattr(room, "source", None) != "private"
             or not str(getattr(room, "creator_qq", "") or "").strip()):
         return None
-    route = session_route(getattr(room, "session_id", None))
+    resolver = getattr(topology, "route", session_route)
+    route = resolver(getattr(room, "session_id", None))
     expected = (str(getattr(room, "platform", "") or ""), "private", str(room.creator_qq))
     return expected if route == expected else None
 
 
 def _scope_matches(scope, room, route):
     return bool(route and scope.kind is ScopeKind.PRIVATE
-                and (scope.platform, scope.native_scope_id, scope.session_id)
-                    == (route[0], route[2], route[2])
+                and (scope.platform, scope.native_scope_id) == (route[0], route[2])
+                and f"{scope.platform}:FriendMessage:{scope.session_id}" == room.session_id
                 and scope.bot_id and scope.account_id)
 
 
@@ -80,7 +81,7 @@ def _multi_context(controller, session, room, route):
 def current_room_context(runtime, room, visitor_qq=None):
     """Return a current, exact V2 private context or no private context."""
     controller = getattr(runtime, "controller", None)
-    route = _room_route(room)
+    route = _room_route(room, getattr(controller, "session_topology", None))
     if controller is None or route is None or getattr(controller, "_terminated", False):
         return None
     if visitor_qq is not None:

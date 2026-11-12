@@ -446,6 +446,64 @@ class CoreReplyVoiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(diagnostics[-1]["state"], "no_text")
 
 
+class NativeVoiceDecorationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_voice_only_retains_text_for_quote_and_mentions(self):
+        from astrbot.core.message.components import At, AtAll, Reply
+        for decoration in (Reply(id="4601"), At(qq="synthetic-member"), AtAll()):
+            with self.subTest(decoration=type(decoration).__name__):
+                event = FakeEvent()
+                event.get_platform_name = lambda: "wechat_native"
+                prepared = {"context": object(), "event_id": "native-voice",
+                            "voice_reply_policy": VoiceReplyPolicy(delivery_mode="voice_only")}
+                async def render(*_, **__):
+                    return {"type": "record", "data": {"file": "base64://YQ=="}}
+                async def prepare(current, message, check, index, count):
+                    return await prepare_core_reply_voice_message(
+                        event, current, message, renderer=render, delivery=None, authorize=check)
+                prepare_core_reply_event(event, prepared, authorize=_allow, prepare_send=prepare)
+                activate_core_reply_delivery_guard(event)
+                await event.send(MessageChain(chain=[decoration, Plain("晚安，睡吧")]))
+                self.assertEqual(len(event.sent), 1)
+                chain = event.sent[0].chain
+                self.assertIs(chain[0], decoration)
+                self.assertEqual("".join(p.text for p in chain if isinstance(p, Plain)), "晚安，睡吧")
+                self.assertEqual(sum(isinstance(p, Record) for p in chain), 1)
+
+    async def test_undecorated_native_and_other_platforms_keep_voice_only(self):
+        from astrbot.core.message.components import Reply
+        for platform, decorated in (("wechat_native", False), ("aiocqhttp", True),
+                                    ("weixin_oc", True), ("telegram", True)):
+            with self.subTest(platform=platform):
+                event = FakeEvent()
+                event.get_platform_name = lambda: platform
+                async def render(*_, **__):
+                    return {"type": "record", "data": {"file": "base64://YQ=="}}
+                chain = ([Reply(id="4601")] if decorated else []) + [Plain("晚安，睡吧")]
+                prepared = {"context": object(), "event_id": "voice-only",
+                            "voice_reply_policy": VoiceReplyPolicy(delivery_mode="voice_only")}
+                result = await prepare_core_reply_voice_message(
+                    event, prepared, MessageChain(chain=chain), renderer=render,
+                    delivery=None, authorize=_allow)
+                self.assertFalse(any(isinstance(p, Plain) for p in result.chain))
+                self.assertTrue(any(isinstance(p, Record) for p in result.chain))
+
+    async def test_native_tts_failure_keeps_original_quote_and_text(self):
+        from astrbot.core.message.components import Reply
+        event = FakeEvent()
+        event.get_platform_name = lambda: "wechat_native"
+        quote = Reply(id="4601")
+        async def render(*_, **__):
+            raise RuntimeError("synthetic synthesis failure")
+        prepared = {"context": object(), "event_id": "voice-failure",
+                    "voice_reply_policy": VoiceReplyPolicy(delivery_mode="voice_only")}
+        result = await prepare_core_reply_voice_message(
+            event, prepared, MessageChain(chain=[quote, Plain("晚安，睡吧")]),
+            renderer=render, delivery=None, authorize=_allow)
+        self.assertEqual([type(p) for p in result.chain], [Reply, Plain])
+        self.assertIs(result.chain[0], quote)
+        self.assertEqual(result.chain[1].text, "晚安，睡吧")
+
+
 class FakeDelivery:
     def __init__(self):
         self.released = []
