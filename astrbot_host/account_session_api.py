@@ -10,7 +10,7 @@ import logging
 from astrbot.api.web import request
 from astrbot.core import sp
 
-from companion_v2.adapters.astrbot.native import route_id
+from companion_v2.adapters.astrbot.native import native_client_connected, route_id
 from companion_v2.execution.models import TaskError, digest
 from .multi_settings import MultiHostSettings
 from .native import remember_session_settings
@@ -117,7 +117,28 @@ class AccountSessionWebAPI:
             code = data.get("code") or response.get("message") or "setup_targets_unavailable"
             reason = response.get("reason") or "the native session directory could not be read"
             raise TaskError(code, reason)
-        return response["data"]
+        discovered = deepcopy(response["data"])
+        lookup = getattr(getattr(self.controller, "context", None), "get_platform_inst", None)
+        if callable(lookup):
+            for row in discovered.get("accounts", []):
+                row["connection_status"] = self._connection_status(lookup, row)
+        return discovered
+
+    @staticmethod
+    def _connection_status(lookup, account):
+        # Read adapter-owned objects only; no login, transport call or runtime
+        # mutation. These hints explain a refusal, never authorize a save.
+        try:
+            platform = lookup(account["platform_id"])
+            if platform is None:
+                return "platform_unavailable"
+            client = platform.get_client()
+            if client is None:
+                return "client_unavailable"
+            return ("ready" if native_client_connected(platform, account["account_id"], client)
+                    else "account_unavailable")
+        except Exception:
+            return "unknown"
 
     async def get(self):
         try:
