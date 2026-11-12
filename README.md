@@ -561,6 +561,10 @@ python -X utf8 tools/build_v2_release.py --output <安装目录以外的交付�
 
 负责框架设计的 `6astra`、负责前端设计的 `opus5.5`、负责文本打磨的 `4argon`、负责吃白饭的 `ds4.1f`，为开发与测试提供支持的星渊、里恩、墨飛ぶ等群友，以及所有插件的贡献者与使用者们。
 
+### 许可证
+
+本项目使用 **GNU Affero General Public License v3.0（AGPL-3.0-only）**。完整文本见 [LICENSE](LICENSE)。
+
 ### Star History
 
 <a href="https://www.star-history.com/?repos=menglimi%2Fastrbot_plugin_private_companion&type=timeline&legend=top-left">

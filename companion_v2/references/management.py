@@ -329,7 +329,14 @@ class ReferenceMaterialManagement:
         identifiers = self._album_selection(image_ids)
         self._admit(operator, context, at)
         for image_id in identifiers:
-            self.application.messages.generated_images.album_image(context, at, image_id)
+            # Hiding is a non-destructive gallery projection.  A stale native
+            # item may no longer be readable (expired source, changed batch),
+            # but the operator must still be able to remove its card.  Do not
+            # let one unreadable image abort the whole selection.
+            try:
+                self.application.messages.generated_images.album_image(context, at, image_id)
+            except TaskError:
+                pass
         hidden = self._hide_album_ids(context, identifiers)
         return {"hidden": len(identifiers), "hidden_total": len(hidden)}
 
