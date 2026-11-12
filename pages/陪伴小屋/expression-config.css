@@ -58,6 +58,14 @@
 /* 平台页：主配置与右侧跨页入口并排；实际交互仍走原来的真实端点。 */
 #replyWorkspace.expression-platform-focus{display:block}#replyWorkspace.expression-platform-focus>[data-reply-part="preview"]{display:none}#replyWorkspace.expression-platform-focus .wb-section-layout{grid-template-columns:minmax(0,1fr);gap:0}#replyWorkspace.expression-platform-focus .wb-section-sidebar{display:none}.expression-platform-workspace{display:grid;grid-template-columns:minmax(0,1fr) minmax(250px,.36fr);gap:var(--sp-5);align-items:start}.expression-platform-workspace>#expressionPlatformReplyHost{grid-column:1;min-width:0}.expression-platform-workspace>#replyWorkspace{grid-column:1}.expression-platform-workspace>#pokePolicyWorkspace{grid-column:2;grid-row:1}.expression-platform-workspace>.expression-route-button,.expression-platform-workspace>[data-go]{grid-column:2}.expression-platform-workspace>.expression-route-button{width:100%;margin:0}.expression-platform-workspace .host-options-panel{padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--expression-panel-soft)}
 
+/* 表情检索配置：宽屏排成两列字段卡，避免单列行拉满整页后留下大片空白。 */
+@media (min-width:1180px){
+  .expression-reaction-workspace>#reactionConfigWorkspace .wb-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3);max-width:none}
+  .expression-reaction-workspace>#reactionConfigWorkspace .wb-field{padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
+  .expression-reaction-workspace>#reactionConfigWorkspace .wb-field+.wb-field{margin-top:0}
+  .expression-reaction-workspace>#reactionConfigWorkspace .wb-field-main{grid-template-columns:minmax(0,1fr) minmax(150px,.8fr);gap:var(--sp-2) var(--sp-3)}
+}
+
 /* 表情库：配置卡、搜索卡、素材网格和详情编辑器分层。 */
 .expression-reaction-workspace{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-5)}.expression-reaction-workspace>#reactionConfigWorkspace{padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--expression-panel-soft)}.expression-reaction-workspace .semantic-section{margin-top:var(--sp-4);padding-top:var(--sp-4);border-top-color:var(--t-line)}.expression-reaction-workspace .semantic-flags{grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-2)}.expression-reaction-workspace .semantic-providers{grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-3)}.expression-reaction-workspace .semantic-collection-summary{padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}.expression-reaction-workspace .semantic-toolbar{padding:var(--sp-2) 0;border-top:1px solid var(--t-line);border-bottom:1px solid var(--t-line)}.expression-reaction-workspace .semantic-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:var(--sp-3);border:0}.expression-reaction-workspace .semantic-row{display:grid;align-content:start;gap:var(--sp-2);min-height:130px;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);box-shadow:0 1px 4px color-mix(in srgb,var(--t-accent) 5%,transparent)}.expression-reaction-workspace .semantic-row strong{font-size:var(--fs-lead)}.expression-reaction-workspace .semantic-row p{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:var(--fs-tiny)}.expression-reaction-workspace .semantic-row small{font-size:var(--fs-micro)}.expression-reaction-workspace .semantic-row .button{justify-self:start}.expression-reaction-workspace .semantic-editor{position:fixed;z-index:80;top:50%;left:50%;width:min(520px,calc(100vw - 32px));max-height:86vh;overflow:auto;transform:translate(-50%,-50%);margin:0;padding:var(--sp-5);border:1px solid var(--t-accent);border-radius:var(--r-lg);background:var(--t-surface);box-shadow:var(--t-shadow-lift)}
 
@@ -135,4 +143,20 @@
   .expression-reaction-workspace .semantic-flags,
   .expression-reaction-workspace .semantic-providers{grid-template-columns:minmax(0,1fr)}
   .expression-reaction-workspace .semantic-list{grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr))}
+}
+
+/* 无层轨字段（journal / 精简卡片）没有左侧 12px 轨道；如果仍按三列排，
+   main 会落在第一列，标题被压成一字一行。 */
+.wb-field:not(:has(.wb-rail)){grid-template-columns:minmax(0,1fr) auto}
+.wb-field:not(:has(.wb-rail))>.wb-field-main{grid-column:1;min-width:0}
+.wb-field-main>.wb-label{min-width:0;overflow-wrap:break-word}
+#replyWorkspace .wb-field{display:grid;grid-template-columns:12px minmax(0,1fr) auto}
+#replyWorkspace .wb-field:not(:has(.wb-rail)){grid-template-columns:minmax(0,1fr) auto}
+#replyWorkspace .wb-field>.wb-field-main{grid-column:2;min-width:0}
+#replyWorkspace .wb-field:not(:has(.wb-rail))>.wb-field-main{grid-column:1}
+@media(max-width:760px){
+  #replyWorkspace .wb-field,
+  #replyWorkspace .wb-field:not(:has(.wb-rail)){grid-template-columns:auto minmax(0,1fr)}
+  #replyWorkspace .wb-field>.wb-field-main{grid-column:2}
+  #replyWorkspace .wb-field-main{grid-template-columns:minmax(0,1fr)}
 }

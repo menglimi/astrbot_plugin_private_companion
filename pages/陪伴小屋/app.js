@@ -71,6 +71,7 @@ let expressionModule='expression-text';
 let observationFilter='records', furnitureFilter='all', furnitureQuery='';
 let configEditorMounts=[];
 let identityDialogMount=null;
+let allFeatureDialogMount=null;
 let roleProfileConfigMount=null;
 let toastTimer, arrangementDraft=null, dialogReturnFocus=null, dialogReturnFurniture='', lastDetail='', voxelController=null;
 let draftConfirmation=null;
@@ -1955,7 +1956,7 @@ function closePerceptionSingle(){
   const head=document.getElementById('perceptionSingleItemHead');
   restorePerceptionSingleDetails();
   if(head)head.hidden=true;
-  if(workspace){workspace.classList?.toggle?.('is-single-item',false);workspace.hidden=true;}
+  if(workspace){workspace.classList?.toggle?.('is-single-item',false);workspace.hidden=true;delete workspace.dataset.perceptionSection;}
   window.CompanionRealityAccess?.focus?.('');
   window.CompanionPerceptionOverviewPage?.preview?.('');
   const previewHost=document.getElementById('perceptionSingleItemPreview');
@@ -1978,7 +1979,8 @@ function activatePerceptionTab(destination,{focus=false,scroll=false,modelTab=''
   restorePerceptionSingleDetails();
   const entering=page.hidden;
   const workspace=document.getElementById('perceptionConfigWorkspace');
-  if(workspace){workspace.hidden=false;workspace.classList?.toggle?.('is-single-item',single===true);}
+  if(workspace){workspace.hidden=false;workspace.classList?.toggle?.('is-single-item',single===true);
+    workspace.dataset.perceptionSection=id.startsWith('config-')?id.slice('config-'.length):id;}
   $$('[data-perception-page]').forEach(item=>{item.hidden=item!==page;});
   const subpanel=subpanelId?document.getElementById(subpanelId):null;
   const availableSubpanels=[...panel.querySelectorAll('details.perception-subpanel')].filter(item=>!item.hidden);
@@ -4357,7 +4359,7 @@ const allFeatureDomainOf={
   'image.output':'图像与创作',image_review:'图像与创作',quota:'图像与创作','content.authoring':'图像与创作',
   wardrobe:'图像与创作',library:'图像与创作',budget:'运行设置',relay:'运行设置',
 };
-const allFeaturesState={roleKey:'',loading:false,loaded:false,attempted:false,error:'',notice:'',sections:{},draft:{},saving:false};
+const allFeaturesState={roleKey:'',loading:false,loaded:false,attempted:false,error:'',notice:'',sections:{},draft:{},saving:false,domain:'all',status:'all'};
 function pluginRelativePath(path){
   const prefix='/astrbot_plugin_private_companion/';
   return typeof path==='string'&&path.startsWith(prefix)?path.slice(prefix.length):'';
@@ -4514,37 +4516,86 @@ function renderAllFeatureBoard(){
   if(allFeaturesState.error)
     return `<div class="all-functions-page">${head}<div class="all-functions-error" role="alert">${escapeHTML(allFeaturesState.error)}<button type="button" class="button small" data-all-feature-reload>重新读取</button></div></div>`;
   const board=allFeatureBoardGroups();
-  const sections=board.map(({domain,note,rows:groupRows},index)=>{
+  const domain=allFeaturesState.domain||'all';
+  const status=allFeaturesState.status||'all';
+  const allRows=board.flatMap(group=>group.rows.map(row=>({...row,domain:group.domain})));
+  const isOn=row=>Boolean(allFeaturesState.draft?.[row.name]?.[row.field]);
+  const statusHit=row=>status==='all'||(status==='enabled'?isOn(row):!isOn(row));
+  const domainHit=row=>domain==='all'||row.domain===domain;
+  const visibleRows=allRows.filter(row=>domainHit(row)&&statusHit(row));
+  const enabledCount=allRows.filter(isOn).length;
+  const domainNames=[...new Set(board.map(group=>group.domain))];
+  const domainCounts=Object.fromEntries(domainNames.map(name=>[name,allRows.filter(row=>row.domain===name).length]));
+  const statusCounts={all:allRows.length,enabled:allRows.filter(isOn).length,disabled:allRows.filter(row=>!isOn(row)).length};
+  const summary=`<div class="all-functions-summary">
+    <section class="all-functions-summary-card is-on"><span>已开启</span><b>${enabledCount} / ${allRows.length}</b><small>当前功能开关</small></section>
+    <section class="all-functions-summary-card"><span>未保存</span><b>${dirtyCount}</b><small>${dirtyCount?'保存后写入当前角色':'与已保存一致'}</small></section>
+    <section class="all-functions-summary-card"><span>功能领域</span><b>${domainNames.length}</b><small>按使用场景分组</small></section></div>`;
+  const domainChips=[['all','全部领域',allRows.length],...domainNames.map(name=>[name,name,domainCounts[name]])]
+    .map(([id,label,count])=>`<button type="button" class="all-functions-chip${domain===id?' is-active':''}" data-all-feature-domain="${escapeHTML(id)}" aria-pressed="${domain===id}"><span>${escapeHTML(label)}</span><small>${count}</small></button>`).join('');
+  const statusChips=[['all','全部状态'],['enabled','已开启'],['disabled','已关闭']]
+    .map(([id,label])=>`<button type="button" class="all-functions-chip${status===id?' is-active':''}" data-all-feature-status="${id}" aria-pressed="${status===id}"><span>${label}</span><small>${statusCounts[id]}</small></button>`).join('');
+  const visibleBoard=board.map((group,index)=>({...group,index,
+    rows:group.rows.filter(row=>domainHit({...row,domain:group.domain})&&statusHit({...row,domain:group.domain}))}))
+    .filter(group=>group.rows.length);
+  const sections=visibleBoard.map(({domain,note,rows:groupRows,index})=>{
     const id='all-feature-'+index;
     const rows=groupRows.map(row=>{
       const search=normalizeSearchText([row.label,row.help,row.field,domain,row.name].join(' '));
       if(row.link)return `<button type="button" class="all-feature-row all-feature-link" data-all-feature-search="${escapeHTML(search)}"
         data-go="manage" data-manage="identity-access" data-page-anchor="identity-relay">
         <span class="all-feature-link-icon">${I('arrow-up-right')}</span>
-        <span class="all-feature-copy"><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.help)}</small></span>
-        <span class="all-feature-scope">设置</span></button>`;
+        <span class="all-feature-copy"><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.help)}</small>
+          <span class="all-feature-meta"><span class="all-feature-state">设置</span><span class="all-feature-scope">${escapeHTML(domain)}</span></span></span></button>`;
       const checked=Boolean(allFeaturesState.draft?.[row.name]?.[row.field]);
       const dirty=allFeatureDirty(row.name,row.field,checked);
-      return `<label class="all-feature-row${dirty?' is-dirty':''}" data-all-feature-search="${escapeHTML(search)}">
-        <span class="all-feature-switch"><input type="checkbox" data-all-feature-toggle data-all-feature-group="${escapeHTML(row.name)}" data-all-feature-field="${escapeHTML(row.field)}" ${checked?'checked':''}></span>
-        <span class="all-feature-copy"><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.help||row.field)}</small></span>
-        <span class="all-feature-scope">${escapeHTML(row.name)}</span></label>`;
+      return `<div class="all-feature-row${checked?' is-on':' is-off'}${dirty?' is-dirty':''}" data-all-feature-search="${escapeHTML(search)}">
+        <label class="all-feature-toggle" aria-label="${escapeHTML(row.label)}"><input type="checkbox" data-all-feature-toggle data-all-feature-group="${escapeHTML(row.name)}" data-all-feature-field="${escapeHTML(row.field)}" ${checked?'checked':''}><span class="all-feature-toggle-visual" aria-hidden="true"></span></label>
+        <button type="button" class="all-feature-copy" data-all-feature-open="${escapeHTML(row.name)}" data-all-feature-open-field="${escapeHTML(row.field)}">
+          <strong>${escapeHTML(row.label)}</strong><code>${escapeHTML(row.field)}</code><small>${escapeHTML(row.help||row.field)}</small>
+          <span class="all-feature-meta"><span class="all-feature-state">${checked?'已开启':'已关闭'}</span><span class="all-feature-scope">${escapeHTML(domain)}</span><span class="all-feature-open-hint">查看配置 ›</span></span>
+        </button></div>`;
     }).join('');
-    return `<details class="all-feature-domain" id="${id}" open>
-      <summary><span>${escapeHTML(domain)}</span><small>${groupRows.length} 项</small></summary>
-      ${note?`<p class="all-feature-note">${escapeHTML(note)}</p>`:''}
-      <div class="all-feature-list">${rows}</div></details>`;
+    return `<section class="all-feature-domain" id="${id}">
+      <header><div><b>${escapeHTML(domain)}</b>${note?`<p>${escapeHTML(note)}</p>`:''}</div><small>${groupRows.length} 项</small></header>
+      <div class="all-feature-list">${rows}</div></section>`;
   }).join('');
   const nav=board.map(({domain},index)=>`<button type="button" data-all-feature-jump="all-feature-${index}">${escapeHTML(domain)}</button>`).join('');
   return `<div class="all-functions-page">${head}
     ${allFeaturesState.notice?`<p class="all-functions-notice" role="status">${escapeHTML(allFeaturesState.notice)}</p>`:''}
+    ${summary}
+    <div class="all-functions-filter">
+      <div class="all-functions-filter-line"><span>功能领域</span><div class="all-functions-chips">${domainChips}</div></div>
+      <div class="all-functions-filter-line"><span>当前状态</span><div class="all-functions-chips">${statusChips}</div></div>
+      <label class="all-functions-search"><span>筛选功能</span>
+        <input type="search" data-all-feature-filter placeholder="功能名、说明或字段键" autocomplete="off" />
+        <small data-all-feature-count>${visibleRows.length} 项</small></label>
+    </div>
     <nav class="all-functions-section-nav" aria-label="功能领域">${nav}</nav>
-    <label class="all-functions-filter"><span>筛选功能</span>
-      <input type="search" data-all-feature-filter placeholder="功能名、说明或字段键" autocomplete="off" />
-      <small data-all-feature-count></small></label>
-    ${board.length?sections:'<div class="all-functions-empty" role="status">当前角色没有可读取的布尔功能开关。</div>'}
+    ${visibleBoard.length?sections:'<div class="all-functions-empty" role="status">没有符合当前筛选的功能开关。</div>'}
   </div>`;
 }
+function openAllFeatureDetail(group, field=''){
+  const section=allFeaturesState.sections?.[group];
+  if(!section)return;
+  const spec=window.CompanionConfigEditors?.spec?.[group]||{};
+  const title=spec.title||group;
+  const id='allFeatureDetailWorkspace';
+  const body=`<p class="all-feature-detail-note">${escapeHTML(spec.note||'修改后会回到「全部功能」页显示；复杂字段在下方完整配置中编辑。')}</p>`
+    +configEditors(id,[group],title);
+  if(!openDetailDialog(title,body))return;
+  allFeatureDialogMount?.unmount?.();
+  allFeatureDialogMount=mountConfigEditor(id,[group]);
+  if(allFeatureDialogMount)configEditorMounts.push(allFeatureDialogMount);
+  if(field){
+    requestAnimationFrame(()=>{
+      const safe=globalThis.CSS?.escape?.(field)||field.replace(/["\\]/g,'\\$&');
+      const row=document.querySelector(`#${id} [data-config-field="${safe}"], #${id} [name="${safe}"]`);
+      row?.scrollIntoView?.({block:'center',behavior:'smooth'});
+    });
+  }
+}
+
 function filterAllFeatures(value){
   const query=normalizeSearchText(value).trim();
   let visible=0;
@@ -5144,6 +5195,8 @@ function openDetailDialog(title,body){
   if(!dialog||!dialog.classList||!$('#dialogContent'))return false;
   identityDialogMount?.unmount?.();
   identityDialogMount=null;
+  allFeatureDialogMount?.unmount?.();
+  allFeatureDialogMount=null;
   window.CompanionGameAccess?.unmount();
   const previousNativeHost=$('#dialogContent').querySelector('[data-native-extension-host]');
   if(previousNativeHost)window.CompanionNativeExtensionPanel?.unmount(previousNativeHost);
@@ -5215,8 +5268,8 @@ function configSearchLocation(entry){
 }
 function replySearchLocation(entry){
   const decisionView=['wakeup_direct','wakeup_interest','wakeup_members'].includes(entry.section)?'response'
-    :['wakeup_cold_group','wakeup_fatigue'].includes(entry.section)?'tempo'
-      :['group_air_guard','group_content_safety'].includes(entry.section)?'safety':'';
+    :['group_continuation','private_debounce','wakeup_cold_group','wakeup_fatigue'].includes(entry.section)?'tempo'
+      :['silence_policy','private_closing','group_air_guard','group_content_safety'].includes(entry.section)?'safety':'';
   if(decisionView)return {next:'manage',tab:'decision',decisionView,root:'#decisionReplyWorkspace'};
   const understandingTab={media_permissions:'overview',context_image:'image',image_narration:'image',
     video_narration:'video',file_understanding:'file',forwards:'forwards'}[entry.section];
@@ -5704,6 +5757,9 @@ document.addEventListener('click',event=>{
   if(el.dataset.allJump){const target=document.getElementById(el.dataset.allJump);if(target){target.open=true;target.scrollIntoView({behavior:'smooth',block:'start'});}return;}
   if(el.dataset.allFeatureReload!==undefined){allFeaturesState.error='';allFeaturesState.attempted=false;loadAllFeatures();return;}
   if(el.dataset.allFeatureSave!==undefined){saveAllFeatures();return;}
+  if(el.dataset.allFeatureDomain!==undefined){allFeaturesState.domain=el.dataset.allFeatureDomain||'all';paintPanel();return;}
+  if(el.dataset.allFeatureStatus!==undefined){allFeaturesState.status=el.dataset.allFeatureStatus||'all';paintPanel();return;}
+  if(el.dataset.allFeatureOpen){openAllFeatureDetail(el.dataset.allFeatureOpen,el.dataset.allFeatureOpenField||'');return;}
   if(el.dataset.allFeatureJump){const target=document.getElementById(el.dataset.allFeatureJump);if(target){target.open=true;target.scrollIntoView({behavior:'smooth',block:'start'});}return;}
   if(el.dataset.openSearch!==undefined){openSearch();return;}
   if(el.dataset.openNavigation!==undefined){navigate('manage','all');return;}
@@ -5865,7 +5921,7 @@ document.addEventListener('submit',event=>{
      弹窗里现在不会有 data-form 表单，保留这条兜底防止未捕获的提交刷新页面。 */
   const form=event.target;if(!form.dataset.form)return;event.preventDefault();
 });
-$('#detailDialog').addEventListener('close',()=>{identityDialogMount?.unmount?.();identityDialogMount=null;window.CompanionGameAccess?.unmount();const nativeHost=$('#dialogContent').querySelector('[data-native-extension-host]');if(nativeHost)window.CompanionNativeExtensionPanel?.unmount(nativeHost);$('#detailDialog').classList.remove('detail-dialog-settings','detail-dialog-native-extension');if(dialogReturnFocus?.isConnected)dialogReturnFocus.focus({preventScroll:true});else if(dialogReturnFurniture)document.querySelector('[data-furniture="'+dialogReturnFurniture+'"]')?.focus({preventScroll:true});else document.querySelector('[data-detail="'+lastDetail+'"]')?.focus({preventScroll:true});});
+$('#detailDialog').addEventListener('close',()=>{identityDialogMount?.unmount?.();identityDialogMount=null;allFeatureDialogMount?.unmount?.();allFeatureDialogMount=null;window.CompanionGameAccess?.unmount();const nativeHost=$('#dialogContent').querySelector('[data-native-extension-host]');if(nativeHost)window.CompanionNativeExtensionPanel?.unmount(nativeHost);$('#detailDialog').classList.remove('detail-dialog-settings','detail-dialog-native-extension');if(dialogReturnFocus?.isConnected)dialogReturnFocus.focus({preventScroll:true});else if(dialogReturnFurniture)document.querySelector('[data-furniture="'+dialogReturnFurniture+'"]')?.focus({preventScroll:true});else document.querySelector('[data-detail="'+lastDetail+'"]')?.focus({preventScroll:true});});
 $('#detailDialog').addEventListener('click',event=>{if(event.target!==event.currentTarget)return;const r=event.currentTarget.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)closeDetail();});
 $('#searchDialog').addEventListener('click',event=>{if(event.target===event.currentTarget){const r=event.currentTarget.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)event.currentTarget.close();}});
 $('#searchButton').addEventListener('click',openSearch);
