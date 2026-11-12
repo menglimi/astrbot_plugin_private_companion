@@ -23,6 +23,11 @@ from .types import MAX_REFERENCE_IMAGES, BackendResult, NativeImageError, finger
 OPENAI_COMPATIBLE_PLATFORMS = frozenset({"openai", "openrouter", "agnes", "sensenova", "doubao"})
 OPENAI_IMAGE_SUFFIXES = ("/images/generations", "/images/edits")
 MINIMAX_IMAGE_SUFFIX = "/image_generation"
+BAILIAN_IMAGE_SUFFIX = "/api/v1/services/aigc/multimodal-generation/generation"
+BAILIAN_KNOWN_SUFFIXES = (
+    BAILIAN_IMAGE_SUFFIX,
+    "/api/v1/services/aigc/text2image/image-synthesis",
+)
 # Grok Imagine (xAI) sizes images with ``aspect_ratio``/``resolution`` and
 # rejects the OpenAI ``size`` field outright:
 #   400 {"code":"400","error":"Argument not supported: size"}
@@ -286,6 +291,15 @@ def operation_url(base: str, operation: str, platform: str) -> str:
     """
     parsed = urlsplit(base)
     path = parsed.path.rstrip("/")
+    if platform == "bailian":
+        for candidate in BAILIAN_KNOWN_SUFFIXES:
+            if path.endswith(candidate):
+                path = path[:-len(candidate)]
+                break
+        if path.endswith("/api/v1"):
+            path = path[:-len("/api/v1")]
+        return urlunsplit((parsed.scheme, parsed.netloc, path + BAILIAN_IMAGE_SUFFIX,
+                           parsed.query, ""))
     if platform == "minimax":
         suffix = MINIMAX_IMAGE_SUFFIX
         known = (MINIMAX_IMAGE_SUFFIX,)
@@ -297,6 +311,45 @@ def operation_url(base: str, operation: str, platform: str) -> str:
             path = path[:-len(candidate)]
             break
     return urlunsplit((parsed.scheme, parsed.netloc, path + suffix, parsed.query, ""))
+
+
+def bailian_image_body(config, prompt: str, negative_prompt: str = "") -> dict:
+    """The DashScope multimodal image-generation request.
+
+    Wan/Qwen image models use ``input.messages``/``parameters.size`` rather than
+    the OpenAI Images shape.  ``size`` is the provider's ``WIDTH*HEIGHT`` string;
+    the same body is accepted by the native multimodal endpoint.
+    """
+    width = int(config.get("width", 1024))
+    height = int(config.get("height", 1024))
+    payload = {
+        "model": config.get("model", ""),
+        "input": {"messages": [{"role": "user", "content": [{"text": prompt}]}]},
+        "parameters": {"size": f"{width}*{height}", "n": 1, "watermark": False},
+    }
+    if isinstance(negative_prompt, str) and negative_prompt.strip():
+        payload["input"]["negative_prompt"] = negative_prompt.strip()
+    return payload
+
+
+def bailian_image_entries(payload: dict) -> list:
+    """Extract image URLs from DashScope's multimodal-generation response."""
+    output = payload.get("output") if isinstance(payload, dict) else None
+    if not isinstance(output, dict):
+        return []
+    entries = []
+    for choice in output.get("choices") or []:
+        message = choice.get("message") if isinstance(choice, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        for part in content or []:
+            if isinstance(part, dict):
+                url = part.get("image") or part.get("url")
+                if isinstance(url, str) and url:
+                    entries.append({"url": url})
+    for result in output.get("results") or []:
+        if isinstance(result, dict) and isinstance(result.get("url"), str) and result["url"]:
+            entries.append({"url": result["url"]})
+    return entries
 
 
 def xai_aspect_ratio(width: int, height: int) -> str:
@@ -316,6 +369,16 @@ def effective_platform(config):
     platform = resolve_platform(config)
     if platform in OPENAI_COMPATIBLE_PLATFORMS and is_xai_image_host(config.get("base_url", "")):
         return XAI_PLATFORM
+    if platform == "openai":
+        parsed = urlsplit(str(config.get("base_url") or ""))
+        host = (parsed.hostname or "").lower()
+        # A 7.1.x endpoint saved as OpenAI against the DashScope root never
+        # worked: Images API has no /images/generations there.  Route Wan/Qwen
+        # models through the native multimodal endpoint instead.  An explicit
+        # /compatible-mode/ path keeps the OpenAI contract.
+        if (host == "dashscope.aliyuncs.com" or host.endswith(".dashscope.aliyuncs.com")) \
+                and "/compatible-mode/" not in (parsed.path or "").lower():
+            return "bailian"
     return platform
 
 
@@ -450,6 +513,8 @@ class OnlineImageBackend:
         platform = effective_platform(config)
         if platform == "minimax":
             return ("generate",)
+        if platform == "bailian":
+            return ("generate",)
         if platform == XAI_PLATFORM:
             return (("generate", "edit") if xai_reference_limit(config) > 0 else ("generate",))
         if platform in OPENAI_COMPATIBLE_PLATFORMS:
@@ -465,47 +530,54 @@ class OnlineImageBackend:
         platform = effective_platform(config)
         if invocation.operation == "mask_edit" or (platform == "minimax" and invocation.operation != "generate"):
             raise NativeImageError("unsupported_image_operation", unconfirmed=False)
-        if platform not in OPENAI_COMPATIBLE_PLATFORMS and platform not in {"minimax", XAI_PLATFORM}:
+        if platform == "bailian" and invocation.operation != "generate":
+            raise NativeImageError("unsupported_image_operation", unconfirmed=False)
+        if platform not in OPENAI_COMPATIBLE_PLATFORMS and platform not in {"minimax", XAI_PLATFORM, "bailian"}:
             raise NativeImageError("unsupported_image_platform", unconfirmed=False)
         url = operation_url(base, invocation.operation, platform)
-        size = f"{config['width']}x{config['height']}"
-        if platform == "agnes" and config.get("size_label") in {"1K", "2K", "3K", "4K"}:
-            size = config["size_label"]
-        # The optional request fields follow the model's protocol.  The official
-        # GPT Image family accepts no ``response_format`` and only
-        # auto/low/medium/high quality; 7.0.7's stored ``standard`` is a legacy
-        # default there, while a dall-e endpoint keeps an explicit standard/hd.
-        accepted = accepted_request_fields(platform, config.get("model", ""),
-                                           quality=config.get("quality", ""),
-                                           response_format=config.get("response_format", ""))
-        request_prompt = (_prompt_with_reference_roles(invocation.prompt, references)
-                          if invocation.operation == "edit" else invocation.prompt)
-        body = {"model": config["model"], "prompt": request_prompt, "n": 1}
-        if platform == XAI_PLATFORM:
-            # Grok Imagine rejects OpenAI's ``size`` field.  Generation takes a
-            # native ``aspect_ratio``/``resolution`` pair; an edit keeps the
-            # source image's framing instead of being cropped to the saved
-            # canvas.  An inexpressible canvas is left to the provider instead
-            # of guessing a neighbouring ratio.
-            if invocation.operation == "generate":
-                aspect_ratio = xai_ratio(config)
-                if aspect_ratio:
-                    body["aspect_ratio"] = aspect_ratio
-                resolution = xai_resolution(config.get("size_label"))
-                if resolution:
-                    body["resolution"] = resolution
+        if platform == "bailian":
+            body = bailian_image_body(config, invocation.prompt, invocation.negative_prompt)
+            kwargs = {"json": body}
         else:
-            body["size"] = size
-        if accepted["response_format"]:
-            body["response_format"] = accepted["response_format"]
-        if platform == "minimax":
-            divisor = math.gcd(config["width"], config["height"])
-            ratio = config.get("ratio") or f"{config['width'] // divisor}:{config['height'] // divisor}"
-            body = {"model": config["model"], "prompt": invocation.prompt,
-                    "n": 1, "aspect_ratio": ratio,
-                    "response_format": "base64"}
-        elif accepted["quality"]:
-            body["quality"] = accepted["quality"]
+            size = f"{config['width']}x{config['height']}"
+            if platform == "agnes" and config.get("size_label") in {"1K", "2K", "3K", "4K"}:
+                size = config["size_label"]
+            # The optional request fields follow the model's protocol.  The official
+            # GPT Image family accepts no ``response_format`` and only
+            # auto/low/medium/high quality; 7.0.7's stored ``standard`` is a legacy
+            # default there, while a dall-e endpoint keeps an explicit standard/hd.
+            accepted = accepted_request_fields(platform, config.get("model", ""),
+                                               quality=config.get("quality", ""),
+                                               response_format=config.get("response_format", ""))
+            request_prompt = (_prompt_with_reference_roles(invocation.prompt, references)
+                              if invocation.operation == "edit" else invocation.prompt)
+            body = {"model": config["model"], "prompt": request_prompt, "n": 1}
+            if platform == XAI_PLATFORM:
+                # Grok Imagine rejects OpenAI's ``size`` field.  Generation takes a
+                # native ``aspect_ratio``/``resolution`` pair; an edit keeps the
+                # source image's framing instead of being cropped to the saved
+                # canvas.  An inexpressible canvas is left to the provider instead
+                # of guessing a neighbouring ratio.
+                if invocation.operation == "generate":
+                    aspect_ratio = xai_ratio(config)
+                    if aspect_ratio:
+                        body["aspect_ratio"] = aspect_ratio
+                    resolution = xai_resolution(config.get("size_label"))
+                    if resolution:
+                        body["resolution"] = resolution
+            else:
+                body["size"] = size
+            if accepted["response_format"]:
+                body["response_format"] = accepted["response_format"]
+            if platform == "minimax":
+                divisor = math.gcd(config["width"], config["height"])
+                ratio = config.get("ratio") or f"{config['width'] // divisor}:{config['height'] // divisor}"
+                body = {"model": config["model"], "prompt": invocation.prompt,
+                        "n": 1, "aspect_ratio": ratio,
+                        "response_format": "base64"}
+            elif accepted["quality"]:
+                body["quality"] = accepted["quality"]
+            kwargs = None
         if invocation.operation == "edit":
             max_reference_images = (xai_reference_limit(config) if platform == XAI_PLATFORM
                                     else config.get("max_reference_images", MAX_REFERENCE_IMAGES))
@@ -578,7 +650,7 @@ class OnlineImageBackend:
                 payload = json.loads(raw)
             except (ValueError, UnicodeError) as exc:
                 raise NativeImageError("backend_result_unconfirmed") from exc
-            entries = payload.get("data", [])
+            entries = bailian_image_entries(payload) if platform == "bailian" else payload.get("data", [])
             if isinstance(entries, dict):
                 entries = [{"b64_json":item} for item in entries.get("image_base64", [])] or [
                     {"url":item} for item in entries.get("image_urls", [])]
