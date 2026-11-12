@@ -21,6 +21,7 @@
 - 百炼生图地址归一化：带完整 multimodal-generation / text2image 后缀的地址会统一到图像生成端点。
 - 产出图库删除：即使原生图片已过期或源批次不可读，也会从图库移除，不再因单张图片校验失败而整批删除失败。
 - Provider 指纹忽略 AstrBot 动态重写的 `modalities`，避免平台重连后误报 `host_provider_changed`。
+- 项目许可证切换为 AGPL-3.0-only，补全 LICENSE、`pyproject.toml` 与 `metadata.yaml` 声明。
 
 ### 平台与宿主
 
