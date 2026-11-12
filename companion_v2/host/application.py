@@ -123,6 +123,8 @@ from companion_v2.references.wardrobe import (WardrobeConfigurationOwner, Wardro
 from companion_v2.qzone.configuration import (QzoneConfigurationOwner, QzoneSettings,
     configuration_fields as qzone_configuration_fields)
 from companion_v2.qzone.service import QzoneService
+from companion_v2.system_prompts.configuration import (
+    RoleSystemPromptConfigurationOwner, configuration_fields as system_prompt_configuration_fields)
 from companion_v2.relationships.private_access import (PrivateAccessSettings,
     configuration_fields as private_access_configuration_fields)
 from companion_v2.relationships.private_notice import PrivateAccessGate, PrivateRefusalNotice
@@ -220,7 +222,7 @@ class CompanionApplication:
                  solar_term_port=None, budget_soft=None, capability_owners=(),
                  qzone_transport=None, default_provider_resolver=None,
                  knowledge=None, memory_owner=DEFAULT_MEMORY_OWNER, memory_push=DEFAULT_MEMORY_PUSH, wake_port=None,
-                 search_port_factory=None):
+                 search_port_factory=None, configuration_store=None):
         if type(owns_runtime) is not bool or not any(p.kind == REPLY_KIND and p.lane is Lane.FOREGROUND for p in profiles):
             raise ValueError("assembly requires a foreground reply profile and explicit runtime ownership")
         if external is not None and (external.runtime is not runtime or external.messages is not None):
@@ -229,6 +231,10 @@ class CompanionApplication:
         if external is not None and limits.foreground_slots < 2:
             raise ValueError("external tools need capacity for both parent and child")
         self.runtime, self.owns_runtime = runtime, owns_runtime
+        self.configuration_store = configuration_store if configuration_store is not runtime else None
+        if self.configuration_store is not None:
+            runtime.attach_configuration_store(self.configuration_store)
+        configuration_runtime = configuration_store or runtime
         self.now = now or (lambda: datetime.now(timezone.utc))
         # 关键词材料（如服务余额）只有登记项自己需要时才会去取；端口留着由它按需调用。
         self.balance_port = balance_port
@@ -267,12 +273,13 @@ class CompanionApplication:
             *qzone_configuration_fields(),
             *private_access_configuration_fields(),
             *relay_configuration_fields(),
+            *system_prompt_configuration_fields(),
             *(field for owner in capability_owners for field in owner.fields),
             *content_authoring_configuration_fields(), *content_cover_configuration_fields()) if f.field_id not in registry.fields)
         if extra:
             registry = FieldRegistry(version=registry.version, fields=tuple(registry.fields.values()) + extra)
         reference_configuration_owner = ReferenceConfigurationOwner(runtime)
-        self.configuration = ConfigurationService(runtime, with_contact_fields(registry),
+        self.configuration = ConfigurationService(runtime, with_contact_fields(registry), store=configuration_runtime,
             owners=(ContactConfigurationOwner(runtime), GrowthConfigurationOwner(runtime),
                 SkillConfigurationOwner(runtime), RoleProfileConfigurationOwner(runtime),
                 RelationshipProfileConfigurationOwner(runtime),
@@ -291,9 +298,10 @@ class CompanionApplication:
                     reference_configuration_owner,
                     WardrobeConfigurationOwner(runtime),
                     QzoneConfigurationOwner(runtime),
+                    RoleSystemPromptConfigurationOwner(runtime),
                     *capability_owners))
         try:
-            migrate_presence_to_role(runtime)
+            migrate_presence_to_role(configuration_runtime)
         except Exception as error:
             logger.warning("[CompanionV2] QQ presence scope migration failed error_type=%s", type(error).__name__)
         self.reply_settings = ReplySettings(self.configuration)
@@ -1213,4 +1221,8 @@ class CompanionApplication:
                 if self.owns_runtime:
                     self.runtime.close()
                     self._storage_closed = True
+                if self.configuration_store is not None:
+                    self.runtime.attach_configuration_store(None)
+                    self.configuration_store.close()
+                    self.configuration_store = None
             return ShutdownReport(self.state, handles, self._storage_closed)

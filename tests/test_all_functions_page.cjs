@@ -69,6 +69,7 @@ test("功能总表按 6.7.0 分组渲染真实布尔开关", () => {
   assert.match(html, /通用能力/);
   assert.match(html, /群聊功能/);
   assert.match(html, /data-all-feature-toggle/);
+  assert.match(html, /data-all-feature-open=/);
   assert.match(html, /data-all-feature-save/);
   assert.match(html, /enable_expression_learning/);
   assert.match(html, /enable_group_companion/);
@@ -92,6 +93,9 @@ test("领域导航与筛选输入来自当前总表", () => {
   const html = api.render();
   assert.match(html, /data-all-feature-jump="all-feature-0"/);
   assert.match(html, /data-all-feature-filter/);
+  assert.match(html, /all-functions-summary/);
+  assert.match(html, /data-all-feature-domain="all"/);
+  assert.match(html, /data-all-feature-status="enabled"/);
   assert.ok(html.includes("通用能力"));
   assert.ok(html.includes("群聊功能"));
 });

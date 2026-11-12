@@ -259,7 +259,7 @@ test('事实页读取全量统计并展示已授权的外部记忆分类计数',
   assert.match(markup, /3 \/ 4/);
   assert.match(markup, /27/);
   assert.match(markup, /整理完成 3/);
-  assert.match(markup, /记忆插件摘要已接通/);
+  assert.match(markup, /已接通/);
   assert.match(markup, /个人资料/);
   assert.match(markup, /私聊内容/);
   assert.equal(h.page.state.data.overview.linkage.counts.total, 11);
@@ -352,7 +352,7 @@ test('选中事实会读详情，并顺手带出版本历史', async () => {
   /* pinned 由列表项带过来：/detail 不重复下发 context_mode，
      但「是不是核心记忆」是详情要显示的东西，漏了这条详情上就少一个徽章。 */
   assert.equal(h.page.state.data.factDetail.item.context_mode, 'pinned');
-  assert.match(h.element.innerHTML, /核心记忆/);
+  assert.match(h.element.innerHTML, /核心事实/);
   assert.match(h.element.innerHTML, /第三版/);
   assert.match(h.element.innerHTML, /对方消息/);
   assert.doesNotMatch(h.element.innerHTML.replace(/<[^>]*>/g, ''), /human_message|internal-source/);
@@ -407,7 +407,7 @@ test('群聊目标不给 memory_api 时，整页给一条说明而不是空表',
   });
   await h.settle();
   await mounted;
-  assert.match(h.element.innerHTML, /群聊记忆独立管理/);
+  assert.match(h.element.innerHTML, /群聊记录独立管理/);
   assert.equal(h.requests.filter(r => r.route === 'memory').length, 0);
 });
 
@@ -418,7 +418,7 @@ test('目录失败时给一句人话，不留旧内容', async () => {
   h.fail(h.requests.find(r => r.route === 'page/targets'), 'core_access_required');
   await h.settle();
   await mounted;
-  assert.match(h.element.innerHTML, /没有记忆管理权限/);
+  assert.match(h.element.innerHTML, /没有 事实管理权限/);
   assert.equal(h.page.state.data.ready, false);
   assert.equal(h.page.state.data.catalog, null);
 });
@@ -465,24 +465,19 @@ test('unmount 之后迟到的响应不会写回页面', async () => {
    这三条钉的是「页面按后端判定说话」：让位时点名伙伴，自己来时说明原因，
    读不到时不假装知道。名字只能来自 display_name，页面不许写死。 */
 
-test('让位时页面点名伙伴，而不是声称 V2 独占记忆', async () => {
+test('让位时只标外部提供方，不写长提示', async () => {
   const h = harness(undefined, ownership('external', 'external_owner_active', '某个记忆插件'));
   await boot(h, [fact('a-1', 1)]);
   const text = h.element.innerHTML;
-  assert.match(text, /长期记忆现在由〈某个记忆插件〉提供/);
-  assert.match(text, /换回 V2 提供时可以直接接着用/);
+  assert.match(text, /长期记录：〈某个记忆插件〉（外部）/);
   /* 名字来自 display_name：换一个名字，页面说的就得跟着换。 */
   assert.doesNotMatch(text, /我会牢牢记住你/);
 });
 
-test('自己来时说明原因，并点明两个库不是同一份', async () => {
+test('自己来时只标本插件事实库', async () => {
   const h = harness(undefined, ownership('self', 'owner_handle_disabled', '某个记忆插件'));
   await boot(h, [fact('a-1', 1)]);
-  const text = h.element.innerHTML;
-  assert.match(text, /长期记忆现在由 V2 提供/);
-  assert.match(text, /它的记忆桥没有启用/);
-  assert.match(text, /与〈某个记忆插件〉的库不是同一份/);
-  assert.match(text, /它恢复可用后，注入与工具会立刻回到它那边/);
+  assert.match(h.element.innerHTML, /长期记录：本插件事实库/);
 });
 
 test('归属读不到时按「V2 自己来」说，不留空也不假装知道', async () => {
@@ -490,7 +485,7 @@ test('归属读不到时按「V2 自己来」说，不留空也不假装知道',
      这时页面必须说「读不出来」并给出兜底口径，而不是留空让人猜。 */
   const h = harness(undefined, {owner: null, reason: ''});
   await boot(h, [fact('a-1', 1)]);
-  assert.match(h.element.innerHTML, /记忆归属暂时读不出来/);
+  assert.match(h.element.innerHTML, /记录归属暂时读不出来/);
   assert.match(h.element.innerHTML, /注入与工具都会照常出现/);
 });
 
@@ -499,8 +494,7 @@ test('归属形状能读但取值不认识时，仍按「V2 自己来」说清�
      而是走「自己来」那一支，用兜底原因说明。 */
   const h = harness(undefined, {owner: 'nonsense', reason: 'nonsense', display_name: ''});
   await boot(h, [fact('a-1', 1)]);
-  assert.match(h.element.innerHTML, /长期记忆现在由 V2 提供/);
-  assert.match(h.element.innerHTML, /它的记忆声明当前不可用/);
+  assert.match(h.element.innerHTML, /长期记录：本插件事实库/);
 });
 
 

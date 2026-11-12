@@ -113,13 +113,13 @@ SCOPE_MAIN_DATABASE = "main_database_only"
 # dashboard page owns the human wording so the API stays language-neutral.
 LEGACY_WARNINGS = ("legacy_main_database_only", "side_stores_not_restored", "mixed_generation_risk")
 # The paths a main-database-only restore leaves exactly as they are today.
-LEGACY_PRESERVES = ("semantic-catalog.sqlite3", "legacy-memory-materials.sqlite3", "content_v2/",
-                    "decision/", "extensions/", "legacy-v1-archives/", "screen/", "search/")
+LEGACY_PRESERVES = ("semantic-catalog.sqlite3", "legacy-memory-materials.sqlite3", "configuration/",
+                    "content_v2/", "decision/", "extensions/", "legacy-v1-archives/", "screen/", "search/")
 # Files at the root of the runtime data directory that are part of the installation.
 OWNED_ROOT_FILES = (MAIN_DATABASE, "semantic-catalog.sqlite3", "legacy-memory-materials.sqlite3")
 # Root directories the installation fully owns. Adding a new top-level data store
 # means adding it here in the same change, otherwise snapshots would omit it.
-OWNED_ROOT_DIRECTORIES = ("content_v2", "decision", "extensions", "legacy-v1-archives", "screen", "search")
+OWNED_ROOT_DIRECTORIES = ("configuration", "content_v2", "decision", "extensions", "legacy-v1-archives", "screen", "search")
 # Derived state that is rebuilt from authoritative rows; never packaged, always
 # dropped by a restore so a stale index cannot answer for rows that no longer exist.
 DERIVED_ROOT_FILES = ("memory-search.sqlite3",)

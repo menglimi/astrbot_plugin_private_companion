@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+from functools import lru_cache
 from pathlib import PurePosixPath
 from zipfile import ZipFile, BadZipFile
 
@@ -12,6 +13,7 @@ from companion_v2.execution.models import TaskError
 _DOCUMENT_PARSERS = {".pdf": "fitz", ".docx": "docx", ".xlsx": "openpyxl", ".pptx": "pptx"}
 
 
+@lru_cache(maxsize=1)
 def parser_availability() -> dict[str, bool]:
     """各文档格式的解析器是否可用。
 

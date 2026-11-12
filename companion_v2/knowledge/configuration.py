@@ -179,7 +179,7 @@ def read_installation_settings(runtime, installation_id, *, override=None):
 
 
 def _read(runtime, target, *, override=None):
-    snapshot = SparseConfigurationOwner(runtime).read(target, field_names())
+    snapshot = SparseConfigurationOwner(runtime.configuration_store).read(target, field_names())
     values = {key.removeprefix(GROUP + "."): field.value for key, field in snapshot.fields.items()}
     if override is not None:
         values.update(override)

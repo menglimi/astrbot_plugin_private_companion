@@ -943,7 +943,7 @@ function mountPanelWorkspaces(){
   /* 卸载对记忆页尤其重要：它有一条 8 秒的自动刷新定时器（整理与事实视图），
      面板整块替换后不卸载的话，定时器会继续往丢弃的节点上发请求。 */
   const memorySettingsHost=$('#memorySettingsHost');
-  guarded('记忆策略',()=>memorySettingsHost
+  guarded('整理策略',()=>memorySettingsHost
     ?window.CompanionMemorySettingsSection?.mount(memorySettingsHost)
     :window.CompanionMemorySettingsSection?.unmount());
   const maintenanceHost=$('#maintenanceWorkspace');
@@ -4024,7 +4024,7 @@ function renderExpressionLearning(){
 function renderLearningPageOriginal(){
   return consoleSections([
     ['表达与说话习惯学习','',`${renderExpressionLearning()}${configEditors('growthConfigWorkspace',['role.growth.skills'],'成长与技能','')}${settingsJump('风格提示词与表达规则','expression','候选的采纳、驳回与退役，以及每条已采纳规则被用过多少次。')}`],
-    ['记忆沉淀与每日反思','反思按时间到点或手动续接，把来源提炼为事实与经历摘要。',`${consoleMountHead('记忆反思','来源 → 新记忆条目；增量、重复安全，不回写改写已成型记忆。')}${settingsJump('反思结果与记忆治理','memory','查看沉淀下来的事实、经历与整理进度。')}`],
+    ['事实沉淀与每日反思','把来源提炼为事实与经历摘要。',`${consoleMountHead('整理与反思','来源 → 新事实条目；增量、重复安全，不回写改写已成型事实。')}${settingsJump('查看本插件事实与经历','memory','查看沉淀下来的事实、经历与整理进度。')}`],
   ]);
 }
 /* 需要一个具体对象与角色的配置组：后端按会话或按安装/角色保存。
@@ -4284,7 +4284,7 @@ const allFunctionsGroups=[
     ['identity-groups','messages-square','群聊','群聊目录、群成员与成员线索'],
     ['identity-access','shield-check','访问规则','新私聊成员的默认权限与跨窗口递话'],
     ['identity-feelings','heart-handshake','关系与情感','角色对用户和群聊的关系理解'],
-    ['memory','orbit','事实与经历','事实、原话、来源与记忆策略',[
+    ['memory','orbit','事实与经历','本插件事实、原话与整理策略',[
       ['记录','records'],['设置','settings']]],
   ]],
   ['对话与感知',[
@@ -4788,11 +4788,11 @@ function renderMemoryPage(){
   return `<div class="memory-route">
     <div class="memory-route-tabs" role="tablist" aria-label="事实与经历页面">
       <button id="memory-route-records" type="button" role="tab" class="memory-route-tab${records?' is-active':''}" data-memory-route="records" aria-selected="${records}" aria-controls="memoryWorkspace" tabindex="${records?'0':'-1'}">事实与经历</button>
-      <button id="memory-route-settings" type="button" role="tab" class="memory-route-tab${records?'':' is-active'}" data-memory-route="settings" aria-selected="${!records}" aria-controls="memorySettingsHost" tabindex="${records?'-1':'0'}">记忆策略</button>
+      <button id="memory-route-settings" type="button" role="tab" class="memory-route-tab${records?'':' is-active'}" data-memory-route="settings" aria-selected="${!records}" aria-controls="memorySettingsHost" tabindex="${records?'-1':'0'}">整理策略</button>
     </div>
     ${records
       ? '<section id="memoryWorkspace" class="memory-workspace" aria-label="事实与经历工作区"></section>'
-      : `<section id="memorySettingsHost" class="memory-settings-workspace" aria-label="记忆策略设置">${consoleLoading('正在读取记忆策略…')}</section>`}
+      : `<section id="memorySettingsHost" class="memory-settings-workspace" aria-label="整理策略设置">${consoleLoading('正在读取整理策略…')}</section>`}
   </div>`;
 }
 function learningRoleApi(target,role,key){
@@ -5218,9 +5218,9 @@ function openDetailDialog(title,body){
 const searchIndex=[
   ['生活观察','日记、梦境、生活轨迹、状态与交互影响','scan-eye','home-section','observation'],['家具与能力','基础生活与拓展家具，启用状态和连接','armchair','home-section','furniture'],
   ['跨窗口与跨群递话','私聊与群聊目标、确认和成员权限','corner-up-right','manage','identity-access'],
-  ['首页与小屋','生活总览、观察与家具能力','house','life','home'],['日记与生活','日记、睡眠、阅读与作息配置','notebook-pen','life','diary'],['关系网','只查看用户与群聊之间的连接关系','network','manage','identity'],['用户','用户目录、逐人资料与私聊默认权限','users-round','manage','identity-people'],['群聊','群聊目录、群内成员与成员线索','messages-square','manage','identity-groups'],['共同经历','记录、原话、来源与记忆策略','orbit','manage','memory'],['作品与相册','原稿、照片与收藏','images','home-section','furniture'],['一起活动','共读、棋桌与通话','coffee','home-section','furniture'],['能力目录','可选拓展当前能不能用','blocks','home-section','furniture'],
+  ['首页与小屋','生活总览、观察与家具能力','house','life','home'],['日记与生活','日记、睡眠、阅读与作息配置','notebook-pen','life','diary'],['关系网','只查看用户与群聊之间的连接关系','network','manage','identity'],['用户','用户目录、逐人资料与私聊默认权限','users-round','manage','identity-people'],['群聊','群聊目录、群内成员与成员线索','messages-square','manage','identity-groups'],['共同经历','本插件事实、原话与经历记录','orbit','manage','memory'],['作品与相册','原稿、照片与收藏','images','home-section','furniture'],['一起活动','共读、棋桌与通话','coffee','home-section','furniture'],['能力目录','可选拓展当前能不能用','blocks','home-section','furniture'],
   ['感知','环境、消息与媒体来源','scan-eye','manage','perception'],['决策','本轮上下文与群聊参与判断','brain','manage','decision'],['行动','生活行为与社交发布','play','manage','action'],['产出','图像生成与创作作品','shapes','manage','output'],['表达','文本、语音、表情与投递','message-square-more','manage','expression'],['自我','世界知识、角色设定与自身档案','user-round','manage','governance'],
-  ['开始使用','首次连接、选择对象与决定是否发送','rocket','manage','setup'],['人格处理','规范人格、创建人格与拟人优化','notebook-pen','manage','persona'],['外观与设置','主题、密度、圆角、字号与动效','palette','manage','appearance'],['主动联系','主动契机、联系节奏与免打扰','heart-handshake','manage','contact'],['事实与经历','事实、原话与群词义','orbit','manage','memory'],['模型与连接','公共模型与任务路由','sliders-horizontal','manage','models'],['运行诊断','运行状态与排障','settings-2','manage','maintenance'],['便签','下次去书店，找一本植物随笔','sticky-note',null,'notes'],['窗边的一页','照片与相关经历','image',null,'photo-window'],['创作书架','Content 能力状态','library-big',null,'cap-content'],['现实触及','Reality 设备与授权','radio','manage','perception'],
+  ['开始使用','首次连接、选择对象与决定是否发送','rocket','manage','setup'],['人格处理','规范人格、创建人格与拟人优化','notebook-pen','manage','persona'],['外观与设置','主题、密度、圆角、字号与动效','palette','manage','appearance'],['主动联系','主动契机、联系节奏与免打扰','heart-handshake','manage','contact'],['事实与经历','本插件事实、原话与群词义','orbit','manage','memory'],['模型与连接','公共模型与任务路由','sliders-horizontal','manage','models'],['运行诊断','运行状态与排障','settings-2','manage','maintenance'],['便签','下次去书店，找一本植物随笔','sticky-note',null,'notes'],['窗边的一页','照片与相关经历','image',null,'photo-window'],['创作书架','Content 能力状态','library-big',null,'cap-content'],['现实触及','Reality 设备与授权','radio','manage','perception'],
 ];
 const configSearchLocations={
   quota:{next:'manage',tab:'output',root:'#imageControlWorkspace'},image_review:{next:'manage',tab:'output',root:'#imageControlWorkspace'},

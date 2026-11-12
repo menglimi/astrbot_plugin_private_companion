@@ -272,6 +272,80 @@ class _SlowOperationLogState:
     max_elapsed_ms: int = 0
 
 
+CONFIGURATION_STORE_STATEMENTS = (
+    """CREATE TABLE IF NOT EXISTS runtime_metadata (
+        key TEXT PRIMARY KEY NOT NULL,
+        value TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS operations (
+        operation_id TEXT PRIMARY KEY NOT NULL,
+        owner TEXT NOT NULL,
+        installation_id TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        scope_kind TEXT NOT NULL,
+        native_scope_id TEXT NOT NULL,
+        bot_id TEXT NOT NULL DEFAULT '',
+        account_id TEXT NOT NULL DEFAULT '',
+        conversation_id TEXT NOT NULL DEFAULT '',
+        session_id TEXT NOT NULL DEFAULT '',
+        lineage_id TEXT NOT NULL,
+        operation_revision INTEGER NOT NULL CHECK (operation_revision > 0),
+        idempotency_key TEXT NOT NULL,
+        parameter_hash TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('accepted', 'completed', 'unknown')),
+        commit_state TEXT NOT NULL CHECK (commit_state IN ('committed', 'not_committed', 'unknown')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(owner, installation_id, platform, scope_kind, native_scope_id,
+               bot_id, account_id, conversation_id, session_id, idempotency_key)
+    )""",
+    """CREATE TABLE IF NOT EXISTS configuration_targets (
+        target_key TEXT PRIMARY KEY NOT NULL,
+        target_json TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK (revision >= 0),
+        updated_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS configuration_values (
+        target_key TEXT NOT NULL,
+        field_id TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK (revision > 0),
+        PRIMARY KEY(target_key, field_id),
+        FOREIGN KEY(target_key) REFERENCES configuration_targets(target_key)
+    )""",
+    """CREATE TABLE IF NOT EXISTS configuration_changes (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation_id TEXT UNIQUE NOT NULL,
+        target_key TEXT NOT NULL,
+        group_id TEXT NOT NULL,
+        changed INTEGER NOT NULL CHECK (changed IN (0, 1)),
+        result_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(operation_id) REFERENCES operations(operation_id),
+        FOREIGN KEY(target_key) REFERENCES configuration_targets(target_key)
+    )""",
+    "CREATE INDEX IF NOT EXISTS configuration_changes_target_idx "
+    "ON configuration_changes(target_key, group_id, changed, sequence)",
+    """CREATE TABLE IF NOT EXISTS configuration_consumers (
+        consumer_id TEXT PRIMARY KEY NOT NULL,
+        generation INTEGER NOT NULL CHECK (generation > 0),
+        started_sequence INTEGER NOT NULL CHECK (started_sequence >= 0)
+    )""",
+    """CREATE TABLE IF NOT EXISTS configuration_applications (
+        target_key TEXT NOT NULL,
+        group_id TEXT NOT NULL,
+        consumer_id TEXT NOT NULL,
+        generation INTEGER NOT NULL CHECK (generation > 0),
+        resolution_token TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('applied', 'failed')),
+        adopted_values_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(target_key, group_id, consumer_id),
+        FOREIGN KEY(consumer_id) REFERENCES configuration_consumers(consumer_id)
+    )""",
+)
+
+
 class StorageRuntime:
     """Own the V2 database connection; repositories never open their own connection."""
 
@@ -321,10 +395,28 @@ class StorageRuntime:
         self._slow_operation_clock = time.monotonic
         self._write_depth = 0
         self._write_owner_thread_id: int | None = None
+        self._configuration_only = False
+        self._configuration_store: StorageRuntime | None = None
+
+    @property
+    def configuration_store(self) -> "StorageRuntime":
+        """The runtime that owns configuration rows (this one unless split)."""
+        return self._configuration_store or self
+
+    def attach_configuration_store(self, store: "StorageRuntime | None") -> None:
+        self._configuration_store = store if store is not self else None
 
     @classmethod
     def open(cls, *, data_root: str | Path, installation_id: str) -> "StorageRuntime":
         runtime = cls(data_root=Path(data_root), installation_id=installation_id)
+        runtime._open_connection()
+        return runtime
+
+    @classmethod
+    def open_configuration(cls, *, data_root: str | Path, installation_id: str) -> "StorageRuntime":
+        """Open the small side store without creating the 100+ table conversation schema."""
+        runtime = cls(data_root=Path(data_root), installation_id=installation_id)
+        runtime._configuration_only = True
         runtime._open_connection()
         return runtime
 
@@ -710,7 +802,19 @@ class StorageRuntime:
             # every migration checks references before commit and restores them.
             connection.execute("PRAGMA foreign_keys = OFF")
             try:
-                self._initialize_schema()
+                if self._configuration_only:
+                    for statement in CONFIGURATION_STORE_STATEMENTS:
+                        connection.execute(statement)
+                    connection.execute(
+                        "INSERT OR IGNORE INTO runtime_metadata(key, value) VALUES (?, ?)",
+                        ("installation_id", self._installation_id),
+                    )
+                    connection.execute(
+                        "INSERT OR IGNORE INTO runtime_metadata(key, value) VALUES (?, ?)",
+                        ("schema_version", "configuration-store.v1"),
+                    )
+                else:
+                    self._initialize_schema()
             finally:
                 connection.execute("PRAGMA foreign_keys = ON")
         except sqlite3.Error as error:

@@ -35,21 +35,39 @@ class ConfigurationService:
     OWNER = "configuration"
 
     def __init__(
-        self, runtime: StorageRuntime, registry: FieldRegistry, *, owners: tuple[ConfigurationOwner, ...] = (),
+        self, runtime: StorageRuntime, registry: FieldRegistry, *,
+        store: StorageRuntime | None = None, owners: tuple[ConfigurationOwner, ...] = (),
     ) -> None:
+        # ``runtime`` owns identity/authorization; ``store`` owns configuration
+        # rows and configuration operation receipts.  They are the same runtime
+        # unless the host explicitly splits the configuration database.
         self.runtime = runtime
+        self.store = (store or runtime).configuration_store
         self.registry = registry
         self.identity = PersistentIdentityDirectory(runtime)
         self.policy = ObjectAccessPolicy(runtime)
-        self.operations = OperationRepository(runtime)
+        self.operations = OperationRepository(self.store)
         self._active_generations: dict[str, int] = {}
-        self._owners: dict[str, ConfigurationOwner] = {self.OWNER: SparseConfigurationOwner(runtime)}
+        self._owners: dict[str, ConfigurationOwner] = {self.OWNER: SparseConfigurationOwner(self.store)}
         for owner in owners:
-            if owner.owner_id in self._owners or owner.runtime is not runtime:
-                raise ValueError("configuration owners must be unique and share the same storage runtime")
+            if owner.owner_id in self._owners:
+                raise ValueError("configuration owners must be unique")
+            # Capability owners keep their existing ``capability_settings``
+            # table on the main runtime; sparse configuration owners must use
+            # the configuration store.  ``store_independent`` is the explicit
+            # opt-out for that second table.
+            if getattr(owner, "store_independent", False):
+                valid = owner.runtime is self.runtime
+            else:
+                valid = getattr(owner, "store", None) is self.store
+            if not valid:
+                raise ValueError(
+                    f"configuration owner {owner.owner_id!r} must share its declared storage runtime")
             self._owners[owner.owner_id] = owner
-        if any(field.owner_id not in self._owners for field in registry.fields.values()):
-            raise ValueError("every field requires its registered configuration owner")
+        missing = sorted({field.owner_id for field in registry.fields.values()
+                          if field.owner_id not in self._owners})
+        if missing:
+            raise ValueError(f"every field requires its registered configuration owner: missing={missing}")
 
     def _authorize(self, actor: ResolvedIdentity, target: ConfigTarget, capability: str, now: datetime,
                    *, core_only: bool = False):
@@ -90,7 +108,7 @@ class ConfigurationService:
         owned = owner.read(target, definitions)
         layers = target.chain()
         placeholders = ",".join("?" for _ in layers)
-        sequence = self.runtime.read_one(
+        sequence = self.store.read_one(
             f"""SELECT COALESCE(MAX(sequence), 0) AS n FROM configuration_changes
                 WHERE target_key IN ({placeholders}) AND group_id = ? AND changed = 1""",
             (*(layer.key for layer in layers), group_id),
@@ -123,7 +141,7 @@ class ConfigurationService:
         self, actor: ResolvedIdentity, *, target: ConfigTarget, group_id: str, observed_at: datetime,
     ) -> Outcome[ConfigurationSnapshot]:
         try:
-            with self.runtime.read_snapshot():
+            with self.store.read_snapshot():
                 result = self._snapshot(actor, target, group_id, observed_at)
             return Outcome.success(result)
         except ConfigurationError as error:
@@ -135,7 +153,7 @@ class ConfigurationService:
         reset_to_inherit: tuple[str, ...] = (), observed_at: datetime,
     ) -> Outcome[ConfigurationReceipt]:
         try:
-            with self.runtime.transaction() as connection:
+            with self.store.transaction() as connection:
                 snapshot = self._snapshot(actor, target, group_id, observed_at, "configuration.write")
                 definitions = self.registry.group(group_id)
                 owner = self._owners[definitions[0].owner_id]
@@ -211,7 +229,7 @@ class ConfigurationService:
                         changes: Mapping[str, object], observed_at: datetime) -> Outcome[ConfigurationPreview]:
         """Preview explicit values through the same owner and permissions as patch."""
         try:
-            with self.runtime.read_snapshot():
+            with self.store.read_snapshot():
                 snapshot = self._snapshot(actor, target, group_id, observed_at, "configuration.write")
                 definitions = self.registry.group(group_id)
                 normalized = self._normalize_patch(target, definitions, changes)
@@ -229,11 +247,11 @@ class ConfigurationService:
         try:
             if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 100:
                 raise ConfigurationError("invalid_configuration_cursor", "expected a nonnegative cursor and limit 1..100")
-            with self.runtime.read_snapshot():
+            with self.store.read_snapshot():
                 self._snapshot(actor, target, group_id, observed_at)
                 layers = target.chain()
                 placeholders = ",".join("?" for _ in layers)
-                rows = self.runtime.read_all(
+                rows = self.store.read_all(
                     f"""SELECT sequence FROM configuration_changes
                         WHERE target_key IN ({placeholders}) AND group_id = ? AND changed = 1 AND sequence > ?
                         ORDER BY sequence LIMIT ?""",
@@ -248,13 +266,14 @@ class ConfigurationService:
 
     @staticmethod
     def _receipt(data: dict, *, replayed: bool) -> ConfigurationReceipt:
-        return ConfigurationReceipt(data["operation_id"], data["target_key"], data["revision"], tuple(data["changed_fields"]), replayed)
+        return ConfigurationReceipt(data["operation_id"], data["target_key"], data["revision"],
+            tuple(data["changed_fields"]), replayed)
 
     def start_consumer(self, consumer_id: str, *, expected_generation: int) -> int:
         """Trusted lifecycle hook; a new process must acquire a fresh generation."""
         if consumer_id not in {field.consumer_id for field in self.registry.fields.values()}:
             raise ConfigurationError("unknown_configuration_consumer", "consumer is not registered")
-        with self.runtime.transaction() as connection:
+        with self.store.transaction() as connection:
             row = connection.execute("SELECT generation FROM configuration_consumers WHERE consumer_id = ?", (consumer_id,)).fetchone()
             generation = row["generation"] if row else 0
             if type(expected_generation) is not int or expected_generation != generation:
@@ -272,9 +291,9 @@ class ConfigurationService:
         self, actor: ResolvedIdentity, *, target: ConfigTarget, operation_id: str, observed_at: datetime,
     ) -> Outcome[ConfigurationReceipt]:
         try:
-            with self.runtime.read_snapshot():
+            with self.store.read_snapshot():
                 self._authorize(actor, target, "configuration.write", observed_at)
-                row = self.runtime.read_one(
+                row = self.store.read_one(
                     "SELECT result_json, group_id FROM configuration_changes WHERE operation_id = ? AND target_key = ?",
                     (operation_id, target.key),
                 )
@@ -292,7 +311,7 @@ class ConfigurationService:
     ) -> Outcome[ApplicationStatus]:
         """Trusted consumer attestation after local adoption; never a page write API."""
         try:
-            with self.runtime.transaction() as connection:
+            with self.store.transaction() as connection:
                 current = self._snapshot(actor, snapshot.target, snapshot.group_id, observed_at)
                 if (current.edit_token != snapshot.edit_token or current.values != snapshot.values
                         or current.resolution_token != snapshot.resolution_token):
@@ -321,10 +340,10 @@ class ConfigurationService:
             return Outcome.failed(error.code, str(error))
 
     def _status(self, snapshot: ConfigurationSnapshot) -> ApplicationStatus:
-        consumer = self.runtime.read_one("SELECT generation FROM configuration_consumers WHERE consumer_id = ?", (snapshot.consumer_id,))
+        consumer = self.store.read_one("SELECT generation FROM configuration_consumers WHERE consumer_id = ?", (snapshot.consumer_id,))
         if consumer is None or self._active_generations.get(snapshot.consumer_id) != consumer["generation"]:
             return ApplicationStatus("consumer_not_started", snapshot.consumer_id, None, {})
-        row = self.runtime.read_one(
+        row = self.store.read_one(
             "SELECT * FROM configuration_applications WHERE target_key = ? AND group_id = ? AND consumer_id = ?",
             (snapshot.target.key, snapshot.group_id, snapshot.consumer_id),
         )
@@ -340,7 +359,7 @@ class ConfigurationService:
         self, actor: ResolvedIdentity, *, target: ConfigTarget, group_id: str, observed_at: datetime,
     ) -> Outcome[ApplicationStatus]:
         try:
-            with self.runtime.read_snapshot():
+            with self.store.read_snapshot():
                 return Outcome.success(self._status(self._snapshot(actor, target, group_id, observed_at)))
         except ConfigurationError as error:
             return Outcome.failed(error.code, str(error))

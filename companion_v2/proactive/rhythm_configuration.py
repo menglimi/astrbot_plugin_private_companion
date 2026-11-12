@@ -36,11 +36,12 @@ WINDOW_CONTACT_OPERATION_PREFIX = "proactive.contact-window-config:"
 
 def _private_contact_operations(runtime, target_keys, prefixes):
     """Identify member saves by their exact parent/child operation hash."""
+    store = runtime.configuration_store
     if not target_keys:
         return set()
     placeholders = ",".join("?" for _ in target_keys)
     operation_filters = " OR ".join("c.operation_id LIKE ?" for _ in prefixes)
-    routes = runtime.read_all(f"""SELECT DISTINCT c.target_key, c.operation_id AS child_id,
+    routes = store.read_all(f"""SELECT DISTINCT c.target_key, c.operation_id AS child_id,
             p.operation_id AS parent_id
         FROM configuration_changes c JOIN operations o ON o.operation_id = c.operation_id
         JOIN operations p ON p.owner = 'relationships.private-settings'
@@ -71,6 +72,7 @@ def private_contact_operations(runtime, target_keys):
 
 def personal_contact_snapshot(runtime, target, fields, current):
     """Read proven old member overrides on the same stable human relationship."""
+    store = runtime.configuration_store
     if target.layer is not ConfigLayer.RELATIONSHIP:
         return current
     missing = {field.field_id: field for field in fields if not current.fields[field.field_id].explicit}
@@ -78,7 +80,7 @@ def personal_contact_snapshot(runtime, target, fields, current):
         return current
     document = "CASE WHEN json_valid(t.target_json) THEN t.target_json ELSE '{}' END"
     receipt = "CASE WHEN json_valid(c.result_json) THEN c.result_json ELSE '{}' END"
-    rows = runtime.read_all(f"""SELECT t.target_key, t.revision AS target_revision,
+    rows = store.read_all(f"""SELECT t.target_key, t.revision AS target_revision,
             v.field_id, v.value_json, v.revision, c.operation_id
         FROM configuration_targets t JOIN configuration_values v ON v.target_key = t.target_key
         JOIN configuration_changes c ON c.target_key = t.target_key AND c.group_id = ?
@@ -112,6 +114,7 @@ def personal_contact_snapshot(runtime, target, fields, current):
 
 def global_contact_snapshot(runtime, target, fields):
     """Installation defaults never depend on a selected bot, role or chat ID."""
+    store = runtime.configuration_store
     installation = ConfigTarget(target.installation_id, ConfigLayer.INSTALLATION)
     current = SparseConfigurationOwner(runtime).read(installation, fields)
     missing = {field.field_id: field for field in fields
@@ -122,7 +125,7 @@ def global_contact_snapshot(runtime, target, fields):
     document = "CASE WHEN json_valid(t.target_json) THEN t.target_json ELSE '{}' END"
     receipt = "CASE WHEN json_valid(c.result_json) THEN c.result_json ELSE '{}' END"
     placeholders = ",".join("?" for _ in missing)
-    rows = runtime.read_all(f"""SELECT t.target_key, t.revision AS target_revision,
+    rows = store.read_all(f"""SELECT t.target_key, t.revision AS target_revision,
             v.field_id, v.value_json, v.revision, c.operation_id
         FROM configuration_targets t JOIN configuration_values v ON v.target_key = t.target_key
         LEFT JOIN configuration_changes c ON c.target_key = t.target_key AND c.group_id = ?

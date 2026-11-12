@@ -1689,6 +1689,18 @@ class ModelWebAPI:
                     result["host_registered"] = self._image_host_registered()
                 except Exception as error:
                     code = getattr(error, "code", "")
+                    if code == "native_endpoint_unconfigured":
+                        raise TaskError(
+                            "model_image_output_unconfigured",
+                            "no enabled image backend can run the requested operations",
+                        ) from error
+                    if code in {"configuration_store_unavailable", "configuration_save_failed"}:
+                        raise TaskError(
+                            "model_image_output_store_failed",
+                            "image backend settings could not be written to the data directory",
+                        ) from error
+                    if code not in {"configuration_conflict", "configuration_busy", "invalid_configuration"}:
+                        logger.exception("image output configuration save failed (code=%s)", code or "unexpected")
                     suffix = "conflict" if code == "configuration_conflict" else (
                         "busy" if code == "configuration_busy" else "invalid" if code == "invalid_configuration" else "failed")
                     raise TaskError("model_image_output_" + suffix, "image backend settings were not saved") from error
