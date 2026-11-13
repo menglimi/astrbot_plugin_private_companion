@@ -433,6 +433,33 @@ class GroupHostTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         snapshot = await group_bridge.capture_text_only(self.group_event(sender="777"))
         self.assertTrue(snapshot.is_success, snapshot.failure)
 
+    async def test_first_group_conversation_rejects_transport_change_during_creation(self):
+        app = await self.start_host()
+        session = self.controller.session
+        await session.account_recovery.refresh(wait=True)
+        event = self.group_event(sender="777")
+        original_client = event.bot
+        self.native.conversations[event.unified_msg_origin] = None
+        created = []
+
+        async def create_conversation(umo, platform_id):
+            created.append((umo, platform_id))
+            await asyncio.sleep(0)
+            original_client._wsr_api_clients["100"] = object()
+            self.native.conversations[umo] = "new-group-conversation"
+            return "new-group-conversation"
+
+        before = database_contents(app.runtime)
+        with patch.object(self.native.conversation_manager, "new_conversation",
+                          create_conversation, create=True):
+            result = await session.prepare_group(event, self.controller.settings.group_targets[0],
+                                                 reply_candidate=True)
+
+        self.assertEqual(created, [(event.unified_msg_origin, "qq-main")])
+        self.assertIs(self.native.platform.client, original_client)
+        self.assertEqual(result.failure.code, "host_connection_changed")
+        self.assertEqual(database_contents(app.runtime), before)
+
     async def test_unconfigured_group_disconnected_account_and_private_id_collision(self):
         app = await self.start_host()
         unknown = self.group_event()

@@ -9,7 +9,7 @@ from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.tools.message_tools import SendMessageToUserTool
 
 from companion_v2.execution.models import TaskError, digest
-from .core_reply import CORE_REPLY_CONTEXT_EXTRA, sent_core_text
+from .core_reply import CORE_REPLY_CONTEXT_EXTRA, assert_core_reply_connection, sent_core_text
 from .core_reply_presentation import present_core_reply_message
 from .core_reply_media_delivery import native_reply_messages, native_wire_message
 
@@ -87,6 +87,7 @@ class _CurrentReplyContext:
             try:
                 await state["_authorize_delivery"]()
                 wire = await native_wire_message(tool._event, part)
+                assert_core_reply_connection(tool._event)
             except BaseException:
                 release_pending_voice_claim(tool._event)
                 raise
@@ -167,6 +168,7 @@ class CurrentReplySendTool(SendMessageToUserTool):
                 or self._state.get("prepared") is not self._prepared
                 or self._event.unified_msg_origin != self._origin):
             raise TaskError("core_reply_tool_event_changed", "the admitted native reply event changed")
+        assert_core_reply_connection(self._event)
 
     def observe(self, stage, result=None):
         self._state["_notify_delivery"](stage)

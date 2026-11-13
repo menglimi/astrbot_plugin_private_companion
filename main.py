@@ -495,6 +495,8 @@ class PrivateCompanionV2StagingPlugin(Star):
             self._schedule_host_start()
 
     async def _try_start_host(self) -> bool:
+        if getattr(self.staging, "_stopped_by_user", False):
+            return True
         try:
             readiness = self.staging.startup_readiness()
         except Exception as error:
@@ -520,7 +522,7 @@ class PrivateCompanionV2StagingPlugin(Star):
             if not loaded.unwrap()["loaded"]:
                 # Account/persona mappings are sufficient to create the shared
                 # installation. The old core-window binding was only a first-run bootstrap.
-                initialized = await self.staging.initialize_profile()
+                initialized = await self.staging.initialize_profile(automatic=True)
                 if initialized.failure is not None:
                     if initialized.failure.code == "host_terminated":
                         return True
@@ -530,9 +532,11 @@ class PrivateCompanionV2StagingPlugin(Star):
                     return not retry
                 initialized_profile = True
 
-        started = await self.staging.start()
+        if getattr(self.staging, "_stopped_by_user", False):
+            return True
+        started = await self.staging.start(automatic=True)
         if started.failure is not None:
-            if started.failure.code == "host_terminated":
+            if started.failure.code in ("host_terminated", "host_manually_stopped"):
                 return True
             retry = self._retry_startup_failure(started.failure.code)
             self._note_startup_failure("start", started.failure.code,
@@ -572,7 +576,7 @@ class PrivateCompanionV2StagingPlugin(Star):
                            code, error_type or "unknown", detail or "unavailable")
 
     def _schedule_host_start(self) -> None:
-        if self.staging._terminated:
+        if self.staging._terminated or getattr(self.staging, "_stopped_by_user", False):
             return
         session = self.staging.session
         if (self.staging._accepting and session is not None
@@ -608,6 +612,7 @@ class PrivateCompanionV2StagingPlugin(Star):
     @filter.on_platform_loaded()
     async def on_companion_platform_loaded(self) -> None:
         if self.staging.settings is not None and self.staging.settings.enabled:
+            await self.staging.recover_accounts()
             self._schedule_host_start()
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=240000)
@@ -688,6 +693,13 @@ class PrivateCompanionV2StagingPlugin(Star):
         event_ref = prepared.get("event_ref")
         origin_key = prepared.get("origin_key")
         channel = prepared.get("channel")
+        session = getattr(self.staging, "session", None)
+        connection_callbacks = {}
+        if prepared.get("connection_lease") is not None:
+            connection_callbacks = {
+                "assert_connection_current": lambda: session.assert_connection_current(prepared),
+                "wait_connection_changed": lambda: session.wait_connection_changed(prepared),
+            }
 
         async def authorize_core_send(current):
             return await self.staging.authorize_core_reply(event, target, current)
@@ -739,6 +751,7 @@ class PrivateCompanionV2StagingPlugin(Star):
 
         observer = getattr(getattr(self.staging, "session", None), "core_reply_observations", None)
         return {
+            **connection_callbacks,
             "authorize": authorize_core_send,
             "on_denied": note_core_send_denied,
             "on_sent": observe_core_send,

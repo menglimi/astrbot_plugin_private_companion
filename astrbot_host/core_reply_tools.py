@@ -506,6 +506,8 @@ class CoreReplyToolSession:
         if (self.event.get_extra(CORE_REPLY_CONTEXT_EXTRA) is not self.state
                 or self.state.get("prepared") is not self.prepared):
             raise TaskError("core_tool_context_changed", "the original admitted tool context changed")
+        from .core_reply import assert_core_reply_connection
+        assert_core_reply_connection(self.event)
         self.application.require_running()
 
     async def authorize(self, wrapper):

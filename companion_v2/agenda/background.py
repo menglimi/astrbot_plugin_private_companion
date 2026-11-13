@@ -40,6 +40,11 @@ class AgendaBackground:
         self.agenda, self.tasks, self.delivery = agenda, tasks, delivery
         self.runtime, self.policy = agenda.runtime, policy
         self.calendar = calendar
+        self._connection_available = None
+
+    def bind_connection_gate(self, available):
+        """Keep unstarted reminders pending while their account is offline."""
+        self._connection_available = available
 
     @staticmethod
     def _context(reminder):
@@ -102,6 +107,8 @@ class AgendaBackground:
         if datetime.fromisoformat(row["due_at"]) <= cutoff:
             # Strictly after the deadline boundary, so a skipped period cannot be re-enqueued.
             self._skip(row, reminder, memo, cutoff + timedelta(microseconds=1))
+            return
+        if self._connection_available is not None and not self._connection_available(context):
             return
         claim = require(self.agenda.accept_due(identifier, observed_at=now))
         prepared = require(self.agenda.prepare_local(claim, observed_at=now))
