@@ -57,13 +57,14 @@ class AstrBotPlatformSender:
             self.now() if status == "delivered" else None, failure_code,
         )
 
-    def _session(self, scope):
+    def _session(self, scope, *, platform_name=""):
         kind = MessageType.GROUP_MESSAGE if scope.kind is ScopeKind.GROUP else MessageType.FRIEND_MESSAGE
-        session_id = scope.session_id if scope.kind is ScopeKind.GROUP else scope.native_scope_id
+        session_id = (scope.session_id if scope.kind is ScopeKind.GROUP or platform_name == "wechat_native"
+                      else scope.native_scope_id)
         return MessageSession(scope.platform, kind, session_id)
 
     @staticmethod
-    def _chain(component_plan):
+    def _chain(component_plan, *, platform_name=""):
         chain = []
         for component in component_plan.components:
             if component.kind == "text":
@@ -80,7 +81,8 @@ class AstrBotPlatformSender:
             elif component.kind == "at":
                 chain.append(At(qq=str(component.value)))
             elif component.kind == "face":
-                chain.append(Face(id=int(component.value)))
+                chain.append(Plain(text=f"[QQ表情 {component.value}]") if platform_name == "wechat_native"
+                             else Face(id=int(component.value)))
             else:
                 raise ValueError("component kind is unsupported by the AstrBot session transport")
         return MessageChain(chain=chain)
@@ -177,7 +179,7 @@ class AstrBotPlatformSender:
             if not callable(getattr(platform, "send_by_session", None)):
                 return not_sent("platform_session_transport_unavailable")
 
-            session = self._session(scope)
+            session = self._session(scope, platform_name=platform.meta().name)
             stage = "voice_render"
             voice_plan, voice_segment, render_state = await self._render_voice(envelope, scope, context)
             if voice_plan is not None and voice_segment is None:
@@ -212,7 +214,7 @@ class AstrBotPlatformSender:
                     component_plan.text_hidden if component_plan is not None else False)
             if not has_message_content:
                 return not_sent("empty_message")
-            chain = self._chain(component_plan)
+            chain = self._chain(component_plan, platform_name=platform.meta().name)
 
             # Re-read the live route and authorization immediately before the
             # platform-owned side effect. This mirrors the OneBot dispatch fence.

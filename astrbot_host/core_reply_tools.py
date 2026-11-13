@@ -304,7 +304,8 @@ class CoreReplyToolSession:
                 offered.extend(_OfferedTool(spec, "authoring") for spec in authoring.catalog_for(
                     context, (spec.action for spec in native_tools)))
         offered.append(_OfferedTool(EVIDENCE_SPEC, "evidence"))
-        if context.scope.kind in (ScopeKind.GROUP, ScopeKind.PRIVATE):
+        if (context.scope.kind in (ScopeKind.GROUP, ScopeKind.PRIVATE)
+                and getattr(getattr(getattr(self, "event", None), "platform_meta", None), "name", "") != "wechat_native"):
             offered.append(_OfferedTool(POKE_SPEC, "interaction"))
         if self.context.scope.kind is ScopeKind.GROUP and self.group_tool_profile in ("lean", "standard"):
             allow_camera = is_core(self.application.runtime, self.context.actor.subject)
