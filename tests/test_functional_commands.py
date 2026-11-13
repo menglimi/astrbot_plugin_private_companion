@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from astrbot_host.functional_commands import (
     FunctionalCommand,
     command_instruction,
+    execute_functional_command,
     inject_functional_command_instruction,
     parse_functional_command,
 )
@@ -22,6 +23,19 @@ class FunctionalCommandParsingTests(unittest.TestCase):
             with self.subTest(text=text):
                 command = parse_functional_command(text, channel="private")
                 self.assertEqual((command.surface, command.intent), ("private", intent))
+
+    def test_exploration_notes_command_reports_private_research_only(self):
+        command = parse_functional_command("陪伴 探索笔记", channel="private")
+        self.assertEqual(command.intent, "exploration_notes")
+        service = SimpleNamespace(read=lambda _context: {"notes": [{
+            "label": "对方生日", "title": "摄影爱好者生日礼物推荐",
+            "source": "摄影杂志", "share_policy": "private_note"}], "last_result": "notes"})
+        application = SimpleNamespace(contact_schedule=SimpleNamespace(exploration=service))
+        receipt = execute_functional_command(command, application=application, context=object())
+        self.assertIn("摄影爱好者生日礼物推荐", receipt)
+        self.assertIn("仅准备", receipt)
+        group = parse_functional_command("陪伴群 探索笔记", channel="group")
+        self.assertIsNone(group)
 
     def test_group_commands_use_group_surface(self):
         current = parse_functional_command("/群陪伴 黑话 贴贴", channel="group")

@@ -4,6 +4,7 @@ import json
 import re
 
 from companion_v2.capabilities.native_reads import check_no_credentials
+from companion_v2.capabilities.privacy import is_core
 from companion_v2.conversation.messages import event_from_document
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.refs import ScopeKind
@@ -32,7 +33,12 @@ class RealityCameraGuard:
 
     def _latest_input(self, invocation):
         context = invocation.context
-        if context.scope.kind is not ScopeKind.PRIVATE:
+        # Camera is private-only for ordinary members.  The installation's core
+        # administrator may explicitly ask in a group they own; that exception
+        # is identity-bound and still requires the latest message to name the
+        # camera, so a stale or third-party group turn cannot open it.
+        if context.scope.kind is not ScopeKind.PRIVATE and not is_core(
+                self.application.runtime, context.actor.subject):
             raise TaskError("reality_camera_private_required", "camera observations require a private conversation")
         messages = self.application.messages
         from companion_v2.conversation.native_tool_sources import input_row, native_invocation, native_turn

@@ -204,6 +204,13 @@ class PrivateCompanionV2StagingPlugin(Star):
                         config_object.save_config()
                     except Exception:
                         logger.warning("[CompanionV2] 旧单目标设置已在内存迁移，但持久化失败", exc_info=True)
+            try:
+                repaired = self.staging.repair_legacy_config()
+            except Exception:
+                repaired = {}
+                logger.warning("[CompanionV2] 旧配置自愈检查失败", exc_info=True)
+            if repaired:
+                logger.warning("[CompanionV2] 启动时已自动修复旧策略字段：%s", repaired)
             # One public facade exposes the body and its seven internal modules.
             # Independent third-party integrations use their documented APIs.
             self.extension_api = UnifiedCompanionExtensionAPI(self.staging)

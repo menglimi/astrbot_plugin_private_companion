@@ -910,8 +910,8 @@ test('the perception view edits image, native video and file understanding witho
   const harnessed = await loaded(harness(), 'perception');
   assert.equal(harnessed.requests[0].route, 'group/reply');
   assert.match(harnessed.root.innerHTML, /data-reply-part="settings"/);
-  assert.match(harnessed.root.innerHTML, /普通聊天的媒体理解在 AstrBot 中配置/);
-  assert.match(harnessed.root.innerHTML, /视频目前由「基米看得见视频」这类扩展提供原生理解/);
+  assert.match(harnessed.root.innerHTML, /普通聊天的视频已由本插件原生理解/);
+  assert.match(harnessed.root.innerHTML, /不依赖外部视频插件/);
   assert.doesNotMatch(harnessed.root.innerHTML, /data-reply-part="preview"|data-reply-part="diagnostics"/);
   const instance = live(harnessed);
   assert.deepEqual(plain(instance.state.container.order),

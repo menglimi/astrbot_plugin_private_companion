@@ -35,7 +35,7 @@
             <label class="source-opt on" data-source-option="current"><input type="radio" name="source-mode" value="current" checked><b>选择 AstrBot 人格</b><small>只生成可编辑底稿，不切换实际对话人格</small></label>
             <label class="source-opt" data-source-option="paste"><input type="radio" name="source-mode" value="paste"><b>粘贴人格文本</b><small>整理列表外的人格或另一份文本</small></label>
           </div>
-          <div id="persona-select-wrap" class="source-inline"><label class="field"><span>人格选择 <small>选择要整理的人格；未选择时使用当前人格</small></span><span class="source-picker"><select id="source-persona" aria-label="选择要整理的人格"></select><button id="refresh" class="button secondary icon-button" type="button" aria-label="重新读取人格" title="重新读取人格">↻</button></span></label></div>
+          <div id="persona-select-wrap" class="source-inline"><label class="field"><span>人格选择 <small>选择要整理的人格；未选择时使用当前人格</small></span><span class="source-picker"><select id="source-persona" size="6" aria-label="选择要整理的人格"></select><button id="refresh" class="button secondary icon-button" type="button" aria-label="重新读取人格" title="重新读取人格">↻</button></span></label></div>
           <div id="paste-wrap" class="source-inline" hidden><label class="field"><span>原人格文本</span><textarea id="source-text" rows="6" maxlength="30000" placeholder="粘贴要整理的人格全文；这里只生成审核稿，不会修改原人格"></textarea></label></div>
         </section>
         <section class="card">

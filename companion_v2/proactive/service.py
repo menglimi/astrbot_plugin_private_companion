@@ -416,7 +416,7 @@ class ProactiveContacts:
         return voice, poke
 
     def start(self):
-        row = self.runtime.read_one("SELECT generation FROM configuration_consumers WHERE consumer_id = ?", (GROUP,))
+        row = self.configuration.store.read_one("SELECT generation FROM configuration_consumers WHERE consumer_id = ?", (GROUP,))
         self.generation = self.configuration.start_consumer(GROUP, expected_generation=row["generation"] if row else 0)
 
     def proactive_denied(self, context, *, at=None):
@@ -503,7 +503,7 @@ class ProactiveContacts:
     def _adopt(self, context, preferences):
         # The persisted receipt survives restart and transactional rollback;
         # an unchanged polling pass must not rewrite it every second.
-        row = self.runtime.read_one("""SELECT a.state, a.resolution_token, a.generation FROM configuration_applications a
+        row = self.configuration.store.read_one("""SELECT a.state, a.resolution_token, a.generation FROM configuration_applications a
             JOIN configuration_consumers c ON c.consumer_id = a.consumer_id AND c.generation = a.generation
             WHERE a.target_key = ? AND a.group_id = ? AND a.consumer_id = ?""",
             (preferences.snapshot.target.key, GROUP, GROUP))

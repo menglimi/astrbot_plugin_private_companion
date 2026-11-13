@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import timedelta
 import re
 from typing import Any
@@ -36,7 +36,8 @@ class HostControlError(ValueError):
 def _section(config: object, name: str) -> dict[str, Any]:
     value = config.get(name, {}) if hasattr(config, "get") else {}
     if not isinstance(value, dict):
-        raise HostControlError("staging_settings_invalid", "staging settings contain an invalid section")
+        raise HostControlError("staging_settings_invalid",
+                               f"staging settings contain an invalid section: {name}")
     return value
 
 
@@ -61,6 +62,72 @@ def _boolean(value: object) -> bool:
     if type(value) is not bool:
         raise HostControlError("staging_settings_invalid", "staging settings contain an invalid switch")
     return value
+
+
+def _policy_values(policy_type, section: dict[str, Any]) -> dict[str, Any]:
+    """Keep only fields this policy understands.
+
+    Legacy configuration sections may still carry renamed/removed keys after an
+    upgrade.  Passing them as ``**kwargs`` made every mapping save fail with
+    ``staging_settings_invalid`` even though the known fields were valid.
+    """
+    names = {item.name for item in fields(policy_type)}
+    return {name: value for name, value in section.items() if name in names}
+
+
+def _policy_parses(policy_type, section: dict[str, Any]) -> bool:
+    try:
+        policy_type(**_policy_values(policy_type, section))
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def repair_host_policy_sections(config: dict[str, Any]) -> dict[str, list[str]]:
+    """Drop known-but-invalid legacy policy values before a mapping save.
+
+    A 6.x -> 7.x upgrade can leave a single stale enum/boolean in
+    ``segmentation`` or ``voice_reply``.  That one value used to block the
+    entire account/role save with a generic ``staging_settings_invalid``.  Keep
+    every valid field, remove only the fields that prevent the policy from
+    parsing, and fall back to the section default if the combination is still
+    invalid.  Returns the removed field names for the save receipt.
+    """
+    if not isinstance(config, dict):
+        return {}
+    repaired: dict[str, list[str]] = {}
+    for name, policy_type in (("segmentation", SegmentationPolicy),
+                              ("voice_reply", VoiceReplyPolicy)):
+        if name not in config:
+            continue
+        section = config.get(name)
+        if not isinstance(section, dict):
+            config[name] = {}
+            repaired[name] = ["<section>"]
+            continue
+        candidate = _policy_values(policy_type, section)
+        if _policy_parses(policy_type, candidate):
+            continue
+        removed: list[str] = []
+        while candidate and not _policy_parses(policy_type, candidate):
+            fixed = False
+            for key in tuple(candidate):
+                reduced = {item: value for item, value in candidate.items() if item != key}
+                if _policy_parses(policy_type, reduced):
+                    candidate = reduced
+                    removed.append(key)
+                    fixed = True
+                    break
+            if not fixed:
+                # Several fields may be invalid at once. Drop one and retry
+                # rather than discarding every valid sibling at the first miss.
+                key = next(iter(candidate))
+                candidate.pop(key)
+                removed.append(key)
+        if removed:
+            config[name] = candidate
+            repaired[name] = removed
+    return repaired
 
 
 @dataclass(frozen=True)
@@ -109,14 +176,17 @@ class HostSettings:
         except (TypeError, ValueError, AttributeError) as error:
             raise HostControlError("host_model_routes_invalid", "check additional providers, fallback and replacement rules") from error
         try:
-            segmentation = SegmentationPolicy(**_section(config, "segmentation"))
+            segmentation = SegmentationPolicy(**_policy_values(SegmentationPolicy,
+                                                                _section(config, "segmentation")))
         except (TypeError, ValueError) as error:
-            raise HostControlError("staging_settings_invalid", "reply segmentation settings are invalid") from error
+            raise HostControlError("staging_settings_invalid",
+                                   f"reply segmentation settings are invalid: {error}") from error
         voice_section = _section(config, "voice_reply")
         try:
-            voice_policy = VoiceReplyPolicy(**{name: value for name, value in voice_section.items() if name != "enabled"})
+            voice_policy = VoiceReplyPolicy(**_policy_values(VoiceReplyPolicy, voice_section))
         except (TypeError, ValueError) as error:
-            raise HostControlError("staging_settings_invalid", "voice reply settings are invalid") from error
+            raise HostControlError("staging_settings_invalid",
+                                   f"voice reply settings are invalid: {error}") from error
         # 与 _conf_schema.json 的默认 profile_id 对齐（同为 "main"）。
         # 原先这里是 "preview-1"：缺键时安装标识会变成
         # 「astrbot-private-companion-v2:preview-1」，与界面显示、文档和她自己的数据根对不上。

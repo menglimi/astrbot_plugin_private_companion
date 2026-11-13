@@ -21,6 +21,7 @@ window.CompanionStateMaintenance = (() => {
   };
   const definitions={
     enabled:{label:"启用后台状态维护",type:"boolean"},
+    maintenance_grant_scope:{label:"后台维护授权范围",type:"select",choices:{role:"整个角色（默认）",window:"仅当前私聊窗口"}},
     maintenance_minutes:{label:"维护间隔（分钟）",type:"number",max:1440},
     calendar_enabled:{label:"启用角色日程",type:"boolean"},
     home_show_energy:{label:"能量",type:"boolean"},
@@ -96,7 +97,7 @@ window.CompanionStateMaintenance = (() => {
   /* cycle 的前十二位顺序被 form() 的 slice(0,6)/slice(6,12) 依赖：
      前六项是开关与模式，接着六项是阶段天数。新字段一律追加在第十二位之后，
      否则「阶段时长」那一块会串到别的字段上。 */
-  const groups={home:["enabled","maintenance_minutes",...Object.keys(homeFeatures).flatMap(name=>[
+  const groups={home:["enabled","maintenance_grant_scope","maintenance_minutes",...Object.keys(homeFeatures).flatMap(name=>[
       name+"_enabled","home_show_"+name,...(homeFeatures[name].special?["home_only_special_"+name]:[])])],
     intensity:["humanized_state_intensity","energy_expression_prompt"],
     maintenance:["hunger_enabled","health_enabled"],
@@ -363,6 +364,7 @@ window.CompanionStateMaintenance = (() => {
     const result={};
     for(const name of fields(kind)){
       const field=definitions[name];let value=values[name];
+      if(name==="maintenance_grant_scope"&&value===undefined)value="role";
       if(name==="planning_weather_location"&&locationParts)value=weatherLocationValue(locationParts);
       if(field.type==="number"||field.type==="range")value=Number(value);
       if(field.type==="probability")value=Number(value);
@@ -517,6 +519,7 @@ window.CompanionStateMaintenance = (() => {
     if(draft.kind==="home") {
       return configGroup(1,"后台状态维护","定期更新角色的身体与心理状态，设置随当前人格共享；与「每日状态巡视」不同，巡视只定时看一眼并留记录，不改数值。",
         configField("enabled",values,e,{title:"启用状态维护",help:"关闭后暂停后台更新，已有状态记录保留。"})
+        +configField("maintenance_grant_scope",values,e,{title:"后台维护授权范围",help:"默认整个角色：开启一次后，该角色的其他私聊窗口自动获得维护授权；仅当前窗口：每个私聊单独授权，适合一个角色被多个用户共用。"})
         +configField("maintenance_minutes",values,e,{title:"更新间隔（分钟）",help:"1–1440 分钟；保存后用于后续维护安排。"}))
         +configGroup(2,"状态模拟与首页展示","状态模拟开关控制后台是否更新这一项；首页展示只控制小屋首页是否显示，状态详情仍可查看。睡眠状态模拟与按角色作息自动入睡是两个独立开关。",
           `<div class="state-home-display-summary"><span data-state-home-count>${Object.keys(homeFeatures).filter(name=>values[name+"_enabled"]&&values["home_show_"+name]).length} 项允许展示</span><small>特殊状态依据已有记录判断</small></div><div class="state-home-feature-list">${Object.entries(homeFeatures).map(([name,spec])=>{

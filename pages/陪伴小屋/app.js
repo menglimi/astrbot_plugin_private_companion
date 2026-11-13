@@ -71,6 +71,7 @@ let expressionModule='expression-text';
 let observationFilter='records', furnitureFilter='all', furnitureQuery='';
 let configEditorMounts=[];
 let identityDialogMount=null;
+let allFeatureDialogMount=null;
 let roleProfileConfigMount=null;
 let toastTimer, arrangementDraft=null, dialogReturnFocus=null, dialogReturnFurniture='', lastDetail='', voxelController=null;
 let draftConfirmation=null;
@@ -942,7 +943,7 @@ function mountPanelWorkspaces(){
   /* 卸载对记忆页尤其重要：它有一条 8 秒的自动刷新定时器（整理与事实视图），
      面板整块替换后不卸载的话，定时器会继续往丢弃的节点上发请求。 */
   const memorySettingsHost=$('#memorySettingsHost');
-  guarded('记忆策略',()=>memorySettingsHost
+  guarded('整理策略',()=>memorySettingsHost
     ?window.CompanionMemorySettingsSection?.mount(memorySettingsHost)
     :window.CompanionMemorySettingsSection?.unmount());
   const maintenanceHost=$('#maintenanceWorkspace');
@@ -1955,7 +1956,7 @@ function closePerceptionSingle(){
   const head=document.getElementById('perceptionSingleItemHead');
   restorePerceptionSingleDetails();
   if(head)head.hidden=true;
-  if(workspace){workspace.classList?.toggle?.('is-single-item',false);workspace.hidden=true;}
+  if(workspace){workspace.classList?.toggle?.('is-single-item',false);workspace.hidden=true;delete workspace.dataset.perceptionSection;}
   window.CompanionRealityAccess?.focus?.('');
   window.CompanionPerceptionOverviewPage?.preview?.('');
   const previewHost=document.getElementById('perceptionSingleItemPreview');
@@ -1978,7 +1979,8 @@ function activatePerceptionTab(destination,{focus=false,scroll=false,modelTab=''
   restorePerceptionSingleDetails();
   const entering=page.hidden;
   const workspace=document.getElementById('perceptionConfigWorkspace');
-  if(workspace){workspace.hidden=false;workspace.classList?.toggle?.('is-single-item',single===true);}
+  if(workspace){workspace.hidden=false;workspace.classList?.toggle?.('is-single-item',single===true);
+    workspace.dataset.perceptionSection=id.startsWith('config-')?id.slice('config-'.length):id;}
   $$('[data-perception-page]').forEach(item=>{item.hidden=item!==page;});
   const subpanel=subpanelId?document.getElementById(subpanelId):null;
   const availableSubpanels=[...panel.querySelectorAll('details.perception-subpanel')].filter(item=>!item.hidden);
@@ -4022,7 +4024,7 @@ function renderExpressionLearning(){
 function renderLearningPageOriginal(){
   return consoleSections([
     ['表达与说话习惯学习','',`${renderExpressionLearning()}${configEditors('growthConfigWorkspace',['role.growth.skills'],'成长与技能','')}${settingsJump('风格提示词与表达规则','expression','候选的采纳、驳回与退役，以及每条已采纳规则被用过多少次。')}`],
-    ['记忆沉淀与每日反思','反思按时间到点或手动续接，把来源提炼为事实与经历摘要。',`${consoleMountHead('记忆反思','来源 → 新记忆条目；增量、重复安全，不回写改写已成型记忆。')}${settingsJump('反思结果与记忆治理','memory','查看沉淀下来的事实、经历与整理进度。')}`],
+    ['事实沉淀与每日反思','把来源提炼为事实与经历摘要。',`${consoleMountHead('整理与反思','来源 → 新事实条目；增量、重复安全，不回写改写已成型事实。')}${settingsJump('查看本插件事实与经历','memory','查看沉淀下来的事实、经历与整理进度。')}`],
   ]);
 }
 /* 需要一个具体对象与角色的配置组：后端按会话或按安装/角色保存。
@@ -4282,7 +4284,7 @@ const allFunctionsGroups=[
     ['identity-groups','messages-square','群聊','群聊目录、群成员与成员线索'],
     ['identity-access','shield-check','访问规则','新私聊成员的默认权限与跨窗口递话'],
     ['identity-feelings','heart-handshake','关系与情感','角色对用户和群聊的关系理解'],
-    ['memory','orbit','事实与经历','事实、原话、来源与记忆策略',[
+    ['memory','orbit','事实与经历','本插件事实、原话与整理策略',[
       ['记录','records'],['设置','settings']]],
   ]],
   ['对话与感知',[
@@ -4357,7 +4359,7 @@ const allFeatureDomainOf={
   'image.output':'图像与创作',image_review:'图像与创作',quota:'图像与创作','content.authoring':'图像与创作',
   wardrobe:'图像与创作',library:'图像与创作',budget:'运行设置',relay:'运行设置',
 };
-const allFeaturesState={roleKey:'',loading:false,loaded:false,attempted:false,error:'',notice:'',sections:{},draft:{},saving:false};
+const allFeaturesState={roleKey:'',loading:false,loaded:false,attempted:false,error:'',notice:'',sections:{},draft:{},saving:false,domain:'all',status:'all'};
 function pluginRelativePath(path){
   const prefix='/astrbot_plugin_private_companion/';
   return typeof path==='string'&&path.startsWith(prefix)?path.slice(prefix.length):'';
@@ -4514,37 +4516,86 @@ function renderAllFeatureBoard(){
   if(allFeaturesState.error)
     return `<div class="all-functions-page">${head}<div class="all-functions-error" role="alert">${escapeHTML(allFeaturesState.error)}<button type="button" class="button small" data-all-feature-reload>重新读取</button></div></div>`;
   const board=allFeatureBoardGroups();
-  const sections=board.map(({domain,note,rows:groupRows},index)=>{
+  const domain=allFeaturesState.domain||'all';
+  const status=allFeaturesState.status||'all';
+  const allRows=board.flatMap(group=>group.rows.map(row=>({...row,domain:group.domain})));
+  const isOn=row=>Boolean(allFeaturesState.draft?.[row.name]?.[row.field]);
+  const statusHit=row=>status==='all'||(status==='enabled'?isOn(row):!isOn(row));
+  const domainHit=row=>domain==='all'||row.domain===domain;
+  const visibleRows=allRows.filter(row=>domainHit(row)&&statusHit(row));
+  const enabledCount=allRows.filter(isOn).length;
+  const domainNames=[...new Set(board.map(group=>group.domain))];
+  const domainCounts=Object.fromEntries(domainNames.map(name=>[name,allRows.filter(row=>row.domain===name).length]));
+  const statusCounts={all:allRows.length,enabled:allRows.filter(isOn).length,disabled:allRows.filter(row=>!isOn(row)).length};
+  const summary=`<div class="all-functions-summary">
+    <section class="all-functions-summary-card is-on"><span>已开启</span><b>${enabledCount} / ${allRows.length}</b><small>当前功能开关</small></section>
+    <section class="all-functions-summary-card"><span>未保存</span><b>${dirtyCount}</b><small>${dirtyCount?'保存后写入当前角色':'与已保存一致'}</small></section>
+    <section class="all-functions-summary-card"><span>功能领域</span><b>${domainNames.length}</b><small>按使用场景分组</small></section></div>`;
+  const domainChips=[['all','全部领域',allRows.length],...domainNames.map(name=>[name,name,domainCounts[name]])]
+    .map(([id,label,count])=>`<button type="button" class="all-functions-chip${domain===id?' is-active':''}" data-all-feature-domain="${escapeHTML(id)}" aria-pressed="${domain===id}"><span>${escapeHTML(label)}</span><small>${count}</small></button>`).join('');
+  const statusChips=[['all','全部状态'],['enabled','已开启'],['disabled','已关闭']]
+    .map(([id,label])=>`<button type="button" class="all-functions-chip${status===id?' is-active':''}" data-all-feature-status="${id}" aria-pressed="${status===id}"><span>${label}</span><small>${statusCounts[id]}</small></button>`).join('');
+  const visibleBoard=board.map((group,index)=>({...group,index,
+    rows:group.rows.filter(row=>domainHit({...row,domain:group.domain})&&statusHit({...row,domain:group.domain}))}))
+    .filter(group=>group.rows.length);
+  const sections=visibleBoard.map(({domain,note,rows:groupRows,index})=>{
     const id='all-feature-'+index;
     const rows=groupRows.map(row=>{
       const search=normalizeSearchText([row.label,row.help,row.field,domain,row.name].join(' '));
       if(row.link)return `<button type="button" class="all-feature-row all-feature-link" data-all-feature-search="${escapeHTML(search)}"
         data-go="manage" data-manage="identity-access" data-page-anchor="identity-relay">
         <span class="all-feature-link-icon">${I('arrow-up-right')}</span>
-        <span class="all-feature-copy"><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.help)}</small></span>
-        <span class="all-feature-scope">设置</span></button>`;
+        <span class="all-feature-copy"><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.help)}</small>
+          <span class="all-feature-meta"><span class="all-feature-state">设置</span><span class="all-feature-scope">${escapeHTML(domain)}</span></span></span></button>`;
       const checked=Boolean(allFeaturesState.draft?.[row.name]?.[row.field]);
       const dirty=allFeatureDirty(row.name,row.field,checked);
-      return `<label class="all-feature-row${dirty?' is-dirty':''}" data-all-feature-search="${escapeHTML(search)}">
-        <span class="all-feature-switch"><input type="checkbox" data-all-feature-toggle data-all-feature-group="${escapeHTML(row.name)}" data-all-feature-field="${escapeHTML(row.field)}" ${checked?'checked':''}></span>
-        <span class="all-feature-copy"><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.help||row.field)}</small></span>
-        <span class="all-feature-scope">${escapeHTML(row.name)}</span></label>`;
+      return `<div class="all-feature-row${checked?' is-on':' is-off'}${dirty?' is-dirty':''}" data-all-feature-search="${escapeHTML(search)}">
+        <label class="all-feature-toggle" aria-label="${escapeHTML(row.label)}"><input type="checkbox" data-all-feature-toggle data-all-feature-group="${escapeHTML(row.name)}" data-all-feature-field="${escapeHTML(row.field)}" ${checked?'checked':''}><span class="all-feature-toggle-visual" aria-hidden="true"></span></label>
+        <button type="button" class="all-feature-copy" data-all-feature-open="${escapeHTML(row.name)}" data-all-feature-open-field="${escapeHTML(row.field)}">
+          <strong>${escapeHTML(row.label)}</strong><code>${escapeHTML(row.field)}</code><small>${escapeHTML(row.help||row.field)}</small>
+          <span class="all-feature-meta"><span class="all-feature-state">${checked?'已开启':'已关闭'}</span><span class="all-feature-scope">${escapeHTML(domain)}</span><span class="all-feature-open-hint">查看配置 ›</span></span>
+        </button></div>`;
     }).join('');
-    return `<details class="all-feature-domain" id="${id}" open>
-      <summary><span>${escapeHTML(domain)}</span><small>${groupRows.length} 项</small></summary>
-      ${note?`<p class="all-feature-note">${escapeHTML(note)}</p>`:''}
-      <div class="all-feature-list">${rows}</div></details>`;
+    return `<section class="all-feature-domain" id="${id}">
+      <header><div><b>${escapeHTML(domain)}</b>${note?`<p>${escapeHTML(note)}</p>`:''}</div><small>${groupRows.length} 项</small></header>
+      <div class="all-feature-list">${rows}</div></section>`;
   }).join('');
   const nav=board.map(({domain},index)=>`<button type="button" data-all-feature-jump="all-feature-${index}">${escapeHTML(domain)}</button>`).join('');
   return `<div class="all-functions-page">${head}
     ${allFeaturesState.notice?`<p class="all-functions-notice" role="status">${escapeHTML(allFeaturesState.notice)}</p>`:''}
+    ${summary}
+    <div class="all-functions-filter">
+      <div class="all-functions-filter-line"><span>功能领域</span><div class="all-functions-chips">${domainChips}</div></div>
+      <div class="all-functions-filter-line"><span>当前状态</span><div class="all-functions-chips">${statusChips}</div></div>
+      <label class="all-functions-search"><span>筛选功能</span>
+        <input type="search" data-all-feature-filter placeholder="功能名、说明或字段键" autocomplete="off" />
+        <small data-all-feature-count>${visibleRows.length} 项</small></label>
+    </div>
     <nav class="all-functions-section-nav" aria-label="功能领域">${nav}</nav>
-    <label class="all-functions-filter"><span>筛选功能</span>
-      <input type="search" data-all-feature-filter placeholder="功能名、说明或字段键" autocomplete="off" />
-      <small data-all-feature-count></small></label>
-    ${board.length?sections:'<div class="all-functions-empty" role="status">当前角色没有可读取的布尔功能开关。</div>'}
+    ${visibleBoard.length?sections:'<div class="all-functions-empty" role="status">没有符合当前筛选的功能开关。</div>'}
   </div>`;
 }
+function openAllFeatureDetail(group, field=''){
+  const section=allFeaturesState.sections?.[group];
+  if(!section)return;
+  const spec=window.CompanionConfigEditors?.spec?.[group]||{};
+  const title=spec.title||group;
+  const id='allFeatureDetailWorkspace';
+  const body=`<p class="all-feature-detail-note">${escapeHTML(spec.note||'修改后会回到「全部功能」页显示；复杂字段在下方完整配置中编辑。')}</p>`
+    +configEditors(id,[group],title);
+  if(!openDetailDialog(title,body))return;
+  allFeatureDialogMount?.unmount?.();
+  allFeatureDialogMount=mountConfigEditor(id,[group]);
+  if(allFeatureDialogMount)configEditorMounts.push(allFeatureDialogMount);
+  if(field){
+    requestAnimationFrame(()=>{
+      const safe=globalThis.CSS?.escape?.(field)||field.replace(/["\\]/g,'\\$&');
+      const row=document.querySelector(`#${id} [data-config-field="${safe}"], #${id} [name="${safe}"]`);
+      row?.scrollIntoView?.({block:'center',behavior:'smooth'});
+    });
+  }
+}
+
 function filterAllFeatures(value){
   const query=normalizeSearchText(value).trim();
   let visible=0;
@@ -4737,11 +4788,11 @@ function renderMemoryPage(){
   return `<div class="memory-route">
     <div class="memory-route-tabs" role="tablist" aria-label="事实与经历页面">
       <button id="memory-route-records" type="button" role="tab" class="memory-route-tab${records?' is-active':''}" data-memory-route="records" aria-selected="${records}" aria-controls="memoryWorkspace" tabindex="${records?'0':'-1'}">事实与经历</button>
-      <button id="memory-route-settings" type="button" role="tab" class="memory-route-tab${records?'':' is-active'}" data-memory-route="settings" aria-selected="${!records}" aria-controls="memorySettingsHost" tabindex="${records?'-1':'0'}">记忆策略</button>
+      <button id="memory-route-settings" type="button" role="tab" class="memory-route-tab${records?'':' is-active'}" data-memory-route="settings" aria-selected="${!records}" aria-controls="memorySettingsHost" tabindex="${records?'-1':'0'}">整理策略</button>
     </div>
     ${records
       ? '<section id="memoryWorkspace" class="memory-workspace" aria-label="事实与经历工作区"></section>'
-      : `<section id="memorySettingsHost" class="memory-settings-workspace" aria-label="记忆策略设置">${consoleLoading('正在读取记忆策略…')}</section>`}
+      : `<section id="memorySettingsHost" class="memory-settings-workspace" aria-label="整理策略设置">${consoleLoading('正在读取整理策略…')}</section>`}
   </div>`;
 }
 function learningRoleApi(target,role,key){
@@ -5144,6 +5195,8 @@ function openDetailDialog(title,body){
   if(!dialog||!dialog.classList||!$('#dialogContent'))return false;
   identityDialogMount?.unmount?.();
   identityDialogMount=null;
+  allFeatureDialogMount?.unmount?.();
+  allFeatureDialogMount=null;
   window.CompanionGameAccess?.unmount();
   const previousNativeHost=$('#dialogContent').querySelector('[data-native-extension-host]');
   if(previousNativeHost)window.CompanionNativeExtensionPanel?.unmount(previousNativeHost);
@@ -5165,9 +5218,9 @@ function openDetailDialog(title,body){
 const searchIndex=[
   ['生活观察','日记、梦境、生活轨迹、状态与交互影响','scan-eye','home-section','observation'],['家具与能力','基础生活与拓展家具，启用状态和连接','armchair','home-section','furniture'],
   ['跨窗口与跨群递话','私聊与群聊目标、确认和成员权限','corner-up-right','manage','identity-access'],
-  ['首页与小屋','生活总览、观察与家具能力','house','life','home'],['日记与生活','日记、睡眠、阅读与作息配置','notebook-pen','life','diary'],['关系网','只查看用户与群聊之间的连接关系','network','manage','identity'],['用户','用户目录、逐人资料与私聊默认权限','users-round','manage','identity-people'],['群聊','群聊目录、群内成员与成员线索','messages-square','manage','identity-groups'],['共同经历','记录、原话、来源与记忆策略','orbit','manage','memory'],['作品与相册','原稿、照片与收藏','images','home-section','furniture'],['一起活动','共读、棋桌与通话','coffee','home-section','furniture'],['能力目录','可选拓展当前能不能用','blocks','home-section','furniture'],
+  ['首页与小屋','生活总览、观察与家具能力','house','life','home'],['日记与生活','日记、睡眠、阅读与作息配置','notebook-pen','life','diary'],['关系网','只查看用户与群聊之间的连接关系','network','manage','identity'],['用户','用户目录、逐人资料与私聊默认权限','users-round','manage','identity-people'],['群聊','群聊目录、群内成员与成员线索','messages-square','manage','identity-groups'],['共同经历','本插件事实、原话与经历记录','orbit','manage','memory'],['作品与相册','原稿、照片与收藏','images','home-section','furniture'],['一起活动','共读、棋桌与通话','coffee','home-section','furniture'],['能力目录','可选拓展当前能不能用','blocks','home-section','furniture'],
   ['感知','环境、消息与媒体来源','scan-eye','manage','perception'],['决策','本轮上下文与群聊参与判断','brain','manage','decision'],['行动','生活行为与社交发布','play','manage','action'],['产出','图像生成与创作作品','shapes','manage','output'],['表达','文本、语音、表情与投递','message-square-more','manage','expression'],['自我','世界知识、角色设定与自身档案','user-round','manage','governance'],
-  ['开始使用','首次连接、选择对象与决定是否发送','rocket','manage','setup'],['人格处理','规范人格、创建人格与拟人优化','notebook-pen','manage','persona'],['外观与设置','主题、密度、圆角、字号与动效','palette','manage','appearance'],['主动联系','主动契机、联系节奏与免打扰','heart-handshake','manage','contact'],['事实与经历','事实、原话与群词义','orbit','manage','memory'],['模型与连接','公共模型与任务路由','sliders-horizontal','manage','models'],['运行诊断','运行状态与排障','settings-2','manage','maintenance'],['便签','下次去书店，找一本植物随笔','sticky-note',null,'notes'],['窗边的一页','照片与相关经历','image',null,'photo-window'],['创作书架','Content 能力状态','library-big',null,'cap-content'],['现实触及','Reality 设备与授权','radio','manage','perception'],
+  ['开始使用','首次连接、选择对象与决定是否发送','rocket','manage','setup'],['人格处理','规范人格、创建人格与拟人优化','notebook-pen','manage','persona'],['外观与设置','主题、密度、圆角、字号与动效','palette','manage','appearance'],['主动联系','主动契机、联系节奏与免打扰','heart-handshake','manage','contact'],['事实与经历','本插件事实、原话与群词义','orbit','manage','memory'],['模型与连接','公共模型与任务路由','sliders-horizontal','manage','models'],['运行诊断','运行状态与排障','settings-2','manage','maintenance'],['便签','下次去书店，找一本植物随笔','sticky-note',null,'notes'],['窗边的一页','照片与相关经历','image',null,'photo-window'],['创作书架','Content 能力状态','library-big',null,'cap-content'],['现实触及','Reality 设备与授权','radio','manage','perception'],
 ];
 const configSearchLocations={
   quota:{next:'manage',tab:'output',root:'#imageControlWorkspace'},image_review:{next:'manage',tab:'output',root:'#imageControlWorkspace'},
@@ -5215,8 +5268,8 @@ function configSearchLocation(entry){
 }
 function replySearchLocation(entry){
   const decisionView=['wakeup_direct','wakeup_interest','wakeup_members'].includes(entry.section)?'response'
-    :['wakeup_cold_group','wakeup_fatigue'].includes(entry.section)?'tempo'
-      :['group_air_guard','group_content_safety'].includes(entry.section)?'safety':'';
+    :['group_continuation','private_debounce','wakeup_cold_group','wakeup_fatigue'].includes(entry.section)?'tempo'
+      :['silence_policy','private_closing','group_air_guard','group_content_safety'].includes(entry.section)?'safety':'';
   if(decisionView)return {next:'manage',tab:'decision',decisionView,root:'#decisionReplyWorkspace'};
   const understandingTab={media_permissions:'overview',context_image:'image',image_narration:'image',
     video_narration:'video',file_understanding:'file',forwards:'forwards'}[entry.section];
@@ -5704,6 +5757,9 @@ document.addEventListener('click',event=>{
   if(el.dataset.allJump){const target=document.getElementById(el.dataset.allJump);if(target){target.open=true;target.scrollIntoView({behavior:'smooth',block:'start'});}return;}
   if(el.dataset.allFeatureReload!==undefined){allFeaturesState.error='';allFeaturesState.attempted=false;loadAllFeatures();return;}
   if(el.dataset.allFeatureSave!==undefined){saveAllFeatures();return;}
+  if(el.dataset.allFeatureDomain!==undefined){allFeaturesState.domain=el.dataset.allFeatureDomain||'all';paintPanel();return;}
+  if(el.dataset.allFeatureStatus!==undefined){allFeaturesState.status=el.dataset.allFeatureStatus||'all';paintPanel();return;}
+  if(el.dataset.allFeatureOpen){openAllFeatureDetail(el.dataset.allFeatureOpen,el.dataset.allFeatureOpenField||'');return;}
   if(el.dataset.allFeatureJump){const target=document.getElementById(el.dataset.allFeatureJump);if(target){target.open=true;target.scrollIntoView({behavior:'smooth',block:'start'});}return;}
   if(el.dataset.openSearch!==undefined){openSearch();return;}
   if(el.dataset.openNavigation!==undefined){navigate('manage','all');return;}
@@ -5865,7 +5921,7 @@ document.addEventListener('submit',event=>{
      弹窗里现在不会有 data-form 表单，保留这条兜底防止未捕获的提交刷新页面。 */
   const form=event.target;if(!form.dataset.form)return;event.preventDefault();
 });
-$('#detailDialog').addEventListener('close',()=>{identityDialogMount?.unmount?.();identityDialogMount=null;window.CompanionGameAccess?.unmount();const nativeHost=$('#dialogContent').querySelector('[data-native-extension-host]');if(nativeHost)window.CompanionNativeExtensionPanel?.unmount(nativeHost);$('#detailDialog').classList.remove('detail-dialog-settings','detail-dialog-native-extension');if(dialogReturnFocus?.isConnected)dialogReturnFocus.focus({preventScroll:true});else if(dialogReturnFurniture)document.querySelector('[data-furniture="'+dialogReturnFurniture+'"]')?.focus({preventScroll:true});else document.querySelector('[data-detail="'+lastDetail+'"]')?.focus({preventScroll:true});});
+$('#detailDialog').addEventListener('close',()=>{identityDialogMount?.unmount?.();identityDialogMount=null;allFeatureDialogMount?.unmount?.();allFeatureDialogMount=null;window.CompanionGameAccess?.unmount();const nativeHost=$('#dialogContent').querySelector('[data-native-extension-host]');if(nativeHost)window.CompanionNativeExtensionPanel?.unmount(nativeHost);$('#detailDialog').classList.remove('detail-dialog-settings','detail-dialog-native-extension');if(dialogReturnFocus?.isConnected)dialogReturnFocus.focus({preventScroll:true});else if(dialogReturnFurniture)document.querySelector('[data-furniture="'+dialogReturnFurniture+'"]')?.focus({preventScroll:true});else document.querySelector('[data-detail="'+lastDetail+'"]')?.focus({preventScroll:true});});
 $('#detailDialog').addEventListener('click',event=>{if(event.target!==event.currentTarget)return;const r=event.currentTarget.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)closeDetail();});
 $('#searchDialog').addEventListener('click',event=>{if(event.target===event.currentTarget){const r=event.currentTarget.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)event.currentTarget.close();}});
 $('#searchButton').addEventListener('click',openSearch);

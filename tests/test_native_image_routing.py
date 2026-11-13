@@ -282,15 +282,36 @@ class NativeImageRoutingTests(unittest.TestCase):
     def test_auto_platform_does_not_send_openai_requests_to_other_protocols(self):
         from astrbot_host.native_extensions.image_native.output_routing import OnlineImageBackend, resolve_platform
 
-        for url, expected in (
-            ("https://dashscope.aliyuncs.com/api/v1", "bailian"),
-            ("https://api-inference.modelscope.cn/v1", "modelscope"),
-            ("https://generativelanguage.googleapis.com/v1beta", "gemini"),
+        for url, expected, operations in (
+            ("https://dashscope.aliyuncs.com/api/v1", "bailian", ("generate",)),
+            ("https://api-inference.modelscope.cn/v1", "modelscope", ()),
+            ("https://generativelanguage.googleapis.com/v1beta", "gemini", ()),
         ):
             with self.subTest(url=url):
                 endpoint = {**self.endpoint("primary", "image-v1"), "platform": "auto", "base_url": url}
                 self.assertEqual(resolve_platform(endpoint), expected)
-                self.assertEqual(OnlineImageBackend(endpoint).operations, ())
+                self.assertEqual(OnlineImageBackend(endpoint).operations, operations)
+
+    def test_dashscope_root_routes_to_native_multimodal_and_compatible_path_stays_openai(self):
+        from astrbot_host.native_extensions.image_native.output_routing import (
+            bailian_image_body, bailian_image_entries, effective_platform, operation_url)
+
+        endpoint = {**self.endpoint("primary", "image-v1"), "platform": "openai",
+                    "base_url": "https://dashscope.aliyuncs.com", "model": "wan2.2-t2i-flash",
+                    "width": 1024, "height": 1024}
+        self.assertEqual(effective_platform(endpoint), "bailian")
+        self.assertEqual(operation_url(endpoint["base_url"], "generate", "bailian"),
+                         "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")
+        self.assertEqual(operation_url("https://dashscope.aliyuncs.com/api/v1", "generate", "bailian"),
+                         "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")
+        body = bailian_image_body(endpoint, "a frog")
+        self.assertEqual(body["input"]["messages"][0]["content"][0]["text"], "a frog")
+        self.assertEqual(body["parameters"]["size"], "1024*1024")
+        self.assertEqual(bailian_image_entries({"output": {"choices": [{"message": {
+            "content": [{"image": "https://example.test/frog.png"}]}}]}}),
+            [{"url": "https://example.test/frog.png"}])
+        compatible = {**endpoint, "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"}
+        self.assertEqual(effective_platform(compatible), "openai")
 
     def test_sd_webui_enables_masked_edit_after_a_real_endpoint_is_configured(self):
         current = self.api.output_configuration()

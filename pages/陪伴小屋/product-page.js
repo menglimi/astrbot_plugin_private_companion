@@ -933,7 +933,7 @@ window.CompanionProduct = (() => {
       ...(items.length
         ? items.slice(0,3).map(item => row(e(item.representation||item.predicate||"已保存事实"), ""))
         : [row("最近的事实", e(unavailable("memory")))]),
-      row("记忆工作区", "", link("查看", 'data-go="memories"')),
+      row("本插件事实与经历", "", link("查看", 'data-go="memories"')),
       row("人物与关系", "", link("查看", 'data-go="people"')),
     ]);
   }

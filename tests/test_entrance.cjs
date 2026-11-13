@@ -593,20 +593,20 @@ test("启动幕在首屏闸门关闭期间可见", () => {
 
 test("启动幕随机预载一张单次动图并遵从减少动态效果", () => {
   const assets = [
-    "pages/陪伴小屋/assets/room-loading-tea-coffee.gif",
-    "pages/陪伴小屋/assets/room-loading-mug.gif",
+    "pages/陪伴小屋/assets/room-loading-tea-coffee.webp",
+    "pages/陪伴小屋/assets/room-loading-mug.webp",
   ];
   for (const asset of assets) {
     const bytes = fs.readFileSync(path.join(__dirname, "..", asset));
     assert.ok(bytes.length > 100_000, `${asset} 没有随包提供`);
-    assert.equal(bytes.includes(Buffer.from("NETSCAPE2.0")), false,
-      `${asset} 仍保留无限循环扩展，不能只播放一遍`);
+    assert.equal(bytes.subarray(8, 12).toString("ascii"), "WEBP",
+      `${asset} 不是有效的 WebP 动图`);
   }
   assert.match(INDEX, /Math\.floor\(Math\.random\(\)\s*\*\s*choices\.length\)/,
     "启动幕没有在两张动图之间随机选择");
-  assert.match(INDEX, /<template[^>]+data-room-boot-gif="assets\/room-loading-tea-coffee\.gif[^>]*>[\s\S]*?<img[^>]+src="assets\/room-loading-tea-coffee\.gif/,
+  assert.match(INDEX, /<template[^>]+data-room-boot-gif="assets\/room-loading-tea-coffee\.webp[^>]*>[\s\S]*?<img[^>]+src="assets\/room-loading-tea-coffee\.webp/,
     "茶咖啡杯没有以宿主可重写的静态 src 放进 inert template");
-  assert.match(INDEX, /<template[^>]+data-room-boot-gif="assets\/room-loading-mug\.gif[^>]*>[\s\S]*?<img[^>]+src="assets\/room-loading-mug\.gif/,
+  assert.match(INDEX, /<template[^>]+data-room-boot-gif="assets\/room-loading-mug\.webp[^>]*>[\s\S]*?<img[^>]+src="assets\/room-loading-mug\.webp/,
     "马克杯没有以宿主可重写的静态 src 放进 inert template");
   assert.match(INDEX, /preload\.rel\s*=\s*"preload"[\s\S]*?preload\.as\s*=\s*"image"[\s\S]*?preload\.href\s*=\s*candidate\.src[\s\S]*?fetchpriority[\s\S]*?document\.head\.appendChild\(preload\)/,
     "启动图没有用宿主已重写的最终地址低优先级预载");

@@ -1905,19 +1905,24 @@
       window.parent?.postMessage?.({channel: "companion-workspace", kind: "host-mappings-updated"}, "*");
       try { await readStatus(); }
       catch { notice("角色映射已保存；运行状态暂未读到，可重新读取。", "info"); return; }
+      const repaired = result.repaired_settings && Object.keys(result.repaired_settings).length
+        ? `已自动修复旧配置（${Object.entries(result.repaired_settings)
+          .map(([section, names]) => `${section}: ${names.join("、")}`).join("；")}）。`
+        : "";
       if (result.startup_error) {
         const modelPending = ["host_provider_required", "host_provider_unavailable"].includes(result.startup_error);
         const message = modelPending
           ? "角色映射已经保存。共享启动模型会自动跟随 AstrBot 当前模型；如无可用模型，请先在 AstrBot 模型配置中启用 Provider，再点「准备并启动」。"
           : `运行未启动：${failureMessage(result.startup_error)}`;
-        notice(`角色映射已保存。${message}`, modelPending ? "info" : "error");
+        notice(`${repaired}角色映射已保存。${message}`, modelPending ? "info" : "error");
         return;
       }
       if (result.requires_initialize) {
-        notice("角色映射已保存；点「准备并启动」完成角色准备。", "info");
+        notice(`${repaired}角色映射已保存；点「准备并启动」完成角色准备。`, "info");
         return;
       }
-      notice(result.started ? "角色映射已保存并自动加载。" : "角色映射已保存，运行状态已更新。", "success");
+      notice(`${repaired}${result.started ? "角色映射已保存并自动加载。" : "角色映射已保存，运行状态已更新。"}`,
+        "success");
     } catch (error) { notice(`保存未完成：${await bindingSaveError(error, accounts)}`, "error"); }
     finally { setBusy(false); updateBindingCheck(); }
   }
@@ -1997,7 +2002,22 @@
     throw lastError || new Error("没有发现可用的 Companion V2 管理接口。");
   }
   function publicError(error) {
-    if (labelFor(error?.code)) return labelFor(error.code);
+    const label = labelFor(error?.code);
+    const detail = messageOf(error);
+    const backendReason = typeof error?.reason === "string" ? error.reason : "";
+    if (label) {
+      if (error?.code === "staging_settings_invalid") {
+        const cause = backendReason || detail;
+        if (/segmentation/i.test(cause)) {
+          return `回复分段设置无效：${cause.replace(/^.*?segmentation settings are invalid:?\s*/i, "") || "请检查 segmentation"}。请在插件配置里修正后重试。`;
+        }
+        if (/voice/i.test(cause)) {
+          return `语音回复设置无效：${cause.replace(/^.*?voice reply settings are invalid:?\s*/i, "") || "请检查 voice_reply"}。请在插件配置里修正后重试。`;
+        }
+        return cause ? `${label}（${cause}）` : label;
+      }
+      return detail && detail !== label ? `${label}（${detail}）` : label;
+    }
     const message = messageOf(error) || error?.message || "";
     if (labelFor(message)) return labelFor(message);
     if (/dashboard|sign in|unauthorized|401/i.test(message)) return "请先登录 AstrBot Dashboard，再从插件页面打开本页。";
@@ -2105,8 +2125,12 @@
     }
   }
   boot();
+  /* Native session discovery walks AstrBot's platform/persona directories and
+     is much heavier than a status read.  The page already refreshes on every
+     explicit action and on focus; 30s is enough for a background tab that is
+     left open, while halving those native scans. */
   setInterval(() => {
     if (host && !busy && !bindingsDirty && !groupTargetsDirty
         && document.visibilityState !== "hidden" && !topologySelection) void readBindingConfig();
-  }, 15000);
+  }, 30000);
 })();
