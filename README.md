@@ -28,7 +28,7 @@
 | --- | --- |
 | 插件名 | `astrbot_plugin_private_companion` |
 | 显示名 | 我会永远陪着你 |
-| 当前版本 | `7.1.16`（7.x 架构线，内部领域标识 `private_companion.v2`） |
+| 当前版本 | `7.1.17`（7.x 架构线，内部领域标识 `private_companion.v2`） |
 | AstrBot 版本 | `>= 4.27.2` |
 | 声明支持平台 | `aiocqhttp`（OneBot v11）、`qq_official`、`qq_official_webhook`、`weixin_oc`（个人微信）、`wechat_native`（WeChat Native） |
 | 管理入口 | AstrBot 插件扩展页「陪伴小屋」（支持低配设备开启「性能模式」切换为轻量状态页） |
@@ -431,7 +431,7 @@ flowchart LR
 
 ### 5.5 识屏、现实触及、手机连接与智能家居（Screen & Reality）
 
-- **桌面识屏（Screen）**：按管理员授权读取桌面屏幕画面摘要，支持作为生活陪伴背景或主动关心线索，历史观察自动脱敏。
+- **桌面识屏（Screen）**：按管理员授权读取桌面屏幕画面摘要，支持作为生活陪伴背景或主动关心线索，历史观察自动脱敏。Docker、WSL 或服务器可选择远端 Windows / Linux 桌面，沿用现有授权与主动观察。配置方法见[远端桌面捕捉](docs/remote-screen-capture.md)。
 - **Android 手机连接**：
   - 在「专题配置 → 手机连接」提供清晰的三步配对卡片与健康检查地址；生成配对令牌时自动启用手机网关，支持同步手机位置、身体活动与终端状态。
 - **华为运动健康与智能睡眠叫醒**：

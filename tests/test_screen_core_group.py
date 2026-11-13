@@ -42,9 +42,11 @@ class ScreenCoreGroupAdmissionTests(unittest.TestCase):
         repository._capabilities = SimpleNamespace(
             require_role_enabled=lambda **_: Outcome.success(SimpleNamespace(revision=7)),
             installation=lambda **_: Outcome.success(SimpleNamespace(revision=3)),
+            consent=lambda **_: Outcome.failed("capability_consent_missing", "no window consent"),
         )
         repository._authorizer = SimpleNamespace(
             resolve_authenticated=lambda principal, *, observed_at: Outcome.success(RESOLVED),
+            authorize=lambda *args, **kwargs: Outcome.failed("authorization_denied", "no window grant"),
         )
         with patch("companion_v2.screen.repositories.is_core", return_value=True):
             admitted = repository._admission(reference(), ROLE, RESOLVED, NOW)
