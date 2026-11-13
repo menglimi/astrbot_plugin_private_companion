@@ -625,7 +625,12 @@ class AstrBotMultiController:
                 raise TaskError("host_platform_unavailable",
                     f"配置的平台实例 {account.platform_id} 不在当前 AstrBot 中；请先在宿主平台设置里恢复它。")
             client = bridge.platforms.get(account.platform_id, (None, None))[1]
-            if platform.get_client() is not client or not bridge.account_connected(account, client):
+            current_client = platform.get_client()
+            if current_client is not client or not bridge.account_connected(account, client):
+                logger.warning("[CompanionV2] 账号校验未通过 platform=%r account=%r "
+                               "client_present=%s client_current=%s",
+                               account.platform_id, account.self_id,
+                               client is not None, current_client is client)
                 raise TaskError("host_account_unavailable",
                     f"配置的 Bot 账号 {account.platform_id}:{account.self_id} 当前未连接 AstrBot；"
                     "请确认这个账号已登录，再重试初始化。")

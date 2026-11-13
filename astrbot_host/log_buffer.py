@@ -20,6 +20,8 @@ MAX_MESSAGE_CHARS = 4000
 _MAX_QUERY_CHARS = 120
 LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 _PREFIXES = ("astrbot_plugin_private_companion", "companion_v2", "astrbot_host")
+_PLUGIN_LOGGER = "astrbot.plugin.astrbot_plugin_private_companion"
+_HANDLER_TAG = "_private_companion_log_buffer"
 _records: deque[dict] = deque(maxlen=MAX_RECORDS)
 _lock = threading.Lock()
 _next_id = 0
@@ -30,7 +32,8 @@ class _BufferHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         global _next_id
         name = record.name or ""
-        if not name.startswith(_PREFIXES):
+        if name != _PLUGIN_LOGGER and not any(
+                name == prefix or name.startswith(prefix + ".") for prefix in _PREFIXES):
             return
         try:
             message = record.getMessage()
@@ -50,15 +53,24 @@ class _BufferHandler(logging.Handler):
             })
 
 
-def install_log_buffer() -> None:
-    """Attach the ring buffer once, to the root logger, with a name filter."""
+def install_log_buffer(sink: logging.Logger | None = None) -> None:
+    """Capture owned root logs and the host's non-propagating plugin sink once."""
     global _handler
-    if _handler is not None:
-        return
-    handler = _BufferHandler()
-    handler.setLevel(logging.DEBUG)
-    logging.getLogger().addHandler(handler)
-    _handler = handler
+    if _handler is None:
+        _handler = _BufferHandler()
+        _handler.setLevel(logging.DEBUG)
+        setattr(_handler, _HANDLER_TAG, True)
+    for logger in (logging.getLogger(), sink):
+        if logger is None:
+            continue
+        # A plugin reload creates a new module graph. Retire only our previous
+        # buffer handler, preserving the host's handlers and other plugins.
+        for handler in tuple(logger.handlers):
+            if handler is not _handler and getattr(handler, _HANDLER_TAG, False):
+                logger.removeHandler(handler)
+                handler.close()
+        if _handler not in logger.handlers:
+            logger.addHandler(_handler)
 
 
 def snapshot(*, level: str = "", query: str = "", limit: int = 200, before: int = 0) -> dict:
