@@ -173,8 +173,9 @@ class AstrBotPlatformSender:
                 require(authorization)
             route_bridge = (getattr(self.bridge, "groups", self.bridge)
                             if scope.kind is ScopeKind.GROUP else self.bridge)
+            lease = route_bridge.connections.acquire(route_bridge.account(scope))
             await route_bridge.verify_role(scope, context.role_binding)
-            platform = route_bridge.platform(scope)
+            platform = route_bridge.connections.assert_current(lease).platform
             route_bridge.client(scope)
             if not callable(getattr(platform, "send_by_session", None)):
                 return not_sent("platform_session_transport_unavailable")
@@ -227,6 +228,7 @@ class AstrBotPlatformSender:
             if envelope.before_dispatch is None:
                 return not_sent("dispatch_fence_missing")
             envelope.before_dispatch()
+            platform = route_bridge.connections.assert_current(lease).platform
             stage = "platform_send"
             try:
                 await platform.send_by_session(session, chain)

@@ -410,6 +410,22 @@ class NativeInputTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
         result = await self.bridge.capture(event)
         self.assertEqual(result.failure.code, "host_account_changed")
 
+    async def test_replaced_connection_rejects_old_capture_and_accepts_next_event(self):
+        event = FakeEvent(self.native)
+        old_platform = self.native.platform
+
+        async def replace_connection(_umo):
+            self.native.platform = FakePlatform()
+            return "original"
+
+        self.bridge.session_persona_override_lookup = replace_connection
+        result = await self.bridge.capture(event)
+        self.assertEqual(result.failure.code, "host_connection_changed")
+        self.bridge.session_persona_override_lookup = AsyncMock(return_value="original")
+        result = await self.bridge.capture(FakeEvent(self.native))
+        self.assertTrue(result.is_success, result.failure)
+        self.assertIsNot(self.bridge.platform(result.unwrap().route.scope), old_platform)
+
     async def test_v2_role_mismatch_rolls_back_source_and_input_publication(self):
         snapshot = await self.capture()
         host = await self.setup_host()
