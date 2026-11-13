@@ -13,7 +13,7 @@ window.CompanionDecisionPage = (() => {
   ];
   const replyViewSections = {
     response: ["wakeup_direct", "wakeup_interest", "wakeup_members"],
-    tempo: ["wakeup_cold_group", "wakeup_fatigue"],
+    tempo: ["group_continuation", "private_debounce", "wakeup_cold_group", "wakeup_fatigue"],
     safety: ["silence_policy", "group_air_guard", "private_closing", "group_content_safety"],
   };
   let root = null;

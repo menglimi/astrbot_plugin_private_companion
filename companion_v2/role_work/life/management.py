@@ -28,6 +28,7 @@ class RoleLifeManagement:
         self.life = app.life_runtime.for_context(context)
         self.policy = ObjectAccessPolicy(self.runtime)
         self.operations = OperationRepository(self.runtime)
+        self.config_operations = OperationRepository(app.configuration.store)
         self.owner = RoleOwnerRef(context.scope.installation_id, context.scope.bot_id, context.role_binding.role.subject_id)
 
     def authorize(self, operator):
@@ -206,7 +207,9 @@ class RoleLifeManagement:
     def operation_id(self, prefix, operator, key):
         # Preserve pre-partitioning retries only in their original private scope.
         legacy = prefix + digest([operator.subject, key])
-        receipt = self.operations.get(legacy)
+        receipt = self.config_operations.get(legacy)
+        if not receipt.is_success:
+            receipt = self.operations.get(legacy)
         if prefix != "life-config-" and receipt.is_success and receipt.unwrap().operation.scope == self.context.scope:
             return legacy
         allowed_owners = (CONFIGURATION_OWNER,
@@ -221,7 +224,9 @@ class RoleLifeManagement:
         """Use a retired owner only to replay its exact persisted receipt."""
         owner = self.app.configuration._owners.get(CONFIGURATION_OWNER)
         legacy_ids = tuple(getattr(owner, "legacy_owner_ids", ()))
-        receipt = self.operations.get(operation_id)
+        receipt = self.config_operations.get(operation_id)
+        if not receipt.is_success:
+            receipt = self.operations.get(operation_id)
         if (receipt.is_success and receipt.unwrap().operation.scope == self.context.scope
                 and receipt.unwrap().operation.owner in legacy_ids):
             return receipt.unwrap().operation.owner
@@ -461,5 +466,8 @@ class RoleLifeManagement:
             return Outcome.success({"operation_id": op_id, **result})
         except TaskError as error:
             return Outcome.failed(error.code, str(error))
-        except (KeyError, ValueError, TypeError):
-            return Outcome.failed("life_command_invalid", "invalid command or stale activity revision; refresh and check the selected record")
+        except (KeyError, ValueError, TypeError) as error:
+            return Outcome.failed(
+                "life_command_invalid",
+                f"invalid command or stale activity revision; refresh and check the selected record "
+                f"({type(error).__name__}: {error})")

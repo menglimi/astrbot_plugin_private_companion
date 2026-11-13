@@ -1,6 +1,9 @@
 body.state-connected{min-width:320px}
 #roleStateWorkspace{min-width:0;color:var(--t-accent-ink)}
 .state-page-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:var(--sp-4);margin:3px 0 var(--sp-4)}
+.state-page-heading>div{display:grid;gap:var(--sp-1);min-width:0}
+.state-page-hint{margin:0;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.6;max-width:100%;overflow-wrap:anywhere}
+.state-page-heading p.state-page-hint{margin:0;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.6;max-width:100%}
 .state-page-actions{display:flex;align-items:center;justify-content:flex-end;gap:var(--sp-2);flex-wrap:wrap}
 .state-page-actions .memory-button{white-space:nowrap}
 .state-maintain-button{display:inline-flex;align-items:center;gap:var(--sp-2)}
@@ -584,3 +587,53 @@ body.state-connected{min-width:320px}
   .state-conditions-inline li{grid-template-columns:minmax(0,1fr);gap:2px}
 }
 @media(prefers-reduced-motion:reduce){.state-feature-detail,.state-board-point,.state-extra-nav button{animation:none;transition:none}}
+
+/* 窄屏排版（2026-11-12）
+ * 原来的状态看板是 repeat(auto-fit,minmax(118px,1fr))：窗口一窄就挤成五六列，
+ * 「饥饿 / 睡眠 / 心情」这类长句只能在一个 120px 的格子里逐字换行，整行被撑到
+ * 两百多像素，旁边几个短指标留下大片空白。这里改成两列清单（≥1200 三列），
+ * 每格从「图标 + 一行短值」变成可换行的整段；心情和位置独占整行。
+ * 手机宽度（≤700）再降成一列，四个入口卡片也改成单列，避免两列窄卡片里的
+ * 说明文字被压成一条竖线。 */
+.state-dashboard-grid{
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:1px;
+  padding:1px;
+  background:var(--t-line);
+}
+.state-board-point{
+  align-content:start;
+  min-height:64px;
+  padding:var(--sp-2) var(--sp-3);
+  border:0;
+  border-radius:0;
+  background:var(--t-surface);
+}
+.state-board-point.tone-mood,.state-board-point.tone-location{grid-column:1/-1}
+.state-board-point>strong{font-size:var(--fs-body);line-height:1.5}
+@media(min-width:1200px){
+  .state-dashboard-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(max-width:700px){
+  .state-dashboard>header{align-items:flex-start;flex-wrap:wrap;gap:var(--sp-1)}
+  .state-dashboard-updated{text-align:left}
+  .state-dashboard-grid{grid-template-columns:minmax(0,1fr)}
+  .state-board-point.tone-mood,.state-board-point.tone-location{grid-column:auto}
+  .state-board-point{grid-template-columns:18px minmax(0,1fr);gap:2px var(--sp-2);min-height:0;padding:var(--sp-2) var(--sp-3)}
+  .state-board-point>i{width:15px;height:15px}
+  .state-board-point>span{font-size:var(--fs-micro)}
+  .state-board-point>strong{font-size:var(--fs-body)}
+
+  .state-extra-nav{grid-template-columns:minmax(0,1fr);gap:var(--sp-2);margin:var(--sp-3) 0}
+  .state-extra-nav button{min-height:68px;padding:var(--sp-3)}
+  .state-extra-nav .state-extra-arrow{display:block}
+  .state-extra-copy>span{font-size:var(--fs-body)}
+
+  .state-feature-detail{padding:var(--sp-3)}
+  .state-feature-detail>header{flex-wrap:wrap;gap:var(--sp-2);padding-bottom:var(--sp-2)}
+  .state-feature-head-aside{order:3;width:100%;max-width:none;justify-content:space-between}
+  .state-feature-scope-pill{white-space:normal}
+  .state-feature-detail h3{font-size:var(--fs-lead)}
+  .state-feature-subtitle{font-size:var(--fs-body)}
+  .state-workspace-overview{padding:var(--sp-2) 0 var(--sp-3)}
+}

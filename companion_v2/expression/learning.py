@@ -126,9 +126,13 @@ def normalize_applicability(raw=None, *, default_channels=None):
             return list(fallback)
         if (type(value) is not list or not value or len(value) > maximum
                 or any(type(item) is not str or item not in choices for item in value)
-                or len(set(value)) != len(value)
-                or "any" in value and len(value) != 1):
+                or len(set(value)) != len(value)):
             raise ValueError("invalid_applicability")
+        # ``any`` is the widest sentinel.  Models naturally write
+        # ``["close", "any"]`` to mean "close or anyone"; collapsing it to the
+        # sentinel keeps the same meaning without failing the whole extraction.
+        if "any" in value:
+            return ["any"]
         return sorted(value, key=choices.index)
 
     channels = values("channels", CHANNELS, channels_default, maximum=len(CHANNELS))
@@ -193,7 +197,7 @@ def laya_intent_matches(applicability, decision):
 
 INSTRUCTION = """只观察可借鉴的表达形式：句长、节奏、标点、措辞、直接程度和排版，捕捉长期相处中自然耳濡目染的呼吸节拍、软化语气的小助词或熟稔接话方式。区分明确反馈与偶然写法，不从少量样本推断身份、性格、情绪、健康、关系或稳定偏好；证据不足就不提候选，一次说法不概括为长期习惯。
 每项引用输入中的真实 evidence_handle，写清可复用形式及使用条件；proposal 写成角色能以自身性格底色自然化用的表达习惯，而非机械复读；这里只提出待审核候选，不宣称已学习或保存。
-填写 applicability：channels 选 private/group/proactive/qzone/tts，必须包含来源频道；relationship_stages 选 stranger/familiar/close/any，emotion_gates 选 normal/positive/low/guarded/any，intent 选 acknowledgement/question/request/help/comfort/play/tease/intimacy/boundary/emotion/casual/proactive/any，keywords 最多 8 个简短情境词。其他条件依据不足时用 any 或空关键词，不猜身份、关系或心情。条件是建议的使用范围，不是事实声明，应用时缺失不等于匹配。
+填写 applicability：channels 选 private/group/proactive/qzone/tts，必须包含来源频道；relationship_stages 选 stranger/familiar/close/any，emotion_gates 选 normal/positive/low/guarded/any，intent 选 acknowledgement/question/request/help/comfort/play/tease/intimacy/boundary/emotion/casual/proactive/any，keywords 最多 8 个简短情境词。any 表示“不限”，只能单独使用，不能与具体值并列。其他条件依据不足时用 any 或空关键词，不猜身份、关系或心情。条件是建议的使用范围，不是事实声明，应用时缺失不等于匹配。
 每条候选都必须填写 expression：kind=style 时 pattern 是能被自然改写的具体说法；kind=grammar 时 pattern 是可复用的句法结构。observation 和 expression.situation 说明证据发生的情境，不要用“口语化、自然、简短”代替实际模板；语法习惯不要伪装成口头禅。实在没有具体形式时返回空 signals，不要省略 expression 字段凑候选。
 仅输出符合给定 JSON Schema 的 JSON，不附推理过程。"""
 

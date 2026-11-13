@@ -23,8 +23,8 @@ window.CompanionMigrationConfigReview = (() => {
     "旧快捷档没有唯一对应任务。请在功能任务中选择需要使用该模型的任务。");
   model(["model_assignment_config.COMPLEX_REASONING_PROVIDER_ID"], "复杂推理模型",
     "旧推理档没有唯一对应任务。请在功能任务中分别设置主模型与备用模型。");
-  model(["external_memory_config.new_framework_s4_provider_id"], "后台记忆整理模型",
-    "旧后台模型未自动分配。请核对记忆整理等后台任务使用的模型。");
+  model(["external_memory_config.new_framework_s4_provider_id"], "后台事实整理模型",
+    "旧后台模型未自动分配。请核对事实整理等后台任务使用的模型。");
   model(["model_token_limit_overrides"], "任务输出上限", "旧覆盖表未自动转换。请在对应任务中设置输出上限。");
   model(["model_fallback_overrides"], "任务备用模型", "旧覆盖表未自动转换。请在对应任务中设置备用模型与替代规则。");
   model(["task_prompt_overrides"], "任务提示词", "旧任务提示词未自动转换。请在对应任务中核对提示词。");

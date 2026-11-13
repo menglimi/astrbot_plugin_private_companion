@@ -630,7 +630,8 @@ class AstrBotStagingController:
         if self.runtime is None:
             raise HostControlError("staging_not_initialized", "initialize the staging profile first")
         task = self.runtime.read_one("SELECT generation FROM task_supervisor WHERE singleton = 1", ())
-        model = self.runtime.read_one(
+        configuration = getattr(getattr(self.session, "application", None), "configuration", None)
+        model = (configuration.store if configuration is not None else self.runtime).read_one(
             "SELECT generation FROM configuration_consumers WHERE consumer_id = ?", (CONSUMER,)
         )
         return (task["generation"] if task else 0, model["generation"] if model else 0)

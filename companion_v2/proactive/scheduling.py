@@ -24,6 +24,7 @@ from .contact_models import ContactIntent
 from .configuration import GROUP, PURPOSES, hour_activity_curve
 from .calendar_events import CalendarContactEvents
 from .date_events import DateContactEvents
+from .exploration import ExplorationEvents
 from .events import ActivityContactEvents
 from .greetings import GreetingContactEvents
 from .health_events import HealthContactEvents
@@ -117,6 +118,8 @@ class ContactSchedule:
             contacts, role_state, weather_alert_port) if role_state is not None else None
         self.balance_events = BalanceContactEvents(contacts, balance_port)
         self.news_events = NewsContactEvents(contacts, news_port)
+        self.exploration = (ExplorationEvents(contacts, self.date_events, news_port)
+                            if news_port is not None else None)
         self.screen_events = ScreenContactEvents(contacts)
         self.relationship_events = RelationshipContactEvents(contacts, messages)
         self._diagnostics_cleaned_at = None
@@ -1523,6 +1526,8 @@ class ContactSchedule:
                 preferences = self.contacts.preferences.read(context, observed_at=self.tasks.now())
                 if preferences.is_success:
                     self.news_events.maintain(context, preferences.unwrap())
+                    if getattr(self, "exploration", None) is not None:
+                        self.exploration.maintain(context, preferences.unwrap())
             except (TaskError, ValueError, TypeError, AttributeError):
                 # A source status must never take down the contact coordinator.
                 pass
@@ -1706,6 +1711,8 @@ class ContactSchedule:
             self.health_events.close()
         self.balance_events.close()
         self.news_events.close()
+        if getattr(self, "exploration", None) is not None:
+            self.exploration.close()
         self.screen_events.close()
 
     def cancel_running(self, *, close_sources=True):

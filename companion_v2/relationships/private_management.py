@@ -200,7 +200,7 @@ class PrivateMemberSettings:
                 if prefix is None:
                     continue
                 operation_id = prefix + digest([operator.subject, target.key, section_key])
-                if self.app.runtime.read_one("""SELECT operation_id FROM configuration_changes
+                if self.app.configuration.store.read_one("""SELECT operation_id FROM configuration_changes
                         WHERE operation_id = ? AND target_key = ? AND group_id = ?""",
                         (operation_id, target.key, editor.group)) is not None:
                     return operation_id
@@ -218,9 +218,12 @@ class PrivateMemberSettings:
         op_id = "private-member-settings:" + digest([operator.subject, self.context.key, command["operation_key"]])
         operation = OperationRef(op_id, "relationships.private-settings", self.context.scope,
                                  VersionRef(op_id, 1), op_id)
-        operations = OperationRepository(self.app.runtime)
+        store = self.app.configuration.store
+        operations = OperationRepository(store)
         # Validate every original token before shared owner revisions advance.
-        with self.app.runtime.transaction():
+        # All section writes and the receipt must share the configuration store
+        # transaction; the main runtime no longer owns these rows.
+        with store.transaction():
             snapshots = {name: require(editor.status(operator)) for name, editor in editors.items()}
             require(self.app.tasks.check_generation())
             receipt = require(operations.reserve(operation, parameter_hash=digest([

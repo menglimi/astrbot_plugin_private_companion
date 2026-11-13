@@ -390,6 +390,37 @@ class TogetherActivityMethods:
                 logger.warning('[TogetherCompanion] AstrBot 对话记录同步失败: %s', exc, exc_info=True)
                 return False
 
+    async def _record_astrbot_assistant(self, room: RoomSession, bot_text: str) -> bool:
+        """Append an assistant-only room comment to the AstrBot conversation.
+
+        Native rooms already sync through ``native_transcripts.delivered_output``;
+        this path covers the compatibility room where auto watch comments would
+        otherwise stay inside ``room.watch_events`` and never reach the QQ
+        conversation that the next normal reply reads.
+        """
+        async with room.conversation_lock:
+            try:
+                manager, unified_origin, conversation_id = await self._resolve_astrbot_conversation(room)
+                get_conversation = getattr(manager, 'get_conversation', None) if manager is not None else None
+                update_conversation = getattr(manager, 'update_conversation', None) if manager is not None else None
+                if (not unified_origin or not conversation_id
+                        or not callable(get_conversation) or not callable(update_conversation)):
+                    return False
+                conversation = await get_conversation(unified_origin, conversation_id, create_if_not_exists=False)
+                if conversation is None:
+                    return False
+                history = self._conversation_history_items(conversation)
+                await update_conversation(unified_origin, conversation_id,
+                    history=[*history, {'role': 'assistant', 'content': str(bot_text or '').strip()}])
+                logger.info('[TogetherCompanion] 已同步观影评论到 AstrBot 对话记录: room=%s conversation=%s',
+                            room.room_id[:10], conversation_id[:10])
+                return True
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning('[TogetherCompanion] 观影评论同步失败: %s', exc, exc_info=True)
+                return False
+
     def _schedule_shared_experience_record(self, room: RoomSession, *, delay_seconds: float=0.0) -> None:
         if room.native_v2 is not None or not self.record_shared_experiences or room.shared_experience_finalized:
             return

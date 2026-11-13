@@ -135,6 +135,18 @@ test("新分区都注册了标题，且字段都能读出标签",()=>{
     assert.notEqual(m.label(name),name,`${name} 缺标签`);
 });
 
+test("后台维护授权范围只接受 window/role，并在状态设置中可选",()=>{
+  const m=load();
+  assert.equal(m.validField("maintenance_grant_scope","window"),true);
+  assert.equal(m.validField("maintenance_grant_scope","role"),true);
+  assert.equal(m.validField("maintenance_grant_scope","all"),false);
+  assert.equal(m.label("maintenance_grant_scope"),"后台维护授权范围");
+  assert.ok(m.fields("home").includes("maintenance_grant_scope"));
+  const form=m.form({kind:"home",values:{enabled:true,maintenance_grant_scope:"role",maintenance_minutes:30}},String);
+  assert.match(form,/仅当前私聊窗口/);
+  assert.match(form,/整个角色/);
+});
+
 test("睡眠模拟与按角色作息自动入睡在状态设置中明确区分",()=>{
   const m=load();
   const form=m.form({kind:"home",values:{enabled:true,maintenance_minutes:30,sleep_enabled:true,

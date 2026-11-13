@@ -126,6 +126,7 @@ class AstrBotStagingHostTests(unittest.IsolatedAsyncioTestCase):
             "/astrbot_plugin_private_companion/host-options/forward_intake",
             "/astrbot_plugin_private_companion/host-options/balance",
             "/astrbot_plugin_private_companion/storage",
+            "/astrbot_plugin_private_companion/logs",
         }.issubset(routes))
         storage_methods = {tuple(methods) for route, _, methods, _ in self.native.registered_web_apis
                            if route == "/astrbot_plugin_private_companion/storage"}

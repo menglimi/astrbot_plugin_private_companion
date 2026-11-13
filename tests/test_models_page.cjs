@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+﻿const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
@@ -263,7 +263,7 @@ test('the routing matrix lists every registered task with its provider', async (
   await flush();
   assert.match(node.innerHTML, /任务/);
   assert.match(node.innerHTML, /对话回复/);
-  assert.match(node.innerHTML, /记忆整理/);
+  assert.match(node.innerHTML, /事实整理/);
   assert.match(node.innerHTML, /2<\/b><span>可用模型/);
   assert.match(node.innerHTML, /前台/);
   assert.doesNotMatch(node.innerHTML, /保存本任务/);
@@ -293,7 +293,7 @@ test('a slow reply from a previous mount cannot overwrite the current matrix', a
   requests[0].resolve(status());
   await flush();
   assert.match(second.innerHTML, /对话回复/);
-  assert.doesNotMatch(second.innerHTML, /记忆整理/);
+  assert.doesNotMatch(second.innerHTML, /事实整理/);
 });
 
 test('switching a provider inline raises one queued change and posting saves that task only', async () => {
@@ -423,8 +423,8 @@ test('provider search narrows tasks and a routed task opens its editor', async (
   requests[0].resolve(status());
   await flush();
   node.click('[data-model-view]', {modelView: 'providers'});
-  node.input('[data-model-search]', {value: '记忆'});
-  assert.match(node.innerHTML, /记忆整理/);
+  node.input('[data-model-search]', {value: '事实'});
+  assert.match(node.innerHTML, /事实整理/);
   assert.doesNotMatch(node.innerHTML, /对话回复/);
   node.click('[data-model-open]', {modelOpen: 'memory.reflect'});
   assert.match(node.innerHTML, /data-model-view="tasks" aria-pressed="true"/);
@@ -1215,7 +1215,7 @@ test('switching tabs round-trip keeps the functional matrix without reloading', 
   node.click('[data-model-tab]', {modelTab: 'fn'});
   await flush();
   assert.match(node.innerHTML, /对话回复/);
-  assert.match(node.innerHTML, /记忆整理/);
+  assert.match(node.innerHTML, /事实整理/);
   // exactly one functional GET happened on mount; switching back reused in-memory state
   const fnGets = requests.filter(r => r.method === 'GET' && r.route === 'model');
   assert.equal(fnGets.length, 1, 'functional matrix must not be re-fetched on tab return');

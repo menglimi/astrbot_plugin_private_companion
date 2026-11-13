@@ -422,7 +422,7 @@ class ContactConfigurationOwner(SparseConfigurationOwner):
         pause_fields = tuple(field for field in fields if field.field_id.endswith(".pause_until"))
         layers = target.chain()
         placeholders = ",".join("?" for _ in pause_fields)
-        stored = {layer.key: {row["field_id"]: row for row in self.runtime.read_all(
+        stored = {layer.key: {row["field_id"]: row for row in self.store.read_all(
             f"SELECT field_id, value_json, revision FROM configuration_values WHERE target_key = ? AND field_id IN ({placeholders})",
             (layer.key, *(field.field_id for field in pause_fields)))} for layer in layers}
         for field in pause_fields:
@@ -460,7 +460,7 @@ class ContactConfigurationOwner(SparseConfigurationOwner):
             stable = super().read(stable_target, fields)
             stable = personal_contact_snapshot(self.runtime, stable_target, fields, stable)
             if target.layer is ConfigLayer.WINDOW:
-                rows = self.runtime.read_all("""SELECT operation_id,
+                rows = self.store.read_all("""SELECT operation_id,
                         json_extract(CASE WHEN json_valid(result_json) THEN result_json ELSE '{}' END,
                                      '$.revision') AS revision
                     FROM configuration_changes WHERE target_key = ? AND group_id = ? AND changed = 1""",
