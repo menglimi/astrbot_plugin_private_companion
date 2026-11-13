@@ -17,7 +17,11 @@ class FunctionalCommandParsingTests(unittest.TestCase):
             ("/私聊陪伴 长期记忆 咖啡", "memory"),
             ("主动陪伴 日期添加 纪念日 2026-11-02", "dates_add"),
             ("陪伴 生图 一只白猫", "image_generate"),
+            ("陪伴 自拍 窗边", "image_generate"),
+            ("陪伴 改图 换成海边", "image_edit"),
             ("陪伴合照 把背景换成海边", "image_edit"),
+            ("陪伴 查看生图API", "manage_image"),
+            ("陪伴 今日穿搭图", "manage_image"),
         )
         for text, intent in cases:
             with self.subTest(text=text):
