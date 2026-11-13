@@ -59,3 +59,21 @@ test("unknown persona details and an empty mapping set add nothing", () => {
     discovered: {targets: [target("bot-test", "星缘-私聊", {details_available: false})]},
   }).personas.length, 1);
 });
+
+
+test("refresh never restores a removed account mapping just because its window uses the same persona", () => {
+  const saved = {accounts: [{bot_id: "bot-native"}],
+    personas: [{bot_id: "bot-native", persona_id: "shared", role_id: "role"}],
+    discovered: {targets: [target("bot-native", "shared"), target("bot-official", "shared")]}};
+  const result = context.expandPersonaRoles(saved);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.personas)), saved.personas);
+  assert.equal(saved.personas.length, 1, "reading does not mutate the saved mapping");
+});
+
+test("persona inheritance still works within the explicitly saved account set", () => {
+  const result = context.expandPersonaRoles({accounts: [{bot_id: "bot-main"}, {bot_id: "bot-second"}],
+    personas: [{bot_id: "bot-main", persona_id: "shared", role_id: "role"}],
+    discovered: {targets: [target("bot-second", "shared"), target("bot-unselected", "shared")]}});
+  assert.deepEqual(JSON.parse(JSON.stringify(result.personas.slice(1))),
+    [{bot_id: "bot-second", persona_id: "shared", role_id: "role"}]);
+});

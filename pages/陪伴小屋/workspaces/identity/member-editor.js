@@ -201,6 +201,9 @@
     route.role_id ? `内部归属 ${route.role_id}` : ""].filter(Boolean).join(" · ");
   const personaLabel = person => Array.isArray(person?.persona_ids) && person.persona_ids.length
     ? person.persona_ids.map(value => value || "默认人格").join("、") : person?.role_name || "当前角色";
+  const peerLabel = person => (person.platform_name === "wechat_native" ? "微信" :
+    person.platform_name === "weixin_oc" ? "微信" : /^\d+$/.test(String(person.native_account_id || "")) ? "QQ" : "账号")
+    + " " + (person.native_account_id || "未知");
   const accountLabel = person => person.account_name || (/^\d+$/.test(String(person.account_id || ""))
     ? `QQ ${person.account_id}` : "当前 Bot 账号");
   const operation = () => "member:" + Date.now().toString(36) + ":" + Math.random().toString(36).slice(2, 10);
@@ -1144,7 +1147,7 @@
     nameRow.append(element("h3", nameOf(person)), element("span", tierLabels[tier], "member-tier-badge"));
     const metaRow = element("div", undefined, "member-meta-row");
     const metaTexts = [];
-    for (const [glyph, text] of [["at-sign", "QQ " + (person.native_account_id || "未知")],
+    for (const [glyph, text] of [["at-sign", peerLabel(person)],
         ["bot", accountLabel(person)], ["sparkles", personaLabel(person)]]) {
       if (text && !metaTexts.some(entry => entry[1] === text)) metaTexts.push([glyph, text]);
     }

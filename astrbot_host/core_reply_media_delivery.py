@@ -6,6 +6,7 @@ from astrbot.core.message.components import (
     BaseMessageComponent,
     ComponentType,
     Image,
+    Face,
     Plain,
     Record,
     Reply,
@@ -79,6 +80,12 @@ def native_reply_messages(event, message):
 async def native_wire_message(event, message):
     """The SDK's Image conversion drops sub_type; keep it for owned QQ stickers."""
     getter = getattr(event, "get_platform_name", None)
+    if callable(getter) and getter() == "wechat_native":
+        chain = getattr(message, "chain", ())
+        if any(isinstance(part, Face) for part in chain):
+            return _derive(message, [Plain(text=f"[QQ表情 {part.id}]") if isinstance(part, Face) else part
+                                     for part in chain])
+        return message
     if not callable(getter) or getter() != "aiocqhttp":
         return message
     chain = getattr(message, "chain", None)

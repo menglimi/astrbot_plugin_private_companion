@@ -9,6 +9,7 @@ from .group_interjection import (ACKNOWLEDGED_STEP, IGNORED_STEP, INTERJECTION, 
                                  WEIGHT_MAX, WEIGHT_MIN, WEIGHT_START, addresses_role, day_key,
                                  interjection_state, openings)
 from .group_observation import observe, parse_moment
+from .group_timing import strip_address_markers
 from .participation import INSTRUCTION, group_participation_settings
 from .participation_prompts import group_hints, interjection_instruction, observation_instruction
 from .reply_settings import group_safety_settings, group_wakeup_settings
@@ -73,7 +74,7 @@ def speaker_history_instruction(items, current_speaker):
             + f"\n本轮 current_group_speaker={current_speaker}；只代表本轮，不代表上面每一个人。")
 
 
-def native_participation_turn(participation, context, native_input, settings):
+def native_participation_turn(participation, context, native_input, settings, *, group_trigger=None):
     """Read effective references; the model remains responsible for participation."""
     values = group_participation_settings(participation.runtime, context)
     at = native_input.at
@@ -84,8 +85,9 @@ def native_participation_turn(participation, context, native_input, settings):
     visible = tuple(item for item in visible if item.get("event_id") not in merged_ids)
     recent_visible = tuple(item for item in visible
                           if (at - parse_moment(item["received_at"])).total_seconds() <= values["group_context_max_age_hours"] * 3600)
+    current_text = getattr(native_input, "group_message_text", None) or native_input.text
     current = {"kind": "member", "speaker_id": context.actor.principal.native_account_id,
-               "received_at": stamp(at), "text": native_input.text, "event_id": native_input.event_id}
+               "received_at": stamp(at), "text": current_text, "event_id": native_input.event_id}
     visible = (*visible, current) if current not in visible else visible
     recent = [{"type": "group_member_message", **item} for item in recent_visible if item != current]
     recent.extend({"type": "native_group_reply", "turn_id": turn["event_id"], "returned_at": turn["returned_at"]}
@@ -93,7 +95,7 @@ def native_participation_turn(participation, context, native_input, settings):
     request = SimpleNamespace(event=SimpleNamespace(received_at=at), images=getattr(native_input, "images", ()),
                               context=SimpleNamespace(materials=()))
     hints = group_hints(request, context, settings, recent, {}, native=True,
-                        current_text=native_input.text)
+                        current_text=current_text, group_trigger=group_trigger)
     if len(merged_ids) > 1:
         hints += ("\n本轮 current_source 已合并同一成员的连续纯文本补话；这些片段是一次表达，"
                   "不代表多次叫你。先按完整意思判断要不要接话；接话时抓重点一次回应，"
@@ -104,8 +106,11 @@ def native_participation_turn(participation, context, native_input, settings):
     policy = participation._interjection_policy(values, settings)
     record = _speech_record(turns, visible, at=at, policy=policy, timezone_name=participation.messages.timezone_name)
     mood = (observation["facts"].get("mood") or {}).get("top_mood", "")
+    mentioned = group_trigger["mentioned"] if group_trigger is not None else False
+    address_text = (strip_address_markers(native_input.text)
+                    if group_trigger is not None else native_input.text)
     facts = interjection_state(policy, record, at=at,
-        initiative=bool(native_input.text) and not addresses_role(native_input.text, policy.address_words),
+        initiative=bool(native_input.text) and not (mentioned or addresses_role(address_text, policy.address_words)),
         reasons=openings(native_input.text, mood_top=mood),
         interest_probability=group_wakeup_settings(settings)["group_wakeup_interest_probability"])
     hints += interjection_instruction(facts).replace("已确认", "宿主发送调用已返回的")

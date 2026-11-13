@@ -29,6 +29,7 @@ from unittest.mock import patch
 from tests import astrbot_data_root  # noqa: F401  (must precede astrbot imports)
 
 from astrbot.core.agent.hooks import BaseAgentRunHooks
+from astrbot.core.agent.message import ThinkPart
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 from astrbot.core.astr_agent_run_util import run_agent
@@ -44,7 +45,8 @@ from astrbot_host.core_reply_tool_dispatch import (
 )
 from astrbot_host.core_reply_turn_gate import (
     RESPONSE_STREAM, _blank, _downstream_buffers, _restore_blank,
-    _turn_round, close_core_reply_turn, install_core_reply_turn, turn_gate,
+    _turn_round, close_core_reply_turn, discard_skipped_core_reply,
+    install_core_reply_turn, turn_gate,
 )
 
 BODY = "我先看看这事的来龙去脉。"
@@ -92,9 +94,14 @@ class ParticipationTool(FunctionTool):
         self.calls = 0
         self.runner = None
         self.stop_after = False
+        self.skip_after = 0
 
     async def call(self, context, **kwargs):
         self.calls += 1
+        if self.skip_after and self.calls >= self.skip_after:
+            context.context.event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["group_participation"] = {
+                "mode": "skip", "reason": "保持旁听",
+            }
         if self.stop_after and self.runner is not None:
             self.runner.request_stop()
         return '{"state":"succeeded","effect":"none","payload":{}}'
@@ -143,6 +150,7 @@ class ScriptedProvider:
             tools_call_name=[tool] if tool else [],
             tools_call_args=[{}] if tool else [],
             tools_call_ids=[spec.get("call_id") or "call-1"] if tool else [],
+            reasoning_content=spec.get("reasoning"),
             is_chunk=is_chunk,
             id="scripted-%d" % self.calls,
         )
@@ -223,14 +231,16 @@ def sent_text(event):
 
 class TurnGateTests(unittest.IsolatedAsyncioTestCase):
     async def run_turn(self, rounds, *, streaming=False, buffered=True, observe=True, install=True,
-                       event=None, max_step=8, stop_after=False):
+                       event=None, max_step=8, stop_after=False, skip_after=0, contexts=None,
+                       tool_schema_mode="full"):
         """Run one turn end to end and return what a chat would see."""
         event = event or GateEvent(buffered=buffered)
         event.set_extra(CORE_REPLY_CONTEXT_EXTRA, {"prepared": {"channel": "group", "event_ref": "turn-gate"}})
         provider = ScriptedProvider(rounds)
         tool = ParticipationTool()
         tool.stop_after = stop_after
-        request = ProviderRequest(prompt="在吗", func_tool=ToolSet(tools=[tool]))
+        tool.skip_after = skip_after
+        request = ProviderRequest(prompt="在吗", func_tool=ToolSet(tools=[tool]), contexts=contexts or [])
         wrapper = NS(context=NS(event=event), messages=[], tool_call_timeout=5)
         gate = {}
 
@@ -246,7 +256,8 @@ class TurnGateTests(unittest.IsolatedAsyncioTestCase):
                 restore_core_tool_dispatch(event, run_context)
 
         runner = ToolLoopAgentRunner()
-        await runner.reset(provider, request, wrapper, FunctionToolExecutor(), Hooks(), streaming=streaming)
+        await runner.reset(provider, request, wrapper, FunctionToolExecutor(), Hooks(), streaming=streaming,
+                           tool_schema_mode=tool_schema_mode)
         tool.runner = runner
         _ACTIVE_AGENT_RUNNERS[event.unified_msg_origin] = runner
         self.addCleanup(_ACTIVE_AGENT_RUNNERS.pop, event.unified_msg_origin, None)
@@ -449,6 +460,110 @@ class TurnGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["provider"].responses[0].completion_text, BODY)
         self.assertNotIn(RESPONSE_STREAM, result["runner"].__dict__)
         self.assertNotIn("step", result["runner"].__dict__)
+
+    async def test_skip_discards_drafts_without_losing_tool_pairs_or_reasoning(self):
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                first = {**tool_round(), "reasoning": "先判断是否参与"}
+                result = await self.run_turn(
+                    [first, tool_round(LATER, call_id="call-2"), text_round(OTHER)],
+                    streaming=streaming, skip_after=2,
+                )
+                self.assertEqual(result["text"] + result["sent"], "")
+                self.assertIsNone(result["gate"]["draft"])
+                self.assertEqual(result["gate"]["released"], 0)
+                messages = result["messages"]
+                assistants = [message for message in messages if message.tool_calls]
+                calls = [call.id for message in assistants for call in message.tool_calls]
+                answers = [message.tool_call_id for message in messages if message.role == "tool"]
+                self.assertEqual(calls, answers)
+                self.assertEqual(calls, ["call-1", "call-2"])
+                self.assertTrue(any(isinstance(part, ThinkPart) for part in assistants[0].content))
+                self.assertFalse(any(getattr(part, "type", None) == "text"
+                                     for message in assistants for part in message.content or ()))
+                finals = [response for response in result["provider"].responses if not response.is_chunk]
+                self.assertEqual(finals[0].completion_text, "")
+                self.assertEqual(finals[1].completion_text, "")
+
+    async def test_skip_keeps_existing_history_even_when_call_ids_repeat(self):
+        old_tool = {"role": "assistant", "content": BODY,
+                    "tool_calls": [{"id": "call-1", "type": "function",
+                                    "function": {"name": TOOL, "arguments": "{}"}}]}
+        contexts = [{"role": "user", "content": "上一轮"}, old_tool,
+                    {"role": "tool", "tool_call_id": "call-1", "content": "旧结果"},
+                    {"role": "assistant", "content": OTHER}]
+        result = await self.run_turn([tool_round(), text_round(LATER)],
+                                     skip_after=1, contexts=contexts)
+        messages = result["messages"]
+        self.assertEqual(messages[1].content, BODY)
+        self.assertEqual(messages[2].content, "旧结果")
+        self.assertEqual(messages[3].content, OTHER)
+        self.assertEqual(messages[4].content[0].text, "在吗")
+        self.assertFalse(messages[5].content)
+        self.assertEqual(result["text"] + result["sent"], "")
+
+    async def test_skip_clears_the_executed_batch_after_skills_like_replaces_call_ids(self):
+        result = await self.run_turn(
+            [tool_round(BODY, call_id="selected-1"), tool_round("", call_id="executed-1"),
+             tool_round("", call_id="selected-skip"), tool_round("", call_id="executed-skip"),
+             text_round(OTHER)],
+            skip_after=2, tool_schema_mode="skills_like",
+        )
+        batches = result["runner"].req.tool_calls_result
+        self.assertEqual([batch.tool_calls_info.tool_calls[0].id for batch in batches],
+                         ["executed-1", "executed-skip"])
+        self.assertFalse(batches[0].tool_calls_info.content)
+        self.assertEqual(result["provider"].responses[0].completion_text, "")
+        self.assertEqual(result["text"] + result["sent"], "")
+        self.assertEqual([message.tool_call_id for message in result["messages"] if message.role == "tool"],
+                         ["executed-1", "executed-skip"])
+
+    async def test_skip_clears_only_the_withheld_batch_when_this_turn_reuses_a_call_id(self):
+        result = await self.run_turn(
+            [tool_round(BODY, decorated="at", call_id="reused"),
+             tool_round(LATER, call_id="reused"), text_round(OTHER)],
+            skip_after=2,
+        )
+        batches = result["runner"].req.tool_calls_result
+        self.assertEqual([batch.tool_calls_info.tool_calls[0].id for batch in batches], ["reused", "reused"])
+        self.assertEqual([part.text for part in batches[0].tool_calls_info.content], [BODY])
+        self.assertFalse(batches[1].tool_calls_info.content)
+        self.assertEqual(result["provider"].responses[0].completion_text, BODY)
+        self.assertEqual(result["provider"].responses[1].completion_text, "")
+        self.assertEqual(result["text"], BODY)
+
+    async def test_skip_does_not_remove_prose_already_exposed_by_the_gate(self):
+        for first, streaming, buffered in (
+            (tool_round(decorated="at"), False, True),
+            (tool_round(media=True), False, True),
+            (tool_round(), True, False),
+        ):
+            with self.subTest(first=first, streaming=streaming):
+                result = await self.run_turn(
+                    [first, tool_round(LATER, call_id="call-2"), text_round(OTHER)],
+                    skip_after=2, streaming=streaming, buffered=buffered,
+                )
+                self.assertIn(BODY, result["text"])
+                if streaming:
+                    self.assertEqual(result["provider"].responses[0].completion_text, BODY)
+                else:
+                    self.assertIn(BODY, [getattr(part, "text", "")
+                                         for part in result["messages"][1].content or ()])
+                self.assertNotIn(OTHER, result["text"])
+
+    async def test_skip_discards_draft_at_step_limit_and_on_error(self):
+        for ending in (silent_round(), failed_round(), raising_round()):
+            with self.subTest(ending=ending):
+                result = await self.run_turn([tool_round(), ending], skip_after=1, max_step=1)
+                self.assertNotIn(BODY, result["text"] + result["sent"])
+                self.assertIsNone(result["gate"]["draft"])
+                self.assertEqual(result["gate"]["released"], 0)
+
+    def test_skip_is_reported_even_without_a_gate(self):
+        event = GateEvent()
+        self.assertFalse(discard_skipped_core_reply(event))
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, {"group_participation": {"mode": "skip"}})
+        self.assertTrue(discard_skipped_core_reply(event))
 
     async def test_the_gate_is_installed_once_per_turn(self):
         result = await self.run_turn([tool_round(), text_round(OTHER)])

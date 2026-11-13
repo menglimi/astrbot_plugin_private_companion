@@ -770,6 +770,9 @@ class WardrobeManagement(GroupEditor):
     layers = wardrobe_fields()[0].layers
     error_prefix = "wardrobe"
 
+    def _target(self):
+        return self.app.wardrobe_settings.target(self.context)
+
 
 class ReferenceManagement(GroupEditor):
     """Reference material for one role, and the daily-outfit path it feeds.
@@ -785,6 +788,9 @@ class ReferenceManagement(GroupEditor):
     group, owner = REFERENCE_GROUP, REFERENCE_OWNER
     layers = reference_fields()[0].layers
     error_prefix = "reference"
+
+    def _target(self):
+        return self.app.reference_settings.target(self.context)
 
 
 class ProactiveContactManagement(GroupEditor):

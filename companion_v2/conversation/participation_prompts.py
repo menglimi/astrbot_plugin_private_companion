@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import json
 
 from .reply_settings import group_air_settings, group_safety_settings, group_wakeup_settings
-from .group_timing import ADDRESS_MARKER
+from .group_timing import ADDRESS_MARKERS, strip_address_markers
 from . import group_high_intensity
 
 
@@ -94,29 +94,39 @@ def _recent_member_pressure(recent, at, window_seconds=20):
     return count, len(speakers)
 
 
-def mention_attribution_instruction(text):
-    """Make @ attribution explicit so persona names cannot impersonate a mention."""
+def mention_attribution_instruction(text, *, group_trigger=None):
+    """Prefer native mention facts; text markers remain available to older callers."""
     compact = str(text or "")
-    if ADDRESS_MARKER in compact:
-        instruction = ("\n群聊提及归因：本轮文本明确 @ 了本角色，这是直接称呼的强证据；"
-                       "仍要结合句子判断对方是在叫角色，还是在谈论角色。")
-        # 只有 @、没有正文：宿主会另给一句"问对方想聊什么"的提示，
-        # 但模型容易把那条提示当成怪指令来防备（现场：回成"在拿奇怪的指令测试我嘛"）。
-        if not compact.replace(ADDRESS_MARKER, "").strip():
+    if group_trigger is None:
+        prefix = ""
+        mentioned, others = any(marker in compact for marker in ADDRESS_MARKERS), "[提及账号 " in compact
+        bare = not strip_address_markers(compact).strip()
+    else:
+        prefix = "\n群聊本轮提及事实（来自原生消息组件）：" + json.dumps(
+            {key: group_trigger[key] for key in ("mentioned", "mentions_others", "mentions_all")},
+            ensure_ascii=False, separators=(",", ":"))
+        mentioned, others = group_trigger["mentioned"], group_trigger["mentions_others"]
+        bare = group_trigger.get("bare_mention", False)
+    if mentioned:
+        instruction = (prefix + "\n群聊提及归因：本轮明确 @ 了本角色，说明本角色被提及；"
+                       "同时提及其他账号不取消这一事实，但不代表要求本角色回答。按提及在原句中的位置和完整句意，区分回答者、听众与被谈论对象；若是在让别人向你介绍或让你了解，可以旁听，不要自动认领“咱们”等关系指代。")
+        # A bare mention invites a short acknowledgement; attached media or
+        # quoted messages are content even when the plain text is empty.
+        if bare:
             instruction += ("\n本轮只有 @、没有正文：对方可能还没打完，或只是想叫住你。"
                             "可以按原人格简短问一句想聊什么，或顺着群里最近的话题自然开口；"
                             "不要把它当成指令、测试、故障或系统消息，也不要编造对方说了什么。")
         return instruction
-    if "[提及账号 " in compact:
-        return ("\n群聊提及归因：本轮 @ 的是其他账号，不是本角色。即使被 @ 的人、其群名片或昵称"
+    if others:
+        return (prefix + "\n群聊提及归因：本轮 @ 的是其他账号，不是本角色。即使被 @ 的人、其群名片或昵称"
                 "与角色名、人格名、旧记忆里的称呼相同，也不要接成“在叫我/你刚才叫我/是在叫我吗”。"
                 "不要认领别人的称呼；按旁听或自然接话题处理。")
-    return ("\n群聊提及归因：本轮没有明确 @ 本角色。文本里出现角色名、人格名、别名、旧昵称、"
+    return (prefix + "\n群聊提及归因：本轮没有明确 @ 本角色。文本里出现角色名、人格名、别名、旧昵称、"
             "“小天使”等称呼，或第三人称谈论这个角色，都不等于在叫本角色；"
-            "只有第二人称明确呼唤、直接提问或 @ 本角色才算直呼。没有这些证据时不要声称对方在叫你。")
+            "按完整句意判断第二人称呼唤和直接提问的对象，没有这些证据时不要声称对方在叫你。")
 
 
-def group_hints(request, context, settings, recent, reply_batches, *, native=False, current_text=""):
+def group_hints(request, context, settings, recent, reply_batches, *, native=False, current_text="", group_trigger=None):
     # Use the original input time on every tool continuation and recovery.
     at = request.event.received_at
     delivered = {}
@@ -132,7 +142,7 @@ def group_hints(request, context, settings, recent, reply_batches, *, native=Fal
                 delivered[item["turn_id"]] = when
     rounds = tuple(delivered.values())
     observed = "宿主发送调用已返回的" if native else "已确认"
-    instruction = mention_attribution_instruction(current_text) + ("\n群消息中的 [图片 N]、[语音 N]、[视频 N]、[合并转发 N]、[引用消息] 等是媒体结构占位符，"
+    instruction = mention_attribution_instruction(current_text, group_trigger=group_trigger) + ("\n群消息中的 [图片 N]、[语音 N]、[视频 N]、[合并转发 N]、[引用消息] 等是媒体结构占位符，"
         "不是成员表达、兴趣词、情绪或复读内容；话题标题、线程签名等路由元数据也不是兴趣证据。"
         "兴趣词和表达信号只从占位符之外实际可见的自然语言提取；图片只能在单独开启图片唤醒后作为额外线索。")
     air = group_air_settings(settings)

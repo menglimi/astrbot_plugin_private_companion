@@ -19,11 +19,12 @@ from companion_v2.conversation.quotes.models import CapturedQuote, event_images,
 from companion_v2.conversation.quotes.forward_models import CapturedQuoteMedia, CapturedForwardQuote, CapturedForwardQuoteMedia
 from .native import (NativeAudioLocator, NativeConversationInput, NativePrivateBridge, NativeVideoLocator,
                      MEDIA_PREPARE_TIMEOUT, account_number, event_account_id, event_group_id,
-                     event_peer_id, native_client_connected, native_id, native_user_subject_id,
+                     event_peer_id, event_session_id, event_native_client, native_client_connected, native_id, native_user_subject_id,
                      route_id, supported_platform_name)
 from .quotes import NativeQuoteLocator, image_locator
 from .forwards import NativeForwardLocator, resource_id
-from .group_quotes import mention_text
+from .group_mentions import group_message_parts, group_message_text, current_mention_text
+from companion_v2.conversation.group_timing import SELF_MENTION
 from .files import file_locator, prepare_file_text, MAX_FILES
 
 
@@ -78,6 +79,8 @@ def group_event_route(event):
                 or sender == login):
             raise TaskError("host_group_identity_mismatch", "group sender and route must match the original OneBot message")
         valid_sessions = (group, sender + "_" + group)
+    elif meta.name == "wechat_native":
+        valid_sessions = (event_session_id(event),)
     else:
         # QQ Official group openids are not OneBot envelopes.  AstrBot's
         # adapter already verified the websocket payload before creating the
@@ -85,7 +88,7 @@ def group_event_route(event):
         valid_sessions = (group,)
     if (session.platform_id != meta.id or session.platform_name != meta.id
             or session.session_id not in valid_sessions
-            or message.session_id != group
+            or message.session_id != (session.session_id if meta.name == "wechat_native" else group)
             or event.unified_msg_origin != f"{meta.id}:GroupMessage:{session.session_id}"):
         raise TaskError("host_route_mismatch", "group fields do not identify one native conversation")
     return GroupEventRoute(meta.id, login, sender, group, session.session_id, event_id, meta.name)
@@ -101,6 +104,10 @@ class NativeGroupBridge(NativePrivateBridge):
     @staticmethod
     def _umo(platform_id, session_id):
         return f"{platform_id}:GroupMessage:{session_id}"
+
+    async def _role(self, account, session_id):
+        conversation_id, role, instruction = await self._role_for_umo(account, self._umo(account.platform_id, session_id))
+        return self._role_conversation_id(conversation_id, role), role, instruction
 
     @staticmethod
     def _connection(client, account_id):
@@ -126,7 +133,7 @@ class NativeGroupBridge(NativePrivateBridge):
         """
         raw = getattr(event.message_obj, "raw_message", None)
         segments = raw.get("message") if isinstance(raw, Mapping) else None
-        parts = segments if isinstance(segments, list) else getattr(event.message_obj, "message", ())
+        parts = group_message_parts(event, route.account_id)
         if not isinstance(parts, (list, tuple)) or not 1 <= len(parts) <= 128:
             raise TaskError("host_group_media_unsupported", "group text components are unavailable")
         raw_kinds = {
@@ -169,10 +176,9 @@ class NativeGroupBridge(NativePrivateBridge):
                     has_text |= bool(value.strip())
                 elif kind == "at":
                     try:
-                        value = mention_text(data.get("qq"), route.account_id,
-                                             bot_ids=(event.message_obj.self_id, "qq_official"))
+                        value = current_mention_text(data.get("qq"), event, route.account_id)
                         text.append(value)
-                        has_text |= value == "[提及机器人]"
+                        has_text |= value == SELF_MENTION
                     except (TaskError, ValueError, TypeError):
                         text.append("[提及不可用]")
                 elif kind == "image":
@@ -209,10 +215,9 @@ class NativeGroupBridge(NativePrivateBridge):
                 has_text |= bool(value.strip())
             elif kind == "At":
                 try:
-                    value = mention_text(part.qq, route.account_id,
-                                         bot_ids=(event.message_obj.self_id, "qq_official"))
+                    value = current_mention_text(part.qq, event, route.account_id)
                     text.append(value)
-                    has_text |= value == "[提及机器人]"
+                    has_text |= value == SELF_MENTION
                 except (TaskError, ValueError, TypeError):
                     text.append("[提及不可用]")
             elif kind in ("Face", "Mface"):
@@ -247,7 +252,9 @@ class NativeGroupBridge(NativePrivateBridge):
             original_parts = raw.get("message") if isinstance(raw, Mapping) else None
             self._validate_quote_components(original_parts, parts)
             text = self._text_only_parts(event, route)
-            at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event.bot
+            message_text = group_message_text(event, route.account_id)
+            at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event_native_client(
+                self.context.get_platform_inst(route.platform_id), event)
             principal = AuthenticatedHostPrincipal(self.installation_id, self.host_id, route.platform_id,
                 route.sender_id, account.bot_id, route.account_id)
             cid, role, instruction = await self._role(account, route.session_id)
@@ -259,7 +266,7 @@ class NativeGroupBridge(NativePrivateBridge):
                 native_user_subject_id(route.platform_name, route.sender_id))
             return Outcome.success(NativeConversationInput(route.event_id, principal,
                 ConversationRoute(scope, group_id=route.group_id), group_audience(scope, speaker), text, at, role,
-                instruction))
+                instruction, group_message_text=message_text))
         except TaskError as error:
             return Outcome.failed(error.code, str(error))
         except Exception:
@@ -309,6 +316,12 @@ class NativeGroupBridge(NativePrivateBridge):
         return super().client(scope)
 
     def _session_matches_group(self, account, session_id, group_id):
+        if self.platform_name(account) == "wechat_native":
+            from .wechat_native import session_target
+            try:
+                return session_target(self.platforms[account.platform_id][0], session_id) == group_id
+            except ValueError:
+                return False
         if self.platform_name(account) == "aiocqhttp":
             parts = session_id.split("_")
             return (len(parts) in (1, 2)
@@ -376,13 +389,13 @@ class NativeGroupBridge(NativePrivateBridge):
             text_parts, image_locators, quote_locators, forward_locators = [], [], [], []
             audio_locators, video_locators = [], []
             file_locators = []
+            parts = group_message_parts(event, route.account_id, native_parts=parts)
             for position, part in enumerate(parts):
                 kind = getattr(part.type, "value", part.type)
                 if kind == "Plain" and isinstance(part.text, str):
                     text_parts.append(part.text)
                 elif kind == "At":
-                    text_parts.append(mention_text(part.qq, route.account_id,
-                                                   bot_ids=(event.message_obj.self_id, "qq_official")))
+                    text_parts.append(current_mention_text(part.qq, event, route.account_id))
                 elif kind == "Image" and self.image_type is not None and type(part) is self.image_type:
                     image_locators.append(image_locator(position, part.file, part.url))
                     text_parts.append("\n[图片 " + str(len(image_locators)) + "]\n")
@@ -453,7 +466,8 @@ class NativeGroupBridge(NativePrivateBridge):
                                  if allow_text_fallback else None)
             except TaskError:
                 fallback_text = None
-            at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event.bot
+            at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event_native_client(
+                self.context.get_platform_inst(route.platform_id), event)
             principal = AuthenticatedHostPrincipal(self.installation_id, self.host_id, route.platform_id,
                 route.sender_id, account.bot_id, route.account_id)
             # All mutable native fields above are frozen before host I/O. Identity

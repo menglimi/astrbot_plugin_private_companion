@@ -30,11 +30,13 @@
 | 显示名 | 我会永远陪着你 |
 | 当前版本 | `7.1.17`（7.x 架构线，内部领域标识 `private_companion.v2`） |
 | AstrBot 版本 | `>= 4.27.2` |
-| 声明支持平台 | `aiocqhttp`（OneBot v11）、`qq_official`、`qq_official_webhook`、`weixin_oc`（个人微信） |
+| 声明支持平台 | `aiocqhttp`（OneBot v11）、`qq_official`、`qq_official_webhook`、`weixin_oc`（个人微信）、`wechat_native`（WeChat Native） |
 | 管理入口 | AstrBot 插件扩展页「陪伴小屋」（支持低配设备开启「性能模式」切换为轻量状态页） |
 | 数据存储 | 独立 SQLite 运行库（覆盖升级自动隔离于 `companion-7` 子目录，支持备份快照与跨盘迁移） |
 | 内置原生扩展 | `Content`、`Image`、`Screen`、`Reality`、`Together`、`Game`、`Live` 七项能力随包内置 |
 | 开发者 | `menglimi` |
+
+WeChat Native 接入沿用 AstrBot 核心普通回复与适配器的原事件发送，后台投递使用 `send_by_session`。私聊、群聊及原生媒体／工具的配置与限制见 [WeChat Native 接入说明](docs/WECHAT_NATIVE_ADAPTATION.md)。首次主动发送前须接收并认证对应私聊会话；不支持时不会猜测联系人或改走独立通道。
 
 ### 文档与支持
 
@@ -169,6 +171,8 @@ https://github.com/menglimi/astrbot_plugin_private_companion
 ### 3.3 从 6.7.0 升级与回退指南
 
 7.x 继续使用原仓库和插件名 `astrbot_plugin_private_companion`，通过现有安装原地更新即可，**不要并行安装第二份同名插件，也不要先删除原数据目录**。
+
+离线替换插件代码后须完整重启 AstrBot。仅重新启用已禁用的插件可能复用进程中已导入的旧模块，不能据此确认新版代码已加载。
 
 #### 升级六步流程
 

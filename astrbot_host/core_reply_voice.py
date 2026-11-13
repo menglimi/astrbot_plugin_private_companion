@@ -5,7 +5,7 @@ import asyncio
 from collections.abc import Mapping
 
 from astrbot.api import logger
-from astrbot.core.message.components import Plain, Record
+from astrbot.core.message.components import At, AtAll, Plain, Record, Reply
 from astrbot.core.message.message_event_result import MessageChain
 
 from companion_v2.conversation.voice_reply import (
@@ -342,10 +342,17 @@ async def prepare_core_reply_voice_message(
     if isinstance(core, dict) and claim is not None:
         core["_voice_reply_pending_claim"] = (delivery, claim)
     same_text = re.sub(r"\s+", "", visible) == re.sub(r"\s+", "", visible_speech(speech))
+    # Native quotes and mentions are metadata on a text send, not on a media
+    # send. Keep the authored text as their carrier even in voice-only mode;
+    # otherwise TTS leaves an unsupported Reply/At + Record payload.
+    platform = getattr(event, "get_platform_name", None)
+    native_text_carrier = (callable(platform) and platform() == "wechat_native"
+                           and any(isinstance(part, (Reply, At, AtAll))
+                                   for part in getattr(cleaned_message, "chain", ())))
     return _message_with_voice(cleaned_message, visible, records, policy,
                                hide_text=(policy.delivery_mode == "voice_only"
                                           and not (policy.segment_mode == "whole" and segment_count > 1)
-                                          and same_text))
+                                          and same_text and not native_text_carrier))
 
 
 def prepare_core_reply_voice(event):

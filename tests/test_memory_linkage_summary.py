@@ -47,7 +47,7 @@ class ExternalMemorySummaryTests(unittest.IsolatedAsyncioTestCase):
         }
         bridge = SummaryBridge(raw)
         controller, owner, producer = self.controller(bridge)
-        scope = SimpleNamespace(kind=ScopeKind.PRIVATE, native_scope_id="user-1", platform="qq", bot_id="bot-1")
+        scope = SimpleNamespace(kind=ScopeKind.PRIVATE, native_scope_id="user-1", platform="qq", bot_id="bot-1", session_id="user-1")
         context = SimpleNamespace(scope=scope)
 
         with patch("astrbot_host.memory_linkage.read_memory_owner", return_value=owner):
@@ -64,6 +64,20 @@ class ExternalMemorySummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(read_call[1], "user-1")
         self.assertEqual(read_call[2]["session_id"], "qq:FriendMessage:user-1")
         self.assertEqual(read_call[2]["limit"], 8)
+
+    async def test_preserves_native_session_separate_from_memory_user(self):
+        raw = {"contract": "memory.user_memory_summary.v1", "ok": True, "state": "ready", "counts": {}}
+        bridge = SummaryBridge(raw)
+        controller, owner, _ = self.controller(bridge)
+        scope = SimpleNamespace(kind=ScopeKind.PRIVATE, native_scope_id="real-user", platform="wx-main",
+                                bot_id="bot-w", session_id="adapter-owned-private-session")
+        with patch("astrbot_host.memory_linkage.read_memory_owner", return_value=owner):
+            result = await read_external_memory_summary(controller, SimpleNamespace(scope=scope))
+        self.assertEqual(result["state"], "ready")
+        identity = bridge.calls[1][2]
+        self.assertEqual(identity["user_id"], "real-user")
+        self.assertEqual(identity["session_id"], "wx-main:FriendMessage:adapter-owned-private-session")
+        self.assertEqual(bridge.calls[-1][2]["session_id"], identity["session_id"])
 
     async def test_does_not_read_when_external_plugin_is_not_the_memory_owner(self):
         bridge = SummaryBridge({})
