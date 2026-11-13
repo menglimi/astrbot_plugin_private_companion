@@ -19,10 +19,10 @@ window.CompanionModelsPage = (() => {
     ["感知", [["screen.interpretation", "屏幕解读", "分析已授权截图与摄像头单帧，需要支持图片的模型"],
       ["conversation.image_review", "图片审核", "检查群聊成图的可见内容"],
       ["reality.text", "现实提醒文案", "现实提醒、唤醒回执和短回复的文字生成"]]],
-    ["主动与记忆", [["proactive.plan", "主动联系规划", "双阶段模式下判断时机并整理新回合切口"],
+    ["主动与整理", [["proactive.plan", "主动联系规划", "双阶段模式下判断时机并整理新回合切口"],
       ["proactive.compose", "主动联系写作", "按所选方式生成主动消息正文"],
       ["proactive.judge", "主动联系复核", "复核主动消息是否符合当前人格与来源"],
-      ["memory.reflect", "记忆整理", "从已授权素材整理认识"]]],
+      ["memory.reflect", "事实整理", "从已授权素材整理认识"]]],
     ["生活与成长", [["calendar.plan", "日程规划", "基于已有目标规划下一步"], ["role.state.maintain", "角色状态", "维护角色的连续生活状态"], ["role.reading.consume", "阅读理解", "阅读实际提供的原文"], ["role.growth.progress", "成长进展", "根据已完成确认提出进展"]]],
     ["私人书写", [["role.journal.diary", "日记", "保存私人书写"], ["role.journal.dream", "梦境", "保存梦境记录"], ["role.journal.derive", "书写整理", "整理已有文字素材"], ["role.journal.select", "素材选择", "选择本次书写素材"]]],
     ["学习", [["role.expression.learn", "表达学习", "从当前会话的原始素材提炼表达规则"],
@@ -51,6 +51,8 @@ window.CompanionModelsPage = (() => {
     model_image_store_failed: "生图开关保存失败，请检查插件数据目录权限。",
     model_image_output_unavailable: "生图扩展尚未提供配置接口。", model_image_output_conflict: "生图配置已在其他页面更新，请重新读取后再保存。",
     model_image_output_busy: "当前有生图任务正在执行，请稍后保存。", model_image_output_invalid: "生图配置未通过校验，请检查模型、地址、参数与优先级。",
+    model_image_output_unconfigured: "还没有可用的生图模型：先添加并启用一个在线模型，或配置 ComfyUI / SD WebUI，再打开总开关。",
+    model_image_output_store_failed: "配置已读取，但写不回插件数据目录。请检查目录权限或被其它程序占用后重试。",
     model_image_output_failed: "生图模型配置读取或保存失败。",
     model_request_invalid: "请求未通过校验，请刷新后重试。",
     staging_profile_conflict: "当前角色映射已变化，请在账号与会话重新读取。",
@@ -356,7 +358,7 @@ window.CompanionModelsPage = (() => {
     write: '<path d="M4 20l4-1 10-10-3-3L5 16l-1 4Z"/>',
     lane: '<path d="M4 6h16M4 12h16M4 18h16"/>',
     decision: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><circle cx="12" cy="12" r="5"/><path d="m8.5 8.5 7 7M15.5 8.5l-7 7"/>' };
-  const groupIcon = name => ({ "对话": ICONS.reply, "主动与记忆": ICONS.memory, "生活与成长": ICONS.life, "私人书写": ICONS.write }[name] || ICONS.lane);
+  const groupIcon = name => ({ "对话": ICONS.reply, "主动与整理": ICONS.memory, "生活与成长": ICONS.life, "私人书写": ICONS.write }[name] || ICONS.lane);
   function topbar(s) {
     return `<div class="model-topbar"><span class="model-topbar-t">当前对象与角色 · 任务 → 模型提供方路由</span>
       <span class="model-pill ${s.status?.host_state === "running" ? "ok" : "warn"}">${esc(s.status?.host_state === "running" ? "运行中" : s.status?.host_state || "未连接")}</span>

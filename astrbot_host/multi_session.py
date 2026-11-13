@@ -23,6 +23,7 @@ from companion_v2.adapters.astrbot.onebot_group import OneBotGroupSender
 from companion_v2.adapters.astrbot.platform_sender import AstrBotPlatformSender
 from companion_v2.adapters.astrbot.presence import OneBotPresencePort
 from companion_v2.adapters.astrbot.provider import AstrBotTextProvider, REPLY_TASK_CAPABILITIES
+from companion_v2.configuration.store import open_configuration_store
 from companion_v2.adapters.astrbot.provider_catalog import (TextProviderSettings, assemble_providers,
     attach_native_video, loaded_routing)
 from companion_v2.adapters.astrbot.tools import CompositeAstrBotToolPort
@@ -552,6 +553,7 @@ class MultiHostSession:
         registry_ids = {item.field_id for item in registry_fields}
         registry_fields += tuple(field for field in relay_configuration_fields()
                                  if field.field_id not in registry_ids)
+        configuration_store = open_configuration_store(runtime)
         self.host = AstrBotCompanionHost(runtime, event_port=self.bridge.ports, identity_port=self.bridge.ports,
             role_port=self.bridge.ports, runtime_identity=RuntimeIdentity("companion", runtime_instance_id, "astrbot", HOST_ID),
             registry=FieldRegistry(version="astrbot-multi.v1", fields=registry_fields),
@@ -573,6 +575,7 @@ class MultiHostSession:
             solar_term_port=solar_term_port,
             qzone_transport=qzone_transport,
             voice_policy=common.voice_reply_policy if common.voice_reply_enabled else None,
+            configuration_store=configuration_store,
             wake_port=self._wake_snapshot,
             presence_port=MultiPresence(self))
         self.application = self.host.application

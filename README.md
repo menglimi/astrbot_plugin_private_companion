@@ -28,7 +28,7 @@
 | --- | --- |
 | 插件名 | `astrbot_plugin_private_companion` |
 | 显示名 | 我会永远陪着你 |
-| 当前版本 | `7.1.15`（7.x 架构线，内部领域标识 `private_companion.v2`） |
+| 当前版本 | `7.1.16`（7.x 架构线，内部领域标识 `private_companion.v2`） |
 | AstrBot 版本 | `>= 4.27.2` |
 | 声明支持平台 | `aiocqhttp`（OneBot v11）、`qq_official`、`qq_official_webhook`、`weixin_oc`（个人微信）、`wechat_native`（WeChat Native） |
 | 管理入口 | AstrBot 插件扩展页「陪伴小屋」（支持低配设备开启「性能模式」切换为轻量状态页） |
@@ -562,6 +562,10 @@ python -X utf8 tools/build_v2_release.py --output <安装目录以外的交付�
 ### 8.3 致谢
 
 负责框架设计的 `6astra`、负责前端设计的 `opus5.5`、负责文本打磨的 `4argon`、负责吃白饭的 `ds4.1f`，为开发与测试提供支持的星渊、里恩、墨飛ぶ等群友，以及所有插件的贡献者与使用者们。
+
+### 许可证
+
+本项目使用 **GNU Affero General Public License v3.0（AGPL-3.0-only）**。完整文本见 [LICENSE](LICENSE)。
 
 ### Star History
 

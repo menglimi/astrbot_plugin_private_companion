@@ -458,9 +458,10 @@ class LiveActivityMethods:
         return 5
 
     def _bili_guaranteed_support_types(self) -> set[str]:
-        raw = self.config.get('bili_live_auto_reply_guaranteed_event_types', ['super_chat'])
+        raw = self.config.get('bili_live_auto_reply_guaranteed_event_types',
+                              ['super_chat', 'buy_guard'])
         if not isinstance(raw, list):
-            raw = ['super_chat']
+            raw = ['super_chat', 'buy_guard']
         return {str(item).strip() for item in raw if str(item).strip()}
 
     def _ensure_bili_support_acknowledgement(self, reply_text: str, events: list[LiveDanmakuEvent]) -> str:
@@ -498,7 +499,7 @@ class LiveActivityMethods:
             except Exception as e:
                 logger.warning(f'[B站直播] SC 兜底字幕推送失败，文字已发送: {e}')
             self._record_bili_auto_reply_sent(selected, reply_text)
-            logger.warning('[B站直播] SC 模型链路未完成，已发送不依赖模型的文字兜底%s -> %s: %s', f' ({self._single_line_text(reason, 100)})' if reason else '', session_id, reply_text)
+            logger.warning('[B站直播] SC/上舰模型回复未产生，已发送不依赖模型的文字兜底%s -> %s: %s', f' ({self._single_line_text(reason, 100)})' if reason else '', session_id, reply_text)
             return True
         except Exception as e:
             logger.error(f'[B站直播] SC 最终兜底发送失败: {e}')

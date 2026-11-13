@@ -697,9 +697,10 @@
   "bili_live_auto_reply_guaranteed_event_types": {
     "description": "保证鸣谢的事件类型",
     "type": "list",
-    "hint": "这些事件在自动回应开启时会跳过普通冷却等待、最少事件数、读空气和每分钟限流，并按事件 ID 去重；默认保证逐一鸣谢 SC",
+    "hint": "这些事件在自动回应开启时会跳过普通冷却等待、最少事件数、读空气和每分钟限流，并按事件 ID 去重；默认保证逐一鸣谢 SC 与上舰",
     "default": [
-      "super_chat"
+      "super_chat",
+      "buy_guard"
     ]
   },
   "bili_live_auto_reply_cooldown_seconds": {

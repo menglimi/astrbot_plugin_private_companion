@@ -11,7 +11,9 @@ stored rule reads its governed source and only labels the reset (see
 
 Samples are form only. They are never republished as facts about the role or
 about anyone else, and the prompt contract forbids inferring identity,
-personality, mood, health, relationships or stable preference from them.
+personality, mood, health, relationships or stable preference from them. A
+learned run may keep one bounded excerpt per cited handle so the reviewed rule
+survives conversation cleanup; that excerpt is audit material, not new context.
 
 Every bound is a default for the registered ``expression.learning`` settings;
 callers pass the effective values so an operator can widen the window or the
@@ -33,6 +35,44 @@ from .sample_review import ExpressionSampleReviewStore
 
 READ_ACTION = "role.expression.read"
 REPLY_OWNER = "conversation.confirmed_reply"
+SNAPSHOT_MAX_CHARS = 400
+
+
+def sample_snapshot(samples, handles):
+    """Bounded text for the handles a candidate cites.
+
+    The run window is the durable record of a learned rule.  Conversation
+    cleanup may remove the original native input later, so store one short
+    excerpt per cited handle; it is review material, never republished as a
+    fact and never used for identity inference.
+    """
+    wanted = {value for value in handles if type(value) is str and value}
+    texts = {}
+    for sample in samples.samples:
+        if sample.handle in wanted:
+            texts[sample.handle] = sample.text[:SNAPSHOT_MAX_CHARS]
+    return texts if wanted and len(texts) == len(wanted) else {}
+
+
+def evidence_snapshot(window, handles):
+    """Return the saved evidence excerpt in citation order, or ``None``."""
+    if type(window) is not dict or type(handles) is not list or not handles:
+        return None
+    texts = window.get("texts")
+    if type(texts) is not dict:
+        return None
+    if any(type(handle) is not str or handle not in texts for handle in handles):
+        return None
+    values = []
+    for handle in handles:
+        value = texts.get(handle) if type(handle) is str else None
+        if type(value) is not str or not value.strip() or len(value) > SNAPSHOT_MAX_CHARS:
+            return None
+        values.append(value)
+    return values
+
+
+
 REPLY_SAMPLE_SOURCE = "confirmed_reply"
 INPUT_SAMPLE_SOURCE = "conversation_input"
 MAX_SAMPLE_LIMIT = 64

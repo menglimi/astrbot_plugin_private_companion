@@ -270,6 +270,20 @@ test("understanding configuration search opens the host-owned forward limits", (
   }
 });
 
+test("decision search locations open the tempo and safety tabs that own the field", () => {
+  const h = harness();
+  for (const section of ["group_continuation", "private_debounce", "wakeup_cold_group", "wakeup_fatigue"]) {
+    const location = h.run(`replySearchLocation({section:'${section}'})`);
+    assert.equal(location.tab, "decision");
+    assert.equal(location.decisionView, "tempo");
+    assert.equal(location.root, "#decisionReplyWorkspace");
+  }
+  for (const section of ["silence_policy", "private_closing", "group_air_guard", "group_content_safety"]) {
+    const location = h.run(`replySearchLocation({section:'${section}'})`);
+    assert.equal(location.decisionView, "safety");
+  }
+});
+
 test("quick setup reply links select the matching editable section", () => {
   const h = harness(), selected = [];
   h.window.CompanionReplyPage = {selectSection: (section, options) => selected.push({section, options})};

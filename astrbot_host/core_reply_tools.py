@@ -16,6 +16,7 @@ from mcp.types import CallToolResult, ImageContent, TextContent
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 
 from companion_v2.agenda.models import AgendaTarget, MemoCursor
+from companion_v2.capabilities.privacy import is_core
 from companion_v2.conversation.agenda_tools import AgendaRoleSession
 from companion_v2.conversation.interaction_tools import POKE_ACTION, POKE_SPEC
 from companion_v2.conversation.tool_loop import READ_ACTIONS
@@ -53,17 +54,23 @@ LEAN_GROUP_INSTRUCTION = ("【群聊精简工具】本轮工具集固定且很�
     "不要因为缺少某个工具就声称无法回应，先用自然语言把当前能说的说完。")
 
 
-def group_tool_manifest(offered, profile):
+def group_tool_manifest(offered, profile, *, allow_camera=False):
     """Return the fixed group manifest for one window-level profile.
 
     ``full`` keeps the ordinary catalogue.  ``lean`` and ``standard`` filter to
     the same ordered allowlist on every turn, so the provider's cached tool
     prefix does not change when a message happens to carry an image or mention.
+    ``allow_camera`` is the explicit core-admin exception; it is computed from
+    the authenticated actor, never from message text.
     """
     if profile not in ("lean", "standard"):
         return tuple(offered)
     allowed = LEAN_GROUP_ACTIONS if profile == "lean" else STANDARD_GROUP_ACTIONS
+    if allow_camera:
+        allowed = allowed | {"reality.camera.observe"}
     order = {action: index for index, action in enumerate(LEAN_GROUP_TOOL_ORDER)}
+    if allow_camera:
+        order["reality.camera.observe"] = len(order)
     filtered, seen = [], set()
     for item in offered:
         action = item.spec.action
@@ -301,7 +308,8 @@ class CoreReplyToolSession:
                 and getattr(getattr(getattr(self, "event", None), "platform_meta", None), "name", "") != "wechat_native"):
             offered.append(_OfferedTool(POKE_SPEC, "interaction"))
         if self.context.scope.kind is ScopeKind.GROUP and self.group_tool_profile in ("lean", "standard"):
-            return group_tool_manifest(offered, self.group_tool_profile)
+            allow_camera = is_core(self.application.runtime, self.context.actor.subject)
+            return group_tool_manifest(offered, self.group_tool_profile, allow_camera=allow_camera)
         return tuple(offered)
 
     def choose_participation(self, wrapper, arguments):

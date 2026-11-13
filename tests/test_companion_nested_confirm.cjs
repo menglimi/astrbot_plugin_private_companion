@@ -268,7 +268,14 @@ test("嵌套工作区的确认层在插件视口内可见可操作，取消 0 �
   } finally {
     try { cdp && cdp.socket.close(); } catch { /* 关闭失败不影响断言结果 */ }
     try { child.kill(); } catch { /* 浏览器可能已退出 */ }
+    await new Promise(resolve => child.exitCode !== null ? resolve() : child.once("exit", resolve));
     await fixture.close().catch(() => {});
-    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    try {
+      fs.rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
+    } catch (error) {
+      /* Windows may keep a browser profile handle for a moment after exit;
+         a leftover temp directory must not turn a passing test into EPERM. */
+      if (!["EPERM", "EBUSY", "ENOTEMPTY"].includes(error.code)) throw error;
+    }
   }
 });

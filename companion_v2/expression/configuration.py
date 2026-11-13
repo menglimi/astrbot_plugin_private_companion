@@ -48,6 +48,7 @@ LIMITS = {
     "group_daily_batch_limit": (1, 50),
     "group_new_messages": (5, 80),
 }
+PROBABILITY_LIMITS = {"minimum_confidence": (0.0, 1.0)}
 DEFAULTS = {
     "private_learning_enabled": True,
     "group_learning_enabled": False,
@@ -58,6 +59,7 @@ DEFAULTS = {
     "sample_chars": 800,
     "active_signal_limit": 60,
     "rules_per_turn": 2,
+    "minimum_confidence": 0.65,
     "payload_chars": 4000,
     "rotation_candidate_limit": 24,
     "rotation_decay_hours": 336,
@@ -117,6 +119,10 @@ def configuration_fields():
     for name, maximum in TEXT_FIELDS.items():
         definitions.append(FieldDefinition(GROUP + "." + name, GROUP, GROUP, ValueKind.TEXT, ROLE_DEFAULTS[name],
             maximum_chars=maximum, layers=POLICY_LAYERS, apply_mode=ApplyMode.IMMEDIATE, owner_id=OWNER))
+    for name, (minimum, maximum) in PROBABILITY_LIMITS.items():
+        definitions.append(FieldDefinition(GROUP + "." + name, GROUP, GROUP, ValueKind.PROBABILITY,
+            ROLE_DEFAULTS[name], minimum=minimum, maximum=maximum, decimal_places=2,
+            layers=POLICY_LAYERS, apply_mode=ApplyMode.IMMEDIATE, owner_id=OWNER))
     return tuple(definitions)
 
 
@@ -165,6 +171,7 @@ def target_for(context=None, *, installation_id=None):
 
 def migrate_legacy_policy_values(runtime):
     """Preserve old role/window policies and split the former group interval."""
+    runtime = runtime.configuration_store
     promoted = []
     legacy_interval = GROUP + ".scan_interval_minutes"
     group_interval = GROUP + ".group_scan_interval_minutes"
@@ -382,6 +389,7 @@ class ExpressionLearningSettings:
     group_new_messages: int = 20
     group_member_mode: str = "all"
     group_member_ids: str = ""
+    minimum_confidence: float = 0.65
 
     def __post_init__(self):
         if any(type(getattr(self, name)) is not bool for name in BOOLEAN_FIELDS):
@@ -397,6 +405,9 @@ class ExpressionLearningSettings:
             if type(value) is not int or not minimum <= value <= maximum:
                 raise ConfigurationError("expression_settings_invalid",
                                          f"{name} is outside its registered range")
+        if type(self.minimum_confidence) not in (int, float) or not 0 <= self.minimum_confidence <= 1:
+            raise ConfigurationError("expression_settings_invalid",
+                                     "minimum_confidence must be between 0 and 1")
         if self.sample_limit < max(self.min_samples, self.group_min_samples):
             raise ConfigurationError("expression_settings_invalid",
                                      "the sample batch cannot be smaller than either scope's minimum sample count")
@@ -422,8 +433,9 @@ class ExpressionLearningSettings:
 
 def read_settings(runtime, context, *, override=None):
     """Read global policy plus the participant or group-specific learning switch."""
+    store = runtime.configuration_store
     values = dict(DEFAULTS)
-    snapshot = ExpressionConfigurationOwner(runtime).read(target_for(context), field_names())
+    snapshot = ExpressionConfigurationOwner(store).read(target_for(context), field_names())
     values = {key.removeprefix(GROUP + "."): field.value for key, field in snapshot.fields.items()}
     values = {**DEFAULTS, **values}
     if context.scope.kind is ScopeKind.PRIVATE:
@@ -433,7 +445,7 @@ def read_settings(runtime, context, *, override=None):
     else:
         target, fields = None, ()
     if target is not None:
-        local = SparseConfigurationOwner(runtime).read(target, fields)
+        local = SparseConfigurationOwner(store).read(target, fields)
         local_group = PRIVATE_GROUP if target.layer is ConfigLayer.RELATIONSHIP else GROUP_SCOPE_GROUP
         values.update({key.removeprefix(local_group + "."): field.value
                        for key, field in local.fields.items() if field.explicit})

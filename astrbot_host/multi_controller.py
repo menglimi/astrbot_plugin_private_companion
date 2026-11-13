@@ -35,7 +35,8 @@ from .backup_api import guard_restore_startup
 from .storage_location import resolve_data_root, selected_backup_directory
 from .native_extensions import NativeExtensionRegistry, together_execution_binding
 from .native_extensions.builtins import MANAGED_EXTENSIONS, create_bundled_extensions
-from .settings import DELIVERY_AUTHORIZATION_TTL, INSTALLATION_PREFIX, PROFILE_PATTERN, HostControlError
+from .settings import (DELIVERY_AUTHORIZATION_TTL, INSTALLATION_PREFIX, PROFILE_PATTERN,
+                       HostControlError, repair_host_policy_sections)
 from .binding import describe_pin, event_identity, is_private_message, message_text, parse_bind_command
 from .calendar_command import receive_calendar_command
 from .binding_store import PendingBinding, binding_path, clear_binding, read_binding, write_binding
@@ -92,6 +93,26 @@ class AstrBotMultiController:
                                    HostControlError("host_poke_settings_invalid", str(error)))
         from .multi_api import MultiHostWebAPI
         self.web_api = MultiHostWebAPI(self)
+
+    def repair_legacy_config(self) -> dict[str, list[str]]:
+        """Normalize stale optional policy fields once, then refresh settings.
+
+        Called after the plugin installs its config writer.  Keeping this out
+        of ``__init__`` means tests and embedders that never persist config are
+        not surprised by an early write; the method is idempotent and safe to
+        call on every load.
+        """
+        repaired = repair_host_policy_sections(self.config)
+        if not repaired:
+            return {}
+        save = getattr(self, "save_plugin_config", None)
+        if callable(save):
+            try:
+                save(self.config)
+            except Exception:
+                logger.warning("[CompanionV2] 旧策略字段已修复但写回配置失败：%s", repaired, exc_info=True)
+        self.refresh_settings()
+        return repaired
 
     def refresh_settings(self):
         try:
@@ -743,9 +764,13 @@ class AstrBotMultiController:
         except BaseException:
             runtime.close()
             raise
-        return runtime, MultiAuthority(runtime, settings, now=self.now,
+        authority = MultiAuthority(runtime, settings, now=self.now,
             platform_name=self._configured_platform_name,
-            private_session_lookup=self._configured_private_session), last_restore
+            private_session_lookup=self._configured_private_session)
+        parked = self._parked_binding()
+        core_target = self._core_target(parked) if parked is not None else None
+        authority.core_target_id = core_target.target_id if core_target is not None else None
+        return runtime, authority, last_restore
 
     def _configured_private_session(self, platform_id, account_id, participant_id):
         session = self.session
@@ -921,6 +946,9 @@ class AstrBotMultiController:
     def _initialize_manifest_storage(self, manifest, conversations):
         with self.runtime.transaction():
             receipt = self.authority.initialize(manifest, allow_legacy_staging=self._adopting_legacy_profile)
+            parked = self._parked_binding()
+            core_target = self._core_target(parked) if parked is not None else None
+            core_target_id = core_target.target_id if core_target is not None else None
             for conversation in conversations.values():
                 target = conversation["target"]
                 for role_id in conversation["role_ids"]:
@@ -929,7 +957,8 @@ class AstrBotMultiController:
                     scope = ScopeRef(self.settings.installation_id, target.platform_id, ScopeKind.PRIVATE,
                         target.participant_id, target.bot_id, target.account_id,
                         persona_conversation(conversation["conversation_id"], role), conversation["session_id"])
-                    self.authority.provision_scope(target, scope, role)
+                    self.authority.provision_scope(target, scope, role,
+                        core_admin=core_target_id == target.target_id)
         return receipt
 
     async def apply_bindings(self, candidate, *, expected_config=None):
@@ -1214,8 +1243,9 @@ class AstrBotMultiController:
 
     def _startup_generations(self):
         task = self.runtime.read_one("SELECT generation FROM task_supervisor WHERE singleton = 1", ())
-        model = self.runtime.read_one("SELECT generation FROM configuration_consumers WHERE consumer_id = ?",
-                                      ("model_gateway",))
+        configuration = getattr(getattr(self.session, "application", None), "configuration", None)
+        model = (configuration.store if configuration is not None else self.runtime).read_one(
+            "SELECT generation FROM configuration_consumers WHERE consumer_id = ?", ("model_gateway",))
         return task, model
 
     def target_for_event(self, event, *, connected=True):
