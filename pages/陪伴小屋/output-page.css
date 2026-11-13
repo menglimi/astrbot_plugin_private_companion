@@ -103,6 +103,8 @@
 .output-page #imageOutputWorkspace [data-wb-row="style_prompt"],.output-page #imageOutputWorkspace [data-wb-row="negative_prompt"]{grid-column:1/-1}
 .output-page #imageOutputWorkspace [data-wb-row="prompt_format"],.output-page #imageOutputWorkspace [data-wb-row="style"],.output-page #imageOutputWorkspace [data-wb-row="negative_mode"]{padding:0;border:0;background:transparent}
 .output-page #imageOutputWorkspace [data-wb-row="prompt_format"] .wb-field-main,.output-page #imageOutputWorkspace [data-wb-row="style"] .wb-field-main,.output-page #imageOutputWorkspace [data-wb-row="negative_mode"] .wb-field-main{display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:calc(var(--sp-3) * .75)}
+.output-page #imageOutputWorkspace [data-wb-row="prompt_format"] .wb-field-main>.wb-label,.output-page #imageOutputWorkspace [data-wb-row="style"] .wb-field-main>.wb-label,.output-page #imageOutputWorkspace [data-wb-row="negative_mode"] .wb-field-main>.wb-label{flex:0 1 auto;min-width:0}
+.output-page #imageOutputWorkspace [data-wb-row="prompt_format"] .wb-field-main>.wb-control,.output-page #imageOutputWorkspace [data-wb-row="style"] .wb-field-main>.wb-control,.output-page #imageOutputWorkspace [data-wb-row="negative_mode"] .wb-field-main>.wb-control{flex:0 1 auto;width:auto;max-width:none}
 .output-page #imageOutputWorkspace [data-wb-row="scene_presets_json"]{display:none!important}
 .output-page #imageOutputWorkspace [data-wb-group="scenes"]{display:none}
 .output-page #imageOutputWorkspace [data-wb-group="prompts"] textarea{min-height:35px;line-height:1.6}
