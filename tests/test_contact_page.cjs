@@ -936,9 +936,10 @@ test('长目标路径使用不超过后端上限的幂等键', async () => {
   assert.deepEqual(Object.keys(post.values.changes), ['news.enabled']);
 });
 
-test('保存成功后清空草稿并刷新安装级配置', async () => {
+test('保存成功后清空草稿并使用回执令牌，不再全量回读', async () => {
   const h = harness();
   await boot(h);
+  const before = h.requests.filter(r => r.method === 'GET' && r.route === 'config').length;
   const box = fakeInput({type: 'checkbox', checked: false, dataset: {field: 'news.enabled'}});
   h.element.dispatch('change', fieldEvent(box, 'change'));
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-action]' ? {dataset: {action: 'save'}} : null}});
@@ -947,11 +948,10 @@ test('保存成功后清空草稿并刷新安装级配置', async () => {
   h.reply(post, {result: {operation_id: 'contact-op-1', replayed: false},
     status: {sections: {['proactive.contact']: {edit_token: 'c2'.repeat(32)}}}});
   await h.settle();
-  const refresh = h.requests.filter(r => r.method === 'GET' && r.route === 'config').at(-1);
-  replyGlobalConfig(h, refresh, {...baseSettings(), 'news.enabled': false}, 'c3'.repeat(32));
-  await h.settle();
   assert.equal(h.page.state.data.touched.size, 0, '保存成功后草稿要清空');
-  assert.equal(h.page.state.data.configToken, 'c3'.repeat(32), '要用刷新后的配置令牌');
+  assert.equal(h.page.state.data.configToken, 'c2'.repeat(32), '回执令牌应直接用于下一次保存');
+  assert.equal(h.requests.filter(r => r.method === 'GET' && r.route === 'config').length, before,
+    '保存回执已经给出令牌时不应再读整块配置');
   assert.equal(h.page.state.data.settings['news.enabled'], false);
   assert.ok(h.page.state.data.notice.includes('已保存'), '要有确认');
 });
@@ -977,23 +977,25 @@ test('写入回执确认后单独刷新安装级配置令牌', async () => {
   assert.doesNotMatch(h.element.innerHTML, /保存结果尚未确认/);
 });
 
-test('a saved receipt stays confirmed when the follow-up global config read fails', async () => {
+test('a saved receipt with a fresh token skips the follow-up full section read', async () => {
   const h = harness();
   await boot(h);
+  const before = h.requests.filter(r => r.method === 'GET' && r.route === 'config').length;
   h.element.dispatch('change', fieldEvent(fakeInput({type: 'checkbox', checked: false,
     dataset: {field: 'news.enabled'}}), 'change'));
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-action]' ? {dataset: {action: 'save'}} : null}});
   await h.settle();
   const post = h.requests.find(r => r.method === 'POST');
-  h.reply(post, {result: {operation_id: 'contact-op-2', replayed: false}, status: {sections: {
+  h.reply(post, {result: {operation_id: 'contact-op-2', replayed: false,
+    edit_token: 'c2'.repeat(32)}, status: {sections: {
     ['proactive.contact']: {edit_token: 'c2'.repeat(32)},
   }}});
   await h.settle();
-  const refresh = h.requests.filter(r => r.method === 'GET' && r.route === 'config').at(-1);
-  refresh.reject(new Error('connection reset'));
-  await h.settle();
   assert.equal(h.page.state.data.pendingWrite, null);
-  assert.match(h.page.state.data.notice, /已保存 1 项，但当前状态未能刷新/);
+  assert.equal(h.page.state.data.configToken, 'c2'.repeat(32));
+  assert.equal(h.requests.filter(r => r.method === 'GET' && r.route === 'config').length, before,
+    'the save response replaces the full projection used only to mint a token');
+  assert.match(h.page.state.data.notice, /已保存 1 项/);
   assert.doesNotMatch(h.page.state.data.notice, /保存结果尚未确认|未收到服务确认/);
 });
 
@@ -1161,6 +1163,26 @@ test('a bridge error without a machine code explains the pending save and keeps 
   assert.equal(h.page.state.data.pendingWrite.body.operation_key, operationKey);
   assert.match(h.element.innerHTML, /网络连接中断/);
   assert.match(h.element.innerHTML, /原保存请求已保留/);
+});
+
+test('a fenced save drops the stale operation and keeps the draft for a fresh save', async () => {
+  const h = harness();
+  await boot(h);
+  h.element.dispatch('change', fieldEvent(fakeInput({type: 'checkbox', checked: false,
+    dataset: {field: 'news.enabled'}}), 'change'));
+  h.element.dispatch('click', {target: {closest: selector => selector === '[data-action]'
+    ? {dataset: {action: 'save'}} : null}});
+  await h.settle();
+
+  const post = h.requests.find(request => request.method === 'POST');
+  post.reject(Object.assign(new Error('host generation replaced'), {code: 'supervisor_fenced'}));
+  await h.settle();
+
+  assert.equal(h.page.state.data.pendingWrite, null, 'the old generation cannot confirm this operation');
+  assert.equal(h.page.state.data.touched.size, 1, 'keep the edits so the user can review and save again');
+  assert.match(h.page.state.data.notice, /宿主已重启/);
+  assert.doesNotMatch(h.element.innerHTML, /data-action="retry-pending"/);
+  assert.match(h.element.innerHTML, /data-action="save"/);
 });
 
 test('a machine-coded bridge rejection is confirmed and does not retry as an unknown write', async () => {

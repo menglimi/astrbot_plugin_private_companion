@@ -187,6 +187,8 @@ window.CompanionContactPage = (() => {
     proactive_contact_dates_invalid:"重要日期需要一个 JSON 数组，最多 32 条。",
     proactive_contact_source_invalid:"资讯来源填写有误，请核对类型、标识或地址。",
     proactive_contact_revision_conflict:"设置已有其他更新，已读取最新值。",
+    supervisor_fenced:"宿主已重启，原保存请求已无法核对；请重新读取确认当前值，未写入再保存。",
+    supervisor_generation_conflict:"宿主已重启，原保存请求已无法核对；请重新读取确认当前值，未写入再保存。",
     configuration_revision_conflict:"设置已有其他更新。正在读取最新值，未保存的改动会保留。",
     contact_configuration_invalid:"请核对联系设置：提交的字段或操作不完整。",
     invalid_contact_preference:"请核对联系设置的格式或范围。",
@@ -691,9 +693,13 @@ window.CompanionContactPage = (() => {
         throw problem("invalid_response");
       }
       const status = payload?.status?.sections?.[GROUP];
-      const hasFreshConfigToken = typeof status?.edit_token === "string" && status.edit_token.length === 64;
-      if (hasFreshConfigToken) {
-        data.configToken = status.edit_token;
+      const returnedToken = typeof receipt?.edit_token === "string" && receipt.edit_token.length === 64
+        ? receipt.edit_token : "";
+      const statusToken = typeof status?.edit_token === "string" && status.edit_token.length === 64
+        ? status.edit_token : "";
+      const freshToken = returnedToken || statusToken;
+      if (freshToken) {
+        data.configToken = freshToken;
       }
       data.pendingWrite = null; storePendingWrite();
       clearPendingRecovery(pending.body.operation_key);
@@ -702,7 +708,10 @@ window.CompanionContactPage = (() => {
       data.savedAt = Date.now(); data.busy = false;
       const savedNotice = "已保存 " + Object.keys(changes).length + " 项。改动从下一轮主动评估开始生效。";
       notice(savedNotice);
-      if (live(ticket)) await loadContract();
+      /* The configure response now carries the next edit token.  Re-reading the
+         whole 170+ field section after every save only duplicated work and made
+         a one-field change wait for a second full projection. */
+      if (live(ticket) && !freshToken) await loadContract();
       if (live(ticket)) {
         const refreshed = settingsAvailable() && !!data.configToken;
         notice(refreshed ? savedNotice : "已保存 " + Object.keys(changes).length + " 项，但当前状态未能刷新；请稍后重新读取。", !refreshed);
@@ -712,7 +721,10 @@ window.CompanionContactPage = (() => {
       if (!live(ticket)) return;
       data.busy = false;
       const code = error.code || "";
-      if (error.confirmed) {
+      const fenced = ["supervisor_fenced", "supervisor_generation_conflict"].includes(code);
+      if (error.confirmed || fenced) {
+        /* A new host generation cannot confirm an operation owned by the old
+           one. Keeping the idempotency key would make "立即核对" fail forever. */
         data.pendingWrite = null; storePendingWrite();
         clearPendingRecovery(pending?.body?.operation_key);
       }
@@ -1742,7 +1754,8 @@ window.CompanionContactPage = (() => {
       {id:"news", icon:ICON.source, title:"资讯", hint:"资讯来源、每日热点与去重时长。", body:[
         srcToggle("news_share_enabled", "分享资讯", "自然分享亮点和感想；追问时再给来源与原文。分段沿用表达设置。"),
         srcNumber("news_check_interval_minutes", "检查间隔", "分钟", 15, 1440, ""),
-        srcSelect("news_source_kind", "来源类型", [["host","默认数据源"],["url","自定地址"],["uid","平台标识"]]),
+        srcSelect("news_source_kind", "来源类型", [["host","默认数据源"],["disabled","停用资讯源"],
+          ["bilibili","B 站动态"],["rss","RSS / Atom"],["json","HTTPS JSON"],["search","网络搜索"],["hot","热榜"]]),
         srcText("news_source_uid", "来源标识", "", "与类型匹配填写。"),
         srcText("news_source_url", "来源地址", "", "与类型匹配填写。"),
         srcToggle("news_daily_hot_read_enabled", "每日热点", ""),
@@ -1757,8 +1770,8 @@ window.CompanionContactPage = (() => {
         srcText("date_checkin_time", "问候时刻", "09:00", ""),
         srcNumber("important_date_lookahead_days", "提前几天开始留意", "天", 0, 30, "0 表示只在当天问候；角色生日、对方资料日期和每日反思记下的重要互动纪念日会自动读取，无需再填日期清单；可在聊天中用「陪伴 日期列表」查看或删除。"),
       ]},
-      {id:"explore", icon:ICON.compass, title:"网络探索与自关联", hint:"她自己去网上找素材，并把外部事件关联回来。", body:[
-        srcToggle("web_exploration_enabled", "网络探索", ""),
+      {id:"explore", icon:ICON.compass, title:"网络探索与自关联", hint:"按生日、纪念日、日程和兴趣生成研究目标，结果先存笔记。", body:[
+        srcToggle("web_exploration_enabled", "网络探索", "需要把上方「来源类型」设为“网络搜索”；生日等惊喜目标只记笔记，不会直接说破。"),
         srcText("web_exploration_interests", "关注方向", "", "留空则不做定向探索。"),
         srcNumber("web_exploration_min_interval_hours", "最短探索间隔", "小时", 1, 168, ""),
         srcNumber("web_exploration_result_count", "每次取几条", "条", 1, 30, ""),

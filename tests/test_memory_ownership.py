@@ -332,14 +332,12 @@ class MemoryOwnershipTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIn("data.ownership", page)
         for field in ("owner", "reason", "display_name"):
             self.assertIn(field, page)
-        self.assertIn("长期记忆现在由〈", page)
-        self.assertIn("长期记忆现在由 V2 提供", page)
-        self.assertIn("owner_handle_disabled", page)
-        self.assertIn("owner_handle_unreadable", page)
+        self.assertIn("长期记录：〈", page)
+        self.assertIn("长期记录：本插件事实库", page)
         # 旧的徽标文案读的是「这一页连不连得上」，却写成「记忆读取正常」——
-        # 那正是「V2 独占记忆」的说法，必须收窄到 V2 自己的库。
+        # 必须收窄到本插件自己的事实库。
         self.assertNotIn("记忆读取正常", page)
-        self.assertIn("V2 记忆库读取正常", page)
+        self.assertIn("事实库读取正常", page)
 
     async def test_ownership_endpoint_reports_v2_when_nothing_else_is_loaded(self):
         own_host = await self.start(self.host_with(DEFAULT_MEMORY_OWNER,

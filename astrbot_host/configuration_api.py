@@ -11,6 +11,7 @@ remain on their user, device or relationship routes.
 import asyncio
 import json
 import logging
+import time
 from types import SimpleNamespace
 
 from astrbot.api.web import request
@@ -250,6 +251,7 @@ class ConfigurationWebAPI:
                 result = Outcome.success(await self._status(application, context, operator, query,
                                                              host_context=controller.context))
             else:
+                started = time.perf_counter()
                 def write():
                     operator = dashboard_operator(runtime, username, at=observed_at)
                     editor = SECTIONS[data["section"]](application, context)
@@ -267,6 +269,10 @@ class ConfigurationWebAPI:
                 # V2 存储是同步 SQLite（单连接 + 全局锁）。放到工作线程里执行，
                 # 事务再慢也只占用那个线程，不会卡住 AstrBot 的事件循环。
                 result = await asyncio.to_thread(write)
+                elapsed_ms = round((time.perf_counter() - started) * 1000)
+                if elapsed_ms >= 500:
+                    logger.warning("[CompanionV2] 配置保存耗时 section=%s ms=%s",
+                                   data["section"], elapsed_ms)
             return outcome_response(result)
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
@@ -294,7 +300,11 @@ class ConfigurationWebAPI:
                 # 分区状态同样是一次同步 SQLite 投影；放到工作线程里读，
                 # 读取再慢也不会把事件循环按住。knowledge 的扩展来源
                 # 仍是异步接口，留在事件循环上取。
+                started = time.perf_counter()
                 result = await asyncio.to_thread(self.sections[name](app, context).status, operator)
+                elapsed_ms = round((time.perf_counter() - started) * 1000)
+                if elapsed_ms >= 500:
+                    logger.warning("[CompanionV2] 配置读取耗时 section=%s ms=%s", name, elapsed_ms)
                 if result.failure is not None:
                     if len(requested) == 1:
                         raise TaskError(result.failure.code, result.failure.reason)

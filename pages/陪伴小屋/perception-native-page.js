@@ -26,6 +26,8 @@ window.CompanionNativePerceptionPage = (() => {
     ["bilibili", "B 站动态"],
     ["rss", "RSS / Atom"],
     ["json", "HTTPS JSON"],
+    ["search", "网络搜索"],
+    ["hot", "热榜"],
   ];
   const fields = {
     environment:[],
@@ -46,7 +48,7 @@ window.CompanionNativePerceptionPage = (() => {
       ["news_share_enabled","允许分享外部资讯","bool","只会考虑有来源、时间和链接的实际条目。"],
       ["news.enabled","允许资讯作为联系契机","bool","仍受主动联系总开关与免打扰约束。"],
       ["news_check_interval_minutes","资讯检查间隔（分钟）","number","15 至 1440 分钟。"],
-      ["news_source_kind","资讯来源","select","B 站动态使用发布者动态；RSS / JSON 必须是 HTTPS 订阅地址。",newsSourceOptions],
+      ["news_source_kind","资讯来源","select","B 站动态使用发布者动态；RSS / JSON 必须是 HTTPS 订阅地址；网络搜索按「网络探索」的关注方向检索。",newsSourceOptions],
       ["news_source_uid","B 站 UID","text","仅在来源选择 B 站动态时填写十进制 UID。"],
       ["news_source_url","RSS / JSON 地址","text","仅在来源选择 RSS / Atom 或 HTTPS JSON 时填写地址。"],
     ],

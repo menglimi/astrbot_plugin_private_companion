@@ -350,6 +350,8 @@ class ConfigurationWebAPITests(MultiFixture, unittest.IsolatedAsyncioTestCase):
                 "edit_token": contact["edit_token"], "changes": {"interval_seconds": 1234},
             })
             self.assertEqual(saved["status"], "ok", saved)
+            self.assertEqual(len(saved["data"]["result"]["edit_token"]), 64,
+                             "save response must carry the next write token")
             role_sections = (await call(handlers[first], query={
                 "sections": "role.growth.skills,expression.learning"}))["data"]["sections"]
             role_saved = await call(handlers[first + "/configure"], {

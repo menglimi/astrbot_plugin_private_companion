@@ -314,14 +314,14 @@ test('a host without the memory route refuses instead of showing an empty editor
   wrong.mount();
   await drains();
   assert.equal(wrong.requests.length, 0, 'an unusable route must not be called');
-  assert.match(wrong.html, /没有可用的记忆设置/);
+  assert.match(wrong.html, /没有可用的整理设置/);
 
   /* 角色根本没有这个字段。 */
   const absent = harness({memoryApi: null});
   absent.mount();
   await drains();
   assert.equal(absent.requests.length, 0);
-  assert.match(absent.html, /没有可用的记忆设置/);
+  assert.match(absent.html, /没有可用的整理设置/);
 
   /* 非托管环境（静态预览）：不假装能读，也不发请求。 */
   const offline = harness({hosted: false});

@@ -7,11 +7,11 @@ again. Rejecting is available even when the sampled writing has since been
 withdrawn, so an operator is never left with an undecidable row.
 
 ``unavailable_reason`` only reports that the original evidence can no longer
-be read (withdrawn, revoked or expired). The rule itself is kept: its form,
-observation, proposal and applicability stay listed, because an unreadable
-source never unlearns what the operator already reviewed. A window reset is
-not unreadability; stored evidence survives it and is only labelled with the
-reset moment (``evidence_reset_at``).
+be read (withdrawn, revoked or expired) and the run has no bounded excerpt to
+fall back to. The rule itself is kept: its form, observation, proposal and
+applicability stay listed, because an unreadable source never unlearns what the
+operator already reviewed. A window reset is not unreadability; stored evidence
+survives it and is only labelled with the reset moment (``evidence_reset_at``).
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from . import rule_support
 from .configuration import read_settings
 from .learning import DIMENSIONS, candidate_signature, form_identity, normalize_applicability
 from .sharing import MAX_IMPORT_SIGNALS, build_pack, normalize_pack
+from .style_evidence import evidence_snapshot
 from .window_scope import active_rule_count, row_usable, rule_reason, rule_scope_counts
 
 
@@ -171,7 +172,8 @@ class ExpressionStyleManagement:
             raise TaskError("expression_sample_changed", "stored style samples are invalid") from None
         required = {"opened_at", "closed_at", "handles", "characters"}
         if (type(window) is not dict or not required <= set(window)
-                or set(window) - required - {"context_key", "source_kind", "legacy"}
+                or set(window) - required - {"context_key", "source_kind", "legacy", "texts"}
+                or ("texts" in window and evidence_snapshot(window, handles) is None)
                 or ("context_key" in window and (type(window["context_key"]) is not str
                     or len(window["context_key"]) != 64))
                 or window.get("source_kind", "confirmed_reply") not in
@@ -219,6 +221,12 @@ class ExpressionStyleManagement:
     def _basis(self, row, owner, context, at):
         """Recheck only the samples this signal cites."""
         _, window, handles = self._run(row, owner, context)
+        snapshot = evidence_snapshot(window, handles)
+        if snapshot is not None:
+            if (window.get("source_kind") == "conversation_input"
+                    and not self.samples.reviews.allows_handles(context, handles)):
+                raise TaskError("expression_sample_changed", "sample approval was revoked")
+            return list(snapshot)
         opened_at, closed_at = self._window(window, at)
         if window.get("source_kind") == SHARE_PACK_SOURCE:
             return []
@@ -329,6 +337,7 @@ class ExpressionStyleManagement:
             source_kind = "confirmed_reply"
             reset_at = None
             run = None
+            snapshot = None
             # Whether reply injection would really use this rule here. It is
             # the answer the capacity, the state tabs, the restore gate, the
             # learning budget and the import preview share, so it is decided
@@ -348,6 +357,7 @@ class ExpressionStyleManagement:
                     try:
                         run, window, handles = self._run(row, owner, context,
                             run=runs.get((row["run_id"], row["scope_key"])))
+                        snapshot = evidence_snapshot(window, handles)
                         source_kind = window.get("source_kind", "confirmed_reply")
                         opened_at, closed_at = self._window(window, at)
                     except TaskError as error:
@@ -365,7 +375,13 @@ class ExpressionStyleManagement:
                         unavailable = rule_reason(context, row["scope_key"], window, handles,
                                                   samples=self.samples, at=at)
                         injectable = unavailable is None and row["state"] in ("pending", "adopted")
-                        if unavailable is None:
+                        if unavailable is None and snapshot is not None:
+                            # The run owns a bounded excerpt of the evidence it
+                            # cited.  The original conversation may already be
+                            # gone, but the reviewed form can still be rechecked
+                            # against that immutable excerpt.
+                            evidence = list(snapshot)
+                        elif unavailable is None:
                             try:
                                 if source_kind == "legacy_expression":
                                     from .legacy_import import evidence as legacy_evidence
@@ -429,6 +445,7 @@ class ExpressionStyleManagement:
                 "observation": row["observation"] if visible else None,
                 "proposal": row["proposal"] if visible else None,
                 "evidence": evidence if unavailable is None else [],
+                "evidence_snapshot": bool(snapshot),
                 "evidence_reset_at": reset_at if unavailable is None else None,
                 "confidence": row["confidence"], "state": row["state"],
                 "created_at": row["created_at"], "decided_at": row["decided_at"],
@@ -453,6 +470,46 @@ class ExpressionStyleManagement:
             "next_cursor": page_cursor(rows[limit - 1]) if len(rows) > limit else None,
             "context_key": context.key, "role_id": owner.persona_id, "capacity": capacity,
             "counts": counts, "rotated_rules": rotated_rules}
+
+    @outcome
+    def cleanup_unreadable(self, *, operator, context, operation_key):
+        """Reject pending candidates whose original evidence is already gone.
+
+        A retention/reset can remove the cited conversation while the learned
+        candidate remains.  Such a row can never be adopted (the source cannot
+        be rechecked) and would otherwise require one click per card.  This is
+        deliberately a batch *reject*, never an adoption path: the rule text is
+        kept in the rejected tab for audit, but no unverified rule is enabled.
+        """
+        self.management._validate_operation_key(operation_key)
+        at = self.management.ledger.now()
+        with self.runtime.transaction() as connection:
+            owner, policy_revision = self._authorize(operator, context, at)
+            keys = self._family(context)
+            placeholders = ",".join("?" * len(keys))
+            rows = self.runtime.read_all(f"""SELECT * FROM expression_style_signals
+                WHERE owner_key = ? AND scope_key IN ({placeholders}) AND state = 'pending'
+                ORDER BY created_at DESC, signal_id DESC LIMIT 500""",
+                (digest(owner), *keys))
+            rejected = 0
+            for row in rows:
+                try:
+                    _, window, handles = self._run(row, owner, context)
+                    if rule_reason(context, row["scope_key"], window, handles,
+                                   samples=self.samples, at=at) is None:
+                        continue
+                except TaskError:
+                    pass
+                decision_key = digest([operator.subject, context.key, operation_key,
+                                       row["signal_id"], "cleanup"])
+                changed = connection.execute("""UPDATE expression_style_signals
+                    SET state = 'rejected', decided_at = ?, decided_by = ?, decision_key = ?
+                    WHERE signal_id = ? AND owner_key = ? AND scope_key = ? AND state = 'pending'""",
+                    (stamp(at), "system:cleanup", decision_key, row["signal_id"],
+                     digest(owner), row["scope_key"]))
+                rejected += changed.rowcount
+            self.app.notify()
+            return {"rejected": rejected}
 
     @outcome
     def command(self, *, operator, context, signal_id, action, view_token, operation_key):

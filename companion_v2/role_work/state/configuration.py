@@ -21,7 +21,10 @@ OWNER = "role.state.settings"
 FEATURE_SWITCHES = {name: name + "_enabled" for name in (
     "energy", "health", "hunger", "sleep", "cycle", "mood", "busy", "location")}
 SPECIAL_DISPLAY_FEATURES = ("health", "hunger", "sleep", "cycle", "busy")
-DEFAULTS = {"enabled": False, "maintenance_minutes": 30, "hunger_enabled": True,
+DEFAULT_GRANT_SCOPE = "role"
+GRANT_SCOPES = frozenset({"window", "role"})
+DEFAULTS = {"enabled": False, "maintenance_grant_scope": DEFAULT_GRANT_SCOPE,
+    "maintenance_minutes": 30, "hunger_enabled": True,
     "health_enabled": True, "cycle_enabled": False, "calendar_enabled": True,
     "energy_enabled": True, "sleep_enabled": True, "busy_enabled": True, "location_enabled": True,
     "energy_expression_prompt": "", "hunger_expression_prompt": "", "health_expression_prompt": "",
@@ -54,6 +57,13 @@ def validate_expression_prompts(values):
         value = values.get(name, "")
         if type(value) is not str or len(value) > 512:
             raise ConfigurationError("state_expression_prompt_invalid", f"{name} must be text up to 512 characters")
+
+
+def validate_grant_scope(values):
+    scope = values.get("maintenance_grant_scope", DEFAULT_GRANT_SCOPE)
+    if scope not in GRANT_SCOPES:
+        raise ConfigurationError("state_grant_scope_invalid",
+            "maintenance_grant_scope must be 'window' or 'role'")
 
 
 def validate_mood_settings(values):
@@ -134,6 +144,38 @@ def ensure_window_presentation_grants(runtime, context, observed_at):
             valid_from=observed_at, expected_revision=identity.revision)
 
 
+def ensure_role_state_grants(runtime, context, observed_at):
+    """Issue the role-wide state grants for this private window.
+
+    The default ``role`` mode treats one private window's opt-in as the role's
+    opt-in and walks other windows automatically.  The stricter ``window`` mode
+    keeps the grant tied to the window where the user enabled or re-saved
+    maintenance, so one participant cannot authorize another participant's
+    private window.  Existing grants and explicit revocations are left
+    untouched in either mode.
+    """
+    if context.scope.kind is not ScopeKind.PRIVATE:
+        return
+    target = target_for(context)
+    fields = configuration_fields()
+    snapshot = StateConfigurationOwner(runtime).read(target, fields)
+    if snapshot.fields[GROUP + ".maintenance_grant_scope"].value != "role":
+        return
+    if not bool(snapshot.fields[GROUP + ".enabled"].value):
+        return
+    identity = PersistentIdentityDirectory(runtime)
+    subject = context.actor.subject
+    for action in PERMISSIONS["enabled"]:
+        prefix = "state-grant:" + digest([target.key, subject, action]) + ":"
+        matching = tuple(grant for grant in identity.grants_for_subject(subject)
+                         if grant.grant_id.startswith(prefix) and grant.scope == target.scope)
+        if matching:
+            continue
+        identity.issue_grant(grant_id=prefix + str(identity.revision), subject=subject,
+            scope=target.scope, capability=action, tier=AuthorizationTier.STANDARD,
+            valid_from=observed_at, expected_revision=identity.revision)
+
+
 def role_target_for(context):
     return ConfigTarget(context.scope.installation_id, ConfigLayer.ROLE, context.role_binding.role,
                         bot_id=context.scope.bot_id)
@@ -176,6 +218,7 @@ class StateConfigurationOwner(PhysicalSettingsOwner):
         validate_planning(values)
         validate_mood_settings(values)
         validate_humanized(values)
+        validate_grant_scope(values)
         return result
 
     def write(self, target, fields, *, changes, reset, expected_revision, observed_at):
@@ -199,6 +242,7 @@ class StateConfigurationOwner(PhysicalSettingsOwner):
             validate_planning(proposed)
             validate_mood_settings(proposed)
             validate_humanized(proposed)
+            validate_grant_scope(proposed)
             saved = super().write(target, fields, changes=changes, reset=reset,
                                   expected_revision=expected_revision, observed_at=observed_at)
             changed = {key.rsplit(".", 1)[-1] for key in (*changes, *reset)}

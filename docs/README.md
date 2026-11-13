@@ -14,6 +14,10 @@
 - [扩展开发规范](extension-development.md)：稳定接口范围、扩展生命周期、身份边界和兼容建议。
 - [外部记忆 Provider 接口](external-memory-provider.md)：注册代码、读写/统计负载、归属和超时语义。
 
+## 用户教程
+
+- [共享记忆配置教程](shared-memory-tutorial.md)：跨窗口记忆、用户窗口合并、外部记忆插件和跨窗口在场的区别与排障。
+
 ## 架构与排障
 
 - [Agent 首次配置与数据迁移手册](AGENT_MIGRATION_AND_SETUP.md)：向导、只读预览、目标核对、导入回执与重载验证。

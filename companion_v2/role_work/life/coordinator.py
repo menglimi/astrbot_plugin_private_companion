@@ -30,12 +30,27 @@ class RoleLifeCoordinator:
     @staticmethod
     def route(context):
         s = context.scope
-        return (s.installation_id, s.platform, s.bot_id, s.account_id, s.native_scope_id)
+        return (s.installation_id, s.platform, s.bot_id, s.account_id, s.native_scope_id,
+                context.role_binding.role.subject_id)
 
     def bind(self, context, role_instruction, *, guard=None):
         if self._closed:
             raise TaskError("life_closed", "routine coordinator is closed")
-        routine = self.for_context(context)
+        routine = self.routines.get(context.key)
+        if routine is None:
+            # The Dashboard and native intake can name the same private route
+            # with different conversation IDs.  Adopt the existing routine
+            # instead of creating a second one whose activities/grants use a
+            # different context key.
+            for candidate in self.routines.values():
+                if (not getattr(candidate, "_retired", False)
+                        and candidate.instruction in (None, role_instruction)
+                        and self.route(candidate.context) == self.route(context)):
+                    routine = candidate
+                    self.routines[context.key] = candidate
+                    break
+        if routine is None:
+            routine = self.for_context(context)
         routine.bind(context, role_instruction, guard=guard)
         for other in tuple(self.routines.values()):
             if other is not routine and other.instruction is not None and self.route(other.context) == self.route(context):
@@ -57,7 +72,7 @@ class RoleLifeCoordinator:
 
     def consumer_generation(self):
         if self._generation is None:
-            row = self.app.runtime.read_one("SELECT generation FROM configuration_consumers WHERE consumer_id = ?", (GROUP,))
+            row = self.app.configuration.store.read_one("SELECT generation FROM configuration_consumers WHERE consumer_id = ?", (GROUP,))
             self._generation = self.app.configuration.start_consumer(GROUP,
                 expected_generation=row["generation"] if row else 0)
         return self._generation

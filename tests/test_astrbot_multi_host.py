@@ -15,6 +15,8 @@ from astrbot_host.media_components import private_components
 from astrbot_host.video.loader import load_native_video
 from companion_v2.execution.models import TaskError, stamp
 from companion_v2.foundation.refs import ScopeRef, SubjectKind, SubjectRef
+from companion_v2.identity_policy.models import AuthorizationTier
+from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.memory.models import AtomRef, owner_key
 from companion_v2.adapters.astrbot.staging import NativeAdapterTypes
 from tests.multi_host_support import MultiFixture, multi_config
@@ -25,6 +27,7 @@ from tests.video_support import video_bytes
 from astrbot_host.multi_settings import MultiHostSettings, find_persona_mapping
 from astrbot_host.shared_host_migration import migrate_single_target_config
 from astrbot_host.multi_authority import MultiAuthority
+from astrbot_host.binding_store import PendingBinding, write_binding
 from astrbot_host.settings import INSTALLATION_PREFIX
 from companion_v2.storage.runtime import StorageRuntime
 from astrbot_host.multi_api import PREFIX as MULTI_HOST_PREFIX
@@ -233,6 +236,88 @@ class MultiHostTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len([grant for grant in authority.identities.grants_for_subject(context.actor.subject)
                               if grant.scope == context.scope and grant.capability == action]), 1)
 
+    async def test_configuration_rows_are_written_to_the_side_store(self):
+        app = await self.start_host()
+        self.assertIsNotNone(app.configuration_store)
+        store = app.configuration_store
+        from companion_v2.model_gateway.routing import CONSUMER
+        current = store.read_one("SELECT generation FROM configuration_consumers WHERE consumer_id = ?", (CONSUMER,))
+        app.configuration.start_consumer(CONSUMER, expected_generation=current["generation"] if current else 0)
+        store_count = store.read_one("SELECT COUNT(*) AS n FROM configuration_consumers", ())["n"]
+        main_count = app.runtime.read_one("SELECT COUNT(*) AS n FROM configuration_consumers", ())["n"]
+        self.assertGreater(store_count, 0)
+        self.assertEqual(main_count, 0, "the main conversation database must not receive new config rows")
+
+    async def test_first_confirmed_core_binding_is_provisioned_as_administrator(self):
+        write_binding(self.controller.binding_root,
+            PendingBinding("qq-main", "100", "200", "original", confirmed=True))
+        await self.start_host()
+        authority = self.controller.authority
+        context = authority.context("first", "role-a")
+        tier = authority.runtime.read_one(
+            "SELECT tier FROM subject_access_tiers WHERE subject_kind = ? AND subject_id = ?",
+            (context.actor.subject.kind.value, context.actor.subject.subject_id))
+        self.assertEqual(tier["tier"], "core")
+        self.assertTrue(authority.identities.authorize(context.actor, scope=context.scope,
+            capability="proactive.contact", observed_at=self.clock.now()).is_success)
+
+    async def test_selecting_the_core_window_repairs_an_existing_install(self):
+        await self.start_host()
+        authority = self.controller.authority
+        context = authority.context("first", "role-a")
+        self.assertIsNone(authority.runtime.read_one(
+            "SELECT tier FROM subject_access_tiers WHERE subject_kind = ? AND subject_id = ?",
+            (context.actor.subject.kind.value, context.actor.subject.subject_id)))
+        authority.core_target_id = "first"
+        authority.select(authority.settings.target("first"), context.scope, context.role_binding.role)
+        tier = authority.runtime.read_one(
+            "SELECT tier FROM subject_access_tiers WHERE subject_kind = ? AND subject_id = ?",
+            (context.actor.subject.kind.value, context.actor.subject.subject_id))
+        self.assertEqual(tier["tier"], "core")
+        self.assertTrue(authority.identities.authorize(context.actor, scope=context.scope,
+            capability="proactive.contact", observed_at=self.clock.now()).is_success)
+
+    async def test_core_provisioning_preserves_an_explicit_tier_downgrade(self):
+        await self.start_host()
+        authority = self.controller.authority
+        context = authority.context("first", "role-a")
+        authority.provision_scope(authority.settings.target("first"), context.scope,
+            context.role_binding.role, core_admin=True)
+        policy = ObjectAccessPolicy(authority.runtime)
+        policy.set_tier(context.actor.subject, AuthorizationTier.STANDARD,
+            expected_revision=policy.revision, observed_at=self.clock.now())
+        authority.provision_scope(authority.settings.target("first"), context.scope,
+            context.role_binding.role, core_admin=True)
+        tier = authority.runtime.read_one(
+            "SELECT tier FROM subject_access_tiers WHERE subject_kind = ? AND subject_id = ?",
+            (context.actor.subject.kind.value, context.actor.subject.subject_id))
+        self.assertEqual(tier["tier"], "standard")
+
+    async def test_confirmed_core_window_gets_core_tier_and_contact_without_overriding_revoke(self):
+        await self.start_host()
+        authority = self.controller.authority
+        context = authority.context("first", "role-a")
+        target = authority.settings.target("first")
+        self.assertIsNone(authority.runtime.read_one(
+            "SELECT tier FROM subject_access_tiers WHERE subject_kind = ? AND subject_id = ?",
+            (context.actor.subject.kind.value, context.actor.subject.subject_id)))
+
+        authority.provision_scope(target, context.scope, context.role_binding.role, core_admin=True)
+        tier = authority.runtime.read_one(
+            "SELECT tier FROM subject_access_tiers WHERE subject_kind = ? AND subject_id = ?",
+            (context.actor.subject.kind.value, context.actor.subject.subject_id))
+        self.assertEqual(tier["tier"], "core")
+        self.assertTrue(authority.identities.authorize(context.actor, scope=context.scope,
+            capability="proactive.contact", observed_at=self.clock.now()).is_success)
+
+        contact = next(grant for grant in authority.identities.grants_for_subject(context.actor.subject)
+                       if grant.scope == context.scope and grant.capability == "proactive.contact")
+        authority.identities.revoke_grant(contact.grant_id, revoked_at=self.clock.now(),
+            expected_revision=authority.identities.revision)
+        authority.provision_scope(target, context.scope, context.role_binding.role, core_admin=True)
+        self.assertFalse(authority.identities.authorize(context.actor, scope=context.scope,
+            capability="proactive.contact", observed_at=self.clock.now()).is_success)
+
     async def test_saved_large_output_limit_prepares_and_reloads(self):
         prepared = await self.controller.initialize_profile()
         self.assertTrue(prepared.is_success, prepared.failure)
@@ -406,6 +491,28 @@ class MultiHostTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["started"], result)
         self.assertIsNone(self.controller.settings_error)
         self.assertTrue(self.controller.status()["accepting"])
+
+    def test_repair_legacy_config_normalizes_policy_sections_at_startup(self):
+        config = multi_config()
+        config["segmentation"] = {"enabled": False, "max_segments": "not-an-int"}
+        config["voice_reply"] = {"probability": 0.5, "trigger_mode": "retired-mode"}
+        controller = self.make_controller(config)
+        # Mapping parsing tolerates optional policy sections; the startup
+        # repair still normalizes and persists them.
+        self.assertIsNone(controller.settings_error)
+
+        saved = []
+        controller.save_plugin_config = lambda candidate: saved.append(deepcopy(candidate))
+        repaired = controller.repair_legacy_config()
+
+        self.assertEqual(repaired, {"segmentation": ["max_segments"],
+                                    "voice_reply": ["trigger_mode"]})
+        self.assertIsNone(controller.settings_error)
+        self.assertFalse(controller.settings.common.segmentation.enabled)
+        self.assertEqual(controller.settings.common.voice_reply_policy.probability, 0.5)
+        self.assertTrue(saved)
+        self.assertNotIn("max_segments", saved[-1]["segmentation"])
+        self.assertNotIn("trigger_mode", saved[-1]["voice_reply"])
 
     async def test_reviewed_persona_mapping_uses_astrbot_current_provider_when_blank(self):
         candidate = multi_config()
@@ -965,7 +1072,12 @@ class MultiHostTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         for target in ("first", "second"):
             context, _ = await self.accepted(target)
             contexts.append(context)
-        self.assertEqual(len(list(self.root.rglob("companion-v2.sqlite3"))), 1)
+        databases = list(self.root.rglob("companion-v2.sqlite3"))
+        main_databases = [path for path in databases if "configuration" not in path.parts]
+        configuration_databases = [path for path in databases if "configuration" in path.parts]
+        self.assertEqual(len(main_databases), 1)
+        self.assertEqual(len(configuration_databases), 1,
+                         "configuration rows live in one side store next to the main runtime")
         self.assertEqual(contexts[0].actor.subject, contexts[1].actor.subject)
         self.assertNotEqual(owner_key(contexts[0]), owner_key(contexts[1]))
         self.assertEqual(app.state, "running")

@@ -1,4 +1,4 @@
-/* 记忆策略配置：事实与经历页面的独立视图。
+/* 整理策略配置：事实与经历页面的独立视图。
 
    档案操作与策略编辑分开呈现，但共用同一领域入口，避免把策略散落在决策页。
 
@@ -10,16 +10,16 @@ window.CompanionMemorySettingsSection = (() => {
   const PREFIX = "/astrbot_plugin_private_companion/";
 
   const labels = {
-    enabled: "启用记忆", automatic_context: "自动注入相关记忆",
+    enabled: "启用整理", automatic_context: "自动注入相关事实",
     context_items: "自动上下文条数", context_chars: "自动上下文字符数",
     query_items: "查询结果条数", query_chars: "查询结果字符数",
-    source_chars: "单个来源读取字符数", turn_chars: "单轮记忆字符预算",
-    turn_calls: "单轮记忆查询次数", core_items: "核心记忆条数", core_chars: "核心记忆字符数",
+    source_chars: "单个来源读取字符数", turn_chars: "单轮事实字符预算",
+    turn_calls: "单轮事实查询次数", core_items: "核心事实条数", core_chars: "核心事实字符数",
     inclusion_chars: "整理材料字符上限",
     reflection_enabled: "定时整理", reflection_timezone: "整理时区",
     reflection_time: "每日整理时间", reflection_response_format: "模型返回格式",
     reflection_auto_repair: "允许修复未完成整理项",
-    group_episode_memory_enabled: "群聊经历记忆",
+    group_episode_memory_enabled: "群聊经历",
     group_episode_refresh_minutes: "群聊经历刷新间隔（分钟）",
     group_episode_min_messages: "群聊经历最少消息数", max_group_episodes: "群聊经历上限",
     dialogue_episode_memory_enabled: "私聊对话经历",
@@ -31,13 +31,13 @@ window.CompanionMemorySettingsSection = (() => {
     food_menu_recommendation_enabled: "推荐菜谱",
   };
   const helps = {
-    automatic_context: "关闭后不会主动把记忆塞进这一轮对话，仍可在「来源与经历」里手动查询。",
+    automatic_context: "关闭后不会主动把事实塞进这一轮对话，仍可在「来源与经历」里手动查询。",
     reflection_timezone: "IANA 时区名；定时整理按这个时区计算每日时刻。",
     reflection_time: "每天在这个时刻整理一次；时区由上一条决定。",
     reflection_response_format: "取决于整理模型支持的模式，选错会被后端拒绝。",
     inclusion_chars: "单次整理最多读取多少字符的材料。",
-    turn_chars: "一轮对话里记忆内容的总长度上限。",
-    turn_calls: "一轮对话最多查几次记忆，防止反复检索拖慢回复。",
+    turn_chars: "一轮对话里事实内容的总长度上限。",
+    turn_calls: "一轮对话最多查几次事实，防止反复检索拖慢回复。",
     habit_min_count: "同一习惯被观察到这么多次才会沉淀，避免一次就下结论。",
     food_menu_recommendation_enabled: "允许角色在合适的时候推荐菜谱；关闭后不再产生这类建议。",
     group_episode_refresh_minutes: "每隔这么久把「本群最近发生」整理成一段经历。",
@@ -48,7 +48,7 @@ window.CompanionMemorySettingsSection = (() => {
     "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles"];
   /* 分组按语义切，字段名照注册表抄（见文件头）。 */
   const sections = [
-    {id: "core", title: "记忆与注入", help: "决定记忆怎么进入对话，以及单轮最多读多少。",
+    {id: "core", title: "事实与注入", help: "决定事实怎么进入对话，以及单轮最多读多少。",
      fields: ["enabled", "automatic_context", "context_items", "context_chars", "query_items",
               "query_chars", "source_chars", "turn_chars", "turn_calls", "core_items", "core_chars"]},
     {id: "reflection", title: "定时整理", help: "把来源提炼成事实与经历；时区与时刻决定什么时候跑。",
@@ -89,29 +89,24 @@ window.CompanionMemorySettingsSection = (() => {
     host = root;
     if (!window.CompanionProduct?.hosted?.()) {
       root.innerHTML = '<div class="wb-notice">请从已登录的 AstrBot 管理界面打开陪伴小屋，'
-        + '连接 V2 运行实例后调整记忆策略。</div>';
+        + '连接运行实例后调整整理策略。</div>';
       return;
     }
     const path = relativePath();
     if (!path) {
-      root.innerHTML = '<div class="wb-notice is-error">当前对象没有可用的记忆设置。'
+      root.innerHTML = '<div class="wb-notice is-error">当前对象没有可用的整理设置。'
         + '请先选择已初始化的私聊对象和角色。</div>';
       return;
     }
     if (!window.CompanionWorkbench?.create) {
-      root.innerHTML = '<div class="wb-notice is-error">配置工作台未加载，无法编辑记忆策略。</div>';
+      root.innerHTML = '<div class="wb-notice is-error">配置工作台未加载，无法编辑整理策略。</div>';
       return;
     }
     boundPath = path;
     instance = window.CompanionWorkbench.create({
       group: "memory",
-      title: "统一记忆策略",
-      /* 「别把两件事弄混」的落点：用户看到「记忆」两个字，最容易以为这里调的是
-         外部记忆插件（LivingMemory /《我会牢牢记住你》）。实际调的是 V2 自己
-         记什么、记多少、多久整理一次；外部插件是否提供长期记忆、用了多少，
-         由它自己在治理与维护页的账本行负责。 */
-      note: "这里调的是 V2 自己记什么、记多少、多久整理一次，与外部记忆插件的库无关——"
-        + "外部记忆插件是否提供长期记忆、用了多少，由它自己的账本负责。",
+      title: "整理策略",
+      note: "",
       labels, helps,
       /* 注册表里这两个是 TEXT，但整理时刻与 IANA 时区名各有更合适的控件。 */
       inputs: {reflection_time: "time", reflection_timezone: "line"},
@@ -122,7 +117,7 @@ window.CompanionMemorySettingsSection = (() => {
          照 memory_api.py 的 PREFIX 拼。 */
       endpoint: PREFIX + path + "/settings",
       savePath: "/command",
-      /* 不能带 query：记忆设置路由显式拒绝任何查询串。载荷是扁平的。 */
+      /* 不能带 query：整理设置路由显式拒绝任何查询串。载荷是扁平的。 */
       valuesKey: "values",
       sendTokenKey: "expected_edit_token",
       resetKey: "reset_to_inherit",
@@ -142,7 +137,7 @@ window.CompanionMemorySettingsSection = (() => {
      里逐段找。 */
   function searchEntries() {
     return sections.flatMap(section => (section.fields || []).filter(name => labels[name]).map(field => ({
-      group: "memory", groupTitle: "记忆策略", field,
+      group: "memory", groupTitle: "整理策略", field,
       label: labels[field] || field, help: helps[field] || "",
       section: section.id, sectionTitle: section.title, sectionCount: sections.length,
     })));

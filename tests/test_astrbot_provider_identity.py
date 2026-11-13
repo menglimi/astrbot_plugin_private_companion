@@ -38,8 +38,8 @@ def clone_provider_class(name):
     return type(name, (), body)
 
 
-def make_provider():
-    native = StubProvider()
+def make_provider(native=None):
+    native = native or StubProvider()
     provider = AstrBotTextProvider(
         StubContext(native), bridge=NS(),
         binding=ProviderBinding("model.text", "native", "4.29.1", "generation-1"),
@@ -55,6 +55,19 @@ class ProviderIdentityTests(unittest.TestCase):
         replacement = StubProvider()
         replacement.provider_config["modalities"] = []
         replacement.provider_config["reasoning"] = False
+        provider.context.provider = replacement
+
+        provider._current()
+
+        self.assertIs(provider.native, replacement)
+        self.assertIs(provider.client, replacement.client)
+
+    def test_host_rewritten_modalities_do_not_replace_the_provider(self):
+        native = StubProvider()
+        native.provider_config["modalities"] = []
+        provider, _native = make_provider(native)
+        replacement = StubProvider()
+        replacement.provider_config["modalities"] = ["text", "tool_use", "image"]
         provider.context.provider = replacement
 
         provider._current()

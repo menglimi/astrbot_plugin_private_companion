@@ -12,7 +12,7 @@ def actual_sleep_seconds(activity, now):
     recorded = receipt.slept_seconds if receipt else 0
     if activity.state is State.ACTIVE:
         now = normalize_utc(now, field="sleep observation")
-        return recorded + max(0, round((now - activity.updated_at).total_seconds()))
+        return min(172800, recorded + max(0, round((now - activity.updated_at).total_seconds())))
     if receipt:
         return recorded
     if activity.state in (State.COMPLETED, State.CANCELLED):

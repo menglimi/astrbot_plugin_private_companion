@@ -8,6 +8,8 @@ window.CompanionOutputPage=(()=>{
     model_image_output_conflict:"配置已在其他页面更新，请重新读取后核对。",
     model_image_output_busy:"正在执行生图任务，请等待当前任务结束后保存。",
     model_image_output_invalid:"配置未保存，请核对地址、端点和数值。",
+    model_image_output_unconfigured:"还没有可用的生图模型：先添加并启用一个在线模型，或配置本地后端，再打开总开关。",
+    model_image_output_store_failed:"配置写不回插件数据目录，请检查目录权限或占用后重试。",
     model_image_output_failed:"操作未完成，请重新读取状态。",
     staging_not_initialized:"V2 执行器尚未初始化，请先加载陪伴小屋配置。",
     staging_session_still_stopping:"V2 当前会话仍在停止，请稍等片刻后再重连。",

@@ -22,7 +22,8 @@ from companion_v2.expression.configuration import (GROUP, ExpressionLearningSett
     target_for)
 from companion_v2.expression.style_service import ExpressionStyleService
 from companion_v2.expression.style_evidence import (DEFAULT_SAMPLE_CHARS, INPUT_SAMPLE_SOURCE, MAX_SAMPLE_CHARS,
-    MAX_WINDOW_HOURS, ExpressionSampleCatalog, SampleSet, StyleSample, sample_document, sample_handles)
+    MAX_WINDOW_HOURS, ExpressionSampleCatalog, SampleSet, StyleSample, evidence_snapshot,
+    sample_document, sample_handles, sample_snapshot)
 from companion_v2.foundation.refs import (AudienceRef, ScopeKind, ScopeRef, SourceRef, SubjectKind, SubjectRef,
     VersionRef)
 from companion_v2.identity_policy.group_audience import group_audience
@@ -240,6 +241,16 @@ class SampleCatalogTests(unittest.TestCase):
         self.assertEqual(document["handles"], [handle("a"), handle("b")])
         self.assertEqual(document["source_kind"], "confirmed_reply")
         self.assertEqual(sample_handles(samples), {handle("a"), handle("b")})
+
+    def test_evidence_snapshot_is_bounded_and_order_stable(self):
+        samples = SampleSet(NOW, NOW, (StyleSample(handle("a"), "第一句"), StyleSample(handle("b"), "第二句")))
+        snapshot = sample_snapshot(samples, [handle("b"), handle("a")])
+        self.assertEqual(snapshot, {handle("a"): "第一句", handle("b"): "第二句"})
+        window = {"handles": [handle("a"), handle("b")], "texts": snapshot}
+        self.assertEqual(evidence_snapshot(window, [handle("b"), handle("a")]),
+                         ["第二句", "第一句"])
+        self.assertIsNone(evidence_snapshot(window, [handle("a"), handle("missing")]))
+        self.assertIsNone(evidence_snapshot({"handles": []}, [handle("a")]))
 
     def test_inbound_samples_are_rechecked_and_keep_exact_private_scope(self):
         context = self.private_context()
@@ -461,6 +472,7 @@ class ExpressionSettingsTests(unittest.TestCase):
         self.assertEqual(kinds["group_min_samples"], ValueKind.INTEGER)
         self.assertEqual(kinds["active_signal_limit"], ValueKind.INTEGER)
         self.assertEqual(kinds["rules_per_turn"], ValueKind.INTEGER)
+        self.assertEqual(kinds["minimum_confidence"], ValueKind.PROBABILITY)
 
     def test_defaults_are_used_before_anything_is_written(self):
         self.assertEqual(read_settings(self.runtime, self.context()),
@@ -470,11 +482,12 @@ class ExpressionSettingsTests(unittest.TestCase):
         self.assertEqual(read_settings(self.runtime, self.context()).min_samples, 2)
         self.assertEqual(read_settings(self.runtime, self.context()).group_min_samples, 20)
         self.assertEqual(read_settings(self.runtime, self.context()).active_signal_limit, 60)
+        self.assertEqual(read_settings(self.runtime, self.context()).minimum_confidence, 0.65)
 
     def test_written_values_round_trip(self):
         self.write({"private_learning_enabled": False, "group_learning_enabled": True,
                     "window_hours": 48, "sample_limit": 40, "group_min_samples": 32,
-                    "active_signal_limit": 72,
+                    "active_signal_limit": 72, "minimum_confidence": 0.8,
                     "min_samples": 2, "rules_per_turn": 4, "rotation_decay_hours": 12})
         settings = read_settings(self.runtime, self.context())
         self.assertFalse(settings.private_learning_enabled)
@@ -484,6 +497,7 @@ class ExpressionSettingsTests(unittest.TestCase):
         self.assertEqual((settings.window_hours, settings.sample_limit, settings.min_samples),
                          (48, 40, 2))
         self.assertEqual((settings.rules_per_turn, settings.rotation_decay_hours), (4, 12))
+        self.assertEqual(settings.minimum_confidence, 0.8)
 
     def test_installation_policy_is_shared_across_scopes(self):
         self.write({"window_hours": 48})
