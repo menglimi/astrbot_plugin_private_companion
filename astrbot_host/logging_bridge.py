@@ -5,6 +5,8 @@ import logging
 
 from astrbot.core.log import LogManager
 
+from .log_buffer import install_log_buffer
+
 
 PLUGIN_NAME = "astrbot_plugin_private_companion"
 _STATE = "_private_companion_v2_log_bridge"
@@ -29,6 +31,7 @@ def _names(entry_name):
 
 def install_logging_bridge(entry_name):
     sink = LogManager.get_plugin_logger(PLUGIN_NAME)
+    install_log_buffer(sink)
     for name in _names(entry_name):
         source = logging.getLogger(name)
         prior = getattr(source, _STATE, None)

@@ -17,7 +17,7 @@ const selectors = [
   "[data-output-native-notice]",
 ];
 
-function fixture(nai = null) {
+function fixture(nai = null, album = {}) {
   const nodes = new Map(selectors.map(selector => [selector, [{textContent: "初始值", hidden: false,
     classList: {toggle() {}}}]]));
   const single = new Map([
@@ -39,14 +39,16 @@ function fixture(nai = null) {
   const listeners = new Map();
   let outputSettings = {backend: "auto", enabled: false, endpoints: [], comfyui: {}, sd_webui: {},
     operation_routes: {generate: [], edit: []}};
-  const role = {model_api: "model", image_material_api: "image-materials"};
+  const role = {role_id: "role-a", model_api: "model", image_material_api: "image-materials"};
   const window = {
     CompanionProduct: {
       scopeKey: () => "role-a",
       role: () => role,
+      targets: () => album.targets || [],
       relative: value => value,
       async request(method, endpoint, body) {
         requests.push({method, endpoint, body});
+        if (album.request && /\/(album|references)(\/|$)/.test(endpoint)) return album.request(method, endpoint, body);
         if (endpoint === "integration/manifest") {
           if (manifestFailure) throw Object.assign(new Error("network failed"), {code: "network_error"});
           return {nai};
@@ -86,7 +88,7 @@ function fixture(nai = null) {
     querySelector(selector) {return single.get(selector) || null;},
     querySelectorAll(selector) {return nodes.get(selector) || [];},
   };
-  const context = {window, console, AbortController, Event, setTimeout, clearTimeout, Promise, Math, Date, JSON,
+  const context = {window, document: window.document, crypto: {randomUUID: () => "synthetic-op"}, console, AbortController, Event, setTimeout, clearTimeout, Promise, Math, Date, JSON,
     Object, String, Array, Map, Set, Error};
   vm.runInNewContext(source, context, {filename: "output-page.js"});
   return {page: window.CompanionOutputPage, nodes, single, requests, root,
@@ -332,4 +334,102 @@ test("gallery supports selection, export, delete and open-folder actions", async
   assert.ok(state.requests.some(request => request.method === "POST" &&
     request.endpoint === "image-materials/album/open-folder"));
   state.page.unmount();
+});
+
+function multiAlbum(options = {}) {
+  const image = (id, date) => ({image_id:id, thumbnail: `data:image/png;base64,${id}`, created_at:date});
+  const targets = [
+    {scope_kind: "private", roles:[{role_id: "role-a", image_material_api: "image-materials"}]},
+    {scope_kind: "private", roles:[{role_id: "role-a", image_material_api: "wechat-materials"}]},
+    {scope_kind: "private", roles:[{role_id: "role-a", image_material_api: "wechat-materials"}]},
+    {scope_kind: "private", roles:[{role_id: "other", image_material_api: "other-materials"}]},
+    {scope_kind: "group", roles:[{role_id: "role-a", image_material_api: "group-materials"}]},
+  ];
+  let fail = !!options.fail, failAction = "", hold = null;
+  const state = fixture(null, {targets:options.targets||targets, request: async (method, endpoint, body) => {
+    const native = endpoint.startsWith("wechat-materials/");
+    if (native && (fail || (failAction && endpoint.endsWith(failAction)))) throw new Error("synthetic native unavailable");
+    if (method === "GET") {
+      if (options.hold && native) return new Promise(resolve => {hold = resolve;});
+      if (native) return {items:[image(body?.cursor ? "wx-old" : "wx-new", body?.cursor ? "2026-10-01" : "2026-11-12")], next_cursor:body?.cursor ? null : "wx-cursor"};
+      return {items:[image("qq-image", "2026-11-11")],next_cursor:null};
+    }
+    const expected = native ? ["wx-new", "wx-old"] : ["qq-image"];
+    for (const id of body?.image_ids || (body?.image_id ? [body.image_id] : [])) assert.ok(expected.includes(id), `wrong account: ${endpoint}: ${id}`);
+    if (endpoint.endsWith("/export")) return {filename:"album.zip", data_url:"data:application/zip;base64,AAA", count:body.image_ids.length};
+    if (endpoint.endsWith("/hide")) return {hidden:body.image_ids.length};
+    if (endpoint.endsWith("/references")) return {};
+    throw new Error(`unexpected ${endpoint}`);
+  }});
+  return {...state, recover: () => {fail=false;failAction="";}, failAction: action => {failAction=action;}, release: () => hold?.({items:[image("wx-delayed", "2026-11-12")],next_cursor:null})};
+}
+const settleAlbum = () => new Promise(resolve => setImmediate(resolve));
+
+test("role gallery includes QQ and WeChat in the existing gallery without an account switch", async () => {
+  const s=multiAlbum();s.page.mount(s.root);await settleAlbum();
+  const html=s.single.get("#outputAlbumWorkspace").innerHTML;
+  assert.match(html,/wx-new/);assert.match(html,/qq-image/);
+  assert.ok(html.indexOf('base64,wx-new') < html.indexOf('base64,qq-image'));
+  assert.equal(s.requests.filter(r=>r.method==="GET"&&r.endpoint==="wechat-materials/album").length,1);
+  assert.ok(!s.requests.some(r=>/other-materials|group-materials/.test(r.endpoint)));
+  assert.doesNotMatch(html,/<select|account-switch/);
+  s.clickAction("album-more");await settleAlbum();
+  assert.match(s.single.get("#outputAlbumWorkspace").innerHTML,/wx-old/);
+  assert.equal(s.requests.filter(r=>r.method==="GET"&&r.endpoint==="image-materials/album").length,1);
+  assert.equal(s.requests.find(r=>r.body?.cursor).body.cursor,"wx-cursor");
+  s.page.unmount();
+});
+
+test("role gallery sends exports hide and references to each image's original account", async () => {
+  const s=multiAlbum();s.page.mount(s.root);await settleAlbum();
+  s.toggleAlbum("wx-new");s.clickAction("album-reference");s.clickAction("album-reference-save");await settleAlbum();
+  assert.ok(s.requests.some(r=>r.endpoint==="wechat-materials/references"&&r.body.image_id==="wx-new"));
+  s.toggleAlbum("qq-image");s.clickAction("album-export");await settleAlbum();
+  assert.equal(s.requests.filter(r=>r.endpoint.endsWith("/export")).length,2);
+  s.clickAction("album-hide");await settleAlbum();
+  assert.equal(s.requests.filter(r=>r.endpoint.endsWith("/hide")).length,2);
+  assert.doesNotMatch(s.single.get("#outputAlbumWorkspace").innerHTML,/output-album-card/);s.page.unmount();
+});
+
+test("role gallery reports a failed account while retaining successful images and permits retry", async () => {
+  const s=multiAlbum({fail:true});s.page.mount(s.root);await settleAlbum();
+  let html=s.single.get("#outputAlbumWorkspace").innerHTML;assert.match(html,/qq-image/);assert.match(html,/synthetic native unavailable/);
+  s.recover();s.clickAction("album-more");await settleAlbum();
+  html=s.single.get("#outputAlbumWorkspace").innerHTML;assert.match(html,/wx-new/);assert.doesNotMatch(html,/synthetic native unavailable/);s.page.unmount();
+});
+
+test("role gallery discards late multi account responses after unmount", async () => {
+  const s=multiAlbum({hold:true});s.page.mount(s.root);await settleAlbum();s.page.unmount();
+  const html=s.single.get("#outputAlbumWorkspace").innerHTML;s.release();await settleAlbum();
+  assert.equal(s.single.get("#outputAlbumWorkspace").innerHTML,html);
+});
+
+test("role gallery preserves the failed account selection after a partial hide", async () => {
+  const s=multiAlbum();s.page.mount(s.root);await settleAlbum();
+  s.toggleAlbum("qq-image");s.toggleAlbum("wx-new");s.failAction("/hide");
+  s.clickAction("album-hide");await settleAlbum();
+  let html=s.single.get("#outputAlbumWorkspace").innerHTML;
+  assert.match(html,/wx-new/);assert.doesNotMatch(html,/qq-image/);assert.match(html,/部分删除未确认/);
+  assert.match(html,/已选 <b>1<\/b> 张/);
+  s.recover();s.clickAction("album-hide");await settleAlbum();
+  assert.equal(s.requests.filter(r=>r.endpoint==="image-materials/album/hide").length,1);
+  assert.equal(s.requests.filter(r=>r.endpoint==="wechat-materials/album/hide").length,2);s.page.unmount();
+});
+
+test("role gallery reports partial export failures without automatically resending", async () => {
+  const s=multiAlbum();s.page.mount(s.root);await settleAlbum();
+  s.toggleAlbum("qq-image");s.toggleAlbum("wx-new");s.failAction("/export");
+  s.clickAction("album-export");await settleAlbum();
+  const html=s.single.get("#outputAlbumWorkspace").innerHTML;
+  assert.match(html,/部分导出失败/);assert.match(html,/wx-new/);assert.match(html,/qq-image/);
+  assert.equal(s.requests.filter(r=>r.endpoint.endsWith("/export")).length,2);s.page.unmount();
+});
+
+test("role gallery reads one album per account even when the directory lists setup and concrete windows", async () => {
+  const role=endpoint=>({role_id:"role-a",image_material_api:endpoint});
+  const target=(id,endpoint)=>({scope_kind:"private",platform_id:id,account_id:id,bot_id:`bot-${id}`,roles:[role(endpoint)]});
+  const s=multiAlbum({targets:[target("qq","image-materials"),target("wx","wechat-materials"),target("wx","alias-materials")]});
+  s.page.mount(s.root);await settleAlbum();
+  assert.match(s.single.get("#outputAlbumWorkspace").innerHTML,/wx-new/);
+  assert.ok(!s.requests.some(r=>r.endpoint.startsWith("alias-materials")));s.page.unmount();
 });
