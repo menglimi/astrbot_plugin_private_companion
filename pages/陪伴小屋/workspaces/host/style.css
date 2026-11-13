@@ -145,6 +145,21 @@ dt { margin-bottom: 6px; color: var(--muted); font-size: 11.5px; }
 dd { margin: 0; font-size: 14px; font-weight: 680; line-height: 1.45; word-break: break-word; }
 .safety-note, .permission-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .safety-note::before { margin-right: 7px; color: var(--accent); content: "●"; font-size: 9px; vertical-align: 1px; }
+.account-runtime { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.account-runtime-heading, .account-runtime-title { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.account-runtime-heading h3 { margin: 0; font-size: 14px; }
+.account-runtime-heading > span, .account-runtime-note, .account-runtime-meta, .account-runtime-recovered { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.account-runtime-note { margin: 7px 0 11px; }
+.account-runtime-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
+.account-runtime-card { min-width: 0; padding: 12px 13px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-muted); overflow-wrap: anywhere; }
+.account-runtime-title strong { font-size: 13px; }
+.account-runtime-badge { padding: 3px 7px; border-radius: 6px; color: var(--muted); background: var(--surface); font-size: 11px; }
+.account-runtime-card[data-state="online"] .account-runtime-badge { color: var(--green); background: var(--green-soft); }
+.account-runtime-card:is([data-state="waiting"], [data-state="recovering"]) .account-runtime-badge { color: var(--amber); background: var(--amber-soft); }
+.account-runtime-card:is([data-state="identity_changed"], [data-state="error"]) .account-runtime-badge { color: var(--danger); background: var(--danger-soft); }
+.account-runtime-meta { margin: 5px 0 0; }
+.account-runtime-reason { margin: 7px 0 0; color: var(--ink); font-size: 12px; line-height: 1.6; }
+.account-runtime-recovered { margin: 5px 0 0; }
 .actions-panel { margin-top:14px; padding:19px 20px 16px; }
 .probe-state { flex: 0 0 auto; color: var(--muted); font-size: 12px; text-align: right; }
 .action-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 18px 0 17px; }
