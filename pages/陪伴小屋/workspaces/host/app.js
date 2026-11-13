@@ -305,11 +305,16 @@
     const uniqueRole = new Map([...rolesByPersona].filter(([, ids]) => ids.size === 1)
       .map(([personaId, ids]) => [personaId, [...ids][0]]));
     const seen = new Set(rows.map(row => nativePersonaKey(row.bot_id, row.persona_id)));
+    const savedBots = Array.isArray(data?.accounts)
+      ? new Set(data.accounts.map(row => String(row.bot_id || ""))) : null;
     for (const target of data?.discovered?.targets || []) {
       if (target?.native !== true || target.details_available === false) continue;
       const personaId = String(target.persona_override || target.persona_id || "");
       const botId = String(target.bot_id || "");
       if (!personaId || !botId || !uniqueRole.has(personaId)) continue;
+      // Discovery is not consent to bind an account. Inherit personas only
+      // inside the saved account set, so refresh cannot restore removed bots.
+      if (savedBots && !savedBots.has(botId)) continue;
       const key = nativePersonaKey(botId, personaId);
       if (seen.has(key)) continue;
       seen.add(key);
@@ -1484,6 +1489,33 @@
     markBindingsDirty(account);
   }
 
+  function accountConnectionLabel(state) {
+    return ({ready: "客户端检查通过", platform_unavailable: "平台实例未加载",
+      client_unavailable: "适配器未提供可校验的客户端",
+      account_unavailable: "账号未通过连接校验", unknown: "连接状态未确认"})[state] || "连接状态未确认";
+  }
+  function accountMappingLabel(account) {
+    const saved = (bindingConfig?.accounts || []).some(row => bindingAccountKey(row) === bindingAccountKey(account))
+      && (bindingConfig?.personas || []).some(row => row.bot_id === account.bot_id);
+    return saved ? "已保存角色映射" : "仅发现账号 · 未保存角色映射";
+  }
+  async function bindingSaveError(error, selectedAccounts) {
+    const code = codeOf(error) || error?.message || "";
+    if (!["host_account_unavailable", "host_platform_unavailable"].includes(code)) return publicError(error);
+    // The host bridge may forward only the error code. Refresh read-only hints
+    // without replacing the editor or losing its unsaved selections.
+    try {
+      const current = await api("GET", accountApi);
+      const selected = new Set(selectedAccounts.map(bindingAccountKey));
+      const unavailable = (current?.discovered?.accounts || []).filter(row =>
+        selected.has(bindingAccountKey(row)) && ["platform_unavailable", "client_unavailable", "account_unavailable"]
+          .includes(row.connection_status));
+      if (unavailable.length) return unavailable.map(row =>
+        `${accountChoiceLabel(row)}：${accountConnectionLabel(row.connection_status)}`).join("；")
+        + "。本次角色映射未保存，页面选择仍为草稿。";
+    } catch { /* The original refusal remains authoritative if diagnostics fail. */ }
+    return `${publicError(error)} 本次角色映射未保存；请在插件日志中查找「账号校验未通过」确认具体账号。`;
+  }
   function accountBindingCard(account, mappings) {
     const card = document.createElement("section");
     card.className = "account-binding-card";
@@ -1495,7 +1527,9 @@
     const title = document.createElement("strong");
     title.textContent = accountChoiceLabel(account);
     const meta = document.createElement("small");
-    meta.textContent = `${platformLabel(account.platform_name || account.platform_id)} · Bot ${account.bot_id || "未标记"}`;
+    meta.textContent = `${platformLabel(account.platform_name || account.platform_id)} · Bot ${account.bot_id || "未标记"}`
+      + ` · ${accountMappingLabel(account)}`
+      + (account.connection_status ? ` · ${accountConnectionLabel(account.connection_status)}` : "");
     const add = document.createElement("button");
     add.type = "button";
     add.className = "button button-quiet";
@@ -1889,7 +1923,7 @@
       }
       notice(`${repaired}${result.started ? "角色映射已保存并自动加载。" : "角色映射已保存，运行状态已更新。"}`,
         "success");
-    } catch (error) { notice(`保存未完成：${publicError(error)}`, "error"); }
+    } catch (error) { notice(`保存未完成：${await bindingSaveError(error, accounts)}`, "error"); }
     finally { setBusy(false); updateBindingCheck(); }
   }
 
