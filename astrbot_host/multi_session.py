@@ -13,7 +13,7 @@ from companion_v2.adapters.astrbot.memory_owner import memory_owner_provider
 from companion_v2.adapters.astrbot.memory_push import memory_push_provider
 from companion_v2.adapters.astrbot.native import (
     NativeConversationInput, NativePrivateBridge, bounded_native_lookup, event_account_id,
-    event_peer_id, native_client_connected, native_id, native_user_subject_id,
+    event_peer_id, event_session_id, event_native_client, native_client_connected, native_id, native_user_subject_id,
     platform_client_matches,
     supported_platform_name,
 )
@@ -162,14 +162,15 @@ class MultiPrivateBridge(NativePrivateBridge):
                     or getattr(message, "group_id", None)):
                 raise TaskError("host_scene_unsupported", "core private reply requires a native private route")
             sender, login = event_peer_id(event), event_account_id(event)
+            session_id = event_session_id(event)
             account = self.accounts.get((platform_id, login))
             target = self.settings.private_target(platform_id, login, sender)
             if (not supported_platform_name(meta.name) or session.platform_id != platform_id
-                    or session.platform_name != platform_id or session.session_id != sender
-                    or event.unified_msg_origin != self._umo(platform_id, sender)
+                    or session.platform_name != platform_id or session.session_id != session_id
+                    or event.unified_msg_origin != self._umo(platform_id, session_id)
                     or account is None or target is None or target.bot_id != account.bot_id):
                 raise TaskError("host_route_mismatch", "event fields do not identify one registered private route")
-            event_client = event.bot
+            event_client = event_native_client(self.context.get_platform_inst(platform_id), event)
             platform = self.context.get_platform_inst(platform_id)
             if (platform is None or not platform_client_matches(platform, event_client)
                     or not native_client_connected(platform, login)):
@@ -181,9 +182,10 @@ class MultiPrivateBridge(NativePrivateBridge):
                                                    sender, account.bot_id, login)
             self.authority.ensure_actor(target)
             actor = require(self.identities.resolve_authenticated(principal, observed_at=at))
+            self.remember_private_session(event)
             conversation_id, role, instruction = await self._role(account, sender)
             scope = ScopeRef(self.installation_id, platform_id, ScopeKind.PRIVATE, sender,
-                             account.bot_id, login, conversation_id, sender)
+                             account.bot_id, login, conversation_id, session_id)
             if not platform_client_matches(self.platform(scope), event_client):
                 raise TaskError("host_client_mismatch", "private host account changed during persona lookup")
             self.client(scope)
@@ -225,9 +227,10 @@ class MultiPrivateBridge(NativePrivateBridge):
             return await super().capture(event)
         try:
             sender, login = event_peer_id(event), event_account_id(event)
+            session_id = event_session_id(event)
             if (not supported_platform_name(meta.name) or session.platform_id != meta.id
-                    or session.platform_name != meta.id or session.session_id != sender
-                    or event.unified_msg_origin != f"{meta.id}:FriendMessage:{sender}"):
+                    or session.platform_name != meta.id or session.session_id != session_id
+                    or event.unified_msg_origin != f"{meta.id}:FriendMessage:{session_id}"):
                 return await super().capture(event)
             target = self.settings.private_target(meta.id, login, sender)
             if target is None:
@@ -235,7 +238,7 @@ class MultiPrivateBridge(NativePrivateBridge):
             account = self.accounts.get((meta.id, login))
             platform = self.context.get_platform_inst(meta.id)
             if (account is None or account.bot_id != target.bot_id or platform is None
-                    or not platform_client_matches(platform, event.bot)
+                    or not platform_client_matches(platform, event_native_client(platform, event))
                     or not native_client_connected(platform, login)):
                 raise TaskError("host_client_mismatch", "private event did not originate from its registered Bot account")
             self.authority.ensure_actor(target)
@@ -461,7 +464,7 @@ class MultiHostSession:
     def __init__(self, runtime, native_context, *, settings, personas, authority, native_types,
                  provider_fingerprint, runtime_instance_id, now, native_tool_port=None, news_port=None,
                  solar_term_port=None, qzone_transport=None, balance_port=None, weather_ports=None,
-                 persona_window_snapshot_lookup=None, persona_window_snapshot_update=None,
+                 persona_window_snapshot_lookup=None, persona_window_snapshot_update=None, private_session_lookup=None,
                  search_port_factory=None):
         self.runtime, self.settings, self.authority, self.types, self.now = runtime, settings, authority, native_types, now
         self.native_tool_port = native_tool_port
@@ -489,6 +492,7 @@ class MultiHostSession:
             persona_selection_lookup=native_types.persona_selection_lookup,
             persona_window_snapshot_lookup=persona_window_snapshot_lookup,
             persona_window_snapshot_update=persona_window_snapshot_update,
+            private_session_lookup=private_session_lookup,
             file_settings=lambda scope, role: file_intake_settings(runtime, scope, role))
         self.model = AstrBotTextProvider(native_context, bridge=self.bridge,
             binding=ProviderBinding("model.text", common.provider_id, native_types.version, provider_fingerprint),
@@ -550,8 +554,10 @@ class MultiHostSession:
         registry_ids = {item.field_id for item in registry_fields}
         registry_fields += tuple(field for field in relay_configuration_fields()
                                  if field.field_id not in registry_ids)
+        from .role_reference_owner import RoleReferenceOwnerResolver
         configuration_store = open_configuration_store(runtime)
         self.host = AstrBotCompanionHost(runtime, event_port=self.bridge.ports, identity_port=self.bridge.ports,
+            reference_owner_resolver=RoleReferenceOwnerResolver(runtime, self.bridge),
             role_port=self.bridge.ports, runtime_identity=RuntimeIdentity("companion", runtime_instance_id, "astrbot", HOST_ID),
             registry=FieldRegistry(version="astrbot-multi.v1", fields=registry_fields),
             profiles=profiles, providers=tuple(model.local_provider() for model in self.models), budget=common.budget,
@@ -597,7 +603,8 @@ class MultiHostSession:
 
     def scope(self, target, conversation_id):
         return ScopeRef(self.runtime.installation_id, target.platform_id, ScopeKind.PRIVATE, target.participant_id,
-                        target.bot_id, target.account_id, conversation_id, target.participant_id)
+                        target.bot_id, target.account_id, conversation_id, self.bridge.private_session_id(
+                            self.bridge.accounts[(target.platform_id, target.account_id)], target.participant_id))
 
     def _wake_snapshot(self, context):
         """Read the Reality wake signals for this exact private target.
@@ -692,7 +699,7 @@ class MultiHostSession:
             try:
                 context, instruction = await self.synchronize(target)
             except TaskError as error:
-                if error.code in ("host_persona_unmapped", "host_persona_window_unbound"):
+                if error.code in ("host_persona_unmapped", "host_persona_window_unbound", "host_native_session_unavailable"):
                     # Leave this target unrouted until its V2 window persona is explicit.
                     continue
                 raise

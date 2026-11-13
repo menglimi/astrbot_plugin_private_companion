@@ -14,6 +14,9 @@ from companion_v2.adapters.astrbot.native import (
     configured_default_persona_id,
     event_account_id,
     event_peer_id,
+    event_session_id,
+    event_native_client,
+    native_id,
     native_client_connected,
     platform_client_matches,
     route_id,
@@ -65,6 +68,70 @@ class SessionTopology:
         self._closed = False
         self._write_lock = asyncio.Lock()
         self._persona_role_snapshot = {}
+
+    def route(self, umo):
+        if not isinstance(umo, str) or len(parts := umo.split(":")) != 3:
+            return None
+        platform = self.controller.context.get_platform_inst(parts[0])
+        if platform is None or platform.meta().name != "wechat_native":
+            return session_route(umo)
+        from companion_v2.adapters.astrbot.wechat_native import session_target
+        try:
+            thread = session_target(platform, native_id(parts[2]))
+            if parts[1] == "GroupMessage":
+                return parts[0], "group", thread
+            if parts[1] == "FriendMessage":
+                peers = {row.get("participant_id") for row in self._observed().values()
+                         if row.get("unified_msg_origin") == umo and row.get("account_id") == parts[0]
+                         and row.get("participant_id")}
+                if len(peers) == 1:
+                    return parts[0], "private", peers.pop()
+        except (ValueError, AttributeError):
+            pass
+        return None
+
+    def private_session_id(self, platform_id, account_id, participant_id):
+        platform = self.controller.context.get_platform_inst(platform_id)
+        if platform is None or platform.meta().name != "wechat_native":
+            return participant_id
+        from companion_v2.adapters.astrbot.wechat_native import session_target
+        rows = sorted(self._observed().values(), key=lambda row: row.get("last_seen_at", ""), reverse=True)
+        for row in rows:
+            if row.get("account_id") != account_id or row.get("participant_id") != participant_id:
+                continue
+            parts = str(row.get("unified_msg_origin", "")).split(":")
+            if len(parts) != 3 or parts[:2] != [platform_id, "FriendMessage"]:
+                continue
+            try:
+                session_target(platform, parts[2])
+                return native_id(parts[2])
+            except ValueError:
+                continue
+        # Accepted scopes already persist in the existing host metadata, including
+        # before an optional directory observation has finished flushing.
+        runtime = getattr(self.controller, "runtime", None)
+        settings = getattr(self.controller, "settings", None)
+        if runtime is not None and settings is not None:
+            target = settings.private_target(platform_id, account_id, participant_id)
+            if target is not None:
+                from .multi_authority import MultiAuthority
+                for persona in settings.personas:
+                    if persona.bot_id != target.bot_id:
+                        continue
+                    row = runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?",
+                                           (MultiAuthority.context_key(target, persona.role_id),))
+                    if row:
+                        try:
+                            from companion_v2.foundation.refs import ScopeRef, ScopeKind
+                            scope = ScopeRef.restore(json.loads(row["value"]))
+                            if (scope.kind is ScopeKind.PRIVATE and scope.platform == platform_id
+                                    and scope.account_id == account_id and scope.bot_id == target.bot_id
+                                    and scope.native_scope_id == participant_id):
+                                session_target(platform, scope.session_id)
+                                return scope.session_id
+                        except (ValueError, TypeError, KeyError):
+                            continue
+        return None
 
     def schedule_observe(self, event):
         """Keep optional directory IO outside native reply hooks."""
@@ -227,7 +294,7 @@ class SessionTopology:
         names = {}
         for row in sorted((row for row in rows.values() if isinstance(row, dict)),
                           key=lambda row: str(row.get("last_seen_at") or ""), reverse=True):
-            route = session_route(row.get("unified_msg_origin"))
+            route = self.route(row.get("unified_msg_origin"))
             account = row.get("account_id")
             if route is None or route[1] != "group" or not isinstance(account, str) or not account:
                 continue
@@ -245,7 +312,7 @@ class SessionTopology:
         snapshot = self._persona_role_snapshot.get((umo, account_id))
         if snapshot is not None:
             return snapshot
-        route = session_route(umo)
+        route = self.route(umo)
         if route is None:
             return None
         platform, kind, _peer = route
@@ -256,7 +323,7 @@ class SessionTopology:
         """Refresh one verified live window after a native lookup or conversation reset."""
         controller = self.controller
         settings = controller.settings if controller._multi_host else None
-        route = session_route(umo)
+        route = self.route(umo)
         if settings is None or route is None:
             return
         platform, kind, peer = route
@@ -300,8 +367,8 @@ class SessionTopology:
 
         if complete:
             retained = {key: value for key, value in self._persona_role_snapshot.items()
-                        if scope_kind is not None and (session_route(key[0]) is None
-                                                       or session_route(key[0])[1] != scope_kind)}
+                        if scope_kind is not None and (self.route(key[0]) is None
+                                                       or self.route(key[0])[1] != scope_kind)}
             retained.update(discovered)
             self._persona_role_snapshot = retained
         else:
@@ -374,7 +441,10 @@ class SessionTopology:
         """
         if not all(type(value) is str and value for value in (platform_id, participant_id)):
             return ""
-        umo = f"{platform_id}:FriendMessage:{participant_id}"
+        session_id = self.private_session_id(platform_id, platform_id, participant_id)
+        if not session_id:
+            return ""
+        umo = f"{platform_id}:FriendMessage:{session_id}"
         manager = getattr(self.controller.context, "conversation_manager", None)
         if manager is None:
             return ""
@@ -413,7 +483,13 @@ class SessionTopology:
         controller = self.controller
         if controller._terminated or not isinstance(event, controller.native_types.event):
             return
-        route = session_route(event.unified_msg_origin)
+        if getattr(event.platform_meta, "name", None) == "wechat_native":
+            event_session_id(event)
+            message = event.message_obj
+            route = (event.platform_meta.id, "group" if message.group_id else "private",
+                     message.group_id or event_peer_id(event))
+        else:
+            route = self.route(event.unified_msg_origin)
         if route is None:
             return
         platform_id, kind, peer = route
@@ -426,7 +502,7 @@ class SessionTopology:
         if not supported_platform_name(meta.name):
             logger.debug("[CompanionV2] 跳过事件：平台 %s 不在支持名单", meta.name)
             return
-        if not platform_client_matches(platform, event.bot):
+        if not platform_client_matches(platform, event_native_client(platform, event)):
             logger.debug(
                 "[CompanionV2] 跳过事件：事件携带的 bot(%s) 不是平台当前的 client",
                 type(getattr(event, "bot", None)).__name__,
@@ -442,7 +518,7 @@ class SessionTopology:
         elif (message.group_id or event_peer_id(event) != peer
               or getattr(message.type, "value", None) != "FriendMessage"
               or getattr(session.message_type, "value", None) != "FriendMessage"
-              or session.session_id != peer or session.platform_id != platform_id
+              or session.session_id != event_session_id(event) or session.platform_id != platform_id
               or session.platform_name != platform_id or meta.id != platform_id):
             return
         manager = controller.context.conversation_manager
@@ -453,6 +529,8 @@ class SessionTopology:
         key = digest([platform_id, login, event.unified_msg_origin])
         row = {"unified_msg_origin": event.unified_msg_origin, "account_id": login,
                "conversation_id": cid, "last_seen_at": controller.now().isoformat()}
+        if meta.name == "wechat_native":
+            row["group_id" if kind == "group" else "participant_id"] = peer
         if kind == "group":
             group = getattr(message, "group", None)
             group_name = platform_label(getattr(group, "group_name", None), peer)
@@ -468,7 +546,7 @@ class SessionTopology:
 
     def _store_observation(self, key, row):
         rows = self._observed()
-        route = session_route(row.get("unified_msg_origin"))
+        route = self.route(row.get("unified_msg_origin"))
         if route:
             field = "group_name" if route[1] == "group" else "display_name"
             previous_name = platform_label(rows.get(key, {}).get(field), route[2])
@@ -507,7 +585,7 @@ class SessionTopology:
                         break
                     for item in batch:
                         umo = item.get("session_id")
-                        route = session_route(umo)
+                        route = self.route(umo)
                         if route and (scope_kind is None or route[1] == scope_kind):
                             rows[umo] = {**item, "unified_msg_origin": umo}
                     if not batch or page * 100 >= total:
@@ -515,7 +593,7 @@ class SessionTopology:
                     page += 1
         else:
             for umo, cid in getattr(manager, "session_conversations", {}).items():
-                route = session_route(umo)
+                route = self.route(umo)
                 if route and route[0] in platforms and (scope_kind is None or route[1] == scope_kind):
                     rows[umo] = {"unified_msg_origin": umo, "conversation_id": cid}
         return rows, issues
@@ -538,7 +616,7 @@ class SessionTopology:
         observed = {}
         for row in self._observed().values():
             umo = row.get("unified_msg_origin")
-            route = session_route(umo)
+            route = self.route(umo)
             if route and route[0] in platforms and (scope_kind is None or route[1] == scope_kind):
                 observed.setdefault(umo, []).append(row)
                 native.setdefault(umo, {"unified_msg_origin": umo,
@@ -554,7 +632,7 @@ class SessionTopology:
                                                        managed_only=managed_only)
                     return rows, None
                 except TaskError as error:
-                    return self._partial_windows(umo, accounts, configured, observed), error
+                    return self._partial_windows(umo, accounts, configured, observed, route_resolver=self.route), error
 
         # One stale or slow conversation must not erase the rest of the directory.
         native_items = list(native.items())
@@ -566,7 +644,7 @@ class SessionTopology:
                 if isinstance(value, asyncio.CancelledError):
                     raise value
                 issues.append(self._directory_issue(value))
-                result.extend(self._partial_windows(umo, accounts, configured, observed))
+                result.extend(self._partial_windows(umo, accounts, configured, observed, route_resolver=self.route))
                 continue
             rows, error = value
             result.extend(rows)
@@ -606,8 +684,8 @@ class SessionTopology:
                 for (code, stage, platform, reason), count in sorted(counts.items())]
 
     @staticmethod
-    def _partial_windows(umo, accounts, configured, observed):
-        route = session_route(umo)
+    def _partial_windows(umo, accounts, configured, observed, *, route_resolver=session_route):
+        route = route_resolver(umo)
         if route is None:
             return []
         platform, kind, peer = route
@@ -649,7 +727,7 @@ class SessionTopology:
     async def _session_windows(self, umo, item, accounts, configured, mappings, observed, *, managed_only):
         manager = getattr(self.controller.context, "conversation_manager", None)
         result = []
-        platform, kind, peer = session_route(umo)
+        platform, kind, peer = self.route(umo)
         candidates = [row for row in accounts if row["platform_id"] == platform]
         if not candidates:
             return result

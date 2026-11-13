@@ -35,7 +35,7 @@ VERIFIED_SERIES = frozenset(("4.27", "4.28", "4.29"))
 # Native routing is verified for the OneBot reverse-WS adapter and the two
 # QQ Official adapter names AstrBot exposes.  Keeping the allow-list here
 # prevents an arbitrary adapter from inheriting route privileges by accident.
-SUPPORTED_PLATFORM_NAMES = frozenset(("aiocqhttp", "qq_official", "qq_official_webhook", "lark", "weixin_oc"))
+SUPPORTED_PLATFORM_NAMES = frozenset(("aiocqhttp", "qq_official", "qq_official_webhook", "lark", "weixin_oc", "wechat_native"))
 OFFICIAL_PLATFORM_NAMES = frozenset(("qq_official", "qq_official_webhook"))
 _REPORTED_UNVERIFIED = set()
 NATIVE_LOOKUP_TIMEOUT_SECONDS = 20
@@ -202,7 +202,7 @@ def event_account_id(event):
         # Lark (Feishu) has no stable numeric self id on the event; the
         # configured platform instance id is the account key, same as QQ Official.
         return route_id(event_platform_id(event))
-    if name == "weixin_oc":
+    if name in {"weixin_oc", "wechat_native"}:
         # Personal WeChat exposes an openid/wxid instead of a numeric self id;
         # the configured adapter instance is the stable account projection.
         return route_id(event_platform_id(event))
@@ -228,6 +228,8 @@ def native_user_subject_id(platform_name, sender_id):
         return "lark-user:" + sender_id
     if platform_name == "weixin_oc":
         return "weixin-user:" + sender_id
+    if platform_name == "wechat_native":
+        return "wechat-native-user:" + sender_id
     raise ValueError("unsupported native user platform")
 
 
@@ -253,6 +255,23 @@ def platform_client_matches(platform, client):
         return False
     return False
 
+def event_session_id(event):
+    """Keep the platform session distinct from the authenticated participant."""
+    if event_platform_name(event) == "wechat_native":
+        from .wechat_native import event_session
+        return native_id(event_session(event))
+    return event_peer_id(event)
+
+
+def event_native_client(platform, event):
+    if event_platform_name(event) != "wechat_native":
+        return getattr(event, "bot", None)
+    if platform is None or getattr(event, "adapter", None) is not platform:
+        return None
+    event_session_id(event)
+    return platform.get_client()
+
+
 def native_client_connected(platform, account_id, client=None):
     """Whether one configured account currently has a usable native client."""
     if platform is None:
@@ -264,6 +283,10 @@ def native_client_connected(platform, account_id, client=None):
         return False
     if client is None or not supported_platform_name(getattr(meta, "name", None)):
         return False
+    if meta.name == "wechat_native":
+        return (meta.id == account_id and not getattr(platform, "stopped", True)
+                and not getattr(client, "closed", True)
+                and getattr(client, "account_id", None) == platform.native_config.account_id)
     if meta.name == "aiocqhttp":
         clients = getattr(client, "_wsr_api_clients", None)
         if not isinstance(clients, dict):
@@ -438,9 +461,11 @@ class NativePrivateBridge:
                  audio_type=None, audio_loader=None, component_reader=None, video_type=None, video_loader=None,
                  forward_intake=None, file_type=None, file_loader=None, file_settings=None,
                  session_persona_override_lookup=None, persona_snapshot_lookup=None, persona_selection_lookup=None,
-                 persona_window_snapshot_lookup=None, persona_window_snapshot_update=None):
+                 persona_window_snapshot_lookup=None, persona_window_snapshot_update=None, private_session_lookup=None):
         check_version(version)
         self.context, self.event_type, self.identities = context, event_type, identities
+        self.private_session_lookup = private_session_lookup
+        self._private_sessions = {}
         if session_persona_override_lookup is not None and not callable(session_persona_override_lookup):
             raise ValueError("session persona override lookup must be supplied by trusted host assembly")
         self.session_persona_override_lookup = session_persona_override_lookup
@@ -526,6 +551,18 @@ class NativePrivateBridge:
                 or platform.get_client() is not client or meta.id != account.platform_id
                 or not supported_platform_name(meta.name)):
             raise TaskError("host_account_changed", "original platform/client was replaced")
+        if meta.name == "wechat_native":
+            from .wechat_native import session_target
+            try:
+                thread = session_target(platform, scope.session_id)
+                if scope.kind is ScopeKind.PRIVATE:
+                    matches = scope.session_id == self.private_session_id(account, scope.native_scope_id)
+                else:
+                    matches = thread == scope.native_scope_id
+                if not matches:
+                    raise ValueError("native scope differs from its original session")
+            except ValueError as error:
+                raise TaskError("host_route_changed", "native session does not match the original account and scope") from error
         return platform
 
     def platform_name(self, scope_or_account):
@@ -570,8 +607,33 @@ class NativePrivateBridge:
                     else replace(projection, persona_id=persona_id))
         return None
 
+    def private_session_id(self, account, sender_id):
+        if self.platform_name(account) != "wechat_native":
+            return sender_id
+        key = account.platform_id, account.self_id, sender_id
+        session_id = self._private_sessions.get(key)
+        if session_id is None and self.private_session_lookup is not None:
+            session_id = self.private_session_lookup(*key)
+        if not session_id:
+            raise TaskError("host_native_session_unavailable", "receive a native private message before background delivery")
+        from .wechat_native import session_target
+        try:
+            session_target(self.platforms[account.platform_id][0], session_id)
+        except ValueError as error:
+            raise TaskError("host_route_changed", "the saved native session belongs to another account") from error
+        return native_id(session_id)
+
+    def remember_private_session(self, event):
+        session_id = event_session_id(event)
+        if event_platform_name(event) == "wechat_native":
+            platform = self.context.get_platform_inst(event_platform_id(event))
+            if event_native_client(platform, event) is None:
+                raise TaskError("host_client_mismatch", "the native adapter was replaced")
+            self._private_sessions[(event_platform_id(event), event_account_id(event), event_peer_id(event))] = session_id
+        return session_id
+
     async def _role(self, account, sender_id):
-        umo = self._umo(account.platform_id, sender_id)
+        umo = self._umo(account.platform_id, self.private_session_id(account, sender_id))
         conversation_id, role, instruction = await self._role_for_umo(account, umo)
         return self._role_conversation_id(conversation_id, role), role, instruction
 
@@ -720,7 +782,7 @@ class NativePrivateBridge:
         """
         account = self.account(scope)
         sender = route_id(scope.native_scope_id)
-        umo = self._umo(account.platform_id, sender)
+        umo = self._umo(account.platform_id, scope.session_id)
         conversation_manager = self.context.conversation_manager
         conversation_id = await bounded_native_lookup(
             conversation_manager.get_curr_conversation_id(umo), operation="conversation_id")
@@ -799,7 +861,7 @@ class NativePrivateBridge:
     async def verify_role(self, scope, binding, instruction=None):
         self.client(scope)
         sender = route_id(scope.native_scope_id)
-        if scope.session_id != sender or binding.scope != scope:
+        if scope.session_id != self.private_session_id(self.accounts[(scope.platform, scope.account_id)], sender) or binding.scope != scope:
             raise TaskError("host_route_changed", "original private session is inconsistent")
         cid, role, prompt = await self._role(self.accounts[(scope.platform, scope.account_id)], sender)
         self.client(scope)
@@ -809,9 +871,9 @@ class NativePrivateBridge:
 
     def _verified_persona_umo(self, scope, binding, account):
         sender = route_id(scope.native_scope_id)
-        if scope.session_id != sender or binding.scope != scope:
+        if scope.session_id != self.private_session_id(self.accounts[(scope.platform, scope.account_id)], sender) or binding.scope != scope:
             raise TaskError("host_route_changed", "original private session is inconsistent")
-        return self._umo(account.platform_id, sender)
+        return self._umo(account.platform_id, scope.session_id)
 
     async def verified_persona(self, scope, binding):
         account = self.account(scope)
@@ -849,10 +911,11 @@ class NativePrivateBridge:
                     or getattr(session.message_type, "value", None) != "FriendMessage" or message.group_id):
                 raise TaskError("host_scene_unsupported", "group and thread adapters are not installed")
             sender, login = event_peer_id(event), event_account_id(event)
+            session_id = event_session_id(event)
             account = self.accounts.get((platform_id, login))
             if (account is None or not supported_platform_name(meta.name) or session.platform_id != platform_id
-                    or session.platform_name != platform_id or session.session_id != sender
-                    or event.unified_msg_origin != self._umo(platform_id, sender)):
+                    or session.platform_name != platform_id or session.session_id != session_id
+                    or event.unified_msg_origin != self._umo(platform_id, session_id)):
                 raise TaskError("host_route_mismatch", "event fields do not identify one registered private route")
             parts = self.component_reader(event) if self.component_reader is not None else tuple(message.message)
             if not parts or len(parts) > 128:
@@ -920,9 +983,10 @@ class NativePrivateBridge:
             principal = AuthenticatedHostPrincipal(self.installation_id, self.host_id, platform_id, sender, account.bot_id, login)
             actor = require(self.identities.resolve_authenticated(principal, observed_at=at))
             # Freeze all event fields before any host await; later event middleware cannot restamp them.
-            event_client = event.bot
+            event_client = event_native_client(self.context.get_platform_inst(platform_id), event)
+            self.remember_private_session(event)
             cid, role, instruction = await self._role(account, sender)
-            scope = ScopeRef(self.installation_id, platform_id, ScopeKind.PRIVATE, sender, account.bot_id, login, cid, sender)
+            scope = ScopeRef(self.installation_id, platform_id, ScopeKind.PRIVATE, sender, account.bot_id, login, cid, session_id)
             if not platform_client_matches(self.platform(scope), event_client):
                 raise TaskError("host_client_mismatch", "event did not originate from the registered account client")
             self.client(scope)

@@ -91,7 +91,7 @@ async def read_external_memory_summary(controller, context) -> dict[str, Any]:
         capability = register(producer)
         if capability is None:
             return _unavailable("unavailable", provider, display_name, "v2_capability_denied")
-        session_id = f"{scope.platform}:FriendMessage:{scope.native_scope_id}"
+        session_id = f"{scope.platform}:FriendMessage:{scope.session_id}"
         requester = create_context(capability, bot_id=scope.bot_id or "", scope="private",
                                    platform=scope.platform, user_id=scope.native_scope_id,
                                    session_id=session_id)

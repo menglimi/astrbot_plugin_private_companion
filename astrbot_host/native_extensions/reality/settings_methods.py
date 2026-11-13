@@ -202,7 +202,8 @@ class RealitySettingsMethods:
                 if not identity:
                     raise ValueError('请选择本人已有 V2 私聊窗口的用户')
                 user = self._user(user_id)
-                user['umo'] = f"{self.v2_host_api().mobile_target_context(user_id)[2].scope.platform}:FriendMessage:{user_id}"
+                context = self.v2_host_api().mobile_target_context(user_id)[2]
+                user['umo'] = f"{context.scope.platform}:FriendMessage:{context.scope.session_id}"
                 if action == 'request_audio_consent':
                     prompt, _ = self._wakeup_alarm_command(user, '授权')
                     result = {'user_id': user_id, 'confirmation_required': True, 'prompt': prompt}

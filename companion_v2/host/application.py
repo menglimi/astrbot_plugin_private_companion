@@ -222,7 +222,7 @@ class CompanionApplication:
                  solar_term_port=None, budget_soft=None, capability_owners=(),
                  qzone_transport=None, default_provider_resolver=None,
                  knowledge=None, memory_owner=DEFAULT_MEMORY_OWNER, memory_push=DEFAULT_MEMORY_PUSH, wake_port=None,
-                 search_port_factory=None, configuration_store=None):
+                 search_port_factory=None, configuration_store=None, reference_owner_resolver=None):
         if type(owns_runtime) is not bool or not any(p.kind == REPLY_KIND and p.lane is Lane.FOREGROUND for p in profiles):
             raise ValueError("assembly requires a foreground reply profile and explicit runtime ownership")
         if external is not None and (external.runtime is not runtime or external.messages is not None):
@@ -310,8 +310,10 @@ class CompanionApplication:
         self.recall_settings = RecallSettings(self.configuration)
         self.relay_settings = RelaySettings(self.configuration)
         self.library_settings = LibrarySettings(self.configuration)
-        self.reference_settings = ReferenceSettings(reference_configuration_owner)
-        self.wardrobe_settings = WardrobeSettings(self.configuration)
+        self.reference_settings = ReferenceSettings(reference_configuration_owner,
+                                                    owner_resolver=reference_owner_resolver)
+        self.wardrobe_settings = WardrobeSettings(self.configuration,
+                                                 target_resolver=self.reference_settings.target)
         self.qzone_settings = QzoneSettings(self.configuration)
         # Without a host transport the extension is simply absent: no credentials,
         # no session and no partially usable Zone path.
