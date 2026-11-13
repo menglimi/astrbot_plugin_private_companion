@@ -8,6 +8,7 @@ from companion_v2.sources.dependencies import key, link
 from companion_v2.sources.models import AssetRecord, SourceRecord
 from companion_v2.sources.repositories import AssetRepository
 from companion_v2.conversation.models import InboundConversationEvent
+from companion_v2.storage.image_payloads import load_image
 
 from .models import CapturedImage, OWNER, PromptImage, fits_budget
 from .animation import AnimationDescriptor, AnimationFrameEvent, CapturedAnimation, PromptAnimation
@@ -116,7 +117,7 @@ class ConversationImages:
                             asset.asset_id, asset.version.lineage_id, asset.version.revision)
                         or row["descriptor_json"] != encode(descriptor)):
                     raise TaskError("image_content_changed", "image body is bound to another original")
-                captured = CapturedImage(descriptor, row["content"])
+                captured = CapturedImage(descriptor, load_image(self.runtime.data_root, row["content"]))
                 data = base64.b64encode(captured.content).decode("ascii")
                 if isinstance(descriptor, AnimationDescriptor):
                     frames = self.read(context, (self.frame_event(event, descriptor),), at)
