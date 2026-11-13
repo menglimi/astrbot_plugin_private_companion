@@ -101,7 +101,10 @@ def core_decision_facts(event, prepared, application, *, at):
     account = str(getattr(scope, "account_id", "") or "")
     sender = str(getattr(getattr(native, "principal", None), "native_account_id", "") or "")
     text = str(prepared.get("text", getattr(native, "text", getattr(event, "message_str", ""))) or "")
-    trigger = group_trigger_facts(event, account)
+    text = getattr(native, "group_message_text", None) or text
+    trigger = prepared.get("group_trigger")
+    if trigger is None:
+        trigger = group_trigger_facts(event, account)
     kinds = {getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
              for part in getattr(event.message_obj, "message", ())}
     has_image = bool(trigger["has_image"] or getattr(native, "images", ()))

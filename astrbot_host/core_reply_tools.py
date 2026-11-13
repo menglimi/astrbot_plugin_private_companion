@@ -327,13 +327,16 @@ class CoreReplyToolSession:
             if not self._skip_is_alone(wrapper):
                 raise TaskError("group_participation_skip_alone", "listening may accompany learning notes, but no business operation")
         admission = _field(self.prepared, "group_admission", {}) or {}
+        group_trigger = _field(self.prepared, "group_trigger")
+        mentioned = group_trigger["mentioned"] if group_trigger is not None else admission.get("mentioned")
         act, signature = "", ""
-        if arguments["mode"] == "reply" and not admission.get("mentioned") and admission.get("reason") in AUTONOMOUS_REASONS:
+        if arguments["mode"] == "reply" and not mentioned and admission.get("reason") in AUTONOMOUS_REASONS:
             try:
                 snapshot = self.application.reply_settings.snapshot(self.context.actor, self.context, self.application.tasks.now())
                 settings = {key.removeprefix(GROUP + "."): value for key, value in snapshot.values.items()}
                 turn = native_participation_turn(self.application.tools.group_participation, self.context,
-                                                _field(self.prepared, "native_input"), settings)
+                                                _field(self.prepared, "native_input"), settings,
+                                                group_trigger=group_trigger)
                 act, signature = turn["act"], turn["signature"]
             except Exception:
                 pass

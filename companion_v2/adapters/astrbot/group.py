@@ -23,7 +23,8 @@ from .native import (NativeAudioLocator, NativeConversationInput, NativePrivateB
                      route_id, supported_platform_name)
 from .quotes import NativeQuoteLocator, image_locator
 from .forwards import NativeForwardLocator, resource_id
-from .group_quotes import mention_text
+from .group_mentions import group_message_parts, group_message_text, current_mention_text
+from companion_v2.conversation.group_timing import SELF_MENTION
 from .files import file_locator, prepare_file_text, MAX_FILES
 
 
@@ -132,7 +133,7 @@ class NativeGroupBridge(NativePrivateBridge):
         """
         raw = getattr(event.message_obj, "raw_message", None)
         segments = raw.get("message") if isinstance(raw, Mapping) else None
-        parts = segments if isinstance(segments, list) else getattr(event.message_obj, "message", ())
+        parts = group_message_parts(event, route.account_id)
         if not isinstance(parts, (list, tuple)) or not 1 <= len(parts) <= 128:
             raise TaskError("host_group_media_unsupported", "group text components are unavailable")
         raw_kinds = {
@@ -175,10 +176,9 @@ class NativeGroupBridge(NativePrivateBridge):
                     has_text |= bool(value.strip())
                 elif kind == "at":
                     try:
-                        value = mention_text(data.get("qq"), route.account_id,
-                                             bot_ids=(event.message_obj.self_id, "qq_official"))
+                        value = current_mention_text(data.get("qq"), event, route.account_id)
                         text.append(value)
-                        has_text |= value == "[提及机器人]"
+                        has_text |= value == SELF_MENTION
                     except (TaskError, ValueError, TypeError):
                         text.append("[提及不可用]")
                 elif kind == "image":
@@ -215,10 +215,9 @@ class NativeGroupBridge(NativePrivateBridge):
                 has_text |= bool(value.strip())
             elif kind == "At":
                 try:
-                    value = mention_text(part.qq, route.account_id,
-                                         bot_ids=(event.message_obj.self_id, "qq_official"))
+                    value = current_mention_text(part.qq, event, route.account_id)
                     text.append(value)
-                    has_text |= value == "[提及机器人]"
+                    has_text |= value == SELF_MENTION
                 except (TaskError, ValueError, TypeError):
                     text.append("[提及不可用]")
             elif kind in ("Face", "Mface"):
@@ -253,6 +252,7 @@ class NativeGroupBridge(NativePrivateBridge):
             original_parts = raw.get("message") if isinstance(raw, Mapping) else None
             self._validate_quote_components(original_parts, parts)
             text = self._text_only_parts(event, route)
+            message_text = group_message_text(event, route.account_id)
             at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event_native_client(
                 self.context.get_platform_inst(route.platform_id), event)
             principal = AuthenticatedHostPrincipal(self.installation_id, self.host_id, route.platform_id,
@@ -266,7 +266,7 @@ class NativeGroupBridge(NativePrivateBridge):
                 native_user_subject_id(route.platform_name, route.sender_id))
             return Outcome.success(NativeConversationInput(route.event_id, principal,
                 ConversationRoute(scope, group_id=route.group_id), group_audience(scope, speaker), text, at, role,
-                instruction))
+                instruction, group_message_text=message_text))
         except TaskError as error:
             return Outcome.failed(error.code, str(error))
         except Exception:
@@ -389,13 +389,13 @@ class NativeGroupBridge(NativePrivateBridge):
             text_parts, image_locators, quote_locators, forward_locators = [], [], [], []
             audio_locators, video_locators = [], []
             file_locators = []
+            parts = group_message_parts(event, route.account_id, native_parts=parts)
             for position, part in enumerate(parts):
                 kind = getattr(part.type, "value", part.type)
                 if kind == "Plain" and isinstance(part.text, str):
                     text_parts.append(part.text)
                 elif kind == "At":
-                    text_parts.append(mention_text(part.qq, route.account_id,
-                                                   bot_ids=(event.message_obj.self_id, "qq_official")))
+                    text_parts.append(current_mention_text(part.qq, event, route.account_id))
                 elif kind == "Image" and self.image_type is not None and type(part) is self.image_type:
                     image_locators.append(image_locator(position, part.file, part.url))
                     text_parts.append("\n[图片 " + str(len(image_locators)) + "]\n")

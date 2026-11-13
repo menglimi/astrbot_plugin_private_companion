@@ -46,7 +46,8 @@ GROUP_INSTRUCTION = (
     "资料标注为私聊专属或与当前群公开称呼不符时改用 display_name，"
     "不得对没有称呼记录的人使用宝贝、亲爱的、老公、老婆、宝宝等亲昵词，私聊称呼不得外溢到群聊。"
     "同名、旧名复用或 name_collision=true 只说明名称撞车，必须以账号区分，不能据此认亲、合并身份或套用称呼。"
-    "群内 @ 归因只认本轮文本里的 [提及机器人]；[提及账号 X] 是其他成员。人格名、角色名、群名片别名、"
+    "群内 @ 归因以群聊本轮提及事实为准；只有未提供该事实时才使用本轮文本里的 <提及自己>、[提及机器人] 和 [提及账号 X] 标记。"
+    "<提及自己> 固定指接收本消息的本 Bot，不是发言者；其他 @ 保留原文。提及位置属于原句语义，被提及不等于被要求回答；按完整句意区分回答者、听众与被谈论对象，需要旁听时可选择 skip。人格名、角色名、群名片别名、"
     "known_names 和旧记忆里的昵称都不是“在叫我”的证据：即使与别人提到或 @ 的名字相同，也不要接成"
     "“在叫我/你刚才叫我/是在叫我吗”；第三人称谈论同名角色不等于直接呼唤。"
 )
@@ -233,7 +234,7 @@ def _input_received_at(native_input, fallback):
 
 
 def build_core_reply_prompt(application, context, native_input, *, at, keyword_materials=(), health_material=None,
-                            external_memory=None, private_group_context=""):
+                            external_memory=None, private_group_context="", group_trigger=None):
     """Build optional background independently; no failed section blocks reply."""
     blocks, stable_blocks, sections, expression_signal_ids = [], [], [], []
     measured, started = [], time.monotonic()
@@ -508,7 +509,7 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
                 return ""
             snapshot = application.reply_settings.snapshot(context.actor, context, at)
             settings = {key.removeprefix(GROUP + "."): value for key, value in snapshot.values.items()}
-            turn = native_participation_turn(owner, context, native_input, settings)
+            turn = native_participation_turn(owner, context, native_input, settings, group_trigger=group_trigger)
             return "\n\n【群聊参与参考】\n" + turn["instruction"]
 
         optional("group_participation", group_participation)

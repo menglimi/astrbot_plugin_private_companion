@@ -226,7 +226,7 @@ class OfficialAdapterTests(OfficialFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured.route.scope.native_scope_id, GROUP_OPENID)
         self.assertEqual(captured.route.scope.session_id, GROUP_OPENID)
         self.assertEqual(captured.principal.native_account_id, member)
-        self.assertEqual(captured.text, "[提及机器人]群消息验证")
+        self.assertEqual(captured.text, "<提及自己>群消息验证")
         full = (await bridge.capture(event, allow_text_fallback=True)).unwrap()
         self.assertEqual(full.route.scope, captured.route.scope)
         self.assertEqual(full.principal, captured.principal)
@@ -312,6 +312,96 @@ class OfficialMultiHostTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
             group_targets=[],
         )
         self.controller = self.make_controller(self.config)
+
+    async def test_original_mentions_reach_observation_provider_continuation_and_history(self):
+        from astrbot.core.agent.message import Message, dump_messages_with_checkpoints
+        from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
+        from astrbot.core.provider.entities import ProviderRequest
+        from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA
+        from astrbot_host.core_reply_perception import inject_core_reply_perception_context
+        from astrbot_host.core_reply_decision import core_decision_facts
+        from tests.test_group_mention_positions import official_message
+
+        self.config["multi_host"]["group_targets"] = [dict(target_id="official-group",
+            platform_id=ACCOUNT, account_id=ACCOUNT, bot_id="bot-test", group_id=GROUP_OPENID)]
+        self.window_personas[f"{ACCOUNT}:GroupMessage:{GROUP_OPENID}"] = "original"
+        self.controller = self.make_controller(self.config)
+        app = await self.start_host()
+        source = "介绍一下你们的项目，让 <@BOT> 了解一下 <@OTHER>"
+        canonical = source.replace("<@BOT>", "<提及自己>")
+        parsed = await official_message(source)
+        event = OfficialEvent(self.native.platform, group=True)
+        event.created_at = self.clock.now().timestamp()
+        event.message_obj = parsed.message_obj
+        event.message_obj.group_id = GROUP_OPENID
+        event.message_obj.session_id = GROUP_OPENID
+        event.message_obj.sender.user_id = OFFICIAL_OPENID
+        admission = (await self.controller.group_reply_candidate(event)).unwrap()
+        prepared = (await self.controller.prepare_core_reply(event, group_admission=admission)).unwrap()
+        plain = "".join(part.text for part in event.message_obj.message if isinstance(part, Plain))
+        self.assertEqual(prepared["native_input"].text, plain)
+        self.assertEqual(prepared["native_input"].group_message_text, canonical)
+        facts = core_decision_facts(event, prepared, app, at=self.clock.now())
+        self.assertEqual(facts["user_text"], canonical)
+        self.assertTrue(facts["mentioned"])
+        self.assertTrue(facts["mentions_others"])
+        self.assertIn("不代表要求本角色回答", prepared["prompt_instruction"])
+        observed, _ = app.tools.group_participation.admission.native_participation_history(
+            prepared["context"], prepared["native_input"].instruction, at=self.clock.now())
+        self.assertIn(canonical, [item["text"] for item in observed])
+
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, {"prepared": prepared})
+        request = ProviderRequest(prompt=plain)
+        await inject_core_reply_perception_context(event, request)
+        self.assertEqual(request.prompt, canonical)
+        provider = object.__new__(ProviderOpenAIOfficial)
+        assembled = await provider.assemble_context(request.prompt,
+            extra_user_content_parts=request.extra_user_content_parts)
+        self.assertEqual(assembled["content"][0]["text"], canonical)
+        user = Message.model_validate(await request.assemble_context())
+        continuation = [user, Message(role="assistant", tool_calls=[{
+            "id": "call-synthetic", "type": "function",
+            "function": {"name": "test_lookup", "arguments": "{}"}}]),
+            Message(role="tool", tool_call_id="call-synthetic", content="测试结果")]
+        saved = dump_messages_with_checkpoints(continuation)
+        self.assertEqual(saved[0]["content"][0]["text"], canonical)
+        self.assertEqual(saved[1]["tool_calls"][0]["id"], saved[2]["tool_call_id"])
+        # The persisted current utterance is independent of temporary perception.
+        self.assertNotIn("companion_v2_context", json.dumps(saved, ensure_ascii=False))
+        restored = Message.model_validate(saved[0])
+        self.assertEqual(restored.content[0].text, canonical)
+        self.assertEqual(self.native.platform.sent, [])
+        self.assertEqual(self.native.provider.client.state.calls, [])
+
+    async def test_native_group_prompt_keeps_bot_mentions_with_other_bot_markup(self):
+        self.config["multi_host"]["group_targets"] = [dict(target_id="official-group",
+            platform_id=ACCOUNT, account_id=ACCOUNT, bot_id="bot-test", group_id=GROUP_OPENID)]
+        self.window_personas[f"{ACCOUNT}:GroupMessage:{GROUP_OPENID}"] = "original"
+        self.controller = self.make_controller(self.config)
+        await self.start_host()
+        for name, self_id, mentioned in (("openid", "BOT_OPENID", True),
+                                        ("legacy", "qq_official", True),
+                                        ("other-only", "qq_official", False)):
+            with self.subTest(name=name):
+                text = "<@OTHER_BOT_OPENID> 来看图"
+                event = OfficialEvent(self.native.platform, group=True, text=text)
+                event.created_at = self.clock.now().timestamp()
+                event.message_obj.message_id = "official-mention-" + name
+                event.message_obj.self_id = self_id
+                event.message_obj.message = ([At(qq=self_id)] if mentioned else []) + [Plain(text)]
+                admission = (await self.controller.group_reply_candidate(event)).unwrap()
+                result = await self.controller.prepare_core_reply(
+                    event, group_admission=admission if admission["admitted"] else None)
+                self.assertTrue(result.is_success, result.failure)
+                prepared = result.unwrap()
+                self.assertEqual(prepared["native_input"].text, text)
+                self.assertEqual(prepared["group_trigger"]["mentioned"], mentioned)
+                expected = "本轮明确 @ 了本角色" if mentioned else "本轮 @ 的是其他账号"
+                self.assertIn(expected, prepared["prompt_instruction"])
+                if mentioned:
+                    self.assertNotIn("本轮没有明确 @ 本角色", prepared["prompt_instruction"])
+        self.assertEqual(self.native.platform.sent, [])
+        self.assertEqual(self.native.provider.client.state.calls, [])
 
     async def _check_name_upgrade(self, *, group):
         if group:

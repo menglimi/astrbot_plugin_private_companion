@@ -10,19 +10,21 @@ answer.  The gate watches each round's model response stream:
   turn's draft candidate;
 * a round without tool calls is the answer: its text is delivered unchanged and
   the draft is dropped, even when the two are word for word the same;
-* a turn that ends without any text still delivers the retained draft once, so a
-  tool round can never become a silent turn.
+* a turn that ends without any text still delivers the retained draft once,
+  unless the group participation decision explicitly chose to keep listening.
 
 Withheld text goes back on the response object before the SDK dispatches the tool,
 so the assistant history and the tool call IDs and arguments keep exactly what the
-model said.  Every step fails open: when the gate cannot be installed, or a
+model said. A listening decision removes only fully withheld prose from this
+turn's tool messages, keeping their calls, results and reasoning intact.
+Every step fails open: when the gate cannot be installed, or a
 decision raises, the round behaves exactly as it does without the gate.
 
 The turn can also end *without* a final round: the step budget runs out, the user
 stops the turn, the provider raises, or the provider answers with an error.  Each
 of those exits releases the draft exactly once -- through the next round when one
 exists, through the event when none does -- because a turn that wrote something
-must never send nothing.
+must never send nothing unless it chose to keep listening.
 
 Why the response stream and not the yielded items: ``on_agent_begin`` -- the first
 hook that carries the run context -- fires from inside the first ``step()`` call,
@@ -88,6 +90,7 @@ def install_core_reply_turn(event, run_context):
             return None
         gate = {"runner": runner, "run_context": run_context, "event": event, "methods": {},
                 "hold_fragments": _hold_fragments(event, runner), "draft": None,
+                "withheld_rounds": [],
                 "emitted": False, "blank": None, "failed": False, "rounds_with_tools": 0,
                 "deferred": 0, "released": 0, "restored": False, "closed": False,
                 "had_tools": getattr(getattr(runner, "req", None), "func_tool", None) is not None}
@@ -183,6 +186,86 @@ def restore_core_turn_text(event):
         _restore_blank(gate)
 
 
+def _is_skipped(event):
+    from .core_reply import CORE_REPLY_CONTEXT_EXTRA
+    getter = getattr(event, "get_extra", None)
+    core = getter(CORE_REPLY_CONTEXT_EXTRA) if callable(getter) else None
+    return isinstance(core, dict) and core.get("group_participation", {}).get("mode") == "skip"
+
+
+def _clear_response_text(response):
+    # Detach first: completion_text setters can rewrite the attached chain.
+    response.result_chain = None
+    response.completion_text = ""
+
+
+def _without_text(content):
+    if isinstance(content, str):
+        return None
+    return [part for part in content or () if getattr(part, "type", None) != "text"] or None
+
+
+def _tool_batches(runner):
+    batches = getattr(getattr(runner, "req", None), "tool_calls_result", None)
+    if batches is None:
+        return ()
+    return tuple(batches) if isinstance(batches, (list, tuple)) else (batches,)
+
+
+def _bind_completed_tool_batches(gate):
+    batches = _tool_batches(gate.get("runner"))
+    for withheld in gate.get("withheld_rounds", ()):
+        index = withheld.get("batch_index")
+        if index is not None and index < len(batches) and "message" not in withheld:
+            withheld["message"] = batches[index].tool_calls_info
+
+
+def begin_core_reply_tool_batch(event, response):
+    """Bind withheld prose to the batch AstrBot is actually about to execute.
+
+    The host appends one ToolCallsResult after dispatch returns. Its request's
+    batch list survives context compression, and tool_calls_info is also the
+    object appended to run_context.messages. Response identity stays stable
+    when skills_like replaces the selected call IDs with executable calls.
+    """
+    gate = turn_gate(event)
+    if gate is None:
+        return
+    _bind_completed_tool_batches(gate)
+    for withheld in gate.get("withheld_rounds", ()):
+        if withheld["response"] is response:
+            withheld["batch_index"] = len(_tool_batches(gate.get("runner")))
+            return
+
+
+def discard_skipped_core_reply(event):
+    """Discard this turn's fully withheld prose after a valid listening choice.
+
+    Calls and results stay paired. Existing messages and rounds that exposed
+    text incrementally, media, mentions or quotes are never rewritten.
+    """
+    if not _is_skipped(event):
+        return False
+    gate = turn_gate(event)
+    if gate is None:
+        return True
+    gate["draft"] = None
+    pending = gate.get("blank")
+    if pending:
+        _clear_response_text(pending[0])
+        gate["blank"] = None
+    # AstrBot appends each tool_calls_info object to run_context.messages too;
+    # updating that object changes both histories without indexing a list that
+    # context compression can shorten or replace.
+    _bind_completed_tool_batches(gate)
+    for withheld in gate.get("withheld_rounds", ()):
+        _clear_response_text(withheld["response"])
+        message = withheld.get("message")
+        if message is not None:
+            message.content = _without_text(message.content)
+    return True
+
+
 async def close_core_reply_turn(event, response=None, *, release=False):
     """Close the turn's gate: never leave withheld text or a wrapper behind.
 
@@ -190,6 +273,7 @@ async def close_core_reply_turn(event, response=None, *, release=False):
     over.  A send hook also calls this to clean up, but a send can happen in the
     middle of a tool turn, so it must not release or close anything early.
     """
+    discard_skipped_core_reply(event)
     gate = turn_gate(event)
     if not isinstance(gate, dict) or gate.get("closed"):
         return
@@ -217,6 +301,8 @@ async def _turn_round(gate, source):
     try:
         async for response in source:
             if getattr(response, "is_chunk", False):
+                if _is_skipped(gate.get("event")):
+                    continue
                 if gate["hold_fragments"]:
                     fragments.append(response)
                 else:
@@ -232,11 +318,12 @@ async def _turn_round(gate, source):
         if final is None:
             # The stream ended without a final response (stop requested, provider
             # gone).  Show what that round already produced, as it does today.
-            for response in fragments:
+            for response in (() if discard_skipped_core_reply(gate.get("event")) else fragments):
                 yield response
             return
         try:
-            pending = _round_plan(gate, fragments, final) if not gate.get("failed") else None
+            pending = (_round_plan(gate, fragments, final)
+                       if not gate.get("failed") or _is_skipped(gate.get("event")) else None)
         except Exception as error:
             # Fail open with everything this round produced -- duplicating is
             # recoverable, swallowing a reply is not.
@@ -261,6 +348,9 @@ async def _turn_round(gate, source):
 
 def _round_plan(gate, fragments, final):
     """The responses this round may expose, after the draft rules are applied."""
+    if discard_skipped_core_reply(gate.get("event")):
+        _clear_response_text(final)
+        return [final]
     kinds = set()
     for response in (*fragments, final):
         kinds |= _kinds(response)
@@ -296,6 +386,8 @@ def _round_plan(gate, fragments, final):
             # everything it produced rather than hold a copy that is still live.
             gate["draft"], gate["emitted"] = None, True
             return [*fragments, final]
+        if gate["hold_fragments"]:
+            gate.setdefault("withheld_rounds", []).append({"response": final})
         return [final]
     if _error_round(final):
         return _error_plan(gate, fragments, final)
@@ -370,6 +462,8 @@ def _draft_responses(draft):
 
 def _draft_agent_responses(gate, reason):
     """Turn-end release: the draft as agent responses the host will deliver."""
+    if discard_skipped_core_reply(gate.get("event")):
+        return []
     draft = gate.get("draft")
     if not draft:
         return []
@@ -424,6 +518,8 @@ def _fragment_chains(fragments):
 
 async def _send_draft(gate, reason):
     """Release the draft through the event when no round is left to carry it."""
+    if discard_skipped_core_reply(gate.get("event")):
+        return False
     draft = gate.get("draft")
     if not draft:
         return False
@@ -517,6 +613,10 @@ def _restore_blank(gate):
     if not pending:
         return
     response, (text, chain) = pending
+    if _is_skipped(gate.get("event")):
+        _clear_response_text(response)
+        gate["blank"] = None
+        return
     try:
         response.completion_text = text
         response.result_chain = chain
@@ -530,6 +630,7 @@ def _finish_gate(gate):
     """Close the gate and put every rewritten object back."""
     if not isinstance(gate, dict):
         return
+    discard_skipped_core_reply(gate.get("event"))
     gate["closed"] = True
     _restore_blank(gate)
     _restore_methods(gate)

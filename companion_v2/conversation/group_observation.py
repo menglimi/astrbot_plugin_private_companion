@@ -25,7 +25,7 @@ import json
 import re
 
 from companion_v2.execution.models import digest
-from .group_timing import ADDRESS_MARKER, clean_group_text, repeat_signature
+from .group_timing import strip_address_markers, clean_group_text, repeat_signature
 
 
 PREFIX = "conversation.group_observation.v1"
@@ -475,7 +475,7 @@ def project_strength(mood_facts_value):
 
 def topic_signature(text):
     """Build V1-style Chinese topic anchors from one admitted, bounded line."""
-    value = " ".join(clean_group_text(text).replace(ADDRESS_MARKER, " ").split())[:160]
+    value = " ".join(strip_address_markers(clean_group_text(text)).split())[:160]
     address_prefix = re.compile(
         r"^(?:[嗯唔哦噢诶欸啊呀哎嘿嗨]+[。！？!?…~～，,\s]*)?"
         r"(?:[\w\u4e00-\u9fffぁ-んァ-ヶー]{1,10}(?:大人|老师|主人|哥哥|姐姐|同学|宝宝|宝贝)"
