@@ -8,7 +8,7 @@ from companion_v2.sources.dependencies import key, link
 from companion_v2.sources.models import AssetRecord, SourceRecord
 from companion_v2.sources.repositories import AssetRepository
 from companion_v2.conversation.models import InboundConversationEvent
-from companion_v2.storage.image_payloads import load_image
+from companion_v2.storage.image_payloads import load_image, store_image
 
 from .models import CapturedImage, OWNER, PromptImage, fits_budget
 from .animation import AnimationDescriptor, AnimationFrameEvent, CapturedAnimation, PromptAnimation
@@ -77,7 +77,9 @@ class ConversationImages:
                 require(self.assets.publish(AssetRecord(asset, context.audience), observed_at=event.received_at))
                 values = (*key(event.source), image.descriptor.position, *key(reference),
                           asset.asset_id, asset.version.lineage_id, asset.version.revision,
-                          encode(image.descriptor), image.content)
+                          encode(image.descriptor), store_image(
+                              self.runtime.data_root, image.content,
+                              mime_type=getattr(image.descriptor, "mime_type", "")))
                 old = connection.execute("""SELECT * FROM conversation_image_payloads
                     WHERE parent_id = ? AND parent_lineage = ? AND parent_revision = ? AND position = ?""",
                     values[:4]).fetchone()
