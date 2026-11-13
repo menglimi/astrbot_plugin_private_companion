@@ -111,6 +111,12 @@ class NativeReplyMessagesTests(unittest.TestCase):
             body = [item for item in wire(group) if item["type"] not in {"reply", "at"}]
             self.assertTrue(body, f"{kinds([group])} would arrive as an empty message")
 
+    def test_expression_markers_never_reach_the_wire(self):
+        chain = MessageChain(chain=[Plain("&&angry&&我没事&&sad&&")])
+        groups = native_reply_messages(_Event(), chain)
+
+        self.assertEqual([item["data"]["text"] for item in wire(groups[0]) if item["type"] == "text"], ["我没事"])
+
     def test_a_message_with_nothing_to_render_is_not_sent_at_all(self):
         for chain in ([Reply(id="4601")], [Reply(id="4601"), At(qq="1538054427")], [Plain("   ")]):
             with self.subTest(chain=[type(part).__name__ for part in chain]):
