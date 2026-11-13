@@ -173,7 +173,7 @@ def configured_balance_source(config=None):
         raise ValueError("service balance settings have an invalid shape")
     configured_url = settings.get("url", "")
     configured_key = settings.get("api_key", "")
-    if configured_url or configured_key:
+    if settings.get("advanced_enabled", False) or configured_url or configured_key:
         return {"source": "plugin", "settings": settings}
 
     names = ("PROVIDER", "URL", "API_KEY", "AUTH_HEADER", "AUTH_SCHEME", "CUSTOM_HEADERS",
@@ -183,12 +183,23 @@ def configured_balance_source(config=None):
     return {"source": "environment", "settings": values} if any(values.values()) else None
 
 
-def configured_balance_port(config=None):
+def configured_balance_port(config=None, *, context=None):
     source = configured_balance_source(config)
     if source is None:
         return None
     settings = source["settings"]
     if source["source"] == "plugin":
+        if type(settings.get("advanced_enabled", False)) is not bool:
+            raise ValueError("advanced balance switch must be boolean")
+        if settings.get("advanced_enabled", False):
+            from .service_balance_script import ScriptServiceBalancePort
+            binding = settings.get("advanced_from_astrbot", False)
+            if type(binding) is not bool:
+                raise ValueError("AstrBot balance binding must be boolean")
+            if binding:
+                from .service_balance_provider import AstrBotBalancePort
+                return AstrBotBalancePort(settings, context)
+            return ScriptServiceBalancePort(settings)
         configured_url = settings.get("url", "")
         configured_key = settings.get("api_key", "")
         if type(configured_url) is not str or not configured_url.strip():
@@ -251,19 +262,30 @@ def balance_keyword_material(application):
         if port is None:
             return {"state": "unavailable", "code": "balance_source_unavailable"}
         observation = await asyncio.wait_for(port.fetch(), timeout=8)
+        if getattr(application, "balance_port", None) is not port:
+            return {"state": "unavailable", "code": "balance_source_changed"}
         total = observation.total
         try:
             percent = round(float(observation.balance) * 100 / float(total), 1) if total else None
         except (ArithmeticError, ValueError):
             percent = None
         return {"state": "ok",
-                "currency": getattr(port, "currency_label", "额度") or "额度",
+                "currency": getattr(observation, "unit", None) or getattr(port, "currency_label", "额度") or "额度",
                 "balance": display_amount(observation.balance),
                 "total": display_amount(total) if total is not None else None,
                 "percent": percent,
                 "observed_at": observation.observed_at.isoformat()}
 
+    last_source = [None]
+
     def available(context):
+        port = getattr(application, "balance_port", None)
+        fingerprint = getattr(port, "source_fingerprint", None)
+        if last_source[0] != fingerprint:
+            last_source[0] = fingerprint
+            materials = getattr(application, "keyword_materials", None)
+            if callable(getattr(materials, "invalidate", None)):
+                materials.invalidate("service.balance")
         if context.scope.kind is not ScopeKind.PRIVATE:
             return False
         if getattr(application, "balance_port", None) is None:
@@ -276,3 +298,25 @@ def balance_keyword_material(application):
     return KeywordMaterialSpec(owner="service.balance", title="服务余额",
         instruction=BALANCE_MATERIAL_INSTRUCTION, keywords=BALANCE_KEYWORDS,
         prepare=prepare, available=available, ttl_seconds=300)
+
+
+def balance_observation_data(port, observation):
+    """Keep the existing amount contract and add optional management metadata."""
+    data = {"currency_label": getattr(observation, "unit", None) or port.currency_label,
+            "amount": display_amount(observation.balance),
+            "observed_at": observation.observed_at.isoformat()}
+    for name in ("total", "used"):
+        value = getattr(observation, name, None)
+        if value is not None:
+            data[name] = display_amount(value)
+    for name in ("plan_name", "extra"):
+        value = getattr(observation, name, None)
+        if value:
+            data[name] = value
+    return data
+
+
+def balance_failure_data(error):
+    if getattr(error, "safe_balance_error", False):
+        return {"state": error.state, "message": str(error)}
+    return {"state": "unavailable"}

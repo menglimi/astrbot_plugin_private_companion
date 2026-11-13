@@ -826,7 +826,7 @@ class AstrBotMultiController:
                 deepseek_provider_resolver=search_provider_resolver,
                 search_priority_resolver=search_settings.source_priority),
             search_port_factory=search_port_factory,
-            balance_port=configured_balance_port(self.config),
+            balance_port=configured_balance_port(self.config, context=self.context),
             weather_ports=configured_weather_ports(self.config),
             qzone_transport=build_qzone_transport(self.context, data_root=self.data_root),
             solar_term_port=configured_solar_term_port(

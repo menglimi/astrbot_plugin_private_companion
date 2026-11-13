@@ -925,7 +925,7 @@
   },
   "service_balance": {
     "description": "服务余额（由陪伴小屋管理）",
-    "hint": "仅保存由管理员在「陪伴小屋 → 此刻，对话能读到什么 → 余额感知」配置的 NewAPI 来源。敏感令牌不会由页面回显。",
+    "hint": "仅保存由管理员在「陪伴小屋 → 此刻，对话能读到什么 → 余额感知」配置的 NewAPI 或高级脚本来源。敏感令牌不会由页面回显。",
     "type": "object",
     "invisible": true,
     "items": {
@@ -943,6 +943,56 @@
       },
       "user_id": {
         "description": "NewAPI 用户 ID",
+        "type": "string",
+        "default": "",
+        "invisible": true
+      },
+      "advanced_from_astrbot": {
+        "description": "从 AstrBot 供应商读取余额连接配置",
+        "type": "bool", "default": false, "invisible": true
+      },
+      "advanced_provider_id": {
+        "description": "余额供应商 ID（空值跟随 AstrBot 默认模型所属供应商）",
+        "type": "string", "default": "", "invisible": true
+      },
+      "advanced_enabled": {
+        "description": "启用高级设置",
+        "type": "bool",
+        "default": false,
+        "invisible": true
+      },
+      "advanced_base_url": {
+        "description": "高级查询基础地址",
+        "type": "string",
+        "default": "",
+        "invisible": true
+      },
+      "advanced_api_key": {
+        "description": "高级查询 API Key",
+        "type": "string",
+        "default": "",
+        "invisible": true
+      },
+      "advanced_access_token": {
+        "description": "高级查询访问令牌（accessToken）",
+        "type": "string",
+        "default": "",
+        "invisible": true
+      },
+      "advanced_user_id": {
+        "description": "高级 NewAPI 用户 ID（userId）",
+        "type": "string",
+        "default": "",
+        "invisible": true
+      },
+      "advanced_script": {
+        "description": "高级余额请求与提取脚本",
+        "type": "string",
+        "default": "",
+        "invisible": true
+      },
+      "advanced_proxy_url": {
+        "description": "高级查询专用 HTTP / SOCKS5 代理",
         "type": "string",
         "default": "",
         "invisible": true

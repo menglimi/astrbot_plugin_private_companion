@@ -41,3 +41,7 @@ fastmcp==3.4.2
 mcp>=1.26,<2
 websocket-client>=1.5,<2.0
 requests>=2.28,<3.0
+# Advanced balance scripts run in an embedded, bounded JS runtime (no Node).
+quickjs-ng>=0.18.0.1,<0.19
+# Dedicated HTTP CONNECT / SOCKS5 transport for balance queries only.
+aiohttp-socks>=0.10,<0.13

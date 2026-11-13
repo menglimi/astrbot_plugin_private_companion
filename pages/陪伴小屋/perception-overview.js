@@ -71,6 +71,13 @@ window.CompanionPerceptionOverviewPage = (() => {
       user_id: typeof value.user_id === "string" ? value.user_id : "",
       value_divisor: String(value.value_divisor || "500000"),
       has_api_key: value.has_api_key === true,
+      advanced_enabled: value.advanced_enabled === true,
+      advanced_base_url: typeof value.advanced_base_url === "string" ? value.advanced_base_url : "",
+      advanced_script: typeof value.advanced_script === "string" ? value.advanced_script : "",
+      has_advanced_api_key: value.has_advanced_api_key === true,
+      has_advanced_access_token: value.has_advanced_access_token === true,
+      advanced_user_id: typeof value.advanced_user_id === "string" ? value.advanced_user_id : "",
+      has_advanced_proxy_url: value.has_advanced_proxy_url === true,
     };
   }
 
@@ -80,8 +87,16 @@ window.CompanionPerceptionOverviewPage = (() => {
       url: typeof value.url === "string" ? value.url : "",
       user_id: typeof value.user_id === "string" ? value.user_id : "",
       value_divisor: String(value.value_divisor || "500000"),
-      /* A typed nap_ token is deliberately discarded on route changes. */
-      api_key: "",
+      /* Never retain typed credentials when leaving this role/page. */
+      api_key: "", advanced_api_key: "", advanced_access_token: "", advanced_proxy_url: "",
+      advanced_user_id: typeof value.advanced_user_id === "string" ? value.advanced_user_id : "",
+      advanced_enabled: value.advanced_enabled === true,
+      advanced_base_url: typeof value.advanced_base_url === "string" ? value.advanced_base_url : "",
+      advanced_script: typeof value.advanced_script === "string" ? value.advanced_script : "",
+      clear_api_key: value.clear_api_key === true,
+      clear_advanced_api_key: value.clear_advanced_api_key === true,
+      clear_advanced_access_token: value.clear_advanced_access_token === true,
+      clear_advanced_proxy_url: value.clear_advanced_proxy_url === true,
       clear_configuration: value.clear_configuration === true,
     };
   }
@@ -93,6 +108,8 @@ window.CompanionPerceptionOverviewPage = (() => {
     return {
       tested: value.tested === true,
       available: true,
+      plan_name: typeof value.plan_name === "string" ? value.plan_name : "",
+      extra: typeof value.extra === "string" ? value.extra : "",
       provider: typeof value.provider === "string" ? value.provider : "newapi",
       provider_label: typeof value.provider_label === "string" ? value.provider_label : "NewAPI",
       currency_label: typeof value.currency_label === "string" ? value.currency_label : "额度",
@@ -108,6 +125,9 @@ window.CompanionPerceptionOverviewPage = (() => {
     if (value.available && (!Number.isFinite(amount) || amount < 0)) return null;
     return {
       configured:value.configured, available:value.available,
+      message:typeof value.message === "string" ? value.message : "",
+      plan_name:typeof value.plan_name === "string" ? value.plan_name : "",
+      extra:typeof value.extra === "string" ? value.extra : "",
       provider:typeof value.provider === "string" ? value.provider : "newapi",
       provider_label:typeof value.provider_label === "string" ? value.provider_label : "NewAPI",
       currency_label:typeof value.currency_label === "string" ? value.currency_label : "额度",
@@ -121,7 +141,7 @@ window.CompanionPerceptionOverviewPage = (() => {
     if (value?.available) return "";
     if (value?.state === "not_configured" || value?.configured === false) return "尚未配置服务余额数据源。";
     if (value?.state === "configuration_invalid") return "余额数据源配置无效，请检查配置。";
-    return "余额读取失败，请检查 NewAPI 地址、令牌和网络。";
+    return value?.message || "余额读取失败，请检查数据源、脚本或网络。";
   }
 
   function balanceConfigKey(value) {
@@ -151,7 +171,7 @@ window.CompanionPerceptionOverviewPage = (() => {
   function restoreBalanceCache(nextScope) {
     const entry = balanceCache.get(nextScope) || {};
     balanceConfig = entry.config ? {...entry.config} : null;
-    balanceDraft = entry.draft ? {...entry.draft, api_key: ""} : null;
+    balanceDraft = entry.draft ? {...entry.draft, api_key: "", advanced_api_key: "", advanced_access_token: "", advanced_proxy_url: ""} : null;
     balanceStatus = safeBalanceStatus(entry.status);
     balanceStatusError = balanceStatus ? balanceStatusMessage(balanceStatus) : "";
     balanceTestResult = entry.observation ? {...entry.observation} : null;
@@ -384,28 +404,98 @@ window.CompanionPerceptionOverviewPage = (() => {
       write("[data-context-clock-zone]", "本机时区");
     }
   }
+  const balanceScriptExamples = {
+  "generic": "({\n  request: {\n    url: \"{{baseUrl}}/user/balance\",\n    method: \"GET\",\n    headers: {\n      \"Authorization\": \"Bearer {{apiKey}}\",\n      \"User-Agent\": \"astrbot_plugin_private_companion\"\n    }\n  },\n  extractor: function(response) {\n    return {\n      isValid: response.is_active !== false,\n      remaining: response.balance,\n      unit: \"USD\"\n    };\n  }\n})",
+  "newapi": "({\n  request: {\n    url: \"{{baseUrl}}/api/user/self\",\n    method: \"GET\",\n    headers: {\n      \"Content-Type\": \"application/json\",\n      \"Authorization\": \"Bearer {{accessToken}}\",\n      \"User-Agent\": \"astrbot_plugin_private_companion\",\n      \"New-Api-User\": \"{{userId}}\"\n    },\n  },\n  extractor: function(response) {\n    if (response.success && response.data) {\n      return {\n        planName: response.data.group || \"默认套餐\",\n        remaining: response.data.quota / 500000,\n        used: response.data.used_quota / 500000,\n        total: (response.data.quota + response.data.used_quota) / 500000,\n        unit: \"USD\",\n      };\n    }\n    return {\n      isValid: false,\n      invalidMessage: response.message || \"查询失败\"\n    };\n  },\n})",
+  "sub2api": "({\n  request: {\n    url: \"{{baseUrl}}\".replace(/\\/+$/, \"\").replace(/\\/v1$/, \"\") + \"/v1/usage\",\n    method: \"GET\",\n    headers: {\n      \"Authorization\": \"Bearer {{apiKey}}\",\n      \"User-Agent\": \"astrbot_plugin_private_companion\"\n    }\n  },\n  extractor: function(response) {\n    var quota = response.quota || {};\n    var result = {\n      isValid: response.isValid !== false,\n      unit: response.unit || quota.unit || \"USD\"\n    };\n    if (typeof response.planName === \"string\") result.planName = response.planName;\n    if (typeof response.remaining === \"number\" && response.remaining >= 0) {\n      result.remaining = response.remaining;\n    }\n    if (quota.limit > 0) {\n      result.used = quota.used;\n      result.total = quota.limit;\n    }\n    if (!result.isValid) {\n      result.invalidMessage = response.status ? String(response.status) : \"查询失败\";\n    }\n    return result;\n  },\n})"
+};
+  let balancePreset = "generic";
+  const balanceTextFields = ["url", "user_id", "value_divisor", "api_key", "advanced_base_url",
+    "advanced_api_key", "advanced_script", "advanced_proxy_url", "advanced_access_token", "advanced_user_id", "advanced_provider_id"];
+  const balanceCheckFields = ["clear_configuration", "advanced_enabled", "advanced_from_astrbot", "clear_api_key",
+    "clear_advanced_api_key", "clear_advanced_proxy_url", "clear_advanced_access_token"];
   function emptyBalanceDraft(config) {
     return {url:config?.url || "", user_id:config?.user_id || "",
-      value_divisor:config?.value_divisor || "500000", api_key:"", clear_configuration:false};
+      value_divisor:config?.value_divisor || "500000", api_key:"", clear_configuration:false,
+      advanced_enabled:config?.advanced_enabled === true,
+      advanced_from_astrbot:config?.advanced_from_astrbot === true, advanced_provider_id:config?.advanced_provider_id || "",
+      advanced_base_url:config?.advanced_base_url || "",
+      advanced_script:config?.advanced_script || balanceScriptExamples.generic,
+      advanced_api_key:"", advanced_access_token:"", advanced_user_id:config?.advanced_user_id || "",
+      advanced_proxy_url:"", clear_api_key:false, clear_advanced_access_token:false,
+      clear_advanced_api_key:false, clear_advanced_proxy_url:false};
   }
   function rememberBalanceDraft(form) {
-    const field = name => form.querySelector(`[name="${name}"]`);
-    balanceDraft = {
-      url:String(field("url")?.value || "").trim(),
-      user_id:String(field("user_id")?.value || "").trim(),
-      value_divisor:String(field("value_divisor")?.value || "").trim(),
-      api_key:String(field("api_key")?.value || ""),
-      clear_configuration:field("clear_configuration")?.checked === true,
-    };
-    return balanceDraft;
+    const draft = balanceDraft || emptyBalanceDraft(balanceConfig);
+    for (const name of balanceTextFields) {
+      const field = form.querySelector(`[name="${name}"]`);
+      if (field) draft[name] = String(field.value || "");
+    }
+    for (const name of balanceCheckFields) {
+      const field = form.querySelector(`[name="${name}"]`);
+      if (field) draft[name] = field.checked === true;
+    }
+    balanceDraft = draft;
+    return draft;
   }
   function balanceDraftIsCurrent() {
-    return !!balanceConfig && !!balanceDraft && !balanceDraft.clear_configuration
-      && balanceConfig.source_state === "configured"
-      && balanceDraft.url === (balanceConfig.url || "")
+    if (!balanceConfig || !balanceDraft || balanceDraft.clear_configuration
+        || balanceConfig.source_state !== "configured"
+        || balanceDraft.advanced_enabled !== (balanceConfig.advanced_enabled === true)) return false;
+    if (balanceDraft.advanced_enabled) return balanceDraft.advanced_from_astrbot === (balanceConfig.advanced_from_astrbot === true)
+      && balanceDraft.advanced_provider_id === (balanceConfig.advanced_provider_id || "")
+      && (balanceDraft.advanced_from_astrbot || (balanceDraft.advanced_base_url === (balanceConfig.advanced_base_url || "")
+        && !balanceDraft.advanced_api_key && !balanceDraft.advanced_proxy_url
+        && !balanceDraft.clear_advanced_api_key && !balanceDraft.clear_advanced_proxy_url))
+      && balanceDraft.advanced_script === (balanceConfig.advanced_script || "")
+      && balanceDraft.advanced_user_id === (balanceConfig.advanced_user_id || "")
+      && !balanceDraft.advanced_access_token && !balanceDraft.clear_advanced_access_token;
+    return balanceDraft.url === (balanceConfig.url || "")
       && balanceDraft.user_id === (balanceConfig.user_id || "")
       && balanceDraft.value_divisor === (balanceConfig.value_divisor || "500000")
-      && !balanceDraft.api_key;
+      && !balanceDraft.api_key && !balanceDraft.clear_api_key;
+  }
+  function balanceDraftTestable(draft) {
+    return !draft.clear_configuration && (balanceDraftIsCurrent() || (draft.advanced_enabled
+      ? !!draft.advanced_script.trim() : !!(draft.url && (draft.api_key || balanceConfig?.has_api_key))));
+  }
+  function balanceDraftError(draft) {
+    if (draft.advanced_enabled) {
+      if (!draft.advanced_script.trim()) return "请填写 request + extractor 余额脚本。";
+      if (draft.advanced_from_astrbot) {
+        const id = draft.advanced_provider_id || balanceConfig?.astrbot_default_provider_id;
+        if (!id || !(balanceConfig?.astrbot_providers || []).some(item => item.id === id && item.enabled !== false))
+          return "所选 AstrBot 供应商不可用，请检查默认模型或重新选择供应商。";
+      }
+      if (!draft.advanced_from_astrbot && draft.advanced_base_url && !/^https:\/\//i.test(draft.advanced_base_url)) return "高级基础地址必须使用 HTTPS。";
+      if (!draft.advanced_from_astrbot && draft.advanced_proxy_url && !/^(http|socks5):\/\//i.test(draft.advanced_proxy_url)) return "代理地址必须使用 http:// 或 socks5://。";
+      if (draft.advanced_user_id && !/^[0-9]{1,19}$/.test(draft.advanced_user_id)) return "高级 NewAPI 用户 ID 必须为数字。";
+      if (draft.clear_advanced_access_token && draft.advanced_access_token) return "请分别选择更换或清除访问令牌。";
+      if (!draft.advanced_from_astrbot && ((draft.clear_advanced_api_key && draft.advanced_api_key) || (draft.clear_advanced_proxy_url && draft.advanced_proxy_url)))
+        return "请分别选择更换或清除凭据。";
+      return "";
+    }
+    if (!draft.url || !/^https:\/\//i.test(draft.url)) return "请填写有效的 HTTPS NewAPI 地址。";
+    if ((!draft.api_key && !balanceConfig?.has_api_key) || draft.clear_api_key) return "请填写带 profile:read 权限的 NewAPI 管理令牌。";
+    if (draft.user_id && !/^[1-9][0-9]{0,18}$/.test(draft.user_id)) return "NewAPI 用户 ID 必须为正整数。";
+    if (!draft.value_divisor || !Number.isFinite(Number(draft.value_divisor)) || Number(draft.value_divisor) <= 0)
+      return "额度单位除数必须是大于 0 的数字。";
+    return "";
+  }
+  function balanceDraftChanges(draft) {
+    if (draft.advanced_enabled) return {advanced_enabled:true,
+      advanced_from_astrbot:draft.advanced_from_astrbot, advanced_provider_id:draft.advanced_provider_id,
+      advanced_script:draft.advanced_script,
+      advanced_access_token:draft.advanced_access_token, advanced_user_id:draft.advanced_user_id,
+      clear_advanced_access_token:draft.clear_advanced_access_token,
+      ...(!draft.advanced_from_astrbot ? {advanced_base_url:draft.advanced_base_url,
+        advanced_api_key:draft.advanced_api_key, advanced_proxy_url:draft.advanced_proxy_url,
+        clear_advanced_api_key:draft.clear_advanced_api_key,
+        clear_advanced_proxy_url:draft.clear_advanced_proxy_url} : {})};
+    const changes = {url:draft.url, api_key:draft.api_key, user_id:draft.user_id, value_divisor:draft.value_divisor};
+    if (balanceConfig?.advanced_enabled) changes.advanced_enabled = false;
+    if (draft.clear_api_key) changes.clear_api_key = true;
+    return changes;
   }
   function balanceConfigMarkup() {
     if (!balanceExpanded) return "";
@@ -415,25 +505,29 @@ window.CompanionPerceptionOverviewPage = (() => {
     const draft = balanceDraft || emptyBalanceDraft(balanceConfig);
     const busy = balanceConfigLoading || balanceSaving || balanceTesting;
     const balanceActionLabel = balanceDraftIsCurrent() ? "重新读取余额" : "测试连接";
-    const testable = !draft.clear_configuration && (balanceDraftIsCurrent()
-      || (draft.url && (draft.api_key || balanceConfig.has_api_key)));
+    const testable = balanceDraftTestable(draft);
     const displayObservation = balanceResultIsDraft ? balanceTestResult
       : balanceStatus?.available ? balanceStatus : balanceTestResult;
     const displayMessage = displayObservation
       ? (balanceResultIsDraft ? "草稿测试成功" : "当前余额已读取") + "：" + formatBalanceAmount(displayObservation.amount)
         + " " + (displayObservation.currency_label || "额度") + " · " + (displayObservation.observed_at || "时间未知")
+        + (displayObservation.plan_name ? " · " + displayObservation.plan_name : "")
+        + (displayObservation.extra ? " · " + displayObservation.extra : "")
       : balanceStatusLoading ? "正在读取当前余额…" : balanceStatusError
         || (balanceStatus?.state === "not_configured" ? "尚未配置服务余额数据源。" : "");
-    const sourceMessage = balanceConfig.source === "plugin" ? "本页保存的 NewAPI 数据源优先用于查询与主动联系。"
+    const sourceMessage = balanceConfig.source === "plugin" ? (balanceConfig.advanced_enabled
+      ? "当前使用高级脚本查询；旧 NewAPI 配置已停用。" : "本页保存的 NewAPI 数据源优先用于查询与主动联系。")
       : balanceConfig.source === "environment" ? "当前数据源来自插件环境配置；在这里保存后将优先使用本页配置。"
         : balanceConfig.source_state === "invalid" ? "检测到数据源配置，但读取失败；请检查地址、令牌和环境变量。"
           : "填写 NewAPI 地址和管理令牌后，插件即可查询服务额度。";
     const sourceState = balanceConfig.source_state === "invalid" ? "数据源配置无效"
-      : balanceConfig.source === "plugin" ? balanceConfig.has_api_key ? "NewAPI 数据源已配置" : "NewAPI 令牌缺失"
+      : balanceConfig.source === "plugin" ? balanceConfig.advanced_enabled ? "高级数据源已配置"
+        : balanceConfig.has_api_key ? "NewAPI 数据源已配置" : "NewAPI 令牌缺失"
       : balanceConfig.source === "environment" ? "正在使用插件环境配置"
         : "尚未配置数据源";
     return `<form id="perception-balance-source" class="perception-balance-config" data-balance-form novalidate aria-label="余额感知数据源配置">
       <div class="perception-balance-config-head"><span>${icon("wallet-cards")}</span><div><strong>余额数据源</strong><small>${esc(sourceState)} · ${esc(sourceMessage)}</small></div></div>
+      <fieldset class="perception-balance-legacy" aria-label="原有 NewAPI 配置" ${busy || draft.clear_configuration || draft.advanced_enabled ? "disabled" : ""}>
       <label class="perception-balance-field"><span>NewAPI 地址</span><input name="url" data-balance-field="url" type="url" inputmode="url" autocomplete="url" maxlength="2048"
         placeholder="https://newapi.example.com" value="${esc(draft.url)}" ${busy || draft.clear_configuration ? "disabled" : ""} required></label>
       <label class="perception-balance-field"><span>NewAPI 用户 ID（可选）</span><input name="user_id" data-balance-field="user_id" type="text" inputmode="numeric" autocomplete="off" maxlength="19"
@@ -444,6 +538,27 @@ window.CompanionPerceptionOverviewPage = (() => {
         value="${esc(draft.api_key)}" placeholder="${balanceConfig.has_api_key ? "已保存；留空保留当前令牌，输入新令牌可更换" : "输入带 profile:read 权限的个人访问令牌"}"
         ${busy || draft.clear_configuration ? "disabled" : ""}></label>
       <p class="perception-balance-note">查询使用个人访问令牌（需 profile:read），不是模型调用用的 sk- Key。额度按 NewAPI 的 QuotaPerUnit 换算；留空时使用 500000。</p>
+      </fieldset>
+      <label class="perception-balance-clear perception-balance-mode"><input type="checkbox" name="advanced_enabled" data-balance-field="advanced_enabled" ${draft.advanced_enabled ? "checked" : ""} ${busy || draft.clear_configuration ? "disabled" : ""}><span>启用高级设置</span><small>开启后禁用上方旧表单，只使用下面的独立配置；关闭后恢复旧配置。</small></label>
+      ${draft.advanced_enabled ? `<fieldset class="perception-balance-advanced" aria-label="高级余额配置" ${busy || draft.clear_configuration ? "disabled" : ""}>
+        <label class="perception-balance-clear"><input name="advanced_from_astrbot" data-balance-field="advanced_from_astrbot" type="checkbox" ${draft.advanced_from_astrbot ? "checked" : ""}><span>从 AstrBot 供应商读取余额（地址、API Key 和代理）</span></label>
+        ${draft.advanced_from_astrbot ? `<label class="perception-balance-field"><span>AstrBot 供应商</span><select name="advanced_provider_id" data-balance-field="advanced_provider_id">
+          <option value="" ${!draft.advanced_provider_id ? "selected" : ""}>跟随 AstrBot 默认模型所属供应商${balanceConfig.astrbot_default_provider_id ? `（${esc(balanceConfig.astrbot_default_provider_id)}）` : "（未配置）"}</option>
+          ${(balanceConfig.astrbot_providers || []).map(item => `<option value="${esc(item.id)}" ${draft.advanced_provider_id === item.id ? "selected" : ""} ${item.enabled === false ? "disabled" : ""}>${esc(item.label || item.id)}${item.enabled === false ? "（已禁用）" : ""}</option>`).join("")}
+          ${draft.advanced_provider_id && !(balanceConfig.astrbot_providers || []).some(item => item.id === draft.advanced_provider_id) ? `<option value="${esc(draft.advanced_provider_id)}" selected disabled>${esc(draft.advanced_provider_id)}（已失效，请重新选择）</option>` : ""}
+        </select></label><p class="perception-balance-note">仅由后端读取供应商连接配置，不回显或复制 Key；每次查询读取最新配置。多 Key 使用首个非空且可解析的 Key。未设置代理则直连，代理错误不会回退直连。余额接口仍由下方脚本定义，NewAPI 管理令牌不能用模型 API Key 替代。</p>` : `
+        <label class="perception-balance-field"><span>基础地址（可选，{{baseUrl}}）</span><input name="advanced_base_url" data-balance-field="advanced_base_url" type="url" maxlength="2048" placeholder="https://provider.example.com" value="${esc(draft.advanced_base_url)}"></label>
+        <label class="perception-balance-field"><span>API Key（{{apiKey}}）</span><input name="advanced_api_key" data-balance-field="advanced_api_key" type="password" autocomplete="new-password" maxlength="4096" placeholder="${balanceConfig.has_advanced_api_key ? "已保存；留空保留，输入可更换" : "按接口需要填写"}" value="${esc(draft.advanced_api_key)}"></label>
+        <label class="perception-balance-clear"><input name="clear_advanced_api_key" data-balance-field="clear_advanced_api_key" type="checkbox" ${draft.clear_advanced_api_key ? "checked" : ""}><span>清除已保存的高级 API Key</span></label>`}
+        <label class="perception-balance-field"><span>NewAPI 访问令牌（{{accessToken}}）</span><input name="advanced_access_token" data-balance-field="advanced_access_token" type="password" autocomplete="new-password" maxlength="4096" placeholder="${balanceConfig.has_advanced_access_token ? "已保存；留空保留，输入可更换" : "使用 newapi 预设时填写"}" value="${esc(draft.advanced_access_token)}"></label>
+        <label class="perception-balance-field"><span>NewAPI 用户 ID（{{userId}}）</span><input name="advanced_user_id" data-balance-field="advanced_user_id" type="text" inputmode="numeric" maxlength="19" placeholder="使用 newapi 预设时填写" value="${esc(draft.advanced_user_id)}"></label>
+        <label class="perception-balance-clear"><input name="clear_advanced_access_token" data-balance-field="clear_advanced_access_token" type="checkbox" ${draft.clear_advanced_access_token ? "checked" : ""}><span>清除已保存的 NewAPI 访问令牌</span></label>
+        <div class="perception-balance-presets"><label class="perception-balance-field"><span>内置预设模板</span><select name="advanced_preset" data-balance-preset>${[["generic","通用"],["newapi","newapi"],["sub2api","sub2api"]].map(([value,label]) => `<option value="${value}" ${balancePreset === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><button type="button" data-balance-load-preset>载入</button><button type="button" data-balance-restore-default>恢复默认</button></div>
+        <label class="perception-balance-field perception-balance-script"><span>请求与提取脚本</span><textarea name="advanced_script" data-balance-field="advanced_script" rows="16" maxlength="16384" spellcheck="false">${esc(draft.advanced_script)}</textarea></label>
+        <p class="perception-balance-note">使用 ({ request: {...}, extractor: function(response) {...} })；支持 ES2020 语法，返回单个对象。request 支持 url、method、headers、字符串 body；{{baseUrl}}、{{apiKey}}、{{accessToken}}、{{userId}} 在脚本字符串中安全展开，支持随后调用 .replace() 等字符串方法。返回字段：isValid、invalidMessage、remaining、unit、planName、total、used、extra。金额为最终值，不再使用旧除数；缺少 remaining 时可由 total - used 计算。异步函数、多账户数组及脚本内联网不受支持。请用变量填写密钥，不要写入脚本。</p>
+        ${!draft.advanced_from_astrbot ? `<label class="perception-balance-field"><span>专用代理（可选）</span><input name="advanced_proxy_url" data-balance-field="advanced_proxy_url" type="password" autocomplete="new-password" maxlength="2048" placeholder="${balanceConfig.has_advanced_proxy_url ? "已保存；留空保留，输入可更换" : "http://host:port 或 socks5://user:password@host:port"}" value="${esc(draft.advanced_proxy_url)}"></label>
+        <label class="perception-balance-clear"><input name="clear_advanced_proxy_url" data-balance-field="clear_advanced_proxy_url" type="checkbox" ${draft.clear_advanced_proxy_url ? "checked" : ""}><span>清除已保存的专用代理，改为直连</span></label>` : ""}
+      </fieldset>` : ""}
       ${balanceConfig.source === "plugin" ? `<label class="perception-balance-clear"><input type="checkbox" name="clear_configuration" data-balance-field="clear_configuration" ${draft.clear_configuration ? "checked" : ""} ${busy ? "disabled" : ""}><span>移除本页保存的数据源</span><small>移除后会继续使用插件环境配置（如果已设置）。</small></label>` : ""}
       <p class="perception-balance-message" role="status" aria-live="polite" ${balanceMessage ? "" : "hidden"}>${esc(balanceMessage)}</p>
       <p class="perception-balance-message is-error" role="alert" ${balanceError ? "" : "hidden"}>${esc(balanceError)}</p>
@@ -1559,19 +1674,9 @@ window.CompanionPerceptionOverviewPage = (() => {
     if (!balanceConfig?.edit_token || balanceSaving || balanceTesting) return;
     const pendingFocus = balanceFocus(form);
     const draft = rememberBalanceDraft(form);
-    const {url, api_key:apiKey, user_id:userId, value_divisor:divisor, clear_configuration:clear} = draft;
-    if (!clear && (!url || !/^https:\/\//i.test(url))) {
-      balanceError = "请填写有效的 HTTPS NewAPI 地址。"; render(); return;
-    }
-    if (!clear && !apiKey && !balanceConfig.has_api_key) {
-      balanceError = "首次配置需要填写 NewAPI 管理令牌。"; render(); return;
-    }
-    if (!clear && userId && !/^[1-9][0-9]{0,18}$/.test(userId)) {
-      balanceError = "NewAPI 用户 ID 必须为正整数。"; render(); return;
-    }
-    if (!clear && (!divisor || !Number.isFinite(Number(divisor)) || Number(divisor) <= 0)) {
-      balanceError = "额度单位除数必须是大于 0 的数字。"; render(); return;
-    }
+    const clear = draft.clear_configuration;
+    const validationError = clear ? "" : balanceDraftError(draft);
+    if (validationError) { balanceError = validationError; render(); return; }
     balanceSaving = true; balanceError = ""; balanceMessage = "";
     balanceTestError = ""; clearBalanceResult();
     const ticket = generation;
@@ -1579,7 +1684,7 @@ window.CompanionPerceptionOverviewPage = (() => {
     try {
       const bridge = product.bridgeNow?.() || (product.bridgeFor ? await product.bridgeFor() : window.AstrBotPluginPage);
       if (!bridge?.apiPost) throw new Error("页面连接尚未就绪，请稍后重试。");
-      const changes = clear ? {clear_configuration:true} : {url, api_key:apiKey, user_id:userId, value_divisor:divisor};
+      const changes = clear ? {clear_configuration:true} : balanceDraftChanges(draft);
       const value = product.unwrap(await bridge.apiPost("host-options/balance", {
         edit_token:balanceConfig.edit_token, changes,
       }));
@@ -1603,7 +1708,7 @@ window.CompanionPerceptionOverviewPage = (() => {
     }
   }
   const balanceTestErrors = {
-    balance_test_timeout:"NewAPI 查询超时，请核对地址和服务状态。",
+    balance_test_timeout:"余额查询超时，请核对地址、服务状态或代理。",
     balance_test_failed:"连接失败，请检查令牌权限、用户 ID 和地址。",
     host_options_conflict:"设置已在别处更新，请重新读取后重试。",
     dashboard_identity_required:"请登录 AstrBot Dashboard 后再测试数据源。",
@@ -1620,20 +1725,9 @@ window.CompanionPerceptionOverviewPage = (() => {
     if (balanceDraftIsCurrent()) {
       usesCurrent = true;
     } else {
-      if (!draft.url || !/^https:\/\//i.test(draft.url)) {
-        balanceTestError = "请填写有效的 HTTPS NewAPI 地址。"; render(); return;
-      }
-      if (!draft.api_key && !balanceConfig.has_api_key) {
-        balanceTestError = "请填写带 profile:read 权限的 NewAPI 管理令牌后再测试。"; render(); return;
-      }
-      if (draft.user_id && !/^[1-9][0-9]{0,18}$/.test(draft.user_id)) {
-        balanceTestError = "NewAPI 用户 ID 必须为正整数。"; render(); return;
-      }
-      if (!draft.value_divisor || !Number.isFinite(Number(draft.value_divisor)) || Number(draft.value_divisor) <= 0) {
-        balanceTestError = "额度单位除数必须是大于 0 的数字。"; render(); return;
-      }
-      changes = {url:draft.url, api_key:draft.api_key, user_id:draft.user_id,
-        value_divisor:draft.value_divisor};
+      const validationError = balanceDraftError(draft);
+      if (validationError) { balanceTestError = validationError; render(); return; }
+      changes = balanceDraftChanges(draft);
     }
     balanceTesting = true; balanceTestError = ""; clearBalanceResult();
     const ticket = generation;
@@ -1658,7 +1752,7 @@ window.CompanionPerceptionOverviewPage = (() => {
         if (!validRoot(ticket)) return;
         if (value?.tested !== true || value?.available !== true || !["number", "string"].includes(typeof value.amount)
             || String(value.amount).trim() === "" || !Number.isFinite(Number(value.amount)) || Number(value.amount) < 0)
-          throw new Error("NewAPI 未返回可用余额，请检查配置后重试。");
+          throw new Error(value?.message || "余额服务未返回可用金额，请检查数据源配置。");
         balanceTestResult = {...value, amount:formatBalanceAmount(value.amount)};
         balanceResultScope = scope;
         balanceResultConfigToken = "";
@@ -1688,9 +1782,9 @@ window.CompanionPerceptionOverviewPage = (() => {
     const field = event.target?.closest?.("[data-balance-field]");
     if (!field) return;
     const name = field.dataset?.balanceField || field.name;
-    if (!["url", "user_id", "value_divisor", "api_key", "clear_configuration"].includes(name)) return;
+    if (![...balanceTextFields, ...balanceCheckFields].includes(name)) return;
     if (!balanceDraft) balanceDraft = emptyBalanceDraft(balanceConfig);
-    balanceDraft[name] = name === "clear_configuration" ? field.checked === true : field.value;
+    balanceDraft[name] = balanceCheckFields.includes(name) ? field.checked === true : field.value;
     const hadDraftObservation = !!balanceTestResult && balanceResultIsDraft;
     balanceError = ""; balanceTestError = "";
     if (hadDraftObservation) clearBalanceResult();
@@ -1700,10 +1794,25 @@ window.CompanionPerceptionOverviewPage = (() => {
     if (result && hadDraftObservation) result.hidden = true;
     const test = form?.querySelector("[data-balance-test]");
     if (test) test.disabled = balanceSaving || balanceTesting || (balanceStatusLoading && balanceDraftIsCurrent()) || balanceDraft.clear_configuration
-      || !(balanceDraftIsCurrent() || (balanceDraft.url && (balanceDraft.api_key || balanceConfig?.has_api_key)));
+      || !balanceDraftTestable(balanceDraft);
     if (hadDraftObservation) render({balanceSource:false});
   }
   function click(event) {
+    const restore = event.target.closest("[data-balance-restore-default]");
+    const load = event.target.closest("[data-balance-load-preset]");
+    if (restore || load) {
+      event.preventDefault();
+      if (balanceSaving || balanceTesting) return;
+      const form = (restore || load).closest("[data-balance-form]");
+      if (form) rememberBalanceDraft(form);
+      const selected = restore ? "generic" : form?.querySelector('[name="advanced_preset"]')?.value || balancePreset;
+      if (balanceDraft?.advanced_enabled && balanceScriptExamples[selected]) {
+        balancePreset = selected;
+        balanceDraft.advanced_script = balanceScriptExamples[selected];
+        clearBalanceResult(); render();
+      }
+      return;
+    }
     const testButton = event.target.closest("[data-balance-test]");
     if (testButton) {
       event.preventDefault();
@@ -1735,19 +1844,17 @@ window.CompanionPerceptionOverviewPage = (() => {
     if (!balanceConfig || balanceDraftIsCurrent()) void readBalanceConfig(ticket);
   }
   function change(event) {
+    const preset = event.target.closest("[data-balance-preset]");
+    if (preset) {balancePreset = preset.value; return;}
     input(event);
-    const clear = event.target.closest('[name="clear_configuration"]');
-    if (!clear) return;
-    const form = clear.closest("[data-balance-form]");
-    if (!form) return;
-    for (const field of form.querySelectorAll('[name="url"], [name="user_id"], [name="value_divisor"], [name="api_key"]'))
-      field.disabled = clear.checked;
-    const button = form.querySelector('button[type="submit"]');
-    if (button) button.textContent = clear.checked ? "移除数据源" : "保存数据源";
-    const test = form.querySelector("[data-balance-test]");
-    if (test) test.disabled = clear.checked || balanceTesting || balanceSaving
-      || (balanceStatusLoading && balanceDraftIsCurrent());
+    const field = event.target.closest("[data-balance-field]");
+    if (field && ["advanced_enabled", "advanced_from_astrbot", "advanced_provider_id", "clear_configuration"].includes(field.dataset?.balanceField || field.name)) {
+      const form = field.closest("[data-balance-form]");
+      if (form) rememberBalanceDraft(form);
+      render();
+    }
   }
+
   function mount(node) {
     unmount();
     const nextScope = activeScopeKey();

@@ -80,6 +80,12 @@ class KeywordMaterials:
             raise ValueError("keyword material owners must be unique")
         self.specs = tuple(specs)
         self._cache: dict[str, tuple[datetime, Mapping[str, Any]]] = {}
+        self._generations: dict[str, int] = {}
+
+    def invalidate(self, owner: str) -> None:
+        """Discard one source, including results from its in-flight fetches."""
+        self._cache.pop(owner, None)
+        self._generations[owner] = self._generations.get(owner, 0) + 1
 
     def matches(self, context, text, at: datetime = None) -> tuple[KeywordMaterialSpec, ...]:
         chosen = [spec for spec in self.specs if spec.usable(context) and spec.matches(text)]
@@ -98,6 +104,7 @@ class KeywordMaterials:
         for spec in self.matches(context, text, at):
             payload = self._fresh(spec, at)
             if payload is None:
+                generation = self._generations.get(spec.owner, 0)
                 try:
                     payload = await spec.prepare(context, text, at)
                 except Exception as error:  # noqa: BLE001 - 失败要变成可读材料，不能打断回复
@@ -107,7 +114,8 @@ class KeywordMaterials:
                     payload = {"state": "unavailable", "code": "material_unavailable"}
                 failed = isinstance(payload, Mapping) and payload.get("state") == "unavailable"
                 # ttl_seconds=0 表示这条材料不进缓存（内容取决于本轮消息，缓存会串轮次）。
-                if at is not None and spec.ttl_seconds > 0:
+                if (at is not None and spec.ttl_seconds > 0
+                        and self._generations.get(spec.owner, 0) == generation):
                     ttl = FAILURE_TTL_SECONDS if failed else spec.ttl_seconds
                     self._cache[spec.owner] = (at + timedelta(seconds=ttl), payload)
             if not isinstance(payload, Mapping):

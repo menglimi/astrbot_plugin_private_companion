@@ -11012,6 +11012,17 @@ body.room-editing .product-scope{display:none}
 .health-preview-section li span{color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.55;overflow-wrap:anywhere}
 @media(max-width:760px){.health-preview-overview{grid-template-columns:repeat(3,minmax(0,1fr))}.health-preview-sections{grid-template-columns:minmax(0,1fr)}}
 
+/* Balance modes share the existing form, with native fieldset disabling. */
+.perception-balance-legacy,.perception-balance-advanced{display:contents;border:0;padding:0;margin:0;min-width:0}
+.perception-balance-mode{color:var(--t-text-strong)}
+.perception-balance-mode input{accent-color:var(--t-accent)}
+.perception-balance-script,.perception-balance-presets{grid-column:1/-1}
+.perception-balance-field textarea{box-sizing:border-box;width:100%;min-width:0;resize:vertical;padding:var(--sp-2);border:1px solid var(--t-line-strong);border-radius:var(--r-xs);background:var(--t-surface);color:var(--t-text-strong);font:12px/1.5 monospace;tab-size:2}
+.perception-balance-field textarea:focus-visible{outline:2px solid var(--t-accent);outline-offset:1px}
+.perception-balance-legacy:disabled input{opacity:.55;cursor:not-allowed}
+.perception-balance-presets{display:flex;align-items:end;flex-wrap:wrap;gap:var(--sp-2)}
+.perception-balance-presets select{min-height:36px;padding:var(--sp-1) var(--sp-2);border:1px solid var(--t-line-strong);border-radius:var(--r-xs);background:var(--t-surface);color:var(--t-text-strong);font:inherit}
+
 /* perception-subpages.css */
 .perception-config-workspace{display:grid;gap:var(--sp-3);min-width:0}
 .perception-config-workspace[hidden],#perceptionConfigWorkspace[hidden],.perception-config-panels[hidden]{display:none!important}
