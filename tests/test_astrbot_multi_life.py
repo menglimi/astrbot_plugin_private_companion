@@ -99,6 +99,7 @@ class MultiLifeTests(MultiLifeFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_original_personas_read_write_sleep_and_dream_independently(self):
         self.native.selections["qq-second"] = "second"
+        self.window_personas["qq-second:FriendMessage:200"] = "second"
         app = await self.initialize()
         pairs = (("first", "role-a", "原人格"), ("second", "role-b", "第二人格"))
         for target, role, _ in pairs:
@@ -135,13 +136,15 @@ class MultiLifeTests(MultiLifeFixture, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(dreams), 1, status)
             self.assertIn(persona, dreams[0]["body"])
             self.assertIsNone((await self.status(target, role))["failure_code"])
-        generations = app.runtime.read_all("SELECT generation FROM configuration_applications WHERE group_id = 'role.life'", ())
+        generations = app.configuration.store.read_all(
+            "SELECT generation FROM configuration_applications WHERE group_id = 'role.life'", ())
         self.assertEqual({r["generation"] for r in generations}, {1})
         self.assertEqual(len(generations), 2)
         self.assertTrue(all(not p.client._api._wsr_api.calls for p in self.native.platforms.values()))
 
     async def test_daily_schedules_keep_own_context_time_and_configuration_generation(self):
         self.native.selections["qq-second"] = "second"
+        self.window_personas["qq-second:FriendMessage:200"] = "second"
         app = await self.initialize()
         for target, role, at in (("first", "role-a", "08:01"), ("second", "role-b", "08:02")):
             await self.enable(target, role, diary_enabled=True, diary_time=at)

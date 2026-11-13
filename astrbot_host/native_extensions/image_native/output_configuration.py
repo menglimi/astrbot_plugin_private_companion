@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .types import MAX_REFERENCE_IMAGES, NativeImageError, fingerprint
+
+LOGGER = logging.getLogger(__name__)
 
 BACKENDS = {"auto", "online_api", "sd_webui", "comfyui", "nai"}
 # xAI's Grok Imagine is its own request contract: OpenAI's ``size`` is rejected
@@ -528,7 +531,11 @@ def save_configuration(plugin, revision, changes):
         plugin.config["native_v2"] = {**original, "enabled": True,
                                       "backend": candidate["backend"], "output": candidate}
         saver()
+    except NativeImageError:
+        plugin.config["native_v2"] = original
+        raise
     except Exception as exc:
+        LOGGER.exception("image output configuration could not be written")
         plugin.config["native_v2"] = original
         raise NativeImageError("configuration_save_failed") from exc
     if provider:
@@ -541,7 +548,10 @@ def save_configuration(plugin, revision, changes):
         provider.wait_budget_seconds = provider.task_timeout_seconds()
     else:
         from .bootstrap import build_provider
-        from ... import main
+        try:
+            from .... import main
+        except ImportError:  # tests import astrbot_host as a top-level package
+            import main
         provider = build_provider(plugin, version=main.PLUGIN_VERSION)
         plugin._native_v2_provider = provider
         if provider is None:

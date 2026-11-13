@@ -52,7 +52,12 @@ class SparseConfigurationOwner:
     supports_reset = True
 
     def __init__(self, runtime: StorageRuntime) -> None:
+        # ``runtime`` stays the main store for persona/route lookups; config
+        # rows live in ``store``.  Splitting the two attributes is important:
+        # owners such as growth/life need conversation_routes from the main
+        # database while writing configuration_values to the side store.
         self.runtime = runtime
+        self.store = runtime.configuration_store
 
     def read(self, target: ConfigTarget, fields: tuple[FieldDefinition, ...]) -> OwnerSnapshot:
         ids = tuple(field.field_id for field in fields)
@@ -62,9 +67,9 @@ class SparseConfigurationOwner:
         dependencies = []
         records = {}
         for layer in layers:
-            row = self.runtime.read_one("SELECT revision FROM configuration_targets WHERE target_key = ?", (layer.key,))
+            row = self.store.read_one("SELECT revision FROM configuration_targets WHERE target_key = ?", (layer.key,))
             revision = row["revision"] if row else 0
-            records[layer.key] = {row["field_id"]: (json.loads(row["value_json"]), row["revision"]) for row in self.runtime.read_all(
+            records[layer.key] = {row["field_id"]: (json.loads(row["value_json"]), row["revision"]) for row in self.store.read_all(
                 f"SELECT field_id, value_json, revision FROM configuration_values WHERE target_key = ? AND field_id IN ({placeholders})",
                 (layer.key, *ids),
             )}
@@ -88,7 +93,7 @@ class SparseConfigurationOwner:
         changes: Mapping[str, Scalar], reset: tuple[str, ...],
         expected_revision: int, observed_at: datetime,
     ) -> OwnerWrite:
-        with self.runtime.transaction() as connection:
+        with self.store.transaction() as connection:
             row = connection.execute("SELECT revision FROM configuration_targets WHERE target_key = ?", (target.key,)).fetchone()
             revision = row["revision"] if row else 0
             if revision != expected_revision:

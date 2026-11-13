@@ -22,13 +22,20 @@ const vm = require("node:vm");
 const ROOT = path.join(__dirname, "..");
 const PAGE = path.join(ROOT, "pages", "陪伴小屋");
 const BACKEND = path.join(ROOT, "astrbot_host", "configuration_api.py");
+/* system.prompts is edited by maintenance-page.js through its own
+   sections=system.prompts request; it is not a config-editor card. Keep it
+   out of the config-editor three-way count instead of pretending it has a
+   spec that would never be mounted. */
+const MAINTENANCE_SECTIONS = new Set(["system.prompts"]);
 
 function backendSections() {
   const source = fs.readFileSync(BACKEND, "utf8");
   const block = source.match(/SECTIONS = \{([\s\S]*?)\n\n/);
   assert.ok(block, "configuration_api.py 里找不到 SECTIONS 定义");
   /* 每个分区形如 "组名": XxxManagement, */
-  return [...block[1].matchAll(/"([a-z_.]+)"\s*:\s*[A-Za-z]+Management/g)].map(match => match[1]);
+  return [...block[1].matchAll(/"([a-z_.]+)"\s*:\s*[A-Za-z]+Management/g)]
+    .map(match => match[1])
+    .filter(name => !MAINTENANCE_SECTIONS.has(name));
 }
 
 function frontendSpec() {

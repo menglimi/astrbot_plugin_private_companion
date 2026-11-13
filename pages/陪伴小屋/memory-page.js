@@ -32,33 +32,33 @@ window.CompanionMemoryPage = (() => {
     dashboard_identity_required: "请从已登录的 AstrBot 管理界面打开陪伴小屋。",
     staging_not_initialized: "角色数据尚未就绪，请在「账号与会话」保存角色映射；已保存可重新读取状态。",
     staging_host_terminated: "插件已停止，请重新打开拓展页。",
-    core_access_required: "当前账号没有记忆管理权限。",
+    core_access_required: "当前账号没有 事实管理权限。",
     binding_revoked: "管理账号的授权已撤销。", binding_rebound: "管理账号的绑定已变化，请重新进入。",
     memory_reflection_unavailable: "这条整理记录已不在当前授权范围。",
     memory_reflection_uncertain: "原模型调用结果尚未确认。请先核对原任务，不能重复发起。",
     memory_reflection_failed: "本次整理未完成，需要明确发起修复。",
-    memory_reflection_closed: "记忆整理服务尚未就绪，请重新读取角色状态。",
+    memory_reflection_closed: "事实整理服务尚未就绪，请重新读取角色状态。",
     application_not_running: "角色尚未就绪，请重新读取状态。",
-    memory_settings_changed: "记忆设置已变化，需要重新准备材料。",
-    memory_reflection_stale: "相关记忆已更新，旧分析不能继续写入。",
+    memory_settings_changed: "整理设置已变化，需要重新准备材料。",
+    memory_reflection_stale: "事实与经历已更新，旧分析不能继续写入。",
     source_revoked: "原来源已撤回。", source_expired: "原来源已过期。",
     memory_evidence_forgotten: "相关来源已被遗忘。",
     memory_schedule_changed: "整理计划已变化，需要重新准备材料。",
-    model_task_unregistered: "尚未配置记忆整理模型。",
+    model_task_unregistered: "尚未配置 事实整理模型。",
     model_response_contract_rejected: "模型返回格式不完整，已有内容保留，未完成项可以单独修复。",
     memory_request_invalid: "请求与当前接口不匹配，请更新页面后重试。",
     memory_revision_conflict: "事实已有新版本，已刷新当前记录。",
     memory_view_stale: "身份或授权版本已变化，请重新打开事实。",
-    memory_clear_stale: "预览后记忆已有变化，已刷新范围预览，请核对后再确认。",
+    memory_clear_stale: "预览后事实已有变化，已刷新范围预览，请核对后再确认。",
     memory_settings_conflict: "配置已有其他更新，已读取最新值。",
     /* 冷归档：可逆地把长期闲置的持久事实移出工作集。 */
-    memory_archive_stale: "预览后记忆已有变化，已刷新归档预览，请核对后再确认。",
+    memory_archive_stale: "预览后事实已有变化，已刷新归档预览，请核对后再确认。",
     memory_archive_restore_invalid: "请选择要移回工作集的事实。",
     memory_archive_restore_unavailable: "有一条原记录已不可读取，无法移回。",
     memory_archive_restore_conflict: "有一条记录并不在归档状态，未做改动。",
-    /* 记忆包：跨安装迁移。 */
-    memory_bundle_invalid: "这不是本版支持的记忆包，未做任何写入。",
-    memory_bundle_too_large: "记忆包超出体积上限，未被接受。",
+    /* 事实包：跨安装迁移。 */
+    memory_bundle_invalid: "这不是本版支持的事实包，未做任何写入。",
+    memory_bundle_too_large: "事实包超出体积上限，未被接受。",
     memory_import_stale: "预览后事实已有变化，已重新校验，请核对后再确认。",
     memory_operation_conflict: "这个操作标识已经用于另一份内容，未重复写入。",
     memory_operation_unavailable: "原操作已不可读取，无法核对结果。",
@@ -66,7 +66,7 @@ window.CompanionMemoryPage = (() => {
     memory_query_budget_exhausted: "本次查询已达到读取预算，请开始新的查询。",
     memory_cursor_stale: "查询索引或记录已变化，请重新提交查询。",
     page_request_invalid: "目标目录请求无效，请重新打开页面。",
-    memory_ownership_unavailable: "记忆归属暂时读不出来。这时按「V2 自己提供记忆」处理：注入与工具都会照常出现。",
+    memory_ownership_unavailable: "记录归属暂时读不出来。这时按「本插件自己提供记录」处理：注入与工具都会照常出现。",
     bridge_unavailable: "页面还没有接上 AstrBot。若这是从管理界面打开的插件页，刷新一次通常就好；若反复出现，请确认插件已启用。",
     bridge_timeout: "未收到服务确认，请刷新核对。",
     invalid_response: "服务返回的数据不完整，请刷新核对。",
@@ -74,7 +74,7 @@ window.CompanionMemoryPage = (() => {
   /* 旧桥接会将机器码放在信封的 message 上。 */
   const CODE = /^[a-z][a-z0-9_]{2,60}$/;
   const stateLabels = {selecting:"正在准备材料", prepared:"待整理", running:"调用结果待核对", received:"已收到，待解析",
-    modelled:"待写入", failed:"整理失败", partial:"部分已保存", complete:"整理完成", empty:"没有可整理材料"};
+    modelled:"待写入", failed:"整理失败", partial:"部分已保存", abandoned:"已放弃", complete:"整理完成", empty:"没有可整理材料"};
   const jobLabels = {queued:"后台已登记", complete:"本次处理完成", blocked:"本次处理受阻"};
   const phases = {source_index:"整理来源索引",sources:"筛选来源",facts:"核对相关事实",ready:"准备完成"};
   /* 生命周期：后端 memory_atoms.state 的取值就是这四种归宿。
@@ -134,7 +134,7 @@ window.CompanionMemoryPage = (() => {
       queryText:"", queryKind:"all", queryResult:null, querySession:null, sourceResult:null,
       archivePreview:null, archiveIdleDays:180, archivedResult:null,
       exportBundle:null, exportIncludeArchived:true, importPreview:null,
-      /* 记忆归属：null = 还没读到；{owner:"self"} 读到但没读全。归属是安装级的事实，
+      /* 记录归属：null = 还没读到；{owner:"self"} 读到但没读全。归属是安装级的事实，
          所以它不进 load() 的轮询——那些轮询只刷数据，不该让这句话闪。 */
       ownership:null,
       addOpen:false, addText:"",
@@ -240,7 +240,7 @@ window.CompanionMemoryPage = (() => {
       data.pending = null; savePending(); data.catalog = null; data.ready = false; stopTimer();
     }
   }
-  /* 记忆归属的文案。
+  /* 记录归属的文案。
    *
    * 用户看到的是「记忆现在由谁对模型说」这件事，而不是我们能拿到多少字段，
    * 所以每一种判定都必须说清**谁在提供**以及**为什么轮到它**——「两边都没注入
@@ -254,21 +254,11 @@ window.CompanionMemoryPage = (() => {
     const value = data.ownership;
     if (!data.ready) return "";
     if (!value || typeof value.owner !== "string") return errors.memory_ownership_unavailable;
-    const name = ownerName(value.display_name, "我会牢牢记住你");
+    const name = ownerName(value.display_name, "外部记忆插件");
     if (value.owner === "external") {
-      return `长期记忆现在由〈${name}〉提供：每轮注入的记忆，以及模型能调用的记忆工具，都来自它——`
-        + "那是外部的记忆插件，与这一页记下的事实和经历不是同一份库，两边各存各的。"
-        + "这里的事实、来源和整理记录仍然照常保存，换回 V2 提供时可以直接接着用。";
+      return `长期记录：〈${name}〉（外部）`;
     }
-    const reason = {
-      owner_module_absent: "它当前没有加载，",
-      owner_declaration_absent: "它没有给出可用的记忆声明，",
-      owner_handle_disabled: "它的记忆桥没有启用，",
-      owner_handle_unreadable: "它的记忆句柄当前读不到，",
-    }[value.reason] || "它的记忆声明当前不可用，";
-    return `长期记忆现在由 V2 提供：注入与记忆工具都来自本插件。${reason}所以这一页管的是 V2 自己的事实与经历，`
-      + `与〈${name}〉的库不是同一份——那是外部记忆插件，不是这里的记录。`
-      + "它恢复可用后，注入与工具会立刻回到它那边。";
+    return "长期记录：本插件事实库";
   }
   /* 徽标与面包屑。
    *
@@ -277,14 +267,14 @@ window.CompanionMemoryPage = (() => {
    * 「连不上」的观感来源。所以宿主徽标在场时直接返回。
    * 只有当这个工作区被单独嵌入（没有外壳徽标）时才自己补一条状态。
    *
-   * 文案只说「V2 记忆库读取」：这句话读的是这一页连不连得上 V2 的事实库，
+   * 文案只说「事实库读取」：这句话读的是这一页连不连得上 V2 的事实库，
    * 不是「谁在给模型提供记忆」——后者由 ownerNotice() 按归属判定说，
    * 徽标抢过去说会变成一句不成立的独占声明。 */
   function setChrome(active) {
     if(window.CompanionProduct?.hosted()&&document.querySelector("[data-host-badge]"))return;
     document.body.classList.toggle("memory-connected",active);
     const label = document.querySelector(".preview-badge");
-    if (label) label.innerHTML = active ? "<span></span>V2 记忆库读取正常 <b>V2</b>" : "<span></span>V2 记忆库待检查 <b>V2</b>";
+    if (label) label.innerHTML = active ? "<span></span>事实库读取正常" : "<span></span>事实库待检查";
     if (active) {
       const breadcrumb = document.querySelector("#breadcrumb strong");
       if (breadcrumb) breadcrumb.textContent = "事实与经历";
@@ -326,7 +316,7 @@ window.CompanionMemoryPage = (() => {
     ["facts","事实治理",ICON.facts,"已保存事实的更正、钉选、撤回与遗忘"],
     ["query","来源与经历",ICON.query,"按关键词检索事实、原始来源与共同经历"],
     ["archive","冷归档",ICON.archive,"把长期闲置的持久事实移出工作集，可随时移回"],
-    ["migrate","迁移",ICON.migrate,"导出可审阅的记忆包，或校验后导入另一安装的包"],
+    ["migrate","迁移",ICON.migrate,"导出可审阅的事实包，或校验后导入另一安装的包"],
     ["clear","范围清理",ICON.clear,"按范围逻辑遗忘当前私聊关系的事实"],
   ];
   function railMarkup() {
@@ -396,7 +386,7 @@ window.CompanionMemoryPage = (() => {
   function overviewMarkup() {
     const overview = data.overview;
     if (!overview) return `<section class="mem-block"><div class="mem-block-body"><p class="mem-plain">${
-      data.loading ? "正在读取全量统计与记忆联动状态…" : "全量统计暂不可用，下面仍显示当前读取到的事实。"}</p></div></section>`;
+      data.loading ? "正在读取全量统计与外部联动状态…" : "全量统计暂不可用，下面仍显示当前读取到的事实。"}</p></div></section>`;
     const local = overview.local || {};
     const facts = local.facts || {};
     const experiences = local.experiences || {};
@@ -408,26 +398,24 @@ window.CompanionMemoryPage = (() => {
       .filter(key => Number.isInteger(states[key]) && states[key] > 0)
       .map(key => `${stateLabels[key] || key} ${num(states[key])}`).join(" · ") || "尚无整理批次";
     const linkage = overview.linkage || {};
-    let linkageTitle = "外部记忆摘要未接通";
-    let linkageNote = "本地事实与经历仍由 V2 保存。";
+    let linkageTitle = "未接通";
+    let linkageNote = "";
     let linkageTone = "is-warn";
     if (linkage.state === "ready") {
-      linkageTitle = `${ownerName(linkage.display_name, "记忆插件")}摘要已接通`;
-      linkageNote = "按当前私聊对象只读分类计数，不读取或展示记忆正文。";
+      linkageTitle = `${ownerName(linkage.display_name, "外部记忆插件")}已接通`;
       linkageTone = "is-ok";
     } else if (linkage.state === "not_owner") {
-      linkageTitle = "当前由 V2 提供长期记忆";
-      linkageNote = "外部记忆插件没有接管当前角色，因此没有读取其摘要。";
+      linkageTitle = "本插件事实库";
     } else if (linkage.reason === "unsupported_scope") {
       linkageTitle = "当前对象不支持外部私聊摘要";
       linkageNote = "切换到已授权的私聊对象后可读取对应摘要。";
     } else if (linkage.reason) {
-      linkageNote = `读取状态：${String(linkage.reason).replace(/_/g, " ")}。本地记忆不受影响。`;
+      linkageNote = `读取状态：${String(linkage.reason).replace(/_/g, " ")}。本地事实不受影响。`;
     }
     const categoryLabels = {profile:"个人资料", preference:"偏好", relationship:"关系", private_conversation:"私聊内容", other:"其他"};
     const categories = Array.isArray(linkage.categories) ? linkage.categories : [];
     return `<section class="mem-block mem-overview-block">
-      <div class="mem-block-head"><h3>当前记忆概况</h3><span class="mem-badge">当前对象 · 当前角色</span></div>
+      <div class="mem-block-head"><h3>事实与经历概况</h3><span class="mem-badge">本插件 · 当前对象</span></div>
       <div class="mem-overview-grid">
         <div><span>已保存事实 / 全部事实</span><strong>${countValue(facts.active)} / ${countValue(facts.total)}</strong></div>
         <div><span>共同经历</span><strong>${countValue(experiences.active)} / ${countValue(experiences.total)}</strong></div>
@@ -435,7 +423,7 @@ window.CompanionMemoryPage = (() => {
         <div><span>整理批次</span><strong>${countValue(reflections.total)}</strong><small>${e(historyCounts)}</small></div>
       </div>
       <section class="mem-linkage" aria-label="外部记忆联动">
-        <div class="mem-linkage-head"><div><h4>记忆插件联动</h4><p>${e(linkageNote)}</p></div><span class="mem-badge ${linkageTone}">${e(linkageTitle)}</span></div>
+        <div class="mem-linkage-head"><div><h4>外部记忆插件</h4><p>${e(linkageNote)}</p></div><span class="mem-badge ${linkageTone}">${e(linkageTitle)}</span></div>
         ${linkage.state === "ready" ? `<dl class="mem-linkage-counts">${categories.map(item =>
           `<div><dt>${e(categoryLabels[item.key] || "其他")}</dt><dd>${countValue(item.count)}</dd></div>`).join("")}
           <div><dt>合计</dt><dd>${countValue(linkage.counts?.total)}</dd></div></dl>` : ""}
@@ -469,8 +457,8 @@ window.CompanionMemoryPage = (() => {
       return `<button type="button" class="mem-card ${entry.tone}" data-fact-id="${e(item.atom_id)}"
         aria-current="${data.selId===item.atom_id}">
         <span class="mem-card-line">
-          <span class="mem-pin"${pinned?"":' hidden'} title="核心记忆"></span>
-          <strong>${e(item.predicate || "记忆记录")}</strong>
+          <span class="mem-pin"${pinned?"":' hidden'} title="核心事实"></span>
+          <strong>${e(item.predicate || "事实记录")}</strong>
         </span>
         <span class="mem-card-q">${e(item.representation ?? "来源已不可读取，正文已隐藏。")}</span>
         <span class="mem-card-meta">
@@ -525,9 +513,9 @@ window.CompanionMemoryPage = (() => {
     return `<div class="mem-detail-top">
       <button type="button" class="mem-btn is-quiet mem-detail-close" id="memory-detail-close">${ICON.back}返回列表</button>
       ${ringMarkup(value)}
-      <h3 id="memory-detail-heading" tabindex="-1">${e(value.predicate || "记忆记录")}</h3>
+      <h3 id="memory-detail-heading" tabindex="-1">${e(value.predicate || "事实记录")}</h3>
       <span class="mem-badge ${entry.tone}">${e(entry.label)}</span>
-      ${pinned?badge("核心记忆","is-accent"):""}
+      ${pinned?badge("核心事实","is-accent"):""}
     </div>
     <blockquote class="mem-quote">${e(value.representation || "来源不可读取，正文已隐藏。")}</blockquote>
     <dl class="mem-fields">
@@ -539,7 +527,7 @@ window.CompanionMemoryPage = (() => {
     ${data.sourceResult?`<blockquote class="mem-source-text"><small>原始来源 · 字符 ${e(data.sourceResult.start)}–${e(data.sourceResult.end)} / ${e(data.sourceResult.total_chars)}</small>${e(data.sourceResult.text)}${
       data.sourceResult.next_offset!==null?`<div style="margin-top:9px">${`<button type="button" class="mem-source-link" data-source-handle="${e(data.sourceResult.handle)}" data-source-session="${e(data.factDetail.session_id)}" data-source-start="${e(data.sourceResult.next_offset)}">继续查看后续</button>`}</div>`:""}</blockquote>`:""}
     <div class="mem-actions">
-      ${active?button("memory-fact-pin",pinned?"取消置顶":"置顶为核心记忆",data.busy||data.loading):""}
+      ${active?button("memory-fact-pin",pinned?"取消置顶":"置顶为核心事实",data.busy||data.loading):""}
       ${active?button("memory-fact-retract","撤回",data.busy||data.loading):""}
       ${active?button("memory-fact-forget","遗忘",data.busy||data.loading,"danger"):""}
       ${button("memory-revisions",data.revisions.length?`收起版本历史（${data.revisions.length}）`:"查看版本历史",data.busy||data.loading)}
@@ -561,18 +549,18 @@ window.CompanionMemoryPage = (() => {
   }
 
   function addFormMarkup() {
-    return `<form class="mem-add-form" id="memory-add-form" aria-label="手动新增记忆">
-      <label class="mem-add-field"><span>记忆内容（关于当前私聊对象）</span><textarea id="memory-add-text" rows="3" maxlength="2000"
+    return `<form class="mem-add-form" id="memory-add-form" aria-label="手动新增事实">
+      <label class="mem-add-field"><span>事实内容（关于当前私聊对象）</span><textarea id="memory-add-text" rows="3" maxlength="2000"
         placeholder="例如：她喜欢在下雨天听旧歌。">${e(data.addText)}</textarea></label>
       <p class="mem-plain">以管理员身份记录，来源标注为手动记录，不会伪装成对方说过的话；角色自己的设定请到角色档案维护。</p>
-      <div class="mem-actions">${button("memory-add-submit","保存记忆",data.busy||data.loading,"primary")}${button("memory-add-cancel","取消",data.busy||data.loading)}</div>
+      <div class="mem-actions">${button("memory-add-submit","保存事实",data.busy||data.loading,"primary")}${button("memory-add-cancel","取消",data.busy||data.loading)}</div>
     </form>`;
   }
 
   function factsMarkup() {
     return `${overviewMarkup()}${vitalsMarkup()}
       <section class="mem-block">
-        <div class="mem-add-row">${button("memory-add-open","手动新增一条记忆",data.busy||data.loading)}</div>
+        <div class="mem-add-row">${button("memory-add-open","手动新增一条事实",data.busy||data.loading)}</div>
         ${data.addOpen?addFormMarkup():""}
         <div class="mem-split">
           <div>
@@ -608,9 +596,9 @@ window.CompanionMemoryPage = (() => {
     ${stageTrackMarkup(item.state)}
     <p class="mem-quote" style="margin-top:17px">${e(item.summary ?? (
       item.state === "failed" && item.captured
-        ? "模型原始输出已保留，但未通过校验，尚未写入记忆；请查看下方原因并修复未完成项。"
+        ? "模型原始输出已保留，但未通过校验，尚未写入事实；请查看下方原因并修复未完成项。"
         : item.state === "partial"
-          ? "部分条目已写入记忆，未完成项可在下方单独修复。"
+          ? "部分条目已写入事实，未完成项可在下方单独修复。"
           : item.captured
             ? "模型结果已保存，正在解析或等待写入。"
             : item.state === "failed"
@@ -634,10 +622,12 @@ window.CompanionMemoryPage = (() => {
       <ul class="mem-list">${issues.map((issue, index)=>`<li>待处理项 ${index + 1}：${e(reason(issue.code))}</li>`).join("")}</ul>` : ""}
     <div class="mem-actions">
       ${item.resumable || item.retryable ? button("memory-queue",data.busy?"正在提交…":action,!canQueue || data.busy || data.loading,"primary") : ""}
+      ${["failed", "partial"].includes(item.state) && !item.repair_batch
+        ? button("memory-discard","放弃本次整理",data.busy || data.loading) : ""}
       ${item.repair_batch?button("memory-repair-link","查看后续修复",data.busy || data.loading):""}
       ${button("memory-detail-refresh","刷新状态",data.busy || data.loading)}
     </div>
-    ${canQueue ? '<p class="mem-plain">继续或修复可能调用已配置的记忆模型；仅处理当前对象与角色的这批材料。</p>' : ""}
+    ${canQueue ? '<p class="mem-plain">继续或修复可能调用已配置的整理模型；仅处理当前对象与角色的这批材料。</p>' : ""}
     ${receipts.length ? `<h4 class="mem-sub">处理确认<small>${receipts.length} 项</small></h4>
       <ul class="mem-list">${receipts.map(([,r], index)=>`<li>处理记录 ${index + 1}：${e(typeof r === "object" && r ? (r.code ? reason(r.code) : stateLabels[r.state] || jobLabels[r.state] || "已有确认") : "已有确认")}</li>`).join("")}</ul>` : ""}
     ${item.retry_of ? '<p class="mem-plain">这批材料来自一次明确的修复操作。</p>' : ""}`;
@@ -652,6 +642,10 @@ window.CompanionMemoryPage = (() => {
       <div class="mem-reflection-views" role="group" aria-label="整理批次范围">
         <button type="button" data-reflection-view="pending" aria-pressed="${!data.history}">待处理 <b>${num(pendingCount)}</b></button>
         <button type="button" data-reflection-view="history" aria-pressed="${data.history}">全部批次 <b>${num(data.overview?.local?.reflections?.total || 0)}</b></button>
+      </div>
+      <div class="mem-filters" style="justify-content:space-between">
+        <span style="font-size:11.5px;color:var(--t-text-faint)">持续失败时可以先停掉定时整理，已存在的批次不会自动重试。</span>
+        ${button("memory-disable-reflection","关闭定时整理",data.busy||data.loading)}
       </div>
       <div class="mem-split">
         <div>
@@ -728,8 +722,8 @@ window.CompanionMemoryPage = (() => {
 
   function archiveMarkup() {
     const snapshot = data.archivePreview;
-    const label = (item, index) => item.unavailable_reason ? `记忆记录 ${index + 1}`
-      : item.predicate || data.corpus.find(row=>row.atom_id===item.atom_id)?.predicate || `记忆记录 ${index + 1}`;
+    const label = (item, index) => item.unavailable_reason ? `事实记录 ${index + 1}`
+      : item.predicate || data.corpus.find(row=>row.atom_id===item.atom_id)?.predicate || `事实记录 ${index + 1}`;
     const archived = snapshot?.archived_items || [];
     return `<section class="mem-block">
       <div class="mem-block-head"><h3>归档预览</h3></div>
@@ -777,13 +771,13 @@ window.CompanionMemoryPage = (() => {
   function exportMarkup() {
     const bundle = data.exportBundle;
     return `<section class="mem-block">
-      <div class="mem-block-head"><h3>导出记忆包</h3></div>
+      <div class="mem-block-head"><h3>导出事实包</h3></div>
       <div class="mem-block-body">
         <label style="display:inline-flex;align-items:center;gap:9px;font-size:12px;color:var(--t-text-soft)">
           <input type="checkbox" id="memory-export-include" ${data.exportIncludeArchived?"checked":""} style="accent-color:var(--t-accent-solid)">
           包含已归档条目
         </label>
-        <div class="mem-actions" style="border:0;padding-top:13px">${button("memory-export-run","生成记忆包",data.busy||data.loading,"primary")}</div>
+        <div class="mem-actions" style="border:0;padding-top:13px">${button("memory-export-run","生成事实包",data.busy||data.loading,"primary")}</div>
         ${bundle?`<div class="mem-preview" style="margin-top:15px">
           <dl class="mem-preview-facts">
             <div><dt>条目</dt><dd>${num(bundle.atom_count)}</dd></div>
@@ -802,11 +796,11 @@ window.CompanionMemoryPage = (() => {
   function importMarkup() {
     const preview = data.importPreview;
     return `<section class="mem-block">
-      <div class="mem-block-head"><h3>导入记忆包</h3></div>
+      <div class="mem-block-head"><h3>导入事实包</h3></div>
       <div class="mem-block-body">
         <form id="memory-import-form" class="mem-form" style="margin:0;padding:0;border:0">
-          <label>记忆包 JSON<textarea id="memory-import-text" rows="6" placeholder="粘贴记忆包 JSON"></textarea></label>
-          <div class="mem-form-actions">${button("memory-import-preview","校验记忆包",data.busy||data.loading)}</div>
+          <label>事实包 JSON<textarea id="memory-import-text" rows="6" placeholder="粘贴事实包 JSON"></textarea></label>
+          <div class="mem-form-actions">${button("memory-import-preview","校验事实包",data.busy||data.loading)}</div>
         </form>
         ${preview?`<div class="mem-preview" style="margin-top:15px">
           <dl class="mem-preview-facts">
@@ -814,15 +808,15 @@ window.CompanionMemoryPage = (() => {
             <div><dt>将新增</dt><dd>${num(preview.counts?.new)}</dd></div>
             <div><dt>已存在</dt><dd>${num(preview.counts?.already_present)}</dd></div>
           </dl>
-          <p class="mem-plain" style="margin:0">每条导入事实都会保留记忆包引用。</p>
+          <p class="mem-plain" style="margin:0">每条导入事实都会保留事实包引用。</p>
           ${(preview.items||[]).length?`<ul class="mem-list" style="max-height:230px;overflow-y:auto">
-            ${(preview.items||[]).slice(0,40).map((item, index)=>`<li>${e(item.decision==="new"?"新增":"已存在")} · ${e(item.predicate||`记忆记录 ${index + 1}`)}</li>`).join("")}
+            ${(preview.items||[]).slice(0,40).map((item, index)=>`<li>${e(item.decision==="new"?"新增":"已存在")} · ${e(item.predicate||`事实记录 ${index + 1}`)}</li>`).join("")}
             ${(preview.items||[]).length>40?`<li>另有 ${num((preview.items||[]).length-40)} 条未列出</li>`:""}</ul>`:""}
           <div class="mem-preview-actions">
             ${button("memory-import-confirm","确认导入",data.busy||data.loading,"primary")}
             ${button("memory-import-discard","放弃这次校验",data.busy||data.loading)}
           </div>
-        </div>`:`<p class="mem-empty">尚未校验记忆包。</p>`}
+        </div>`:`<p class="mem-empty">尚未校验事实包。</p>`}
       </div>
     </section>`;
   }
@@ -833,7 +827,7 @@ window.CompanionMemoryPage = (() => {
     const snapshot = data.clearPreview;
     const active = Number(snapshot?.counts?.active) || 0;
     return `<section class="mem-block">
-      <div class="mem-block-head"><h3>清理当前对象的记忆</h3></div>
+      <div class="mem-block-head"><h3>清理当前对象的事实</h3></div>
       <div class="mem-block-body">
         ${snapshot?`<div class="mem-preview">
           <dl class="mem-preview-facts">
@@ -877,13 +871,13 @@ window.CompanionMemoryPage = (() => {
         ${ownership?`<p class="mem-ownership" role="status">${e(ownership)}</p>`:""}
         ${data.notice?`<div id="memory-notice" class="mem-notice${data.error?" is-error":""}" role="status" aria-live="polite">${data.error?ICON.alert:ICON.info}<span>${e(data.notice)}</span></div>`:""}
         ${data.pending ? `<div class="mem-recovery"><span>${data.pending.uncertain?"上次提交结果未确认。":"保留了上次提交的位置，可继续查看后台结果。"}</span>${button("memory-recover",data.pending.uncertain?"核对上次提交":"查看上次提交",data.busy || data.loading)}</div>` : ""}
-        ${data.pendingMutation ? `<div class="mem-recovery"><span>${data.pendingMutation.kind==="clear"?"上次范围清理结果未确认，请核对。":"上次记忆变更结果未确认，请刷新核对。"}</span>${button("memory-pending-refresh","刷新核对",data.busy||data.loading)}${button("memory-pending-dismiss","已核对，关闭提示",data.busy||data.loading)}</div>` : ""}
+        ${data.pendingMutation ? `<div class="mem-recovery"><span>${data.pendingMutation.kind==="clear"?"上次范围清理结果未确认，请核对。":"上次事实变更结果未确认，请刷新核对。"}</span>${button("memory-pending-refresh","刷新核对",data.busy||data.loading)}${button("memory-pending-dismiss","已核对，关闭提示",data.busy||data.loading)}</div>` : ""}
         ${!data.ready
           ? `<section class="mem-block"><div class="mem-skeleton"><i></i><i></i><i></i></div>
              <p class="mem-empty">${data.loading?"正在读取授权目标…":"刷新目标后即可查看记录。"}</p></section>`
           : !role()?.memory_api
-            ? `<section class="mem-block"><div class="mem-empty"><h3>群聊记忆独立管理</h3>
-               <p>请选择有记忆权限的私聊对象。</p></div></section>`
+            ? `<section class="mem-block"><div class="mem-empty"><h3>群聊记录独立管理</h3>
+               <p>请选择有事实权限的私聊对象。</p></div></section>`
             : AREA_VIEW[data.area]()}
       </div>
     </div>`;
@@ -950,7 +944,7 @@ window.CompanionMemoryPage = (() => {
     }
   }
 
-  /* 记忆归属只读一次：它是安装级的事实（谁在给模型提供记忆），不是随目标变化的
+  /* 记录归属只读一次：它是安装级的事实（谁在给模型提供记忆），不是随目标变化的
      数据，所以不跟 load() 的 8 秒轮询刷新。读不到时留空，由 ownerNotice() 说出
      「归属暂时读不出来，按 V2 自己提供处理」——不静默、也不假装知道。 */
   async function loadOwnership() {
@@ -1071,12 +1065,43 @@ window.CompanionMemoryPage = (() => {
         subject: "self", predicate: "手动记录", object: body, representation: body,
       });
       data.addOpen = false; data.addText = "";
-      notice(`已新增一条记忆${Number.isInteger(result?.revision) ? "（修订 " + result.revision + "）" : ""}。`);
+      notice(`已新增一条事实${Number.isInteger(result?.revision) ? "（修订 " + result.revision + "）" : ""}。`);
       data.busy = false;
       await load();
       return;
     } catch (error) { notice(reason(error.code), true); }
     data.busy = false; render();
+  }
+
+  /* 用户明确要求停掉“整理与修复”时，只关闭自动整理和自动修复；
+     已有批次和事实保留，随时可以在「整理策略」里重新打开。 */
+  async function disableReflection() {
+    if (data.busy || data.loading) return;
+    data.busy = true; render();
+    try {
+      const settings = await api("GET", endpoint() + "/settings", {layer: "role"});
+      if (!settings || typeof settings !== "object") throw problem("invalid_response");
+      if (settings.values?.reflection_enabled === false) {
+        data.busy = false;
+        notice("定时整理已经是关闭状态。");
+        render();
+        return;
+      }
+      await api("POST", endpoint() + "/settings/command", {
+        operation_key: "memory-disable-reflection-" + Date.now().toString(36),
+        expected_edit_token: settings.edit_token,
+        layer: "role",
+        changes: {"memory.reflection_enabled": false, "memory.reflection_auto_repair": false},
+      });
+      data.busy = false;
+      notice("已关闭定时整理和自动修复；已有批次仍可手动处理。");
+      render();
+      await load();
+    } catch (error) {
+      data.busy = false;
+      notice(reason(error.code), true);
+      render();
+    }
   }
 
   /* 条目移出的可见过渡。用户按下「撤回/遗忘」后那条从列表消失，
@@ -1129,7 +1154,7 @@ window.CompanionMemoryPage = (() => {
       if (detail.item?.atom_id !== id || detail.item?.revision !== item.revision || !Array.isArray(detail.sources)) throw problem("invalid_response");
       detail.item.view_token = item.view_token;
       /* context_mode 由列表项带过来：/detail 不重复下发它，
-         但「是不是核心记忆」是详情要显示的东西。 */
+         但「是不是核心事实」是详情要显示的东西。 */
       if (item.context_mode !== undefined && detail.item.context_mode === undefined) detail.item.context_mode = item.context_mode;
       data.factDetail = detail; notice("");
       /* 打开一条事实就顺手取版本历史：版本是这一页的核心信息，
@@ -1209,7 +1234,7 @@ window.CompanionMemoryPage = (() => {
     if (["retract","forget"].includes(action)) {
       const accepted = await askConfirm({
         title:action==="forget"?"遗忘这条事实":"撤回这条事实",
-        message:action==="forget"?"这条事实会从当前记忆中隐藏，并保留可审计的遗忘记录。":"这会产生一个新版本。",
+        message:action==="forget"?"这条事实会从当前事实中隐藏，并保留可审计的遗忘记录。":"这会产生一个新版本。",
         confirmText:action==="forget"?"遗忘事实":"撤回事实",danger:true,
       });
       if (!accepted || !live(confirmationVersion) || data.factDetail?.item?.atom_id!==item.atom_id) return;
@@ -1223,7 +1248,7 @@ window.CompanionMemoryPage = (() => {
     pending.body = payload; data.pendingMutation = pending; saveMutation();
     const removedId = ["retract","forget"].includes(action) ? item.atom_id : null;
     const card = removedId ? root.querySelector(`.mem-card[data-fact-id="${CSS.escape(removedId)}"]`) : null;
-    const ticket = ++version; stopTimer(); data.busy = true; notice("正在保存记忆变更…"); render();
+    const ticket = ++version; stopTimer(); data.busy = true; notice("正在保存事实变更…"); render();
     try {
       await api("POST",endpoint()+"/command",payload);
       if (!live(ticket)) return;
@@ -1295,7 +1320,7 @@ window.CompanionMemoryPage = (() => {
   async function restoreArchive() {
     if (data.busy || data.loading) return;
     const ids = [...root.querySelectorAll("[data-archive-restore]:checked")].map(item=>item.dataset.archiveRestore);
-    if (!ids.length) { notice("请选择要移回的记忆记录。", true); return; }
+    if (!ids.length) { notice("请选择要移回的事实记录。", true); return; }
     if (ids.length > 512) { notice("一次最多移回 512 条。", true); render(); return; }
     const confirmationVersion = version;
     if (!await askConfirm({title:"移回工作集",message:`将 ${ids.length} 条事实移回工作集。它们会重新参与检索。`,confirmText:"移回事实"})
@@ -1310,7 +1335,7 @@ window.CompanionMemoryPage = (() => {
     finally { if (live(ticket)) { data.busy = false; render(); } }
   }
 
-  /* === 记忆包：导出只读，导入先校验 === */
+  /* === 事实包：导出只读，导入先校验 === */
   async function runExport() {
     if (data.busy || data.loading) return;
     const check = root.querySelector("#memory-export-include");
@@ -1328,7 +1353,7 @@ window.CompanionMemoryPage = (() => {
   }
   async function copyExport() {
     const text = JSON.stringify(data.exportBundle?.bundle ?? {}, null, 2);
-    try { await navigator.clipboard.writeText(text); notice("记忆包 JSON 已复制。"); }
+    try { await navigator.clipboard.writeText(text); notice("事实包 JSON 已复制。"); }
     catch { notice("剪贴板不可用，请改用下载。", true); }
     render();
   }
@@ -1340,14 +1365,14 @@ window.CompanionMemoryPage = (() => {
       link.href = url; link.download = `companion-memory-${Date.now()}.json`;
       document.body.appendChild(link); link.click(); link.remove();
       setTimeout(()=>URL.revokeObjectURL(url), 0);
-      notice("已开始下载记忆包。");
+      notice("已开始下载事实包。");
     } catch { notice("当前环境无法下载，请改用复制。", true); }
     render();
   }
   async function previewImport() {
     if (data.busy || data.loading) return;
     const raw = root.querySelector("#memory-import-text")?.value?.trim() || "";
-    if (!raw) { notice("请先粘贴记忆包 JSON。", true); render(); return; }
+    if (!raw) { notice("请先粘贴事实包 JSON。", true); render(); return; }
     let bundle;
     try { bundle = JSON.parse(raw); }
     catch { notice("这段内容不是合法 JSON，未做任何写入。", true); render(); return; }
@@ -1365,9 +1390,9 @@ window.CompanionMemoryPage = (() => {
     const preview = data.importPreview;
     if (!preview || data.busy || data.loading) return;
     const confirmationVersion = version;
-    if (!await askConfirm({title:"导入记忆包",message:`将导入 ${preview.counts?.new ?? 0} 条新事实（已存在的会跳过）。`,confirmText:"导入事实"})
+    if (!await askConfirm({title:"导入事实包",message:`将导入 ${preview.counts?.new ?? 0} 条新事实（已存在的会跳过）。`,confirmText:"导入事实"})
         || !live(confirmationVersion) || data.importPreview!==preview) return;
-    const ticket = ++version; data.busy = true; notice("正在导入记忆包…"); render();
+    const ticket = ++version; data.busy = true; notice("正在导入事实包…"); render();
     try {
       const result = await api("POST",endpoint()+"/import",{bundle:preview.bundle,
         expected_import_token:preview.import_token, operation_key:crypto.randomUUID()});
@@ -1406,6 +1431,32 @@ window.CompanionMemoryPage = (() => {
       if(live(ticket)) {if(error.code && !["bridge_timeout","invalid_response"].includes(error.code)){data.pendingMutation=null;saveMutation();failure(error);if(error.code==="memory_clear_stale")loadClearPreview();}else notice("清理结果尚未确认。请刷新预览核对；重试会沿用相同操作标识与版本。",true);}
     } finally {if(live(ticket)){data.busy=false;render();}}
   }
+  async function discardBatch() {
+    if (data.busy || data.loading || !data.detail?.batch_id || !role()?.memory_api) return;
+    const confirmed = await askConfirm({
+      title: "放弃这次整理？",
+      message: "已保存的事实和来源都会保留，只把这批未完成的整理从待处理里关闭，之后不再自动重试。",
+      confirmText: "放弃本次整理",
+      cancelText: "取消",
+      danger: true,
+    });
+    if (!confirmed) return;
+    const ticket = ++version, target = data.detail.batch_id;
+    stopTimer();
+    data.busy = true; notice("正在关闭本次整理…"); render();
+    try {
+      const receipt = await api("POST", endpoint() + "/reflections/discard",
+        {batch_id: target, operation_key: crypto.randomUUID()});
+      if (!live(ticket)) return;
+      if (receipt?.state !== "abandoned") throw problem("invalid_response");
+      data.busy = false; data.detail = null; data.detailId = null;
+      notice("本次整理已放弃；已保存的事实和来源保持不变。");
+      await load();
+    } catch (error) {
+      if (live(ticket)) { data.busy = false; failure(error); render(); schedule(); }
+    }
+  }
+
   async function queue(recover=false) {
     if (data.busy || data.loading || !role()?.memory_api) return;
     if (!recover && (!(data.detail?.resumable || data.detail?.retryable) || data.pending?.uncertain || data.detail.continuation?.state === "queued")) return;
@@ -1488,6 +1539,7 @@ window.CompanionMemoryPage = (() => {
     if (!el || !root.contains(el) || el.disabled) return;
     const id = el.id;
     if (id === "memory-directory-refresh") { directory(); return; }
+    if (id === "memory-disable-reflection") { disableReflection(); return; }
     if (id === "memory-refresh" || id === "memory-detail-refresh") {
       if (id === "memory-detail-refresh" && data.area === "reflections" && data.detailId) selectBatch(data.detailId); else load();
       return;
@@ -1503,6 +1555,7 @@ window.CompanionMemoryPage = (() => {
       return;
     }
     if (id === "memory-queue") { queue(); return; }
+    if (id === "memory-discard") { discardBatch(); return; }
     if (id === "memory-recover") {
       if (data.pending.uncertain) queue(true);
       else { data.area = "reflections"; data.tab = "reflections"; selectBatch(data.pending.tracked_batch_id); }

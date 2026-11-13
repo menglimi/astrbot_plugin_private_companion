@@ -18,6 +18,7 @@ from companion_v2.adapters.astrbot.onebot import OneBotPrivateSender
 from companion_v2.adapters.astrbot.platform_sender import AstrBotPlatformSender
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.configuration.registry import FieldRegistry
+from companion_v2.configuration.store import open_configuration_store
 from companion_v2.conversation.delivery import DeliveryReceipt, LocalSender
 from companion_v2.conversation.flow import ConversationPolicy
 from companion_v2.conversation.forwards.models import ForwardIntakePolicy
@@ -351,6 +352,7 @@ class AstrBotStagingSession:
         if relay_tool_port_factory is not None:
             relay_port = relay_tool_port_factory(self.bridge)
             tool_port = CompositeAstrBotToolPort(native_tool_port, relay_port)
+        configuration_store = open_configuration_store(runtime)
         self.host = AstrBotCompanionHost(runtime, event_port=self.bridge.ports, identity_port=self.bridge.ports,
             role_port=self.bridge.ports, runtime_identity=profile.runtime_identity, registry=registry,
             profiles=profiles, providers=tuple(model.local_provider() for model in self.models), budget=profile.budget,
@@ -358,6 +360,7 @@ class AstrBotStagingSession:
             default_provider_resolver=default_provider_resolver,
             sender=sender, policy=profile.policy, limits=profile.limits, now=now,
             tool_port=tool_port, segmentation=profile.segmentation, voice_policy=voice_policy,
+            configuration_store=configuration_store,
             # 记忆归属读的是别家插件自己公开的声明；适配层的这一个函数是唯一的跨插件
             # 读取点（核心不能反向导入宿主包，见 companion_v2/capabilities/ownership.py）。
             # 写入端口与它共用同一条发现路径和同一个 context：日记、梦境与主动消息

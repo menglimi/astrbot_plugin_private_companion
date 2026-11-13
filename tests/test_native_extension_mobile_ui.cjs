@@ -156,9 +156,9 @@ test("MiHome device rows expose status and power only after control policy permi
   pending.manager.stop();
 
   const allowed = render(recordWithPolicy(["desk-lamp"]));
-  assert.match(allowed.html, /读取状态/);
-  assert.match(allowed.html, /data-native-mihome-power="true"/);
-  assert.match(allowed.html, /data-native-mihome-power="false"/);
+  assert.match(allowed.html, /状态可读取|状态未读取/);
+  assert.match(allowed.html, /data-native-mihome-power-toggle="desk-lamp"/);
+  assert.match(allowed.html, /class="mihome-switch"/);
   assert.doesNotMatch(allowed.html, /允许此设备/);
   allowed.manager.stop();
 });

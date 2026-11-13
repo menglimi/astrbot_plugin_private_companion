@@ -70,7 +70,8 @@ from . import rule_details
 from . import rule_support
 from .configuration import (application_subject_allowed_for_context, read_settings,
                             source_subject_allowed_for_context)
-from .style_evidence import INPUT_SAMPLE_SOURCE, MAX_WINDOW_HOURS, sample_document, sample_handles
+from .style_evidence import (INPUT_SAMPLE_SOURCE, MAX_WINDOW_HOURS, sample_document,
+                             sample_handles, sample_snapshot)
 from .window_scope import active_rule_count, row_usable
 
 logger = getLogger(__name__)
@@ -1340,11 +1341,12 @@ class ExpressionStyleService:
     def _note_parsed(task_id, job, proposed, counters):
         """How many candidates the model proposed and what happened to each."""
         logger.info("[CompanionV2] 表达学习解析结果 task=%s material=%s mode=%s proposed=%d "
-                    "dedup_signature=%d dedup_form=%d capacity_dropped=%d inserted=%d pending=%d "
-                    "adopted=%d support=%d",
+                    "dedup_signature=%d dedup_form=%d capacity_dropped=%d confidence_dropped=%d "
+                    "inserted=%d pending=%d adopted=%d support=%d",
                     task_id, str(job.get("material_hash") or "")[:12], job["policy"].learning_mode,
                     proposed, counters["signature"], counters["form"], counters["capacity"],
-                    counters["inserted"], counters["inserted"], 0, counters["support"])
+                    counters.get("confidence", 0), counters["inserted"], counters["inserted"], 0,
+                    counters["support"])
 
     def _checkpoint_state(self, context):
         """Whether this window holds a scan checkpoint; read-only, log-only.
@@ -1462,11 +1464,13 @@ class ExpressionStyleService:
             enter_stage(job, "commit")
             # Counters exist only for the parse log line; the accepted list and
             # every write keep exactly the order and conditions they had.
-            counters = {"signature": 0, "form": 0, "capacity": 0, "support": 0}
+            counters = {"signature": 0, "form": 0, "capacity": 0, "support": 0, "confidence": 0}
             with self.runtime.transaction() as connection:
                 run.validate()
                 run.begin_effect()
                 owner_key = digest(self.samples.role_owner(context))
+                policy = self._policy(context, self.tasks.now())
+                confidence_floor = policy.minimum_confidence
                 # The budget and the deduplication priors belong to the family the
                 # rules are read and counted under, not to this one window: a rotated
                 # conversation would otherwise repeat a rule its owner already holds
@@ -1476,7 +1480,7 @@ class ExpressionStyleService:
                 active_count = active_rule_count(self.runtime, context, owner_key, family_keys,
                                                  samples=self.samples, at=self.tasks.now(),
                                                  connection=connection)
-                remaining = max(0, self._policy(context, self.tasks.now()).active_signal_limit - active_count)
+                remaining = max(0, policy.active_signal_limit - active_count)
                 existing_rows = [row for row in connection.execute(f"""SELECT s.signal_id, s.dimension,
                         s.observation, s.proposal, s.applicability_json, s.evidence_json, s.state,
                         s.scope_key, r.sample_json
@@ -1496,6 +1500,11 @@ class ExpressionStyleService:
                         forms[identity] = row
                 accepted_signals = []
                 for item in output.signals:
+                    if item.confidence < confidence_floor:
+                        # A one-off form the model itself barely believes is not a
+                        # habit worth reviewing; keep the pool to reusable rules.
+                        counters["confidence"] += 1
+                        continue
                     signature = learning.candidate_signature(item.dimension, item.observation, item.proposal,
                                                              item.applicability, item.expression)
                     identity = learning.form_identity(item.expression)
@@ -1524,10 +1533,15 @@ class ExpressionStyleService:
                 run_id = "expression-run:" + digest([context.key, job["request_key"]])
                 now = self.tasks.now()
                 at = stamp(now)
+                snapshot = sample_snapshot(job["samples"], {
+                    handle for item in accepted_signals for handle in item.evidence_handles})
+                run_document = {**job["sample_document"],
+                                "context_key": job["sample_context_key"]}
+                if snapshot:
+                    run_document["texts"] = snapshot
                 connection.execute("""INSERT INTO expression_style_runs VALUES
                     (?, ?, ?, ?, ?, ?, 'pending', ?, NULL)""",
-                    (run_id, owner_key, digest(context.scope),
-                     encode({**job["sample_document"], "context_key": job["sample_context_key"]}),
+                    (run_id, owner_key, digest(context.scope), encode(run_document),
                      job["material_hash"], output.summary, at))
                 for ordinal, item in enumerate(accepted_signals):
                     connection.execute("""INSERT INTO expression_style_signals

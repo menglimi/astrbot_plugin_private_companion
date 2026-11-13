@@ -8,7 +8,8 @@ from companion_v2.agenda.planning_config import DEFAULTS as PLANNING_DEFAULTS
 
 WINDOW_FIELDS = frozenset({"typing_enabled", "typing_refresh_seconds"})
 PRESENCE_FIELDS = frozenset({"presence_enabled", "online_status_enabled"})
-ROLE_ONLY_FIELDS = frozenset({"enabled", "calendar_enabled", *PLANNING_DEFAULTS, *PRESENCE_FIELDS})
+ROLE_ONLY_FIELDS = frozenset({"enabled", "maintenance_grant_scope", "calendar_enabled",
+    *PLANNING_DEFAULTS, *PRESENCE_FIELDS})
 
 
 def physical(field):
