@@ -60,7 +60,11 @@
 .output-page .wb-group-head{margin:0 0 var(--sp-2);font-size:var(--fs-tiny);color:var(--t-text-soft)}
 .output-page .wb-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:calc(var(--sp-3) * .75);min-width:0}
 .output-page .wb-field{display:block;min-width:0;margin:0;padding:calc(var(--sp-1) * 1.75) calc(var(--sp-3) * .75);border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface-raised)}
-.output-page .wb-field-main{display:grid;gap:3px;min-width:0}
+.output-page .wb-field-main{display:grid;grid-template-columns:minmax(0,1fr) minmax(150px,42%);align-items:center;gap:3px var(--sp-4);min-width:0}
+.output-page .wb-field-main>.wb-label{grid-column:1;grid-row:1;min-width:0;overflow-wrap:break-word}
+.output-page .wb-field-main>.wb-help{grid-column:1;grid-row:2}
+.output-page .wb-field-main>.wb-control{grid-column:2;grid-row:1 / span 2;justify-self:stretch;width:100%;max-width:none;min-width:0}
+.output-page .wb-field-main>.wb-field-error{grid-column:1 / -1;grid-row:3}
 .output-page .wb-field-side:empty{display:none}
 .output-page .wb-field-side:not(:empty){display:flex;align-items:center;flex-wrap:wrap;gap:calc(var(--sp-1) * 1.5);margin-top:calc(var(--sp-1) * 1.25);font-size:var(--fs-micro)}
 .output-page .wb-label{color:var(--t-text-soft);font-size:var(--fs-micro);font-weight:400;line-height:1.5}
@@ -80,6 +84,8 @@
 .output-page .wb-segmented-option input:checked+span{box-shadow:inset 0 0 0 1px var(--t-accent);background:var(--t-surface-raised)}
 .output-page .wb-field:has(.wb-switch){padding:3px 0;border:0;background:transparent}
 .output-page .wb-field:has(.wb-switch) .wb-field-main{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:var(--sp-2);min-height:32px}
+.output-page .wb-field:has(.wb-switch) .wb-field-main>.wb-label{flex:0 1 auto;min-width:0}
+.output-page .wb-field:has(.wb-switch) .wb-field-main>.wb-control{flex:0 0 auto;width:auto;max-width:none}
 .output-page .wb-switch{min-height:28px;gap:calc(var(--sp-1) * 1.5)}
 .output-page .wb-switch-state{font-size:var(--fs-micro);white-space:nowrap}
 .output-page .wb-field:has(.wb-switch) .wb-control{flex:none}
@@ -301,6 +307,8 @@
   .output-config-tabs{gap:calc(var(--sp-1) * 1.25)}
   .output-config-tab{flex:1;padding:calc(var(--sp-1) * 1.5);font-size:var(--fs-micro)}
   .output-page .wb-fields,.output-endpoint-extra,.output-local-grid,.image-materials-upload-fields,.image-materials-form-grid,.image-materials-usage-choices{grid-template-columns:minmax(0,1fr)}
+  .output-page .wb-field-main{grid-template-columns:minmax(0,1fr)}
+  .output-page .wb-field-main>.wb-control{grid-column:1;grid-row:auto;justify-self:stretch}
   .output-page [data-wb-card="image_review"] .wb-fields{grid-template-columns:minmax(0,1fr)}
   .output-page [data-wb-card="image_review"] .wb-field{grid-column:1/-1}
   .output-page #imageOutputWorkspace [data-wb-row="trigger_mode"] .wb-field-main,.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_mode"] .wb-field-main,.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_sensitivity"] .wb-field-main{grid-template-columns:minmax(0,1fr);gap:calc(var(--sp-1) * 1.25)}
