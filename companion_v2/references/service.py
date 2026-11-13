@@ -100,7 +100,11 @@ class ReferenceAssetService:
         return now, options
 
     def owner(self, context):
-        return owner_key(context)
+        resolver = getattr(self.settings, 'role_owner', None)
+        if resolver is None:
+            return owner_key(context)
+        from companion_v2.execution.models import digest
+        return digest(['role-references.v1', resolver(context)])
 
     # --- registrations -----------------------------------------------------------
 
