@@ -471,7 +471,7 @@ class PrivateMemberTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(after["important_dates"], before["settings"]["important_dates"])
         self.assertEqual(after["max_contacts_24h"], 3)
         self.assertEqual(after["pause_until"], before["settings"]["pause_until"])
-        original = self.controller.runtime.read_one(
+        original = self.controller.session.application.configuration.store.read_one(
             "SELECT result_json FROM configuration_changes WHERE operation_id = ?", (legacy_operation,))
         self.assertIsNotNone(original)
 

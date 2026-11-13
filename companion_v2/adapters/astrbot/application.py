@@ -24,7 +24,8 @@ class AstrBotRolePort(Protocol):
 
 class AstrBotCompanionHost:
     def __init__(self, runtime, *, event_port, identity_port, role_port, runtime_identity,
-                 tool_port=None, memory_owner=None, memory_push=None, **application_options):
+                 tool_port=None, memory_owner=None, memory_push=None, configuration_store=None,
+                 **application_options):
         # Native providers and the included QQ Zone provider share one supervised
         # executor.  The latter is optional and is absent when the host supplied no
         # transport, so a missing account never creates model-visible declarations.
@@ -50,6 +51,7 @@ class AstrBotCompanionHost:
                                                 capability_owners=owners,
                                                 memory_owner=memory_owner,
                                                 memory_push=memory_push,
+                                                configuration_store=configuration_store,
                                                 **application_options)
         self.application.native_tool_port = tool_port
         if tool_port is not None and callable(getattr(tool_port, "attach", None)):

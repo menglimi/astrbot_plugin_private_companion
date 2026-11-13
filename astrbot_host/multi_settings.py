@@ -9,7 +9,8 @@ from companion_v2.execution.models import digest
 from companion_v2.conversation.forwards.models import ForwardIntakePolicy
 from companion_v2.conversation.segmentation import SegmentationPolicy
 from .identity_derivation import role_display_name
-from .settings import HostControlError, HostSettings, PROFILE_PATTERN, _boolean, _section, _text
+from .settings import (HostControlError, HostSettings, PROFILE_PATTERN, _boolean, _section, _text,
+                       repair_host_policy_sections)
 from .group_settings import GroupTarget, parse_group_targets
 
 
@@ -241,10 +242,15 @@ class MultiHostSettings:
         if not PROFILE_PATTERN.fullmatch(key):
             raise HostControlError("host_installation_invalid", "installation ID must be a stable lowercase identifier")
         base = {"model": _section(config, "model"), "runtime": _section(config, "runtime"),
-                "segmentation": _section(config, "segmentation"),
-                "voice_reply": _section(config, "voice_reply"),
+                "segmentation": config.get("segmentation", {}) if hasattr(config, "get") else {},
+                "voice_reply": config.get("voice_reply", {}) if hasattr(config, "get") else {},
                 "staging": {"enabled": enabled, "profile_id": "multi-" + key,
                             "delivery_mode": section.get("delivery_mode", "onebot_private")}}
+        # Account/role/window mapping does not own optional reply style
+        # sections.  Normalize stale policy values for this parse so a mapping
+        # save cannot be blocked by an unrelated legacy segmentation/voice
+        # field; the save path persists the same repair.
+        repair_host_policy_sections(base)
         # The shared model/runtime profile contains no per-target identity.
         base["staging"]["profile_id"] = key if key != "preview-1" else "multi-preview"
         common = HostSettings.parse(base)

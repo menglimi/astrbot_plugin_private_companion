@@ -11,6 +11,8 @@ from . import codec
 from .models import text
 from .tools import PROPOSAL_PROPERTIES, decode_proposal
 
+MAX_REFLECTION_PROPOSALS = 16
+
 
 DETAIL_FIELDS = tuple(k for k in PROPOSAL_PROPERTIES if k not in (
     "operation", "evidence_handles", "predicate", "object", "representation",
@@ -26,7 +28,7 @@ def object_schema(properties):
 # supplies identities, operation keys, namespaces and the default policy values.
 REFLECTION_SCHEMA = object_schema({
     "summary": {"type": "string"},
-    "proposals": {"type": "array", "items": object_schema({
+    "proposals": {"type": "array", "maxItems": MAX_REFLECTION_PROPOSALS, "items": object_schema({
         "item_id": {"type": ["string", "null"]},
         "operation": {"type": "string", "enum": ["add", "correct", "retract", "no_op"]},
         "evidence_handles": {"type": "array", "items": {"type": "string"}},
@@ -126,7 +128,7 @@ def parse_output(raw):
         text(result["summary"], "summary", 8192, empty=True)
     except ValueError:
         raise OutputProblem("invalid_summary", "$.summary") from None
-    if type(result["proposals"]) is not list or len(result["proposals"]) > 32:
+    if type(result["proposals"]) is not list or len(result["proposals"]) > MAX_REFLECTION_PROPOSALS:
         raise OutputProblem("invalid_proposals", "$.proposals")
     decisions = result.get("pending_decisions", [])
     if type(decisions) is not list or len(decisions) > 32:

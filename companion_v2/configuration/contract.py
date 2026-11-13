@@ -11,6 +11,8 @@ drifts would show a field as locally set when it is inherited, and saving would
 write a redundant copy of a value the role layer already owns.
 """
 
+from functools import lru_cache
+
 from companion_v2.configuration.registry import ValueKind
 
 
@@ -24,8 +26,14 @@ def layers_of(target):
     return result
 
 
+@lru_cache(maxsize=128)
 def definitions_of(registry, group):
-    """Registered field definitions for one group, keyed by short name."""
+    """Registered field definitions for one group, keyed by short name.
+
+    The registry is immutable for the life of a host generation, so rebuilding
+    this mapping (and the contract derived from it) on every status read only
+    spent CPU on the 170+ field contact group.
+    """
     prefix = group + "."
     return {field.field_id.removeprefix(prefix): field
             for field in registry.group(group) if field.field_id.startswith(prefix)}
@@ -52,6 +60,7 @@ def provenance_of(snapshot, group):
     return result
 
 
+@lru_cache(maxsize=128)
 def contract_of(registry, group):
     """Bounds and kinds the workbench renders controls from.
 

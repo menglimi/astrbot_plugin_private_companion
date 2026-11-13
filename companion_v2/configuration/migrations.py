@@ -13,6 +13,7 @@ def promote_values_to_installation(runtime, fields, *, source_layers=(ConfigLaye
     Existing installation values win. When old scopes disagree, the value from
     the most recently updated source target is selected independently per field.
     """
+    runtime = runtime.configuration_store
     definitions = {field.field_id: field for field in fields}
     if not definitions:
         return ()
@@ -66,6 +67,7 @@ def promote_values_to_role(runtime, fields, *, source_layers=(ConfigLayer.WINDOW
     Existing role values win. Conflicting source windows are resolved per field
     by the most recently updated source target. Source rows are retained.
     """
+    runtime = runtime.configuration_store
     definitions = {field.field_id: field for field in fields}
     if not definitions:
         return ()

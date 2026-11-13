@@ -309,7 +309,8 @@ def read_settings(runtime, context):
     """One window read of this group; unusable stored values fall back to defaults."""
     from .configuration import LifeConfigurationOwner, configuration_fields, target_for, values
     try:
-        snapshot = LifeConfigurationOwner(runtime).read(target_for(context), configuration_fields())
+        snapshot = LifeConfigurationOwner(runtime.configuration_store).read(
+            target_for(context), configuration_fields())
         return Settings.from_values(values(snapshot))
     except (ValueError, TypeError, KeyError):
         return Settings.from_values(DEFAULTS)

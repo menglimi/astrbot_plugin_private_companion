@@ -103,7 +103,8 @@
   ],
   "bili_live_auto_reply_skip_emoticon_danmaku": true,
   "bili_live_auto_reply_guaranteed_event_types": [
-    "super_chat"
+    "super_chat",
+    "buy_guard"
   ],
   "bili_live_auto_reply_cooldown_seconds": 12,
   "bili_live_auto_reply_max_per_minute": 6,

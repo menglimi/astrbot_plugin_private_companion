@@ -14,7 +14,7 @@ from companion_v2.adapters.astrbot.native import route_id
 from companion_v2.execution.models import TaskError, digest
 from .multi_settings import MultiHostSettings
 from .native import remember_session_settings
-from .settings import HostControlError
+from .settings import HostControlError, repair_host_policy_sections
 from .bootstrap_provider import (resolve_bootstrap_provider, supported_text_provider,
                                  text_provider_catalog, text_provider_predicate)
 
@@ -97,7 +97,12 @@ class AccountSessionWebAPI:
         try:
             # Reading through the same parser as the runtime keeps a persona that
             # is shared by several Bot accounts on one role id in the editor too.
-            personas = [asdict(mapping) for mapping in MultiHostSettings.parse(controller.config).personas]
+            # The controller already holds the parsed settings; only reparse when
+            # the host has not assembled them yet.
+            parsed = controller.settings
+            if parsed is None or not hasattr(parsed, "personas"):
+                parsed = MultiHostSettings.parse(controller.config)
+            personas = [asdict(mapping) for mapping in parsed.personas]
         except (HostControlError, ValueError):
             pass
         enabled = bool(section.get("enabled", False))
@@ -613,8 +618,13 @@ class AccountSessionWebAPI:
             section.update(enabled=enabled, accounts=[{"platform_id": key[0], "account_id": key[1], "bot_id": key[2]}
                                                       for key in sorted(selected)],
                            targets=private, personas=mapped, group_targets=group_rows)
+            repaired = repair_host_policy_sections(candidate)
+            if repaired:
+                logger.warning("[CompanionV2] 保存角色映射时自动修复旧策略字段：%s", repaired)
             MultiHostSettings.parse(candidate)
             result = await controller.apply_bindings(candidate)
+            if repaired:
+                result["repaired_settings"] = repaired
             try:
                 discovered = await self._discovered()
             except (TaskError, HostControlError):

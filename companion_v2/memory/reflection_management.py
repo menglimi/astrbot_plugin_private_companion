@@ -2,7 +2,7 @@
 
 import json
 
-from companion_v2.execution.models import TaskContext, TaskError, digest, encode, require
+from companion_v2.execution.models import TaskContext, TaskError, digest, encode, require, stamp
 from companion_v2.execution.service import outcome
 
 from .management import MemoryManagement
@@ -43,7 +43,7 @@ class ReflectionManagement:
             # original account, role and audience are checked on every page.
             anchor = self._row(context, after_id) if after_id else None
             history_clause = "" if history else (
-                "AND state NOT IN ('complete', 'empty') "
+                "AND state NOT IN ('complete', 'empty', 'abandoned') "
                 "AND json_extract(receipts_json, '$.repair_batch') IS NULL "
             )
             rows = self.reflection.runtime.read_all("""SELECT * FROM memory_reflections
@@ -75,7 +75,30 @@ class ReflectionManagement:
         return await self.reflection.run(context, batch_id)
 
     @outcome
-    def enqueue(self, context, *, batch_id, operation_key):
+    def discard(self, context, *, batch_id, operation_key):
+        """Close a failed/partial batch without deleting receipts or saved facts.
+
+        Repair keeps re-reading the same old manifest; when the model cannot
+        complete it, the user needs a durable way to stop seeing the same stuck
+        item.  ``abandoned`` is terminal for the queue but the batch remains in
+        history with its receipts.
+        """
+        row = self._row(context, batch_id)
+        text(operation_key, "operation_key", 256)
+        if row["state"] in ("complete", "empty", "abandoned"):
+            return {"batch_id": row["batch_id"], "state": row["state"], "discarded": False}
+        if row["state"] not in ("failed", "partial"):
+            raise TaskError("memory_reflection_running", "only a failed or partial batch can be discarded")
+        with self.reflection.runtime.transaction() as connection:
+            result = json.loads(row["result_json"] or "{}")
+            result.setdefault("issues", []).append({"code": "memory_reflection_discarded", "path": "$"})
+            changed = connection.execute(
+                """UPDATE memory_reflections SET state = 'abandoned', result_json = ?, updated_at = ?
+                   WHERE batch_id = ? AND owner_key = ? AND state IN ('failed', 'partial')""",
+                (encode(result), stamp(self.reflection.tasks.now()), batch_id, owner_key(context)))
+            if changed.rowcount != 1:
+                raise TaskError("memory_reflection_changed", "reflection changed during discard")
+        return {"batch_id": batch_id, "state": "abandoned", "discarded": True}
         with self.reflection.runtime.transaction():
             self._row(context, batch_id)
             text(operation_key, "operation_key", 256)

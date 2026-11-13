@@ -272,7 +272,7 @@ class ModelRouter:
                                  snapshot, tuple(selected), self.generation, audit)
 
     def validate_plan(self, plan: ResolvedModelPlan):
-        consumer = self.configuration.runtime.read_one(
+        consumer = self.configuration.store.read_one(
             "SELECT generation FROM configuration_consumers WHERE consumer_id = ?", (CONSUMER,))
         if (consumer is None or plan.consumer_generation is None or self.generation != plan.consumer_generation
                 or consumer["generation"] != plan.consumer_generation):

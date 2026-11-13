@@ -18,7 +18,7 @@ from astrbot_host.binding_store import PendingBinding, write_binding
 from astrbot_host.controller import AstrBotStagingController
 from astrbot_host.multi_controller import AstrBotMultiController
 from astrbot_host.setup_api import (PROACTIVE_TEST_FAILURE_LABELS, PROACTIVE_TEST_STAGE_BY_CODE,
-                                    PROACTIVE_TEST_SUGGESTIONS, SetupWebAPI)
+                                    PROACTIVE_TEST_SUGGESTIONS, SetupWebAPI, _settle_failed_stages)
 from companion_v2.adapters.astrbot.staging import NativeAdapterTypes
 from companion_v2.execution.models import TaskError
 from companion_v2.proactive.diagnostic_models import DiagnosticSourceError
@@ -130,6 +130,31 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
                 result = SetupWebAPI._diagnostic_failure("screen", None, "authorization", code, code)
                 self.assertEqual(result["failure_title"], title)
                 self.assertIn(result["suggestion"], PROACTIVE_TEST_SUGGESTIONS.values())
+
+    def test_failed_proactive_test_closes_pending_stages_and_names_the_origin_change(self):
+        stages = [{"stage": name, "state": "passed"} for name in
+                  ("authorization", "binding", "runtime", "settings", "purpose", "trusted_candidate")]
+        stages.extend(({"stage": "model_generation", "state": "running"},
+                       {"stage": "persona_review", "state": "pending"},
+                       {"stage": "delivery", "state": "pending"},
+                       {"stage": "receipt", "state": "pending"}))
+        self.assertEqual(PROACTIVE_TEST_STAGE_BY_CODE["contact_conversation_changed"], "trusted_candidate")
+        self.assertEqual(PROACTIVE_TEST_FAILURE_LABELS["contact_conversation_changed"][0], "trusted_candidate")
+
+        _settle_failed_stages(stages, "trusted_candidate")
+        states = {item["stage"]: item["state"] for item in stages}
+        self.assertEqual(states["trusted_candidate"], "failed")
+        self.assertEqual({states[name] for name in ("model_generation", "persona_review", "delivery", "receipt")},
+                         {"skipped"})
+
+        # The failed attempt must not leave the UI looking as if generation is still running.
+        result = SetupWebAPI._diagnostic_failure(
+            "chat", None, "trusted_candidate", "contact_conversation_changed",
+            "diagnostic contact lost its original conversation", stages=stages)
+        self.assertEqual(result["failure_title"], "诊断来源会话在测试期间发生变化")
+        self.assertEqual({item["state"] for item in result["stages"]
+                          if item["stage"] in ("model_generation", "persona_review", "delivery", "receipt")},
+                         {"skipped"})
 
     def message_calls(self):
         calls = self.native.platform.client._api._wsr_api.calls
@@ -797,18 +822,13 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(clear_binding(self.controller.binding_root))
 
         target = self.controller.settings.targets[0]
-        with self.assertRaises(TaskError) as missing:
-            await self.controller.proactive_diagnostic_target()
-        self.assertEqual(missing.exception.code, "setup_binding_confirmation_required")
+        # The confirmed core window is provisioned as CORE, so clearing the
+        # binding file still lets the unique configured target be recovered.
+        self.assertEqual(await self.controller.proactive_diagnostic_target(), target)
 
         from companion_v2.identity_policy.models import AuthorizationTier
         from companion_v2.identity_policy.object_access import ObjectAccessPolicy
         policy = ObjectAccessPolicy(self.controller.runtime)
-        actor = self.controller.authority.actor(target)
-        subject = actor.subject
-        policy.set_tier(subject, AuthorizationTier.CORE,
-                        expected_revision=policy.revision, observed_at=NOW)
-        self.assertEqual(await self.controller.proactive_diagnostic_target(), target)
         binding = self.controller.binding_state()
         self.assertTrue(binding["bound"], binding)
         self.assertTrue(binding["recovered"], binding)
@@ -1041,7 +1061,7 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
         recovered_identity = recovered_session.application.tasks.identity
         self.assertTrue(any(grant.capability == GROUP and grant.grant_id.startswith("proactive-managed:")
             and grant.state.value == "active" for grant in recovered_identity.snapshot().grants))
-        legacy = recovered_session.application.runtime.read_one(
+        legacy = recovered_session.application.configuration.store.read_one(
             "SELECT value_json FROM configuration_values WHERE target_key = ? AND field_id = ?",
             (target_for(context).key, GROUP + ".enabled"))
         self.assertEqual(legacy["value_json"], "false")

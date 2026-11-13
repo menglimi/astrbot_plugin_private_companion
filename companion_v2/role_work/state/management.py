@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 from companion_v2.execution.models import TaskError, digest, require, stamp
 from companion_v2.execution.service import outcome
-from companion_v2.foundation.refs import OperationRef, VersionRef
+from companion_v2.foundation.refs import OperationRef, ScopeKind, VersionRef
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
 from companion_v2.delivery.presence_diagnostics import describe_presentation
@@ -46,6 +46,11 @@ class StateManagement:
         try:
             from .configuration import ensure_window_presentation_grants
             ensure_window_presentation_grants(self.app.runtime, self.context, now)
+        except Exception:
+            pass
+        try:
+            from .configuration import ensure_role_state_grants
+            ensure_role_state_grants(self.app.runtime, self.context, now)
         except Exception:
             pass
         with self.app.runtime.read_snapshot():
@@ -128,7 +133,7 @@ class StateManagement:
         window_token = data.get("edit_token", "")
         op_id = "state-config:" + digest([operator.subject, self.context.key, data["operation_key"]])
         operation = OperationRef(op_id, OWNER, self.context.scope, VersionRef(op_id, 1), op_id)
-        reserved = require(OperationRepository(self.app.runtime).reserve(operation,
+        reserved = require(OperationRepository(self.app.configuration.store).reserve(operation,
             parameter_hash=digest({"action": data["action"], "changes": changes,
                 "role_edit_token": role_token if role_changes else None,
                 "edit_token": window_token if window_changes else None}), observed_at=observed_at))
@@ -166,8 +171,9 @@ class StateManagement:
                     VersionRef(layer_id, 1), layer_id), expected_edit_token=window_current.edit_token,
                 changes={GROUP + "." + key: value for key, value in window_changes.items()},
                 observed_at=observed_at))
+        from .ownership import role_owner
         grant_changes = frozenset(set(role_changes).intersection(PERMISSIONS))
-        if "enabled" in role_changes:
+        if "enabled" in role_changes or "maintenance_grant_scope" in role_changes:
             grant_changes |= frozenset({"enabled"})
         if grant_changes:
             effective = require(self.app.configuration.read(operator, target=window_target,
@@ -175,7 +181,17 @@ class StateManagement:
             current_settings = {name: effective.values[GROUP + "." + name] for name in DEFAULTS}
             sync_window_grants(self.app.runtime, window_target, self.context.actor.subject,
                 current_settings, grant_changes, observed_at)
-        from .ownership import role_owner
+            if current_settings["maintenance_grant_scope"] == "role":
+                owner = role_owner(self.context)
+                for bound in tuple(self.app.state_maintenance.bindings.values()):
+                    candidate = bound[0]
+                    if (candidate.key == self.context.key
+                            or role_owner(candidate) != owner
+                            or candidate.scope.kind is not ScopeKind.PRIVATE):
+                        continue
+                    sync_window_grants(self.app.runtime, target_for(candidate),
+                        candidate.actor.subject, current_settings, frozenset({"enabled"}),
+                        observed_at)
         for bound in tuple(self.app.state_maintenance.bindings.values()):
             if role_owner(bound[0]) == role_owner(self.context):
                 try:
@@ -189,7 +205,7 @@ class StateManagement:
             # but do not replace the verified active route until native intake
             # confirms the persona switch.
             self.app.presence.bind(self.context, active=False)
-        require(OperationRepository(self.app.runtime).transition(op_id,
+        require(OperationRepository(self.app.configuration.store).transition(op_id,
             expected_state=OperationState.ACCEPTED, next_state=OperationState.COMPLETED, observed_at=observed_at))
         return {"operation_id": op_id, "replayed": False}
 
