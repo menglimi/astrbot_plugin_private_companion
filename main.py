@@ -204,6 +204,13 @@ class PrivateCompanionV2StagingPlugin(Star):
                         config_object.save_config()
                     except Exception:
                         logger.warning("[CompanionV2] 旧单目标设置已在内存迁移，但持久化失败", exc_info=True)
+            try:
+                repaired = self.staging.repair_legacy_config()
+            except Exception:
+                repaired = {}
+                logger.warning("[CompanionV2] 旧配置自愈检查失败", exc_info=True)
+            if repaired:
+                logger.warning("[CompanionV2] 启动时已自动修复旧策略字段：%s", repaired)
             # One public facade exposes the body and its seven internal modules.
             # Independent third-party integrations use their documented APIs.
             self.extension_api = UnifiedCompanionExtensionAPI(self.staging)
@@ -1313,6 +1320,8 @@ class PrivateCompanionV2StagingPlugin(Star):
         application = getattr(getattr(self.staging, "session", None), "application", None)
         if context is None or application is None:
             return
+        if not hasattr(context, "scope") or not hasattr(context, "actor"):
+            return
         from companion_v2.configuration.models import ConfigLayer, ConfigTarget
         from companion_v2.model_gateway.replacement_rules import checked_rules, match_route
         at = application.tasks.now()
@@ -1322,6 +1331,7 @@ class PrivateCompanionV2StagingPlugin(Star):
             group_id="model.conversation.reply", observed_at=at)
         if not snapshot.is_success:
             return
+        snapshot = snapshot.unwrap()
         values = {name.rsplit(".", 1)[1]: item.value for name, item in snapshot.fields.items()}
         if values.get("replacement_scope") == "plugin":
             # The saved scope says these rules belong to plugin tasks only.
@@ -1354,7 +1364,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         try:
             await self._route_core_peak_provider(event)
         except Exception as error:
-            logger.warning("[CompanionV2] 时段替换暂不可用 error_type=%s", type(error).__name__)
+            logger.warning("[CompanionV2] 时段替换暂不可用 error_type=%s", type(error).__name__, exc_info=True)
 
     @filter.on_llm_request(priority=250000)
     async def prepare_companion_core_request(self, event: AstrMessageEvent, req):

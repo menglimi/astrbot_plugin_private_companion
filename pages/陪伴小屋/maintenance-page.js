@@ -35,7 +35,7 @@ window.CompanionMaintenancePage = (() => {
   const taskName = value => ({
     "conversation.reply": "对话回复", "proactive.plan": "主动联系规划", "proactive.compose": "主动联系写作",
     "conversation.astrbot_core": "AstrBot 核心对话",
-    "proactive.judge": "主动联系复核", "memory.reflect": "记忆整理",
+    "proactive.judge": "主动联系复核", "memory.reflect": "事实整理",
     "role.state.maintain": "角色状态", "calendar.plan": "日程规划",
     "role.reading.consume": "阅读理解", "role.growth.progress": "成长进展",
     "role.journal.diary": "日记", "role.journal.dream": "梦境",
@@ -46,7 +46,7 @@ window.CompanionMaintenancePage = (() => {
     "conversation.image_narration": "当前图片转述", "conversation.video_narration": "原生视频转述",
     "conversation.image_review": "图片审核", "image_review": "图片审核", "screen.interpretation": "屏幕理解",
     "screen.peek": "屏幕速览", "role.state.maintenance": "状态维护",
-    "role.calendar.plan": "日历规划", "memory.reflection": "记忆反思",
+    "role.calendar.plan": "日历规划", "memory.reflection": "整理与反思",
     "conversation.group.review": "群聊审核",
     "reality_touch_camera": "摄像头视觉分析",
     "reality_touch": "现实陪伴文案", "wakeup_alarm_message": "起床提醒文案",
@@ -58,7 +58,7 @@ window.CompanionMaintenancePage = (() => {
     ["对话", [["conversation.reply", "对话回复", "AstrBot 核心回复的 V2 附加提示"],
       ["conversation.image_narration", "当前图片转述", "为本轮已授权图片生成简短文字描述"],
       ["conversation.video_narration", "原生视频转述", "将原视频交给支持视频输入的模型直接理解"]]],
-    ["主动与记忆", [["proactive.plan", "主动联系规划", "双阶段模式下判断时机与切口"], ["proactive.compose", "主动联系写作", "生成主动联系正文"], ["proactive.judge", "主动联系复核", "复核是否符合当前人格与来源"], ["memory.reflect", "记忆整理", "从已授权素材整理认识"]]],
+    ["主动与整理", [["proactive.plan", "主动联系规划", "双阶段模式下判断时机与切口"], ["proactive.compose", "主动联系写作", "生成主动联系正文"], ["proactive.judge", "主动联系复核", "复核是否符合当前人格与来源"], ["memory.reflect", "事实整理", "从已授权素材整理认识"]]],
     ["生活与成长", [["calendar.plan", "日程规划", "基于已有目标规划下一步"], ["role.state.maintain", "角色状态", "维护角色的连续生活状态"], ["role.reading.consume", "阅读理解", "阅读实际提供的原文"], ["role.growth.progress", "成长进展", "根据已完成确认提出进展"], ["role.self_review", "自我复盘", "回看已完成的角色生活记录"], ["role.expression.learn", "表达学习", "从已授权表达样本提炼风格"]]],
     ["私人书写", [["role.journal.diary", "日记", "保存私人书写"], ["role.journal.dream", "梦境", "保存梦境记录"], ["role.journal.derive", "书写整理", "整理已有文字素材"], ["role.journal.select", "素材选择", "选择本次书写素材"]]],
     ["视觉与媒体", [["conversation.context_image_caption", "图片摘要", "从已授权图片提取可见事实"], ["image_review", "图片审核", "按合同检查图片内容"], ["conversation.image_review", "图片审核", "按合同检查图片内容"], ["screen.interpretation", "屏幕理解", "理解已授权屏幕画面"], ["screen.peek", "屏幕速览", "对已授权屏幕进行短摘要"]]],
@@ -475,15 +475,15 @@ window.CompanionMaintenancePage = (() => {
     if (linkage.state === "ready") {
       const categories = Array.isArray(linkage.categories) ? linkage.categories : [];
       const labels = {profile: "个人资料", preference: "偏好", relationship: "关系", private_conversation: "私聊内容", other: "其他"};
-      return '<section class="maint-memory-linkage" aria-label="V2 记忆联动计数"><div><strong>V2 联动摘要</strong><span>' +
-        escapeHtml(linkage.display_name || "记忆插件") + ' · 只读分类计数，不含记忆正文</span></div><dl>' +
+      return '<section class="maint-memory-linkage" aria-label="本插件联动计数"><div><strong>本插件联动摘要</strong><span>' +
+        escapeHtml(linkage.display_name || "外部记忆插件") + ' · 只读分类计数</span></div><dl>' +
         categories.map(item => '<div><dt>' + escapeHtml(labels[item.key] || "其他") + '</dt><dd>' + number(item.count) + '</dd></div>').join("") +
         '<div><dt>合计</dt><dd>' + number(linkage.counts?.total) + '</dd></div></dl></section>';
     }
     if (linkage.state === "not_owner") {
-      return '<section class="maint-memory-linkage is-muted"><div><strong>V2 联动摘要</strong><span>当前长期记忆由 V2 提供，外部摘要未读取。</span></div></section>';
+      return '<section class="maint-memory-linkage is-muted"><div><strong>本插件联动摘要</strong><span>当前由本插件提供。</span></div></section>';
     }
-    return '<section class="maint-memory-linkage is-muted"><div><strong>V2 联动摘要暂不可用</strong><span>外部 Token 账本与 V2 角色预算仍分别统计。</span></div></section>';
+    return '<section class="maint-memory-linkage is-muted"><div><strong>本插件联动摘要暂不可用</strong><span>外部账本与本插件预算分别统计。</span></div></section>';
   }
 
   function externalTokenMarkup(sourceKey) {
@@ -882,7 +882,8 @@ window.CompanionMaintenancePage = (() => {
       risk: "改错可能让模型把摘要当证据、把旧记忆套到别人，或反复背诵时间戳。"},
   ];
   const SYSTEM_PROMPT_LIMIT = 8000;
-  const CONFIG_PREFIX = "/astrbot_plugin_private_companion/config";
+  const PLUGIN_PREFIX = "/astrbot_plugin_private_companion";
+  const CONFIG_PREFIX = PLUGIN_PREFIX + "/config";
   const SYSTEM_PROMPT_OPERATION = "maintenance-system-prompt";
 
   function systemPromptEntry(key) {
@@ -890,9 +891,20 @@ window.CompanionMaintenancePage = (() => {
   }
 
   function configEndpoint() {
-    const endpoint = window.CompanionProduct?.role?.()?.config_api;
-    if (typeof endpoint !== "string" || !endpoint.startsWith(CONFIG_PREFIX)
-        || /[?#%\\:]/.test(endpoint)
+    const role = window.CompanionProduct?.role?.();
+    /* Older inventories exposed only config_api, and a group-only role used to
+       have none. role_config_api is the role-owned fallback for exactly that
+       case; prefer the target-scoped route when both exist. */
+    const endpoint = role?.config_api || role?.role_config_api;
+    /* Single-host exposes the installation route `/config`; a multi-host role
+       exposes `/targets/<id>/roles/<hash>/config`. Both end in `/config`, so do
+       not require the single-host prefix literally. */
+    if (typeof endpoint !== "string"
+        || !(endpoint === CONFIG_PREFIX
+             || endpoint.startsWith(PLUGIN_PREFIX + "/host/targets/")
+             || endpoint.startsWith(PLUGIN_PREFIX + "/targets/"))
+        || !endpoint.endsWith("/config")
+        || /[?#%\\:\s]/.test(endpoint)
         || endpoint.split("/").slice(1).some(part => !part || part === "." || part === "..")) {
       throw new Error("当前对象没有配置管理接口。请先选择已初始化的会话角色。");
     }
@@ -2121,7 +2133,7 @@ window.CompanionMaintenancePage = (() => {
       ],
       budget: [
         ["软限额会中断正在运行的任务吗？", "不会。软限额只影响达到阈值后新建的可选后台任务；已运行任务继续完成。", "budget-block", "查看限额"],
-        ["Provider 余额等于本地预算吗？", "不等于。本页只显示 V2 本地角色预算，当前没有统一授权的 Provider 余额接口。", "budget-block", "查看本地预算"],
+        ["Provider 余额等于本地预算吗？", "不等于。本页只显示 本插件角色预算，当前没有统一授权的 Provider 余额接口。", "budget-block", "查看本地预算"],
       ],
       cache: [
         ["低命中能证明缓存被破坏吗？", "不能。低命中和结构签名只提供排查线索，命中变化也不证明某个请求字段导致缓存失效。", "cache-panel", "查看缓存样本"],
@@ -2989,9 +3001,9 @@ window.CompanionMaintenancePage = (() => {
     const value = balance.available
       ? balance.amount == null || String(balance.amount).trim() === "" ? "未提供余额" : balanceAmount(balance.amount) + " " + (balance.currency_label || "额度")
       : status;
-    const detail = !state.balanceLoaded ? "读取已配置的模型服务余额；查询结果与 V2 本地角色预算分开显示。"
+    const detail = !state.balanceLoaded ? "读取已配置的模型服务余额；查询结果与 本插件角色预算分开显示。"
       : !balance.configured ? "未配置余额端点；NewAPI 需要单独的用户访问令牌。"
-      : balance.available ? "查询于 " + time(balance.observed_at) + "；不会并入 V2 本地角色预算。"
+      : balance.available ? "查询于 " + time(balance.observed_at) + "；不会并入 本插件角色预算。"
       : balance.state === "configuration_invalid" ? "余额查询配置无效，请检查余额查询配置。"
       : "查询失败，请检查 HTTPS 地址、访问令牌与额度单位配置。";
     return '<div class="maint-balance-availability" data-state="' + (balance.available ? "ok" : balance.configured ? "warn" : "unknown") + '">' +

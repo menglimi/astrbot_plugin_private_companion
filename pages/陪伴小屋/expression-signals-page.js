@@ -386,7 +386,9 @@ window.CompanionExpressionSignalsPage = (() => {
   function renderEvidence(item) {
     const evidence = Array.isArray(item.evidence) ? item.evidence : [];
     if (!evidence.length || item.unavailable_reason) return "";
-    return `<details class="lh-signal-evidence"><summary>依据 · ${evidence.length} 条</summary><ol>${evidence.slice(0, 8).map(entry => `<li>${e(entry)}</li>`).join("")}</ol></details>`;
+    const snapshot = item.evidence_snapshot
+      ? '<p class="lh-signal-evidence-note">依据为学习时保存的摘录；原消息可能已被清理。</p>' : "";
+    return `${snapshot}<details class="lh-signal-evidence"><summary>依据 · ${evidence.length} 条</summary><ol>${evidence.slice(0, 8).map(entry => `<li>${e(entry)}</li>`).join("")}</ol></details>`;
   }
 /* 窗口轮换只结束这条规则的可注入范围，依据本身没有被撤回；按状态说明现在
      还能做什么，不承诺之后会恢复，也不把停用说成能释放容量。 */
@@ -541,6 +543,10 @@ window.CompanionExpressionSignalsPage = (() => {
     const visible = items.filter(item=>(kindFilter==="all" || item.expression?.kind===kindFilter)
       && (sourceFilter==="all" || item._source.key===sourceFilter));
     const rows = visible.map(renderItem).join("");
+    const unavailablePending = stateFilter === "pending"
+      ? items.filter(item => item.unavailable_reason && item.unavailable_reason !== "expression_rule_window_rotated").length : 0;
+    const cleanup = unavailablePending
+      ? `<button type="button" class="lh-command" data-signal-cleanup ${busy || writing ? "disabled" : ""}>清理失效候选</button>` : "";
     const more = hasMore() ? `<button type="button" class="lh-signal-more lh-command" data-signal-more ${busy ? "disabled" : ""}>加载更多</button>` : "";
     const cap = capacity ? `待审与启用 ${capacity.active} / ${capacity.limit}${rotatedRules > 0 ? ` · 另有 ${rotatedRules} 条仅原会话窗口` : ""}` : `${items.length} 条`;
     const issueList = readIssues.length ? `<details class="lh-signal-evidence"><summary>查看读取明细 · ${readIssues.length} 个来源</summary><ol>${readIssues.map(issue => `<li data-code="${e(issue.code)}"><b>${e(issue.label)}</b>：${e(issue.detail)}</li>`).join("")}</ol></details>` : "";
@@ -558,7 +564,7 @@ window.CompanionExpressionSignalsPage = (() => {
         ${importPreview ? `<div class="lh-expression-import-preview" role="status"><div><strong>${e(importPreview.title || "表达分享包")}</strong><span>${e(importPreview.importable_rule_count)} 条待导入 / ${e(importPreview.duplicate_rule_count)} 条重复 / ${e(importPreview.capacity_blocked_count)} 条超出容量</span></div>${importPreview.candidates?.length ? `<ul>${importPreview.candidates.slice(0, 6).map(item => `<li><b>${e(DIMENSION[item.dimension] || item.dimension)}</b><span>${e(item.observation)}</span><small>${e(item.proposal)}</small>${renderApplicability(item.applicability)}</li>`).join("")}</ul>` : ""}${importPreview.rejected_count ? `<details><summary>${e(importPreview.rejected_count)} 项未通过</summary><ul>${(importPreview.rejected || []).slice(0, 10).map(item => `<li>第 ${e(Number(item.group_index) + 1)} 组${item.rule_index == null ? "" : `第 ${e(Number(item.rule_index) + 1)} 条`}：${e(item.reason)}</li>`).join("")}</ul></details>` : ""}<small>确认后进入待审列表，采纳后才会用于回复。</small></div>` : ""}
       </div>${transferNotice ? `<p class="lh-inline-status ${transferError ? "is-error" : ""}" role="status">${e(transferNotice)}</p>` : ""}</section>` : "";
     root.innerHTML = `<section class="lh-signal-list" aria-label="表达规则库"><header class="lh-signal-head"><div><h3>表达规则库</h3><span class="lh-signal-capacity">${e(cap)}</span></div>
-      <div class="lh-signal-head-tools"><a class="lh-command" href="#manage/learning/strategy">学习设置</a><button type="button" class="lh-command" data-share-toggle aria-expanded="${transferOpen}">${transferOpen ? "收起分享" : "分享 / 导入"}</button><button type="button" class="lh-refresh" data-signal-refresh aria-label="重新读取" title="重新读取" ${busy || transferBusy ? "disabled" : ""}><i data-lucide="refresh-cw"></i></button></div></header>
+      <div class="lh-signal-head-tools"><a class="lh-command" href="#manage/learning/strategy">学习设置</a>${cleanup}<button type="button" class="lh-command" data-share-toggle aria-expanded="${transferOpen}">${transferOpen ? "收起分享" : "分享 / 导入"}</button><button type="button" class="lh-refresh" data-signal-refresh aria-label="重新读取" title="重新读取" ${busy || transferBusy ? "disabled" : ""}><i data-lucide="refresh-cw"></i></button></div></header>
       <div class="lh-signal-state-filters" role="group" aria-label="规则状态">${stateTabs}</div>
       <div class="lh-signal-toolbar"><div class="lh-signal-filters" role="group" aria-label="表达规则筛选">${filters}</div></div>
       <div class="lh-signal-selects"><label>学习类型<select data-rule-kind-filter><option value="all">全部类型</option><option value="style" ${kindFilter==="style"?"selected":""}>情境表达</option><option value="grammar" ${kindFilter==="grammar"?"selected":""}>语法句式</option></select></label>
@@ -605,6 +611,34 @@ window.CompanionExpressionSignalsPage = (() => {
     const refreshed = await read(current, "refresh");
     if (!mounted(current)) return;
     if (refreshed) { notice = resultNotice; error = resultError; }
+    render();
+  }
+  async function cleanupUnavailable() {
+    if (busy || writing || !sources.length) return;
+    if (!window.confirm("清理后这些候选会进入「已拒绝」，不能再采纳。确定清理所有原文已失效的待审候选？")) return;
+    const current = mountTicket;
+    busy = true; writing = true; notice = ""; error = false; render();
+    let rejected = 0, failed = false;
+    try {
+      for (const source of sources) {
+        try {
+          const result = await api("POST", source.apiBase + "/style/cleanup", {
+            operation_key: operationKey("cleanup"),
+          });
+          rejected += Number(result.rejected || 0);
+        } catch (_) {
+          failed = true;
+        }
+      }
+    } catch (_) {
+      failed = true;
+    }
+    if (!mounted(current)) return;
+    writing = false;
+    await read(current);
+    busy = false;
+    notice = failed ? "部分来源清理失败，请重新读取后再试。" : `已清理 ${rejected} 条原文失效的待审候选。`;
+    error = failed;
     render();
   }
   async function exportRules() {
@@ -718,6 +752,7 @@ window.CompanionExpressionSignalsPage = (() => {
     if (filterButton) { const next = FILTERS.some(([key]) => key === filterButton.dataset.signalFilter) ? filterButton.dataset.signalFilter : "all"; if (next !== filter) { filter = next; void read(mountTicket); } return; }
     if (event.target.closest("[data-signal-refresh]")) { void read(mountTicket, "refresh"); return; }
     if (event.target.closest("[data-signal-more]")) { void read(mountTicket, "append"); return; }
+    if (event.target.closest("[data-signal-cleanup]")) { void cleanupUnavailable(); return; }
     const action = event.target.closest("[data-signal-action]");
     if (action) { if (action.dataset.signalAction === "retire") { confirming = action.dataset.id; render(); } else void command(action.dataset.id, action.dataset.signalAction); return; }
     const confirm = event.target.closest("[data-signal-confirm]");

@@ -27,7 +27,12 @@ def install_native_reset_marker(native_context):
 
     active = ContextVar("companion_v2_native_context_reset", default=None)
     commands = native.ConversationCommands
-    original_clear = native._clear_third_party_agent_runner_state
+    original_clear = getattr(native, "_clear_third_party_agent_runner_state", None)
+    if not callable(original_clear):
+        # AstrBot 4.27.60 and some vendor builds do not expose the internal
+        # runner reset helper this bridge wraps.  The reset marker is optional;
+        # plugin startup must not fail because the host is older.
+        return lambda: None
     if callable(getattr(commands, "reset", None)):
         bindings = ((commands, "reset"), (commands, "new_conv"))
     else:

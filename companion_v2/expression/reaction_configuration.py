@@ -134,7 +134,7 @@ def read_snapshot(runtime, context, *, override=None):
     copied into the installation layer during host preparation. A malformed
     stored value never blocks a turn: the defaults are returned instead.
     """
-    snapshot = SparseConfigurationOwner(runtime).read(target_for(context), field_names())
+    snapshot = SparseConfigurationOwner(runtime.configuration_store).read(target_for(context), field_names())
     values = {key.removeprefix(GROUP + "."): field.value for key, field in snapshot.fields.items()}
     if override is not None:
         values.update(override)
@@ -156,6 +156,7 @@ def migrate_window_values(runtime):
     """
     from companion_v2.configuration.models import encode
 
+    runtime = runtime.configuration_store
     installation = ConfigTarget(runtime.installation_id, ConfigLayer.INSTALLATION)
     prefix = GROUP + "."
     definitions = {field.field_id: field for field in configuration_fields()}

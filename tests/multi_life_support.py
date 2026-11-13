@@ -91,7 +91,8 @@ class MultiLifeFixture(MultiFixture):
         await self.until(lambda: not app.life_runtime.active_handles and not app.journal_schedule.active_handles)
 
     async def model(self, payload, tools):
-        persona = "第二人格" if payload["messages"][0]["content"] == "你是第二个人格。" else "原人格"
+        persona = ("第二人格" if payload["messages"][0]["content"].startswith("你是第二个人格")
+                   else "原人格")
         materials = {}
         for message in payload["messages"]:
             if message["role"] == "user":

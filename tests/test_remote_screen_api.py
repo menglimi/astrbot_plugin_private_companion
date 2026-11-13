@@ -6,6 +6,7 @@ import secrets
 from types import SimpleNamespace as NS
 import unittest
 
+from tests import astrbot_data_root  # Isolate the SDK before importing the host.
 from astrbot.api.web import PluginRequest, bind_request_context
 from starlette.requests import Request
 

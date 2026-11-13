@@ -274,6 +274,7 @@
 .role-profile-draft-compose textarea{min-height:76px;padding:var(--sp-2) var(--sp-3)}
 .role-profile-draft-compose select{min-height:40px;padding:0 var(--sp-3);resize:none}
 .role-profile-draft-persona{display:grid;gap:var(--sp-1)}
+.role-profile-draft-persona select{overflow-y:auto;overscroll-behavior:contain}
 .role-profile-draft-source-picks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2)}
 .role-profile-draft-field textarea{min-height:72px;padding:var(--sp-2)}
 .role-profile-draft-field select{min-height:42px;padding:0 var(--sp-3)}

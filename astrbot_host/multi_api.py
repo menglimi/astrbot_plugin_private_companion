@@ -57,6 +57,10 @@ INSTALLATION_CONFIGURATION_SECTIONS = ("proactive.contact", "reaction", "budget"
                                        "private_access_installation")
 TARGET_CONFIGURATION_SECTIONS = tuple(name for name in SECTIONS
     if name not in INSTALLATION_CONFIGURATION_SECTIONS)
+# Group windows have no private scope, but role-owned fixed prompt blocks still
+# need a route when the role only exists in a group. Do not expose window or
+# relationship editors through that group path.
+GROUP_CONFIGURATION_SECTIONS = ("system.prompts",)
 
 
 def configuration_routes(reply_route, view, *, allowed_sections=None):
@@ -157,8 +161,9 @@ class MultiHostWebAPI:
         settings = self.controller.settings
         if settings is None:
             return []
-        # 角色级配置路由只在私聊目标上注册；群目标打开角色档案/系统提示词时，
-        # 借同一个角色同一个 Bot 的私聊路由，不能给一个永远 404 的群路径。
+        # 角色级配置路由优先借同一个角色同一个 Bot 的私聊目标；只有群目标的
+        # 角色也不能让系统提示词页面变成死路，因此保留一条仅含 system.prompts
+        # 的群内角色路由（见 GROUP_CONFIGURATION_SECTIONS）。
         private_roles = {}
         for candidate in settings.all_targets:
             if isinstance(candidate, GroupTarget):
@@ -178,13 +183,13 @@ class MultiHostWebAPI:
              "state_api": (None if isinstance(target, GroupTarget) else
                            PREFIX + "/targets/" + target.target_id + "/roles/" + digest(role) + "/state"),
              "reply_api": PREFIX + "/targets/" + target.target_id + "/roles/" + digest(role) + "/reply",
-             "config_api": ((PREFIX + "/targets/" + (
-                                private_roles[(target.bot_id, role)] if isinstance(target, GroupTarget)
+             "config_api": (PREFIX + "/targets/" + (
+                                private_roles[(target.bot_id, role)]
+                                if isinstance(target, GroupTarget) and (target.bot_id, role) in private_roles
                                 else target.target_id)
-                            + "/roles/" + digest(role) + "/config")
-                           if (not isinstance(target, GroupTarget)
-                               or (target.bot_id, role) in private_roles) else None),
-             "role_config_api": None,
+                            + "/roles/" + digest(role) + "/config"),
+             "role_config_api": (PREFIX + "/targets/" + target.target_id + "/roles/" + digest(role) + "/config"
+                                 if isinstance(target, GroupTarget) else None),
              "model_api": PREFIX + "/targets/" + target.target_id + "/roles/" + digest(role) + "/model",
              "perception_native_api": (None if isinstance(target, GroupTarget) else
                            PREFIX + "/targets/" + target.target_id + "/roles/" + digest(role) + "/perception-native"),
@@ -376,6 +381,9 @@ class MultiHostWebAPI:
                     routes.extend(LegacyGroupDataWebAPI(self.controller, target["target_id"], role["role_id"]).routes(
                         role["legacy_group_data_api"]))
                 if role["memory_api"] is None:
+                    view = TargetControllerView(self.controller, target["target_id"], role["role_id"])
+                    routes.extend(configuration_routes(role["reply_api"], view,
+                        allowed_sections=GROUP_CONFIGURATION_SECTIONS))
                     continue
                 source_target_id = getattr(self.controller, "role_source_target_id",
                     lambda _role_id, fallback: fallback)(role["role_id"], target["target_id"])

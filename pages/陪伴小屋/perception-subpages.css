@@ -13,6 +13,9 @@
 .perception-config-page-heading{display:flex;align-items:baseline;gap:var(--sp-2);margin:0 0 var(--sp-3);padding:0 0 var(--sp-3);border-bottom:1px solid var(--t-line)}
 .perception-config-page-heading span{color:var(--t-accent);font-size:var(--fs-body);font-weight:700;font-variant-numeric:tabular-nums}
 .perception-config-page-heading h2{margin:0;color:var(--t-text-strong);font-size:var(--fs-title);line-height:1.35}
+.perception-config-workspace.is-single-item .perception-config-grid{grid-template-columns:minmax(0,1fr)}
+.perception-config-workspace.is-single-item .perception-config-grid .perception-subpanel{grid-column:1/-1!important;grid-row:auto!important}
+.perception-config-workspace.is-single-item .perception-config-page{width:100%}
 .perception-config-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:var(--sp-3);min-width:0}
 .perception-config-zone{display:contents}
 .perception-config-zone[hidden]{display:none}

@@ -24,6 +24,11 @@ class LocalDateContextTests(unittest.TestCase):
         self.assertEqual([period_label(hour) for hour in (0, 5, 8, 11, 13, 18, 22, 23)],
                          ["凌晨", "早上", "上午", "中午", "下午", "晚上", "夜里", "夜里"])
 
+    def test_calendar_instruction_does_not_compress_real_world_durations(self):
+        self.assertIn("elapsed_minutes", date_context.CALENDAR_INSTRUCTION)
+        self.assertIn("煮饭", date_context.CALENDAR_INSTRUCTION)
+        self.assertIn("不能只隔一两分钟", date_context.CALENDAR_INSTRUCTION)
+
     def test_fixed_holiday_name_is_a_calendar_label(self):
         result = project_local_date(datetime(2026, 5, 1, 4, tzinfo=timezone.utc), "Asia/Shanghai")
         self.assertEqual(result["fixed_gregorian_holiday"], "劳动节")

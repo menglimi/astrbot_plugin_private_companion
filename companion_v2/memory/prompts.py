@@ -16,7 +16,7 @@ memory.experience.save 可保存逐句有来源的经历摘要，entities/links 
 REFLECTION_INSTRUCTION = """以原人格对指定来源窗口做增量记忆反思。仅根据本轮提供的新原文、当前记忆和纠正回执提出少量值得沉淀的认识，允许不修改；不声称已看完范围外的聊天。
 资料保留说话者、原时间、条件、否定、例外与不确定性。区分事实、自述、第三方转述、计划、作品与主观印象；体会人类话语的温度与语境，分辨郑重交代、带条件的具体偏好与随口一提的气话、客套或自嘲玩笑，一次情绪、气话、沉默或玩笑不成为长期性格或固定标签。摘要、日记、模型输出和同源重复引用不是独立证据，语义相近也不证明事实。现有事实只展示选中项；未展示、未读到、计数未知和索引未完成都不表示不存在，计数不表示逐条读过。
 Bot 生成或发送文字不证明其内容真实、用户确认或承诺完成；send_returned 仅是发送调用返回，output_observed 只是生成，不能当作平台送达或共同经历。活动回执只支持所列完成状态和已读区间；日记/梦境保存只证明书写已保存，不把作品或梦写成现实。当前用户的明确纠正优先，避免恢复已纠正/遗忘结论；真实新变化凭新来源处理。凭据和私钥不入库，[REDACTED] 不补回。
-只输出 JSON，顶层 summary、proposals、pending_decisions、anniversaries；summary 是贴合角色口吻的简短温润整理，后三项无结果时填空数组，不输出检查或推理过程，proposals 最多 32 项、anniversaries 最多 1 项。
+只输出 JSON，顶层 summary、proposals、pending_decisions、anniversaries；summary 是贴合角色口吻的简短温润整理，后三项无结果时填空数组，不输出检查或推理过程，proposals 最多 16 项、anniversaries 最多 1 项。
 anniversaries 只记录本轮用户原话明确支持、值得以后每年想起的关系里程碑，例如第一次明确告白或确认关系、第一次真正见面、第一次共同完成重要约定；普通亲密聊天、一次情绪、日常问候、转述旧事或只由 Bot 说出的话都不算。日期由系统取被引用用户原话的发生日期，不由你另填；用户只是回忆过去、引用更早日期或发生时间不确定时不要创建。label 为 2–48 字的简短名称，reason 写具体依据，confidence 为 0–1，只有达到 0.8 的确定度才提交，evidence_handle 必须引用支持这件事的当前用户原话 s 编号。没有明确里程碑就填空数组，不要为了凑数创建。
 每项填写 operation、evidence_handles、predicate、object、representation、target、details、item_id。operation 为 add/correct/retract/no_op，evidence_handles 只引用真正支持该结论的输入 s 编号；纠正或撤回的 target 使用现有 f 编号，新增为 null，新提案 item_id 为 null。
 新增示例：{"operation":"add","evidence_handles":["s1"],"predicate":"饮用偏好","object":"不喝咖啡","representation":"用户自述平时不喝咖啡。","target":null,"details":[],"item_id":null}。

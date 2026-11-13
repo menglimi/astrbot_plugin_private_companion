@@ -14,10 +14,17 @@ def received_input(runtime, room, text, *, turn_id, visual_context_used=False):
 
 
 def delivered_output(runtime, room, payload, *, transcript=None):
-    if room.native_v2 is None or payload.get("type") not in {"bot_text", "audio", "tts_fallback"}:
+    if payload.get("type") not in {"bot_text", "audio", "tts_fallback"}:
         return
     text = str(payload.get("display_text") or payload.get("text") or "").strip()
     if not text:
+        return
+    if room.native_v2 is None:
+        # Compatibility rooms do not have native observations; only the
+        # automatic watch comment needs to reach the QQ conversation, and only
+        # after the room actually accepted the payload.
+        if getattr(runtime, "sync_astrbot_conversation", False) and payload.get("source") == "watch_comment":
+            runtime._create_background_task(runtime._record_astrbot_assistant(room, text))
         return
     runtime._create_background_task(runtime._push_live_subtitle(text, source="together_companion"))
     if runtime.record_visible_turns:

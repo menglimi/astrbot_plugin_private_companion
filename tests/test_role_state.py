@@ -237,6 +237,14 @@ class RoleStateTests(StateFixture, unittest.IsolatedAsyncioTestCase):
         app.role_state.write(context, data=legacy, expected_revision=0, operation_key="legacy")
         self.assertIsNone(app.role_state.read(context)["values"]["online_mode"])
 
+    async def test_role_grant_scope_is_saved_with_the_state_switch(self):
+        _, app, context, manager = self.setup_state()
+        self.configure(manager, enabled=True, maintenance_grant_scope="role")
+        saved = manager.status(self.core).unwrap()["settings"]
+        self.assertEqual(saved["maintenance_grant_scope"], "role")
+        self.assertTrue(app.tasks.identity.authorize(context.actor, scope=context.scope,
+            capability="role.state.maintain", observed_at=NOW).is_success)
+
     async def test_short_status_and_online_mode_share_presence_grant(self):
         _, app, context, manager = self.setup_state()
         self.configure(manager, presence_enabled=True, online_status_enabled=True)

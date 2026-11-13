@@ -19,6 +19,7 @@ class CapabilityConfigurationOwner:
     """Existing capability_settings stays authoritative and has no inheritance sentinel."""
 
     supports_reset = False
+    store_independent = True
 
     def __init__(self, runtime: StorageRuntime, *, extension_id: str) -> None:
         if not isinstance(extension_id, str) or not extension_id or extension_id != extension_id.strip():

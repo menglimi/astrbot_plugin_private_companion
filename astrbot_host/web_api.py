@@ -41,6 +41,7 @@ from .image_material_api import ImageMaterialsWebAPI
 from .qzone_api import QzoneWebAPI
 from .host_options_api import HostOptionsWebAPI
 from .storage_api import StorageWebAPI
+from .log_api import LogWebAPI
 from .display_names import display_names
 from .huawei_health.api import HuaweiHealthWebAPI
 
@@ -121,6 +122,7 @@ class StagingWebAPI:
         self.state = StateWebAPI(controller)
         self.reply = ReplyWebAPI(controller)
         self.model = ModelWebAPI(controller)
+        self.logs = LogWebAPI(controller)
         self.integration = IntegrationWebAPI(controller)
 
     def register(self) -> None:
@@ -144,7 +146,7 @@ class StagingWebAPI:
         snapshot = list(registered) if isinstance(registered, list) else None
         try:
             all_routes = [(API_PREFIX + suffix, handler, methods, description)
-                          for suffix, handler, methods, description in routes] + self.relationships.routes() + self.backup.routes() + self.memory.routes() + self.life.routes() + self.growth.routes() + self.state.routes() + self.reply.routes() + self.model.routes() + PageWebAPI(self.controller).routes() + self.integration.routes() + AcquaintanceWebAPI(self.controller).routes()
+                          for suffix, handler, methods, description in routes] + self.relationships.routes() + self.backup.routes() + self.memory.routes() + self.life.routes() + self.growth.routes() + self.state.routes() + self.reply.routes() + self.model.routes() + list(self.logs.routes()) + PageWebAPI(self.controller).routes() + self.integration.routes() + AcquaintanceWebAPI(self.controller).routes()
             all_routes += SemanticWebAPI(self.controller).routes()
             all_routes += PerceptionWebAPI(self.controller).routes()
             all_routes += NativeExtensionWebAPI(self.controller).routes()
