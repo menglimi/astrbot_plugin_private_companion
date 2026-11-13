@@ -11,7 +11,12 @@ from astrbot.core.agent.message import Message
 from astrbot.core.message.components import Plain, Record
 
 from companion_v2.conversation.segment_control import controlled_parts
-from companion_v2.conversation.voice_reply import VoiceReplyPolicy, capability_instruction, separate_spoken
+from companion_v2.conversation.voice_reply import (
+    VoiceReplyPolicy,
+    capability_instruction,
+    detected_speech_language,
+    separate_spoken,
+)
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA
 from .core_reply_tool_dispatch import active_core_runner
 from .core_reply_voice import observe_core_voice_response
@@ -31,10 +36,20 @@ def _should_repair(core, response):
     text = getattr(response, "completion_text", "") or ""
     original = getattr(core.get("prepared", {}).get("native_input"), "text", "")
     original = original or core.get("prepared", {}).get("text", "")
-    return (isinstance(policy, VoiceReplyPolicy) and policy.trigger_mode in {"always", "request"}
+    if not (isinstance(policy, VoiceReplyPolicy) and policy.trigger_mode in {"always", "request"}
             and policy.generation_mode == "model_tag" and text.strip()
-            and not _text_only(original) and not separate_spoken(text, policy)[1]
-            and core.get("_voice_authoring_attempted_response") is not response)
+            and not _text_only(original) and core.get("_voice_authoring_attempted_response") is not response):
+        return False
+    _, spoken = separate_spoken(text, policy)
+    # An existing voice tag proves the model produced a spoken span, but not
+    # that it spoke the configured language.  In ja+translation mode a Chinese
+    # speech span beside Japanese visible text used to skip repair entirely.
+    wrong_language = policy.language != "zh" and any(
+        detected_speech_language(speech)
+        and detected_speech_language(speech) != policy.language
+        for _, speech in spoken
+    )
+    return not spoken or wrong_language
 
 
 def _reply_parts(core, draft):
