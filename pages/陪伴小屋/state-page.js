@@ -324,9 +324,9 @@ window.CompanionStatePage = (() => {
         ${dashboardItem("hunger","饥饿",hunger,"utensils","人格共享模拟","tone-hunger")}
         ${dashboardItem("sleep","睡眠",sleep,"moon-star",`${settings.enabled===false||settings.sleep_enabled===false?"状态模拟未运行":"状态模拟已启用"} · ${status.sleep_schedule?.enabled?"自动作息已启用":"自动作息未启用"}`,"tone-sleep")}
         ${dashboardItem("cycle","生理期",phaseLabel(status),"calendar-heart",settings.cycle_enabled?"人格共享模拟":"周期模拟未开启","tone-cycle")}
+        ${dashboardItem("location","位置",valueLabel(values.location,settings.location_enabled!==false),"map-pin","对话中记录的人格位置","tone-location")}
         ${dashboardItem("mood","心情",mood,"smile","心情模拟设置","tone-mood")}
         ${dashboardItem("busy","忙碌",valueLabel(values.busy,settings.busy_enabled!==false),"briefcase-business","日程状态与忙碌处理","tone-busy")}
-        ${dashboardItem("location","位置",valueLabel(values.location,settings.location_enabled!==false),"map-pin","对话中记录的人格位置","tone-location")}
       </div>
       <footer><span class="state-dashboard-status ${maintenance.tone}" role="status"><i aria-hidden="true"></i>${e(maintenance.label)}</span>
         <span>${maintenance.scheduled&&status.maintenance?.enabled!==false&&status.maintenance?.next_at?`下次更新 ${e(when(status.maintenance.next_at))}`:""}</span></footer>
