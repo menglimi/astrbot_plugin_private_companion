@@ -448,10 +448,13 @@ class AstrBotMultiController:
 
     def handles_binding(self, event):
         from .recalls import is_notice_event
-        return (not is_notice_event(event) and is_private_message(event)
+        return (getattr(getattr(event, "platform_meta", None), "name", None) != "telegram"
+                and not is_notice_event(event) and is_private_message(event)
                 and parse_bind_command(message_text(event)).kind != "ignore")
 
     async def receive_binding(self, event):
+        if getattr(getattr(event, "platform_meta", None), "name", None) == "telegram":
+            return {"handled": False}
         request = parse_bind_command(message_text(event))
         if request.kind == "ignore":
             return {"handled": False}
@@ -1288,6 +1291,12 @@ class AstrBotMultiController:
             platform = self.context.get_platform_inst(meta.id)
             if target is None or platform is None:
                 return None
+            if meta.name == "telegram":
+                # Telegram routes only an exact admitted chat on the running application.
+                from companion_v2.adapters.astrbot.telegram import explicit_target
+                if (not explicit_target(self.settings, target) or platform.meta().name != "telegram"
+                        or platform.meta().id != meta.id or not native_client_connected(platform, login)):
+                    return None
             if not platform_client_matches(platform, event_native_client(platform, event)):
                 return None
             return self.settings.effective_private_target(target)

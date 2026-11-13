@@ -483,6 +483,9 @@ class SessionTopology:
         controller = self.controller
         if controller._terminated or not isinstance(event, controller.native_types.event):
             return
+        if getattr(event.platform_meta, "name", None) == "telegram" and controller.target_for_event(event) is None:
+            # Only an admitted Telegram private chat enters the session directory.
+            return
         if getattr(event.platform_meta, "name", None) == "wechat_native":
             event_session_id(event)
             message = event.message_obj

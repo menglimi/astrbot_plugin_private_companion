@@ -35,7 +35,7 @@ VERIFIED_SERIES = frozenset(("4.27", "4.28", "4.29"))
 # Native routing is verified for the OneBot reverse-WS adapter and the two
 # QQ Official adapter names AstrBot exposes.  Keeping the allow-list here
 # prevents an arbitrary adapter from inheriting route privileges by accident.
-SUPPORTED_PLATFORM_NAMES = frozenset(("aiocqhttp", "qq_official", "qq_official_webhook", "lark", "weixin_oc", "wechat_native"))
+SUPPORTED_PLATFORM_NAMES = frozenset(("aiocqhttp", "qq_official", "qq_official_webhook", "lark", "weixin_oc", "wechat_native", "telegram"))
 OFFICIAL_PLATFORM_NAMES = frozenset(("qq_official", "qq_official_webhook"))
 _REPORTED_UNVERIFIED = set()
 NATIVE_LOOKUP_TIMEOUT_SECONDS = 20
@@ -206,6 +206,10 @@ def event_account_id(event):
         # Personal WeChat exposes an openid/wxid instead of a numeric self id;
         # the configured adapter instance is the stable account projection.
         return route_id(event_platform_id(event))
+    if name == "telegram":
+        # A bot username can be renamed and is never an account key; the
+        # configured adapter instance is the stable account projection.
+        return route_id(event_platform_id(event))
     raise ValueError("unsupported native event platform")
 
 
@@ -230,6 +234,8 @@ def native_user_subject_id(platform_name, sender_id):
         return "weixin-user:" + sender_id
     if platform_name == "wechat_native":
         return "wechat-native-user:" + sender_id
+    if platform_name == "telegram":
+        return "telegram-user:" + sender_id
     raise ValueError("unsupported native user platform")
 
 
@@ -260,10 +266,17 @@ def event_session_id(event):
     if event_platform_name(event) == "wechat_native":
         from .wechat_native import event_session
         return native_id(event_session(event))
+    if event_platform_name(event) == "telegram":
+        from .telegram import event_session
+        return native_id(event_session(event))
     return event_peer_id(event)
 
 
 def event_native_client(platform, event):
+    if event_platform_name(event) == "telegram":
+        # AstrBot's Telegram event carries its bot as ``client``.
+        event_session_id(event)
+        return getattr(event, "client", None)
     if event_platform_name(event) != "wechat_native":
         return getattr(event, "bot", None)
     if platform is None or getattr(event, "adapter", None) is not platform:
@@ -287,6 +300,9 @@ def native_client_connected(platform, account_id, client=None):
         return (meta.id == account_id and not getattr(platform, "stopped", True)
                 and not getattr(client, "closed", True)
                 and getattr(client, "account_id", None) == platform.native_config.account_id)
+    if meta.name == "telegram":
+        from .telegram import application_running
+        return str(meta.id) == str(account_id) and application_running(platform, client)
     if meta.name == "aiocqhttp":
         clients = getattr(client, "_wsr_api_clients", None)
         if not isinstance(clients, dict):
@@ -525,6 +541,7 @@ class NativePrivateBridge:
         if any(p.role.installation_id != installation_id for p in personas):
             raise ValueError("persona projections cross installation")
         self.platforms = {}
+        self.telegram_bot_ids = {}
         for account in accounts:
             platform = context.get_platform_inst(account.platform_id)
             if platform is None:
@@ -533,6 +550,8 @@ class NativePrivateBridge:
             if not supported_platform_name(meta.name) or meta.id != account.platform_id:
                 raise TaskError("host_platform_changed", "the configured platform does not match its native account")
             self.platforms[account.platform_id] = (platform, platform.get_client())
+            if meta.name == "telegram" and native_client_connected(platform, account.self_id):
+                self.telegram_bot_ids[account.platform_id] = platform.get_client().id
         self.ports = NativeInputPorts()
 
     def account(self, scope):
@@ -547,6 +566,17 @@ class NativePrivateBridge:
         account = self.account(scope)
         platform, client = self.platforms[account.platform_id]
         meta = platform.meta()
+        if meta.name == "telegram":
+            # The adapter rebuilds its application and bot after a polling failure,
+            # so the authenticated bot account is the stable fact, not the object.
+            current = platform.get_client()
+            if (self.context.get_platform_inst(account.platform_id) is not platform
+                    or not native_client_connected(platform, account.self_id, current)):
+                raise TaskError("host_account_changed", "Telegram application is not current and running")
+            bot_id = self.telegram_bot_ids.setdefault(account.platform_id, current.id)
+            if current.id != bot_id:
+                raise TaskError("host_account_changed", "Telegram authenticated bot account changed")
+            return platform
         if (self.context.get_platform_inst(account.platform_id) is not platform
                 or platform.get_client() is not client or meta.id != account.platform_id
                 or not supported_platform_name(meta.name)):

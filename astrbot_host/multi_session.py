@@ -165,6 +165,10 @@ class MultiPrivateBridge(NativePrivateBridge):
             session_id = event_session_id(event)
             account = self.accounts.get((platform_id, login))
             target = self.settings.private_target(platform_id, login, sender)
+            if meta.name == "telegram":
+                from companion_v2.adapters.astrbot.telegram import explicit_target
+                if not explicit_target(self.settings, target):
+                    raise TaskError("host_route_mismatch", "Telegram needs an exact independent private target")
             if (not supported_platform_name(meta.name) or session.platform_id != platform_id
                     or session.platform_name != platform_id or session.session_id != session_id
                     or event.unified_msg_origin != self._umo(platform_id, session_id)
@@ -233,6 +237,10 @@ class MultiPrivateBridge(NativePrivateBridge):
                     or event.unified_msg_origin != f"{meta.id}:FriendMessage:{session_id}"):
                 return await super().capture(event)
             target = self.settings.private_target(meta.id, login, sender)
+            if meta.name == "telegram":
+                from companion_v2.adapters.astrbot.telegram import explicit_target
+                if not explicit_target(self.settings, target):
+                    return Outcome.failed("host_route_mismatch", "Telegram needs an exact independent private target")
             if target is None:
                 return await super().capture(event)
             account = self.accounts.get((meta.id, login))
@@ -1126,7 +1134,8 @@ class MultiHostSession:
                     context = self._select_core_reply_context(target, captured)
                 self._validate_core_group_admission(group_admission, context, captured)
                 turn_id = "core-reply:" + digest([context.key, captured.event_id])
-                presence = self.application.presence
+                # The typing lease is a OneBot call; Telegram keeps AstrBot's own chat action.
+                presence = None if event.platform_meta.name == "telegram" else self.application.presence
                 if presence is not None:
                     typing_context, typing_turn = context, turn_id
                     presence.begin_native_reply(context, turn_id)
@@ -1291,6 +1300,10 @@ class MultiHostSession:
                                     private_cooldown_seconds=-1, group_cooldown_seconds=-1,
                                                     extra_prompt=extra_prompt)
                             voice_policy = candidate
+                if event.platform_meta.name == "telegram":
+                    # Telegram is a text endpoint: no voice reply and no sticker reaction.
+                    voice_policy = configured_voice_policy = None
+                    reaction_reply_enabled = False
                 from .fish_audio import provider_direction
                 voice_direction = await provider_direction(self.bridge.context, voice_policy, event.unified_msg_origin, channel)
                 source_future = None

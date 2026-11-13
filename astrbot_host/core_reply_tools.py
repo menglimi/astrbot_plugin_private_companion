@@ -219,14 +219,22 @@ class CoreReplyToolSession:
         self.image_locators = frozen_image_locators(event)
         semantic = getattr(application.tools, "semantic", None)
         original = _field(self.prepared, "native_input")
-        if semantic is not None and original is not None:
+        if semantic is not None and original is not None and not self.text_only:
             semantic.reaction_preferences.prepare_native(self.context, self.turn_id,
                 event_id=original.event_id, text=original.text, at=original.at)
+
+    @property
+    def text_only(self):
+        return getattr(getattr(self.event, "platform_meta", None), "name", None) == "telegram"
 
     def catalog(self):
         app, context = self.application, self.context
         app.require_running()
         tools = app.tools
+        if self.text_only:
+            # Other native capabilities need their own channel contract before
+            # they can be advertised on the private-text endpoint.
+            return (_OfferedTool(EVIDENCE_SPEC, "evidence"),)
         offered = []
         if context.scope.kind is ScopeKind.PRIVATE:
             for spec in tools.catalog:
@@ -723,10 +731,13 @@ def inject_core_reply_tools(event, req, *, application):
     # capability invisible until it is provisioned for this scope again, so do it
     # here, on the real event context, before the catalogue is filtered.
     from .image_access import ensure_image_access
-    ensure_image_access(application.runtime, session.context, observed_at=application.tasks.now())
-    offered, image_values = core_image_tools(session, session.catalog())
+    if session.text_only:
+        offered, image_values = session.catalog(), {}
+    else:
+        ensure_image_access(application.runtime, session.context, observed_at=application.tasks.now())
+        offered, image_values = core_image_tools(session, session.catalog())
     semantic = getattr(application.tools, "semantic", None)
-    if semantic is not None:
+    if semantic is not None and not session.text_only:
         from .core_reply_reaction_delivery import inject_core_reaction_instruction
         inject_core_reaction_instruction(event, req, semantic, session.turn_id)
     existing = list(getattr(getattr(req, "func_tool", None), "tools", ()))
@@ -744,8 +755,10 @@ def inject_core_reply_tools(event, req, *, application):
         # same declaration order no matter how the host registered its tools.
         req.func_tool = ToolSet(tools=sorted([*existing, *appended], key=lambda tool: tool.name))
         current = getattr(req, "system_prompt", "") or ""
-        if TOOL_INSTRUCTION not in current:
-            req.system_prompt = (current.rstrip() + "\n\n" + TOOL_INSTRUCTION).lstrip()
+        instruction = ("本轮只提供文字回复；turn.evidence 读取当前已认证发言的证据句柄。"
+                       if session.text_only else TOOL_INSTRUCTION)
+        if instruction not in current:
+            req.system_prompt = (current.rstrip() + "\n\n" + instruction).lstrip()
         if (session.group_tool_profile == "lean" and session.context.scope.kind is ScopeKind.GROUP
                 and LEAN_GROUP_INSTRUCTION not in req.system_prompt):
             req.system_prompt = (req.system_prompt.rstrip() + "\n\n" + LEAN_GROUP_INSTRUCTION).lstrip()
@@ -759,7 +772,8 @@ def inject_core_reply_tools(event, req, *, application):
                 req.system_prompt += "\n\n" + DIAGNOSTIC_INSTRUCTION
     elif getattr(req, "func_tool", None) is not None:
         req.func_tool = ToolSet(tools=sorted(existing, key=lambda tool: tool.name))
-    inject_core_image_prompt(session, req, offered, image_values)
+    if not session.text_only:
+        inject_core_image_prompt(session, req, offered, image_values)
     return tuple(tool._action for tool in appended)
 
 
