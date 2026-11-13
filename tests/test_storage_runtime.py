@@ -198,9 +198,10 @@ class StorageRuntimeTests(unittest.TestCase):
                 self.assertEqual(len(captured.output), 1)
                 self.assertIn("operation=read_one", captured.output[0])
 
-                with self.assertLogs("companion_v2.storage.runtime", level="WARNING") as captured:
+                with self.assertLogs("companion_v2.storage.runtime", level="INFO") as captured:
                     with runtime.transaction():
                         pass
+                self.assertIn("transaction body slow", captured.output[0])
                 self.assertIn("caller=test_storage_runtime.py:", captured.output[0])
                 self.assertIn("begin_ms=", captured.output[0])
                 self.assertIn("body_ms=", captured.output[0])
