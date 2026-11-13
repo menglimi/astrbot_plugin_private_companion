@@ -1,5 +1,7 @@
 """Keep QQ voice and optional reaction attachments in supported messages."""
 
+import re
+
 from astrbot.core.message.components import (
     At,
     AtAll,
@@ -14,6 +16,19 @@ from astrbot.core.message.components import (
 from astrbot.core.message.message_event_result import MessageChain
 
 _DECORATION = (Reply, At, AtAll)
+# meme_manager and similar expression hooks decorate outgoing text with
+# ``&&angry&&``-style tokens.  They are internal markers, never user-facing.
+_EMOTION_MARKER = re.compile(r"&&[A-Za-z][A-Za-z0-9_:-]{0,32}&&")
+
+
+def _without_emotion_markers(chain):
+    cleaned = []
+    for part in chain:
+        if isinstance(part, Plain) and _EMOTION_MARKER.search(part.text or ""):
+            cleaned.append(Plain(text=_EMOTION_MARKER.sub("", part.text or "")))
+        else:
+            cleaned.append(part)
+    return cleaned
 
 
 class _OneBotEmojiImage(BaseMessageComponent):
@@ -43,6 +58,7 @@ def native_reply_messages(event, message):
     chain = getattr(message, "chain", None)
     if not isinstance(chain, (list, tuple)):
         return (message,)
+    chain = _without_emotion_markers(chain)
     getter = getattr(event, "get_platform_name", None)
     qq = callable(getter) and getter() == "aiocqhttp"
     groups, current = [], []
