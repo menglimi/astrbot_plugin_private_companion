@@ -2,20 +2,22 @@
 
 import asyncio
 from dataclasses import replace
-from datetime import time, timedelta
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from companion_v2.conversation.models import InboundConversationEvent
-from companion_v2.execution.models import TaskError, digest, require
+from companion_v2.execution.models import TERMINAL, TaskError, digest, require, stamp
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import RoleOwnerRef, SourceRef, VersionRef
 from companion_v2.sources.models import SourceRecord
 from companion_v2.role_work.models import RoleActivity, RoleActivityState as State
 from companion_v2.role_work.life.physiology import (nap_ready, night_sleep_ready,
     recommended_sleep_minutes, sleep_receipt)
+from companion_v2.role_work.reader import READ_KIND
 from companion_v2.role_work.work_models import RoleWorkSpec
 from companion_v2.role_work.journal.models import JournalKind
 
+from .calendar_work import require_window, reserve_routine_slot, routine_for
 from .configuration import GROUP, target_for, values
 from .scheduling import next_bedtime
 
@@ -30,6 +32,9 @@ class RoleLifeRuntime:
         self._dreams = set()
         self._next_sleep = None
         self._next_wake = None
+        self._next_calendar_work = None
+        self._next_writing_plan_check = None
+        self.next_reading_at = None
         self.failure_code = None
         self._closed = False
         self._retired = False
@@ -135,7 +140,7 @@ class RoleLifeRuntime:
         if self._revision is not None:
             self.app.journal_schedule.remove(self.schedule_id)
         self.settings, self._revision = settings, snapshot.resolution_token
-        self._next_sleep = self._next_wake = None
+        self._next_sleep = self._next_wake = self._next_calendar_work = self.next_reading_at = None
         self.failure_code = None
         if not settings["enabled"]:
             self.cancel_running()
@@ -201,19 +206,30 @@ class RoleLifeRuntime:
         self.app.notify()
         return saved
 
-    def start_reading(self, identifier, *, expected_revision, request_id):
+    def reading_unsettled(self, activity, *, scheduled=False):
+        task_id = self.app.role_reader.task_id(self.context, activity)
+        row = self.runtime.read_one("SELECT state FROM execution_tasks WHERE task_id = ?", (task_id,))
+        if scheduled:
+            # A terminal reading can no longer commit against the old activity
+            # revision. The next slot can retry under a new identity.
+            return row is not None and (row["state"] not in TERMINAL or row["state"] == "succeeded")
+        return (row is not None and row["state"] not in ("failed", "cancelled", "expired", "dead_letter")
+            or self.runtime.read_one("""SELECT 1 FROM model_calls WHERE task_id = ?
+                AND state IN ('reserved','dispatched','unknown')""", (task_id,)) is not None)
+
+    def start_reading(self, identifier, *, expected_revision, request_id, window=None):
         self.authorize()
+        if window is not None:
+            require_window(self.app.calendar, self.context, window, self.app.now())
         a = self.activity(identifier)
         if a.work.kind != "reading":
             raise TaskError("life_reading_invalid", "select a reading activity")
-        if a.state is State.PAUSED:
-            task_id = self.app.role_reader.task_id(self.context, a)
-            row = self.runtime.read_one("SELECT state FROM execution_tasks WHERE task_id = ?", (task_id,))
-            unknown = self.runtime.read_one("SELECT 1 FROM model_calls WHERE task_id = ? AND state IN ('reserved','dispatched','unknown')", (task_id,))
-            if unknown or (row is not None and row["state"] not in ("failed", "cancelled", "expired", "rejected")):
-                raise TaskError("life_reading_unresolved", "the original reading must settle before an explicit retry")
+        if a.state is State.PAUSED and self.reading_unsettled(a, scheduled=window is not None):
+            raise TaskError("life_reading_unresolved", "the original reading must settle before another attempt")
         if self.app.role_state.body_clock.active(self.context, "sleep"):
             raise TaskError("life_sleeping", "wake the role before reading")
+        if self.app.role_state.body_clock.active(self.context, "reading"):
+            raise TaskError("life_reading_active", "another reading is already running")
         record = require(self.app.role_journal.sources.read(a.work.source, resolved=self.context.actor,
             capability="role.reading.record", observed_at=self.app.now(), authorizer=self.app.tasks.identity))
         if record.content_hash != a.work.content_hash or digest(record.payload) != a.work.content_hash:
@@ -222,14 +238,15 @@ class RoleLifeRuntime:
         saved = self.app.role_life.transition_activity(identifier, owner=self.owner, expected_revision=expected_revision,
             state=State.ACTIVE, operation_id="read-start-" + digest([self.context.key, request_id]),
             observed_at=self.app.now(), work=work, checkpoint="正在阅读实际提供的片段")
-        self.launch(identifier, lambda: self._read(saved))
+        self.launch(identifier, lambda: self._read(saved, window=window))
         return saved
 
-    async def _read(self, activity):
+    async def _read(self, activity, *, window=None):
         result = None
         try:
             await self.preflight()
-            result = await self.app.role_reader.consume(self.context, activity, role_instruction=self.instruction)
+            result = await self.app.role_reader.consume(self.context, activity,
+                role_instruction=self.instruction, window=window)
             return result
         finally:
             current = self.activity(activity.activity_id)
@@ -329,7 +346,8 @@ class RoleLifeRuntime:
                     self.launch(wake_key, self._wake_shared_due, timeout_seconds=30)
             records = self.activities()
             for a in records:
-                if a.work.kind == "reading" and a.state is State.ACTIVE and a.activity_id not in self._workers:
+                if (a.work.kind == "reading" and a.state is State.ACTIVE
+                        and a.activity_id not in self._workers):
                     # A restart has no in-memory reading call. Never turn elapsed time into a completion.
                     self.app.role_life.transition_activity(a.activity_id, owner=self.owner, expected_revision=a.revision,
                         state=State.PAUSED, operation_id="recover-reading-" + digest([a.activity_id, a.revision]),
@@ -365,23 +383,99 @@ class RoleLifeRuntime:
                         for item in self.app.role_state.body_clock.episodes(self.context)):
                     self.start_sleep("daily-nap-" + today, 25, label="角色短暂午休", sleep_kind="nap")
                     return
-            if self.settings["reading_enabled"] and not busy:
-                queued = next(iter(sorted((a for a in records if a.work.kind == "reading" and a.state is State.PLANNED),
-                    key=lambda a: (a.started_at, a.work.source.source_id, a.work.start_offset))), None)
-                if queued:
-                    try:
-                        self.start_reading(queued.activity_id, expected_revision=queued.revision,
-                                           request_id=queued.work.request_id)
-                    except TaskError as error:
-                        if error.code not in ("source_revoked", "source_expired", "source_audience_denied"):
-                            raise
-                        self.app.role_life.transition_activity(queued.activity_id, owner=self.owner,
-                            expected_revision=queued.revision, state=State.CANCELLED,
-                            operation_id="unavailable-reading-" + digest([queued.activity_id, queued.revision]),
-                            observed_at=now, checkpoint=error.code)
+            if not busy:
+                self.advance_calendar_work(records, now)
         except (TaskError, ValueError, KeyError) as error:
             self.failure_code = error.code if isinstance(error, TaskError) else "life_configuration_invalid"
             self.cancel_running()
+
+    def advance_calendar_work(self, records, now):
+        if self._next_calendar_work is not None and now < self._next_calendar_work:
+            return
+        self._next_calendar_work = now + timedelta(seconds=20)
+        context, calendar = self.context, self.app.calendar
+        if self.app.state_maintenance.foreground_busy(context):
+            return
+        settings, _ = self.app.role_state.settings(context)
+        if not settings["calendar_enabled"]:
+            self.next_reading_at = None
+            return
+        pending = {}
+        if self.settings["reading_enabled"] and READ_KIND in self.app.gateway.router.profiles:
+            for activity in sorted(records, key=lambda a: (a.started_at, a.activity_id)):
+                if activity.work.kind != "reading" or activity.state not in (State.PLANNED, State.PAUSED):
+                    continue
+                source = activity.work.source
+                if source not in pending or activity.work.start_offset < pending[source].work.start_offset:
+                    pending[source] = activity
+        writer = self.app.scheduled_authoring
+        if not pending:
+            self.next_reading_at = None
+            if writer is None:
+                return
+        page = calendar.occurrences(context, start=now, end=now + timedelta(days=7, hours=1),
+                                    kinds=("role_plan", "commitment"), diagnostics=True)
+        self.next_reading_at = next((item["start"] for item in page["items"]
+            if pending and item["start"] > stamp(now) and routine_for(item) == "reading"), None)
+        current = [item for item in page["items"]
+                   if item["state"] == "accepted" and item["start"] <= stamp(now)]
+        # Leave an overlapping commitment or other planned activity its time.
+        if page["scan_truncated"] or any(routine_for(item) is None for item in current):
+            current = []
+        writing = any(key.startswith("writing:") for other in self.app.life_runtime.routines.values()
+                      if other.owner == self.owner for key in other._workers)
+        if writing or self.app.role_state.body_clock.active(context, "reading"):
+            return
+        if writer is not None:
+            for item in current:
+                if routine_for(item) != "writing":
+                    continue
+                key = "writing:" + item["id"] + ":" + str(item["sequence"])
+                if (key not in self.results and datetime.fromisoformat(item["end"]) - now >= timedelta(minutes=1)
+                        and writer.ready(context, item)):
+                    self.launch(key, lambda: writer.run(self, item))
+                    return
+        if (writer is not None and (self._next_writing_plan_check is None or now >= self._next_writing_plan_check)
+                and not any(routine_for(item) == "writing" and item["start"] > stamp(now)
+                            for item in page["items"])
+                and not any(routine_for(item) == "writing" for item in current)):
+            self._next_writing_plan_check = now + timedelta(minutes=10)
+            planned = writer.plan_continuation(context, now, settings, page,
+                                                sleep_plan=(self._next_sleep, self._next_wake))
+            # A new role plan can occupy a gap the reading scan just saw.
+            if planned and pending:
+                page = calendar.occurrences(context, start=now, end=now + timedelta(days=7, hours=1),
+                                            kinds=("role_plan", "commitment"), diagnostics=True)
+        if not pending:
+            return
+        ready = [a for a in pending.values() if a.state is State.PLANNED or not self.reading_unsettled(a, scheduled=True)]
+        if not ready:
+            return
+        for item in current:
+            if routine_for(item) != "reading":
+                continue
+            start = datetime.fromisoformat(item["start"])
+            queued = next((a for a in ready if a.started_at <= start
+                           and (a.state is State.PLANNED or a.updated_at < start)), None)
+            if (queued is None or datetime.fromisoformat(item["end"]) - now < timedelta(seconds=30)
+                    or self.app.gateway.ledger.background_deferral(context, READ_KIND, at=now)):
+                continue
+            try:
+                self.start_reading(queued.activity_id, expected_revision=queued.revision,
+                    request_id="scheduled-read-" + digest([queued.activity_id, queued.revision]),
+                    window=item)
+            except TaskError as error:
+                if error.code not in ("source_revoked", "source_expired", "source_audience_denied", "source_audience_mismatch"):
+                    raise
+                self.app.role_life.transition_activity(queued.activity_id, owner=self.owner,
+                    expected_revision=queued.revision, state=State.CANCELLED,
+                    operation_id="unavailable-reading-" + digest([queued.activity_id, queued.revision]),
+                    observed_at=now, checkpoint=error.code)
+            return
+        if (self.next_reading_at is None and not page["scan_truncated"] and not page["occurrences_truncated"]):
+            self.next_reading_at = reserve_routine_slot(calendar, context, routine="reading",
+                timezone=settings["planning_timezone"], now=now, items=page["items"],
+                sleep_plan=(self._next_sleep, self._next_wake))
 
     async def _wake_shared_due(self):
         await self.preflight()

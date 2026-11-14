@@ -140,9 +140,9 @@ class CalendarService:
                 expected_revision=expected_revision, parameters=[action, data, sources, actor] + ([planning] if planning is not None else []),
                 transform=transform, at=self.tasks.now(), storage_key=storage_key)
 
-    def inventory(self, context, *, after_id="", limit=30, operator=None, kinds=None):
+    def inventory(self, context, *, after_id="", limit=30, operator=None, kinds=None, active_since=None):
         self.access.check(context, "calendar.read", operator=operator)
-        rows = self.records.list(context, after_id=after_id, limit=limit, kinds=kinds)
+        rows = self.records.list(context, after_id=after_id, limit=limit, kinds=kinds, active_since=active_since)
         items, skipped, skipped_reasons = [], 0, {"role_mismatch": 0, "source_unavailable": 0}
         for row in rows:
             try:
@@ -163,7 +163,8 @@ class CalendarService:
         items, cursor, skipped, scanned, has_more = [], "", 0, 0, False
         skipped_reasons = {"role_mismatch": 0, "source_unavailable": 0}
         while scanned < 200:
-            page = self.inventory(context, after_id=cursor, limit=50, operator=operator, kinds=kinds)
+            page = self.inventory(context, after_id=cursor, limit=50, operator=operator, kinds=kinds,
+                                  active_since=start - timedelta(days=1))
             skipped += page["skipped"]
             for reason, count in page.get("skipped_reasons", {}).items():
                 skipped_reasons[reason] = skipped_reasons.get(reason, 0) + count
@@ -191,13 +192,14 @@ class CalendarService:
                             "kind": row["kind"], "state": row["state"], "title": row["title"],
                             "detail": row.get("details", {}).get(str(sequence), row["detail"]),
                             "start": stamp(due), "end": stamp(due + duration), "presence": row["presence"],
-                            "sources": row["sources"]})
+                            "sources": row["sources"], "planning": row.get("planning")})
             scanned += 50
             if not page["next_cursor"]:
                 break
             cursor = page["next_cursor"]
             if scanned >= 200:
-                probe = self.inventory(context, after_id=cursor, limit=1, operator=operator, kinds=kinds)
+                probe = self.inventory(context, after_id=cursor, limit=1, operator=operator, kinds=kinds,
+                                       active_since=start - timedelta(days=1))
                 skipped += probe["skipped"]
                 for reason, count in probe.get("skipped_reasons", {}).items():
                     skipped_reasons[reason] = skipped_reasons.get(reason, 0) + count

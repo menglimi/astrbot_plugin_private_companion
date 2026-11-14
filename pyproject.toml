@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "astrbot-plugin-private-companion"
-version = "7.1.19"
+version = "7.1.20"
 description = "我会永远陪着你 integrated companion host"
 requires-python = ">=3.10"
 license = {text = "AGPL-3.0-only"}

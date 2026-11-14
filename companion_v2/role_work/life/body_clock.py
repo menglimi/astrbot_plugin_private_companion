@@ -53,8 +53,20 @@ class RoleBodyClock:
         for activity in readings:
             if activity.started_at > now or activity.updated_at < now - timedelta(hours=24):
                 continue
-            end = min(now, now if activity.state is State.ACTIVE else activity.updated_at)
-            reading_minutes += min(360.0, max(0.0, (end - activity.started_at).total_seconds() / 60))
+            if activity.state is State.ACTIVE:
+                started, end = activity.updated_at, now
+            elif activity.reading is not None:
+                try:
+                    active = self.life.activity_revision(activity.activity_id, activity.revision - 1,
+                                                         owner=activity.owner)
+                except KeyError:
+                    continue
+                if active.state is not State.ACTIVE:
+                    continue
+                started, end = active.updated_at, activity.reading.completed_at
+            else:
+                continue
+            reading_minutes += min(360.0, max(0.0, (end - started).total_seconds() / 60))
         scope = context.scope
         row = self.runtime.read_one("""SELECT COUNT(*) AS n FROM conversation_inputs i
             JOIN conversation_batches b ON b.batch_id = i.batch_id

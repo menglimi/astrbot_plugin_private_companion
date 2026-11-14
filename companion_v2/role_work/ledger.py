@@ -112,6 +112,27 @@ class PersistentRoleLifeLedger:
              after_id, after_id, limit))
         return tuple(activity_from_json(row["record_json"]) for row in rows)
 
+    def archive_activities(self, owner, scope, *, after_id=None, limit=30):
+        """Page by import time with contiguous, ascending offsets within a book."""
+        self._page(limit, after_id)
+        rows = self.runtime.read_all("""WITH archive AS (
+                SELECT record_json, activity_id, json_extract(record_json, '$.started_at') AS started,
+                    COALESCE(json_extract(record_json, '$.work.source.source_id'), '') AS source_id,
+                    COALESCE(json_extract(record_json, '$.work.start_offset'), 0) AS offset
+                FROM role_activities
+                WHERE owner_key = ? AND json_extract(record_json, '$.scope') = json(?)
+                    AND json_type(record_json, '$.work') = 'object'
+            ), cursor AS (
+                SELECT started, source_id, offset, activity_id FROM archive WHERE activity_id = ?
+            )
+            SELECT a.record_json FROM archive a LEFT JOIN cursor c ON 1 = 1
+            WHERE c.activity_id IS NULL OR a.started < c.started OR (
+                a.started = c.started AND (a.source_id, a.offset, a.activity_id)
+                    > (c.source_id, c.offset, c.activity_id))
+            ORDER BY a.started DESC, a.source_id, a.offset, a.activity_id LIMIT ?""",
+            (self._owner_key(owner), encode(scope), after_id, limit))
+        return tuple(activity_from_json(row["record_json"]) for row in rows)
+
     def transition_activity(self, activity_id, *, owner, expected_revision, state,
                             operation_id, checkpoint=None, observed_at=None, reading=None, work=None, sleep=None) -> RoleActivity:
         key = self._owner_key(owner)
