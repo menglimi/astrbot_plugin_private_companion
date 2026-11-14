@@ -362,6 +362,10 @@ class PrivateCompanionV2StagingPlugin(Star):
 
     def _fold_private_follow_up(self, event, target, event_ref, text):
         """Join a post-debounce message to the first model request when possible."""
+        # Telegram application replacement must not fold a new client's input
+        # into an older turn whose delivery has just been fenced.
+        if getattr(getattr(event, "platform_meta", None), "name", None) == "telegram":
+            return False
         target_key = getattr(target, "target_id", None)
         if not isinstance(target_key, str) or not target_key:
             return False
