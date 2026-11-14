@@ -76,8 +76,9 @@ def _compact_materials(base, *, history_count):
 def plan_request_for(base, job, records):
     official_alert = any(record.reference.owner == OFFICIAL_ALERT_SOURCE_OWNER for record in records)
     instruction = "\n".join(part for part in (
-        PLAN_INSTRUCTION, PURPOSE_INSTRUCTIONS[job.intent.purpose],
-        _source_guidance(job, records), TOPIC_CONTINUITY_INSTRUCTION,
+        PLAN_INSTRUCTION, TOPIC_CONTINUITY_INSTRUCTION,
+        PURPOSE_INSTRUCTIONS[job.intent.purpose],
+        _source_guidance(job, records),
         ALERT_SCOPE_INSTRUCTION if official_alert else "",
         _diagnostic_guidance(job, writing=False),
     ) if part)
@@ -118,9 +119,12 @@ def write_request_for(base, job, records, preferences, *, reactions_available, v
     length_instruction = (effective_template(preferences.values,
         "news_length_prompt" if news else "length_prompt").format(chars=length) if length else "")
     instruction = "\n".join(part for part in (
-        WRITE_INSTRUCTION, PURPOSE_INSTRUCTIONS[job.intent.purpose], _source_guidance(job, records),
+        WRITE_INSTRUCTION,
         effective_template(preferences.values, "expression_prompt"),
         length_instruction,
+        preferences.values.get("style_prompt") or "",
+        PURPOSE_INSTRUCTIONS[job.intent.purpose],
+        _source_guidance(job, records),
         effective_template(preferences.values, "news_sharing_prompt") if news else "",
         GREETING_INSTRUCTION if greeting else "",
         INSOMNIA_GREETING_INSTRUCTION if isinstance(greeting_event, dict)
@@ -133,7 +137,7 @@ def write_request_for(base, job, records, preferences, *, reactions_available, v
          "，参考长度约 " + str(preferences.values["voice_action_max_chars"]) + " 字。") if voice_available else "",
         WRITE_POKE_INSTRUCTION if poke_available else "",
         EXPRESSION_STYLE_INSTRUCTION if any(item.purpose == "learned_style" for item in materials) else "",
-        preferences.values.get("style_prompt") or "", extra_instruction,
+        extra_instruction,
         _diagnostic_guidance(job, writing=True),
         "官方预警正文还须输出 coverage=covered 与从预警原文摘录的 coverage_quote。" if official_alert else "",
     ) if part)
