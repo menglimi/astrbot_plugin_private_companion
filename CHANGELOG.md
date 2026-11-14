@@ -2,6 +2,11 @@
 
 ## 7.1.19 - 2026-11-14
 
+### 发布修复
+
+- 补齐 7.1.19 首包遗漏的 `companion_v2/external_ownership.py` 与 `astrbot_host/external_ownership.py`：状态维护 tick 不再 `ModuleNotFoundError`，避免宿主 `host_dispatch_failed` / `staging_application_not_running` 和回复退回 AstrBot 默认分段；
+- 图片 BLOB 自动迁移改为按批提交，不再长时间持有 SQLite 写锁，避免迁移期间正常回复事务 `database is locked`。
+
 ### 余额与供应商
 
 - 服务余额新增高级查询：自定义请求与提取脚本、独立 HTTP/SOCKS5 代理、从 AstrBot 供应商读取地址/Key/代理；原 NewAPI 表单保持默认行为（#687，关闭 #659）。
