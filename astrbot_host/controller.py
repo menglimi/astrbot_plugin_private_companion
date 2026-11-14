@@ -476,7 +476,7 @@ class AstrBotStagingController:
                                      default_provider_resolver=conversation_provider_resolver(self.context),
                                      weather_port=weather_port,
                                      weather_alert_port=weather_alert_port,
-                                     balance_port=configured_balance_port(self.config),
+                                     balance_port=configured_balance_port(self.config, context=self.context),
                                      news_port=configured_news_port(self.config, context=self.context,
                                          deepseek_provider_resolver=search_provider_resolver,
                                          search_priority_resolver=search_settings.source_priority),

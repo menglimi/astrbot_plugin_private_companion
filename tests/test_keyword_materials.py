@@ -93,6 +93,39 @@ class KeywordMaterialsTests(unittest.TestCase):
         self.assertIn("不是对方账户余额", text)
         self.assertIn('"balance": "1.00"', text)
 
+    def test_invalidate_discards_only_the_named_source(self):
+        calls = []
+        registry = KeywordMaterials((spec(calls), spec(calls, owner="other.source")))
+        asyncio.run(registry.prepare(Context(), "余额", at=NOW))
+        registry.invalidate("service.balance")
+        asyncio.run(registry.prepare(Context(), "余额", at=NOW + timedelta(seconds=1)))
+        self.assertEqual([owner for owner, _ in calls],
+                         ["service.balance", "other.source", "service.balance"])
+
+    def test_invalidated_inflight_result_cannot_overwrite_a_new_source_cache(self):
+        async def exercise():
+            started, release = asyncio.Event(), asyncio.Event()
+            calls = []
+            async def prepare(context, text, at):
+                calls.append(text)
+                if len(calls) == 1:
+                    started.set()
+                    await release.wait()
+                    return {"state": "unavailable", "code": "balance_source_changed"}
+                return {"state": "ok", "balance": "2.00"}
+            registry = KeywordMaterials((KeywordMaterialSpec(owner="service.balance", title="余额",
+                instruction="只作参考", keywords=("余额",), prepare=prepare, ttl_seconds=300),))
+            pending = asyncio.create_task(registry.prepare(Context(), "旧余额", at=NOW))
+            await started.wait()
+            registry.invalidate("service.balance")
+            await registry.prepare(Context(), "新余额", at=NOW + timedelta(seconds=1))
+            release.set()
+            await pending
+            current = await registry.prepare(Context(), "余额", at=NOW + timedelta(seconds=2))
+            self.assertEqual(current[0]["payload"]["balance"], "2.00")
+            self.assertEqual(calls, ["旧余额", "新余额"])
+        asyncio.run(exercise())
+
     def test_spec_validation(self):
         calls = []
         with self.assertRaises(ValueError):

@@ -20,8 +20,10 @@ from companion_v2.foundation.outcome import Outcome
 
 from .management_identity import dashboard_operator
 from .service_balance import (NEWAPI_DEFAULT_DIVISOR, configured_balance_port,
-                              configured_balance_source, display_amount)
+                              configured_balance_source, display_amount,
+                              balance_observation_data, balance_failure_data)
 from .weather_settings import WeatherHostSettings
+from .service_balance_provider import balance_provider_choices
 
 
 PREFIX = "/astrbot_plugin_private_companion/host-options"
@@ -132,7 +134,7 @@ class HostOptionsWebAPI:
                 or type(balance_user_id) is not str or type(balance_divisor) not in (str, int, float)):
             raise TaskError("host_options_invalid", "the service balance settings have an invalid shape")
         try:
-            port = configured_balance_port(config)
+            port = configured_balance_port(config, context=getattr(self.controller, "context", None))
             source = configured_balance_source(config)
         except (ValueError, TypeError, KeyError, UnicodeError, OverflowError):
             port = None
@@ -143,13 +145,23 @@ class HostOptionsWebAPI:
         plugin_source = bool(source and source["source"] == "plugin")
         balance = {"source": source["source"] if source else "none",
                    "source_state": balance_state,
-                   "provider": "newapi" if plugin_source else getattr(port, "provider", "newapi"),
+                   "provider": ("script" if balance_config.get("advanced_enabled") else "newapi")
+                       if plugin_source else getattr(port, "provider", "newapi"),
                    "url": balance_url if plugin_source else "",
                    "user_id": balance_user_id if plugin_source else "",
                    "value_divisor": str(balance_divisor) if plugin_source else NEWAPI_DEFAULT_DIVISOR,
                    "has_api_key": bool(balance_key),
-                   "edit_token": digest([installation_id, "service_balance", balance_url, balance_key,
-                                         balance_user_id, str(balance_divisor)])}
+                   **balance_provider_choices(getattr(self.controller, "context", None)),
+                   "advanced_from_astrbot": balance_config.get("advanced_from_astrbot", False),
+                   "advanced_provider_id": balance_config.get("advanced_provider_id", ""),
+                   "advanced_enabled": balance_config.get("advanced_enabled", False),
+                   "advanced_base_url": balance_config.get("advanced_base_url", ""),
+                   "advanced_script": balance_config.get("advanced_script", ""),
+                   "has_advanced_api_key": bool(balance_config.get("advanced_api_key")),
+                   "has_advanced_access_token": bool(balance_config.get("advanced_access_token")),
+                   "advanced_user_id": balance_config.get("advanced_user_id", ""),
+                   "has_advanced_proxy_url": bool(balance_config.get("advanced_proxy_url")),
+                   "edit_token": digest([installation_id, "service_balance", balance_config])}
         return {"voice_reply": voice, "poke": poke, "forward_intake": forward_intake,
                 "service_balance": balance,
                 "forward_bounds": {"max_forwards": MAX_FORWARDS, "max_nodes": MAX_NODES, "max_depth": MAX_DEPTH},
@@ -172,7 +184,7 @@ class HostOptionsWebAPI:
                     result = Outcome.success(self._view())
                 else:
                     raw = await request.body()
-                    if len(raw) > 8192:
+                    if len(raw) > (65536 if group == "balance" else 8192):
                         raise ValueError("request is too large")
                     data = _document(raw)
                     result = Outcome.success(WeatherHostSettings(self.controller).configure(data)
@@ -288,41 +300,20 @@ class HostOptionsWebAPI:
         return {"saved": True, "apply_mode": apply_mode, **self._view()}
 
     def _configure_balance(self, changes):
-        allowed = {"url", "api_key", "user_id", "value_divisor", "clear_configuration"}
-        if set(changes) - allowed:
-            raise TaskError("host_options_request_invalid", "only the service balance fields can be changed here")
         clear = changes.get("clear_configuration", False)
         if type(clear) is not bool:
             raise TaskError("host_options_invalid", "the service balance clear option must be boolean")
-        candidate = deepcopy(dict(self.controller.config))
         if clear:
             if set(changes) != {"clear_configuration"}:
                 raise TaskError("host_options_request_invalid", "clear the service balance source separately")
+            candidate = deepcopy(dict(self.controller.config))
             candidate.pop("service_balance", None)
             try:
-                balance_port = configured_balance_port(candidate)
+                balance_port = configured_balance_port(candidate, context=getattr(self.controller, "context", None))
             except (ValueError, TypeError, KeyError, UnicodeError, OverflowError):
                 balance_port = None
         else:
-            url = changes.get("url")
-            api_key = changes.get("api_key", "")
-            if (type(url) is not str or len(url) > 2048 or type(api_key) is not str
-                    or len(api_key) > 4096 or any(ord(char) < 32 for char in api_key)):
-                raise TaskError("host_options_invalid", "check the service balance URL and token")
-            prior = self._config_group(candidate, "service_balance")
-            saved_key = api_key if api_key else prior.get("api_key", "")
-            user_id = changes.get("user_id", prior.get("user_id", ""))
-            divisor = changes.get("value_divisor", prior.get("value_divisor", NEWAPI_DEFAULT_DIVISOR))
-            if (type(user_id) is not str or len(user_id) > 19
-                    or user_id and not user_id.isdecimal()
-                    or type(divisor) is not str or len(divisor) > 64 or not divisor.strip()):
-                raise TaskError("host_options_invalid", "check the NewAPI user ID and quota divisor")
-            candidate["service_balance"] = {"url": url.strip(), "api_key": saved_key,
-                "user_id": user_id, "value_divisor": divisor.strip()}
-            try:
-                balance_port = configured_balance_port(candidate)
-            except (ValueError, TypeError, KeyError, UnicodeError, OverflowError) as error:
-                raise TaskError("host_options_invalid", "check the HTTPS URL and NewAPI dashboard token") from error
+            candidate, balance_port = self._balance_candidate(changes)
 
         save = getattr(self.controller, "save_plugin_config", None)
         if not callable(save):
@@ -330,6 +321,12 @@ class HostOptionsWebAPI:
         save(candidate)
         session = getattr(self.controller, "session", None) or getattr(self.controller, "last_session", None)
         application = getattr(session, "application", None)
+        if application is not None:
+            application.balance_port = balance_port
+            materials = getattr(application, "keyword_materials", None)
+            invalidate = getattr(materials, "invalidate", None)
+            if callable(invalidate):
+                invalidate("service.balance")
         schedule = getattr(application, "contact_schedule", None)
         balance_events = getattr(schedule, "balance_events", None)
         if balance_events is not None:
@@ -348,40 +345,87 @@ class HostOptionsWebAPI:
         if changes.get("use_current") is True:
             if set(changes) != {"use_current"}:
                 raise TaskError("host_options_request_invalid", "test the current source separately")
-            port = configured_balance_port(self.controller.config)
+            port = configured_balance_port(self.controller.config, context=getattr(self.controller, "context", None))
             if port is None:
                 raise TaskError("host_options_invalid", "there is no configured balance source to test")
             return port
 
-        allowed = {"url", "api_key", "user_id", "value_divisor"}
+        return self._balance_candidate(changes)[1]
+
+    def _balance_candidate(self, changes):
+        # Save and draft-test share precisely the same active-mode construction.
+        allowed = {"url", "api_key", "user_id", "value_divisor", "advanced_enabled",
+                   "advanced_from_astrbot", "advanced_provider_id",
+                   "advanced_base_url", "advanced_api_key", "advanced_script", "advanced_proxy_url",
+                   "advanced_access_token", "advanced_user_id", "clear_advanced_access_token",
+                   "clear_api_key", "clear_advanced_api_key", "clear_advanced_proxy_url"}
         if set(changes) - allowed:
-            raise TaskError("host_options_request_invalid", "only balance source fields can be tested")
+            raise TaskError("host_options_request_invalid", "only balance source fields can be changed")
         candidate = deepcopy(dict(self.controller.config))
-        url, api_key = changes.get("url"), changes.get("api_key", "")
-        if (type(url) is not str or len(url) > 2048 or type(api_key) is not str
-                or len(api_key) > 4096 or any(ord(char) < 32 for char in api_key)):
-            raise TaskError("host_options_invalid", "check the service balance URL and token")
-        prior = self._config_group(candidate, "service_balance")
-        saved_key = api_key if api_key else prior.get("api_key", "")
-        user_id = changes.get("user_id", prior.get("user_id", ""))
-        divisor = changes.get("value_divisor", prior.get("value_divisor", NEWAPI_DEFAULT_DIVISOR))
-        if (type(user_id) is not str or len(user_id) > 19
-                or user_id and not user_id.isdecimal()
-                or type(divisor) is not str or len(divisor) > 64 or not divisor.strip()):
-            raise TaskError("host_options_invalid", "check the NewAPI user ID and quota divisor")
-        candidate["service_balance"] = {"url": url.strip(), "api_key": saved_key,
-            "user_id": user_id, "value_divisor": divisor.strip()}
+        settings = deepcopy(self._config_group(candidate, "service_balance"))
+        enabled = changes.get("advanced_enabled", settings.get("advanced_enabled", False))
+        if type(enabled) is not bool:
+            raise TaskError("host_options_invalid", "advanced balance mode must be boolean")
+        settings["advanced_enabled"] = enabled
+        def secret(name, limit):
+            value = changes.get(name, "")
+            clear = changes.get("clear_" + name, False)
+            if (type(clear) is not bool or type(value) is not str or len(value) > limit
+                    or any(ord(char) < 32 for char in value) or clear and value):
+                raise TaskError("host_options_invalid", "check the balance credential fields")
+            return "" if clear else value or settings.get(name, "")
+        if enabled:
+            binding = changes.get("advanced_from_astrbot", settings.get("advanced_from_astrbot", False))
+            identifier = changes.get("advanced_provider_id", settings.get("advanced_provider_id", ""))
+            if type(binding) is not bool or type(identifier) is not str or len(identifier) > 256:
+                raise TaskError("host_options_invalid", "check the AstrBot balance provider selection")
+            settings.update(advanced_from_astrbot=binding, advanced_provider_id=identifier)
+            if binding and any(changes.get(key) for key in (
+                    "advanced_base_url", "advanced_api_key", "advanced_proxy_url",
+                    "clear_advanced_api_key", "clear_advanced_proxy_url")):
+                raise TaskError("host_options_invalid", "AstrBot binding and manual connection edits are exclusive")
+            for name, limit in (("advanced_base_url", 2048), ("advanced_script", 16384)):
+                value = changes.get(name, settings.get(name, ""))
+                if type(value) is not str or len(value.encode("utf-8")) > limit:
+                    raise TaskError("host_options_invalid", "check the advanced balance settings")
+                if name != "advanced_base_url" or not binding:
+                    settings[name] = value.strip()
+            user_id = changes.get("advanced_user_id", settings.get("advanced_user_id", ""))
+            if (type(user_id) is not str or len(user_id) > 19 or user_id and not user_id.isascii()
+                    or user_id and not user_id.isdecimal()):
+                raise TaskError("host_options_invalid", "check the advanced NewAPI user ID")
+            settings["advanced_user_id"] = user_id
+            settings["advanced_access_token"] = secret("advanced_access_token", 4096)
+            if not binding:
+                settings["advanced_api_key"] = secret("advanced_api_key", 4096)
+                settings["advanced_proxy_url"] = secret("advanced_proxy_url", 2048)
+        else:
+            url = changes.get("url", settings.get("url", ""))
+            user_id = changes.get("user_id", settings.get("user_id", ""))
+            divisor = changes.get("value_divisor", settings.get("value_divisor", NEWAPI_DEFAULT_DIVISOR))
+            if (type(url) is not str or len(url) > 2048 or type(user_id) is not str
+                    or len(user_id) > 19 or user_id and not user_id.isdecimal()
+                    or type(divisor) is not str or len(divisor) > 64 or not divisor.strip()):
+                raise TaskError("host_options_invalid", "check the NewAPI URL, user ID and quota divisor")
+            settings.update(url=url.strip(), user_id=user_id, value_divisor=divisor.strip(),
+                            api_key=secret("api_key", 4096))
+        candidate["service_balance"] = settings
         try:
-            return configured_balance_port(candidate)
+            port = configured_balance_port(candidate, context=getattr(self.controller, "context", None))
+            if port is None:
+                raise ValueError("no active balance source")
         except (ValueError, TypeError, KeyError, UnicodeError, OverflowError) as error:
-            raise TaskError("host_options_invalid", "check the HTTPS URL and NewAPI profile:read token") from error
+            message = ("请检查 AstrBot 供应商是否存在且已启用、默认模型归属、HTTPS 地址、Key、脚本、代理及 quickjs-ng / aiohttp-socks 依赖。" if enabled
+                       else "check the HTTPS URL and NewAPI profile:read token")
+            raise TaskError("host_options_invalid", message) from error
+        return candidate, port
 
     async def balance_test(self):
         from .web_api import outcome_response
 
         try:
             raw = await request.body()
-            if len(raw) > 8192:
+            if len(raw) > 65536:
                 raise ValueError("request is too large")
             data = _document(raw)
             async with self.controller._control_lock:
@@ -390,14 +434,18 @@ class HostOptionsWebAPI:
             try:
                 observation = await asyncio.wait_for(port.fetch(), timeout=12)
             except asyncio.TimeoutError as error:
-                raise TaskError("balance_test_timeout", "NewAPI 查询超时，请核对地址和服务状态。") from error
+                raise TaskError("balance_test_timeout", "余额查询超时，请核对地址、服务状态或代理。") from error
             except Exception as error:
+                failure = balance_failure_data(error)
+                if port.provider == "script":
+                    return outcome_response(Outcome.success({"tested": True, "available": False,
+                        "provider": port.provider, "provider_label": port.provider_label,
+                        "amount": None, "observed_at": None, **failure}))
                 raise TaskError("balance_test_failed", "NewAPI 未返回有效余额；请检查令牌权限、用户 ID 和地址。") from error
             return outcome_response(Outcome.success({
                 "tested": True, "available": True, "provider": port.provider,
-                "provider_label": port.provider_label, "currency_label": port.currency_label,
-                "amount": display_amount(observation.balance),
-                "observed_at": observation.observed_at.isoformat(),
+                "provider_label": port.provider_label,
+                **balance_observation_data(port, observation),
             }))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))

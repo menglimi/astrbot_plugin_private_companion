@@ -339,6 +339,41 @@ class ProviderRouteTests(unittest.IsolatedAsyncioTestCase):
         })
         self.assertNotIn("api_key", str(result).lower())
 
+    async def test_script_balance_status_preserves_the_amount_contract_and_unit(self):
+        from companion_v2.proactive.balance_events import BalanceObservation
+        import astrbot_host.model_api as model_api
+        class Port:
+            provider, provider_label, currency_label = "script", "高级余额查询", "额度"
+            async def fetch(self):
+                return BalanceObservation(Decimal("12.3"), Decimal("16.8"),
+                    datetime(2026, 10, 2, tzinfo=timezone.utc), unit="CNY", used=Decimal("4.5"),
+                    plan_name="Synthetic plan", extra="Management only")
+        (await self.controller.initialize_profile()).unwrap()
+        with patch.object(model_api, "configured_balance_port", return_value=Port()):
+            result = await self.call(PREFIX + "/balance")
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(result["data"]["amount"], "12.30")
+        self.assertEqual(result["data"]["currency_label"], "CNY")
+        self.assertEqual(result["data"]["used"], "4.50")
+        self.assertEqual(result["data"]["total"], "16.80")
+        self.assertEqual(result["data"]["plan_name"], "Synthetic plan")
+
+    async def test_script_balance_invalid_account_clears_the_previous_amount(self):
+        from astrbot_host.service_balance_script import BalanceQueryError
+        import astrbot_host.model_api as model_api
+        class Port:
+            provider, provider_label, currency_label = "script", "高级余额查询", "额度"
+            async def fetch(self):
+                raise BalanceQueryError("account_invalid", "Synthetic account expired")
+        (await self.controller.initialize_profile()).unwrap()
+        with patch.object(model_api, "configured_balance_port", return_value=Port()):
+            result = await self.call(PREFIX + "/balance")
+        self.assertEqual(result["status"], "ok", result)
+        self.assertFalse(result["data"]["available"])
+        self.assertIsNone(result["data"]["amount"])
+        self.assertEqual(result["data"]["state"], "account_invalid")
+        self.assertEqual(result["data"]["message"], "Synthetic account expired")
+
     async def test_tts_provider_roundtrip_masks_secrets(self):
         (await self.controller.initialize_profile()).unwrap()
         prefix = "C:/Users/99505/.astrbot/data/plugins/astrbot_plugin_private_companion/astrbot_host.model_api"

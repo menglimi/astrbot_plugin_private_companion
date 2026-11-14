@@ -41,6 +41,7 @@ WeChat Native 接入沿用 AstrBot 核心普通回复与适配器的原事件发
 ### 文档与支持
 
 - 使用说明：[插件 Wiki](https://vue.syuan.org)
+- 服务余额：[NewAPI 与高级请求／提取脚本](docs/service-balance.md)
 - 开发者入口：[开发文档索引](docs/README.md) · [贡献指南](CONTRIBUTING.md) · [第三方扩展开发规范](docs/extension-development.md)
 - 源代码：[GitHub 仓库](https://github.com/menglimi/astrbot_plugin_private_companion)
 - 6.7.x 稳定版备份：[只读备份仓库](https://github.com/menglimi/astrbot_plugin_private_companion_v2)
