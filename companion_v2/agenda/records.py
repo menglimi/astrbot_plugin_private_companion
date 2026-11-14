@@ -102,7 +102,7 @@ class CalendarRecords(VersionedRecords):
                        if item["record"]["id"] == identifier), None)
         return legacy or super().get(context, identifier, storage_key=self.conversation_key(context))
 
-    def list(self, context, *, after_id="", limit=100, kinds=None):
+    def list(self, context, *, after_id="", limit=100, kinds=None, active_since=None):
         if type(limit) is not int or not 1 <= limit <= 100 or type(after_id) is not str:
             raise TaskError("record_page_invalid", "invalid record page")
         if kinds is not None:
@@ -110,12 +110,20 @@ class CalendarRecords(VersionedRecords):
             if not kinds or any(type(kind) is not str or not kind for kind in kinds):
                 raise TaskError("record_page_invalid", "invalid record kind filter")
         role_key, local_key = self.role_key(context), self.conversation_key(context)
-        shared = super().list(context, after_id=after_id, limit=limit, storage_key=role_key, kinds=kinds)
-        local = super().list(context, after_id=after_id, limit=limit, storage_key=local_key, kinds=kinds)
+        shared = super().list(context, after_id=after_id, limit=limit, storage_key=role_key, kinds=kinds,
+                              active_since=active_since)
+        local = super().list(context, after_id=after_id, limit=limit, storage_key=local_key, kinds=kinds,
+                             active_since=active_since)
         kind_set = set(kinds) if kinds is not None else None
         records = {item["id"]: item for item in shared}
         for item in self._legacy_role_plans(context):
             record = item["record"]
+            if active_since is not None:
+                schedule = record["schedule"]
+                if record["state"] == "cancelled" or (schedule["frequency"] == "once" and
+                        all(datetime.fromisoformat(value) < active_since for value in
+                            (schedule["anchor"], *record["exceptions"].values()) if value)):
+                    continue
             if record["id"] > after_id and (kind_set is None or record.get("kind") in kind_set):
                 records.setdefault(record["id"], record)
         for record in local:

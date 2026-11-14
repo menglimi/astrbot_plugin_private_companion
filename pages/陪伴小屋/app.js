@@ -3691,6 +3691,15 @@ function renderOutputOriginal(){
               <article class="output-content-library"><header><h2>Content 作品库</h2><button type="button" class="output-inline-link" data-go="manage" data-manage="models">模型与连接 ${I('arrow-up-right')}</button></header><div class="output-content-status">${outputProviderLine('content','Content 授权')}${contentAssembleButton()}</div><div class="output-content-stats"><div><strong data-output-content-stat="works">—</strong><span>已关联作品</span></div><div><strong data-output-content-stat="candidates">—</strong><span>续写候选稿</span></div><div><strong data-output-content-stat="updated">—</strong><span>最近更新</span></div></div></article>
               <article class="output-authoring-card output-workbench-block"><header><h2>原生创作</h2><span class="output-status-chip">按角色生效 · 私聊</span></header><div id="contentAuthoringWorkspace" data-output-config aria-label="原生创作与方向">${consoleLoading('正在读取原生创作设置…')}</div></article>
             </div>
+            <section class="output-works" aria-labelledby="output-works-title">
+              <header class="output-panel-heading"><h2 id="output-works-title">作品预览</h2><button type="button" class="button small" data-output-native-action="works-refresh">刷新作品</button></header>
+              <div data-output-works-list>正在读取作品…</div>
+              <dialog class="output-work-dialog" aria-label="作品正文" data-output-work-dialog>
+                <header class="output-panel-heading"><h2 data-output-work-title></h2><form method="dialog"><button class="button small">关闭</button></form></header>
+                <div class="output-work-actions" data-output-work-actions></div>
+                <div class="output-work-text" data-output-work-text></div>
+              </dialog>
+            </section>
             <div class="output-route-note"><strong>模型路线</strong><button type="button" class="output-inline-link" data-go="manage" data-manage="models">打开模型与连接 ${I('arrow-up-right')}</button></div>
           </section>
           <section class="output-config-panel" id="output-panel-capabilities" role="tabpanel" aria-labelledby="output-tab-capabilities" tabindex="0" data-output-panel hidden>${renderOutputCapabilitiesPanel()}</section>
@@ -3748,6 +3757,7 @@ function activateOutputTab(id,{focus=false,scroll=false}={}){
     page.querySelector('.output-showcase').hidden=id!=='visual';
     page.querySelector('.output-config-tabs').hidden=false;
   }
+  if(id==='creation')window.CompanionOutputPage?.showWorks?.();
   if(focus)target.focus();
   if(scroll){
     const reduced=state.reduceMotion||window.matchMedia('(prefers-reduced-motion: reduce)').matches

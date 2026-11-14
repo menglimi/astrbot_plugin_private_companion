@@ -352,6 +352,7 @@ class CompanionApplication:
         self.screen_interpretation = ScreenInterpretationService(runtime, notify=self.notify)
         self.screen_peek = ScreenPeekService(runtime, notify=self.notify)
         self.authoring = ContentAuthoringWorkflow(runtime)
+        self.scheduled_authoring = None
         self.poke_reply_model = PokeReplyModel(runtime, now=self.now)
         self.poke_context_tasks = set()
         registrations = (
@@ -513,7 +514,7 @@ class CompanionApplication:
                                                 notify=self.notify)
         self.proactive.schedule = self.contact_schedule
         self.role_reader.attach(self.gateway, self.role_reading, require_running=self.require_running,
-                                waiting=self.background_waiting)
+                                waiting=self.background_waiting, calendar=self.calendar)
         self.journal_triggers = JournalTriggers(self.journal_writer, self.journal_material_collector,
                                                 require_running=self.require_running)
         self.journal_schedule = JournalScheduleDriver(self.journal_triggers, notify=self.notify)

@@ -326,6 +326,8 @@ class NativeExtensionRegistry(AstrBotToolPort):
         if (self.content is None and getattr(application, "messages", None) is not None
                 and any(entry[0].descriptor.tool.action in CONTENT_ACTIONS for entry in self._entries.values())):
             self.content = ContentConsumer(self, application)
+            from .scheduled_authoring import ScheduledAuthoring
+            application.scheduled_authoring = ScheduledAuthoring(self.content)
         return self
 
     def bind_role_guard(self, guard, persona_guard=None):

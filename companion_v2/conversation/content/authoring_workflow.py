@@ -56,6 +56,7 @@ class _Job:
     work_type: str = ""
     result: authoring.ContentDraft | None = None
     revalidate: object = None
+    scheduled: bool = False
 
 
 class ContentAuthoringWorkflow:
@@ -299,26 +300,35 @@ class ContentAuthoringWorkflow:
         self._jobs[task_id] = job
         return task_id
 
+    async def draft_scheduled(self, context, request, *, key, deadline, guard, brief,
+                              previous_text, version, work_type):
+        """Use the normal writing profile with a calendar-bound draft schema."""
+        settings = authoring_service.effective_settings(self.runtime, context)
+        prepared = authoring_service.prepare(action="continue" if version else "draft",
+                                              brief=brief, base_version=version)
+        # Bound the actual model context while preserving the full stored version.
+        # For a long serial, keep the opening and the most recent text.
+        if len(previous_text) > 24000:
+            previous_text = previous_text[:4000] + "\n\n［中段略］\n\n" + previous_text[-20000:]
+        materials = {"base-version": previous_text} if version else {}
+        task_id = "content-authoring-" + digest(key)
+        parent = AuthoringParent(context, key, deadline, guard)
+        self._jobs[task_id] = _Job(context, request, settings, prepared, materials,
+            work_type, revalidate=guard, scheduled=True)
+        return await self._draft(parent, task_id)
+
     async def _draft(self, parent, job_id):
         job = self._jobs[job_id]
         task_id = job_id
-        if DRAFT_KIND not in self.gateway.router.profiles:
-            raise TaskError("model_task_unregistered", "the dedicated Content writing model route is unavailable")
-        now = self.tasks.now()
-        deadline = min(parent.deadline_at, now + timedelta(seconds=AUTHORING_BUDGET_SECONDS))
-        if deadline <= now:
-            raise TaskError("content_authoring_expired", "the original conversation has expired")
-        action = job.authoring_request["action"]
-        request = replace(job.request,
-            instruction=authoring_service.prompt(job.authoring_request, job.materials, settings=job.settings,
-                                                 work_type=job.work_type),
-            output_format="content_authoring", response_format="json_schema",
-            response_schema_json=encode(authoring.schema_for(action)), images=(), reply_images=False,
-            reply_actions=("text",),
-            audios=(), videos=(), streaming=None)
-        spec = TaskSpec(task_id, job.context, DRAFT_KIND, task_id, task_id, now, deadline)
-        require(self.tasks.submit(spec))
         try:
+            if DRAFT_KIND not in self.gateway.router.profiles:
+                raise TaskError("model_task_unregistered", "the dedicated Content writing model route is unavailable")
+            now = self.tasks.now()
+            deadline = min(parent.deadline_at, now + timedelta(seconds=AUTHORING_BUDGET_SECONDS))
+            if deadline <= now:
+                raise TaskError("content_authoring_expired", "the original writing window has expired")
+            spec = TaskSpec(task_id, job.context, DRAFT_KIND, task_id, task_id, now, deadline)
+            require(self.tasks.submit(spec))
             execution = await self.runner.run(job.context, task_id)
             parent.revalidate()
             self._require_enabled(parent.context)
@@ -344,17 +354,33 @@ class ContentAuthoringWorkflow:
             raise TaskError("content_authoring_request_unavailable", "the original writing request is unavailable")
         run.validate()
         action = job.authoring_request["action"]
+        instruction = authoring_service.prompt(job.authoring_request, job.materials, settings=job.settings,
+                                               work_type=job.work_type)
+        schema = authoring.schema_for(action)
+        if job.scheduled:
+            instruction += ("\n本次由角色日程触发。额外返回 finished 布尔值，只有文章已有完整自然的收尾时才为 true。"
+                            "系列仍需以后续写时返回 false。")
+            schema = {**schema, "properties": {**schema["properties"], "finished": {"type": "boolean"}},
+                      "required": [*schema["required"], "finished"]}
         completion = await self.gateway.generate(run, replace(job.request,
-            instruction=authoring_service.prompt(job.authoring_request, job.materials, settings=job.settings,
-                                                 work_type=job.work_type),
-            output_format="content_authoring", response_format="json_schema",
-            response_schema_json=encode(authoring.schema_for(action)), images=(), reply_images=False,
+            instruction=instruction, output_format="content_authoring", response_format="json_schema",
+            response_schema_json=encode(schema), images=(), reply_images=False,
             reply_actions=("text",),
             audios=(), videos=(), streaming=None))
         run.validate()
         if completion.draft is None:
             raise TaskError("content_authoring_output", "the writing model did not return a complete draft")
-        job.result = authoring_service.parse_draft(completion.draft.text, action=action)
+        raw = completion.draft.text
+        finished = True
+        if job.scheduled:
+            try:
+                raw = json.loads(raw)
+                finished = raw.pop("finished")
+                if type(finished) is not bool:
+                    raise ValueError("finished must be a boolean")
+            except (AttributeError, KeyError, TypeError, ValueError) as error:
+                raise TaskError("content_authoring_output", "scheduled writing must report completion") from error
+        job.result = replace(authoring_service.parse_draft(raw, action=action), finished=finished)
         return TaskResult("succeeded", result_ref=run.task.spec.task_id)
 
     def validate_result(self, row, context, result, external, at):
@@ -641,4 +667,4 @@ class ContentAuthoringWorkflow:
             raise TaskError("content_authoring_disabled", "native authoring is turned off for this role")
 
 
-__all__ = ["ACTIONS", "CONTINUE_ACTION", "CREATE_ACTION", "ContentAuthoringWorkflow", "INSTRUCTION", "TOOLS"]
+__all__ = ["ACTIONS", "CONTINUE_ACTION", "CREATE_ACTION", "ContentAuthoringWorkflow", "INSTRUCTION"]
