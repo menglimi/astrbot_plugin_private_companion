@@ -7,6 +7,7 @@ from companion_v2.execution.models import TaskError, encode
 from companion_v2.conversation.media.models import CapturedImage, ImageDescriptor
 from companion_v2.conversation.messages import source_from_document
 from companion_v2.conversation.native_tool_results import PREFIX, operation_row
+from companion_v2.storage.image_payloads import load_image
 
 
 def _active(owner, table, *, id_value, lineage_value, revision_value,
@@ -56,7 +57,7 @@ def _payload_images(owner, row):
                                id_column="asset_id", lineage_column="lineage_id",
                                revision_column="asset_revision")):
             continue
-        images.append(CapturedImage(descriptor, record["content"]))
+        images.append(CapturedImage(descriptor, load_image(owner.runtime.data_root, record["content"])))
     return tuple(images)
 
 

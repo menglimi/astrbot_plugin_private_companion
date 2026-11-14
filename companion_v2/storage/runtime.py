@@ -1,4 +1,4 @@
-"""A V2-owned SQLite lifecycle with fail-closed schema upgrades."""
+﻿"""A V2-owned SQLite lifecycle with fail-closed schema upgrades."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import logging
+import re
 from pathlib import Path
 import sqlite3
 import sys
@@ -350,13 +351,15 @@ class StorageRuntime:
     """Own the V2 database connection; repositories never open their own connection."""
 
     DATABASE_FILENAME = "companion-v2.sqlite3"
-    SLOW_OPERATION_SECONDS = 1.0
+    SLOW_OPERATION_SECONDS = 2.0
+    SLOW_TRANSACTION_BODY_WARNING_SECONDS = 5.0
     # Same window as the two rate-limited diagnostics this repository already
     # trusts: ProactiveScheduler._write_diagnostic(minimum_interval=60) and
     # report_slow_native_lookup (NATIVE_LOOKUP_SLOW_LOG_INTERVAL_SECONDS = 60).
-    # One minute keeps a hot slow query to one line per minute per call site
-    # while still surfacing it inside the tick the operator is already watching.
-    SLOW_OPERATION_LOG_INTERVAL_SECONDS = 60.0
+    # A five-minute window keeps a hot slow query to one line per five minutes
+    # per call site; a transaction body that is merely doing Python work is
+    # logged separately at INFO instead of flooding the WARNING channel.
+    SLOW_OPERATION_LOG_INTERVAL_SECONDS = 300.0
     # Keys are (operation, caller) pairs and callers come from shipped source: a
     # measured 1610 transaction/read_one/read_all/read_snapshot call sites in this
     # tree today. The cap therefore sits above the normal bound so it can only
@@ -488,15 +491,34 @@ class StorageRuntime:
         if caller is None:
             caller = sys._getframe(1)
         caller_name = f"{Path(caller.f_code.co_filename).name}:{caller.f_lineno}"
-        # Key choice: (operation, caller). The caller is a file name plus a line
-        # number, so a release that shifts lines starts new keys and lets the old
-        # ones age out; a stale key can only ever absorb its own repeats, never
-        # another call site's, because the (operation, caller) pair is the whole
-        # identity. Keeping the line number is what makes two different queries
-        # in one file rate-limit apart, which a file-only key would merge into a
-        # single stream and lose. The key space is therefore bounded by the
-        # shipped call-site count (1610 today) and capped hard by
-        # SLOW_OPERATION_LOG_MAX_KEYS.
+        # A transaction's total includes the Python body between BEGIN and
+        # COMMIT.  Logging that as "SQLite slow" is misleading: the common
+        # 1-4 s case has lock_wait_ms=0 and commit_ms=1 while body_ms carries
+        # the whole cost.  Separate it from real SQL stalls, keep it at INFO,
+        # and only return to WARNING when the body is genuinely pathological.
+        if operation == "transaction":
+            body_match = re.search(r"body_ms=(\d+)", details)
+            commit_match = re.search(r"commit_ms=(\d+)", details)
+            begin_match = re.search(r"begin_ms=(\d+)", details)
+            body_ms = int(body_match.group(1)) if body_match else 0
+            commit_ms = int(commit_match.group(1)) if commit_match else 0
+            begin_ms = int(begin_match.group(1)) if begin_match else 0
+            lock_wait_ms = round((lock_acquired - started) * 1000)
+            sql_phase_ms = lock_wait_ms + begin_ms + commit_ms
+            if body_ms < self.SLOW_TRANSACTION_BODY_WARNING_SECONDS * 1000 and sql_phase_ms < 250:
+                emit, suppressed, max_elapsed_ms = self._admit_slow_operation_log(
+                    ("transaction_body", caller_name), elapsed_ms,
+                )
+                if not emit:
+                    return
+                suffix = f" body_ms={body_ms} begin_ms={begin_ms} commit_ms={commit_ms}"
+                if suppressed:
+                    suffix += f" suppressed={suppressed} max_elapsed_ms={max_elapsed_ms}"
+                logger.info(
+                    "V2 SQLite transaction body slow elapsed_ms=%d lock_wait_ms=%d caller=%s%s",
+                    elapsed_ms, lock_wait_ms, caller_name, suffix,
+                )
+                return
         emit, suppressed, max_elapsed_ms = self._admit_slow_operation_log(
             (operation, caller_name), elapsed_ms,
         )
@@ -700,6 +722,9 @@ class StorageRuntime:
                     connection.execute("PRAGMA busy_timeout = 5000")
                     connection.execute("PRAGMA wal_autocheckpoint = 0")
                     connection.execute("PRAGMA query_only = ON")
+                    connection.execute("PRAGMA cache_size = -65536")
+                    connection.execute("PRAGMA mmap_size = 268435456")
+                    connection.execute("PRAGMA temp_store = MEMORY")
                 except sqlite3.Error as error:
                     if connection is not None:
                         connection.close()
@@ -791,6 +816,14 @@ class StorageRuntime:
             connection.execute("PRAGMA synchronous = FULL")
             connection.execute("PRAGMA busy_timeout = 5000")
             connection.execute("PRAGMA wal_autocheckpoint = 0")
+            # The store is routinely hundreds of MB because generated images
+            # still live in BLOB columns.  SQLite's 2 MB default page cache
+            # makes every lookup re-read those pages; 64 MB plus a read-only
+            # mmap keeps hot metadata and payload pages resident without
+            # changing the on-disk format.
+            connection.execute("PRAGMA cache_size = -65536")
+            connection.execute("PRAGMA mmap_size = 268435456")
+            connection.execute("PRAGMA temp_store = MEMORY")
         except (OSError, sqlite3.Error) as error:
             if connection is not None:
                 connection.close()
