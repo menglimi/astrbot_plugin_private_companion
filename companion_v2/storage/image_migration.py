@@ -33,9 +33,13 @@ def _migrate(runtime) -> dict:
         ).fetchone()[0]
         if not legacy:
             return {"migrated": 0, "already_file_backed": 0}
-        connection.execute("BEGIN IMMEDIATE")
-        result = migrate_image_payloads(runtime.data_root, connection, batch_size=BATCH_SIZE)
-        connection.execute("COMMIT")
+        # Commit per batch instead of holding BEGIN IMMEDIATE for the whole
+        # 700 MB conversion.  The live host must be able to take the writer
+        # lock between batches or a reply can fail with "database is locked".
+        result = migrate_image_payloads(
+            runtime.data_root, connection, batch_size=BATCH_SIZE,
+            commit=connection.commit,
+        )
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         return result
     finally:

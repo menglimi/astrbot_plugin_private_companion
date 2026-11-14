@@ -90,8 +90,14 @@ def migration_rows(connection):
     ).fetchall()
 
 
-def migrate_image_payloads(data_root: Path, connection, *, batch_size: int = 128) -> dict:
-    """Move legacy BLOBs to files; returns counts for the maintenance report."""
+def migrate_image_payloads(data_root: Path, connection, *, batch_size: int = 128,
+                           commit=None) -> dict:
+    """Move legacy BLOBs to files; returns counts for the maintenance report.
+
+    ``commit`` is called after every batch when supplied.  The in-process
+    startup migration uses it so a large 700 MB conversion never holds the
+    single SQLite writer lock long enough to fail a live reply transaction.
+    """
     changed = 0
     skipped = 0
     pending = []
@@ -109,6 +115,8 @@ def migrate_image_payloads(data_root: Path, connection, *, batch_size: int = 128
                 "WHERE parent_id = ? AND parent_lineage = ? AND parent_revision = ? AND position = ?",
                 pending,
             )
+            if callable(commit):
+                commit()
             pending.clear()
     if pending:
         connection.executemany(
@@ -116,4 +124,6 @@ def migrate_image_payloads(data_root: Path, connection, *, batch_size: int = 128
             "WHERE parent_id = ? AND parent_lineage = ? AND parent_revision = ? AND position = ?",
             pending,
         )
+        if callable(commit):
+            commit()
     return {"migrated": changed, "already_file_backed": skipped}
