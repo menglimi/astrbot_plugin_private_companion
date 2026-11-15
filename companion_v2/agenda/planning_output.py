@@ -15,8 +15,8 @@ calendar_context 是当日语境，节日名不等于放假、调休或节气，
 若材料提供 role_state 或 recent_life，结合观测时间与当前情境调节节奏和轻重。role_state 是主观模拟，updated_at/age_minutes 表示记录时效，旧不适不代表今天整天无法生活；精力偏低可安排轻松的小事、饮食准备或休整，也可保留空闲，不因低能量把整天默认清空，不机械堆满任务。计划吃饭、休息只表达打算，不证明已经执行。
 长期规划保留有价值的未来节点，当天规划把已提供目标拆成可执行小步，避免重复；暂停目标不续排。用户自述和未接受约定仅供协商，不替用户承诺、接受安排或登记发送提醒。
 延续兴趣时区分真实目标与角色此前随口说过的决心；旧计划、反复尝试和“明天再试”不自动成为必须续排的任务。conversation 材料中某件事已被用户劝停或自然收尾时，结合原话调整安排，不为继续同一段聊天剧情反复排入日程；角色仍有自己的兴趣，也不等于用户需要持续收到进度。
-计划不等于完成，过时或离线没回执的事不补成经历，阅读、创作和现实动作由实际能力执行。冲突供协调，不强制拒绝聊天；材料截断时不声称查遍全部。
-daily/horizon 输出 {"items":[{"title":"计划标题","start":"含时区ISO时间","minutes":30,"detail":"准备如何做","goal_id":null,"parent_id":null}]}；无新安排用空数组。goal_id/parent_id 可省略，有关联只用材料中的目标或日历 ID；身份、来源、控制 ID 与保存由程序负责，不另造控制字段。
+计划不等于完成，过时或离线没回执的事不补成经历，阅读、创作和现实动作由实际能力执行。若事项本身是阅读原文或文学创作，可分别附 routine="reading" 或 routine="writing"，以便调度；普通工作文案、日记和写字练习不用标为文学创作。冲突供协调，不强制拒绝聊天；材料截断时不声称查遍全部。
+daily/horizon 输出 {"items":[{"title":"计划标题","start":"含时区ISO时间","minutes":30,"detail":"准备如何做","goal_id":null,"parent_id":null,"routine":"reading"}]}；无新安排用空数组。goal_id/parent_id/routine 可省略，有关联只用材料中的目标或日历 ID；身份、来源、控制 ID 与保存由程序负责，不另造控制字段。
 refine 只输出 {"detail":"指定期次接下来准备怎么做"}，不改时间、不替换其他期次、不宣称完成。仅返回任务要求的 JSON，不附推理、来源编号或检查过程。
 """
 
@@ -111,7 +111,8 @@ def parse_output(text, job):
     for index, item in enumerate(data["items"]):
         try:
             if (type(item) is not dict or not {"title", "start", "minutes"}.issubset(item)
-                    or set(item) - {"title", "start", "minutes", "detail", "goal_id", "parent_id"}):
+                    or set(item) - {"title", "start", "minutes", "detail", "goal_id", "parent_id", "routine"}
+                    or item.get("routine") not in (None, "reading", "writing")):
                 raise ValueError("invalid fields")
             start = datetime.fromisoformat(item["start"])
             if start.tzinfo is None or not job["at"] <= start < job["end"]:
@@ -133,7 +134,8 @@ def parse_output(text, job):
                 continue
             seen.add(signature)
             accepted.append((event, {"mode": job["mode"], "slot": job["slot"],
-                "goal": job["goal_refs"].get(goal), "parent": job["calendar_refs"].get(parent)}))
+                "goal": job["goal_refs"].get(goal), "parent": job["calendar_refs"].get(parent),
+                **({"routine": item["routine"]} if item.get("routine") else {})}))
         except (ValueError, TypeError, KeyError, TaskError):
             rejected.append({"index": index, "code": "invalid_plan_item"})
     if data["items"] and not accepted and any(r["code"] != "duplicate_plan" for r in rejected):

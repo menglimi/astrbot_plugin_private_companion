@@ -60,9 +60,9 @@ class NativeContentFixture:
         options.setdefault("policy", ConversationPolicy(0, 0, 180, 0))
         host = self.host(tool_port=self.native_registry, **options)
         original = host.application.generator.generate
-        async def observed(run):
+        async def observed(run, **kwargs):
             try:
-                return await original(run)
+                return await original(run, **kwargs)
             except Exception:
                 self.content_errors.append(traceback.format_exc())
                 raise

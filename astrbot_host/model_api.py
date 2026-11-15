@@ -601,7 +601,7 @@ class ModelWebAPI:
                 self._authorized()
             async with self._balance_lock:
                 try:
-                    port = configured_balance_port(self.controller.config)
+                    port = configured_balance_port(self.controller.config, context=getattr(self.controller, "context", None))
                 except (ValueError, TypeError, KeyError, UnicodeError, OverflowError):
                     return self._response(Outcome.success({
                         "configured": True, "available": False, "provider": "unknown",
@@ -616,15 +616,16 @@ class ModelWebAPI:
                     }))
                 try:
                     observation = await asyncio.wait_for(port.fetch(), timeout=12)
-                except Exception:
+                except Exception as error:
+                    from .service_balance import balance_failure_data
                     data = {"configured": True, "available": False, "provider": port.provider,
                             "provider_label": port.provider_label, "currency_label": port.currency_label,
-                            "observed_at": None, "amount": None, "state": "unavailable"}
+                            "observed_at": None, "amount": None, **balance_failure_data(error)}
                 else:
+                    from .service_balance import balance_observation_data
                     data = {"configured": True, "available": True, "provider": port.provider,
-                            "provider_label": port.provider_label, "currency_label": port.currency_label,
-                            "observed_at": observation.observed_at.isoformat(),
-                            "amount": display_amount(observation.balance), "state": "available"}
+                            "provider_label": port.provider_label, "state": "available",
+                            **balance_observation_data(port, observation)}
                 return self._response(Outcome.success(data))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))

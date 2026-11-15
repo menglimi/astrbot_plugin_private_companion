@@ -718,9 +718,19 @@ class LocalReplyGenerator:
                 try:
                     prepared = prepare_reply(draft_text, segmentation, presentation, voice,
                         statements=observed_statements(completion.draft), split=self.split)
-                except ValueError as error:
-                    raise TaskError("message_parts_invalid", "reply contains no bounded visible text") from error
-                parts = prepared.parts
+                except ValueError:
+                    # Presentation cleanup removed every visible character.
+                    # This is an intentional no-reply, not a failed generation:
+                    # returning message_parts_invalid made the whole group turn
+                    # look broken and bypassed the normal silent path.
+                    prepared = None
+                    parts = ()
+                    speech = ()
+                    candidate_reasons = ()
+                    image_only = False
+                    action = "silent"
+                if prepared is not None:
+                    parts = prepared.parts
                 logger.debug("[CompanionV2][开发者追踪] 正文处理 batch=%s stage=prepare_reply action=%s normalized=%r parts=%r",
                              run.task.spec.request_ref, action, draft_text, parts)
                 if action == "voice_only":

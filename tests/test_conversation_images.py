@@ -18,6 +18,7 @@ from companion_v2.adapters.astrbot.native import NativeImageLocator
 from companion_v2.conversation.flow import ConversationPolicy
 from companion_v2.conversation.messages import event_from_document
 from companion_v2.conversation.media.models import ImageConversationEvent
+from companion_v2.storage.image_payloads import load_image
 from companion_v2.execution.models import TaskError, digest
 from companion_v2.foundation.refs import SubjectKind, SubjectRef
 from companion_v2.identity_policy.personas import RuntimeIdentity
@@ -97,7 +98,11 @@ class ConversationImageTests(ImageFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app.messages.history(self.context(app, batch)).unwrap()["items"][0]["text"], "图片中是一片红色。")
         self.assertEqual(app.runtime.read_one("SELECT COUNT(*) n FROM conversation_image_payloads", ())["n"], 1)
         encoded = captured.images[0].content
-        self.assertEqual(app.runtime.read_one("SELECT content FROM conversation_image_payloads", ())["content"], encoded)
+        self.assertEqual(
+            load_image(app.runtime.data_root,
+                       app.runtime.read_one("SELECT content FROM conversation_image_payloads", ())["content"]),
+            encoded,
+        )
         text_sources = " ".join(row["payload_json"] for row in app.runtime.read_all("SELECT payload_json FROM sources", ()))
         self.assertNotIn(base64.b64encode(encoded).decode("ascii"), text_sources)
 

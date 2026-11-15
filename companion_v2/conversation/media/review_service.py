@@ -23,6 +23,7 @@ from companion_v2.execution.runner import ExactTaskRunner
 from companion_v2.execution.service import outcome
 from companion_v2.foundation.refs import ScopeKind
 from companion_v2.model_gateway.models import ModelTaskProfile
+from companion_v2.storage.image_payloads import load_image
 
 from .models import CapturedImage, ImageDescriptor, PromptImage
 from .review import GroupImageReview, check_verdict, decide, merge_answers, parse_answer, review_prompt, verdict_document
@@ -176,7 +177,7 @@ class GroupImageReviewService:
             (source["source_id"], source["version"]["lineage_id"], source["version"]["revision"]))
         if row is None or row["descriptor_json"] != encode(descriptor):
             raise TaskError("image_review_original", "the reviewed provider original is unavailable")
-        return row["content"]
+        return load_image(self.runtime.data_root, row["content"])
 
     def images(self, target):
         from companion_v2.conversation.messages import source_from_document

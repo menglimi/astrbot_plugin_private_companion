@@ -194,6 +194,29 @@ class StateMaintenance:
         if rest_gate.sleep_context(self.runtime, context, now=at, settings=settings)["resting"]:
             require_capability(self.tasks, context, REST_WAKE_INTERVENTION, at=at)
 
+    def _sleep_wake_at(self, context, now):
+        """During execution-confirmed sleep, defer the next model round to wake-up.
+
+        The previous sweep kept calling the state model every maintenance interval
+        while the role was sleeping, even though ``sleep_execution`` already
+        records the planned wake and the sleep receipt carries recovery.  That
+        spent background model calls on a period where no user-facing state can
+        change; wake-up is the first point a fresh round is useful.
+        """
+        try:
+            sleep = self.service.body_clock.read(context, now=now)
+        except TaskError:
+            return None
+        if not isinstance(sleep, dict) or sleep.get("state") != "sleeping":
+            return None
+        try:
+            wake_at = datetime.fromisoformat(str(sleep.get("planned_wake_at")))
+        except (TypeError, ValueError):
+            return None
+        if wake_at.tzinfo is None:
+            wake_at = wake_at.replace(tzinfo=now.tzinfo)
+        return wake_at + timedelta(minutes=1) if wake_at > now else None
+
     def _can_anchor_schedule(self, context):
         try:
             self.service.access.check(context, "role.state.read")
@@ -747,6 +770,12 @@ class StateMaintenance:
     def advance(self):
         if self.closed:
             return
+        from companion_v2.external_ownership import registry_for
+        try:
+            if registry_for(self.runtime.installation_id).active("state") is not None:
+                return
+        except Exception:
+            pass
         self.patrol()
         for key, worker in tuple(self.workers.items()):
             if worker.done():
@@ -803,6 +832,13 @@ class StateMaintenance:
                         or self.foreground_busy(context) or context.key in self.workers or self.workers):
                     continue
                 now = self.tasks.now()
+                deferred_until = self._sleep_wake_at(context, now)
+                if deferred_until is not None:
+                    with self.runtime.transaction() as connection:
+                        connection.execute("""UPDATE role_state_schedules SET next_at = ?
+                            WHERE context_key = ? AND next_at = ? AND revision = ? AND enabled = 1""",
+                            (stamp(deferred_until), row["context_key"], row["next_at"], row["revision"]))
+                    continue
                 context, instruction, guard = self._conversation_anchor((context, instruction, guard), now)
                 self._clear_preflight(context)
                 stage = "budget"

@@ -33,6 +33,7 @@ from companion_v2.conversation.self_review_context import ConversationSelfReview
 from companion_v2.conversation.style_context import ConversationExpressionStyleContext, EXPRESSION_STYLE_INSTRUCTION
 from companion_v2.conversation.open_items_context import OpenItemsReader
 from companion_v2.configuration.models import ConfigurationError
+from companion_v2.storage.image_migration import migrate_image_payloads_in_background
 from companion_v2.configuration.service import ConfigurationService
 from companion_v2.conversation.delivery import LocalConversationDelivery
 from companion_v2.conversation.pokes import PokeReplyModel
@@ -352,6 +353,7 @@ class CompanionApplication:
         self.screen_interpretation = ScreenInterpretationService(runtime, notify=self.notify)
         self.screen_peek = ScreenPeekService(runtime, notify=self.notify)
         self.authoring = ContentAuthoringWorkflow(runtime)
+        self.scheduled_authoring = None
         self.poke_reply_model = PokeReplyModel(runtime, now=self.now)
         self.poke_context_tasks = set()
         registrations = (
@@ -513,7 +515,7 @@ class CompanionApplication:
                                                 notify=self.notify)
         self.proactive.schedule = self.contact_schedule
         self.role_reader.attach(self.gateway, self.role_reading, require_running=self.require_running,
-                                waiting=self.background_waiting)
+                                waiting=self.background_waiting, calendar=self.calendar)
         self.journal_triggers = JournalTriggers(self.journal_writer, self.journal_material_collector,
                                                 require_running=self.require_running)
         self.journal_schedule = JournalScheduleDriver(self.journal_triggers, notify=self.notify)
@@ -566,6 +568,7 @@ class CompanionApplication:
         self._next_contact_delivery_check = 0.0
         self._workers = {}
         self._storage_closed = False
+        self._image_migration_task = None
         self._closing = asyncio.Lock()
         from companion_v2.delivery.presence import PresenceCoordinator
         self.presence = PresenceCoordinator(self, presence_port) if presence_port is not None else None
@@ -695,6 +698,10 @@ class CompanionApplication:
                 await asyncio.sleep(0)
             require(self.tasks.check_generation())
             self.state = "running"
+            self._image_migration_task = asyncio.create_task(
+                migrate_image_payloads_in_background(self.runtime),
+                name="companion-v2:image-payload-migration",
+            )
             self._reconcile_contact_reactions()
             self.memory_schedule.start_recovery()
             self._driver = asyncio.create_task(self._drive(), name="companion:conversation-host")
@@ -1211,6 +1218,10 @@ class CompanionApplication:
             await self.memory_reflection.close()
             await self.proactive.close()
             await self.contact_schedule.close()
+            if self._image_migration_task is not None and not self._image_migration_task.done():
+                self._image_migration_task.cancel()
+                await asyncio.gather(self._image_migration_task, return_exceptions=True)
+            self._image_migration_task = None
             if self.external is not None:
                 await self.external.close()
             for task_id, (_, worker) in tuple(self._workers.items()):

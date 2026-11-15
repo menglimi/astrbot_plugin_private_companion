@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 
 from companion_v2.conversation.foreground import PromptMaterial, PromptRequest, SealedForegroundContext
@@ -31,6 +31,7 @@ class ReadingJob:
     context: object
     activity: object
     instruction: str
+    window: dict | None = None
 
 
 class RoleReader:
@@ -45,9 +46,9 @@ class RoleReader:
             binding=ProviderBinding("role.reading", "local", "1", "reader-1"),
             max_attempts=1, timeout_seconds=180, concurrency=1), self.validate),)
 
-    def attach(self, gateway, completion, *, require_running, waiting=None):
+    def attach(self, gateway, completion, *, require_running, waiting=None, calendar=None):
         self.gateway, self.tasks, self.completion = gateway, gateway.tasks, completion
-        self.require_running = require_running
+        self.require_running, self.calendar = require_running, calendar
         self.runner = ExactTaskRunner(self.tasks, frozenset({READ_KIND}), self._generate, waiting=waiting)
 
     @staticmethod
@@ -63,6 +64,9 @@ class RoleReader:
             raise TaskError("reading_context_mismatch", "reading retains its original authority")
         current = self.life.activity(activity.activity_id, owner=activity.owner)
         committed = self._completed.get(self.task_id(context, activity))
+        if job.window is not None and committed is None:
+            from .life.calendar_work import require_window
+            require_window(self.calendar, context, job.window, at)
         if current != (committed or activity) or (committed is None and current.state is not State.ACTIVE):
             raise TaskError("reading_activity_changed", "reading activity changed during consumption")
         source = require(self.completion.sources.read(work.source, resolved=context.actor,
@@ -83,13 +87,13 @@ class RoleReader:
         self._original(job, at)
         return True
 
-    async def consume(self, context, activity, *, role_instruction):
+    async def consume(self, context, activity, *, role_instruction, window=None):
         if self._closed:
             return Outcome.failed("task_runner_closed", "reader is closed")
         if not isinstance(role_instruction, str) or not role_instruction.strip():
             raise ValueError("reading requires the original persona")
         task_id = self.task_id(context, activity)
-        job = ReadingJob(context, activity, role_instruction)
+        job = ReadingJob(context, activity, role_instruction, window)
         try:
             self.require_running()
             if self.runtime.read_one("SELECT 1 FROM execution_tasks WHERE task_id = ?", (task_id,)):
@@ -100,8 +104,11 @@ class RoleReader:
             invocation = asyncio.current_task()
             self._invocations.add(invocation)
             try:
+                deadline = now + timedelta(seconds=180)
+                if window is not None:
+                    deadline = min(deadline, datetime.fromisoformat(window["end"]))
                 require(self.tasks.submit(TaskSpec(task_id, context, READ_KIND, digest(job),
-                    activity.work.request_id, now, now + timedelta(seconds=180))))
+                    activity.work.request_id, now, deadline)))
                 result = await self.runner.run(context, task_id)
                 return result
             finally:

@@ -16,6 +16,8 @@ source-dependency recheck that every dispatch already performs.
 from __future__ import annotations
 
 from datetime import timedelta
+
+from companion_v2.storage.image_payloads import load_image
 import base64
 import json
 
@@ -189,7 +191,7 @@ class ImageReviewFallback:
              manifest["source"]["version"]["revision"]))
         if row is None or row["descriptor_json"] != encode(descriptor):
             raise TaskError("image_review_original", "the withheld provider original is unavailable")
-        captured = CapturedImage(descriptor, row["content"])
+        captured = CapturedImage(descriptor, load_image(self.runtime.data_root, row["content"]))
         from companion_v2.conversation.messages import source_from_document
         return PromptImage(source_from_document(manifest["source"]), source_from_document(manifest["parent"]),
                            descriptor, base64.b64encode(captured.content).decode("ascii"))
