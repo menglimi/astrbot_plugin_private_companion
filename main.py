@@ -131,7 +131,8 @@ CORE_REPLY_IDENTITY_FAILURE_PREFIXES = (
     "host_persona_", "host_conversation_", "host_native_lookup_timeout", "host_core_reply_capture_failed",
 )
 RETRYABLE_HOST_STARTUP_CODES = frozenset({
-    "host_platform_unavailable", "host_account_unavailable", "host_persona_unavailable",
+    "host_platform_unavailable", "host_platform_changed", "host_account_unavailable",
+    "host_account_changed", "host_persona_unavailable",
     "host_persona_window_unbound", "host_conversation_changed", "host_startup_failed",
     "staging_preflight_failed",
 })
@@ -577,7 +578,9 @@ class PrivateCompanionV2StagingPlugin(Star):
         session = self.staging.session
         if (self.staging._accepting and session is not None
                 and session.application.state == "running"):
-            return
+            if self.staging.native_bridges_current():
+                return
+            self.staging._accepting = False
         task = self._host_start_task
         if task is None or task.done():
             self._host_start_task = asyncio.create_task(

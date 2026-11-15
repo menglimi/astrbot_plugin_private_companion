@@ -204,6 +204,23 @@ class AstrBotMultiController:
                 return "host_account_unavailable"
         return None
 
+    def native_bridges_current(self):
+        """Whether both running bridges still point at AstrBot's selected clients."""
+        session = self.session
+        if session is None or session.application.state != "running":
+            return False
+        for bridge in (session.bridge, session.bridge.groups):
+            if not bridge.platforms:
+                return False
+            for platform_id, (platform, client) in bridge.platforms.items():
+                try:
+                    if (self.context.get_platform_inst(platform_id) is not platform
+                            or platform.get_client() is not client):
+                        return False
+                except Exception:
+                    return False
+        return True
+
     @property
     def profile_root(self):
         return self._storage_profile_root if self.settings else None
@@ -1201,7 +1218,32 @@ class AstrBotMultiController:
         async with self._lifecycle_lock:
             try:
                 if self.session is not None and self.session.application.state == "running":
-                    return Outcome.success({"state": "running", "replayed": True})
+                    if self._accepting and self.native_bridges_current():
+                        return Outcome.success({"state": "running", "replayed": True})
+                    previous_session = self.session
+                    self._accepting = False
+                    self.refresh_settings()
+                    self._settings()
+                    manifest, _ = await self._probe(include_conversations=False, include_window_personas=False)
+                    async with self._control_lock:
+                        if self.session is not previous_session or self._terminated:
+                            raise TaskError("host_session_changed", "the shared host changed during native reconnect")
+                        await self._open_async()
+                        try:
+                            await asyncio.to_thread(self.authority.require_manifest, manifest)
+                        except TaskError as error:
+                            if error.code == "host_binding_changed" and self._confirmed_core_window():
+                                await asyncio.to_thread(self._adopt_confirmed_mapping, manifest)
+                            else:
+                                raise
+                    report = await previous_session.close(grace_seconds=0.5)
+                    if report.state != "stopped":
+                        raise TaskError("host_must_stop", "the shared host did not finish stopping after native reconnect")
+                    async with self._control_lock:
+                        if self.session is not previous_session:
+                            raise TaskError("host_session_changed", "the shared host changed during native reconnect")
+                        self.last_session, self.session = previous_session, None
+                    logger.info("[CompanionV2] 平台连接已更新，重建私聊与群聊 Bridge")
                 self._idle()
                 # Model settings can be changed from another workspace while
                 # this host is stopped. Re-read them here so retrying Start
@@ -1242,6 +1284,11 @@ class AstrBotMultiController:
             self._settings()
             if self.session is not session:
                 raise TaskError("host_session_changed", "the initialized host changed before it could resume")
+            if not self.native_bridges_current():
+                raise TaskError("host_account_changed", "native platform/client changed during startup")
+            readiness = self.startup_readiness()
+            if readiness is not None:
+                raise TaskError(readiness, "a configured native account disconnected during startup")
             self._accepting, self.last_failure = True, None
             targets = len(self.settings.all_targets)
         return Outcome.success({"state": "running", "targets": targets, "startup": result.unwrap()})
