@@ -30,7 +30,7 @@
 | 显示名 | 我会永远陪着你 |
 | 当前版本 | `7.1.20`（7.x 架构线，内部领域标识 `private_companion.v2`） |
 | AstrBot 版本 | `>= 4.27.2` |
-| 声明支持平台 | `aiocqhttp`（OneBot v11）、`qq_official`、`qq_official_webhook`、`weixin_oc`（个人微信）、`wechat_native`（WeChat Native） |
+| 声明支持平台 | `aiocqhttp`（OneBot v11）、`qq_official`、`qq_official_webhook`、`weixin_oc`（个人微信）、`wechat_native`（WeChat Native）、`telegram`（私聊文字） |
 | 管理入口 | AstrBot 插件扩展页「陪伴小屋」（支持低配设备开启「性能模式」切换为轻量状态页） |
 | 数据存储 | 独立 SQLite 运行库（覆盖升级自动隔离于 `companion-7` 子目录，支持备份快照与跨盘迁移） |
 | 内置原生扩展 | `Content`、`Image`、`Screen`、`Reality`、`Together`、`Game`、`Live` 七项能力随包内置 |

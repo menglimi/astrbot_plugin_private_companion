@@ -35,7 +35,7 @@ VERIFIED_SERIES = frozenset(("4.27", "4.28", "4.29"))
 # Native routing is verified for the OneBot reverse-WS adapter and the two
 # QQ Official adapter names AstrBot exposes.  Keeping the allow-list here
 # prevents an arbitrary adapter from inheriting route privileges by accident.
-SUPPORTED_PLATFORM_NAMES = frozenset(("aiocqhttp", "qq_official", "qq_official_webhook", "lark", "weixin_oc", "wechat_native"))
+SUPPORTED_PLATFORM_NAMES = frozenset(("aiocqhttp", "qq_official", "qq_official_webhook", "lark", "weixin_oc", "wechat_native", "telegram"))
 OFFICIAL_PLATFORM_NAMES = frozenset(("qq_official", "qq_official_webhook"))
 _REPORTED_UNVERIFIED = set()
 NATIVE_LOOKUP_TIMEOUT_SECONDS = 20
@@ -202,9 +202,9 @@ def event_account_id(event):
         # Lark (Feishu) has no stable numeric self id on the event; the
         # configured platform instance id is the account key, same as QQ Official.
         return route_id(event_platform_id(event))
-    if name in {"weixin_oc", "wechat_native"}:
-        # Personal WeChat exposes an openid/wxid instead of a numeric self id;
-        # the configured adapter instance is the stable account projection.
+    if name in {"weixin_oc", "wechat_native", "telegram"}:
+        # Personal WeChat exposes an openid/wxid and Telegram a renamable bot
+        # username; the configured adapter instance is the stable account key.
         return route_id(event_platform_id(event))
     raise ValueError("unsupported native event platform")
 
@@ -230,6 +230,8 @@ def native_user_subject_id(platform_name, sender_id):
         return "weixin-user:" + sender_id
     if platform_name == "wechat_native":
         return "wechat-native-user:" + sender_id
+    if platform_name == "telegram":
+        return "telegram-user:" + sender_id
     raise ValueError("unsupported native user platform")
 
 
@@ -264,6 +266,9 @@ def event_session_id(event):
 
 
 def event_native_client(platform, event):
+    if event_platform_name(event) == "telegram":
+        # AstrBot's Telegram event carries its bot as ``client``, not ``bot``.
+        return getattr(event, "client", None)
     if event_platform_name(event) != "wechat_native":
         return getattr(event, "bot", None)
     if platform is None or getattr(event, "adapter", None) is not platform:
@@ -547,8 +552,10 @@ class NativePrivateBridge:
         account = self.account(scope)
         platform, client = self.platforms[account.platform_id]
         meta = platform.meta()
+        # AstrBot's Telegram adapter rebuilds its bot (same token) after polling errors.
         if (self.context.get_platform_inst(account.platform_id) is not platform
-                or platform.get_client() is not client or meta.id != account.platform_id
+                or (meta.name != "telegram" and platform.get_client() is not client)
+                or meta.id != account.platform_id
                 or not supported_platform_name(meta.name)):
             raise TaskError("host_account_changed", "original platform/client was replaced")
         if meta.name == "wechat_native":
