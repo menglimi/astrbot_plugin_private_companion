@@ -34,6 +34,130 @@ class AccountLinkDeliveryTests(ContactFixture, unittest.IsolatedAsyncioTestCase)
         app.outbound.private_account_router = router
         return app
 
+    async def test_linked_diagnostic_bypasses_zero_quota_without_changing_configuration(self):
+        app = await self.ready()
+        for context in (self.a, self.b):
+            self.settings(app, {"max_contacts_24h": 0}, target=target_for(context)).unwrap()
+        from companion_v2.relationships.account_link_settings import seed_values
+        links = PrivateAccountLinks(self.runtime)
+        links.configure(self.a, (self.a, self.b), persona_id="persona", expected_revision=links.read()["revision"],
+            share_context=False, operation_key="share-zero-quota", operator_id="admin", at=self.clock.now(),
+            sharing={"profile": [], "reply": [], "contact": ["proactive.contact.max_contacts_24h"]},
+            seed=member_for(self.a), initial_values=seed_values(app, self.a))
+        before = links.read()
+        task = (await self.linked_diagnostic(app)).unwrap().task
+        await self.delivery_state(app, task.task_id, "delivered")
+        self.assertEqual([e.context.key for e in self.sent], [self.b.key])
+        self.assertEqual(links.read(), before)
+        for context in (self.a, self.b):
+            preferences = require(app.proactive.preferences.read(context, observed_at=self.clock.now()))
+            self.assertEqual(preferences.values["max_contacts_24h"], 0)
+            with self.assertRaises(TaskError) as caught:
+                app.proactive.budget.contacts(context, preferences, self.clock.now())
+            self.assertEqual(caught.exception.code, "contact_delivery_budget")
+
+    async def test_forwarded_diagnostic_does_not_consume_destination_production_quota(self):
+        app = await self.ready()
+        self.settings(app, {"max_contacts_24h": 1}, target=target_for(self.b)).unwrap()
+        task = (await self.linked_diagnostic(app)).unwrap().task
+        await self.delivery_state(app, task.task_id, "delivered")
+        preferences = require(app.proactive.preferences.read(self.b, observed_at=self.clock.now()))
+        app.proactive.budget.contacts(self.b, preferences, self.clock.now())
+
+    async def test_production_route_still_enforces_candidate_quota_and_reports_it(self):
+        app = await self.ready()
+        self.settings(app, {"max_contacts_24h": 0}, target=target_for(self.b)).unwrap()
+        task = (await self.contact(app)).unwrap().task
+        await self.delivery_state(app, task.task_id, "delivered")
+        self.assertEqual([e.context.key for e in self.sent], [self.a.key])
+        observation = require(app.proactive.observe(self.a, task.task_id))
+        self.assertTrue(any(r["member"] == member_for(self.b) and r["code"] == "contact_delivery_budget"
+                            for r in observation["route_rejections"]))
+
+    async def test_diagnostic_quota_exemption_does_not_bypass_quiet_hours(self):
+        app = await self.ready()
+        self.settings(app, {"quiet_enabled": True, "quiet_start": "00:00", "quiet_end": "00:00"},
+                      target=target_for(self.b)).unwrap()
+        task = (await self.linked_diagnostic(app)).unwrap().task
+        await self.delivery_state(app, task.task_id, "delivered")
+        self.assertEqual([e.context.key for e in self.sent], [self.a.key])
+        observation = require(app.proactive.observe(self.a, task.task_id))
+        self.assertTrue(any(r["code"] == "proactive_quiet_hours" for r in observation["route_rejections"]))
+
+    async def test_offline_diagnostic_retains_per_account_rejections_after_router_restart(self):
+        app = await self.ready(available=lambda context: False)
+        task = (await self.linked_diagnostic(app)).unwrap().task
+        await self.until(lambda: bool(app.proactive._delivery_rows(task.task_id)))
+        row = app.proactive._delivery_rows(task.task_id)[0]
+        router = app.outbound.private_account_router
+        await self.until(lambda: bool(router.rejection_report(row["delivery_id"])))
+        restored = PrivateAccountDelivery(app, self.resolve)
+        rejections = restored.rejection_report(row["delivery_id"])
+        self.assertEqual(len(rejections), 2)
+        self.assertEqual({r["code"] for r in rejections}, {"account_link_transport_unavailable"})
+        self.assertIsNone(restored._read(PREFIX + row["delivery_id"]), "readiness must not create a wire journal")
+        self.assertEqual(self.sent, [])
+        self.assertIsNone(app.outbound._row(row["delivery_id"])["operation_id"])
+
+    async def test_administrator_diagnostic_is_pinned_despite_linked_preferred_recipient(self):
+        app = await self.ready()
+        task = (await self.contact(app, administrator_test=True)).unwrap().task
+        await self.delivery_state(app, task.task_id, "delivered")
+        self.assertEqual([envelope.context.key for envelope in self.sent], [self.a.key])
+        row = app.proactive._delivery_rows(task.task_id)[0]
+        self.assertIsNone(app.outbound.private_account_router._read(PREFIX + row["delivery_id"]))
+
+    async def linked_diagnostic(self, app):
+        opportunity = self.opportunity()
+        return await app.proactive.contact(self.contact_context(), opportunity, (self.intent(opportunity),),
+            role_instruction="这是原角色人格，保持自然。", selection_seed="linked-diagnostic",
+            administrator_test=True, diagnostic_allow_linked_accounts=True)
+
+    async def test_opt_in_diagnostic_uses_linked_preferred_account_and_reports_actual_destination(self):
+        app = await self.ready()
+        task = (await self.linked_diagnostic(app)).unwrap().task
+        await self.delivery_state(app, task.task_id, "delivered")
+        self.assertEqual([envelope.context.key for envelope in self.sent], [self.b.key])
+        from astrbot_host.setup_api import SetupWebAPI
+        destinations = SetupWebAPI._diagnostic_delivery_targets(NS(application=app), self.a, task.task_id)
+        self.assertEqual(destinations, [{"platform_id": self.b.scope.platform,
+            "account_id": self.b.scope.account_id, "participant_id": self.b.scope.native_scope_id,
+            "delivery_state": "delivered"}])
+
+    async def test_opt_in_diagnostic_preserves_weighted_selection(self):
+        app = await self.weighted_ready(0, 5)
+        task = (await self.linked_diagnostic(app)).unwrap().task
+        await self.delivery_state(app, task.task_id, "delivered")
+        self.assertEqual([envelope.context.key for envelope in self.sent], [self.b.key])
+
+    async def test_opt_in_diagnostic_preserves_safe_fallback(self):
+        app = await self.ready()
+        async def send(envelope):
+            return self.receipt(envelope, "not_sent" if len(self.sent) == 1 else "delivered")
+        self.send_behavior = send
+        task = (await self.linked_diagnostic(app)).unwrap().task
+        await self.delivery_state(app, task.task_id, "delivered")
+        self.assertEqual([envelope.context.key for envelope in self.sent], [self.b.key, self.a.key])
+
+    async def test_opt_in_diagnostic_never_falls_back_after_unknown_delivery(self):
+        app = await self.ready()
+        async def send(envelope):
+            return self.receipt(envelope, "unknown")
+        self.send_behavior = send
+        task = (await self.linked_diagnostic(app)).unwrap().task
+        await self.delivery_state(app, task.task_id, "unknown")
+        self.assertEqual([envelope.context.key for envelope in self.sent], [self.b.key])
+
+    async def test_forwarding_consent_is_strict_and_only_valid_for_administrator_tests(self):
+        app = await self.ready()
+        opportunity = self.opportunity()
+        for administrator_test, flag in ((False, True), (True, "true"), (True, 1)):
+            with self.assertRaises(ValueError):
+                await app.proactive.contact(self.a, opportunity, (self.intent(opportunity),),
+                    role_instruction="测试人格", selection_seed="invalid-forwarding",
+                    administrator_test=administrator_test, diagnostic_allow_linked_accounts=flag)
+        self.assertEqual(self.sent, [])
+
     async def test_confirmed_not_sent_falls_back_in_same_outbox_once(self):
         app = await self.ready()
         async def send(envelope):

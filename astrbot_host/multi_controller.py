@@ -330,7 +330,12 @@ class AstrBotMultiController:
         await self._open_async()
         return await asyncio.to_thread(self._resolve_proactive_diagnostic_target)
 
-    def _resolve_proactive_diagnostic_target(self):
+    async def proactive_diagnostic_targets(self):
+        """Current exact private recipients whose native identity is CORE."""
+        await self._open_async()
+        return await asyncio.to_thread(self._proactive_diagnostic_targets)
+
+    def _proactive_diagnostic_targets(self):
         settings = self._settings()
         if self.runtime is None or self.authority is None:
             raise TaskError("setup_binding_confirmation_required",
@@ -343,7 +348,7 @@ class AstrBotMultiController:
             (AuthorizationTier.CORE.value,),
         )}
         candidates = []
-        for target in settings.primary_targets:
+        for target in settings.targets:
             if target.participant_id == "*":
                 continue
             subject = self.authority.subject(target)
@@ -356,6 +361,11 @@ class AstrBotMultiController:
             if actor.subject == subject:
                 candidates.append(target)
 
+        return candidates
+
+    def _resolve_proactive_diagnostic_target(self):
+        candidates = [target for target in self._proactive_diagnostic_targets()
+                      if target in self._settings().primary_targets]
         if len(candidates) != 1:
             code = "setup_core_window_ambiguous" if candidates else "setup_binding_confirmation_required"
             reason = ("more than one configured private target belongs to a core administrator"
