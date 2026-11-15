@@ -49,7 +49,9 @@
 | 管理入口 | AstrBot 插件扩展页"陪伴面板"，可选独立 WebUI（默认关闭） |
 | 数据存储 | JSON（默认兼容）或 SQLite |
 | GitHub | `https://github.com/menglimi/astrbot_plugin_private_companion` |
+| 问题反馈 | `https://github.com/menglimi/astrbot_plugin_private_companion/issues` |
 | 交流群 | QQ `1097283005` |
+| 爱发电 | `https://ifdian.net/a/xuhaun` |
 
 身份常量定义在 [`plugin_identity.py`](./plugin_identity.py)：
 
