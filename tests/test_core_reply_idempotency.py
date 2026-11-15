@@ -18,7 +18,7 @@ import unittest
 
 from tests import astrbot_data_root  # noqa: F401  (message components need the SDK)
 
-from astrbot.core.message.components import At, Image, Plain, Reply
+from astrbot.core.message.components import At, Image, Plain, Record, Reply
 from astrbot.core.message.message_event_result import MessageChain
 
 from astrbot_host.core_reply import (
@@ -28,6 +28,7 @@ from astrbot_host.core_reply import (
 from astrbot_host.core_reply_idempotency import (
     begin_core_reply_delivery_turn, remember_native_tool_message,
     should_drop_core_reply_duplicate, should_drop_native_tool_duplicate,
+    should_drop_native_tool_response,
 )
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.outcome import Outcome
@@ -112,6 +113,38 @@ class ReplyDeliveryNetTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(should_drop_native_tool_duplicate(
             event, chain(BODY, At(qq="200"))))
+
+    def test_voice_attachment_records_the_complete_tool_body(self):
+        event = DeliveryEvent()
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, {"send_unknown": 0, "send_failed": 0})
+        remember_native_tool_message(event, chain(BODY, Record(file="base64://YQ==")))
+
+        self.assertTrue(should_drop_native_tool_duplicate(event, chain(BODY)))
+
+    def test_final_media_and_pending_reaction_are_not_suppressed(self):
+        event = DeliveryEvent()
+        state = {"send_unknown": 0, "send_failed": 0}
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, state)
+        remember_native_tool_message(event, chain(BODY, Record(file="base64://YQ==")))
+
+        self.assertFalse(should_drop_native_tool_response(event, chain(BODY, Image(file="x.png"))))
+        state["_reaction_reply"] = {"enabled": True, "intent": "smile", "attempted": False}
+        self.assertFalse(should_drop_native_tool_response(event, chain(BODY)))
+        state.pop("_reaction_reply")
+        self.assertFalse(should_drop_native_tool_response(event, chain(BODY, At(qq="200"))))
+        self.assertTrue(should_drop_native_tool_response(event, chain(BODY)))
+
+    def test_failed_or_unknown_native_send_does_not_suppress_the_final_reply(self):
+        event = DeliveryEvent()
+        state = {"send_unknown": 0, "send_failed": 0}
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, state)
+        remember_native_tool_message(event, chain(BODY, Record(file="base64://YQ==")))
+        state["send_failed"] = 1
+        self.assertFalse(should_drop_native_tool_response(event, chain(BODY)))
+        state["send_failed"], state["send_unknown"] = 0, 1
+        self.assertFalse(should_drop_native_tool_response(event, chain(BODY)))
+        state["send_unknown"] = 0
+        self.assertTrue(should_drop_native_tool_response(event, chain(BODY)))
 
     async def prepare(self, event=None, prepared=None, **kwargs):
         event = event or DeliveryEvent()

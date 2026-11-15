@@ -7,6 +7,7 @@ from astrbot.core.message.components import At, Image, Plain, Record, Reply
 from astrbot.core.message.message_event_result import MessageChain
 
 from astrbot_host.core_reply_outbound import prepare_core_reply_outbound_message
+from astrbot_host.core_reply_idempotency import remember_native_tool_message, should_drop_native_tool_response
 from companion_v2.adapters.astrbot.native import NativeConversationInput
 
 
@@ -28,6 +29,20 @@ def prepared(*, channel="group", event_id="7001", speaker="200", settings=None):
 
 
 class CoreReplyOutboundTests(unittest.TestCase):
+    def test_native_tool_dedupe_keeps_new_outbound_quote_and_mention(self):
+        event = FakeEvent()
+        state = event.extra["_companion_v2_core_reply_context"]
+        state.update(prepared=prepared(settings={"reply_quote_enabled": True,
+                                                 "reply_mention_speaker_enabled": True}),
+                     send_unknown=0, send_failed=0)
+        body = MessageChain(chain=[Plain("我也来说一句。")])
+        remember_native_tool_message(event, body)
+
+        self.assertFalse(should_drop_native_tool_response(event, body))
+        decorated = MessageChain(chain=[Reply(id="7001"), At(qq="200"), Plain("我也来说一句。")])
+        remember_native_tool_message(event, decorated)
+        self.assertTrue(should_drop_native_tool_response(event, body))
+
     def test_group_quote_and_mention_use_the_captured_native_message(self):
         event = FakeEvent()
         message = MessageChain(chain=[Plain("我也来说一句。")])

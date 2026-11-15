@@ -156,7 +156,8 @@ class CurrentReplySendTool(SendMessageToUserTool):
     """Preserve AstrBot component building, media resolution and deduplication."""
 
     def __init__(self, original, event, state, submit):
-        super().__init__(name=original.name, description=original.description,
+        description = (original.description + "\n发送成功后，最终回复不要复述已送达的正文或语音；只补充尚未发送的新内容。")
+        super().__init__(name=original.name, description=description,
                          parameters=deepcopy(original.parameters), active=original.active,
                          handler_module_path=original.handler_module_path)
         self._original, self._event, self._state = original, event, state
