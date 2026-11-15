@@ -1069,3 +1069,56 @@ test("the identity workspace relays only its member configuration and authorizat
   assert.equal(h.identity.messages.at(-1).ok, false, "group target settings are write-only from the identity workspace");
   assert.equal(h.calls.length, 6);
 });
+
+
+test("identity account-link bridge forwards all four exact routes with their original payloads", async () => {
+  const h = await harness(); h.product.mountWorkspace();
+  const params = {subject_id: "synthetic-user", platform: "qq", bot_id: "bot-a", account_id: "100", role_id: "synthetic-role"};
+  for (const endpoint of ["acquaintance/account-links", "acquaintance/account-links/history"]) {
+    const resolve = h.defer(endpoint);
+    const response = {status: "ok", data: endpoint.endsWith("/history")
+      ? {records: [], next_cursor: null} : {revision: 0, group: null, candidates: []}};
+    const pending = h.request(h.identity, "GET", endpoint, "read-" + endpoint, undefined, params);
+    resolve(response); await pending;
+    assert.equal(h.identity.messages.at(-1).ok, true, JSON.stringify(h.identity.messages.at(-1)));
+    const call = h.calls.at(-1);
+    assert.equal(call.endpoint, endpoint);
+    assert.equal(JSON.stringify(call.params), JSON.stringify(params));
+    assert.equal(h.identity.messages.at(-1).ok, true);
+    assert.equal(h.identity.messages.at(-1).data, response, "do not drop the account-link envelope");
+  }
+  const command = {subject_id: "synthetic-user", route: {platform: "qq", bot_id: "bot-a", account_id: "100", role_id: "synthetic-role"},
+    expected_revision: 0, operation_key: "same-safe-retry", share_context: false,
+    proactive: {mode: "random", preferred: null, weights: []}};
+  for (const endpoint of ["acquaintance/account-links", "acquaintance/account-links/unlink"]) {
+    await h.request(h.identity, "POST", endpoint, "write-" + endpoint, undefined, command);
+    assert.equal(h.identity.messages.at(-1).ok, true);
+    assert.equal(h.calls.at(-1).endpoint, endpoint);
+    assert.equal(JSON.stringify(h.calls.at(-1).body), JSON.stringify(command));
+  }
+  assert.equal(h.calls.length, 4);
+});
+
+test("identity account-link bridge still rejects wrong methods, extra suffixes and traversal", async () => {
+  const h = await harness(); h.product.mountWorkspace();
+  for (const [method, path] of [["GET", "acquaintance/account-links/unlink"],
+    ["POST", "acquaintance/account-links/history"], ["DELETE", "acquaintance/account-links"],
+    ["GET", "acquaintance/account-links/extra"], ["POST", "acquaintance/account-links/unlink/extra"],
+    ["GET", "acquaintance/account-links/../settings"], ["GET", "acquaintance/account-links?admin=true"],
+    ["GET", "acquaintance/account-links%2fhistory"], ["POST", "configuration/person"]]) {
+    await h.request(h.identity, method, path, "reject-" + method + path);
+    assert.equal(h.identity.messages.at(-1).ok, false, method + " " + path);
+  }
+  assert.equal(h.calls.length, 0);
+});
+
+test("account-link routes are not exposed through other workspace channels", async () => {
+  const h = await harness(); h.product.mountWorkspace();
+  for (const owner of [h.host, h.relationships, h.persona]) {
+    await h.request(owner, "GET", "acquaintance/account-links");
+    assert.equal(owner.messages.at(-1).ok, false);
+    await h.request(owner, "POST", "acquaintance/account-links/unlink");
+    assert.equal(owner.messages.at(-1).ok, false);
+  }
+  assert.equal(h.calls.length, 0);
+});

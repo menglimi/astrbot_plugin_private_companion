@@ -60,6 +60,13 @@ class SparseConfigurationOwner:
         self.store = runtime.configuration_store
 
     def read(self, target: ConfigTarget, fields: tuple[FieldDefinition, ...]) -> OwnerSnapshot:
+        from companion_v2.relationships.account_link_settings import overlay_snapshot
+        local = self.read_local(target, fields)
+        # Contact owner merges legacy rhythm addresses before applying sharing.
+        return local if self.owner_id == "proactive.contact" else overlay_snapshot(self.runtime, target, fields, local)
+
+    def read_local(self, target: ConfigTarget, fields: tuple[FieldDefinition, ...]) -> OwnerSnapshot:
+        """Original sparse values, without account-sharing projection (seeding/veto)."""
         ids = tuple(field.field_id for field in fields)
         placeholders = ",".join("?" for _ in ids)
         layers = target.chain()
@@ -98,6 +105,9 @@ class SparseConfigurationOwner:
             revision = row["revision"] if row else 0
             if revision != expected_revision:
                 raise ConfigurationError("configuration_revision_conflict", "configuration owner revision changed")
+            from companion_v2.relationships.account_link_settings import split_write
+            changes, reset, shared_changed = split_write(self.runtime, target, fields,
+                changes=changes, reset=reset, observed_at=observed_at)
             timestamp = encode_timestamp(observed_at)
             connection.execute("INSERT OR IGNORE INTO configuration_targets VALUES (?, ?, 0, ?)", (target.key, encode(target.document()), timestamp))
             changed = []
@@ -120,7 +130,7 @@ class SparseConfigurationOwner:
                 changed.append(key)
             revision += bool(changed)
             connection.execute("UPDATE configuration_targets SET revision = ?, updated_at = ? WHERE target_key = ?", (revision, timestamp, target.key))
-        return OwnerWrite(revision, tuple(changed))
+        return OwnerWrite(revision, tuple(sorted(set(changed).union(shared_changed))))
 
     def preview_set(self, target: ConfigTarget, fields: tuple[FieldDefinition, ...], *,
                     changes: Mapping[str, Scalar]) -> Mapping[str, EffectiveValue]:

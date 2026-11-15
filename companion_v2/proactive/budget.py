@@ -201,5 +201,12 @@ class ContactBudget:
             AND (d.state IN ('pending', 'dispatched', 'accepted', 'unknown')
                 OR (d.state = 'delivered' AND d.delivered_at >= ?))""",
             (context.key, exclude_contact_id, cutoff))[0]
-        if count >= preferences.values["max_contacts_24h"]:
+        routed = self.runtime.read_one("""SELECT COUNT(DISTINCT json_extract(value, '$.logical_key'))
+            FROM runtime_metadata WHERE key >= 'account-link-delivery:' AND key < 'account-link-delivery;'
+            AND json_extract(value, '$.target_key') = ? AND json_extract(value, '$.source_key') != ?
+            AND json_extract(value, '$.logical_key') != ?
+            AND (json_extract(value, '$.state') IN ('dispatching','accepted','unknown')
+                OR (json_extract(value, '$.state') = 'delivered' AND json_extract(value, '$.at') >= ?))""",
+            (context.key, context.key, exclude_contact_id, cutoff))[0]
+        if count + routed >= preferences.values["max_contacts_24h"]:
             raise TaskError("contact_delivery_budget", "contact delivery allowance is exhausted")

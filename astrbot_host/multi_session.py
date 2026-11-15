@@ -582,6 +582,12 @@ class MultiHostSession:
             wake_port=self._wake_snapshot,
             presence_port=MultiPresence(self))
         self.application = self.host.application
+        from companion_v2.relationships.account_link_context import persona_for
+        self.application.private_account_link_persona = lambda member: persona_for(self.settings, member)
+        self.application.runtime.private_account_link_persona = lambda member: self.application.private_account_link_persona(member)
+        from companion_v2.relationships.account_link_delivery import PrivateAccountDelivery
+        self.application.outbound.private_account_router = PrivateAccountDelivery(
+            self.application, self._linked_private_context, available=self._linked_private_available)
         if hasattr(self.application, "contact_schedule"):
             self.application.contact_schedule.bind_health_source(self.huawei_health)
         self.application.image_fallback.attach_port(ReviewFallbackRoutes(self))
@@ -1526,7 +1532,24 @@ class MultiHostSession:
         target = self.bridge.target_for_scope(envelope.context.scope)
         return self.authority.group_delivery.authorize_envelope(target, envelope)
 
+    def _linked_private_context(self, member):
+        target = self.settings.private_target(member["platform"], member["account_id"], member["native_account_id"])
+        if target is None or target.bot_id != member["bot_id"]:
+            raise TaskError("account_link_transport_unavailable", "associated account is no longer configured")
+        context = self.authority.context(target.target_id, member["role_id"])
+        from companion_v2.relationships.account_links import member_for
+        if member_for(context) != member:
+            raise TaskError("account_link_route_changed", "current identity no longer matches the associated account")
+        return context
+
+    def _linked_private_available(self, context):
+        self.authorize(context)
+        self.bridge.target_for_scope(context.scope)
+        self.bridge.client(context.scope)
+        return True
+
     async def send(self, envelope):
+        self.application.outbound.private_account_router.authorize_media(envelope)
         # 正式版：不再有"预览/草稿"这一档，也不再需要投递授权——一律真发。
         group = envelope.context.scope.kind is ScopeKind.GROUP
         platform_name = self.bridge.platform_name(envelope.context.scope)

@@ -36,6 +36,7 @@ class ContactPreferences:
     snapshot: ConfigurationSnapshot
     values: Mapping[str, Scalar]
     observed_at: datetime
+    local_values: Mapping[str, Scalar] | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
@@ -43,6 +44,12 @@ class ContactPreferences:
     def reason(self, purpose, *, ignore_time_restrictions=False, ignore_master_switch=False):
         if purpose not in PURPOSES:
             raise TaskError("unknown_contact_purpose", "contact purpose must be registered")
+        if self.local_values is not None:
+            original = ContactPreferences(self.snapshot, self.local_values, self.observed_at)
+            local_reason = original.reason(purpose, ignore_time_restrictions=ignore_time_restrictions,
+                                           ignore_master_switch=ignore_master_switch)
+            if local_reason:
+                return local_reason
         values = self.values
         if (not values["enabled"] and not ignore_master_switch) or not values[purpose + ".enabled"]:
             return "proactive_disabled"
@@ -93,4 +100,11 @@ class ProactivePreferences:
         at = normalize_utc(observed_at, field="contact policy time")
         require(self.tasks.check_context_access(context, action=GROUP, observed_at=at))
         snapshot = require(self.configuration.read(context.actor, target=target_for(context), group_id=GROUP, observed_at=at))
-        return ContactPreferences(snapshot, {key.removeprefix(GROUP + "."): value for key, value in snapshot.values.items()}, at)
+        from companion_v2.relationships.account_link_settings import group_for_target, unshared
+        local_values = None
+        group = group_for_target(self.configuration.runtime, target_for(context))
+        if group and group.get("sharing", {}).get("contact"):
+            with unshared():
+                local = require(self.configuration.read(context.actor, target=target_for(context), group_id=GROUP, observed_at=at))
+            local_values = {key.removeprefix(GROUP + "."): value for key, value in local.values.items()}
+        return ContactPreferences(snapshot, {key.removeprefix(GROUP + "."): value for key, value in snapshot.values.items()}, at, local_values)

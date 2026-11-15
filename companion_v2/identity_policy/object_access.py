@@ -268,6 +268,14 @@ class ObjectAccessPolicy:
                 (actor.subject.kind.value, actor.subject.subject_id),
             )
             tier = AuthorizationTier(row["tier"]) if row else AuthorizationTier.STANDARD
+            from companion_v2.relationships.account_link_identity import effective
+            shared_identity = effective(self.runtime, actor.subject, scope, observed_at)
+            shared_permission = None
+            if shared_identity is not None:
+                tier = AuthorizationTier(shared_identity["tier"])
+                shared_permission = shared_identity["permissions"].get(action)
+                if shared_permission is False:
+                    return Outcome.failed("account_link_permission_disabled", "shared private permission is disabled")
             if definition.core_only and tier is not AuthorizationTier.CORE:
                 return Outcome.failed("core_access_required", "action requires installation core membership")
             route = PersonaDirectory(self.runtime).route(scope) if (
@@ -276,12 +284,12 @@ class ObjectAccessPolicy:
             ) else None
             private_owner_feature = route is not None and route.user == actor.subject
             from .grants import PERSON_PERMISSION_GRANT_PREFIX
-            explicit_private_decision = scope.kind is ScopeKind.PRIVATE and action in (
-                "conversation.reply", "proactive.contact") and any(
+            explicit_private_decision = scope.kind is ScopeKind.PRIVATE and (action in (
+                "conversation.reply", "proactive.contact") or shared_identity is not None and action in shared_identity["permissions"]) and any(
                     grant.scope == scope and grant.capability == action
                     and grant.grant_id.startswith(PERSON_PERMISSION_GRANT_PREFIX)
                     for grant in self.identity.grants_for_subject(actor.subject))
-            if explicit_private_decision or tier is AuthorizationTier.STANDARD and not private_owner_feature:
+            if explicit_private_decision or (shared_permission is not True and tier is AuthorizationTier.STANDARD and not private_owner_feature):
                 granted = self.identity.authorize(actor, scope=scope, capability=action, observed_at=observed_at)
                 if not granted.is_success:
                     return Outcome(failure=granted.failure)
