@@ -33,7 +33,7 @@ class VersionedRecords:
             (storage_key or self.owner_key(context), identifier))
         return json.loads(row["record_json"]) if row else None
 
-    def list(self, context, *, after_id="", limit=100, storage_key=None, kinds=None):
+    def list(self, context, *, after_id="", limit=100, storage_key=None, kinds=None, active_since=None):
         if type(limit) is not int or not 1 <= limit <= 100 or type(after_id) is not str:
             raise TaskError("record_page_invalid", "invalid record page")
         values, parameters = ["owner_key = ?", "record_id > ?"], [storage_key or self.owner_key(context), after_id]
@@ -43,6 +43,13 @@ class VersionedRecords:
                 raise TaskError("record_page_invalid", "invalid record kind filter")
             values.append("json_extract(record_json, '$.kind') IN (" + ", ".join("?" for _ in kinds) + ")")
             parameters.extend(kinds)
+        if active_since is not None:
+            # Recurrence and moved one-off events must still go through Schedule.
+            values.append("""json_extract(record_json, '$.state') != 'cancelled' AND (
+                json_extract(record_json, '$.schedule.frequency') != 'once'
+                OR json_extract(record_json, '$.schedule.anchor') >= ?
+                OR EXISTS (SELECT 1 FROM json_each(record_json, '$.exceptions') WHERE value >= ?))""")
+            parameters.extend((stamp(active_since), stamp(active_since)))
         parameters.append(limit)
         return tuple(json.loads(row["record_json"]) for row in self.runtime.read_all(
             f"SELECT record_json FROM {self.domain}_records WHERE {' AND '.join(values)} ORDER BY record_id LIMIT ?",

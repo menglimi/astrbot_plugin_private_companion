@@ -143,14 +143,23 @@ class RoleLifeManagement:
             target = codec.context(json.loads(row["context_json"]))
             if target.scope == self.context.scope:
                 journals.append(self._journal(target.key, operator, access))
-        activities, cursor = [], after_activity
-        while len(activities) < 30:
-            page = self.app.role_life.activities_for_role(self.owner, limit=30, after_id=cursor)
-            activities.extend(a for a in page if a.scope == self.context.scope and a.work)
-            if len(page) < 30:
-                cursor = None
-                break
-            cursor = page[-1].activity_id
+        archive = self.app.role_life.archive_activities(self.owner, self.context.scope,
+                                                       after_id=after_activity, limit=31)
+        activities = archive[:30]
+        cursor = activities[-1].activity_id if len(archive) > 30 else None
+        books = {}
+        sources = {a.work.source for a in activities if a.work.kind == "reading"}
+        if sources:
+            for activity in self._activities():
+                if activity.work.source in sources:
+                    progress = books.setdefault(activity.work.source, {"total": 0, "completed": 0})
+                    progress["total"] += 1
+                    if (activity.state is State.COMPLETED and activity.reading is not None
+                            and activity.reading.source == activity.work.source
+                            and activity.reading.content_hash == activity.work.content_hash
+                            and (activity.reading.start_offset, activity.reading.end_offset)
+                                == (activity.work.start_offset, activity.work.end_offset)):
+                        progress["completed"] += 1
         receipts = []
         for key, result in self.life.results.items():
             if result is None:
@@ -187,8 +196,10 @@ class RoleLifeManagement:
             "view_token": self.token(operator, access), "failure_code": self.life.failure_code,
             "next_diary_at": daily.next_at.isoformat() if daily else None,
             "next_sleep_at": sleep_schedule["next_sleep_at"], "sleep_schedule": sleep_schedule,
+            "next_reading_at": self.life.next_reading_at,
             "body_sleep": self.app.role_state.body_clock.read(self.context),
-            "activities": [self._project_activity(a, operator, access) for a in activities],
+            "activities": [{**self._project_activity(a, operator, access),
+                            "book_progress": books.get(a.work.source)} for a in activities],
             "next_activity": cursor, "journals": journals,
             "next_date": codec.context(json.loads(rows[-1]["context_json"])).key.local_date
                 if len({codec.context(json.loads(r["context_json"])).key.local_date for r in rows}) == 50 else None,
@@ -314,7 +325,7 @@ class RoleLifeManagement:
         source = SourceRef("book-" + digest(op_id), GROUP, self.context.scope, VersionRef(op_id, 1), now)
         require(self.app.role_journal.sources.publish(SourceRecord(source, self.context.audience, digest(text), text), observed_at=now))
         identifiers = []
-        # Every character belongs to one actual input span. No passage is silently omitted.
+        # Every nonblank passage is represented by an exact original span.
         for start in range(0, len(text), 6000):
             end = min(start + 6000, len(text))
             if not text[start:end].strip():

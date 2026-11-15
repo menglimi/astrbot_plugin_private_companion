@@ -137,11 +137,19 @@
         const card = node("article", undefined, "activity");
         card.append(node("h3", item.title), node("span", names[item.state] || "状态待核对", "badge"));
         card.append(node("p", `${date(item.started_at)}${item.due_at ? " · 计划醒来 " + date(item.due_at) : ""}`, "muted"));
+        if (type === "reading" && item.book_progress && !item.unavailable_reason) {
+          const {completed, total} = item.book_progress;
+          card.append(node("p", `${Math.floor(completed * 100 / total)}% · 全书 ${completed} / ${total} 片段已读`, "muted"));
+          if (item.state === "planned" && state.config.reading_enabled) {
+            card.append(node("p", state.next_reading_at
+              ? "下次阅读时段 " + date(state.next_reading_at) : "等待日历中的阅读时段", "muted"));
+          }
+        }
         if (item.unavailable_reason) card.append(node("p", "原文已不可用，停止后续阅读并隐藏读后感。", "prose"));
         else if (item.reflection) card.append(node("p", item.reflection, "prose"));
         if (item.task && item.task.state !== "succeeded") card.append(node("p", "阅读执行：" + (names[item.task.state] || "状态待核对"), "muted"));
         const actions = node("div", undefined, "actions");
-        if (type === "reading" && ["planned", "paused"].includes(item.state) && !item.unavailable_reason && item.task?.state !== "unknown") actions.append(actionButton(item.state === "paused" ? "重新阅读" : "开始阅读", "read", item, true));
+        if (type === "reading" && ["planned", "paused"].includes(item.state) && !item.unavailable_reason && item.task?.state !== "unknown") actions.append(actionButton(item.state === "paused" ? "重新阅读" : "现在阅读", "read", item, true));
         if (type === "sleep" && item.state === "active") actions.append(actionButton("现在醒来", "wake", item));
         if (type === "sleep" && item.state === "completed") actions.append(actionButton("记录 / 重试梦境", "dream", item));
         if (["planned", "active", "paused"].includes(item.state)) actions.append(actionButton("取消", "cancel", item));
@@ -215,7 +223,10 @@
       state = await api("GET", { ...(datePages[datePage] ? { before: datePages[datePage] } : {}), ...(activityCursor ? { after_activity: activityCursor } : {}) });
       if (!preserveNotice) notice(""); render();
       clearTimeout(polling);
-      if (state.running.length || state.activities.some(a => a.state === "active") || state.config.reading_enabled) polling = setTimeout(() => { if (!busy && !document.hidden) load(true); }, 3000);
+      if (state.running.length || state.activities.some(a => a.state === "active") || state.config.reading_enabled) {
+        const active = state.running.length || state.activities.some(a => a.state === "active");
+        polling = setTimeout(() => { if (!busy && !document.hidden) load(true); }, active ? 3000 : 15000);
+      }
     } catch (error) {
       state = selected = null;
       ["journal-list", "journal-detail", "reading-list", "sleep-list", "receipt-list", "retry-id", "dream-retry"].forEach(id => $(id).replaceChildren());

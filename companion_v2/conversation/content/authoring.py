@@ -32,6 +32,7 @@ class ContentDraft:
     title: str
     work_type: str
     body: str
+    finished: bool = True
 
 
 def _work_type_guidance(work_type: str) -> str:

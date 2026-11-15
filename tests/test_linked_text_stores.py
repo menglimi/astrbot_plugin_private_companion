@@ -151,6 +151,47 @@ class LinkedTextStoreTests(LinkedTextStoreFixture, unittest.IsolatedAsyncioTestC
             calendar.read(reader, "reported-tea")
         self.assertEqual(denied.exception.code, "authorization_revoked")
 
+    async def test_active_calendar_pages_include_linked_scopes_and_filter_before_limiting(self):
+        from datetime import datetime
+        from companion_v2.execution.models import encode
+
+        self.assertEqual((await self.link())["status"], "ok")
+        context = self.context(await self.turn(1, "calendar page", 1))
+        records = self.app.calendar.records
+        keys = (records.role_key(context), *records.conversation_keys(context))
+        self.assertGreaterEqual(len(set(keys)), 3)
+        with self.app.runtime.transaction() as connection:
+            for index, key in enumerate(keys):
+                # More expired rows than a page may never hide an active peer record.
+                for number in range(4):
+                    identifier = f"a-expired-{index}-{number}"
+                    record = {"id": identifier, "kind": "user_report", "state": "accepted",
+                        "schedule": {"frequency": "once", "anchor": "2026-10-01T10:00:00+00:00"},
+                        "exceptions": {}}
+                    connection.execute("INSERT INTO calendar_records VALUES (?, ?, 1, ?, ?)",
+                        (key, identifier, "2026-10-01T00:00:00+00:00", encode(record)))
+                for label, frequency, anchor, exceptions, state in (
+                    ("future", "once", "2026-10-12T10:00:00+00:00", {}, "accepted"),
+                    ("recurring", "daily", "2026-10-01T10:00:00+00:00", {}, "accepted"),
+                    ("moved", "once", "2026-10-01T10:00:00+00:00",
+                     {"0": "2026-10-12T10:00:00+00:00"}, "accepted"),
+                    ("cancelled", "daily", "2026-10-12T10:00:00+00:00", {}, "cancelled")):
+                    identifier = f"z-{label}-{index}"
+                    record = {"id": identifier, "kind": "user_report", "state": state,
+                        "schedule": {"frequency": frequency, "anchor": anchor}, "exceptions": exceptions}
+                    connection.execute("INSERT INTO calendar_records VALUES (?, ?, 1, ?, ?)",
+                        (key, identifier, "2026-10-01T00:00:00+00:00", encode(record)))
+        seen, cursor = [], ""
+        while True:
+            page = records.list(context, after_id=cursor, limit=2, kinds=("user_report",),
+                active_since=datetime.fromisoformat("2026-10-11T00:00:00+00:00"))
+            if not page:
+                break
+            seen.extend(item["id"] for item in page)
+            cursor = page[-1]["id"]
+        self.assertEqual(seen, sorted(f"z-{label}-{index}" for index in range(len(keys))
+            for label in ("future", "recurring", "moved")))
+
     async def test_growth_list_and_revision_share_the_record_but_keep_each_evidence_source(self):
         outside = self.context(await self.turn(1, "independent", 1))
         origin, saved = await self.run_tools(0, [("turn.evidence", {}),

@@ -39,12 +39,23 @@ class BalanceObservation:
     balance: Decimal
     total: Decimal | None
     observed_at: datetime
+    unit: str | None = None
+    used: Decimal | None = None
+    plan_name: str | None = None
+    extra: str | None = None
 
     def __post_init__(self):
         if (type(self.balance) is not Decimal or not self.balance.is_finite() or self.balance < 0
                 or (self.total is not None and
                     (type(self.total) is not Decimal or not self.total.is_finite() or self.total < 0))):
             raise ValueError("balance observation requires finite non-negative values")
+        if self.used is not None and (type(self.used) is not Decimal or not self.used.is_finite() or self.used < 0):
+            raise ValueError("balance used amount must be finite and non-negative")
+        for name, limit in (("unit", 24), ("plan_name", 256), ("extra", 256)):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not str or len(value) > limit
+                                      or any(ord(char) < 32 for char in value)):
+                raise ValueError("balance observation metadata is invalid")
         object.__setattr__(self, "observed_at", normalize_utc(self.observed_at, field="balance observation"))
 
 
@@ -147,13 +158,15 @@ class BalanceContactEvents:
                          "level": level, "settings_hash": settings_hash}
                 if preferences.values["balance_include_amount_in_message"]:
                     event["amount"] = str(observation.balance)
-                    event["currency"] = preferences.values["balance_currency_label"]
+                    event["currency"] = observation.unit or preferences.values["balance_currency_label"]
                 last_notice, last_level = stamp(at), level
             elif previous is not None and previous["event_json"]:
                 prior_event = json.loads(previous["event_json"])
                 if (prior_event["level"] == level
                         and at < datetime.fromisoformat(prior_event["expires_at"])
-                        and ("amount" not in prior_event or prior_event["amount"] == str(observation.balance))):
+                        and ("amount" not in prior_event or prior_event["amount"] == str(observation.balance))
+                        and ("currency" not in prior_event or prior_event["currency"] ==
+                             (observation.unit or preferences.values["balance_currency_label"]))):
                     event = prior_event
         with self.runtime.transaction() as connection:
             connection.execute("""INSERT INTO proactive_balance_polls

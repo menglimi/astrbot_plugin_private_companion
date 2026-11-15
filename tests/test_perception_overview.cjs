@@ -14,7 +14,7 @@ class FixedDate extends Date {
   static now() { return fixedNow.getTime(); }
 }
 
-function harness({runtimeWeatherState="available",mihomeEnabled=true,balanceEnabled=true,automaticAllowed=true,balanceConfigured=false,balanceResponse=null,otherInjections=[{label:"参考资料",detail:"本轮加入 1 项"}],recallEnabled=true,recallEntries=[{local_time:"17:42",withdrawn_at:"2026-10-01T09:42:00Z",author:"user-1",text:"周末去公园走走"}],imageTask=true,imageProviderId="image-live",imagePreferred=null,huaweiBound=false,huaweiLatest=null,materialPool={state:"ready",checked_at:"2026-10-01T09:50:00Z",count:2,items:[{title:"AI 早报一",detail:"摘要一",note:"橘鸦 AI 早报",captured_at:"2026-10-01T09:50:00Z"},{title:"AI 早报二",detail:"摘要二",note:"橘鸦 AI 早报",captured_at:"2026-10-01T09:48:00Z"}]},contactDates=[{calendar:"gregorian",month:10,day:3,label:"相识纪念日"}],contactLookaheadDays=3}={}) {
+function harness({balanceSource=null,runtimeWeatherState="available",mihomeEnabled=true,balanceEnabled=true,automaticAllowed=true,balanceConfigured=false,balanceResponse=null,otherInjections=[{label:"参考资料",detail:"本轮加入 1 项"}],recallEnabled=true,recallEntries=[{local_time:"17:42",withdrawn_at:"2026-10-01T09:42:00Z",author:"user-1",text:"周末去公园走走"}],imageTask=true,imageProviderId="image-live",imagePreferred=null,huaweiBound=false,huaweiLatest=null,materialPool={state:"ready",checked_at:"2026-10-01T09:50:00Z",count:2,items:[{title:"AI 早报一",detail:"摘要一",note:"橘鸦 AI 早报",captured_at:"2026-10-01T09:50:00Z"},{title:"AI 早报二",detail:"摘要二",note:"橘鸦 AI 早报",captured_at:"2026-10-01T09:48:00Z"}]},contactDates=[{calendar:"gregorian",month:10,day:3,label:"相识纪念日"}],contactLookaheadDays=3}={}) {
   let listener = null, intervalCallback = null, cleared = false, requested = [], bridgeRequests = [];
   const failedRequests = new Set(), tabActivations = [], focused = [];
   const currentBalance = balanceResponse || (balanceConfigured
@@ -102,7 +102,7 @@ function harness({runtimeWeatherState="available",mihomeEnabled=true,balanceEnab
         tool_settings:{enable_readonly_tool:mihomeEnabled},snapshot_at:"2026-10-01 17:55",devices:[
           {did:"sensitive-device-id-1",configured:true,name:"客厅灯",aliases:["living_light"],online:true},
           {did:"sensitive-device-id-2",configured:true,name:"书房插座",aliases:["study_plug"],online:false}]}}}}};
-      if (route === "host-options/balance") return {service_balance:{source:balanceConfigured?"plugin":"none",source_state:balanceConfigured?"configured":"not_configured",
+      if (route === "host-options/balance") return {service_balance:balanceSource || {source:balanceConfigured?"plugin":"none",source_state:balanceConfigured?"configured":"not_configured",
         provider:"newapi",url:balanceConfigured?"https://newapi.example.com":"",user_id:"",value_divisor:"500000",has_api_key:balanceConfigured},
         edit_tokens:{balance:"b".repeat(64)}};
       return {enabled:recallEnabled,entries:recallEntries};
@@ -112,8 +112,13 @@ function harness({runtimeWeatherState="available",mihomeEnabled=true,balanceEnab
       if (route === "host-options/balance/test") return {tested:true,available:true,provider:"newapi",
         provider_label:"NewAPI",currency_label:"额度",amount:"123.45",observed_at:"2026-10-01T09:59:00Z"};
       return {saved:true,apply_mode:"immediate",service_balance:{source:"plugin",source_state:"configured",
-        provider:"newapi",url:body.changes.url,user_id:body.changes.user_id,
-        value_divisor:body.changes.value_divisor,has_api_key:true},edit_tokens:{balance:"c".repeat(64)}};
+        provider:body.changes.advanced_enabled ? "script" : "newapi",url:body.changes.url,user_id:body.changes.user_id,
+        value_divisor:body.changes.value_divisor,has_api_key:true,
+        advanced_enabled:body.changes.advanced_enabled === true,
+        advanced_base_url:body.changes.advanced_base_url || "",
+        advanced_script:body.changes.advanced_script || "",
+        has_advanced_api_key:!!body.changes.advanced_api_key,
+        has_advanced_proxy_url:!!body.changes.advanced_proxy_url},edit_tokens:{balance:"c".repeat(64)}};
     }})};
   const native = {subscribe(callback) { listener=callback; callback(snapshot); return () => {listener=null;}; },
     refresh() {}};
@@ -708,5 +713,195 @@ test("perception dashboard uses theme tokens, clear clickable cards and no hardc
   assert.ok((html.match(/class="perception-mini /g) || []).length >= 6,
     "次级感知条目应以带边框与箭头的独立按钮展示");
   assert.doesNotMatch(styles, /--pv9-paper|--pv9-ink|#EFECE4/);
+  page.page.unmount();
+});
+
+
+function balanceForm(controls) {
+  return {querySelector(selector) {
+    const name = selector.match(/^\[name="(.+)"\]$/)?.[1];
+    return name ? controls[name] || null : null;
+  }};
+}
+function editBalanceField(page, name, value, form=null, change=false) {
+  const field = {dataset:{balanceField:name}, name, value, checked:value === true,
+    closest(selector) {return selector === "[data-balance-form]" ? form : null;}};
+  const event = {target:{closest(selector) {return selector === "[data-balance-field]" ? field : null;}}};
+  page.balanceWorkspace.handlers[change ? "change" : "input"](event);
+}
+
+test("advanced switch disables the entire legacy form and restores its draft when disabled", async () => {
+  const page = harness();page.page.mount(page.root);
+  await new Promise(resolve => setImmediate(resolve));
+  page.page.select("config-balance:perception-detail-balance-source");
+  await new Promise(resolve => setImmediate(resolve));
+  editBalanceField(page, "url", "https://legacy.example.test");
+  editBalanceField(page, "api_key", "legacy-draft-secret");
+  editBalanceField(page, "advanced_enabled", true, null, true);
+  assert.match(page.balanceWorkspace.innerHTML, /<fieldset class="perception-balance-legacy"[^>]*disabled/);
+  assert.match(page.balanceWorkspace.innerHTML, /name="advanced_script"/);
+  assert.match(page.balanceWorkspace.innerHTML, /name="advanced_base_url"/);
+  editBalanceField(page, "advanced_script", "({request:{url:'https://advanced.example.test'},extractor:r=>({remaining:1})})");
+  editBalanceField(page, "advanced_enabled", false, null, true);
+  assert.doesNotMatch(page.balanceWorkspace.innerHTML, /<fieldset class="perception-balance-legacy"[^>]*disabled/);
+  assert.doesNotMatch(page.balanceWorkspace.innerHTML, /name="advanced_script"/);
+  assert.match(page.balanceWorkspace.innerHTML, /value="https:\/\/legacy.example.test"/);
+  assert.match(page.balanceWorkspace.innerHTML, /value="legacy-draft-secret"/);
+  editBalanceField(page, "advanced_enabled", true, null, true);
+  assert.match(page.balanceWorkspace.innerHTML, /https:\/\/advanced.example.test/);
+  page.page.unmount();
+});
+
+test("advanced draft testing and saving submit only advanced fields", async () => {
+  const page = harness();page.page.mount(page.root);
+  await new Promise(resolve => setImmediate(resolve));
+  page.page.select("config-balance:perception-detail-balance-source");
+  await new Promise(resolve => setImmediate(resolve));
+  const values = {url:"http://invalid-legacy.example.test",api_key:"ignored-legacy-secret",user_id:"bad-id",
+    value_divisor:"invalid", advanced_enabled:true, advanced_base_url:"https://advanced.example.test",
+    advanced_script:"({request:{url:'{{baseUrl}}'},extractor:r=>({remaining:0})})",
+    advanced_api_key:"advanced-draft-secret",advanced_proxy_url:"socks5://name:proxy-secret@localhost:1080",
+    clear_advanced_api_key:false,clear_advanced_proxy_url:false};
+  const controls = Object.fromEntries(Object.entries(values).map(([name,value]) => [name,
+    typeof value === "boolean" ? {checked:value} : {value}]));
+  const form = balanceForm(controls);
+  const button = {closest(selector) {return selector === "[data-balance-form]" ? form : null;}};
+  page.balanceWorkspace.handlers.click({target:{closest(selector) {
+    return selector === "[data-balance-test]" ? button : null;
+  }},preventDefault(){}});
+  await new Promise(resolve => setImmediate(resolve));
+  const tested = page.bridgeRequests.find(([method,route]) => method === "POST" && route === "host-options/balance/test");
+  assert.ok(tested);
+  assert.equal(tested[2].changes.advanced_enabled, true);
+  assert.equal(tested[2].changes.advanced_api_key, "advanced-draft-secret");
+  assert.equal(tested[2].changes.url, undefined);
+  assert.equal(tested[2].changes.api_key, undefined);
+  assert.equal(tested[2].changes.value_divisor, undefined);
+  page.balanceWorkspace.handlers.submit({target:{closest(selector) {
+    return selector === "[data-balance-form]" ? form : null;
+  }},preventDefault(){}});
+  await new Promise(resolve => setImmediate(resolve));
+  const saved = page.bridgeRequests.find(([method,route]) => method === "POST" && route === "host-options/balance");
+  assert.ok(saved);
+  assert.deepEqual(JSON.parse(JSON.stringify(saved[2].changes)), JSON.parse(JSON.stringify(tested[2].changes)));
+  assert.doesNotMatch(page.balanceWorkspace.innerHTML, /advanced-draft-secret|proxy-secret|ignored-legacy-secret/);
+  page.page.unmount();
+});
+
+test("advanced credentials are discarded on unmount and the saved script is restored", async () => {
+  const script = "({request:{url:'https://saved.example.test'},extractor:r=>({remaining:1})})";
+  const page = harness({balanceSource:{source:"plugin",source_state:"configured",provider:"script",
+    advanced_enabled:true,advanced_base_url:"https://saved.example.test",advanced_script:script,
+    has_advanced_api_key:true,has_advanced_proxy_url:true}});
+  page.page.mount(page.root);await new Promise(resolve => setImmediate(resolve));
+  page.page.select("config-balance:perception-detail-balance-source");
+  await new Promise(resolve => setImmediate(resolve));
+  editBalanceField(page,"advanced_api_key","transient-secret");
+  editBalanceField(page,"advanced_access_token","transient-access-secret");
+  editBalanceField(page,"advanced_proxy_url","socks5://name:transient-proxy@localhost:1080");
+  page.page.unmount();page.page.mount(page.root);
+  await new Promise(resolve => setImmediate(resolve));
+  page.page.select("config-balance:perception-detail-balance-source");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.doesNotMatch(page.balanceWorkspace.innerHTML, /transient-secret|transient-access-secret|transient-proxy/);
+  assert.match(page.balanceWorkspace.innerHTML, /https:\/\/saved.example.test/);
+  assert.match(page.balanceWorkspace.innerHTML, /<fieldset class="perception-balance-legacy"[^>]*disabled/);
+  page.page.unmount();
+});
+
+
+test("preset selection waits for load and restore default only replaces the script", async () => {
+  const page = harness();page.page.mount(page.root);
+  await new Promise(resolve => setImmediate(resolve));
+  page.page.select("config-balance:perception-detail-balance-source");
+  await new Promise(resolve => setImmediate(resolve));
+  editBalanceField(page,"advanced_enabled",true,null,true);
+  assert.match(page.balanceWorkspace.innerHTML,/value="generic"[^>]*>通用/);
+  assert.match(page.balanceWorkspace.innerHTML,/value="newapi"/);
+  assert.match(page.balanceWorkspace.innerHTML,/value="sub2api"/);
+  assert.match(page.balanceWorkspace.innerHTML,/\{\{baseUrl\}\}\/user\/balance/);
+  assert.match(page.balanceWorkspace.innerHTML,/astrbot_plugin_private_companion/);
+  editBalanceField(page,"advanced_api_key","keep-api-key");
+  editBalanceField(page,"advanced_access_token","keep-access-token");
+  editBalanceField(page,"advanced_proxy_url","socks5://name:keep-proxy@localhost:1080");
+  editBalanceField(page,"advanced_script","CUSTOM-SCRIPT");
+  let selected = "newapi";
+  const form = balanceForm({advanced_preset:{get value(){return selected;}}});
+  const preset = {value:selected};
+  page.balanceWorkspace.handlers.change({target:{closest(selector){return selector==="[data-balance-preset]"?preset:null;}}});
+  // Redraw after selection to inspect the stored draft, not stale markup.
+  editBalanceField(page,"advanced_enabled",true,null,true);
+  // Only the dropdown changed; choosing alone must not replace the draft.
+  assert.match(page.balanceWorkspace.innerHTML,/CUSTOM-SCRIPT/);
+  assert.doesNotMatch(page.balanceWorkspace.innerHTML,/response.data.quota \/ 500000/);
+  const button = {closest(selector){return selector==="[data-balance-form]"?form:null;}};
+  const click = selector => page.balanceWorkspace.handlers.click({target:{closest(value){return value===selector?button:null;}},preventDefault(){}});
+  click("[data-balance-load-preset]");
+  assert.match(page.balanceWorkspace.innerHTML,/response.data.quota \/ 500000/);
+  assert.match(page.balanceWorkspace.innerHTML,/Bearer \{\{accessToken\}\}/);
+  selected = "sub2api";click("[data-balance-load-preset]");
+  assert.match(page.balanceWorkspace.innerHTML,/\/v1\/usage/);
+  click("[data-balance-restore-default]");
+  assert.match(page.balanceWorkspace.innerHTML,/\{\{baseUrl\}\}\/user\/balance/);
+  assert.doesNotMatch(page.balanceWorkspace.innerHTML,/response.data.quota \/ 500000|cc-switch/);
+  for (const secret of ["keep-api-key","keep-access-token","keep-proxy"]) assert.match(page.balanceWorkspace.innerHTML,new RegExp(secret));
+  assert.equal(page.bridgeRequests.some(([method])=>method==="POST"),false);
+  page.page.unmount();
+});
+
+
+test("AstrBot connection switch defaults to the default source, lists sources and excludes manual credentials from test and save", async () => {
+  const script = "({request:{url:'{{baseUrl}}/user/balance'},extractor:r=>({remaining:1})})";
+  const page = harness({balanceSource:{source:"plugin",source_state:"configured",advanced_enabled:true,
+    advanced_script:script,advanced_base_url:"https://manual.example.test",advanced_from_astrbot:false,
+    astrbot_default_provider_id:"source-a",astrbot_providers:[{id:"source-a",enabled:true},{id:"source-b",enabled:true}]}});
+  page.page.mount(page.root);await new Promise(resolve => setImmediate(resolve));
+  page.page.select("config-balance:perception-detail-balance-source");
+  await new Promise(resolve => setImmediate(resolve));
+  editBalanceField(page,"advanced_api_key","manual-secret");
+  editBalanceField(page,"advanced_proxy_url","http://user:manual-proxy@localhost:1080");
+  editBalanceField(page,"advanced_from_astrbot",true,null,true);
+  assert.match(page.balanceWorkspace.innerHTML,/跟随 AstrBot 默认模型所属供应商（source-a）/);
+  assert.match(page.balanceWorkspace.innerHTML,/value="source-b"/);
+  assert.doesNotMatch(page.balanceWorkspace.innerHTML,/name="advanced_base_url"|name="advanced_api_key"|name="advanced_proxy_url"|manual-secret|manual-proxy/);
+  editBalanceField(page,"advanced_provider_id","source-b",null,true);
+  const form = balanceForm({});
+  const button = {closest(selector){return selector==="[data-balance-form]"?form:null;}};
+  page.balanceWorkspace.handlers.click({target:{closest(selector){return selector==="[data-balance-test]"?button:null;}},preventDefault(){}});
+  await new Promise(resolve => setImmediate(resolve));
+  const tested = page.bridgeRequests.find(([method,route])=>method==="POST"&&route==="host-options/balance/test");
+  assert.ok(tested);
+  assert.equal(tested[2].changes.advanced_from_astrbot,true);
+  assert.equal(tested[2].changes.advanced_provider_id,"source-b");
+  for (const key of ["advanced_base_url","advanced_api_key","advanced_proxy_url","clear_advanced_api_key","clear_advanced_proxy_url"])
+    assert.equal(Object.hasOwn(tested[2].changes,key),false);
+  // Toggling off restores the exact manual draft and makes it editable again.
+  editBalanceField(page,"advanced_from_astrbot",false,null,true);
+  assert.match(page.balanceWorkspace.innerHTML,/manual-secret/);
+  assert.match(page.balanceWorkspace.innerHTML,/manual-proxy/);
+  assert.match(page.balanceWorkspace.innerHTML,/name="advanced_base_url"/);
+  editBalanceField(page,"advanced_from_astrbot",true,null,true);
+  page.balanceWorkspace.handlers.submit({target:{closest(selector){return selector==="[data-balance-form]"?form:null;}},preventDefault(){}});
+  await new Promise(resolve => setImmediate(resolve));
+  const saved = page.bridgeRequests.find(([method,route])=>method==="POST"&&route==="host-options/balance");
+  assert.ok(saved);
+  assert.equal(saved[2].changes.advanced_provider_id,"source-b");
+  assert.equal(Object.hasOwn(saved[2].changes,"advanced_api_key"),false);
+  page.page.unmount();
+});
+
+test("deleted AstrBot source remains visible as invalid and cannot submit a query", async () => {
+  const page = harness({balanceSource:{source:"plugin",source_state:"invalid",advanced_enabled:true,
+    advanced_script:"SCRIPT",advanced_from_astrbot:true,advanced_provider_id:"deleted-source",
+    astrbot_default_provider_id:"source-a",astrbot_providers:[{id:"source-a",enabled:true}]}});
+  page.page.mount(page.root);await new Promise(resolve => setImmediate(resolve));
+  page.page.select("config-balance:perception-detail-balance-source");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(page.balanceWorkspace.innerHTML,/deleted-source（已失效，请重新选择）/);
+  const form = balanceForm({});
+  page.balanceWorkspace.handlers.submit({target:{closest(selector){return selector==="[data-balance-form]"?form:null;}},preventDefault(){}});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(page.bridgeRequests.some(([method])=>method==="POST"),false);
+  assert.match(page.balanceWorkspace.innerHTML,/所选 AstrBot 供应商不可用/);
   page.page.unmount();
 });
