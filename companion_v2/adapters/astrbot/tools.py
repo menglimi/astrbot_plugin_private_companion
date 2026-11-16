@@ -146,6 +146,7 @@ class QzoneToolPort:
         arguments = json.loads(invocation.arguments_json)
         action = declaration.descriptor.tool.action
         operation_key = invocation.invocation_id
+        effectful = action in (LIKE_ACTION, COMMENT_ACTION, PUBLISH_ACTION)
         try:
             if action == READ_ACTION:
                 result = await service.scan(invocation.context, scope=arguments.get("scope", "friends"),
@@ -174,14 +175,15 @@ class QzoneToolPort:
             else:
                 raise TaskError("qzone_action_unknown", "unknown QQ Zone action")
         except TaskError as error:
-            if error.code == "qzone_delivery_unknown":
+            if error.code == "qzone_delivery_unknown" and effectful:
                 return ExternalToolResponse(invocation.invocation_id, invocation.context.key,
-                    invocation.arguments_hash, declaration.descriptor.binding, "unknown", effect="unknown")
+                    invocation.arguments_hash, declaration.descriptor.binding, "unknown", effect="unknown",
+                    error_code=error.code)
             return ExternalToolResponse(invocation.invocation_id, invocation.context.key,
-                invocation.arguments_hash, declaration.descriptor.binding, "failed", effect="not_committed",
-                receipt_ref=self._receipt(invocation, error.code))
+                invocation.arguments_hash, declaration.descriptor.binding, "failed",
+                effect="not_committed" if effectful else "none",
+                receipt_ref=self._receipt(invocation, error.code), error_code=error.code)
         observed_at = service.now()
-        effectful = action in (LIKE_ACTION, COMMENT_ACTION, PUBLISH_ACTION)
         operation_id = result.get("operation_id") if effectful else None
         receipt_ref = result.get("receipt_ref") if effectful else None
         if effectful and (not operation_id or not receipt_ref):
