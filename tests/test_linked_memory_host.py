@@ -94,3 +94,21 @@ class LinkedMemoryHostTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["status"], "error", response)
         self.assertIn("account_link_memory_confirmation_required", str(response))
         self.assertEqual(self.links.read()["revision"], 0)
+
+
+class NativeMemoryIdentityTests(unittest.TestCase):
+    def test_wechat_mapping_uses_native_login(self):
+        from astrbot_host.multi_session import MultiHostSession
+        platform = NS(bot_self_id="native-login", meta=lambda: NS(name="wechat_native"))
+        scope = NS(account_id="adapter-alias")
+        session = NS(bridge=NS(platform=lambda original: platform if original is scope else None))
+        self.assertEqual(MultiHostSession._linked_memory_identity(session, NS(scope=scope)),
+            {"owner_bot_id": "native-login", "platform_name": "wechat_native"})
+
+    def test_unknown_native_login_fails_closed(self):
+        from astrbot_host.multi_session import MultiHostSession
+        from companion_v2.execution.models import TaskError
+        for owner in ("", "self", None):
+            platform = NS(bot_self_id=owner, meta=lambda: NS(name="wechat_native"))
+            with self.subTest(owner=owner), self.assertRaises(TaskError):
+                MultiHostSession._linked_memory_identity(NS(bridge=NS(platform=lambda _: platform)), NS(scope=NS()))

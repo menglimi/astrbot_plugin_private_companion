@@ -74,7 +74,7 @@ async def prepare_external_memory(native_context, application, context, native_i
             if not isinstance(value, Mapping) or not isinstance(value.get("content"), str):
                 continue
             item = {key: value[key] for key in ("id", "content", "occurred_at", "source",
-                    "source_session_id", "source_user_id", "source_bot_id")
+                    "source_session_id", "source_user_id", "source_bot_id", "source_original_bot_id")
                     if isinstance(value.get(key), str)}
             if not item["content"].strip():
                 continue

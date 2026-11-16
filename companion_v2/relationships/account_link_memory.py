@@ -62,7 +62,14 @@ def read_scope(application, context, purpose):
         application.memory.writer.access.check(original)
         if purpose == "recall" and not application.memory.writer.access.policy_for(original).automatic_context:
             raise TaskError("account_link_memory_access_denied", "automatic memory is disabled for a linked account")
-        scopes.append({**member, "session_id": f"{original.scope.platform}:FriendMessage:{original.scope.session_id}",
+        identity = getattr(application, "private_account_link_memory_identity", None)
+        native = identity(original) if callable(identity) else {
+            "owner_bot_id": member["account_id"], "platform_name": ""}
+        if (not isinstance(native, dict) or not isinstance(native.get("owner_bot_id"), str)
+                or not native["owner_bot_id"].strip() or native["owner_bot_id"] == "self"
+                or not isinstance(native.get("platform_name"), str)):
+            raise TaskError("account_link_memory_scope_unavailable", "verified native memory identity is required")
+        scopes.append({**member, "memory_identity": native, "session_id": f"{original.scope.platform}:FriendMessage:{original.scope.session_id}",
                        "since": group["memory_since"] if shared and member != current
                            and group["memory"]["history"] == "since_enabled" else None})
     return {"schema": "companion.linked-memory-read.v1", "revision": state["revision"],
