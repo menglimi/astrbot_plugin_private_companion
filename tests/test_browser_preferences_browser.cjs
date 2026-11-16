@@ -43,7 +43,9 @@ test("真实 Chromium 沙箱经合成 Dashboard 桥持久保存浏览器偏好",
   const expectPosition = async position=>{
     await frame.waitForFunction(expected=>{
       const box=document.querySelector("#stageScene").getBoundingClientRect();
-      return Math.abs(box.left-expected.left)<1 && Math.abs(box.top-expected.top)<1;
+      const main=document.querySelector(".shell-body").getBoundingClientRect();
+      return Math.abs(Math.min(innerWidth,main.right)-box.right-expected.right)<1
+        && Math.abs(Math.min(innerHeight,main.bottom)-box.bottom-expected.bottom)<1;
     },position);
   };
   let savedPosition;
@@ -58,11 +60,14 @@ test("真实 Chromium 沙箱经合成 Dashboard 桥持久保存浏览器偏好",
     await page.mouse.down();
     await page.mouse.move(box.x-110,box.y-100,{steps:5});
     await page.mouse.up();
-    const moved=await frame.locator("#stageScene").boundingBox();
-    savedPosition={left:moved.x,top:moved.y};
+    savedPosition=await frame.evaluate(()=>{
+      const box=document.querySelector("#stageScene").getBoundingClientRect();
+      const main=document.querySelector(".shell-body").getBoundingClientRect();
+      return {right:Math.min(innerWidth,main.right)-box.right,bottom:Math.min(innerHeight,main.bottom)-box.bottom};
+    });
     await frame.waitForFunction(async expected=>{
       const {preferences}=await CompanionProduct.request("GET","page/browser-preferences");
-      return preferences.room_card_position?.left===expected.left && preferences.room_card_position?.top===expected.top;
+      return preferences.room_card_position?.right===expected.right && preferences.room_card_position?.bottom===expected.bottom;
     },savedPosition);
     assert.deepEqual(await preferences(),{selection:{target_id:"group-a",role_id:"shared-role",bot_id:"bot-a"},room_card_position:savedPosition});
     const cookie=(await context.cookies()).find(item=>item.name===cookieName);
@@ -137,5 +142,8 @@ test("真实 Chromium 沙箱经合成 Dashboard 桥持久保存浏览器偏好",
   });
 
   assert.deepEqual(errors,[]);
-  assert.equal(server.data.calls.some(call=>call.method==="POST" && call.endpoint!=="page/browser-preferences"),false);
+  // 表达页自动 POST 只读分段预览；持久化写入必须仅为浏览器偏好。
+  assert.deepEqual(server.data.calls.filter(call=>call.method==="POST"
+    && call.endpoint!=="page/browser-preferences"
+    && !/^host\/targets\/[^/]+\/roles\/[^/]+\/reply\/preview$/.test(call.endpoint)),[]);
 });

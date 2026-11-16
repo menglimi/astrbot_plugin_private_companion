@@ -33,7 +33,7 @@ def valid_browser_preference(key, value):
                 type(value["target_id"]) is str and bool(value["target_id"].strip())
                 and len(value["target_id"]) <= 512))
     if key == "room_card_position":
-        return set(value) == {"left", "top"} and all(
+        return set(value) in ({"left", "bottom"}, {"right", "bottom"}, {"left", "top"}) and all(
             type(coordinate) in (int, float) and math.isfinite(coordinate) and coordinate >= 0
             for coordinate in value.values())
     return False

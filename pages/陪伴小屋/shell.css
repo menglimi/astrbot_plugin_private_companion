@@ -916,7 +916,7 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region:focus-within 
 }
 .stage-role-card-switch :is(i, svg) { width: 16px; height: 16px; pointer-events: none; }
 .stage-region:hover .stage-role-card-switch,
-.stage-region:focus-within .stage-role-card-switch,
+.stage-region:has(:focus-visible) .stage-role-card-switch,
 .stage-role-card-switch[aria-expanded="true"] {
   opacity: 1;
   pointer-events: auto;
@@ -957,7 +957,7 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
   #homeShell[data-away="true"] .stage-region .room-stage::after { opacity: 1; }
 }
 
-/* 右侧贴靠只留下把手；裁剪移动中的场景，避免制造横向滚动。 */
+/* 两侧贴靠只留下把手；裁剪移动中的场景，避免遮挡导航或制造横向滚动。 */
 .stage-role-card-handle { display:none; }
 body:not(.room-editing) #homeShell[data-away="true"] .stage-region .room-stage {
   transform:translateX(var(--role-card-offset, 0px));
@@ -975,7 +975,11 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-handle:not
   border:1px solid var(--t-line-firm);border-right:0;border-radius:var(--r-md) 0 0 var(--r-md);
   background:var(--t-surface);color:var(--t-text);box-shadow:var(--t-shadow-lift);
   pointer-events:auto;touch-action:none;cursor:grab;user-select:none;z-index:5;
-  font-size:26px;line-height:1;
 }
+.stage-role-card-handle svg { width:20px;height:20px;flex:none;pointer-events:none; }
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-card-dock-side="left"] .stage-role-card-handle {
+  left:0;right:auto;border-left:0;border-right:1px solid var(--t-line-firm);border-radius:0 var(--r-md) var(--r-md) 0;
+}
+.stage-region[data-role-card-dock-side="left"] .stage-role-card-handle svg { transform:rotate(180deg); }
 .stage-role-card-handle:focus-visible { outline:2px solid var(--t-focus);outline-offset:-3px; }
 body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-card-dragging="true"] .stage-role-card-handle { opacity:0;cursor:grabbing; }

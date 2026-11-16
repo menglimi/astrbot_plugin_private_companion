@@ -28,7 +28,7 @@ from astrbot_host.page_api import PageWebAPI, PREFIX
 PLUGIN_NAME = "astrbot_plugin_private_companion"
 API_PATH = "/api/v1/plugins/extensions" + PREFIX + "/page/browser-preferences"
 SELECTION = {"bot_id": "synthetic-bot", "role_id": "合成角色", "target_id": None}
-POSITION = {"left": 325.5, "top": 40}
+POSITION = {"right": 325.5, "bottom": 40}
 EMPTY_PREFERENCES = {"selection": None, "room_card_position": None}
 
 
@@ -100,6 +100,21 @@ class BrowserPreferencesApiTests(unittest.IsolatedAsyncioTestCase):
         saved = await self.call(self.api.save_browser_preferences, {"selection": selection})
         restored = await self.call(self.api.browser_preferences, cookies=cookies_from(saved))
         self.assertEqual(payload(restored)["data"]["preferences"]["selection"], selection)
+
+    async def test_legacy_position_cookie_preserves_role_selection(self):
+        preferences = {"selection": SELECTION, "room_card_position": {"left": 325.5, "top": 40}}
+        original = await self.call(self.api.save_browser_preferences, preferences)
+        cookies = cookies_from(original)
+        restored = await self.call(self.api.browser_preferences, cookies=cookies)
+        self.assertEqual(payload(restored)["data"]["preferences"], preferences)
+
+    async def test_left_bottom_anchor_round_trip(self):
+        position = {"left": 80.5, "bottom": 60}
+        saved = await self.call(self.api.save_browser_preferences,
+                                {"selection": SELECTION, "room_card_position": position})
+        restored = await self.call(self.api.browser_preferences, cookies=cookies_from(saved))
+        self.assertEqual(payload(restored)["data"]["preferences"],
+                         {"selection": SELECTION, "room_card_position": position})
 
     async def test_cookie_is_persistent_and_only_sent_to_the_preferences_endpoint(self):
         saved = await self.call(self.api.save_browser_preferences, {"selection": SELECTION})
@@ -197,7 +212,11 @@ class BrowserPreferencesApiTests(unittest.IsolatedAsyncioTestCase):
                           {"room_card_position": {"left": True, "top": 0}},
                           {"room_card_position": {"left": -1, "top": 0}},
                           {"room_card_position": {"left": float("nan"), "top": 0}},
-                          {"room_card_position": {"left": float("inf"), "top": 0}})
+                          {"room_card_position": {"left": float("inf"), "top": 0}},
+                          {"room_card_position": {"right": -1, "bottom": 0}},
+                          {"room_card_position": {"right": True, "bottom": 0}},
+                          {"room_card_position": {"right": 0, "bottom": float("nan")}},
+                          {"room_card_position": {"right": 0, "top": 0}})
         for value in invalid_values:
             with self.subTest(value=value):
                 rejected = await self.call(self.api.save_browser_preferences, value)

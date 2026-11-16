@@ -26,6 +26,7 @@ window.CompanionRoleCard = (() => {
     const reset = root.querySelector("[data-role-card-reset]");
     if (!region || !scene || !toggle || !product) return null;
     let position = null;
+    let anchoredPosition = null;
     let docked = false;
     let slide = null;
     let preferenceIdentity = null;
@@ -33,6 +34,7 @@ window.CompanionRoleCard = (() => {
     let drag = null;
     let suppressClick = false;
     let startedOnControl = false;
+    let menuKeyboard = false;
     const controls = "button, a, select, input, label";
 
     const isAway = () => Boolean(shell.section) && !document.body.classList.contains("room-editing");
@@ -55,23 +57,34 @@ window.CompanionRoleCard = (() => {
     const currentKey = () => product.role() && product.roleTarget()
       ? product.roleChoiceKey({target: product.roleTarget(), role: product.role()}) : "";
 
+    function anchorPosition(next) {
+      const bounds = contentBounds();
+      const size = scene.getBoundingClientRect();
+      const placed = clampPosition(next, size, bounds);
+      const bottom = Math.max(0, bounds.top + bounds.height - placed.top - size.height);
+      return placed.left + size.width / 2 <= bounds.left + bounds.width / 2
+        ? {left:Math.max(0, placed.left - bounds.left), bottom}
+        : {right:Math.max(0, bounds.left + bounds.width - placed.left - size.width), bottom};
+    }
+
     function savePosition() {
-      const saved = position && clampPosition(position, scene.getBoundingClientRect(), contentBounds());
-      preferencePosition = JSON.stringify(saved);
-      return product.saveBrowserPreferences({room_card_position:saved});
+      preferencePosition = JSON.stringify(anchoredPosition);
+      return product.saveBrowserPreferences({room_card_position:anchoredPosition});
     }
 
     function applyPosition(next) {
       position = next;
       if (position) {
         const bounds = contentBounds();
-        const anchor = Math.min(position.left, bounds.left + bounds.width - scene.offsetWidth);
-        region.style.setProperty("--role-card-left", `${anchor}px`);
+        const anchor = Math.min(Math.max(bounds.left, position.left), bounds.left + bounds.width - scene.offsetWidth);
+        const fromLeft = anchoredPosition && "left" in anchoredPosition;
+        region.style.setProperty("--role-card-left", fromLeft ? `${anchor}px` : "auto");
         region.style.setProperty("--role-card-offset", `${position.left - anchor}px`);
-        region.dataset.roleCardOverflow = String(position.left > anchor);
-        region.style.setProperty("--role-card-top", `${position.top}px`);
-        region.style.setProperty("--role-card-right", "auto");
-        region.style.setProperty("--role-card-bottom", "auto");
+        region.dataset.roleCardOverflow = String(position.left !== anchor);
+        region.style.setProperty("--role-card-top", "auto");
+        region.style.setProperty("--role-card-right", fromLeft ? "auto"
+          : `${document.documentElement.getBoundingClientRect().width - anchor - scene.offsetWidth}px`);
+        region.style.setProperty("--role-card-bottom", `${document.documentElement.clientHeight - position.top - scene.offsetHeight}px`);
       } else {
         region.style.removeProperty("--role-card-offset");
         delete region.dataset.roleCardOverflow;
@@ -86,7 +99,8 @@ window.CompanionRoleCard = (() => {
       if (nextIdentity === preferenceIdentity && nextPosition === preferencePosition) return;
       preferenceIdentity = nextIdentity;
       preferencePosition = nextPosition;
-      applyPosition(stored && Number.isFinite(stored.left) && Number.isFinite(stored.top) ? stored : null);
+      anchoredPosition = stored && "bottom" in stored ? stored : null;
+      applyPosition(null);
     }
 
     function placeMenu() {
@@ -112,17 +126,26 @@ window.CompanionRoleCard = (() => {
       const bounds = contentBounds();
       region.style.setProperty("--role-card-max-width", `${Math.max(0, bounds.width - MARGIN * 2)}px`);
       region.style.setProperty("--role-card-max-height", `${Math.max(0, bounds.height - MARGIN * 2)}px`);
+      if (!anchoredPosition) applyPosition(null);
       const rect = scene.getBoundingClientRect();
-      const next = clampPosition(position || rect, rect, bounds);
-      if (docked) next.left = bounds.left + bounds.width;
+      const candidate = anchoredPosition ? {
+        left:"left" in anchoredPosition ? bounds.left + anchoredPosition.left
+          : bounds.left + bounds.width - rect.width - anchoredPosition.right,
+        top:bounds.top + bounds.height - rect.height - anchoredPosition.bottom,
+      } : rect;
+      const next = clampPosition(candidate, rect, bounds);
+      if (docked) next.left = docked === "left" ? bounds.left - rect.width : bounds.left + bounds.width;
       if (position || next.left !== rect.left || next.top !== rect.top) applyPosition(next);
       placeMenu();
     }
 
     function setDocked(value) {
       docked = value;
-      region.dataset.roleCardDocked = String(value);
-      scene.inert = value;
+      region.dataset.roleCardDocked = String(Boolean(value));
+      const side = value || (drag?.fromHandle && drag.wasDocked) || "right";
+      region.dataset.roleCardDockSide = side;
+      handle.title = `点击展开，或向${side === "left" ? "右" : "左"}拖出小屋卡片`;
+      scene.inert = Boolean(value);
       handle.hidden = !value && !drag?.fromHandle;
       if (value) closeMenu();
     }
@@ -159,7 +182,8 @@ window.CompanionRoleCard = (() => {
     function closeMenu({focus = false} = {}) {
       menu.hidden = true;
       toggle.setAttribute("aria-expanded", "false");
-      if (focus) toggle.focus({preventScroll: true});
+      if (focus && menuKeyboard) toggle.focus({preventScroll: true});
+      else if (menu.contains(document.activeElement) || document.activeElement === toggle) document.activeElement.blur();
     }
 
     function render() {
@@ -184,6 +208,7 @@ window.CompanionRoleCard = (() => {
     toggle.addEventListener("click", event => {
       event.stopPropagation();
       if (!menu.hidden) { closeMenu(); return; }
+      menuKeyboard = event.detail === 0;
       render();
       menu.hidden = false;
       toggle.setAttribute("aria-expanded", "true");
@@ -204,16 +229,25 @@ window.CompanionRoleCard = (() => {
     });
     reset.addEventListener("click", () => {
       setDocked(false);
+      anchoredPosition = null;
       applyPosition(null);
       savePosition();
       fitPosition();
       closeMenu({focus: true});
     });
     menu.addEventListener("keydown", event => {
+      menuKeyboard = true;
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeMenu({focus: true}); }
     });
     document.addEventListener("pointerdown", event => {
+      menuKeyboard = false;
       if (!menu.hidden && !menu.contains(event.target) && !toggle.contains(event.target)) closeMenu();
+    }, true);
+    // 嵌入工作区的点击不冒泡到父页面，通过焦点进入 iframe 收起弹窗。
+    window.addEventListener("blur", () => {
+      setTimeout(() => {
+        if (!menu.hidden && document.activeElement?.tagName === "IFRAME") closeMenu();
+      }, 0);
     });
 
     function startDrag(event) {
@@ -239,7 +273,7 @@ window.CompanionRoleCard = (() => {
       setDocked(false);
       const bounds = contentBounds();
       const next = clampPosition({left:drag.left + dx, top:drag.top + dy}, scene.getBoundingClientRect(), bounds);
-      next.left = Math.min(Math.max(bounds.left + MARGIN, drag.left + dx), bounds.left + bounds.width);
+      next.left = Math.min(Math.max(bounds.left - scene.offsetWidth, drag.left + dx), bounds.left + bounds.width);
       applyPosition(next);
     }
     function endDrag(event) {
@@ -257,13 +291,22 @@ window.CompanionRoleCard = (() => {
           const bounds = contentBounds();
           const right = bounds.left + bounds.width;
           // 使用布局宽度判定半幅，不受变换后浮点尺寸的影响。
-          setDocked(ended.fromHandle ? position.left >= ended.left : position.left + scene.offsetWidth / 2 >= right);
+          const center = position.left + scene.offsetWidth / 2;
+          let side = center <= bounds.left ? "left" : center >= right ? "right" : false;
+          if (ended.fromHandle && ended.wasDocked === "left" && position.left > ended.left && side === "left") side = false;
+          if (ended.fromHandle && ended.wasDocked === "right" && position.left < ended.left && side === "right") side = false;
+          setDocked(side);
         }
+        anchoredPosition = anchorPosition(position);
         fitPosition();
         savePosition();
         settle(before);
       } else setDocked(ended.wasDocked);
       if (ended.owner.hasPointerCapture(event.pointerId)) ended.owner.releasePointerCapture(event.pointerId);
+      if (!ended.moved && ended.fromHandle && event.type === "pointerup" && event.pointerType === "touch") {
+        suppressClick = true;
+        revealCard();
+      }
     }
     for (const target of [scene, handle]) {
       target.addEventListener("pointerdown", startDrag);
@@ -295,7 +338,7 @@ window.CompanionRoleCard = (() => {
     window.addEventListener("companion:browser-preferences-changed", render);
     shell.onChange(() => { closeMenu(); requestAnimationFrame(fitPosition); });
     render();
-    return {render, resetPosition: () => { setDocked(false); applyPosition(null); savePosition(); fitPosition(); }, fitPosition};
+    return {render, resetPosition: () => { setDocked(false); anchoredPosition = null; applyPosition(null); savePosition(); fitPosition(); }, fitPosition};
   }
 
   return {mount, clampPosition};
