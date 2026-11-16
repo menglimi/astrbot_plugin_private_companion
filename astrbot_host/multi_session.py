@@ -584,6 +584,7 @@ class MultiHostSession:
         self.application = self.host.application
         from companion_v2.relationships.account_link_context import persona_for
         self.application.private_account_link_persona = lambda member: persona_for(self.settings, member)
+        self.application.private_account_link_resolve = self._linked_private_context
         self.application.runtime.private_account_link_persona = lambda member: self.application.private_account_link_persona(member)
         from companion_v2.relationships.account_link_delivery import PrivateAccountDelivery
         self.application.outbound.private_account_router = PrivateAccountDelivery(

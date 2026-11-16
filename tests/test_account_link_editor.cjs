@@ -17,13 +17,13 @@ const route = suffix => ({platform: "qq-" + suffix, bot_id: "bot-" + suffix, acc
 const person = {subject_id: "user-a", ...route("a")};
 const candidates = ["a", "b"].map(s => ({subject_id: "user-" + s, route: route(s), label: "Account " + s}));
 const member = candidate => ({subject_id: candidate.subject_id, ...candidate.route, native_account_id: candidate.label});
-function fixture({group = null, failPost = false, confirm = true, features = false} = {}) {
+function fixture({group = null, failPost = false, confirm = true, features = false, memory = false} = {}) {
   let counter = 0;
   const jobs = [], posts = [], state = {};
   const data = {revision: 0, group, candidates, ...(features ? {
     supported: {settings: true, identity: true, proactive: true},
     fields: {profile: ["relationship.profile.default_nickname", "relationship.profile.extra"],
-      reply: ["conversation.presentation.style_prompt"], contact: ["proactive.contact.enabled"]}} : {})};
+      reply: ["conversation.presentation.style_prompt"], contact: ["proactive.contact.enabled"]}} : {}), ...(memory ? {supported: {memory: true}} : {})};
   const bridge = {apiGet: async () => ({status: "ok", data}), apiPost: async (url, body) => {
     posts.push({url, body: structuredClone(body)});
     if (failPost) throw new Error("ambiguous timeout");
@@ -203,4 +203,44 @@ test("saved random weights are restored when reopening", async () => {
       {member: member(candidates[0]), weight: 0}, {member: member(candidates[1]), weight: 8}]}}});
   const pane = await f.render();
   assert.deepEqual(all(pane).filter(e => e.tag === "input" && e.type === "number").map(e => e.value), ["0", "8"]);
+});
+
+async function memoryFixture(options = {}) {
+  const f = fixture({memory: true, ...options}); const pane = await f.render();
+  const account = all(pane).filter(e => e.tag === "input")[1];
+  account.checked = true; account.events.change();
+  return f;
+}
+test("long-term memory is a separate opt-in with labeled existing controls", async () => {
+  const f = await memoryFixture(); const pane = await f.render();
+  assert.equal(f.state.accountLinks.shareMemory, false);
+  assert.equal(f.state.accountLinks.memoryHistory, "since_enabled");
+  const select = all(pane).find(e => e.tag === "select");
+  assert.equal(select.disabled, true); assert.equal(select["aria-label"], "长期记忆共享范围");
+  const label = all(pane).find(e => e.tag === "label" && e.children.includes(select));
+  assert.ok(label.className.includes("member-field"));
+  button(pane, "保存账号关联与共享开关").events.click(); await settle();
+  assert.deepEqual(f.posts[0].body.memory, {enabled: false, history: "since_enabled"});
+  assert.equal(f.posts[0].body.share_context, false);
+});
+test("new memory sharing and historical sharing use distinct confirmations", async () => {
+  for (const history of ["since_enabled", "all"]) {
+    const f = await memoryFixture(); f.state.accountLinks.shareMemory = true;
+    f.state.accountLinks.memoryHistory = history;
+    const pane = await f.render();
+    button(pane, "保存账号关联与共享开关").events.click(); await settle();
+    assert.equal(f.posts[0].body.memory.confirmation, history === "all"
+      ? "include-existing-linked-memory" : "share-linked-long-term-memory");
+  }
+});
+test("declining memory confirmation sends no mutation", async () => {
+  const f = await memoryFixture({confirm: false}); f.state.accountLinks.shareMemory = true;
+  const pane = await f.render(); button(pane, "保存账号关联与共享开关").events.click(); await settle();
+  assert.equal(f.posts.length, 0);
+});
+test("saved memory range is restored independently of chat context", async () => {
+  const f = await memoryFixture({group: {members: candidates.map(member), share_context: false,
+    memory: {enabled: true, history: "all"}}});
+  assert.equal(f.state.accountLinks.shareMemory, true); assert.equal(f.state.accountLinks.memoryHistory, "all");
+  assert.equal(f.state.accountLinks.shareContext, false);
 });

@@ -1157,6 +1157,8 @@
         links.selected = new Set((data.candidates || []).filter(item => isCurrent(item)
           || data.group?.members.some(member => matchesMember(item, member))).map(candidateKey));
         links.shareContext = data.group?.share_context === true;
+        links.shareMemory = data.group?.memory?.enabled === true;
+        links.memoryHistory = data.group?.memory?.history || "since_enabled";
         links.sharing = Object.fromEntries(["profile", "reply", "contact"].map(name =>
           [name, new Set(data.group?.sharing?.[name] || [])]));
         links.shareIdentity = data.group?.identity?.enabled === true;
@@ -1180,7 +1182,7 @@
     refresh.addEventListener("click", () => void read()); box.append(refresh);
     if (!links.data || links.loading) return box;
     const data = links.data;
-    if (data.group) box.append(element("p", `已关联 ${data.group.members.length} 个账号。共享从开启时生效，不导入旧历史。`));
+    if (data.group) box.append(element("p", `已关联 ${data.group.members.length} 个账号。聊天上下文仅共享开启后的新对话；长期记忆按单独授权的范围读取。`));
     const choices = element("fieldset", undefined, "member-link-section"); choices.disabled = links.busy || Boolean(links.pending);
     choices.append(element("legend", "选择关联账号（最多 16 个）"));
     for (const candidate of data.candidates || []) {
@@ -1200,6 +1202,26 @@
     share.addEventListener("change", () => {links.shareContext = share.checked;});
     contextLabel.append(element("span", "共享聊天上下文（仅开启后的新对话）"), share);
     choices.append(contextLabel); box.append(choices);
+    if (data.supported?.memory) {
+      const section = element("fieldset", undefined, "member-link-section");
+      section.disabled = links.busy || Boolean(links.pending);
+      section.append(element("legend", "共享长期记忆"));
+      const row = element("label", undefined, "member-switch-row");
+      const toggle = element("input"); toggle.type = "checkbox"; toggle.checked = links.shareMemory;
+      toggle.addEventListener("change", () => {links.shareMemory = toggle.checked; redraw(state);});
+      row.append(element("span", "允许关联账号读取长期记忆（默认关闭）"), toggle); section.append(row);
+      const history = element("select"); history.setAttribute("aria-label", "长期记忆共享范围"); history.disabled = !links.shareMemory;
+      for (const [value, label] of [["since_enabled", "仅共享开启后的记忆"], ["all", "包含已有历史记忆（需单独确认）"]]) {
+        const option = element("option", label); option.value = value; option.selected = links.memoryHistory === value;
+        history.append(option);
+      }
+      history.value = links.memoryHistory;
+      history.addEventListener("change", () => {links.memoryHistory = history.value;});
+      const historyLabel = element("label", undefined, "member-field member-link-select");
+      historyLabel.append(element("span", "共享范围", "member-field-caption"), history); section.append(historyLabel);
+      section.append(element("p", "只共享读取权限，不合并或复制原记忆。关闭或解除关联后停止跨账号读取；缺少明确机器人、人格和来源窗口的旧记忆不跨账号开放。", "member-block-note"));
+      box.append(section);
+    }
     if (data.supported?.settings) {
       const sharing = element("fieldset", undefined, "member-link-section"); sharing.disabled = links.busy || Boolean(links.pending);
       sharing.append(element("legend", "共享设置（默认关闭，可逐字段选择）"));
@@ -1316,8 +1338,21 @@
         if (!unlink && (members.length < 2 || members.length > 16)) {
           links.error = "请选择当前账号和至少一个其他账号，总数不超过 16 个。"; redraw(state); return;
         }
-        if (unlink && !window.confirm("解除整组账号关联？之后不再读取其他账号的新对话，原记录和原设置不会删除。")) return;
+        if (unlink && !window.confirm("解除整组账号关联？之后不再读取其他账号的新对话和共享长期记忆，原记录和原设置不会删除。")) return;
         const extras = {};
+        if (!unlink && data.supported?.memory) {
+          const old = data.group?.memory;
+          const unchangedMembers = data.group?.members?.length === members.length
+            && (data.candidates || []).filter(item => links.selected.has(candidateKey(item)))
+              .every(item => data.group.members.some(member => matchesMember(item, member)));
+          extras.memory = {enabled: links.shareMemory, history: links.memoryHistory};
+          if (links.shareMemory && (!old?.enabled || old.history !== links.memoryHistory || !unchangedMembers)) {
+            const history = links.memoryHistory === "all";
+            if (!window.confirm(history ? "允许这些关联账号读取彼此已有的历史长期记忆？不会合并或改写原记录。"
+              : "允许这些关联账号读取本次开启之后的新长期记忆？关闭或解除关联即可停止跨账号读取。")) return;
+            extras.memory.confirmation = history ? "include-existing-linked-memory" : "share-linked-long-term-memory";
+          }
+        }
         if (!unlink && data.supported?.settings) {
           extras.sharing = Object.fromEntries(Object.entries(links.sharing).map(([key, values]) => [key, [...values].sort()]));
           const newlyShared = Object.entries(extras.sharing).some(([key, values]) => values.some(value => !data.group?.sharing?.[key]?.includes(value)));
