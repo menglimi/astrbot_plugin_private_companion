@@ -164,7 +164,8 @@ class CalendarPlanning:
     def _legacy_automatic_attempt(self, context, slot, *, connection=None):
         current = self.identifier(context, slot, connection=connection)
         if connection is not None:
-            exists = connection.execute("SELECT 1 FROM operations WHERE operation_id = ?", (current,)).fetchone()
+            exists = connection.execute(
+                "SELECT 1 FROM operations WHERE operation_id = ? AND state = 'completed'", (current,)).fetchone()
             if exists is not None:
                 return current
         elif self.operations.get(current).is_success:
@@ -172,8 +173,9 @@ class CalendarPlanning:
         for candidate in self._automatic_contexts(context):
             identifier = self._legacy_identifier(candidate, slot, connection=connection)
             if connection is not None:
-                exists = connection.execute("SELECT 1 FROM operations WHERE operation_id = ?",
-                                            (identifier,)).fetchone()
+                exists = connection.execute(
+                    "SELECT 1 FROM operations WHERE operation_id = ? AND state = 'completed'",
+                    (identifier,)).fetchone()
                 if exists is not None:
                     return identifier
             elif self.operations.get(identifier).is_success:
