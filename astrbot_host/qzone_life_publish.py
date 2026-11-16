@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import timedelta
 import logging
 import random
 
@@ -111,8 +112,10 @@ class QzoneLifePublisher:
             text = await self._draft(session, context, settings, at)
         except Exception as error:  # noqa: BLE001 - no draft means no public post
             logger.warning("[CompanionV2] 生活说说草稿生成失败 error_type=%s", type(error).__name__)
+            self._schedule_retry(service, context, state, at, settings)
             return {"reason": "draft_failed"}
         if not text:
+            self._schedule_retry(service, context, state, at, settings)
             return {"reason": "draft_unavailable"}
         try:
             result = await service.publish(
@@ -120,12 +123,33 @@ class QzoneLifePublisher:
                 scene=life_publish.SCENE.value, confidence=0.82, topic_confirmed=True,
                 operation_key=life_publish.operation_key(owner_key(context), decision.day, at))
         except Exception as error:  # noqa: BLE001 - publish reports its own codes; log and space the retry
+            code = getattr(error, "code", "qzone_publish_failed")
             logger.warning("[CompanionV2] 生活说说发布未完成 code=%s error_type=%s",
-                           getattr(error, "code", "qzone_publish_failed"), type(error).__name__)
-            return {"reason": "publish_failed", "code": getattr(error, "code", "")}
+                           code, type(error).__name__)
+            self._schedule_retry(service, context, state, at, settings, unknown=code in {
+                "qzone_delivery_unknown", "qzone_operation_unresolved"})
+            return {"reason": "publish_failed", "code": code}
         logger.info("[CompanionV2] 生活说说已发布 status=%s", result.get("status"))
         return {"reason": "published", "status": result.get("status"),
                 "operation_id": result.get("operation_id")}
+
+    @staticmethod
+    def _schedule_retry(service, context, state, at, settings, *, unknown=False):
+        try:
+            minutes = int(settings.get("life_publish_retry_minutes") or 30)
+        except (TypeError, ValueError):
+            minutes = 30
+        if unknown:
+            try:
+                minutes = max(60, int(settings.get("life_publish_min_interval_hours") or 6) * 60)
+            except (TypeError, ValueError):
+                minutes = 360
+        minutes = min(24 * 60, max(5, minutes))
+        retry = replace(state, last_action_at={
+            **state.last_action_at,
+            life_publish.RETRY_KEY: stamp(at + timedelta(minutes=minutes)),
+        })
+        service.store.write(owner_key(context), retry, at=at)
 
     # ---- drafting ------------------------------------------------------
 
