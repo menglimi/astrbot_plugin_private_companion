@@ -216,6 +216,12 @@ def _coerce_soft_details(data):
             data.pop("single_value", None)
         else:
             data["single_value"] = folded
+    value = data.get("stability_estimate")
+    if value is not None and not isinstance(value, str):
+        # The model often emits a numeric stability estimate even though the
+        # memory contract stores text.  Normalize it instead of rejecting the
+        # whole proposal as invalid_proposal.
+        data["stability_estimate"] = str(value)
     for name in ("valid_from", "valid_to"):
         value = data.get(name)
         if value is None:
@@ -253,6 +259,11 @@ def normalize_proposal(raw, manifest):
             data[field] = value
     if "target" in data:
         alias = data.pop("target")
+        # no_op means "this fact is already recorded"; models naturally include
+        # the target handle.  The contract forbids it, but rejecting the whole
+        # proposal produces a partial batch and stalls the remaining sources.
+        if data.get("operation") == "no_op":
+            alias = None
         if alias is not None:
             if type(alias) is not str or alias not in manifest.get("fact_handles", {}):
                 raise OutputProblem("unknown_target", "target")
