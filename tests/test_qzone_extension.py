@@ -535,6 +535,9 @@ class AccessTests(unittest.TestCase):
         self.assertTrue(status["role_enabled"])
         self.assertTrue(all(status["consented"].values()))
         self.assertTrue(status["invoke_granted"])
+        self.assertTrue(status["publish_granted"])
+        self.assertTrue(self.identities.authorize(self.context.actor, scope=self.scope,
+                                                  capability="qzone.post.publish", observed_at=NOW).is_success)
         self.assertEqual(status["reason"], "")
         scanned = asyncio.run(self.service.scan(self.context, scope="own"))
         self.assertEqual(scanned["count"], 2)
@@ -542,6 +545,9 @@ class AccessTests(unittest.TestCase):
         self.assertTrue(self.configure(True, key="op-1", command=self.last_command)["replayed"])
         revoked = self.configure(False, key="op-2")["status"]
         self.assertFalse(any(revoked["consented"].values()))
+        self.assertFalse(revoked["publish_granted"])
+        self.assertFalse(self.identities.authorize(self.context.actor, scope=self.scope,
+                                                   capability="qzone.post.publish", observed_at=NOW).is_success)
         self.assertTrue(revoked["installed"])
         with self.assertRaises(TaskError):
             asyncio.run(self.service.scan(self.context, scope="own"))

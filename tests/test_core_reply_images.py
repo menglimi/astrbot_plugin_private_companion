@@ -7,6 +7,7 @@ import json
 import io
 from pathlib import Path
 import re
+import sqlite3
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock
@@ -27,7 +28,7 @@ from companion_v2.conversation.media.quota import GROUP, QUOTA_FIELDS, ImageQuot
 from companion_v2.conversation.media.output_settings import (
     GROUP as OUTPUT_GROUP, ImageOutputConfigurationOwner, configuration_fields as output_fields,
 )
-from companion_v2.execution.models import TaskContext, digest, require
+from companion_v2.execution.models import TaskContext, TaskError, digest, encode, require
 from datetime import timedelta
 from companion_v2.foundation.refs import AudienceRef
 from companion_v2.identity_policy.personas import ConversationRoute
@@ -50,6 +51,14 @@ from tests.test_management_access import NOW, SCOPE
 class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
+        # The native-turn ledger is optional in production and is not part of
+        # the minimal HostFixture schema. These album tests deliberately add
+        # historical context rows, so install the same schema used by the
+        # runtime before exercising that projection.
+        from companion_v2.storage.native_conversation_schema import STATEMENTS
+        with self.runtime.transaction() as connection:
+            for statement in STATEMENTS:
+                connection.execute(statement)
         self.image_directory = self.root.parent / "image-native-v2"
         self.native_registry = self.create_image_port(self.image_directory, self.clock.now)
         self.native_registry._default_handlers = True
@@ -251,13 +260,18 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         result = self.result(generation, "red")
         native = json.loads(result["payload"])["native"]
         artifact = native["artifacts"][0]["artifact_id"]
+        album = self.app.messages.generated_images
+        native_item = album.album_image(self.context, self.clock.now(), artifact)
+        self.assertEqual(native_item.image_id, "generated-image:" + result["invocation_id"] + ":0")
+        self.assertEqual(native_item.content, image_bytes("red"))
+        with self.assertRaisesRegex(TaskError, "selected album image is unavailable"):
+            album.album_image(self.context, self.clock.now(), artifact + "-forged")
         edited = await self.call(event, request, "image.edit", {"prompt": "蓝色", "artifact_id": artifact}, "edit")
         self.result(edited, "blue")
         replay = await self.call(event, request, "image.generate", {"prompt": "红色"}, "generate")
         self.assertEqual(replay.content, generation.content)
         self.assertEqual(len(self.image_backend.calls), 2)
         self.assertEqual(len(self.image_backend.calls[1][1]), 1)
-        album = self.app.messages.generated_images
         page = album.album_page(self.context, self.clock.now(), limit=1)
         self.assertEqual(len(page["items"]), 1)
         self.assertIsNotNone(page["next_cursor"])
@@ -274,6 +288,213 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         self.app.messages.sources.revoke(selected.parent, expected_governance_revision=1,
                                          observed_at=self.clock.now()).unwrap()
         self.assertEqual(len(album.album_page(self.context, self.clock.now())["items"]), 1)
+        self.assert_no_reply_work(event)
+
+    async def test_native_artifact_id_still_resolves_after_more_than_one_page_of_new_images(self):
+        event, request = self.prepare("native-image-artifact-retention")
+        first = await self.call(event, request, "image.generate", {"prompt": "第一张"}, "retention-000")
+        first_result = self.result(first, "red")
+        first_artifact = json.loads(first_result["payload"])["native"]["artifacts"][0]["artifact_id"]
+
+        # The historical UI once retained only a bounded page of recent results.
+        # Exercise the real image operation path so the stored artifact, source,
+        # and receipt all have the same shape as a normal provider generation.
+        for index in range(1, 130):
+            received = await self.call(event, request, "image.generate", {"prompt": f"第 {index + 1} 张"},
+                                       f"retention-{index:03d}")
+            self.result(received, "red")
+
+        resolved = self.app.messages.generated_images.album_image(
+            self.context, self.clock.now(), first_artifact)
+        self.assertEqual(resolved.image_id, "generated-image:" + first_result["invocation_id"] + ":0")
+        self.assertEqual(resolved.content, image_bytes("red"))
+        self.assertEqual(len(self.image_backend.calls), 130)
+        self.assert_no_reply_work(event)
+
+    async def test_native_album_ignores_json_context_rows_with_unexpected_shapes(self):
+        event, request = self.prepare("native-image-context-shapes")
+        received = await self.call(event, request, "image.generate", {"prompt": "红色"}, "context-shapes")
+        result = self.result(received, "red")
+        artifact_id = json.loads(result["payload"])["native"]["artifacts"][0]["artifact_id"]
+        malformed_contexts = ("[]", "null", '"legacy string"',
+                              '{"role_binding":[]}',
+                              '{"role_binding":{"role":[],"scope":[]}}')
+        with self.runtime.transaction() as connection:
+            for index, context_json in enumerate(malformed_contexts):
+                connection.execute("""INSERT INTO conversation_native_turns
+                    (turn_id, context_key, context_json, role_instruction, input_observation_id,
+                     observed_at, generation_state, phase_at, last_sent_at)
+                    VALUES (?, ?, ?, '', NULL, ?, 'completed', ?, NULL)""",
+                    (f"malformed-album-context-{index}", f"legacy-context-{index}", context_json,
+                     self.clock.now().isoformat(), self.clock.now().isoformat()))
+
+        resolved = self.app.messages.generated_images.album_image(self.context, self.clock.now(), artifact_id)
+        self.assertEqual(resolved.image_id, "generated-image:" + result["invocation_id"] + ":0")
+        self.assertEqual(resolved.content, image_bytes("red"))
+        self.assert_no_reply_work(event)
+
+    async def test_native_album_handles_many_historical_origin_keys_under_a_low_sqlite_bind_limit(self):
+        event, request = self.prepare("native-image-origin-key-limit")
+        received = await self.call(event, request, "image.generate", {"prompt": "红色"}, "origin-key-limit")
+        result = self.result(received, "red")
+        artifact_id = json.loads(result["payload"])["native"]["artifacts"][0]["artifact_id"]
+        context_json = encode(self.context)
+        with self.runtime.transaction() as connection:
+            for index in range(80):
+                connection.execute("""INSERT INTO conversation_native_turns
+                    (turn_id, context_key, context_json, role_instruction, input_observation_id,
+                     observed_at, generation_state, phase_at, last_sent_at)
+                    VALUES (?, ?, ?, '', NULL, ?, 'completed', ?, NULL)""",
+                    (f"historical-album-context-{index}", f"historical-context-{index}", context_json,
+                     self.clock.now().isoformat(), self.clock.now().isoformat()))
+
+        # The old one-placeholder-per-origin-key SQL exceeded SQLite's variable
+        # limit as soon as a role accumulated enough windows. Keep the limit low
+        # so this test exercises the production query shape rather than the
+        # default build's generous limit.
+        with self.runtime.read_snapshot() as connection:
+            previous_limit = connection.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+            connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 8)
+            try:
+                page = self.app.messages.generated_images.album_page(self.context, self.clock.now(), limit=1)
+                resolved = self.app.messages.generated_images.album_image(
+                    self.context, self.clock.now(), artifact_id)
+            finally:
+                connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, previous_limit)
+        self.assertEqual(page["items"][0].content, image_bytes("red"))
+        self.assertEqual(resolved.content, image_bytes("red"))
+        self.assert_no_reply_work(event)
+
+    async def test_native_generated_image_builds_qzone_upload_request(self):
+        from companion_v2.capabilities.models import CapabilityAuthorizationState
+        from companion_v2.capabilities.repositories import CapabilityRepository
+        from companion_v2.execution.models import require
+        from companion_v2.qzone.capability import CAPABILITIES, EXTENSION, PUBLISH_ACTION, package_descriptor
+        from companion_v2.qzone.images import album_images
+        from companion_v2.qzone.protocol import credential_from_cookies, parse_cookie_text, upload_image_request
+        from companion_v2.sharing.planner import ShareCatalog, SharePlanner
+        from companion_v2.sources.repositories import AssetRepository, SourceRepository
+
+        event, request = self.prepare("native-image-qzone-upload")
+        received = await self.call(event, request, "image.generate", {"prompt": "自拍"}, "qzone-selfie")
+        result = self.result(received, "red")
+        artifact_id = json.loads(result["payload"])["native"]["artifacts"][0]["artifact_id"]
+        self.grant(self.important, SCOPE, PUBLISH_ACTION)
+
+        package = package_descriptor()
+        capabilities = CapabilityRepository(self.runtime)
+        require(capabilities.register_descriptor(package, registered_at=self.clock.now()))
+        require(capabilities.acquire(extension_id=EXTENSION, package_id=package.package_id,
+                                     package_version=package.package_version, expected_revision=0,
+                                     observed_at=self.clock.now()))
+        require(capabilities.set_role_enabled(extension_id=EXTENSION,
+            role=self.context.role_binding.role, bot_id=SCOPE.bot_id, enabled=True,
+            expected_revision=0, observed_at=self.clock.now()))
+        for capability in CAPABILITIES:
+            require(capabilities.set_authorization(extension_id=EXTENSION, capability_id=capability,
+                subject=self.context.actor.subject, scope=SCOPE,
+                state=CapabilityAuthorizationState.ACTIVE, expected_revision=0,
+                observed_at=self.clock.now()))
+
+        planner = SharePlanner(sources=SourceRepository(self.runtime), assets=AssetRepository(self.runtime),
+                               catalog=ShareCatalog())
+        images, candidates = album_images(self.app, self.context, self.clock.now(), [artifact_id], planner=planner)
+        self.assertEqual(len(images), 1)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(images[0].content, image_bytes("red"))
+        self.assertEqual(images[0].mime_type, "image/png")
+        credential = credential_from_cookies(parse_cookie_text("uin=o123456789; p_skey=TEST; qzonetoken=TOKEN"))
+        upload = upload_image_request(credential, images[0])
+        self.assertEqual(upload.description, "image.upload")
+        self.assertEqual(base64.b64decode(upload.data["picfile"], validate=True), image_bytes("red"))
+        self.assertEqual(upload.data["filename"], f"{images[0].content_hash[:16]}.png")
+        self.assertEqual(upload.data["qzonetoken"], "TOKEN")
+        self.assert_no_reply_work(event)
+
+    async def test_corrupt_native_artifact_receipt_is_refused_without_crashing(self):
+        event, request = self.prepare("native-image-corrupt-receipt")
+        generated = await self.call(event, request, "image.generate", {"prompt": "红色"}, "generate-corrupt")
+        result = self.result(generated, "red")
+        artifact_id = json.loads(result["payload"])["native"]["artifacts"][0]["artifact_id"]
+        saved = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?",
+                                      ("astrbot.core-tool." + result["invocation_id"],))
+        operation = json.loads(saved["value"])
+        reference = operation["source"]
+        source = self.runtime.read_one("""SELECT payload_json FROM sources
+            WHERE source_id=? AND lineage_id=? AND source_revision=?""",
+            (reference["source_id"], reference["version"]["lineage_id"],
+             reference["version"]["revision"]))
+        document = json.loads(json.loads(source["payload_json"]))
+        document["native"]["artifacts"] = [None]
+        malformed = encode(document)
+        with self.runtime.transaction() as connection:
+            connection.execute("""UPDATE sources SET payload_json=?,content_hash=?
+                WHERE source_id=? AND lineage_id=? AND source_revision=?""",
+                (encode(malformed), digest(malformed), reference["source_id"],
+                 reference["version"]["lineage_id"], reference["version"]["revision"]))
+
+        with self.assertRaisesRegex(TaskError, "selected album image is unavailable"):
+            self.app.messages.generated_images.album_image(self.context, self.clock.now(), artifact_id)
+        self.assert_no_reply_work(event)
+
+    async def test_native_replay_rejects_execution_ledger_receipt_divergence(self):
+        event, request = self.prepare("native-image-receipt-divergence")
+        generated = await self.call(event, request, "image.generate", {"prompt": "红色"}, "generate-receipt")
+        result = self.result(generated, "red")
+        invocation_id = result["invocation_id"]
+        metadata_key = "astrbot.core-tool." + invocation_id
+        saved = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?", (metadata_key,))
+        operation = json.loads(saved["value"])
+        task_id = operation["task_id"]
+        task = self.runtime.read_one("SELECT record_json FROM execution_tasks WHERE task_id = ?", (task_id,))
+        original_task = json.loads(task["record_json"])
+
+        for field, forged in (("effect", "none"), ("operation_id", "forged-operation"),
+                              ("result_ref", "forged-result"), ("receipt_ref", "forged-receipt")):
+            with self.subTest(field=field):
+                tampered = dict(original_task)
+                tampered[field] = forged
+                with self.runtime.transaction() as connection:
+                    connection.execute("UPDATE execution_tasks SET record_json = ? WHERE task_id = ?",
+                                       (encode(tampered), task_id))
+                replay = await self.call(event, request, "image.generate", {"prompt": "红色"}, "generate-receipt")
+                self.assertEqual(json.loads(replay)["code"], "core_tool_result_unresolved")
+                with self.runtime.transaction() as connection:
+                    connection.execute("UPDATE execution_tasks SET record_json = ? WHERE task_id = ?",
+                                       (encode(original_task), task_id))
+
+        tampered_result = dict(operation["result"])
+        tampered_result["receipt_ref"] = "forged-native-receipt"
+        tampered_operation = dict(operation, result=tampered_result)
+        with self.runtime.transaction() as connection:
+            connection.execute("UPDATE runtime_metadata SET value = ? WHERE key = ?",
+                               (encode(tampered_operation), metadata_key))
+        replay = await self.call(event, request, "image.generate", {"prompt": "红色"}, "generate-receipt")
+        self.assertEqual(json.loads(replay)["code"], "core_tool_result_unresolved")
+        self.assert_no_reply_work(event)
+
+    async def test_native_replay_rejects_source_hash_divergence(self):
+        event, request = self.prepare("native-image-source-divergence")
+        generated = await self.call(event, request, "image.generate", {"prompt": "红色"}, "generate-source")
+        result = self.result(generated, "red")
+        metadata_key = "astrbot.core-tool." + result["invocation_id"]
+        operation = json.loads(self.runtime.read_one(
+            "SELECT value FROM runtime_metadata WHERE key = ?", (metadata_key,))["value"])
+        reference = operation["source"]
+        source_key = (reference["source_id"], reference["version"]["lineage_id"], reference["version"]["revision"])
+        source = self.runtime.read_one("SELECT payload_json FROM sources "
+                                       "WHERE source_id = ? AND lineage_id = ? AND source_revision = ?", source_key)
+        with self.runtime.transaction() as connection:
+            connection.execute("UPDATE sources SET payload_json = ? "
+                               "WHERE source_id = ? AND lineage_id = ? AND source_revision = ?",
+                               (json.dumps("tampered native source", ensure_ascii=False), *source_key))
+        replay = await self.call(event, request, "image.generate", {"prompt": "红色"}, "generate-source")
+        replayed = json.loads(replay)
+        self.assertEqual((replayed["state"], replayed["effect"], replayed["code"]),
+                         ("succeeded", "committed", "core_tool_result_changed"))
+        with self.runtime.transaction() as connection:
+            connection.execute("UPDATE sources SET payload_json = ? WHERE source_id = ? AND lineage_id = ? "
+                               "AND source_revision = ?", (source["payload_json"], *source_key))
         self.assert_no_reply_work(event)
 
     async def test_edit_reads_actual_current_native_attachment_only_on_tool_invocation(self):

@@ -748,11 +748,14 @@ class ExternalToolExecutor:
         if (task.spec.kind, task.spec.request_ref) != (descriptor.kind, row["invocation_id"]):
             raise TaskError("external_task_mismatch", "original child does not belong to this invocation")
         state = row["state"] if row["state"] in ("succeeded", "failed") else "unknown"
-        if state == "succeeded" and (task.state, task.effect, task.operation_id, task.result_ref) != (
-                "succeeded", row["effect"], row["operation_id"], row["invocation_id"]):
-            raise TaskError("external_task_unresolved", "original child has not accepted its final receipt")
-        if state == "failed" and row["receipt_ref"] is not None and task.state != "failed":
-            raise TaskError("external_task_unresolved", "original child has not accepted the owner's failure receipt")
+        if state in ("succeeded", "failed") and row["receipt_ref"] is not None:
+            task_row = self.runtime.read_one("SELECT record_json FROM execution_tasks WHERE task_id = ?",
+                                             (row["task_id"],))
+            task_data = json.loads(task_row["record_json"]) if task_row is not None else {}
+            expected_result_ref = row["invocation_id"] if state == "succeeded" else None
+            if (task.state, task.effect, task.operation_id, task.result_ref, task_data.get("receipt_ref")) != (
+                    state, row["effect"], row["operation_id"], expected_result_ref, row["receipt_ref"]):
+                raise TaskError("external_task_unresolved", "original child has not accepted its final receipt")
         result = {"invocation_id": row["invocation_id"], "state": state, "effect": row["effect"],
                   "operation_id": row["operation_id"], "receipt_ref": row["receipt_ref"], "code": row["error_code"]}
         material = None
