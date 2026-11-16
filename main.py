@@ -1809,6 +1809,40 @@ class PrivateCompanionV2StagingPlugin(Star):
         activate_core_reply_tracking(event)
         activate_core_reply_segmentation(event)
 
+    @filter.on_decorating_result(priority=999999)
+    async def suppress_companion_native_tool_repeat(self, event: AstrMessageEvent):
+        """Check the complete final result before AstrBot splits or speaks it."""
+        state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+        result = event.get_result()
+        if (not isinstance(state, dict) or not state.get("delivery_guard_active")
+                or getattr(getattr(result, "result_content_type", None), "name", None) != "LLM_RESULT"
+                or not getattr(result, "chain", None)):
+            return
+        get_config = getattr(getattr(self, "context", None), "get_config", None)
+        if not callable(get_config):
+            return
+        config = get_config(event.unified_msg_origin)
+        settings = config.get("platform_settings") if isinstance(config, Mapping) else None
+        if not isinstance(settings, Mapping):
+            return
+        if (config.get("t2i") or getattr(result, "use_t2i_", False)
+                or settings.get("reply_prefix") or settings.get("reply_with_quote")
+                or settings.get("reply_with_mention")):
+            return
+        if event.get_platform_name() == "aiocqhttp":
+            try:
+                if len(result.get_plain_text()) > int(settings["forward_threshold"]):
+                    return
+            except (KeyError, TypeError, ValueError):
+                return
+        from astrbot.core.message.message_event_result import MessageChain
+        from .astrbot_host.core_reply_voice import capture_core_voice_message
+        from .astrbot_host.core_reply_idempotency import should_drop_native_tool_response
+
+        visible = capture_core_voice_message(event, MessageChain(chain=list(result.chain)))
+        if should_drop_native_tool_response(event, visible):
+            result.chain.clear()
+
     def _observe_session(self, event: AstrMessageEvent) -> None:
         try:
             self.staging.session_topology.schedule_observe(event)

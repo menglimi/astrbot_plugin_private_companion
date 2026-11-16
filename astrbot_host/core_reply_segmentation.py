@@ -177,32 +177,36 @@ def prepare_core_reply_segmentation(event):
         capture_core_reaction_intent(event, message)
         from .core_reply_voice import capture_core_voice_message
         message = capture_core_voice_message(event, message)
+        from .core_reply_idempotency import mark_native_tool_checked, should_drop_native_tool_response
+        already_native_parts = _already_native_parts(event, message)
+        if not already_native_parts and should_drop_native_tool_response(event, message):
+            return None
         if prepared.get("channel") == "private" and is_core_reply_stream(event):
             try:
-                return await state["send"](message, *args, **kwargs)
+                return await state["send"](mark_native_tool_checked(message), *args, **kwargs)
             except BaseException:
                 state["stopped"] = True
                 raise
         if _contains_native_voice(event, message):
             try:
-                return await state["send"](message, *args, **kwargs)
+                return await state["send"](mark_native_tool_checked(message), *args, **kwargs)
             except BaseException:
                 state["stopped"] = True
                 raise
         if getattr(message, MARKED, False):
             try:
-                return await state["send"](message, *args, **kwargs)
+                return await state["send"](mark_native_tool_checked(message), *args, **kwargs)
             except BaseException:
                 state["stopped"] = True
                 raise
-        if _already_native_parts(event, message):
+        if already_native_parts:
             source = getattr(getattr(event, "get_result", lambda: None)(), "chain", ())
             count = max(1, sum(isinstance(part, Plain) for part in source))
             core["voice_segment_index"], core["voice_segment_count"] = state["sent"], count
             core["outbound_first_text_segment"] = 0
             attempts = core["send_attempts"]
             try:
-                result = await state["send"](message, *args, **kwargs)
+                result = await state["send"](mark_native_tool_checked(message), *args, **kwargs)
                 if core["send_attempts"] > attempts:
                     state["sent"] += 1
                 return result
@@ -232,7 +236,7 @@ def prepare_core_reply_segmentation(event):
             core["voice_segment_index"], core["voice_segment_count"] = index, len(parts)
             core["outbound_first_text_segment"] = first_text_segment
             try:
-                result = await _send_part(event, state, part, args, kwargs)
+                result = await _send_part(event, state, mark_native_tool_checked(part), args, kwargs)
             finally:
                 core.pop("voice_segment_index", None)
                 core.pop("voice_segment_count", None)
