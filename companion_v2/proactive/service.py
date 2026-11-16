@@ -936,7 +936,7 @@ class ProactiveContacts:
             provider.reserve(plan.envelope)
             return True, None
         except TaskError as error:
-            if error.code not in ("host_model_limit_input", "host_model_limit_output"):
+            if error.code not in ("host_model_limit", "host_model_limit_input", "host_model_limit_output"):
                 raise
             detail = {"limit_code": error.code, "provider_id": provider.binding.provider,
                       "requested_output_tokens": plan.envelope.max_output_tokens,
