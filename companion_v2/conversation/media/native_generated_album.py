@@ -314,7 +314,6 @@ def page(owner, context, at, *, before=None, limit=24):
     items = []
     scan_before = before
     first_scan = True
-    more = False
     while True:
         selection, values = _selection(owner, context)
         selection += " AND json_extract(m.value, '$.state') = 'succeeded'"
@@ -326,7 +325,6 @@ def page(owner, context, at, *, before=None, limit=24):
         rows = owner.runtime.read_all("SELECT json_extract(m.value, '$.invocation_id') AS invocation_id, t.created_at " + selection
             + " ORDER BY t.created_at DESC, invocation_id DESC LIMIT 128", values)
         if not rows:
-            more = False
             break
         for selected in rows:
             row = _operation_or_none(owner.runtime, selected["invocation_id"])
@@ -348,8 +346,7 @@ def page(owner, context, at, *, before=None, limit=24):
         scan_before = {"created_at": rows[-1]["created_at"],
                        "invocation_id": rows[-1]["invocation_id"]}
         first_scan = False
-        more = True
-    return items, more
+    return items, False
 
 
 def image(owner, context, at, invocation_id, position):

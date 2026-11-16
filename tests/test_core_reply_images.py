@@ -365,6 +365,27 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         self.assertEqual(resolved.content, image_bytes("red"))
         self.assert_no_reply_work(event)
 
+    async def test_native_album_exhausted_history_has_no_next_cursor(self):
+        event, request = self.prepare("native-image-exhausted-history")
+        received = await self.call(event, request, "image.generate", {"prompt": "红色"}, "exhausted-history")
+        result = self.result(received, "red")
+        metadata_key = "astrbot.core-tool." + result["invocation_id"]
+        saved = json.loads(self.runtime.read_one(
+            "SELECT value FROM runtime_metadata WHERE key=?", (metadata_key,))["value"])
+        # More than one scan window of stale receipts must not hide the final
+        # valid image or advertise another page after the history is exhausted.
+        with self.runtime.transaction() as connection:
+            for index in range(128):
+                stale = dict(saved, invocation_id=f"zz-stale-album-{index:03d}")
+                connection.execute("INSERT INTO runtime_metadata (key, value) VALUES (?, ?)",
+                                   ("astrbot.core-tool." + stale["invocation_id"], encode(stale)))
+
+        page = self.app.messages.generated_images.album_page(self.context, self.clock.now(), limit=2)
+        self.assertEqual([item.image_id for item in page["items"]],
+                         ["generated-image:" + result["invocation_id"] + ":0"])
+        self.assertIsNone(page["next_cursor"])
+        self.assert_no_reply_work(event)
+
     async def test_native_generated_image_builds_qzone_upload_request(self):
         from companion_v2.capabilities.qzone_access import QzoneAccess
         from companion_v2.qzone.images import album_images
