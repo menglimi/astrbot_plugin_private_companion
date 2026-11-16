@@ -59,6 +59,17 @@ class ProposalAttributionTests(unittest.TestCase):
         self.assertEqual(data["subject"], "self")
         self.assertEqual(data["confidence"], 0.75)
 
+    def test_numeric_stability_estimate_is_coerced_to_text(self):
+        data = normalize_proposal(proposal(stability_estimate=0.8), {})
+        self.assertEqual(data["stability_estimate"], "0.8")
+
+    def test_no_op_target_is_ignored_instead_of_rejecting_the_batch(self):
+        raw = {"operation": "no_op", "target": "f1", "predicate": "观影情况",
+               "evidence_handles": ["s19"]}
+        data = normalize_proposal(raw, {})
+        self.assertEqual(data["operation"], "no_op")
+        self.assertNotIn("target", data)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1799,7 +1799,7 @@ window.CompanionConfigEditors = (() => {
     knowledge_scope_invalid: "知识库按会话生效，请选择一个已初始化的私聊对象。",
     knowledge_target_changed: "当前对象或角色绑定已变化，请重新读取。",
     knowledge_settings_invalid: "知识库设置不合法：单轮的引用字符上限不能小于单条素材的字数上限。",
-    role_life_scope_invalid: "日记与梦境按会话生效，请选择一个已初始化的私聊对象。",
+    role_life_scope_invalid: "日记与梦境按角色生效，请先绑定当前角色。",
     role_life_target_changed: "当前对象或角色绑定已变化，请重新读取。",
     rest_gate_settings_invalid: "休息判定设置不合法：判定方式只能选概率或模型，时段格式形如 23:00-08:30。",
     life_timezone_invalid: "请填写有效的 IANA 时区，例如 Asia/Shanghai。",
