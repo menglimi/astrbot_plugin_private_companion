@@ -849,12 +849,12 @@ function panelScope(){
   if(section==='data'&&dataPane==='port')return {kind:'window'};
   if(section==='data'&&['storage','backup'].includes(dataPane)||section==='mobile'
     ||section==='learning'&&learningTab==='semantic')return {kind:'global',label:'全局'};
+  if((section==='memory'||route==='memories')&&memoryWorkspaceRoute==='records')
+    return {kind:'window',requiresWindow:true};
   if(['decision','models','identity-feelings','perception','contact','understanding'].includes(section)
     ||section==='expression'&&['expression-text','expression-voice','expression-platform'].includes(expressionModule)
-    ||window.CompanionShell?.view==='state'
-    ||section==='memory'&&memoryWorkspaceRoute==='records'
-    ||route==='memories'&&memoryWorkspaceRoute==='records')return {kind:'window'};
-  if(section==='learning'&&learningTab==='chain')return {kind:'window',privateOnly:true};
+    ||window.CompanionShell?.view==='state')return {kind:'window'};
+  if(section==='learning'&&learningTab==='chain')return {kind:'window',privateOnly:true,requiresWindow:true};
   return null;
 }
 function roleContextMarkup(){
@@ -869,7 +869,7 @@ function roleContextMarkup(){
     &&(!scope.privateOnly||target.scope_kind==='private'));
   const selectedHere=windows.some(target=>target.target_id===selected.target_id);
   return `<section class="role-context" aria-label="会话范围">
-    <label>会话<select data-role-window aria-label="当前角色的会话窗口"><option value=""${!selectedHere?' selected':''}>未选择窗口</option>${windows.map(target=>`<option value="${escapeHTML(target.target_id)}"${selected.target_id===target.target_id?' selected':''}>${escapeHTML(product.targetLabel(target))}</option>`).join('')}</select></label>
+    <label>会话<select data-role-window aria-label="当前角色的会话窗口"><option value=""${!selectedHere?' selected':''}>${scope.requiresWindow?'请选择会话窗口':'默认设置'}</option>${windows.map(target=>`<option value="${escapeHTML(target.target_id)}"${selected.target_id===target.target_id?' selected':''}>${escapeHTML(product.targetLabel(target))}</option>`).join('')}</select></label>
     ${scope.privateOnly&&selected.target_id&&!selectedHere?'<span>成长链路仅支持私聊，请选择私聊会话。</span>':''}
     ${product.selectionNotice?.()?`<p role="status">${escapeHTML(product.selectionNotice())}</p>`:''}
   </section>`;
