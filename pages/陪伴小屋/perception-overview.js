@@ -749,11 +749,12 @@ window.CompanionPerceptionOverviewPage = (() => {
     const analysisProvider = semanticStatus?.settings?.analysis_provider;
     const events = upcomingDates(snapshot);
     const alertList = weather.state === "available" && Array.isArray(weather.alerts) ? weather.alerts.slice(0, 4) : [];
-    const screenValue = screenResult.state === "available" ? screenResult.interpretation || "已有屏幕解读"
+    const windowRequired = !selectedWindowRole();
+    const screenValue = windowRequired ? "请选择私聊窗口" : screenResult.state === "available" ? screenResult.interpretation || "已有屏幕解读"
       : screenResult.state === "blocked" ? reasonLabel(screenResult.reason)
         : screenResult.state === "empty" ? "暂无已保存解读"
           : runtimeState === "loading" ? "正在核对屏幕权限" : "屏幕解读暂不可读";
-    const mobileValue = mobile.location?.available
+    const mobileValue = windowRequired ? "请选择私聊窗口" : mobile.location?.available
       ? mobile.location.label || "附近位置已读取"
       : runtimeState === "loading" ? "正在读取定位状态"
         : runtimeState === "error" ? "定位状态读取失败"
@@ -775,7 +776,7 @@ window.CompanionPerceptionOverviewPage = (() => {
     const healthAvailable = health.available === true && healthParts.length > 0;
     const healthReason = typeof health.reason === "string" ? health.reason : "";
     const healthSourceDisabled = healthReason === "telemetry_disabled" || healthReason === "mobile_gateway_disabled";
-    const healthValue = healthAvailable ? healthParts.join(" · ")
+    const healthValue = windowRequired ? "请选择私聊窗口" : healthAvailable ? healthParts.join(" · ")
       : runtimeState === "loading" ? "正在读取健康摘要"
         : runtimeState === "error" ? "健康摘要读取失败"
           : healthReason === "telemetry_disabled" ? "手机健康上报未开启"
@@ -792,12 +793,12 @@ window.CompanionPerceptionOverviewPage = (() => {
     }
     if (activity.available === true && activity.label) phoneParts.push(`${activity.stale ? "上次活动" : "活动"} · ${activity.label}`);
     const phoneAvailable = phoneParts.length > 0;
-    const phoneValue = phoneAvailable ? phoneParts.join(" · ")
+    const phoneValue = windowRequired ? "请选择私聊窗口" : phoneAvailable ? phoneParts.join(" · ")
       : runtimeState === "loading" ? "正在读取手机状态"
         : runtimeState === "error" ? "手机状态读取失败"
           : realityResult.reason ? reasonLabel(realityResult.reason) : "暂无已授权的手机状态快照";
     const cameraObservation = cameraResult.observation || {};
-    const cameraValue = cameraResult.state === "available"
+    const cameraValue = windowRequired ? "请选择私聊窗口" : cameraResult.state === "available"
       ? cameraResult.answer_available
         ? cameraObservation.summary || cameraObservation.scene_description || cameraObservation.purpose_answer || "最近单帧已识别"
         : cameraObservation.uncertainty || cameraResult.message || "最近单帧结果不确定"
@@ -838,7 +839,9 @@ window.CompanionPerceptionOverviewPage = (() => {
        每条都带上它自己的读数与说明。不给通道编造数值、百分比或统一总数；
        读不到就说读不到（未启用 / 待授权），不拿旧数据冒充当前值。 */
     const percepts = [];
-    const channel = (id, board, spec) => percepts.push({id, board, ...spec});
+    const channel = (id, board, spec) => percepts.push({id, board, ...spec,
+      ...(windowRequired && ["device-location", "device-screen", "device-phone", "device-camera", "device-recalls"].includes(id)
+        ? {value:"请选择私聊窗口", detail:"选择窗口后查看该会话的感知记录。", state:"pending", tag:"未选择窗口"} : {})});
     const tabModel = "config-models:perception-detail-model-route";
     const tabPlace = "config-environment:perception-detail-place";
     const tabDevice = "config-screen:perception-detail-device-access";
@@ -1032,7 +1035,7 @@ window.CompanionPerceptionOverviewPage = (() => {
       const location = channelById("device-location"), screen = channelById("device-screen"), phone = channelById("device-phone");
       const health = channelById("device-health"), camera = channelById("device-camera"), mihome = channelById("device-mihome");
       const cameraAuthorized = cameraResult.state === "available" || cameraResult.state === "ready";
-      const cameraTag = cameraAuthorized ? "已授权" : runtimeState === "error" ? "读取失败" : runtimeState === "loading" ? "读取中" : /consent/.test(cameraResult.reason || "") ? "待授权" : "未就绪";
+      const cameraTag = windowRequired ? "未选择窗口" : cameraAuthorized ? "已授权" : runtimeState === "error" ? "读取失败" : runtimeState === "loading" ? "读取中" : /consent/.test(cameraResult.reason || "") ? "待授权" : "未就绪";
       const mihomeLabel = mihome ? mihomeSummary : mihomeState === "disabled" ? "未启用" : mihomeState === "loading" ? "读取中" : "暂不可读";
       return `<div class="perception-reading-card">
         <button type="button" class="perception-feature is-location is-${location.state}" ${channelAttrs(location)}>
@@ -1600,16 +1603,16 @@ window.CompanionPerceptionOverviewPage = (() => {
   }
   async function refreshRuntime(ticket = generation) {
     if (!validRoot(ticket)) return;
-    const role=selectedWindowRole();
-    if(!role){runtimeSnapshot=null;runtimeState="window_required";forgetOverview("runtimeSnapshot","runtimeState");render();return;}
+    const windowRole=selectedWindowRole(), role=windowRole || product.role();
     runtimeState = "loading"; render();
     try {
-      const endpoint = role.perception_native_api;
+      const endpoint = role?.perception_native_api;
       if (typeof endpoint !== "string" || !endpoint) throw new Error("missing perception runtime route");
       const route = endpoint.replace(/\/$/, "") + "/runtime";
-      const value = product.unwrap(await product.request("GET", product.relative(route)));
+      const value = product.unwrap(await product.request("GET", product.relative(route), windowRole ? undefined : {scope:"role"}));
       if (!validRoot(ticket)) return;
-      if (!value || typeof value !== "object" || !value.weather || !value.screen || !value.reality || !value.calendar)
+      if (!value || typeof value !== "object" || !value.weather
+          || windowRole && (!value.screen || !value.reality || !value.calendar))
         throw new Error("invalid perception runtime snapshot");
       runtimeSnapshot = value; runtimeState = "ready"; rememberOverview("runtimeSnapshot", value, "runtimeState", "ready");
     } catch (_) {
@@ -1888,7 +1891,7 @@ window.CompanionPerceptionOverviewPage = (() => {
     imageStatus = cached.imageStatus || null; imageState = cached.imageState || "loading";
     semanticStatus = cached.semanticStatus || null; semanticState = cached.semanticState || "loading";
     recallStatus = cached.recallStatus || null; recallState = cached.recallState || "loading";
-    if(!selectedWindowRole()){runtimeSnapshot=recallStatus=null;runtimeState=recallState="window_required";}
+    if(!selectedWindowRole()){recallStatus=null;recallState="window_required";}
     mihomeStatus = cached.mihomeStatus || null; mihomeState = cached.mihomeState || "loading";
     huaweiHealth = cached.huaweiHealth || null; huaweiHealthState = cached.huaweiHealthState || "loading";
     materialPool = cached.materialPool || null; materialPoolState = cached.materialPoolState || "loading";
