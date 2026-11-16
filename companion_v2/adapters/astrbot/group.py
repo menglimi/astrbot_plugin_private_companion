@@ -253,11 +253,13 @@ class NativeGroupBridge(NativePrivateBridge):
             self._validate_quote_components(original_parts, parts)
             text = self._text_only_parts(event, route)
             message_text = group_message_text(event, route.account_id)
+            lease = self.connections.acquire(account)
             at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event_native_client(
                 self.context.get_platform_inst(route.platform_id), event)
             principal = AuthenticatedHostPrincipal(self.installation_id, self.host_id, route.platform_id,
                 route.sender_id, account.bot_id, route.account_id)
             cid, role, instruction = await self._role(account, route.session_id)
+            self.connections.assert_current(lease)
             scope = ScopeRef(self.installation_id, route.platform_id, ScopeKind.GROUP, route.group_id,
                              account.bot_id, route.account_id, cid, route.session_id)
             if event_client is not self.client(scope) or not self.account_connected(account, event_client):
@@ -338,11 +340,12 @@ class NativeGroupBridge(NativePrivateBridge):
     async def verify_role(self, scope, binding, instruction=None):
         self.client(scope)
         account = self.accounts[(scope.platform, scope.account_id)]
+        lease = self.connections.acquire(account)
         if (not self._session_matches_group(account, scope.session_id, scope.native_scope_id)
                 or binding.scope != scope):
             raise TaskError("host_route_changed", "original group session is inconsistent")
         cid, role, prompt = await self._role(account, scope.session_id)
-        self.client(scope)
+        self.connections.assert_current(lease)
         if cid != scope.conversation_id or role != binding.role or (instruction is not None and prompt != instruction):
             raise TaskError("host_persona_changed", "group conversation/persona differs from the original turn")
         return prompt
@@ -466,6 +469,7 @@ class NativeGroupBridge(NativePrivateBridge):
                                  if allow_text_fallback else None)
             except TaskError:
                 fallback_text = None
+            lease = self.connections.acquire(account)
             at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event_native_client(
                 self.context.get_platform_inst(route.platform_id), event)
             principal = AuthenticatedHostPrincipal(self.installation_id, self.host_id, route.platform_id,
@@ -473,6 +477,7 @@ class NativeGroupBridge(NativePrivateBridge):
             # All mutable native fields above are frozen before host I/O. Identity
             # enrollment happens only in the later atomic, authorized admission.
             cid, role, instruction = await self._role(account, route.session_id)
+            self.connections.assert_current(lease)
             scope = ScopeRef(self.installation_id, route.platform_id, ScopeKind.GROUP, route.group_id,
                              account.bot_id, route.account_id, cid, route.session_id)
             if event_client is not self.client(scope) or not self.account_connected(account, event_client):
@@ -567,6 +572,7 @@ class NativeGroupBridge(NativePrivateBridge):
             if frozen_images or frozen_quotes or frozen_forwards or frozen_audios or frozen_videos or frozen_files:
                 if await self._role(account, route.session_id) != (cid, role, instruction):
                     raise TaskError("host_persona_changed", "group role changed while preparing attachments")
+                self.connections.assert_current(lease)
                 if (event_client is not self.client(scope)
                         or not self._connection_current(account, event_client, connection)):
                     raise TaskError("host_client_mismatch", "original group account connection changed")
@@ -579,6 +585,7 @@ class NativeGroupBridge(NativePrivateBridge):
                 try:
                     if await self._role(account, route.session_id) != (cid, role, instruction):
                         raise TaskError("host_persona_changed", "group role changed while preparing attachments")
+                    self.connections.assert_current(lease)
                     if (event_client is not self.client(scope)
                             or not self._connection_current(account, event_client, connection)):
                         raise TaskError("host_client_mismatch", "original group account connection changed")

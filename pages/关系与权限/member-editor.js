@@ -197,8 +197,10 @@
     }
     return person;
   };
-  const routeLabel = route => [Array.isArray(route.persona_ids) ? route.persona_ids.map(value => value || "默认人格").join("、") : "当前人格",
-    route.role_id ? `内部归属 ${route.role_id}` : ""].filter(Boolean).join(" · ");
+  const selection = () => current?.services.bridge?.getContext?.()?.selection;
+  const matchesSelection = route => !selection() || Boolean(route && route.bot_id === selection().bot_id
+    && route.role_id === selection().role_id);
+  const routeLabel = route => [personaLabel(route), accountLabel(route)].join(" · ");
   const personaLabel = person => Array.isArray(person?.persona_ids) && person.persona_ids.length
     ? person.persona_ids.map(value => value || "默认人格").join("、") : person?.role_name || "当前角色";
   const peerLabel = person => (person.platform_name === "wechat_native" ? "微信" :
@@ -282,6 +284,8 @@
   async function load(person, {preserve = true} = {}) {
     const state = stateFor(person), services = current.services;
     if (state.loading) return;
+    const retainedTier = preserve && state.authorization && state.tier !== state.authorization.identity_tier
+      ? state.tier : null;
     state.loading = true; state.loaded = true;
     state.settingsError = state.authError = "";
     state.sectionErrors = {};
@@ -294,8 +298,8 @@
     try {
       if (auth.status === "rejected") throw auth.reason;
       state.authorization = unwrap(auth.value);
-      state.tier = state.authorization.identity_tier || "standard";
-      services.onChanged?.(person, {identity_tier: state.tier});
+      state.tier = retainedTier || state.authorization.identity_tier || "standard";
+      services.onChanged?.(person, {identity_tier: state.authorization.identity_tier || "standard"});
     } catch (error) {
       state.authError = errorText(error, "权限读取失败，请重新读取以核对状态。");
       state.authorization = null;
@@ -401,6 +405,7 @@
     if (value === state.sections[section]?.settings?.[field]) state.dirty.delete(token);
     else state.dirty.add(token);
     state.pendingSave = null;
+    reportDraft();
     current?.panel.querySelectorAll(".member-savebar").forEach(bar => {
       const replacement = savebar(state);
       bar.replaceChildren(...replacement.children);
@@ -483,7 +488,7 @@
   // 熟人卡只管理自动积累的互动记忆，不承载人工关系设定。
   function openCard(state, person) {
     closeDialog({restoreFocus: false});
-    if (!current) return;
+    if (!current || !matchesSelection(activeRoute()) || !current.route) return;
     current.card = true;
     const trigger = current.panel.querySelector('[data-card-trigger="true"]');
     if (trigger) trigger.setAttribute("aria-expanded", "true");
@@ -615,7 +620,7 @@
     const input = element("input"); input.type = "text"; input.maxLength = 64; input.value = state.nickname;
     input.setAttribute("aria-label", "目录显示名称"); input.placeholder = "留空使用平台名称";
     input.disabled = state.busy || !person.revision;
-    input.addEventListener("input", () => { state.nickname = input.value; });
+    input.addEventListener("input", () => { state.nickname = input.value; reportDraft(); });
     const button = element("button", "保存备注", "secondary"); button.type = "button";
     button.disabled = state.busy || !person.revision;
     button.addEventListener("click", () => saveNickname(person, state));
@@ -710,7 +715,7 @@
       card.append(step, glyph, copy, check);
       card.addEventListener("click", () => {
         if (card.disabled) return;
-        state.tier = card.dataset.tier;
+        state.tier = card.dataset.tier; reportDraft();
         for (const other of cardMap.values()) other.setAttribute("aria-checked", String(other.dataset.tier === state.tier));
         syncTierState();
       });
@@ -733,7 +738,7 @@
     const administratorAction = element("button", "设为核心用户", "secondary"); administratorAction.type = "button";
     administratorAction.addEventListener("click", () => {
       if (state.busy || state.loading || !state.authorization) return;
-      state.tier = "core";
+      state.tier = "core"; reportDraft();
       for (const other of cardMap.values()) other.setAttribute("aria-checked", String(other.dataset.tier === state.tier));
       syncTierState();
     });
@@ -1042,7 +1047,13 @@
         || !dirtySectionNames(state).some(section => state.sections[section] && !state.sectionErrors[section]);
     save.addEventListener("click", () => state.pendingSave
       ? verifyAndRetrySave(activePerson(), state) : saveSettings(activePerson(), state));
-    bar.append(cancel, save);
+    const person = activePerson();
+    const hint = element("details", undefined, "member-scope-hint");
+    const summary = element("summary", "ⓘ"); summary.setAttribute("aria-label", "查看保存范围");
+    const scopeText = `保存到：${personaLabel(person)} 与 ${nameOf(person)} 的关系 · ${accountLabel(person)}`;
+    hint.append(summary, element("span", scopeText, "member-scope-tooltip"));
+    save.title = scopeText;
+    bar.append(hint, cancel, save);
     return bar;
   }
   function replyFieldBlock(state, name) {
@@ -1489,8 +1500,8 @@
     const routes = routeEntries(current.person);
     if (routes.length > 1) {
       const selector = element("select", undefined, "member-route-select");
-      selector.setAttribute("aria-label", "选择内部人格归属");
-      const placeholder = element("option", "选择内部归属后读取资料与权限");
+      selector.setAttribute("aria-label", "选择角色与账号");
+      const placeholder = element("option", "选择角色与账号");
       placeholder.value = "";
       placeholder.selected = !current.route;
       selector.append(placeholder);
@@ -1502,12 +1513,13 @@
       });
       selector.value = activeRoute() ? JSON.stringify(activeRoute()) : "";
       selector.disabled = state.busy || state.loading || !!state.pendingSave;
-      selector.addEventListener("change", event => {
+      selector.addEventListener("change", async event => {
         const value = event?.target?.value ?? selector.value;
         const next = routes.find(route => JSON.stringify(route) === value) || null;
+        if (hasChanges() && !await beforeLeave()) { render(); return; }
         current.route = next;
         render();
-        if (next) void load(activePerson(), {preserve: false});
+        if (next && matchesSelection(next)) void load(activePerson());
       });
       copy.append(selector);
     }
@@ -1518,6 +1530,7 @@
     const actions = element("div", undefined, "member-card-actions");
     const cardButton = element("button", undefined, "member-card-button"); cardButton.type = "button";
     cardButton.dataset.cardTrigger = "true";
+    cardButton.disabled = !current.route || !matchesSelection(current.route);
     cardButton.setAttribute("aria-haspopup", "dialog");
     cardButton.setAttribute("aria-expanded", String(Boolean(current.card)));
     const cardGlyph = element("i"); cardGlyph.setAttribute("data-lucide", "id-card");
@@ -1533,7 +1546,7 @@
     const refresh = element("button", undefined, "member-icon-button"); refresh.type = "button";
     refresh.setAttribute("aria-label", "重新读取成员配置"); refresh.title = "重新读取成员配置";
     const icon = element("i"); icon.setAttribute("data-lucide", "refresh-cw"); refresh.append(icon);
-    refresh.disabled = !current.route || state.loading || state.busy;
+    refresh.disabled = !current.route || !matchesSelection(current.route) || state.loading || state.busy;
     refresh.addEventListener("click", () => { if (current.route) void load(person); });
     if (!isCore) actions.append(cardButton);
     actions.append(refresh);
@@ -1583,7 +1596,7 @@
     panel.append(hero, tabs);
     const body = element("section", undefined, "member-pane"); body.id = "member-pane";
     body.setAttribute("role", "tabpanel"); body.setAttribute("aria-labelledby", "member-tab-" + state.pane);
-    const canConfigure = Boolean(current.route && current.route.private_target === true
+    const canConfigure = Boolean(current.route && matchesSelection(current.route) && current.route.private_target === true
       && current.route.settings_available === true);
     const category = {relationship: "profile", reply: "reply", contact: "contact"}[state.pane];
     if (category && state.sharedSettings?.sharing?.[category]?.length) body.append(element("p",
@@ -1591,8 +1604,16 @@
     if (state.pane === "history") {body.append(historyPane(current.person, services));
       if (current.route && canConfigure) body.append(accountHistoryPane(state, person));}
     else if (!current.route) body.append(element("p", routes.length > 1
-      ? "此成员对应多个内部归属。选择一个后，页面会读取该归属的资料与权限。"
+      ? "此用户有多个角色与账号关系，请先选择要查看的对象。"
       : "此成员尚未建立当前账号与人格下可管理的 V2 私聊窗口，资料和权限暂时只读。", "member-unavailable"));
+    else if (!matchesSelection(current.route)) {
+      const switcher = element("div", undefined, "member-scope-switch");
+      const button = element("button", "切换到该角色并编辑", "member-primary"); button.type = "button";
+      button.addEventListener("click", () => window.parent?.postMessage?.({channel: "companion-workspace",
+        kind: "navigate", target: {tab: "member-edit", ...parameters(person)}}, "*"));
+      switcher.append(element("p", `正在查看 ${personaLabel(person)} 与 ${nameOf(person)} 的关系。`), button);
+      body.append(switcher);
+    }
     else if (!canConfigure) body.append(element("p", "此成员尚未建立当前账号与人格下可管理的 V2 私聊窗口，资料和权限暂时只读。", "member-unavailable"));
     else if (state.pane === "links") body.append(accountLinksPane(state, person));
     else if (state.pane === "access") body.append(accessPane(state, person));
@@ -1620,6 +1641,7 @@
     }
     // 熟人卡弹窗在重绘后重建，保证里面的草稿与保存条跟着最新状态。
     if (current.card) openCard(state, person);
+    reportDraft();
     window.lucide?.createIcons();
   }
   async function saveSettings(person, state) {
@@ -1772,6 +1794,7 @@
         expected_revision: person.revision, operation_key: state.pendingNickname.key}));
       state.pendingNickname = null;
       services.onChanged?.(person, result);
+      state.nickname = result.admin_nickname ?? nickname;
       notify(state, "面板备注已保存。");
     } catch (error) {notify(state, errorText(error), true);}
     state.busy = false; redraw(state);
@@ -1779,12 +1802,16 @@
   function mount(panel, person, services) {
     const previousPane = current ? stateFor(activePerson()).pane : null;
     const routes = routeEntries(person);
-    current = {panel, person, services, route: routes.length === 1 ? routes[0] : null, card: false};
+    const previousRoute = current && keyOf(current.person) === keyOf(person) ? current.route : null;
+    current = {panel, person, services, route: null, card: false};
+    const matches = routes.filter(matchesSelection);
+    current.route = routes.find(route => previousRoute && routeKey(route) === routeKey(previousRoute)
+      && matchesSelection(route)) || (matches.length === 1 ? matches[0] : routes.length === 1 ? routes[0] : null);
     const routed = activePerson();
     const state = stateFor(routed);
     if (["access", "relationship", "reply", "contact", "links", "history"].includes(previousPane)) state.pane = previousPane;
     render();
-    if (current.route && !state.loaded) void load(routed);
+    if (current.route && matchesSelection(current.route) && !state.loaded) void load(routed);
   }
   function selectPane(name) {
     if (!current || !["access", "relationship", "reply", "contact", "links", "history"].includes(name)) return;
@@ -1795,5 +1822,75 @@
   function refresh() {
     for (const state of states.values()) {state.loaded = false; state.pendingSave = null; state.accountLinks = null;}
   }
-  window.CompanionPrivateMembers = {mount, refresh, keyOf, selectPane};
+  function hasChanges() {
+    if (!current) return false;
+    const state = stateFor(activePerson());
+    return Boolean(state.busy || state.pendingSave || state.dirty.size
+      || state.nickname !== (current.person.admin_nickname || "")
+      || state.authorization && state.tier !== state.authorization.identity_tier);
+  }
+  function reportDraft() {
+    current?.services.bridge?.reportDraft?.({dirty:hasChanges(),
+      title:current ? `${personaLabel(activePerson())} · ${nameOf(activePerson())}` : "成员资料",
+      fields:["成员资料与设置"]});
+  }
+  async function saveDraft() {
+    if (!current) return true;
+    const person = activePerson(), state = stateFor(person);
+    if (state.busy || state.pendingSave) return {error:"保存结果尚未确认，请先在成员详情完成核对。"};
+    if (state.dirty.size) await saveSettings(person, state);
+    if (!state.dirty.size && state.nickname !== (current.person.admin_nickname || "")) await saveNickname(person, state);
+    if (!state.dirty.size && state.authorization && state.tier !== state.authorization.identity_tier) await saveIdentity(person, state);
+    reportDraft();
+    return !hasChanges() || {error:"部分修改未保存，请回到成员详情核对。"};
+  }
+  function discardDraft() {
+    if (!current) return true;
+    const state = stateFor(activePerson());
+    if (state.busy || state.pendingSave) return {error:"保存结果尚未确认，请先在成员详情完成核对。"};
+    adoptSettings(state, {sections: state.sections, section_errors: state.sectionErrors}, false);
+    state.nickname = current.person.admin_nickname || "";
+    state.tier = state.authorization?.identity_tier || current.person.identity_tier || "standard";
+    redraw(state); return true;
+  }
+  let leavePromise = null;
+  function beforeLeave() {
+    if (!hasChanges()) return Promise.resolve(true);
+    if (leavePromise) return leavePromise;
+    const person = activePerson(), state = stateFor(person);
+    if (state.busy || state.pendingSave) {
+      notify(state, "保存结果尚未确认，请先完成核对再切换。", true); redraw(state);
+      return Promise.resolve(false);
+    }
+    leavePromise = new Promise(resolve => {
+      const host = element("div", undefined, "member-dialog-host member-leave-host");
+      host.setAttribute("role", "dialog"); host.setAttribute("aria-modal", "true");
+      host.setAttribute("aria-label", "处理未保存修改");
+      const panel = element("article", undefined, "member-dialog member-leave-dialog");
+      panel.append(element("h3", "有未保存的修改"), element("p", `${personaLabel(person)} · ${nameOf(person)}`));
+      const actions = element("footer", undefined, "member-card-actions");
+      const finish = value => { host.remove(); leavePromise = null; resolve(value); };
+      const cancel = element("button", "取消", "secondary"); cancel.type = "button";
+      cancel.addEventListener("click", () => finish(false));
+      const discard = element("button", "放弃修改", "secondary"); discard.type = "button";
+      discard.addEventListener("click", () => {
+        finish(discardDraft() === true);
+      });
+      const save = element("button", "保存并继续", "member-primary"); save.type = "button";
+      save.addEventListener("click", async () => {
+        save.disabled = discard.disabled = cancel.disabled = true;
+        finish(await saveDraft() === true);
+      });
+      host.addEventListener("keydown", event => {
+        if (event.key === "Escape" && !cancel.disabled) { event.preventDefault(); finish(false); }
+        if (event.key === "Tab") {
+          if (event.shiftKey && document.activeElement === cancel) { event.preventDefault(); save.focus(); }
+          else if (!event.shiftKey && document.activeElement === save) { event.preventDefault(); cancel.focus(); }
+        }
+      });
+      actions.append(cancel, discard, save); panel.append(actions); host.append(panel); document.body.append(host); cancel.focus();
+    });
+    return leavePromise;
+  }
+  window.CompanionPrivateMembers = {mount, refresh, keyOf, selectPane, hasChanges, beforeLeave, saveDraft, discardDraft, reportDraft};
 })();

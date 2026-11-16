@@ -12,7 +12,7 @@ test("rendering a QQ status detail does not open or reopen its editor", () => {
   const window={CompanionStateMaintenance:{fields:()=>[],validField:()=>true,titles:{},canAlign:()=>false},CompanionStateContact:{}};
   vm.runInNewContext(source,{window,structuredClone,JSON,crypto,console});
   const editor=window.CompanionStateEditor.create({changed(){},failed(){},refresh:async()=>null,api:async()=>({})});
-  editor.setScope({installation_id:"install",operator_id:"admin",path:"role/state"});
+  editor.setScope({installation_id:"install",operator_id:"admin",path:"role/state",window_selected:true});
   editor.setStatus({edit_token:"window-token",role_edit_token:"role-token",
     settings:{typing_enabled:true,typing_refresh_seconds:3,presence_enabled:false},state:{values:{}}});
   const details=()=>editor.markup({feature:"presentation"});
@@ -41,7 +41,7 @@ test("QQ presence saves at role scope while typing stays window scoped", async (
   const posts=[];
   const editor=window.CompanionStateEditor.create({changed(){},failed(){},refresh:async()=>status,
     api:async(_method,_route,body)=>{posts.push(body);return {operation_id:"presence-config"};}});
-  editor.setScope({installation_id:"install",operator_id:"admin",path:"role/state"});
+  editor.setScope({installation_id:"install",operator_id:"admin",path:"role/state",window_selected:true});
   editor.setStatus(status);
   const input=(name,value,type="checkbox")=>editor.input({target:{dataset:{stateField:name},type,
     checked:value,value:String(value),matches:()=>true,hasAttribute:()=>false,closest:()=>null}});
@@ -64,6 +64,27 @@ test("QQ presence saves at role scope while typing stays window scoped", async (
   assert.equal(posts[1].edit_token,"window-edit");
   assert.equal(Object.hasOwn(posts[1],"role_edit_token"),false);
   assert.deepEqual(JSON.parse(JSON.stringify(posts[1].changes)),{typing_enabled:true});
+  editor.destroy();
+});
+
+test("role-only QQ settings never display or submit a representative window's typing fields", async () => {
+  const window={CompanionStateMaintenance:{fields:()=>[],validField:()=>true,canAlign:()=>false,titles:{}},CompanionStateContact:{}};
+  vm.runInNewContext(source,{window,structuredClone,JSON,crypto,console,sessionStorage:{getItem:()=>null,setItem(){},removeItem(){}}});
+  const status={role_edit_token:"role-edit",settings:{presence_enabled:false,online_status_enabled:false},state:{values:{}}};
+  const posts=[];
+  const editor=window.CompanionStateEditor.create({changed(){},failed(){},refresh:async()=>status,
+    api:async(_method,_route,body)=>{posts.push(body);return {operation_id:"role-presence"};}});
+  editor.setScope({installation_id:"install",operator_id:"admin",path:"role/state",window_selected:false});
+  editor.setStatus(status);editor.open("settings");
+  assert.match(editor.markup({feature:"presentation"}),/未选择私聊窗口/);
+  assert.doesNotMatch(editor.markup({feature:"presentation"}),/data-state-field="typing_/);
+  for(const name of ["presence_enabled","typing_enabled"])editor.input({target:{dataset:{stateField:name},
+    type:"checkbox",checked:true,matches:()=>true,hasAttribute:()=>false,closest:()=>null}});
+  editor.submit({target:{id:"state-edit-form"},preventDefault(){}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(posts.length,1);
+  assert.equal(posts[0].action,"configure_role");
+  assert.deepEqual(JSON.parse(JSON.stringify(posts[0].changes)),{presence_enabled:true});
   editor.destroy();
 });
 
@@ -107,7 +128,7 @@ test("weather location and switches share one role-wide state command", async ()
   const posts=[];let refreshes=0;
   const editor=window.CompanionStateEditor.create({changed(){},failed(){},refresh:async()=>{refreshes+=1;return status;},
     api:async(_method,_route,body)=>{posts.push(body);return {operation_id:"state-config"};}});
-  editor.setScope({installation_id:"install",operator_id:"admin",path:"role/state"});
+  editor.setScope({installation_id:"install",operator_id:"admin",path:"role/state",window_selected:true});
   editor.setStatus(status);editor.open("weather");
   const part=(name,value)=>editor.input({target:{dataset:{stateWeatherLocation:name},value,matches:()=>false}});
   part("name","札幌");part("latitude","43.06");part("longitude","141.35");
@@ -137,7 +158,7 @@ test("perception weather controls edit the role settings through the state comma
   const posts=[];
   const editor=window.CompanionStateEditor.create({changed(){},failed(){},refresh:async()=>null,
     api:async(_method,_route,body)=>{posts.push(body);return {operation_id:"weather-config"};}});
-  editor.setScope({installation_id:"install",operator_id:"admin",path:"role/state"});
+  editor.setScope({installation_id:"install",operator_id:"admin",path:"role/state",window_selected:true});
   editor.setStatus(status);
   assert.match(editor.markup({section:"weather"}),/data-state-edit="weather"/);
   assert.doesNotMatch(editor.markup({section:"weather"}),/id="state-edit-form"/);
@@ -173,7 +194,7 @@ test("mixed state settings keep role defaults and window controls on their own t
   const posts=[];
   const editor=window.CompanionStateEditor.create({changed(){},failed(){},refresh:async()=>status,
     api:async(_method,_route,body)=>{posts.push(body);return {operation_id:"mixed-config"};}});
-  editor.setScope({installation_id:"install",operator_id:"admin",path:"role/state"});
+  editor.setScope({installation_id:"install",operator_id:"admin",path:"role/state",window_selected:true});
   editor.setStatus(status);
   editor.open("home");
   const input=(name,value,type="checkbox")=>editor.input({target:{dataset:{stateField:name},type,

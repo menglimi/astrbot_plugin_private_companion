@@ -16,9 +16,9 @@ window.CompanionGameAccess = (() => {
   let root, path = "", scope = "", status, generation = 0, busy = false, notice = "";
   const current = ticket => ticket === generation && root?.isConnected && scope === product.scopeKey();
   function privateChoices() {
-    const roleId = product.selection?.().role_id;
+    const roleId = product.selection?.().role_id,botId=product.selection?.().bot_id;
     return (product.targets?.() || []).filter(target => target.scope_kind === "private"
-      && target.roles?.some(role => role.role_id === roleId));
+      && (!botId||target.bot_id===botId) && target.roles?.some(role => role.role_id === roleId));
   }
   function targetLabel(target) {
     return [product.accountLabel?.(target), product.targetLabel?.(target)].filter(Boolean).join(" · ");
@@ -29,7 +29,7 @@ window.CompanionGameAccess = (() => {
     const label = [product.scopeLabel?.(), target && targetLabel(target)].filter(Boolean).join(" · ");
     root.innerHTML = `<section class="extension-live-panel" aria-label="当前私聊游戏权限">
       <h3>当前私聊游戏权限</h3><p>${esc(label || "当前私聊窗口")}</p>
-      ${choices.length > 1 ? `<label>授权对象 <select data-game-access-target aria-label="选择游戏授权的私聊窗口" ${busy ? "disabled" : ""}>
+      ${choices.length ? `<label>授权对象 <select data-game-access-target aria-label="选择游戏授权的私聊窗口" ${busy ? "disabled" : ""}>
         ${target?.scope_kind !== "private" ? '<option value="">请选择私聊窗口</option>' : ""}
         ${choices.map(item => `<option value="${esc(item.target_id)}" ${item.target_id === target?.target_id ? "selected" : ""}>${esc(targetLabel(item))}</option>`).join("")}
       </select></label>` : ""}
@@ -95,7 +95,10 @@ window.CompanionGameAccess = (() => {
     const ticket = generation, node = root, roleId = product.selection().role_id;
     busy = true; notice = "正在切换私聊窗口…"; render();
     try {
-      await product.choose(choice.target_id, roleId, true);
+      if (await product.choose(choice.target_id, roleId, true) === false) {
+        if (ticket === generation && root === node) { busy = false; notice = ""; render(); }
+        return;
+      }
       if (ticket === generation && node?.isConnected && root === node) mount(node);
     } catch (error) {
       if (ticket === generation && root === node) {
@@ -112,7 +115,7 @@ window.CompanionGameAccess = (() => {
   function mount(node) {
     unmount(); root = node; if (!root) return;
     scope = product.scopeKey();
-    const base = product.role()?.game_access_api;
+    const base = (product.windowRole ? product.windowRole() : product.role())?.game_access_api;
     path = base ? product.relative(base) : "";
     root.addEventListener("click", click);
     root.addEventListener("change", change);

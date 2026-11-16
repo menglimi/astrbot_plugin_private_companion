@@ -123,6 +123,21 @@ class ContactSchedule:
         self.screen_events = ScreenContactEvents(contacts)
         self.relationship_events = RelationshipContactEvents(contacts, messages)
         self._diagnostics_cleaned_at = None
+        self._connection_available = None
+
+    def bind_connection_gate(self, available):
+        """Pause outbound planning for unavailable accounts without retiring a window."""
+        self._connection_available = available
+
+    def _account_available(self, context):
+        return self._connection_available is None or self._connection_available(context)
+
+    def _row_available(self, row, now):
+        context = TaskContext.restore(json.loads(row["context_json"]))
+        if self._account_available(context):
+            return True
+        self._note_window(context, row, now, "connection", "skipped", "host_account_offline")
+        return False
 
     @staticmethod
     def _diagnostic_key(kind, value=""):
@@ -1475,6 +1490,8 @@ class ContactSchedule:
                 if datetime.fromisoformat(spec["deadline_at"]) <= at:
                     self._withhold(row, "judge_expired", "主动人格判定已过期，未判定的草稿不发送")
                     continue
+                if not self._account_available(context):
+                    continue
                 worker = asyncio.create_task(self.contacts.judge_runner.run(context, task_id),
                                              name="companion:contact-judge:" + task_id)
                 self._judges[task_id] = worker
@@ -1590,6 +1607,9 @@ class ContactSchedule:
     def _activate_plan(self, row, plan, available, now):
         context, _, intents, _, origin = plan
         purpose = intents[0].purpose if intents else None
+        if not self._account_available(context):
+            self._note_window(context, row, now, "connection", "skipped", "host_account_offline", purpose=purpose)
+            return available
         circuit_until = self.contacts.platform_circuit.cooldown_until(context, at=now)
         if circuit_until is not None:
             self._note_window(context, row, now, "delivery_admission", "skipped", "platform_circuit_open",
@@ -1629,6 +1649,8 @@ class ContactSchedule:
             if self._closed or available <= 0:
                 break
             self._row_cursor(row)
+            if not self._row_available(row, now):
+                continue
             try:
                 plan = self._plan_one(row, now)
             except TaskError as error:
@@ -1656,6 +1678,8 @@ class ContactSchedule:
                 if self._closed or available <= 0:
                     break
                 self._row_cursor(row)
+                if not self._row_available(row, now):
+                    continue
                 planning = asyncio.create_task(asyncio.to_thread(self._plan_one, row, now))
                 self._planning = planning
                 try:

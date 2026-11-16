@@ -56,20 +56,12 @@ function harness({kind = "private", route = true, request, targets = [], fields 
   return {node, calls, choices, page: window.CompanionScreenAccess};
 }
 
-test("识屏授权明确选择同角色私聊，切换对象不提交授权", async () => {
-  const {node, calls, choices} = harness({targets: [
-    {target_id: "window-a", scope_kind: "private", display_name: "私聊甲", roles: [{role_id: "role-a"}]},
-    {target_id: "window-b", scope_kind: "private", display_name: "私聊乙", roles: [{role_id: "role-a"}]},
-    {target_id: "group-a", scope_kind: "group", display_name: "群聊", roles: [{role_id: "role-a"}]},
-    {target_id: "other-role", scope_kind: "private", display_name: "其他角色", roles: [{role_id: "role-b"}]},
-  ]});
+test("识屏授权显示实际窗口并共用页面会话入口", async () => {
+  const {node, calls, choices} = harness();
   await settle();
-  assert.match(node.innerHTML, /识屏授权私聊/);
-  assert.match(node.innerHTML, /私聊乙/);
-  assert.doesNotMatch(node.innerHTML, /value="(?:group-a|other-role)"/);
-  node.listeners.change({target: {closest: () => ({value: "window-b"})}});
-  await settle();
-  assert.deepEqual(choices, [{targetId: "window-b", roleId: "role-a"}]);
+  assert.doesNotMatch(node.innerHTML, /data-screen-private-window|<select/);
+  assert.match(node.innerHTML, /屏幕读取权限/);
+  assert.deepEqual(choices, []);
   assert.equal(calls.filter(call => call.method === "POST").length, 0);
 });
 

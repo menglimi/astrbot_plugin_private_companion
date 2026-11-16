@@ -385,26 +385,10 @@
   .stage-furniture-strip button,
   #shellPanel .button.small { touch-action:manipulation; }
 
-  /* 缂╃暐鎬佸湪鎵嬫満涓婁笉鍐嶅崰涓€鏉?150px 鐨勬í鏉★細灞忓箷鏈潵灏辩獎锛?     杩斿洖鍏ュ彛鐢遍潰鏉挎爣棰樻爮鐨勩€屽洖鍒板皬灞嬨€嶅拰宸︽爮鍝佺墝鎵挎媴銆?     鍦烘櫙鐣欏湪 DOM 閲屻€佸昂瀵镐笉鍙橈紙visibility:hidden + 绉诲嚭瑙嗗彛锛夛紝
-     鎵€浠ュ洖鍒伴椤垫椂鐩告満鏈轰綅涓庡竷鏅粛鍦ㄩ偅閲岋紝閲嶆柊鍏ュ満涓嶅繀閲嶅缓銆?*/
-  #homeShell[data-away="true"] .stage-region {
-    position: fixed;
-    left: -9999px;
-    top: 0;
-    width: 320px;
-    height: 140px;
-    visibility: hidden;
-    pointer-events: none;
-  }
-  #homeShell[data-away="true"] .shell-panel-body { padding-bottom: var(--sp-4); }
+
 }
 
-/* 灏忓眿閫€鍒拌儗鏅紙B 鏂规锛夈€? *
- * 閫変簡涓€椤归厤缃垎鍖轰箣鍚庡皬灞嬩笉閿€姣侊紝鑰屾槸缂╂垚闈㈡澘涓婃柟涓€寮犵獎鍗＄墖锛? *
- *   鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹? *   鈹?宸︽爮    鈹?鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹? *   鈹?       鈹?鈹?灏忓眿锛堢缉鐣ワ紝鍙偣鍥為椤碉級           鈹?鈹? *   鈹?       鈹?鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹? *   鈹?       鈹?鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹? *   鈹?       鈹?鈹?鍐呭闈㈡澘锛堣鍒嗗尯鐨勯厤缃紪杈戝櫒锛?     鈹?鈹? *   鈹?       鈹?鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?鈹? *   鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹粹攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹? *
- * 涓轰粈涔堜繚鐣欏畠鑰屼笉鏄殣钘忥細3D 鍦烘櫙鏄悓涓€涓疄渚嬶紝鐩告満鏈轰綅锛圲锛変笌甯冩櫙
- * 鍏ㄧ▼淇濇寔锛屽洖鍒伴椤垫椂涓嶉渶瑕侀噸寤恒€佷篃涓嶉渶瑕侀噸鎾叆鍦恒€? *
- * 涓轰粈涔堢缉鎴愮獎鏉¤€屼笉鏄叏灞忔诞灞傦細閰嶇疆闈㈡澘閲屾弧鏄緭鍏ユ锛? * 娴眰浼氱洊浣忔鍦ㄥ～鐨勫唴瀹癸紱绐勬潯鍙崰椤堕儴涓€娈碉紝涓嶉伄鎸′换浣曞瓧娈点€? */
+/* 配置页保留小屋缩略卡片，主面板独占内容区。 */
 #homeShell[data-away="true"] .shell-side { display: none; }
 /* 缂╃暐鎬佸彧鏈夐潰鏉夸竴琛岋紝闈㈡澘鎷挎弧鏁村垪銆? *
  * 杩欓噷鍘熸潵鍐欑殑鏄?grid-template-areas:"stage" "panel" 閰嶄袱琛?auto銆? * .shell-body 鐨勯珮搴﹁ #homeShell 鐨?100dvh 鎾戝紑锛堟爡鏍肩殑 align-content:normal
@@ -426,51 +410,7 @@
 }
 #homeShell[data-away="true"] .shell-panel-body { flex: 1 1 auto; }
 
-/* 缂╃暐鎬佺殑灏忓眿锛氬彸涓嬭涓€寮犵敾涓敾鍗＄墖銆? *
- * 涓轰粈涔堜繚鐣欏畠鑰屼笉鏄殣钘忥細3D 鍦烘櫙鏄悓涓€涓疄渚嬶紝鐩告満鏈轰綅锛圲锛変笌甯冩櫙
- * 鍏ㄧ▼淇濇寔锛屽洖鍒伴椤垫椂涓嶉渶瑕侀噸寤恒€佷篃涓嶉渶瑕侀噸鎾叆鍦恒€傚畠閫€鍒拌钀借€屼笉鏄? * 妯湪鍐呭涓婃柟鈥斺€旈厤缃潰鏉块噷婊℃槸杈撳叆妗嗭紝涓€寮?150px 楂樼殑妯潯浼氭妸姣忛〉鐨? * 棣栧睆鍐呭鍘嬫帀鍥涘垎涔嬩竴锛岃€岀敾涓敾瀹屽叏涓嶅崰甯冨眬銆? *
- * 涓轰粈涔堜笉鍋氭垚鍙搷浣滃満鏅細缂╃暐鎬佷笅瀹冩槸涓€岃繑鍥炪€嶆寜閽紝涓嶆槸涓€涓兘鎷栧姩鐨? * 鎴块棿銆傛寚閽堜氦浜掔敱涓嬮潰鐨?pointer-events 鍏虫帀锛屽惁鍒欑偣鍑讳細琚綋鎴愭嫋鎷芥棆杞紝
- * 鏃㈣浆涓嶅姩涔熶笉杩斿洖锛涢敭鐩樺彲杈炬€ф潵鑷?app.js 缁欏満鏅姞鐨?role=button銆?*/
-@media (min-width: 761px) {
-  /* 鐢讳腑鐢荤殑灏哄鍙湪涓€澶勫０鏄庯細闈㈡澘搴曢儴瑕佽鍑虹殑楂樺害涔熻瀹冿紝
-     涓ゅ鍚勫啓涓€涓暟瀛楃殑璇濊繜鏃╁涓嶄笂銆?*/
-  #homeShell[data-away="true"] { --shell-pip-w: 176px; --shell-pip-h: 104px; }
-  body:not(.room-editing) #homeShell[data-away="true"] .stage-region {
-    position: fixed;
-    right: var(--shell-pad);
-    bottom: var(--shell-pad);
-    z-index: 15;
-    width: var(--shell-pip-w);
-    gap: 0;
-    opacity: .96;
-    transition: opacity var(--dur-fast, .16s ease);
-  }
-  body:not(.room-editing) #homeShell[data-away="true"] .stage-region:hover,
-  body:not(.room-editing) #homeShell[data-away="true"] .stage-region:focus-within { opacity: 1; }
-  body:not(.room-editing) #homeShell[data-away="true"] .stage-region .room-stage {
-    height: var(--shell-pip-h);
-    min-height: var(--shell-pip-h);
-    border-radius: var(--r-md);
-    border-color: var(--t-line-firm, var(--t-line));
-    box-shadow: var(--t-shadow-lift);
-    /* 閫€鍒拌儗鏅椂鍘嬫殫骞剁◢寰檷楗卞拰锛岃瑙変笂鏄庣‘瀹冩槸銆屾瑕佺殑銆佸彲杩斿洖鐨勩€嶏紱
-       鎮仠涓庨敭鐩樿仛鐒︽椂鎭㈠锛屼綔涓恒€岀偣瀹冭兘鍥炲幓銆嶇殑鍙嶉銆?*/
-    filter: saturate(.74) brightness(.94);
-    transition: filter var(--dur), box-shadow var(--dur);
-  }
-  body:not(.room-editing) #homeShell[data-away="true"] .stage-region .room-stage:hover,
-  body:not(.room-editing) #homeShell[data-away="true"] .stage-region .room-stage:focus-visible {
-    filter: none;
-    box-shadow: var(--t-shadow-lift);
-  }
-  /* 鐢讳腑鐢婚噷鏀句笉涓嬭鑹插垏鎹㈠櫒锛?04px 楂樺彧鍓╀竴鏉＄紳锛夛紝鑰屽畠鏄釜鐪熸帶浠躲€?     缂╃暐鎬佷氦缁欎笅闈㈤偅棰楀父椹荤殑銆屽洖鍒板皬灞嬨€嶅紩瀵硷紝瑙掕壊鍒囨崲浠嶇暀鍦ㄩ椤点€?*/
-  body:not(.room-editing) #homeShell[data-away="true"] .stage-region .stage-role { display: none; }
-  /* 闈㈡澘搴曢儴鐣欏嚭鐢讳腑鐢荤殑楂樺害锛屾渶鍚庝竴琛屾帶浠朵笉浼氳瀹冨帇浣忋€?*/
-  #homeShell[data-away="true"] .shell-panel-body {
-    padding-bottom: calc(var(--sp-4) + var(--shell-pip-h) + var(--shell-pad));
-  }
-}
-/* 缂╃暐鎬佷笅灏忓眿鏄釜銆岃繑鍥炪€嶆寜閽細鍏虫帀 3D 鐨勬寚閽堜氦浜掍笌鍦烘櫙鍐呭伐鍏锋爮銆?*/
+/* 缩略时关闭 3D 操作，由卡片处理返回、角色切换和拖动。 */
 #homeShell[data-away="true"] .stage-region .voxel-room { pointer-events: none; }
 #homeShell[data-away="true"] .stage-region .room-stage { cursor: pointer; }
 #homeShell[data-away="true"] .stage-region .room-stage::after {
@@ -895,3 +835,151 @@ body.room-editing-exit .shell-side { pointer-events: none; }
   border-radius: 0;
   background: transparent;
 }
+
+/* 缩略卡片的角色名始终可见；空白区域保留返回小屋和拖动行为。 */
+.stage-role-card-heading { display: none; }
+.stage-role-card-menu[hidden] { display: none; }
+body:not(.room-editing) #homeShell[data-away="true"] {
+  --shell-pip-w: 176px;
+  --shell-pip-h: 104px;
+}
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region {
+  position: fixed;
+  left: var(--role-card-left, auto);
+  top: var(--role-card-top, auto);
+  right: var(--role-card-right, var(--shell-pad));
+  bottom: var(--role-card-bottom, var(--shell-pad));
+  width: min(var(--shell-pip-w), var(--role-card-max-width, 100vw));
+  height: min(var(--shell-pip-h), var(--role-card-max-height, 100dvh));
+  gap: 0;
+  z-index: 15;
+  visibility: visible;
+  pointer-events: auto;
+  opacity: .96;
+  transition: opacity var(--dur-fast, .16s ease);
+}
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region .room-stage {
+  height: min(var(--shell-pip-h), var(--role-card-max-height, 100dvh));
+  min-height: min(var(--shell-pip-h), var(--role-card-max-height, 100dvh));
+  margin: 0;
+  border-radius: var(--r-md);
+  border-color: var(--t-line-firm, var(--t-line));
+  box-shadow: var(--t-shadow-lift);
+  touch-action: none;
+  user-select: none;
+}
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region .stage-role { display: none; }
+body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: absolute;
+  z-index: 4;
+  inset: 6px 6px auto;
+  gap: 4px;
+  pointer-events: none;
+}
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region:hover,
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region:focus-within { opacity: 1; }
+#homeShell[data-away="true"] .shell-panel-body {
+  padding-bottom: calc(var(--sp-4) + var(--shell-pip-h) + var(--shell-pad));
+}
+.stage-role-card-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 6px;
+  border-radius: var(--r-sm);
+  color: var(--t-text);
+  background: color-mix(in srgb, var(--t-surface) 92%, transparent);
+  font-size: var(--fs-tiny);
+  font-weight: 600;
+  line-height: 1.5;
+}
+.stage-role-card-switch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  padding: 5px;
+  border: 1px solid var(--t-line);
+  border-radius: var(--r-sm);
+  background: var(--t-surface);
+  color: var(--t-text-soft);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast, .16s ease);
+}
+.stage-role-card-switch :is(i, svg) { width: 16px; height: 16px; pointer-events: none; }
+.stage-region:hover .stage-role-card-switch,
+.stage-region:has(:focus-visible) .stage-role-card-switch,
+.stage-role-card-switch[aria-expanded="true"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+.stage-role-card-switch:hover { color: var(--t-accent-ink); border-color: var(--t-accent); }
+.stage-role-card-switch:focus-visible,
+.stage-role-card-reset:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 2px; }
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-card-dragging="true"] .room-stage { cursor: grabbing; }
+.stage-role-card-menu {
+  position: fixed;
+  z-index: 16;
+  box-sizing: border-box;
+  width: min(300px, calc(100vw - 16px));
+  padding: var(--sp-3);
+  border: 1px solid var(--t-line-firm, var(--t-line));
+  border-radius: var(--r-md);
+  background: var(--t-surface);
+  box-shadow: var(--t-shadow-lift);
+  color: var(--t-text);
+  font-size: var(--fs-tiny);
+}
+.stage-role-card-menu > label { display: block; margin-bottom: var(--sp-2); font-weight: 600; }
+.stage-role-card-menu select { width: 100%; min-height: 36px; }
+.stage-role-card-status { margin: var(--sp-2) 0; color: var(--t-text-soft); line-height: 1.6; }
+.stage-role-card-reset {
+  border: 0;
+  padding: 4px 0;
+  background: transparent;
+  color: var(--t-accent-ink);
+  font: inherit;
+  cursor: pointer;
+}
+@media (max-width: 760px) {
+  body:not(.room-editing) #homeShell[data-away="true"] { --shell-pip-w: 160px; --shell-pip-h: 98px; }
+}
+@media (hover: none), (pointer: coarse) {
+  .stage-role-card-switch { opacity: 1; pointer-events: auto; }
+  #homeShell[data-away="true"] .stage-region .room-stage::after { opacity: 1; }
+}
+
+/* 两侧贴靠只留下把手；裁剪移动中的场景，避免遮挡导航或制造横向滚动。 */
+.stage-role-card-handle { display:none; }
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region .room-stage {
+  transform:translateX(var(--role-card-offset, 0px));
+}
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region:is([data-role-card-overflow="true"], [data-role-card-settling="true"]) {
+  overflow:clip;
+}
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-card-docked="true"] {
+  pointer-events:none;
+}
+body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-handle:not([hidden]) {
+  display:flex;align-items:center;justify-content:center;
+  position:absolute;right:0;top:50%;transform:translateY(-50%);
+  width:28px;height:min(56px, 100%);padding:0;
+  border:1px solid var(--t-line-firm);border-right:0;border-radius:var(--r-md) 0 0 var(--r-md);
+  background:var(--t-surface);color:var(--t-text);box-shadow:var(--t-shadow-lift);
+  pointer-events:auto;touch-action:none;cursor:grab;user-select:none;z-index:5;
+}
+.stage-role-card-handle svg { width:20px;height:20px;flex:none;pointer-events:none; }
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-card-dock-side="left"] .stage-role-card-handle {
+  left:0;right:auto;border-left:0;border-right:1px solid var(--t-line-firm);border-radius:0 var(--r-md) var(--r-md) 0;
+}
+.stage-region[data-role-card-dock-side="left"] .stage-role-card-handle svg { transform:rotate(180deg); }
+.stage-role-card-handle:focus-visible { outline:2px solid var(--t-focus);outline-offset:-3px; }
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-card-dragging="true"] .stage-role-card-handle { opacity:0;cursor:grabbing; }

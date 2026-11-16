@@ -29,6 +29,54 @@ def _require_authorization_result(result: Any) -> None:
     require(result)
 
 
+def assert_core_reply_connection(event: Any) -> None:
+    """Keep a native turn on the account connection it was admitted with."""
+    state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+    guard = state.get("assert_connection_current") if isinstance(state, dict) else None
+    if guard is not None:
+        guard()
+
+
+def watch_core_reply_connection(event: Any) -> None:
+    """Cancel only this turn when its admitted account connection is replaced."""
+    state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+    waiter = state.get("wait_connection_changed") if isinstance(state, dict) else None
+    if waiter is None:
+        return
+    task = asyncio.current_task()
+    if task is None or (state.get("_connection_owner_task") is task
+                        and state.get("_connection_prepared") is state["prepared"]):
+        return
+    old_task = state.pop("_connection_owner_task", None)
+    old_done = state.pop("_connection_owner_done", None)
+    if old_task is not None and old_done is not None:
+        old_task.remove_done_callback(old_done)
+    previous = state.pop("_connection_waiter", None)
+    if previous is not None:
+        previous.cancel()
+    prepared = state["prepared"]
+
+    async def changed():
+        await waiter()
+        if (event.get_extra(CORE_REPLY_CONTEXT_EXTRA) is state
+                and state.get("prepared") is prepared and not task.done()):
+            task.cancel()
+
+    worker = asyncio.create_task(changed(), name="companion:core-account-connection")
+
+    def finished(_):
+        worker.cancel()
+        if state.get("_connection_waiter") is worker:
+            state.pop("_connection_waiter", None)
+            state.pop("_connection_owner_task", None)
+            state.pop("_connection_owner_done", None)
+            state.pop("_connection_prepared", None)
+
+    state.update(_connection_waiter=worker, _connection_owner_task=task,
+                 _connection_owner_done=finished, _connection_prepared=prepared)
+    task.add_done_callback(finished)
+
+
 def restore_core_reply_prepared(prepared: Mapping) -> Mapping:
     """Reconstruct captured values after reload without choosing new settings."""
     from companion_v2.conversation.voice_reply import VoiceReplyPolicy
@@ -145,6 +193,8 @@ def prepare_core_reply_event(
     prepare_send: PrepareSend | None = None,
     media_submit: Callable | None = None,
     owner: Any = None,
+    assert_connection_current: Callable[[], Any] | None = None,
+    wait_connection_changed: Callable[[], Awaitable[Any]] | None = None,
 ) -> None:
     """Attach reply authorization and guard final delivery on this event."""
     state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
@@ -156,6 +206,7 @@ def prepare_core_reply_event(
 
         async def authorize_delivery() -> None:
             try:
+                assert_core_reply_connection(event)
                 result = await state["authorize"](state["prepared"])
                 # Retained wrappers outlive their module during hot reload.
                 # Check the current owner's Outcome class, just as we call
@@ -233,6 +284,7 @@ def prepare_core_reply_event(
                 try:
                     await authorize_delivery()
                     wire = await native_wire_message(event, part)
+                    assert_core_reply_connection(event)
                 except BaseException:
                     release_pending_voice_claim(event)
                     raise
@@ -344,6 +396,7 @@ def prepare_core_reply_event(
             if stream is not None and hasattr(stream, "__aiter__"):
                 async def observed_stream():
                     async for chunk in stream:
+                        assert_core_reply_connection(event)
                         if not accounted_by_parts and is_core_sendable_message(chunk):
                             start_stream()
                         chunks.append(_plain_text(chunk))
@@ -407,6 +460,8 @@ def prepare_core_reply_event(
         prepare_send=prepare_send,
         media_submit=media_submit,
         owner=owner,
+        assert_connection_current=assert_connection_current,
+        wait_connection_changed=wait_connection_changed,
         delivery_guard_active=False,
         denial_notified=False,
         send_attempts=0,
@@ -418,6 +473,7 @@ def prepare_core_reply_event(
         _presence_stream_active=False,
     )
     event.set_extra(CORE_REPLY_CONTEXT_EXTRA, state)
+    watch_core_reply_connection(event)
     from .core_reply_idempotency import begin_core_reply_delivery_turn, reset_core_reply_delivery_net
     if begin_core_reply_delivery_turn(event):
         # A new turn may legitimately repeat the last turn's words.  Re-entering
@@ -455,6 +511,8 @@ def adopt_core_reply_event(
     on_reply_end: Callable[[], Any] | None = None,
     prepare_send: PrepareSend | None = None,
     media_submit: Callable | None = None,
+    assert_connection_current: Callable[[], Any] | None = None,
+    wait_connection_changed: Callable[[], Awaitable[Any]] | None = None,
 ) -> bool:
     """Move an in-flight reply guard to the current plugin instance.
 
@@ -496,7 +554,15 @@ def adopt_core_reply_event(
         on_reply_end=on_reply_end,
         prepare_send=prepare_send,
         media_submit=media_submit,
+        assert_connection_current=assert_connection_current,
+        wait_connection_changed=wait_connection_changed,
     )
+    if changed_owner:
+        previous_task = state.pop("_connection_owner_task", None)
+        previous_done = state.pop("_connection_owner_done", None)
+        if previous_task is not None and previous_done is not None:
+            previous_task.remove_done_callback(previous_done)
+    watch_core_reply_connection(event)
     if changed_owner and on_reply_end is not None:
         task = asyncio.current_task()
         if task is not None:

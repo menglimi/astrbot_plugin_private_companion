@@ -27,6 +27,16 @@ window.CompanionPerceptionOverviewPage = (() => {
      最近成功读数。只挑选可安全展示的字段；API 令牌和 edit token 永不缓存。 */
   const balanceCache = new Map();
   let overviewRouteKey = "";
+  function selectedWindowRole() {
+    const selected=product.selection?.(),target=product.target?.();
+    if(!selected?.target_id||target?.scope_kind!=="private"||target.target_id!==selected.target_id
+      ||target.bot_id!==selected.bot_id)return null;
+    const role=product.windowRole?.();
+    return role?.role_id===selected.role_id?role:null;
+  }
+  function roleSnapshot(value) {
+    return value&&!selectedWindowRole()?{...value,windowRequired:true,contact:{},news:{}}:value;
+  }
   function activeScopeKey() {
     try {
       const scoped = product.scopeKey?.();
@@ -739,11 +749,12 @@ window.CompanionPerceptionOverviewPage = (() => {
     const analysisProvider = semanticStatus?.settings?.analysis_provider;
     const events = upcomingDates(snapshot);
     const alertList = weather.state === "available" && Array.isArray(weather.alerts) ? weather.alerts.slice(0, 4) : [];
-    const screenValue = screenResult.state === "available" ? screenResult.interpretation || "已有屏幕解读"
+    const windowRequired = !selectedWindowRole();
+    const screenValue = windowRequired ? "请选择私聊窗口" : screenResult.state === "available" ? screenResult.interpretation || "已有屏幕解读"
       : screenResult.state === "blocked" ? reasonLabel(screenResult.reason)
         : screenResult.state === "empty" ? "暂无已保存解读"
           : runtimeState === "loading" ? "正在核对屏幕权限" : "屏幕解读暂不可读";
-    const mobileValue = mobile.location?.available
+    const mobileValue = windowRequired ? "请选择私聊窗口" : mobile.location?.available
       ? mobile.location.label || "附近位置已读取"
       : runtimeState === "loading" ? "正在读取定位状态"
         : runtimeState === "error" ? "定位状态读取失败"
@@ -765,7 +776,7 @@ window.CompanionPerceptionOverviewPage = (() => {
     const healthAvailable = health.available === true && healthParts.length > 0;
     const healthReason = typeof health.reason === "string" ? health.reason : "";
     const healthSourceDisabled = healthReason === "telemetry_disabled" || healthReason === "mobile_gateway_disabled";
-    const healthValue = healthAvailable ? healthParts.join(" · ")
+    const healthValue = windowRequired ? "请选择私聊窗口" : healthAvailable ? healthParts.join(" · ")
       : runtimeState === "loading" ? "正在读取健康摘要"
         : runtimeState === "error" ? "健康摘要读取失败"
           : healthReason === "telemetry_disabled" ? "手机健康上报未开启"
@@ -782,12 +793,12 @@ window.CompanionPerceptionOverviewPage = (() => {
     }
     if (activity.available === true && activity.label) phoneParts.push(`${activity.stale ? "上次活动" : "活动"} · ${activity.label}`);
     const phoneAvailable = phoneParts.length > 0;
-    const phoneValue = phoneAvailable ? phoneParts.join(" · ")
+    const phoneValue = windowRequired ? "请选择私聊窗口" : phoneAvailable ? phoneParts.join(" · ")
       : runtimeState === "loading" ? "正在读取手机状态"
         : runtimeState === "error" ? "手机状态读取失败"
           : realityResult.reason ? reasonLabel(realityResult.reason) : "暂无已授权的手机状态快照";
     const cameraObservation = cameraResult.observation || {};
-    const cameraValue = cameraResult.state === "available"
+    const cameraValue = windowRequired ? "请选择私聊窗口" : cameraResult.state === "available"
       ? cameraResult.answer_available
         ? cameraObservation.summary || cameraObservation.scene_description || cameraObservation.purpose_answer || "最近单帧已识别"
         : cameraObservation.uncertainty || cameraResult.message || "最近单帧结果不确定"
@@ -828,7 +839,9 @@ window.CompanionPerceptionOverviewPage = (() => {
        每条都带上它自己的读数与说明。不给通道编造数值、百分比或统一总数；
        读不到就说读不到（未启用 / 待授权），不拿旧数据冒充当前值。 */
     const percepts = [];
-    const channel = (id, board, spec) => percepts.push({id, board, ...spec});
+    const channel = (id, board, spec) => percepts.push({id, board, ...spec,
+      ...(windowRequired && ["device-location", "device-screen", "device-phone", "device-camera", "device-recalls"].includes(id)
+        ? {value:"请选择私聊窗口", detail:"选择窗口后查看该会话的感知记录。", state:"pending", tag:"未选择窗口"} : {})});
     const tabModel = "config-models:perception-detail-model-route";
     const tabPlace = "config-environment:perception-detail-place";
     const tabDevice = "config-screen:perception-detail-device-access";
@@ -1022,7 +1035,7 @@ window.CompanionPerceptionOverviewPage = (() => {
       const location = channelById("device-location"), screen = channelById("device-screen"), phone = channelById("device-phone");
       const health = channelById("device-health"), camera = channelById("device-camera"), mihome = channelById("device-mihome");
       const cameraAuthorized = cameraResult.state === "available" || cameraResult.state === "ready";
-      const cameraTag = cameraAuthorized ? "已授权" : runtimeState === "error" ? "读取失败" : runtimeState === "loading" ? "读取中" : /consent/.test(cameraResult.reason || "") ? "待授权" : "未就绪";
+      const cameraTag = windowRequired ? "未选择窗口" : cameraAuthorized ? "已授权" : runtimeState === "error" ? "读取失败" : runtimeState === "loading" ? "读取中" : /consent/.test(cameraResult.reason || "") ? "待授权" : "未就绪";
       const mihomeLabel = mihome ? mihomeSummary : mihomeState === "disabled" ? "未启用" : mihomeState === "loading" ? "读取中" : "暂不可读";
       return `<div class="perception-reading-card">
         <button type="button" class="perception-feature is-location is-${location.state}" ${channelAttrs(location)}>
@@ -1373,7 +1386,7 @@ window.CompanionPerceptionOverviewPage = (() => {
       </article>`;
     }).join("")}</section>
     <p class="perception-board-hint">点击任意感知条目卡片，可在下方单独查看该项的当前内容与设置；点击卡片右上角「分区设置」可切换整组配置。</p>`;
-    root.innerHTML = `${barMarkup}${boardMarkup}`;
+    root.innerHTML = `${barMarkup}${!selectedWindowRole()?'<p class="memory-notice">未选择私聊窗口；当前显示角色配置，窗口感知与撤回记录需选择当前角色的私聊窗口后查看。</p>':""}${boardMarkup}`;
     syncSelection();
     if (activePreviewItemId) preview(activePreviewItemId);
     if (balanceSource) renderBalanceSource();
@@ -1390,6 +1403,7 @@ window.CompanionPerceptionOverviewPage = (() => {
     const recallWorkspace = page?.querySelector("#perceptionRecallWorkspace");
     if (recallWorkspace) recallWorkspace.innerHTML = recallState === "loading"
       ? `<p class="memory-notice" role="status">正在读取当前窗口的撤回记录…</p>`
+      : recallState === "window_required" ? '<p class="memory-notice" role="status">请先选择当前角色的私聊窗口，再查看撤回记录。</p>'
       : recallState === "error" ? `<p class="memory-notice" role="status">这个角色窗口的撤回记录暂不可读（${esc(recallError || "原因未知")}）；检查角色窗口授权和撤回转录开关。</p>`
         : recallStatus?.enabled === false ? `<p class="memory-notice" role="status">撤回转录未启用。配置开启后，只读记录会在设定时限内显示。</p>`
           : recalls.length ? `<ul>${recalls.map(item => `<li class="perception-recall-item"><span><strong>${esc(item.local_time || ageLabel(item.withdrawn_at))}</strong><small>${item.author ? `发送账号 ${esc(item.author)}` : "当前会话记录"}</small></span><p>${esc(item.text || "（无可展示文本）")}</p></li>`).join("")}</ul>`
@@ -1499,7 +1513,9 @@ window.CompanionPerceptionOverviewPage = (() => {
     semanticState = "loading"; render();
     try {
       const bridge = product.bridgeNow?.() || await product.bridgeFor();
-      const value = product.unwrap(await bridge.apiGet("semantic", {...product.selection(), kind:"reaction"}));
+      const selected=product.roleSelection?.();
+      if(!selected?.target_id||!selected?.role_id)throw new Error("semantic_role_required");
+      const value = product.unwrap(await bridge.apiGet("semantic", {target_id:selected.target_id,role_id:selected.role_id,kind:"reaction"}));
       if (!validRoot(ticket)) return;
       if (!value || typeof value !== "object") throw new Error("invalid semantic status");
       semanticStatus = value; semanticState = "ready"; rememberOverview("semanticStatus", value, "semanticState", "ready");
@@ -1512,9 +1528,11 @@ window.CompanionPerceptionOverviewPage = (() => {
   }
   async function refreshRecalls(ticket = generation) {
     if (!validRoot(ticket)) return;
+    const role=selectedWindowRole();
+    if(!role){recallStatus=null;recallState="window_required";recallError="";forgetOverview("recallStatus","recallState");render();return;}
     recallState = "loading"; render();
     try {
-      const replyApi = product.role?.()?.reply_api;
+      const replyApi = role.reply_api;
       if (typeof replyApi !== "string" || !replyApi) throw new Error("recall_scope_denied");
       const route = product.relative(replyApi).replace(/\/$/, "") + "/recalls";
       const response = product.request
@@ -1585,14 +1603,16 @@ window.CompanionPerceptionOverviewPage = (() => {
   }
   async function refreshRuntime(ticket = generation) {
     if (!validRoot(ticket)) return;
+    const windowRole=selectedWindowRole(), role=windowRole || product.role();
     runtimeState = "loading"; render();
     try {
-      const endpoint = product.role()?.perception_native_api;
+      const endpoint = role?.perception_native_api;
       if (typeof endpoint !== "string" || !endpoint) throw new Error("missing perception runtime route");
       const route = endpoint.replace(/\/$/, "") + "/runtime";
-      const value = product.unwrap(await product.request("GET", product.relative(route)));
+      const value = product.unwrap(await product.request("GET", product.relative(route), windowRole ? undefined : {scope:"role"}));
       if (!validRoot(ticket)) return;
-      if (!value || typeof value !== "object" || !value.weather || !value.screen || !value.reality || !value.calendar)
+      if (!value || typeof value !== "object" || !value.weather
+          || windowRole && (!value.screen || !value.reality || !value.calendar))
         throw new Error("invalid perception runtime snapshot");
       runtimeSnapshot = value; runtimeState = "ready"; rememberOverview("runtimeSnapshot", value, "runtimeState", "ready");
     } catch (_) {
@@ -1864,13 +1884,14 @@ window.CompanionPerceptionOverviewPage = (() => {
     balanceWorkspace = root.parentElement?.querySelector("#perceptionBalanceSourceWorkspace") || null;
     const ticket = ++generation;
     const cached = overviewCache.get(`${scope}:${overviewRouteKey}`) || {};
-    snapshot = cached.snapshot || null; runtimeSnapshot = cached.runtimeSnapshot || null;
+    snapshot = roleSnapshot(cached.snapshot || null); runtimeSnapshot = cached.runtimeSnapshot || null;
     runtimeState = cached.runtimeState || "loading";
     modelStatus = cached.modelStatus || null; modelState = cached.modelState || "loading";
     voiceStatus = cached.voiceStatus || null; voiceState = cached.voiceState || "loading";
     imageStatus = cached.imageStatus || null; imageState = cached.imageState || "loading";
     semanticStatus = cached.semanticStatus || null; semanticState = cached.semanticState || "loading";
     recallStatus = cached.recallStatus || null; recallState = cached.recallState || "loading";
+    if(!selectedWindowRole()){recallStatus=null;recallState="window_required";}
     mihomeStatus = cached.mihomeStatus || null; mihomeState = cached.mihomeState || "loading";
     huaweiHealth = cached.huaweiHealth || null; huaweiHealthState = cached.huaweiHealthState || "loading";
     materialPool = cached.materialPool || null; materialPoolState = cached.materialPoolState || "loading";
@@ -1885,7 +1906,7 @@ window.CompanionPerceptionOverviewPage = (() => {
       if (!validRoot(ticket)) return;
       /* native 页刚挂载时会先发 loading。已有成功快照时保留它，避免切页
          回来出现一整块空白；明确失败仍清掉旧快照并展示失败状态。 */
-      if (next?.ready === true || !snapshot || (next?.loading === false && next?.error)) snapshot = next;
+      if (next?.ready === true || !snapshot || (next?.loading === false && next?.error)) snapshot = roleSnapshot(next);
       if (snapshot?.ready === true) rememberOverview("snapshot", snapshot);
       else if (next?.loading === false && next?.error) forgetOverview("snapshot");
       render();

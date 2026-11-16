@@ -1013,6 +1013,17 @@ select:focus-visible, textarea:focus-visible { outline: 3px solid color-mix(in s
   .stranger-action { align-self: flex-end; flex-wrap: wrap; justify-content: flex-end; }
 }
 
+/* 保存范围随交互展开，编辑对象由详情标题持续显示。 */
+.member-scope-hint { position: relative; margin-left: auto; }
+.member-scope-hint summary { cursor: pointer; list-style: none; padding: 6px; color: var(--muted); }
+.member-scope-tooltip { display: none; position: absolute; bottom: calc(100% + 6px); right: 0; width: max-content; max-width: min(320px, 70vw); padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface, #fff); color: var(--ink); box-shadow: 0 4px 16px #0002; z-index: 10; font-size: 12px; }
+.member-scope-hint:hover .member-scope-tooltip,
+.member-scope-hint:focus-within .member-scope-tooltip,
+.member-scope-hint[open] .member-scope-tooltip { display: block; }
+.member-leave-host { z-index: 110; }
+.member-leave-dialog { max-width: 420px; padding: 24px; }
+.member-leave-dialog .member-card-actions { margin-top: 20px; }
+.member-scope-switch { padding: 12px 0; }
 /* Explicit account associations; no routing/authority controls are implied. */
 /* Account links reuse the member editor palette, controls and spacing. */
 .member-account-links, .member-linked-history { display: grid; gap: 14px; min-width: 0; }

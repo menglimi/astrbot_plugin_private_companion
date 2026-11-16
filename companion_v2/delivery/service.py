@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import logging
 from types import MappingProxyType
@@ -101,6 +101,9 @@ class OutboundDelivery:
         self.on_receipt = None
         self.private_account_router = None
         self.tasks = None
+        self._connection_available = None
+        self._pending_cursor = ("", "")
+        self._waiting_for_connections = False
         self.operations = OperationRepository(runtime)
         self.registrations = tuple(TaskRegistration(TaskDefinition(o.kind, "delivery", o.action,
             Lane.BACKGROUND, side_effect=SideEffect.MESSAGE_DELIVERY, binding=sender.binding,
@@ -110,6 +113,10 @@ class OutboundDelivery:
         if self.tasks is not None or tasks.runtime is not self.runtime:
             raise ValueError("delivery must attach once to its original supervisor")
         self.tasks = tasks
+
+    def bind_connection_gate(self, available):
+        """Keep unstarted reminders available for recovery within their deadline."""
+        self._connection_available = available
 
     def contains(self, delivery_id):
         return self.runtime.read_one("SELECT 1 FROM background_deliveries WHERE delivery_id = ?", (delivery_id,)) is not None
@@ -334,16 +341,36 @@ class OutboundDelivery:
         if len(excluded) > 32:
             raise ValueError("delivery exclusions must be bounded")
         exclusions = "" if not excluded else " AND d.task_id NOT IN (" + ",".join("?" for _ in excluded) + ")"
-        rows = self.runtime.read_all("""SELECT d.request_json, d.task_id FROM background_deliveries d
+        scan = 32 if self._connection_available is not None else limit
+        cursor = self._pending_cursor if self._connection_available is not None else ("", "")
+        rows = self.runtime.read_all("""SELECT d.request_json, d.task_id, d.delivery_id,
+            t.next_run_at, t.deadline_at FROM background_deliveries d
             JOIN execution_tasks t ON t.task_id = d.task_id WHERE d.state = 'pending'
             AND t.state IN ('created', 'retry_scheduled') AND t.next_run_at <= ?
+            AND (t.next_run_at, d.delivery_id) > (?, ?)
             AND (SELECT COUNT(*) FROM execution_attempts a WHERE a.slot_held = 1 AND a.kind = t.kind)
                 < json_extract(t.record_json, '$.definition.concurrency')
             AND (SELECT COUNT(*) FROM execution_attempts a WHERE a.slot_held = 1 AND a.kind = t.kind
                  AND a.scope_key = json_extract(t.record_json, '$.scope_key'))
                 < json_extract(t.record_json, '$.definition.per_scope_concurrency')""" + exclusions +
-            " ORDER BY t.next_run_at, d.delivery_id LIMIT ?", (stamp(self.tasks.now()), *excluded, limit))
-        return tuple((DeliveryRequest.restore(row["request_json"]).context, row["task_id"]) for row in rows)
+            " ORDER BY t.next_run_at, d.delivery_id LIMIT ?", (stamp(self.tasks.now()), *cursor, *excluded, scan))
+        selected = []
+        self._waiting_for_connections = False
+        for row in rows:
+            self._pending_cursor = row["next_run_at"], row["delivery_id"]
+            request = DeliveryRequest.restore(row["request_json"])
+            if (self._connection_available is not None and request.owner == "agenda.reminder"
+                    and request.deadline_at > self.tasks.now()
+                    and not self._connection_available(request.context)):
+                self._waiting_for_connections = True
+                continue
+            selected.append((request.context, row["task_id"]))
+            if len(selected) >= limit:
+                break
+        else:
+            if len(rows) < scan:
+                self._pending_cursor = ("", "")
+        return tuple(selected)
 
     def next_wake(self, *, excluded=()):
         """Earliest queued delivery that can use its original kind/scope slot."""
@@ -360,7 +387,10 @@ class OutboundDelivery:
                  AND a.scope_key = json_extract(t.record_json, '$.scope_key'))
                 < json_extract(t.record_json, '$.definition.per_scope_concurrency')""" + exclusions,
             (self.tasks.limits.background_slots, *excluded))
-        return datetime.fromisoformat(row["next_at"]) if row and row["next_at"] else None
+        next_at = datetime.fromisoformat(row["next_at"]) if row and row["next_at"] else None
+        if next_at is not None and self._waiting_for_connections:
+            return max(next_at, self.tasks.now() + timedelta(seconds=1))
+        return next_at
 
     def cancel_unstarted(self, task_id, *, reason):
         with self.runtime.transaction() as connection:

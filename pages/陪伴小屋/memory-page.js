@@ -125,7 +125,7 @@ window.CompanionMemoryPage = (() => {
   let root = null, bridge = null, version = 0, timer = null, data = null;
 
   function blank() {
-    return {catalog:null, target:0, role:0, area:"facts", tab:"facts",
+    return {catalog:null, target:-1, role:0, area:"facts", tab:"facts",
       /* 语料：一次预读多页，本地筛选。corpus 是全量（含已归档提示），
          filter 只影响渲染，不改动数据。 */
       corpus:[], cursors:[""], page:0, next:null, hasMore:false, overview:null, history:false,
@@ -335,7 +335,6 @@ window.CompanionMemoryPage = (() => {
   /* ================= 视图：页头 ================= */
 
   function headMarkup() {
-    const target = current();
     /* 页头不放说明句。
        切到哪个视图，标题就是那件事，左侧轨道已经写了它是干什么的；
        再加一行「这里可以……每条都带……」是把导航重说一遍，占掉了第一屏。
@@ -346,14 +345,6 @@ window.CompanionMemoryPage = (() => {
     };
     return `<header class="mem-head">
       <div class="mem-head-title"><h2>${e(AREA_TITLE[data.area])}</h2></div>
-      <div class="mem-scope">
-        <label>会话对象<select id="memory-target" ${!data.catalog?"disabled":""}>${
-          data.catalog?.targets.map((t,i)=>`<option value="${i}" ${i===data.target?"selected":""}>${e((window.CompanionProduct?.targetLabel?.(t) || (t.scope_kind === "group"?"群聊 ":"私聊 ")+(t.display_name || (/^\d+$/.test(String(t.participant_id || t.group_id || "")) ? t.participant_id || t.group_id : "当前对象"))) + " · " + (window.CompanionProduct?.accountLabel?.(t) || t.account_name || "当前账号"))}</option>`).join("") || '<option>尚未读取目标</option>'
-        }</select></label>
-        <label>角色<select id="memory-role" ${!target?"disabled":""}>${
-          target?.roles.map((r,i)=>`<option value="${i}" ${i===data.role?"selected":""}>${e(window.CompanionProduct?.roleLabel?.(r,i) || "当前角色")}</option>`).join("") || '<option>尚未选择角色</option>'
-        }</select></label>
-      </div>
     </header>`;
   }
 
@@ -876,8 +867,8 @@ window.CompanionMemoryPage = (() => {
           ? `<section class="mem-block"><div class="mem-skeleton"><i></i><i></i><i></i></div>
              <p class="mem-empty">${data.loading?"正在读取授权目标…":"刷新目标后即可查看记录。"}</p></section>`
           : !role()?.memory_api
-            ? `<section class="mem-block"><div class="mem-empty"><h3>群聊记录独立管理</h3>
-               <p>请选择有事实权限的私聊对象。</p></div></section>`
+            ? `<section class="mem-block"><div class="mem-empty"><h3>${current()?.scope_kind==="group"?"群聊记录独立管理":"未选择记忆窗口"}</h3>
+               <p>请选择当前小屋角色的私聊窗口；群聊记录请进入本群公共档案。</p></div></section>`
             : AREA_VIEW[data.area]()}
       </div>
     </div>`;
@@ -932,9 +923,14 @@ window.CompanionMemoryPage = (() => {
       if (!live(ticket)) return;
       if (!Array.isArray(catalog.targets) || !catalog.installation_id || !catalog.operator_id
           || catalog.targets.some(t=>!Array.isArray(t.roles))) throw problem("invalid_response");
-      data.catalog = catalog; data.ready = true; data.loading = false;
-      const selected=window.CompanionProduct?.selection();
-      if(selected){const index=catalog.targets.findIndex(t=>t.target_id===selected.target_id);if(index>=0){data.target=index;data.role=Math.max(0,catalog.targets[index].roles.findIndex(r=>r.role_id===selected.role_id));}}
+      const product=window.CompanionProduct,selected=product?.selection?.();
+      const owner=product?.roleSelection?.();
+      const targets=owner?catalog.targets.filter(t=>t.bot_id===owner.bot_id)
+        .map(t=>({...t,roles:t.roles.filter(r=>r.role_id===owner.role_id)})).filter(t=>t.roles.length):catalog.targets;
+      data.catalog = {...catalog,targets}; data.ready = true; data.loading = false;
+      if(selected){data.target=targets.findIndex(t=>t.target_id===selected.target_id);
+        if(data.target>=0)data.role=Math.max(0,targets[data.target].roles.findIndex(r=>r.role_id===selected.role_id));}
+      else if(!product?.roleSelection)data.target=targets.length?0:-1;
       if (role()?.memory_api) {
         endpoint(); data.pending = restorePending(); data.pendingMutation = restoreMutation(); data.detailId = data.pending?.tracked_batch_id || null;
         await load();
@@ -1485,18 +1481,6 @@ window.CompanionMemoryPage = (() => {
       }
     } finally { if (live(ticket)) { data.busy = false; render(); schedule(); } }
   }
-  function changeScope(targetIndex, roleIndex) {
-    if (!data.catalog?.targets[targetIndex]?.roles[roleIndex]) return;
-    ++version; stopTimer();
-    const catalog = data.catalog;
-    data = {...blank(),catalog,target:targetIndex,role:roleIndex,ready:true};
-    window.CompanionProduct?.choose(catalog.targets[targetIndex].target_id,catalog.targets[targetIndex].roles[roleIndex].role_id,true);
-    if (role()?.memory_api) {
-      try { data.pending = restorePending(); data.pendingMutation=restoreMutation(); data.detailId = data.pending?.tracked_batch_id || null; load(); }
-      catch (error) { failure(error); render(); }
-    } else render();
-  }
-
   /* ================= 事件 ================= */
 
   async function switchArea(area) {
@@ -1599,8 +1583,6 @@ window.CompanionMemoryPage = (() => {
 
   function change(event) {
     const el = event.target;
-    if (el.id === "memory-target") { changeScope(Number(el.value),0); return; }
-    if (el.id === "memory-role") { changeScope(data.target,Number(el.value)); return; }
     if (el.id === "memory-export-include") { data.exportIncludeArchived = el.checked; return; }
   }
 

@@ -73,6 +73,19 @@ function createDom({omitStatic = []} = {}) {
       addEventListener() {}, removeEventListener() {}, dispatchEvent() {},
       setAttribute() {}, removeAttribute() {}, getAttribute: () => null, hasAttribute: () => false,
       appendChild() {}, removeChild() {}, insertBefore() {}, replaceChildren() {},
+      insertAdjacentHTML(position, value) {
+        assert.ok(["afterbegin", "beforeend"].includes(position));
+        const html = String(value);
+        element._html = position === "afterbegin" ? html + element._html : element._html + html;
+        for (const match of html.matchAll(/\bid="([^"]+)"/g)) {
+          const childId = match[1];
+          const fresh = makeElement(childId);
+          fresh._html = innerHtmlOf(html, childId) ?? "";
+          fresh._descendants = new Set([...fresh._html.matchAll(/\bid="([^"]+)"/g)].map(item => item[1]));
+          nodes.set(childId, fresh);
+          element._descendants.add(childId);
+        }
+      },
       querySelector: () => null, querySelectorAll: () => [], closest: () => null, contains: () => false,
       focus() {}, blur() {}, click() {}, remove() {}, scrollIntoView() {},
       replaceWith(next) {
@@ -133,6 +146,26 @@ function createDom({omitStatic = []} = {}) {
   };
   return {document};
 }
+
+test("插入范围提示保留已有编辑器节点，整体重画仍使旧节点失效", () => {
+  const {document} = createDom();
+  const host = document.getElementById("shellPanel");
+  host.innerHTML = '<div id="editor"><input id="draft"></div>';
+  const editor = document.getElementById("editor");
+  const draft = document.getElementById("draft");
+  draft.value = "未保存内容";
+  host.insertAdjacentHTML("afterbegin", '<section id="scope">会话</section>');
+  host.insertAdjacentHTML("beforeend", '<div id="footer">说明</div>');
+  assert.equal(document.getElementById("editor"), editor);
+  assert.equal(document.getElementById("draft"), draft);
+  assert.equal(draft.value, "未保存内容");
+  assert.equal(document.getElementById("scope").innerHTML, "会话");
+  assert.equal(document.getElementById("footer").innerHTML, "说明");
+  host.innerHTML = "";
+  assert.equal(editor.isConnected, false);
+  assert.equal(document.getElementById("scope"), null);
+  assert.equal(document.getElementById("footer"), null);
+});
 
 const ROLE = {
   role_id: "role-first", role_name: "小伴",

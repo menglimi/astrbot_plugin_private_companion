@@ -238,6 +238,7 @@ class StartupRetryTests(unittest.IsolatedAsyncioTestCase):
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
         plugin._host_start_task = None
         plugin._session_settings_warm_task = None
+        plugin._qzone_life_publisher = NS()
         plugin.staging = NS(
             settings=NS(enabled=True),
             _terminated=False,
@@ -263,6 +264,7 @@ class StartupRetryTests(unittest.IsolatedAsyncioTestCase):
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
         plugin._host_start_task = None
         plugin._session_settings_warm_task = None
+        plugin._qzone_life_publisher = NS()
         plugin._startup_failure_key = None
         plugin._startup_failure_at = 0.0
         staging = NS(
