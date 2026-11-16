@@ -32,4 +32,5 @@ support_platforms:
   - qq_official_webhook
   - weixin_oc
   - wechat_native
+  - telegram
 astrbot_version: ">=4.27.2"

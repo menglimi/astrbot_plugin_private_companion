@@ -1,5 +1,9 @@
 # 更新日志
 
+## 未发布
+
+- 新增 Telegram 私聊文字：纳入原生路由白名单，账号键使用平台实例 ID，用户 subject 使用 `telegram-user:` 命名空间；沿用 AstrBot 的 Telegram 通道收发与白名单，事件 bot 从 Telegram 事件的 `client` 读取；AstrBot 在轮询出错后重建 Telegram bot 时，已准入的私聊不再被判为 `host_account_changed`（#639）。
+
 ## 7.1.20 - 2026-11-14
 
 ### 书架与阅读
