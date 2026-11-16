@@ -24,6 +24,10 @@ class ReleaseSecretDetectionTests(unittest.TestCase):
     def test_core_release_sources_include_astrbot_changelog(self):
         self.assertIn(ROOT / "CHANGELOG.md", sources(ROOT, CORE_DIRS))
 
+    def test_core_release_sources_include_migration_audit_ledger(self):
+        self.assertIn(ROOT / "docs" / "V1_V2_CONFIG_RESOLVED_20260928.csv",
+                      sources(ROOT, CORE_DIRS))
+
     def test_excludes_local_news_feed_capture_from_release_sources(self):
         root = Path("source-root")
         fixture = root / "fixtures" / "proactive" / "news_feed_juya_20261004.xml"
