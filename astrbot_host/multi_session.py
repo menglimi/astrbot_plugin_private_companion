@@ -115,7 +115,7 @@ class MultiPrivateBridge(NativePrivateBridge):
         self.settings, self.authority = settings, authority
         self.targets = {target.route_key: target for target in settings.targets}
         super().__init__(*args, **kwargs)
-        group_options = {**kwargs, "quote_loader": group_quote_loader, "component_reader": group_component_reader,
+        group_options = {**kwargs, "connection_manager": self.connections, "quote_loader": group_quote_loader, "component_reader": group_component_reader,
                          "reply_type": kwargs.get("reply_type") if group_quote_loader is not None else None,
                          "forward_loader": group_forward_loader,
                          "forward_type": kwargs.get("forward_type") if group_forward_loader is not None else None}
@@ -176,6 +176,7 @@ class MultiPrivateBridge(NativePrivateBridge):
                     or not native_client_connected(platform, login)):
                 raise TaskError("host_client_mismatch", "private event did not originate from the connected account client")
 
+            connection_lease = self.connections.acquire(account)
             event_id = native_id(message.message_id)
             at = datetime.fromtimestamp(event.created_at, timezone.utc)
             principal = AuthenticatedHostPrincipal(self.installation_id, self.host_id, platform_id,
@@ -184,6 +185,7 @@ class MultiPrivateBridge(NativePrivateBridge):
             actor = require(self.identities.resolve_authenticated(principal, observed_at=at))
             self.remember_private_session(event)
             conversation_id, role, instruction = await self._role(account, sender)
+            self.connections.assert_current(connection_lease)
             scope = ScopeRef(self.installation_id, platform_id, ScopeKind.PRIVATE, sender,
                              account.bot_id, login, conversation_id, session_id)
             if not platform_client_matches(self.platform(scope), event_client):
@@ -244,11 +246,14 @@ class MultiPrivateBridge(NativePrivateBridge):
             self.authority.ensure_actor(target)
         except (ValueError, AttributeError, TypeError):
             return await super().capture(event)
+        source_lease = self.connections.acquire(account)
         result = await super().capture(event)
         if not result.is_success:
             return result
         try:
-            return Outcome.success(await self._apply_window_link(target, result.unwrap()))
+            captured = await self._apply_window_link(target, result.unwrap())
+            self.connections.assert_current(source_lease)
+            return Outcome.success(captured)
         except (TaskError, HostControlError, ValueError, KeyError) as error:
             code = getattr(error, "code", "host_window_link_failed")
             return Outcome.failed(code, str(error))
@@ -264,7 +269,9 @@ class MultiPrivateBridge(NativePrivateBridge):
         account = self.accounts.get((primary.platform_id, primary.account_id))
         if account is None or account.bot_id != primary.bot_id:
             raise TaskError("host_window_link_invalid", "the primary Bot account is not connected")
+        primary_lease = self.connections.acquire(account)
         cid, role, instruction = await self._role(account, primary.participant_id)
+        self.connections.assert_current(primary_lease)
         if link.mode == "role":
             # Keep the source window and its identity; only the memory owner and
             # character instruction come from the primary role.
@@ -425,6 +432,7 @@ class CoreReplyPlan:
     captured: NativeConversationInput
     context: TaskContext
     debounce: PrivateDebouncePolicy | None = None
+    connection_lease: object = None
 
 
 class PrivateDialogueDenied(TaskError):
@@ -465,7 +473,7 @@ class MultiHostSession:
                  provider_fingerprint, runtime_instance_id, now, native_tool_port=None, news_port=None,
                  solar_term_port=None, qzone_transport=None, balance_port=None, weather_ports=None,
                  persona_window_snapshot_lookup=None, persona_window_snapshot_update=None, private_session_lookup=None,
-                 search_port_factory=None):
+                 search_port_factory=None, connection_manager=None):
         self.runtime, self.settings, self.authority, self.types, self.now = runtime, settings, authority, native_types, now
         self.native_tool_port = native_tool_port
         self.search_port_factory = search_port_factory
@@ -477,6 +485,7 @@ class MultiHostSession:
         self.bridge = MultiPrivateBridge(native_context, settings=settings, authority=authority,
             version=native_types.version, event_type=native_types.event, installation_id=runtime.installation_id,
             host_id=HOST_ID, identities=authority.identities, accounts=settings.accounts, personas=personas,
+            connection_manager=connection_manager,
             image_type=native_types.image, image_loader=native_types.image_loader,
             reply_type=native_types.reply, quote_loader=native_types.quote_loader,
             group_quote_loader=native_types.group_quote_loader,
@@ -494,6 +503,8 @@ class MultiHostSession:
             persona_window_snapshot_update=persona_window_snapshot_update,
             private_session_lookup=private_session_lookup,
             file_settings=lambda scope, role: file_intake_settings(runtime, scope, role))
+        from .account_recovery import AccountRecovery
+        self.account_recovery = AccountRecovery(self)
         self.model = AstrBotTextProvider(native_context, bridge=self.bridge,
             binding=ProviderBinding("model.text", common.provider_id, native_types.version, provider_fingerprint),
             provider_id=common.provider_id, version=native_types.version, provider_type=native_types.provider_types,
@@ -582,6 +593,12 @@ class MultiHostSession:
             wake_port=self._wake_snapshot,
             presence_port=MultiPresence(self))
         self.application = self.host.application
+        from .account_recovery import AccountExecutionGuard
+        connection_guard = AccountExecutionGuard(self.bridge.connections, self.runtime)
+        self.application.tasks.bind_execution_guard(connection_guard)
+        self.application.contact_schedule.bind_connection_gate(connection_guard.available)
+        self.application.agenda_background.bind_connection_gate(connection_guard.available)
+        self.application.outbound.bind_connection_gate(connection_guard.available)
         from companion_v2.relationships.account_link_context import persona_for
         self.application.private_account_link_persona = lambda member: persona_for(self.settings, member)
         self.application.runtime.private_account_link_persona = lambda member: self.application.private_account_link_persona(member)
@@ -635,9 +652,22 @@ class MultiHostSession:
         return {"mobile": mobile if isinstance(mobile, dict) else {},
                 "wakeup": wakeup if isinstance(wakeup, dict) else {}}
 
+    def assert_connection_current(self, prepared):
+        self.application.require_running()
+        lease = prepared.get("connection_lease")
+        if lease is not None:
+            self.bridge.connections.assert_current(lease)
+
+    async def wait_connection_changed(self, prepared):
+        lease = prepared.get("connection_lease")
+        if lease is not None:
+            await self.bridge.connections.wait_changed(lease)
+
     async def synchronize(self, target):
         account = self.bridge.accounts[(target.platform_id, target.account_id)]
+        connection_lease = self.bridge.connections.acquire(account)
         cid, role, instruction = await self.bridge._role(account, target.participant_id)
+        self.bridge.connections.assert_current(connection_lease)
         scope = self.scope(target, cid)
         self.bridge.client(scope)
         context = self.authority.select(target, scope, role)
@@ -695,25 +725,6 @@ class MultiHostSession:
                 return NativeConversationTurns(self.runtime).interrupt_open(at=self.now())
             await asyncio.to_thread(interrupt_previous_runner)
             self._native_turns_recovered = True
-        targets = [target for target in self.settings.primary_targets if target.participant_id != "*"]
-        targets.extend(self._prepared_wildcard_private_targets())
-        seen = set()
-        for target in targets:
-            if target.target_id in seen:
-                continue
-            seen.add(target.target_id)
-            try:
-                context, instruction = await self.synchronize(target)
-            except TaskError as error:
-                if error.code in ("host_persona_unmapped", "host_persona_window_unbound", "host_native_session_unavailable"):
-                    # Leave this target unrouted until its V2 window persona is explicit.
-                    continue
-                raise
-            self.application.life_runtime.bind(context, instruction, guard=self.bridge.verify_role)
-            self.application.state_maintenance.bind(context, instruction, guard=self.bridge.verify_role)
-            self.application.contact_schedule.bind_context(context)
-            if self.application.presence is not None:
-                self.application.presence.bind(context)
         for model in self.models:
             model._current()
         if self.application.state != "new":
@@ -724,6 +735,9 @@ class MultiHostSession:
                                                expected_model_generation=expected_model_generation)
         if result.is_success and callable(getattr(self.native_tool_port, "begin_start", None)):
             self.native_tool_port.begin_start()
+        if result.is_success:
+            await self.account_recovery.refresh()
+            self.account_recovery.start()
         return result
 
     async def receive(self, event, target, *, group_admission=None):
@@ -923,9 +937,11 @@ class MultiHostSession:
         async with self._intake[target.target_id]:
             try:
                 self.application.require_running()
+                connection_lease = self.bridge.connections.acquire((target.platform_id, target.account_id))
                 captured = require(await self.bridge.capture_text_only(event))
                 if reply_candidate:
                     captured = await self._materialize_core_conversation(event, target, captured)
+                self.bridge.connections.assert_current(connection_lease)
                 if (captured.route.scope.kind is not ScopeKind.GROUP
                         or self.bridge.target_for_scope(captured.route.scope) != target):
                     raise TaskError("host_target_mismatch", "input changed its configured native group route")
@@ -1059,12 +1075,14 @@ class MultiHostSession:
         """
         try:
             self.application.require_running()
+            connection_lease = self.bridge.connections.acquire((target.platform_id, target.account_id))
             captured = require(await (
                 self.bridge.capture_text_only(event)
                 if isinstance(target, GroupTarget)
                 else self.bridge.capture_core_reply(event)
             ))
             captured = await self._materialize_core_conversation(event, target, captured)
+            self.bridge.connections.assert_current(connection_lease)
             self._require_core_reply_target(target, captured)
             context = self._select_core_reply_context(target, captured)
             self._validate_core_group_admission(group_admission, context, captured)
@@ -1078,7 +1096,7 @@ class MultiHostSession:
             except Exception as error:
                 logger.warning("[CompanionV2] 私聊防抖设置暂不可读，保留普通回复 error_type=%s",
                                type(error).__name__)
-            return CoreReplyOutcome.success(CoreReplyPlan(captured, context, debounce))
+            return CoreReplyOutcome.success(CoreReplyPlan(captured, context, debounce, connection_lease))
         except TaskError as error:
             return CoreReplyOutcome.from_failure(error)
         except Exception as error:
@@ -1115,6 +1133,9 @@ class MultiHostSession:
             presence, typing_context, typing_turn, prepared_ok = None, None, None, False
             try:
                 self.application.require_running()
+                connection_lease = (plan.connection_lease if plan is not None and plan.connection_lease is not None
+                                    else self.bridge.connections.acquire((target.platform_id, target.account_id)))
+                self.bridge.connections.assert_current(connection_lease)
                 if plan is None:
                     captured = require(await (
                         self.bridge.capture_text_only(event)
@@ -1130,6 +1151,7 @@ class MultiHostSession:
                     # re-resolve under the intake lock instead of trusting the plan.
                     self._require_core_reply_target(target, captured)
                     context = self._select_core_reply_context(target, captured)
+                self.bridge.connections.assert_current(connection_lease)
                 self._validate_core_group_admission(group_admission, context, captured)
                 turn_id = "core-reply:" + digest([context.key, captured.event_id])
                 presence = self.application.presence
@@ -1310,9 +1332,11 @@ class MultiHostSession:
                     self.core_reply_maintenance.schedule(context, captured.instruction, source_future=source_future)
                 except Exception as error:
                     logger.warning("[CompanionV2] 私聊后台绑定调度降级 error_type=%s", type(error).__name__)
+                self.bridge.connections.assert_current(connection_lease)
                 prepared_ok = True
                 return Outcome.success({
                     "context": context,
+                    "connection_lease": connection_lease,
                     "instruction": captured.instruction,
                     "prompt_instruction": prompt_instruction,
                     "stable_prompt_instruction": stable_prompt_instruction,
@@ -1399,6 +1423,7 @@ class MultiHostSession:
                                         "model replies are temporarily blocked in this group")
                 if not isinstance(prepared, Mapping):
                     raise TaskError("core_reply_context_invalid", "prepared core reply context is unavailable")
+                self.assert_connection_current(prepared)
                 if prepared.get("target_id") != target.target_id:
                     raise TaskError("core_reply_target_changed", "core reply target changed after admission")
                 captured = require(await (
@@ -1406,6 +1431,7 @@ class MultiHostSession:
                     if isinstance(target, GroupTarget)
                     else self.bridge.capture_core_reply(event)
                 ))
+                self.assert_connection_current(prepared)
                 current_target = self.bridge.target_for_scope(captured.route.scope)
                 if current_target != target:
                     raise TaskError("host_target_mismatch", "core reply route changed after admission")
@@ -1566,6 +1592,7 @@ class MultiHostSession:
         return await sender.send(envelope)
 
     async def close(self, *, grace_seconds=0.5):
+        await self.account_recovery.close()
         await self.core_reply_maintenance.close()
         from .core_reply_tools import close_core_reply_tools
         await close_core_reply_tools(self.application)

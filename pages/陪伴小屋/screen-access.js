@@ -37,17 +37,12 @@ window.CompanionScreenAccess = (() => {
   const statusKey = (scope, route) => `${scope}:${route}`;
   const current = ticket => ticket === generation && node?.isConnected && path && path === currentPath();
   function currentPath() {
-    try { return product.relative(product.role()?.screen_access_api || ""); } catch (_) { return ""; }
+    try { return product.relative((product.windowRole ? product.windowRole() : product.role())?.screen_access_api || ""); } catch (_) { return ""; }
   }
   function errorText(error) { return messages[error?.code] || messages[error?.message] || "暂时无法核对屏幕授权，请重新读取。"; }
   function identityLine() {
     const target = product.target();
     return [product.scopeLabel?.(), target && product.targetLabel?.(target)].filter(Boolean).join(" · ") || "当前私聊窗口";
-  }
-  function privateWindows() {
-    const roleId = product.selection?.().role_id;
-    return (product.targets?.() || []).filter(target => target.scope_kind === "private"
-      && target.roles?.some(role => role.role_id === roleId));
   }
   function scopeIssue() {
     const target = product.target();
@@ -109,12 +104,8 @@ window.CompanionScreenAccess = (() => {
     const stateLabel = !canManage ? "只读" : issue ? "仅限私聊" : notInstalled ? "未装配" : paused ? "未就绪"
       : roleControlled ? (roleDisabled ? "未启用" : "已启用")
       : ready ? "已授权" : status ? "未就绪" : busy ? "核对中" : "暂不可用";
-    const windows = privateWindows();
-    const selectedWindow = windows.some(target => target.target_id === product.target()?.target_id);
-    const selector = windows.length ? `<label class="config-field"><span>授权私聊</span><select data-screen-private-window aria-label="识屏授权私聊" ${busy ? "disabled" : ""}>${selectedWindow ? "" : '<option value="" selected>选择私聊窗口</option>'}${windows.map(target => `<option value="${escapeHTML(target.target_id)}" ${target.target_id === product.target()?.target_id ? "selected" : ""}>${escapeHTML(product.targetLabel?.(target) || target.display_name || target.participant_id || "私聊窗口")}</option>`).join("")}</select></label>` : "";
     node.innerHTML = `<div class="reality-consent-head"><div><strong>屏幕读取权限</strong><small>${escapeHTML(identityLine())}</small></div>
       <button class="button small" type="button" data-screen-access-action="refresh" ${busy ? "disabled" : ""}>重新读取</button></div>
-      ${selector}
       <article class="reality-consent-panel ${ready ? "is-ready" : ""}">
         <header><span class="reality-consent-mark"><i data-lucide="monitor-dot"></i></span><div><h4>按需采集当前桌面</h4><small>按需采集画面；主动观察会保留原件及对应识屏结果，可在这里查看。</small></div>
           <span class="reality-consent-state ${ready ? "is-ready" : ""}">${stateLabel}</span></header>
@@ -261,18 +252,13 @@ window.CompanionScreenAccess = (() => {
     if (action === "role-disable") { void saveRole(false); return; }
     if (action === "enable" || action === "disable") void save(action === "enable");
   }
-  function change(event) {
-    const select = event.target.closest("[data-screen-private-window]");
-    if (busy || !select || !privateWindows().some(target => target.target_id === select.value)) return;
-    void product.choose(select.value, product.selection().role_id);
-  }
-  function unmount() { ++generation; node?.removeEventListener("click", click); node?.removeEventListener("change", change); node = null; path = ""; status = null; pending = null; busy = false; notice = ""; }
+  function unmount() { ++generation; node?.removeEventListener("click", click); node = null; path = ""; status = null; pending = null; busy = false; notice = ""; }
   function mount(host) {
     unmount(); node = host; if (!node) return; path = currentPath();
     const scope = product.scopeKey();
     status = statusByScope.get(statusKey(scope, path)) || null;
     pending = pendingByScope.get(scope) || null;
-    node.addEventListener("click", click); node.addEventListener("change", change); render(); void load();
+    node.addEventListener("click", click); render(); void load();
   }
   return {mount, unmount};
 })();

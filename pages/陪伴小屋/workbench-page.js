@@ -1,13 +1,13 @@
 /* 统一配置工作台 · 内核
    取代此前 reply / expression / semantic / config-editor 各自实现的保存生命周期。
    各页只声明「字段 + 作用范围 + 接口」，草稿、脏状态、幂等重试、版本冲突、
-   层轨与幽灵值由本文件统一负责。
+   层轨与范围来源提示由本文件统一负责。
 
    设计要点：
    - 声明式字段：kind/minimum/maximum 全部来自后端下发的 `fields` 契约，
      页面不再硬编码一份可能与校验器漂移的范围。
-   - 层轨：后端下发 `layers`（继承链，外→内）与 `provenance`（每字段实际来源）。
-     本文件把它画成可交互的层轨，并让悬停某层时其余层退后。
+   - 层轨：按后端 layers 与 provenance 展示继承链及当前生效层，悬停可查看层级。
+   - 范围：按后端 write_layer 与 provenance 展示保存目标和当前来源，详细信息按需展开。
    - 幂等：保存沿用 operation_key + edit_token，结果未确认时锁编辑并只重试原请求。
    - 草稿：sessionStorage 按 installation + operator + 当前对象/角色 + group 隔离，切页不丢。 */
 "use strict";
@@ -29,7 +29,7 @@ window.CompanionWorkbench = (() => {
     installation: "安装", role: "角色", relationship: "关系", window: "窗口",
   };
   const LAYER_ORIGINS = {
-    installation: "所有角色", role: "这个角色", relationship: "这个人", window: "这个对话",
+    installation: "全局默认", role: "角色默认", relationship: "用户关系设置", window: "会话设置",
   };
   const KIND = {
     boolean: "bool", integer: "int", text: "text", probability: "float", weight: "float",
@@ -47,6 +47,8 @@ window.CompanionWorkbench = (() => {
   const CHOICES = new Map();
 
   const errors = {
+    configuration_window_selection_required: "此设置包含按窗口或用户关系生效的内容。请先在上方选择窗口，再查看和保存。",
+    configuration_window_selection_mismatch: "此设置对应的私聊与所选窗口不同。请在上方选择需要配置的私聊窗口后编辑。",
     configuration_revision_conflict: "配置已经更新。草稿已保留，读取新版本后再核对。",
     configuration_request_invalid: "请求格式有误，请刷新后重试。",
     configuration_target_unavailable: "所选会话当前不可用，请在账号与会话中重新选择。",
@@ -541,6 +543,102 @@ window.CompanionWorkbench = (() => {
       + ` aria-hidden="true">${nodes}</div>`;
   }
 
+  let hintSequence = 0;
+  function scopeHintMarkup(text, label = "查看保存范围与来源") {
+    const id = `wb-context-${++hintSequence}`;
+    return `<span class="wb-context"><button type="button" class="wb-context-toggle" data-scope-hint`
+      + ` aria-label="${e(label)}" aria-expanded="false" aria-controls="${id}" aria-describedby="${id}">ⓘ</button>`
+      + `<span class="wb-context-tip" id="${id}" role="tooltip" popover="manual">${e(text)}</span></span>`;
+  }
+  function hintContext(target) {
+    return target.closest?.(".wb-context") || target.closest?.(".wb-save-context")?.querySelector(".wb-context");
+  }
+  function showScopeHint(context) {
+    const tip = context?.querySelector(".wb-context-tip");
+    if (!tip) return;
+    tip.showPopover();
+    const trigger = context.querySelector("[data-scope-hint]").getBoundingClientRect();
+    const bounds = tip.getBoundingClientRect(), gap = 8;
+    const width = document.documentElement.clientWidth, height = document.documentElement.clientHeight;
+    tip.style.left = `${Math.max(gap, Math.min(trigger.left, width - bounds.width - gap))}px`;
+    tip.style.top = `${Math.max(gap, trigger.bottom + gap + bounds.height <= height
+      ? trigger.bottom + gap : trigger.top - bounds.height - gap)}px`;
+  }
+  function hideScopeHint(context) {
+    context?.querySelector(".wb-context-tip")?.hidePopover();
+  }
+  function dismissScopeHints(root) {
+    root?.querySelectorAll(".wb-context").forEach(context => {
+      context.classList.remove("is-open");
+      context.querySelector("[data-scope-hint]")?.setAttribute("aria-expanded", "false");
+      hideScopeHint(context);
+    });
+  }
+  function scopeHintClick(event) {
+    const button = event.target.closest?.("[data-scope-hint]");
+    if (!button) return false;
+    event.stopPropagation?.();
+    const context = button.closest(".wb-context");
+    const open = button.getAttribute("aria-expanded") !== "true";
+    button.setAttribute("aria-expanded", String(open));
+    context.classList.toggle("is-open", open);
+    context.classList.toggle("is-dismissed", !open);
+    if (open) showScopeHint(context); else hideScopeHint(context);
+    return true;
+  }
+  function scopeHintKeydown(event) {
+    if (event.key !== "Escape") return false;
+    const context = hintContext(event.target);
+    if (!context) return false;
+    context.classList.remove("is-open");
+    context.classList.add("is-dismissed");
+    context.querySelector("[data-scope-hint]")?.setAttribute("aria-expanded", "false");
+    hideScopeHint(context);
+    event.preventDefault();
+    event.stopPropagation?.();
+    return true;
+  }
+  function scopeHintReset(event) {
+    const context = hintContext(event.target);
+    if (!context) return;
+    if (["pointerout", "focusout"].includes(event.type)) {
+      const wrapper = context.closest(".wb-save-context") || context;
+      if (wrapper.contains(event.relatedTarget)) return;
+      if (!context.classList.contains("is-open")) hideScopeHint(context);
+      return;
+    }
+    context.classList.remove("is-dismissed");
+    if (event.type === "pointerover" && event.pointerType === "touch") return;
+    if (event.type === "focusin" && !event.target.matches(":focus-visible")) return;
+    showScopeHint(context);
+  }
+  function scopeObjectForEndpoint(endpoint) {
+    const product = window.CompanionProduct;
+    const match = String(endpoint || "").match(/\/targets\/([^/]+)\/roles\/([^/]+)(?:\/|$)/);
+    const target = match && product?.targets?.().find(item => item.target_id === match[1]);
+    const role = target?.roles?.find(item => item.role_id === match[2]);
+    return {role: role ? product.roleLabel?.(role) || role.role_name || "当前角色" : "",
+      target: target ? product.targetLabel?.(target) || target.display_name || "所选会话" : "",
+      account: target ? product.accountLabel?.(target) || target.account_name || "" : ""};
+  }
+  function saveScopeLabel(layer, object = {}) {
+    const label = {installation: "全局默认设置", role: object.role ? `${object.role}的角色默认` : "当前角色默认",
+      relationship: `${object.role || "当前角色"}与${object.target || "所选用户"}的关系设置`,
+      window: object.target ? `${object.target}的覆盖设置` : "当前窗口覆盖"}[layer] || "当前配置";
+    const details = [layer === "window" && object.role ? `角色：${object.role}` : "",
+      layer !== "installation" && object.account ? `Bot：${object.account}` : ""].filter(Boolean);
+    return label + (details.length ? `（${details.join(" · ")}）` : "");
+  }
+  function fieldScopeMarkup(state, name, item, provenance, container) {
+    const source = provenance?.[name]?.layer;
+    const lines = [`保存到：${saveScopeLabel(item.writeLayer || container.writeLayer, container.scopeObject)}`];
+    if (source) lines.push(`${provenance[name].explicit === false ? "继承自" : "当前值来自"}：${LAYER_ORIGINS[source] || source}`);
+    if (provenance?.[name]?.explicit === false && state.draft[name] !== state.base?.[name]) {
+      lines.push(`覆盖前的继承值：${displayValue(item, state.base?.[name])}`);
+    }
+    return scopeHintMarkup(lines.join("\n"), `${item.label || name}的保存范围与来源`);
+  }
+
   function controlMarkup(item, value, locked, state) {
     const dis = locked ? " disabled" : "";
     if (item.kind === "bool") {
@@ -899,20 +997,7 @@ window.CompanionWorkbench = (() => {
     const inherited = provenance.explicit === false && provenance.layer !== null;
     const layerEditable = !item.editable.length || item.editable.includes(item.writeLayer || container.writeLayer);
     const locked = state.locked() || !layerEditable;
-    /* 控件已显示当前值；只有草稿覆盖继承值时，额外标出被替换的来源值。 */
-    let label = item.label || name;
-    if (inherited && container.presentation !== "journal") {
-      const ghost = state.base?.[name];
-      const shown = displayValue(item, ghost);
-      label = e(item.label || name);
-      if (value !== ghost) {
-        label += ` <span class="wb-ghost" title="当前草稿覆盖前的继承值">继承值 ${e(shown)}</span>`;
-      }
-    } else {
-      label = e(item.label || name);
-    }
-    const chip = inherited
-      ? `<span class="wb-chip">继承自${e(LAYER_ORIGINS[provenance.layer] || LAYER_LABELS[provenance.layer] || provenance.layer)}</span>` : "";
+    const label = e(item.label || name);
     const reset = inherited && !locked
       ? `<button type="button" class="wb-reset" data-wb-reset="${e(name)}">${icon("undo-2")}恢复继承</button>` : "";
     const dirty = state.base && value !== state.base[name] ? " is-dirty" : "";
@@ -925,11 +1010,11 @@ window.CompanionWorkbench = (() => {
     const errorId = `${state.instanceId}-error-${name}`;
     return `<div class="wb-field${dirty}${inheritClass}${layerEditable ? "" : " is-layer-locked"}" data-wb-row="${e(name)}"${visible ? "" : " hidden"}>`
       + (container.presentation === "journal" ? "" : railMarkup(state, name, item, state.status?.provenance, container))
-      + `<div class="wb-field-main"><span class="wb-label">${label}</span>`
+      + `<div class="wb-field-main"><span class="wb-label">${label}${fieldScopeMarkup(state, name, item, state.status?.provenance, container)}</span>`
       + (item.help && container.presentation !== "journal" ? `<p class="wb-help" id="${e(helpId)}">${e(item.help)}</p>` : "")
       + `<div class="wb-control">${controlMarkup(item, value, locked, state)}</div>`
       + `<p class="wb-field-error" id="${e(errorId)}" data-wb-field-error></p></div>`
-      + `<div class="wb-field-side">${chip}${reset}</div></div>`;
+      + `<div class="wb-field-side">${reset}</div></div>`;
   }
 
   function cardMarkup(state, container, titleAbove = "") {
@@ -1025,19 +1110,15 @@ window.CompanionWorkbench = (() => {
          ? `保存结果尚未确认（${s.pendingReason}）。可能已经写入；核对会沿用同一个操作标识，不会重复保存。`
          : "保存结果尚未确认。可能已经写入；核对会沿用同一个操作标识，不会重复保存。")
        : "";
-     const scopeLabel = s.status
-      ? (container.scopeNote || (s.status.scope === "installation" ? "插件安装全局"
-        : s.status.scope === "role" ? "安装与角色"
-        /* 默认写窗口、但角色层同样可写的组（技能领域、日记与作息）：值是角色共享的，
-           只有本会话覆盖才落在窗口层，所以不能只标「当前会话」。
-           角色层之上还有关系层的组（主动联系偏好）由分区自己声明 scopeNote：
-           默认这句会说成「角色共享」，漏掉真正管着这段关系的那一层。 */
-        : (s.status.layers || []).includes("role") ? "角色共享 · 本会话可覆盖" : "当前会话"))
-      : "";
+    const writeLayers = s.status ? [...new Set(Object.values(container.fields)
+      .filter(item => !item.editable.length || item.editable.includes(item.writeLayer || container.writeLayer))
+      .map(item => item.writeLayer || container.writeLayer))] : [];
+    const scopeLabel = s.status ? (writeLayers.length ? writeLayers : [container.writeLayer])
+      .map(layer => saveScopeLabel(layer, container.scopeObject)).join("、")
+      + (container.scopeNote ? " · " + container.scopeNote : "") : "";
     const apply = s.status?.apply_mode === "next_task" ? "下一个任务生效" : "立即生效";
     const heading = journal ? "" : `<header class="wb-card-head"><div class="wb-card-copy">`
       + `${titleAbove === container.title ? "" : `<h3>${e(container.title)}</h3>`}${container.note ? `<p>${e(container.note)}</p>` : ""}</div>`
-      + (scopeLabel ? `<span class="wb-scope">${e(scopeLabel)} · ${e(apply)}</span>` : "")
       + `</header>`;
     return `<section class="wb-card${journal ? " wb-journal" : ""}" data-wb-card="${e(container.group)}">`
       + heading + `<div class="wb-card-body">`
@@ -1045,18 +1126,17 @@ window.CompanionWorkbench = (() => {
            + `<button type="button" class="button small" data-wb-action="retry"${s.busy ? " disabled" : ""}>核对原保存结果</button></div>` : "")
       + legend + body
       + `<div class="wb-actions">`
-      + `<button type="button" class="wb-save${s.busy ? " is-busy" : ""}${s.savedState || ""}"`
+      + `<span class="wb-save-context"><button type="button" class="wb-save${s.busy ? " is-busy" : ""}${s.savedState || ""}"`
       + ` data-wb-action="save"${s.locked() || Object.keys(s.conflicts).length ? " disabled" : ""}>`
       + `<span class="wb-save-label">${e(s.busy ? "保存中…" : s.stale ? "核对最新配置" : "保存")}</span>`
       + `<svg class="wb-ring" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7"></circle></svg>`
       + `<svg class="wb-check" viewBox="0 0 19 19" aria-hidden="true"><path d="M4 10l4 4 7-9"></path></svg>`
-      + `</button>`
+      + `</button>${scopeLabel ? scopeHintMarkup(`保存到：${scopeLabel}\n${apply}`) : ""}</span>`
       + `<button type="button" class="button" data-wb-action="reset"${s.locked() || !s.dirty() ? " disabled" : ""}>使用已保存配置</button>`
       + (container.resettable
         ? `<button type="button" class="button" data-wb-action="inherit"${s.locked() ? " disabled" : ""}>全部恢复继承</button>`
         : "")
       + `<span class="wb-actions-note">${e(Object.keys(s.conflicts).length ? `${Object.keys(s.conflicts).length} 项修改待核对` : s.stale ? "改动已保留，待核对当前配置" : s.dirty() ? "有未保存的改动" : "与已保存一致")}</span>`
-      + (journal && scopeLabel ? `<span class="wb-scope">${e(scopeLabel)}</span>` : "")
       + `</div></div></section>`;
   }
 
@@ -1081,12 +1161,10 @@ window.CompanionWorkbench = (() => {
       visibility = {}, listFields = {}, chipOptions = {}, navigationLimit = 8,
       presentation = "", sectionTabPrefix = "", initialSection = null,
       mount: mountPoint, endpoint, order = null, pollMs = 0, query = null,
-      prefetch = null,
+      prefetch = null, unavailable = "", statusRestriction = null,
       audit = null, onStatus = null, scopeKey: scopeKeyOverride = null,
-      /* 分组用一层继承链，但「值是谁共享的」不一定等于链上有没有角色层：
-         主动联系偏好还有关系层，卡片右上角要说清这一点，所以允许分区声明自己的
-         生效范围文案；不声明时仍按链自动判断。 */
-      scopeNote = "",
+      /* 可选补充说明；保存范围始终由后端 scope 和字段 write_layer 确定。 */
+      scopeNote = "", scopeObject = null,
       /* 有分区的读取键不是 `settings`、保存端点不是 `/configure`、
          令牌字段与重置字段也各有叫法。这些在 spec 里声明，不一处分叉一份内核。
          `resetKey` 默认不发送：只有真的支持恢复继承的分区才声明它，
@@ -1269,8 +1347,9 @@ window.CompanionWorkbench = (() => {
         ? status.layers : ["installation", "role", "window"];
       return {
         group, title, note, order: names, fields, layers, groups, scopeNote, navigationLimit,
+        scopeObject: typeof scopeObject === "function" ? scopeObject() : scopeObject || scopeObjectForEndpoint(endpoint),
         presentation, sectionTabPrefix,
-        writeLayer: layers[layers.length - 1],
+        writeLayer: status.scope || layers[layers.length - 1],
         /* 只有声明了 resetKey 的分区才提供「全部恢复继承」：
            没有这条协议的分区点了会写出错误请求。 */
         resettable: Boolean(resetKey),
@@ -1518,6 +1597,7 @@ window.CompanionWorkbench = (() => {
     }
 
     function onSectionKeydown(event) {
+      if (scopeHintKeydown(event)) return;
       /* Ctrl/Command+S 保存当前分区。
        * 表单有二十多个字段时，键盘用户改完一项要一路 Tab 到按钮；
        * 而浏览器自己的「保存网页」对话框会在这个习惯动作里弹出来。
@@ -1620,11 +1700,16 @@ window.CompanionWorkbench = (() => {
       root.addEventListener("keydown", onSectionKeydown);
       root.addEventListener("mouseover", onHover);
       root.addEventListener("mouseout", onUnhover);
+      root.addEventListener("focusin", scopeHintReset);
+      root.addEventListener("pointerover", scopeHintReset);
+      root.addEventListener("pointerout", scopeHintReset);
+      root.addEventListener("focusout", scopeHintReset);
     }
 
     function unbind() {
       const root = mountPoint();
       if (!root || !bound.has(root)) return;
+      dismissScopeHints(root);
       bound.delete(root);
       root.removeEventListener("input", onInput);
       root.removeEventListener("change", onInput);
@@ -1632,6 +1717,10 @@ window.CompanionWorkbench = (() => {
       root.removeEventListener("keydown", onSectionKeydown);
       root.removeEventListener("mouseover", onHover);
       root.removeEventListener("mouseout", onUnhover);
+      root.removeEventListener("focusin", scopeHintReset);
+      root.removeEventListener("pointerover", scopeHintReset);
+      root.removeEventListener("pointerout", scopeHintReset);
+      root.removeEventListener("focusout", scopeHintReset);
     }
 
     /* 勾选后只更新这一个来源清单：整卡重绘会夺走刚点过的复选框焦点。
@@ -1824,6 +1913,7 @@ window.CompanionWorkbench = (() => {
     }
 
     function onClick(event) {
+      if (scopeHintClick(event)) return;
       const conflict = event.target.closest("[data-wb-conflict]");
       if (conflict) { resolveConflict(conflict.dataset.wbConflict, conflict.dataset.wbChoice); return; }
       const clearDate = event.target.closest("[data-wb-date-clear]");
@@ -2341,6 +2431,9 @@ window.CompanionWorkbench = (() => {
     }
 
     async function refresh(options = {}) {
+      if (unavailable) {
+        state.denied = true; state.loading = false; state.notice = unavailable; paint(); return;
+      }
       /* 已经有一次读取在途时不再叠加：挂载与显式刷新都会走到这里，
          而重复请求既浪费往返，也会让后到的旧快照覆盖新快照。 */
       if (state.loading || state.busy || (state.pending && state.status)) return;
@@ -2370,7 +2463,8 @@ window.CompanionWorkbench = (() => {
             /* /config multiplexes sections for the page's selected target; without
                this the server would edit the active private profile while the page
                shows a group. Other workbench routes identify their group in the path. */
-            const selection = requestSection ? (window.CompanionProduct?.selection?.() || {}) : {};
+            const selection = requestSection && endpoint === "/astrbot_plugin_private_companion/config"
+              ? (window.CompanionProduct?.selection?.() || {}) : {};
             const targetQuery = selection.target_id
               ? {target_id: selection.target_id, ...(selection.role_id ? {role_id: selection.role_id} : {})} : null;
             payload = await api("GET", endpoint, null,
@@ -2399,6 +2493,8 @@ window.CompanionWorkbench = (() => {
             || typeof token !== "string" || token.length !== 64) {
           throw error("invalid_response");
         }
+        const restriction = statusRestriction?.(value);
+        if (restriction) throw error(restriction);
         const nextContainer = buildContainer(value);
         /* 读取侧的令牌名可能与发送侧不同（见 writeTokenKey）。存进 status 时
            统一成 edit_token，后续只读这一个名字；发送时再翻回 writeTokenKey。 */
@@ -2488,6 +2584,10 @@ window.CompanionWorkbench = (() => {
     }
 
     async function save(retry) {
+      const restriction = state.status && statusRestriction?.(state.status);
+      if (restriction) {
+        state.denied = true; state.notice = localized(error(restriction)); state.bad = false; paint(); return;
+      }
       if (state.busy || state.loading || state.denied) return;
        if (!retry) {
          if (state.pending) { state.notice = ""; state.bad = false; paint(); return; }
@@ -2562,7 +2662,7 @@ window.CompanionWorkbench = (() => {
            reply/expression/memory routes identify their group in the path and
            reject unknown body keys. Keep the discriminator opt-in. */
         if (requestSection) body.section = request.section || requestSection;
-        if (requestSection) {
+        if (requestSection && endpoint === "/astrbot_plugin_private_companion/config") {
           const selection = window.CompanionProduct?.selection?.() || {};
           if (selection.target_id) body.target_id = selection.target_id;
           if (selection.role_id) body.role_id = selection.role_id;
@@ -2657,6 +2757,8 @@ window.CompanionWorkbench = (() => {
     }
 
     async function saveField(name, value) {
+      const restriction = state.status && statusRestriction?.(state.status);
+      if (restriction) return {state:"unavailable", message:localized(error(restriction))};
       if (state.pending) return {state: "unknown", message: state.pendingReason || state.pending.pending_reason || ""};
       if (state.busy || state.loading || state.denied || !state.status) return {state: "unavailable"};
       if (!state.draft || !state.container?.fields[name]) return {state: "unavailable"};
@@ -2699,6 +2801,7 @@ window.CompanionWorkbench = (() => {
           + `<span>请从已登录的 AstrBot 管理界面打开陪伴小屋，连接 V2 运行实例后调整这些设置。</span></p>`;
         return;
       }
+      if (unavailable) { void refresh(); return; }
       if (typeof endpoint !== "string" || !endpoint.startsWith(PREFIX)) {
         const root = mountPoint();
         if (root) root.innerHTML = `<p class="wb-notice is-error">${icon("alert-circle")}`
@@ -2717,8 +2820,7 @@ window.CompanionWorkbench = (() => {
 
     /* 宿主页面每次 render() 会整块重写 innerHTML，把本工作台的 DOM 一起冲掉。
        实例仍活着（status/draft 都在），所以只需要重新绑定并重绘——
-       不要再读一次：那会让「切个区域再切回来」变成一次多余往返，
-       也会把页面其他地方正在用的层轨动画重播一遍。
+       不重复读取，避免切换区域产生多余往返。
        endpoint 变了（换了对象或角色）才需要真正重挂。 */
     function attach() {
       bind();
@@ -2777,7 +2879,7 @@ window.CompanionWorkbench = (() => {
     return handle;
   }
 
-  return {create, errors, LAYER_LABELS, contract, valid, toDisplay, fromDisplay, choiceText,
+  return {create, dismissScopeHints, scopeHintMarkup, scopeHintClick, scopeHintKeydown, scopeHintReset, scopeObjectForEndpoint, saveScopeLabel, errors, LAYER_LABELS, contract, valid, toDisplay, fromDisplay, choiceText,
     /* 来源清单的点击裁决是纯函数，事件处理器与测试共用它，避免界面与写回值各算一套。 */
     resolveSourceToggle,
     /* 词条解析也对外：配置覆盖自检要拿它验证注册默认值读得懂，避免审计脚本

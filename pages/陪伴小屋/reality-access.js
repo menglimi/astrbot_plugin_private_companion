@@ -236,7 +236,7 @@ window.CompanionRealityAccess = (() => {
     scope = product.scopeKey();
     for (const kind of Object.keys(labels)) pending[kind] = pendingByScope.get(scopeKey(kind)) || null;
     try {
-      const base = product.role()?.reality_access_api;
+      const base = (product.windowRole ? product.windowRole() : product.role())?.reality_access_api;
       const relative = base ? product.relative(base) : "";
       paths = relative ? Object.fromEntries(Object.entries(labels).map(([kind, meta]) =>
         [kind, relative + meta.path])) : {};

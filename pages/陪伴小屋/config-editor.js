@@ -1600,7 +1600,7 @@ window.CompanionConfigEditors = (() => {
      * 在空间里公开动作（总闸 + 三个能力开关）、一轮能做多少（间隔、条数、
      * 每日上限），以及一条说说要满足什么条件才发得出去（主题判定 + 七个主题）。
      * 值按角色共享，窗口层只作为旧值的回落，
-     * 卡片右上角那句由内核按继承链写，不需要自己声明 scopeNote。
+     * 卡片右上角由内核显示实际写入层，无需另外声明 scopeNote。
      *
      * 注册表里这一组是 47 项：9 项全局 + 7 个主题各 5 项。主题那 35 项由下面
      * 两张表拼出来——47 个字段名手写一遍，漏一个不会有任何报错，只会让审计
@@ -1839,12 +1839,15 @@ window.CompanionConfigEditors = (() => {
    * 一次抛错会让**整条面板挂载链**中断：这一页的配置分区没有，后面所有
    * 工作区也全都不会挂上。用户看到的就是「这些页面完全无法使用」。
    * 读不到就返回 null，由调用方渲染等待态，而不是把整页一起带走。 */
+  const INSTALLATION_KINDS = new Set(["proactive.contact", "reaction", "budget", "private_access_installation"]);
+  const groupOnlyUnavailable = (product, kind, override) => !(typeof override === "string" && override.endsWith("/reply/participation"))
+    && product?.roleTarget?.()?.scope_kind === "group" && kind !== "system.prompts"
+    && !INSTALLATION_KINDS.has(kind);
   function endpointFor(product, override = "", kinds = []) {
-    const installationKinds = new Set(["proactive.contact", "reaction", "budget",
-      "private_access_installation"]);
-    if (Array.isArray(kinds) && kinds.some(kind => installationKinds.has(kind))) {
-      return kinds.every(kind => installationKinds.has(kind)) ? PREFIX + "config" : null;
+    if (Array.isArray(kinds) && kinds.some(kind => INSTALLATION_KINDS.has(kind))) {
+      return kinds.every(kind => INSTALLATION_KINDS.has(kind)) ? PREFIX + "config" : null;
     }
+    if (kinds.some(kind => groupOnlyUnavailable(product, kind, override))) return null;
     if (override) return typeof override === "string" && override.startsWith(PREFIX)
       && (override.endsWith("/config") || override.endsWith("/reply/participation")) ? override : null;
     if (!product || typeof product.role !== "function") return null;
@@ -1862,8 +1865,10 @@ window.CompanionConfigEditors = (() => {
   function create(kinds, rootProvider, views = {}, endpointOverride = "") {
     const product = window.CompanionProduct;
     const names = (kinds || []).filter(kind => Object.hasOwn(spec, kind));
-    const endpoint = endpointFor(product, endpointOverride, names);
-    if (!names.length || !endpoint) return null;
+    const unavailableKinds = new Set(names.filter(kind => groupOnlyUnavailable(product, kind, endpointOverride)));
+    const availableNames = names.filter(kind => !unavailableKinds.has(kind));
+    const endpoint = endpointFor(product, endpointOverride, availableNames);
+    if (!names.length || (!endpoint && availableNames.length)) return null;
     if (!window.CompanionWorkbench?.create) return null;
     let rolePeople = [];
     /* One page often owns several configuration groups.  The backend accepts a
@@ -1871,13 +1876,13 @@ window.CompanionConfigEditors = (() => {
        workbench its slice instead of making one request per section.  The
        shared promise is lazy: the first mounted editor starts it, all later
        editors reuse the same response. */
-    const canBatchRead = names.length > 1 && typeof product?.request === "function" && names.every(kind =>
+    const canBatchRead = availableNames.length > 1 && typeof product?.request === "function" && availableNames.every(kind =>
       !spec[kind]?.query && !views?.[kind]?.query);
     let batchRead = null;
     let batchPrimed = false;
     if (canBatchRead) {
-      const sectionNames = names.join(",");
-      const configBus = endpoint.endsWith("/config");
+      const sectionNames = availableNames.join(",");
+      const configBus = endpoint === PREFIX + "config";
       batchRead = () => {
         if (!batchRead.promise) {
           /* The shared /config route resolves the page's selected target; other
@@ -1950,8 +1955,7 @@ window.CompanionConfigEditors = (() => {
          因此归一后的值仍算未保存改动，会在下一次保存时写回规范值。 */
       normalizeDraft: current.normalizeDraft || null,
       order: current.order,
-      /* 卡片右上角的生效范围文案默认由内核按继承链推断；四层组（主动联系偏好，
-         链里多一层关系）必须自己声明，否则会被说成「角色共享」而漏掉关系层。 */
+      /* 补充范围说明；本次保存层由内核按后端字段合同展示。 */
       scopeNote: current.scopeNote || "",
       /* 段落声明同样必须转交：漏传时内核退回单段渲染，分组与依赖说明
          会被静默丢掉——看起来一切正常，只是少了几段。 */
@@ -1970,9 +1974,27 @@ window.CompanionConfigEditors = (() => {
       audit: current.audit || null,
       onStatus: current.onStatus || null,
       endpoint,
+      unavailable: unavailableKinds.has(kind)
+        ? "当前角色只有群聊入口，此设置尚无角色默认接口。请在「账号与会话」配置该角色的私聊入口后使用。" : "",
+      statusRestriction: status => {
+        if (typeof product?.selection !== "function") return "";
+        const fields = status?.fields || {};
+        const fieldNames = Object.keys(fields);
+        const fallbackLayer = status?.scope || status?.layers?.at(-1) || "window";
+        const needsWindow = fieldNames.some(name => {
+          const field = fields[name], layer = field.write_layer || fallbackLayer;
+          return ["window", "relationship"].includes(layer)
+            && (!field.editable_layers?.length || field.editable_layers.includes(layer));
+        }) || (!fieldNames.length && ["window", "relationship"].includes(fallbackLayer));
+        if (!needsWindow) return "";
+        const selected = product.selection();
+        if (!selected?.target_id) return "configuration_window_selection_required";
+        const boundTarget = endpoint?.match(/\/targets\/([^/]+)\/roles\//)?.[1];
+        return boundTarget && boundTarget !== selected.target_id ? "configuration_window_selection_mismatch" : "";
+      },
       /* Multi-section pages share one batched response; a single-section page
          keeps the normal direct read. */
-      prefetch: batchRead ? async () => {
+      prefetch: batchRead && !unavailableKinds.has(kind) ? async () => {
         const payload = await batchRead();
         if (!payload.sections[kind]) throw new Error("batch configuration section is missing");
         return {sections: {[kind]: payload.sections[kind]}};

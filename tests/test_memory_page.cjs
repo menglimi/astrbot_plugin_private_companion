@@ -505,3 +505,30 @@ test.after(() => {
   for (const page of HANDLES) { try { page.unmount(); } catch (error) { /* 没挂干净就算了 */ } }
   HANDLES.length = 0;
 });
+
+test('事实与经历跟随小屋的 Bot 和角色，未选窗口不借私聊读取', async () => {
+  const h = harness(), product = h.window.CompanionProduct;
+  product.selection = () => ({bot_id: 'bot-a', role_id: 'same-role', target_id: null});
+  product.roleSelection = () => ({bot_id: 'bot-a', role_id: 'same-role', target_id: 'private-a'});
+  const catalog = {installation_id: 'inst', operator_id: 'operator', targets: [
+    {bot_id: 'bot-a', target_id: 'private-a', display_name: '甲的窗口', scope_kind: 'private', roles: [{role_id: 'same-role', memory_api: '/astrbot_plugin_private_companion/memory'}]},
+    {bot_id: 'bot-b', target_id: 'private-b', display_name: '乙的窗口', scope_kind: 'private', roles: [{role_id: 'same-role', memory_api: '/astrbot_plugin_private_companion/other-memory'}]},
+    {bot_id: 'bot-a', target_id: 'private-c', display_name: '另一角色的窗口', scope_kind: 'private', roles: [{role_id: 'other-role', memory_api: '/astrbot_plugin_private_companion/other-memory'}]},
+  ]};
+  const mounted = h.page.mount(h.element); await h.settle();
+  h.reply(h.requests.find(request => request.route === 'page/targets'), catalog);
+  await mounted;
+  assert.match(h.element.innerHTML, /未选择记忆窗口/);
+  assert.doesNotMatch(h.element.innerHTML, /memory-target|<select/);
+  assert.doesNotMatch(h.element.innerHTML, /乙的窗口|另一角色的窗口/);
+  assert.equal(h.requests.some(request => request.route === 'memory'), false);
+  h.page.unmount();
+  product.selection = () => ({bot_id: 'bot-a', role_id: 'same-role', target_id: 'private-a'});
+  const remounted = h.page.mount(h.element); await h.settle();
+  h.reply(h.requests.filter(request => request.route === 'page/targets').at(-1), catalog);
+  await h.settle();
+  assert.equal(h.requests.some(request => request.route === 'memory'), true);
+  assert.equal(h.requests.some(request => request.route === 'other-memory'), false);
+  h.page.unmount();
+  for (const request of h.requests) request.resolve({});
+});

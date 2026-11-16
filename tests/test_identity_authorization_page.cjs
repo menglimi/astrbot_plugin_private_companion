@@ -132,7 +132,7 @@ function element(tag) {
 }
 
 function harness({ persons, groups = [], group_networks = [], group_access, authorizations = {}, memberSettings = {}, post,
-                   refreshPending = false, strangers = [] } = {}) {
+                   refreshPending = false, strangers = [], pageContext } = {}) {
   const requests = [];
   const byId = new Map();
   const tabs = [element("button"), element("button"), element("button")];
@@ -173,6 +173,7 @@ function harness({ persons, groups = [], group_networks = [], group_access, auth
   const window = {
     parent: {postMessage: (message, origin) => navigations.push({message, origin})},
     AstrBotPluginPage: {
+      getContext:()=>pageContext,
       ready: () => Promise.resolve({ pluginName: "astrbot_plugin_private_companion" }),
       apiGet: (route, params, requestOptions) => new Promise((resolve, reject) => {
         requests.push({ method: "GET", route, params, requestOptions, resolve, reject });
@@ -197,7 +198,7 @@ function harness({ persons, groups = [], group_networks = [], group_access, auth
   answers["acquaintance/strangers"] = strangerList;
   const settle = async () => { for (let i = 0; i < 12; i++) await new Promise((r) => setImmediate(r)); };
   const harness = {
-    requests, document, byId, navigations, body, strangerList,
+    requests, document, byId, navigations, body, strangerList, window, documentEvents,
     element: (id) => byId.get(id),
     settle,
     /* 回答在飞的请求。目录与授权都按路由 + 参数分发，写请求交给用例的 post。
@@ -378,13 +379,13 @@ test("同一人格的不同内部归属只显示一张成员卡，权限编辑�
     tree(h.element("people-grid")) + "\nsync=" + h.element("sync-state").textContent
       + "\nnotice=" + h.element("notice").textContent
       + "\nrequests=" + JSON.stringify(h.requests.map(request => [request.method, request.route])));
-  assert.match(flat(h.element("people-grid")), /2 个内部归属/);
+  assert.match(flat(h.element("people-grid")), /2 个角色关系/);
   const card = cardFor(h.element("people-grid"), "阿澈");
   card.handlers.click();
   await h.send((request) => request.route === authorization || request.route === "acquaintance/settings");
   assert.equal(h.requests.filter((request) => request.method === "GET" && request.route === authorization).length, 0,
     "多个内部归属不能自动读取第一条路由的权限");
-  const selector = findInput(h.element("person-detail"), "选择内部人格归属");
+  const selector = findInput(h.element("person-detail"), "选择角色与账号");
   assert.ok(selector && selector.children.length === 3);
   selector.value = selector.children[2].value;
   selector.handlers.change({target: selector});
@@ -1911,4 +1912,81 @@ test("手动添加只接受具体账号，通配符与空值不写配置", async
 
   assert.equal(h.requests.filter((request) => request.method === "POST").length, 0);
   assert.match(h.element("notice").textContent, /通配符|填写对方账号/);
+});
+
+test("当前小屋角色唯一匹配时选择该归属，其他角色只查看且提供显式切换", async () => {
+  const first = person("subject-1", "阿澈", {role_id:"role-a", persona_ids:["璃"]});
+  const second = person("subject-1", "阿澈", {role_id:"role-b", persona_ids:["璃"]});
+  const pageContext = {selection:{bot_id:"bot-a",role_id:"role-b",target_id:null}};
+  const h = harness({persons:[first,second], pageContext,
+    authorizations:{"subject-1":status("subject-1",[])}});
+  await open(h,"阿澈");
+  const reads=h.requests.filter(item=>item.route===authorization);
+  assert.ok(reads.length);
+  assert.ok(reads.every(item=>item.params.role_id==="role-b"));
+  const selector=findInput(h.element("person-detail"),"选择角色与账号");
+  selector.value=selector.children[1].value;
+  await selector.handlers.change({target:selector});
+  assert.match(flat(h.element("person-detail")),/切换到该角色并编辑/);
+  assert.equal(h.requests.filter(item=>item.route===authorization).length,reads.length);
+  assert.equal(findControl(h.element("person-detail"),"熟人卡").disabled,true);
+  findControl(h.element("person-detail"),"切换到该角色并编辑").handlers.click();
+  assert.equal(h.navigations.at(-1).message.target.tab,"member-edit");
+  assert.equal(h.navigations.at(-1).message.target.role_id,"role-a");
+});
+
+test("当前角色无匹配且成员存在多重归属时不代选第一条", async () => {
+  const h=harness({persons:[person("subject-1","阿澈",{persona_ids:["璃"]}),
+    person("subject-1","阿澈",{persona_ids:["璃"],role_id:"role-b"})],
+    pageContext:{selection:{bot_id:"bot-a",role_id:"role-c"}}});
+  await open(h,"阿澈");
+  assert.equal(h.requests.filter(item=>item.route===authorization).length,0);
+  assert.equal(findInput(h.element("person-detail"),"选择角色与账号").value,"");
+});
+
+test("切换成员前取消保留草稿，放弃后才切换到新成员", async () => {
+  const h=harness({persons:[person("subject-1","阿澈"),person("subject-2","阿蓝")],
+    authorizations:{"subject-1":status("subject-1",[]),"subject-2":status("subject-2",[])}});
+  await open(h,"阿澈");
+  const input=findInput(h.element("person-detail"),"目录显示名称");
+  input.value="待保存备注";input.handlers.input();
+  h.card("阿蓝").handlers.click();
+  assert.match(flat(h.element("person-detail")),/阿澈/);
+  findControl(h.body,"取消").handlers.click();await h.settle();
+  assert.equal(findInput(h.element("person-detail"),"目录显示名称").value,"待保存备注");
+  h.card("阿蓝").handlers.click();
+  const dialogs=findAll(h.body,"member-dialog-host member-leave-host").filter(item=>!item.removed);
+  findControl(dialogs.at(-1),"放弃修改").handlers.click();await h.send();
+  assert.match(flat(h.element("person-detail")),/阿蓝/);
+  assert.equal(h.requests.filter(item=>item.method==="POST").length,0);
+});
+
+test("离开前保存昵称发给原成员，保存成功才允许继续", async () => {
+  const h=harness({persons:[person("subject-1","阿澈")],
+    authorizations:{"subject-1":status("subject-1",[])},
+    post:request=>({admin_nickname:request.body.admin_nickname,display_name:request.body.admin_nickname,revision:4})});
+  await open(h,"阿澈");
+  const input=findInput(h.element("person-detail"),"目录显示名称");
+  input.value="新备注";input.handlers.input();
+  const leave=h.window.CompanionPrivateMembers.beforeLeave();
+  findControl(h.body,"保存并继续").handlers.click();
+  await h.send(request=>request.method==="POST");
+  assert.equal(await leave,true);
+  const saved=h.requests.find(item=>item.method==="POST");
+  assert.equal(saved.body.subject_id,"subject-1");
+  assert.equal(saved.body.role_id,"role-a");
+  assert.equal(h.window.CompanionPrivateMembers.hasChanges(),false);
+});
+
+test("成员重新读取保留未保存的目录昵称与身份选择",async()=>{
+  const h=harness({persons:[person("subject-1","阿澈")],authorizations:{"subject-1":status("subject-1",[])}});
+  await open(h,"阿澈");
+  const input=findInput(h.element("person-detail"),"目录显示名称");input.value="尚未保存";input.handlers.input();
+  h.element("person-detail").querySelectorAll(".member-tier-card").find(card=>card.dataset.tier==="important").handlers.click();
+  const reads=h.requests.filter(item=>item.route===authorization).length;
+  const refresh=findAll(h.element("person-detail"),"member-icon-button")[0];
+  refresh.handlers.click();await h.send();
+  assert.equal(h.requests.filter(item=>item.route===authorization).length,reads+1);
+  assert.equal(findInput(h.element("person-detail"),"目录显示名称").value,"尚未保存");
+  assert.equal(h.element("person-detail").querySelectorAll(".member-tier-card").find(card=>card.dataset.tier==="important").getAttribute("aria-checked"),"true");
 });

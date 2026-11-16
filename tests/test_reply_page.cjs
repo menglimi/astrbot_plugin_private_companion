@@ -245,7 +245,7 @@ function harness() {
     setTimeout, clearTimeout, URLSearchParams, Math, Number, Object, JSON, Array, String};
   vm.runInNewContext(workbench, sandbox);
   vm.runInNewContext(adapter, sandbox);
-  return {page: window.CompanionReplyPage, workbench: window.CompanionWorkbench,
+  return {page: window.CompanionReplyPage, workbench: window.CompanionWorkbench, product: window.CompanionProduct,
     root, slots, requests, store, listeners, previewInputs, exampleButtons,
     get previewHtml() { return inner.preview || ''; }};
 }
@@ -335,7 +335,7 @@ test('prompt style offers free, guided, and constraint modes and saves the role 
 
 test('group wakeup controls keep the selected group override', async () => {
   const harnessed = await loaded(harness(), 'decision');
-  assert.match(harnessed.root.innerHTML, /群唤醒设置跟随角色/);
+  assert.match(harnessed.root.innerHTML, /角色默认供各群继承；选中具体群时编辑本群覆盖/);
   const instance = live(harnessed);
   assert.deepEqual(instance.state.container.fields.group_wakeup_enabled.editable, ['role', 'window']);
   assert.equal(instance.state.container.fields.group_wakeup_enabled.writeLayer, 'window');
@@ -1312,4 +1312,16 @@ test('a route outside the plugin prefix is refused instead of half-mounting', as
   await drains();
   assert.equal(requests.length, 0);
   assert.match(node.innerHTML, /没有可用的回复设置工作区/);
+});
+
+test('未选窗口时不展示代表私聊的回复诊断', async () => {
+  const h = harness();
+  h.product.selection = () => ({target_id: null, bot_id: 'bot-a', role_id: 'role-a'});
+  h.page.mount(h.root, {view: 'decision'}); await drains();
+  const value = status();
+  value.recent = [{state: 'failed', failure_code: 'private-window-marker', created_at: '2026-01-01T00:00:00Z'}];
+  h.requests[0].resolve(value); await drains();
+  assert.match(h.slots.diagnostics.innerHTML, /先选择当前角色的窗口/);
+  assert.doesNotMatch(h.slots.diagnostics.innerHTML, /private-window-marker/);
+  h.page.unmount();
 });

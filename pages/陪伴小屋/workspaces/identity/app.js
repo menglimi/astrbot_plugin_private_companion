@@ -527,7 +527,7 @@
     meta.append(node("span", peerLabel(person)),
       node("span", personaDisplayLabel(person)),
       node("span", accountLabel(person)));
-    if (person.display_route_count > 1) meta.append(node("span", `${person.display_route_count} 个内部归属`, "route-count"));
+    if (person.display_route_count > 1) meta.append(node("span", `${person.display_route_count} 个角色关系`, "route-count"));
     const contexts = node("span", undefined, "card-contexts");
     const totalMessages = number(person.total?.msg_count);
     contexts.append(contextBadge(`${totalMessages} 条消息 · 最近 ${shortTime(person.total?.last_seen)}`,
@@ -1330,7 +1330,11 @@
       },
     });
   }
-  function select(person) {
+  function select(person, confirmed = false) {
+    if (!confirmed && selected !== person && window.CompanionPrivateMembers?.hasChanges()) {
+      void window.CompanionPrivateMembers.beforeLeave().then(ok => { if (ok) select(person, true); });
+      return;
+    }
     selected = person;
     renderPeople();
     renderDetail();
@@ -1339,8 +1343,12 @@
     selectedGroupId = groupRouteKey(group);
     renderGroups();
   }
-  function switchTab(next) {
+  function switchTab(next, confirmed = false) {
     if (!["network", "people", "groups"].includes(next)) return;
+    if (!confirmed && next !== activeView && window.CompanionPrivateMembers?.hasChanges()) {
+      void window.CompanionPrivateMembers.beforeLeave().then(ok => { if (ok) switchTab(next, true); });
+      return;
+    }
     activeView = next;
     document.querySelector(".relationship-app").dataset.view = next;
     const pageMeta = {
@@ -1376,7 +1384,11 @@
       if (active) { panel.classList.remove("is-entering"); void panel.offsetWidth; panel.classList.add("is-entering"); }
     });
   }
-  function navigateToPerson(id) {
+  function navigateToPerson(id, confirmed = false) {
+    if (!confirmed && window.CompanionPrivateMembers?.hasChanges()) {
+      void window.CompanionPrivateMembers.beforeLeave().then(ok => { if (ok) navigateToPerson(id, true); });
+      return;
+    }
     const person = data?.persons.find((item) => personRouteKey(item) === id || item.subject_id === id);
     if (!person) return;
     filter = personFilter(person) || "stable";
@@ -1384,7 +1396,11 @@
     switchTab("people");
     select(person);
   }
-  function navigateToGroup(id, route = "") {
+  function navigateToGroup(id, route = "", confirmed = false) {
+    if (!confirmed && window.CompanionPrivateMembers?.hasChanges()) {
+      void window.CompanionPrivateMembers.beforeLeave().then(ok => { if (ok) navigateToGroup(id, route, true); });
+      return;
+    }
     const groups = allGroups();
     const group = groups.find((item) => route && groupRouteKey(item) === route)
       || groups.find((item) => groupKey(item) === id);
@@ -1774,16 +1790,13 @@
   document.querySelectorAll(".chip").forEach((item) => item.addEventListener("click", () => {
     filter = item.dataset.filter;
     updateFilterButtons();
-    if (selected && !visiblePeople().some((person) => personRouteKey(person) === personRouteKey(selected))) select(null);
     renderPeople();
   }));
   const idleToggle = $("hide-idle-users");
   if (idleToggle) idleToggle.addEventListener("change", () => {
     hideIdleUsers = Boolean(idleToggle.checked);
     saveDirectoryPreference();
-    if (selected && !visiblePeople().some((person) => personRouteKey(person) === personRouteKey(selected))) selected = null;
     renderPeople();
-    renderDetail();
   });
   document.querySelectorAll(".group-status-filter").forEach((item) => item.addEventListener("click", () => {
     groupStatusFilter = item.dataset.groupFilter || "all";
@@ -1801,7 +1814,6 @@
     graphExpandedCluster = "";
     $("clear-search").hidden = !searchTerm;
     renderNetworkOverview(); renderGraph(); renderPeople(); renderGroups();
-    if (selected && !visiblePeople().some((person) => personRouteKey(person) === personRouteKey(selected))) select(null);
   });
   $("clear-search").addEventListener("click", () => {
     $("directory-search").value = "";
@@ -1818,14 +1830,30 @@
     event.preventDefault();
     activateGraphNode(target);
   });
-  $("refresh").addEventListener("click", () => { notice(""); load(); });
+  $("refresh").addEventListener("click", async () => {
+    if (!await window.CompanionPrivateMembers.beforeLeave()) return;
+    notice(""); load();
+  });
   /* 这里只做转发：设置弹窗由外壳（陪伴小屋）统一渲染，工作区里再画一份会
      出现两套配置控件争同一个 sparse owner。 */
   $("open-private-access")?.addEventListener("click", () => {
     parent.postMessage({channel: "companion-workspace", kind: "open-settings", target: "private-access"}, "*");
   });
   $("stranger-add")?.addEventListener("submit", addStrangerManually);
-  document.addEventListener("companion-mappings-change", () => { if (bridge) void load(); });
+  document.addEventListener("companion-mappings-change", async () => {
+    if (bridge && await window.CompanionPrivateMembers.beforeLeave()) void load();
+  });
+  document.addEventListener("companion-context-change", () => {
+    if (!bridge || !data) return;
+    const target = bridge.getContext?.()?.member_edit;
+    if (target) {
+      const person = data.persons.find(item => item.subject_id === target.subject_id
+        && (item.display_routes || [item]).some(route => route.bot_id === target.bot_id && route.role_id === target.role_id
+          && route.platform === target.platform && route.account_id === target.account_id));
+      if (person) { switchTab("people"); select(person); return; }
+    }
+    renderDetail();
+  });
   document.addEventListener("companion-navigate-failed", (event) => {
     notice(event.detail?.message || "目标入口暂时不可用，请重新读取群聊目录后再试。", true);
   });
@@ -1835,7 +1863,12 @@
     switchTab(activeView);
     bridge = window.AstrBotPluginPage;
     if (!bridge) { setSyncState("error", "页面桥未连接"); notice(errors.dashboard_identity_required, true); return; }
-    try { await bridge.ready(); await load(); }
+    try {
+      await bridge.ready();
+      bridge.registerDraftHandler?.({save:()=>window.CompanionPrivateMembers.saveDraft(),
+        discard:()=>window.CompanionPrivateMembers.discardDraft()});
+      await load();
+    }
     catch (error) { setSyncState("error", "读取未完成"); notice(localized(error).message, true); }
   })();
 })();

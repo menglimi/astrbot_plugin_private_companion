@@ -130,6 +130,7 @@
   let bridge = null;
   let host = null;
   let status = null;
+  let runtimeStatusRead = false;
   let busy = false;
   let topologySelection = null;
   let topologyHover = null;
@@ -1927,7 +1928,7 @@
     finally { setBusy(false); updateBindingCheck(); }
   }
 
-  function renderStatus() {
+  function renderStatus({showNotice = true} = {}) {
     if (!status || !host) return;
     $("connection").textContent = "插件连接正常";
     $("connection").dataset.state = "ready";
@@ -1936,18 +1937,66 @@
     paintStatusValue("runtime-state", stateLabel(status.state || status.session_state || (status.configured ? "new" : "unloaded")));
     paintStatusValue("accepting", isAccepting() ? "正在运行" : "未运行");
     $("safety-note").textContent = isAccepting()
-      ? "已归入角色的人格自动处理其会话；主动消息按各窗口权限发送。"
+      ? "已接入账号下归入角色的人格自动处理其会话；主动消息按各窗口权限发送。"
       : hasSavedRoleMappings() ? "角色映射已保存；准备并启动后开始处理对应会话。"
         : "保存角色映射后，插件会自动准备并运行对应窗口。";
     $("safety-note").hidden = !$("safety-note").textContent;
-    if (status.last_failure?.code || status.settings_error) {
+    if (showNotice && (status.last_failure?.code || status.settings_error)) {
       const code = status.last_failure?.code || status.settings_error;
       const operation = status.last_failure?.code ? failureOperations[status.last_failure.operation] : "";
       notice((operation ? operation + "：" : "") + failureMessage(code), "error");
-    } else {
+    } else if (showNotice) {
       notice("");
     }
+    renderAccountConnections();
     updateControls();
+  }
+  function accountRuntimeReason(row) {
+    const reasons = {
+      host_platform_unavailable: "平台实例尚未加载，等待连接。",
+      host_account_unavailable: "账号客户端当前不可用，等待恢复。",
+      host_account_offline: "账号连接当前不可用，等待恢复。",
+      host_account_identity_unavailable: "连接已更换，当前适配器尚未提供可核验的账号身份，等待验证。",
+      host_account_changed: "实际 Bot 身份或账号映射发生变化，请核对账号配置。",
+      host_platform_changed: "平台类型或标识与已保存的配置不一致，请核对平台配置。",
+      host_account_identity_changed: "实际 Bot 身份与已保存的账号不一致，请核对账号配置。",
+      host_account_recovering: "正在重新接入账号并准备会话。",
+      host_platform_probe_failed: "暂时无法读取平台连接状态，将自动重试。",
+      host_account_recovery_failed: "账号连接已恢复，但会话准备失败；将自动重试，可查看 AstrBot 日志中的 CompanionV2 详情。",
+    };
+    const defaults = {
+      online: "客户端可用。",
+      waiting: "等待账号连接后自动接入。",
+      recovering: "正在重新接入账号并准备会话。",
+      identity_changed: "实际 Bot 身份发生变化，请核对账号配置。",
+      error: "账号接入未完成，请查看 AstrBot 日志中的 CompanionV2 详情。",
+    };
+    return reasons[row.reason_code] || labelFor(row.reason_code) || defaults[row.state] || "账号状态暂未确认。";
+  }
+  function renderAccountConnections() {
+    const root = $("account-runtime-list"), summary = $("account-runtime-summary");
+    if (!root || !summary) return;
+    const rows = status.account_connections;
+    if (!Array.isArray(rows)) {
+      summary.textContent = "账号状态暂未提供";
+      root.innerHTML = "";
+      return;
+    }
+    const names = {online: "已接入", waiting: "等待连接", recovering: "恢复中",
+      identity_changed: "账号身份变化", error: "接入异常"};
+    const online = rows.filter(row => row.state === "online").length;
+    summary.textContent = rows.length ? `${rows.length} 个已配置 · ${online} 个已接入` : "尚未配置 Bot 账号";
+    root.innerHTML = rows.map(row => {
+      const state = Object.hasOwn(names, row.state) ? row.state : "unknown";
+      const recovered = row.last_recovered_at ? new Date(row.last_recovered_at) : null;
+      const recoveredAt = recovered && !Number.isNaN(recovered.getTime())
+        ? `<p class="account-runtime-recovered">最近恢复：<time datetime="${escapeHTML(recovered.toISOString())}">${escapeHTML(recovered.toLocaleString())}</time></p>` : "";
+      return `<li class="account-runtime-card" data-state="${state}">
+        <div class="account-runtime-title"><strong>${escapeHTML(accountChoiceLabel(row))}</strong><span class="account-runtime-badge">${names[state] || "状态未确认"}</span></div>
+        <p class="account-runtime-meta">平台 ${escapeHTML(row.platform_id)} · Bot ${escapeHTML(row.bot_id)}</p>
+        <p class="account-runtime-reason">${escapeHTML(accountRuntimeReason(row))}</p>${recoveredAt}
+      </li>`;
+    }).join("");
   }
   function updateControls() {
     $("refresh").disabled = busy;
@@ -2000,6 +2049,20 @@
       }
     }
     throw lastError || new Error("没有发现可用的 Companion V2 管理接口。");
+  }
+  async function refreshRuntimeStatus() {
+    if (!host || busy || runtimeStatusRead || document.visibilityState === "hidden") return;
+    runtimeStatusRead = true;
+    try {
+      const value = await api("GET", `${host.prefix}/status`);
+      if (busy) return;
+      status = value;
+      renderStatus({showNotice: false});
+    } catch {
+      $("account-runtime-summary").textContent = "状态刷新失败，当前显示上次结果；可点击刷新状态重试";
+    } finally {
+      runtimeStatusRead = false;
+    }
   }
   function publicError(error) {
     const label = labelFor(error?.code);
@@ -2125,10 +2188,12 @@
     }
   }
   boot();
+  setInterval(refreshRuntimeStatus, 10000);
+  document.addEventListener("visibilitychange", refreshRuntimeStatus);
+  window.addEventListener("focus", refreshRuntimeStatus);
   /* Native session discovery walks AstrBot's platform/persona directories and
-     is much heavier than a status read.  The page already refreshes on every
-     explicit action and on focus; 30s is enough for a background tab that is
-     left open, while halving those native scans. */
+     is much heavier than a status read. Refresh runtime state separately so
+     connection recovery remains visible while a mapping draft is being edited. */
   setInterval(() => {
     if (host && !busy && !bindingsDirty && !groupTargetsDirty
         && document.visibilityState !== "hidden" && !topologySelection) void readBindingConfig();

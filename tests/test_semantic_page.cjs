@@ -50,6 +50,7 @@ function harness(group = false) {
   class FileReaderStub {
     readAsDataURL(file) { this.result = file.dataUrl; this.onload?.(); }
   }
+  vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, "../pages/陪伴小屋/workbench-page.js"), "utf8"), {window});
   vm.runInNewContext(source, {window, AbortController, FormData: FormDataStub, FileReader: FileReaderStub});
   function root() {
     const handlers = {};

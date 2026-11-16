@@ -315,6 +315,20 @@ class NativePerceptionAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime["data"]["calendar"]["status"], "available")
         self.assertEqual(weather.locations[0].name, "测试区域")
 
+        # Role weather must not read private contact, device or conversation snapshots.
+        with patch.object(NativePerceptionWebAPI, "_status", side_effect=AssertionError("window read")):
+            role_weather = await self.call(route=path, query=b"scope=role")
+        self.assertEqual(role_weather["status"], "ok", role_weather)
+        self.assertEqual(set(role_weather["data"]), {"weather", "calendar", "observed_at"})
+        self.assertEqual(role_weather["data"]["weather"]["temperature_c"], 22.0)
+        self.assertEqual(role_weather["data"]["weather"]["humidity_pct"], 45.0)
+        self.assertEqual(role_weather["data"]["calendar"]["status"], "available")
+        for query in (b"scope=other", b"scope=role&scope=window", b"scope=role&target_id=other"):
+            invalid = await self.call(route=path, query=query)
+            self.assertEqual(invalid["data"]["code"], "perception_request_invalid")
+        denied = await self.call(route=path, query=b"scope=role", username=None)
+        self.assertEqual(denied["data"]["code"], "dashboard_identity_required")
+
         owner = RoleProfileConfigurationOwner(app.runtime)
         target = role_profile_target_for(context)
         fields = role_profile_fields()

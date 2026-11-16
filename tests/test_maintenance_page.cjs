@@ -1912,7 +1912,9 @@ test('maintenance completes the V1 task prompt workspace on the V2 model contrac
   assert.match(root.innerHTML, /运行时提示组成/);
   assert.match(root.innerHTML, /业务任务指令/);
   assert.match(root.innerHTML, /本页可编辑/);
-  assert.match(root.innerHTML, /恢复角色级继承值/);
+  assert.match(root.innerHTML, /恢复上级继承值/);
+  assert.match(root.innerHTML, /shield-check"><\/i>角色默认/);
+  assert.doesNotMatch(root.innerHTML, /<small>当前窗口<\/small>/);
   assert.match(root.innerHTML, /回复规则：\{\{task_input\}\}/);
   assert.match(root.innerHTML, /内置版本/);
   assert.match(root.innerHTML, /v7/);
@@ -1971,7 +1973,7 @@ test('maintenance completes the V1 task prompt workspace on the V2 model contrac
   assert.equal(saved[1].kind, 'conversation.reply');
   assert.equal(Object.keys(saved[1].changes).length, 0);
   assert.deepEqual(Array.from(saved[1].reset), ['prompt']);
-  assert.match(root.innerHTML, /已恢复角色级继承值/);
+  assert.match(root.innerHTML, /已恢复上级继承值/);
 
   root.input('临时覆盖', '[data-prompt-draft]');
   root.input('   ', '[data-prompt-draft]');

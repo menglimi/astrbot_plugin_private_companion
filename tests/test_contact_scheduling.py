@@ -17,6 +17,22 @@ from tests.test_role_tool_loop import answered
 
 
 class ContactSchedulingTests(ContactScheduleFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_offline_account_skips_planning_without_retiring_its_conversation(self):
+        host, batch_id = await self.scheduled()
+        app = host.application
+        connected = False
+        app.contact_schedule.bind_connection_gate(lambda _: connected)
+        row = app.contact_schedule._legacy_rows(0)[0]
+        self.assertEqual(row["batch_id"], batch_id)
+        with patch.object(app.contact_schedule, "_begin_tick", return_value=(self.clock.now(), (row,), 1, 1, 0)), \
+                patch.object(app.contact_schedule, "_plan_one", return_value=None) as plan:
+            await app.contact_schedule.advance_async()
+            plan.assert_not_called()
+            self.assertEqual(self.contacts(app), ())
+            connected = True
+            await app.contact_schedule.advance_async()
+            plan.assert_called_once()
+
     async def test_synthetic_diagnostic_uses_ephemeral_event_and_keeps_real_persona_anchor(self):
         host, batch_id = await self.scheduled(automatic=False)
         app = host.application
