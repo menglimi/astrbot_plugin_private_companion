@@ -120,6 +120,47 @@ def observe_core_reaction_response(event, response):
         logger.debug("[CompanionV2][media] reaction observer degraded", exc_info=True)
 
 
+async def _retrieve_core_reaction_image(event, reaction, *, authorize, delivery_mode):
+    """Resolve the optional original image once, sharing all retrieval guards."""
+    core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+    semantic, context, turn_id = reaction["semantic"], reaction["context"], reaction["turn_id"]
+    try:
+        settings = semantic.store.settings()
+        reaction["attempted"] = True
+        await authorize()
+        kwargs = {"review_reply": True} if reaction.get("review_reply") else {}
+        payload = await asyncio.wait_for(semantic.reactions.search_native(
+            context, turn_id, "reply-attachment", reaction["intent"], **kwargs),
+            timeout=settings["timeout_seconds"] * 3)
+        await authorize()
+        images = semantic.reactions.native_images(context, turn_id, "reply-attachment", payload)
+        if not images:
+            reaction["reason"] = "no_matching_image"
+            logger.info("[CompanionV2] 表情附件未命中 event_ref=%s reason=%s",
+                        core["prepared"].get("event_ref", "unknown"), reaction["reason"])
+            return None
+        original = images[0]
+        image = Image.fromBase64(base64.b64encode(original.content).decode("ascii"))
+        object.__setattr__(image, "_companion_v2_reaction_attachment", reaction)
+        reaction.update(payload=payload, content_hash=original.descriptor.content_hash,
+                        delivery_mode=delivery_mode, image_format=settings["reactions_image_format"],
+                        reason="prepared", dispatch_state="pending")
+        review = payload["items"][0].get("review", {})
+        logger.info("[CompanionV2][media] stage=retrieval event_ref=%s media=reaction state=prepared review=%s review_code=%s",
+                    core["prepared"].get("event_ref", "unknown"), review.get("state", "unknown"),
+                    review.get("code", "none"))
+        return image
+    except TaskError as error:
+        if core.get("denial_notified"):
+            raise
+        reaction["reason"] = error.code
+    except Exception as error:
+        reaction["reason"] = type(error).__name__
+    logger.warning("[CompanionV2] 表情附件退回正文 event_ref=%s reason=%s",
+                   core["prepared"].get("event_ref", "unknown"), reaction["reason"])
+    return None
+
+
 async def prepare_core_reaction_message(event, message, *, authorize, segment_index=0, segment_count=1):
     core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
     reaction = core.get("_reaction_reply") if isinstance(core, dict) else None
@@ -127,7 +168,7 @@ async def prepare_core_reaction_message(event, message, *, authorize, segment_in
         return message
     if reaction.get("attempted") or core.get("_reaction_media", {}).get("offers"):
         return message
-    semantic, context, turn_id = reaction["semantic"], reaction["context"], reaction["turn_id"]
+    semantic = reaction["semantic"]
     try:
         settings = semantic.store.settings()
         segment_index = max(0, int(segment_index))
@@ -141,31 +182,19 @@ async def prepare_core_reaction_message(event, message, *, authorize, segment_in
             reaction["attempted"] = True
             reaction["reason"] = "existing_image"
             return message
-        reaction["attempted"] = True
-        await authorize()
+        # ``separate_after`` is already represented as a separate native
+        # message by core_reply_media_delivery.  Do not make the last text
+        # segment wait for optional reaction retrieval; the caller will fetch
+        # and send the image after the text send has returned.
+        if mode == "separate_after":
+            reaction["deferred_after_text"] = True
+            return message
         # Retrieval can include remote embedding, reranking and visual review.
         # A timeout drops the optional attachment and preserves the primary reply.
-        kwargs = {"review_reply": True} if reaction.get("review_reply") else {}
-        payload = await asyncio.wait_for(semantic.reactions.search_native(
-            context, turn_id, "reply-attachment", reaction["intent"], **kwargs),
-            timeout=settings["timeout_seconds"] * 3)
-        await authorize()
-        images = semantic.reactions.native_images(context, turn_id, "reply-attachment", payload)
-        if not images:
-            reaction["reason"] = "no_matching_image"
-            logger.info("[CompanionV2] 表情附件未命中 event_ref=%s reason=%s",
-                        core["prepared"].get("event_ref", "unknown"), reaction["reason"])
+        image = await _retrieve_core_reaction_image(event, reaction, authorize=authorize,
+                                                    delivery_mode=mode)
+        if image is None:
             return message
-        original = images[0]
-        image = Image.fromBase64(base64.b64encode(original.content).decode("ascii"))
-        object.__setattr__(image, "_companion_v2_reaction_attachment", reaction)
-        reaction.update(payload=payload, content_hash=original.descriptor.content_hash,
-                        delivery_mode=settings["reactions_delivery_mode"], image_format=settings["reactions_image_format"],
-                        reason="prepared", dispatch_state="pending")
-        review = payload["items"][0].get("review", {})
-        logger.info("[CompanionV2][media] stage=retrieval event_ref=%s media=reaction state=prepared review=%s review_code=%s",
-                    core["prepared"].get("event_ref", "unknown"), review.get("state", "unknown"),
-                    review.get("code", "none"))
         components = list(chain) if chain else [Plain(message)] if isinstance(message, str) else []
         if settings["reactions_delivery_mode"] == "separate_before":
             components.insert(0, image)
@@ -186,6 +215,18 @@ async def prepare_core_reaction_message(event, message, *, authorize, segment_in
     logger.warning("[CompanionV2] 表情附件退回正文 event_ref=%s reason=%s",
                    core["prepared"].get("event_ref", "unknown"), reaction["reason"])
     return message
+
+
+async def prepare_deferred_core_reaction_image(event, *, authorize):
+    """Retrieve an optional separate-after image after the reply text returned."""
+    core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+    reaction = core.get("_reaction_reply") if isinstance(core, dict) else None
+    if (not isinstance(reaction, dict) or not reaction.get("deferred_after_text")
+            or reaction.get("attempted") or not reaction.get("intent")):
+        return None
+    image = await _retrieve_core_reaction_image(event, reaction, authorize=authorize,
+                                                delivery_mode="separate_after")
+    return MessageChain(chain=[image]) if image is not None else None
 
 
 def observe_core_reaction_returned(event, message, *, submit):
