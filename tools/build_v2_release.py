@@ -127,6 +127,7 @@ EXCLUDED_FILES = {
     # the runtime rule tables. Other historical inventories are source-only.
     "docs/V1_V2_CONFIG_VERIFIED_20260927.csv",
     "docs/V2_CONFIG_SURFACE_20260928.csv",
+    "docs/V1_CONFIG_BY_SEGMENT_20260925.csv",
     "fixtures/reply_efficiency_preview.json",
     # This standalone mini-game is not part of the companion plugin release.
     "tests/bubble_bonbon_smoke.mjs",
@@ -282,7 +283,7 @@ def zip_entries(path, entries):
             info = zipfile.ZipInfo(name, date_time=(2026, 9, 25, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o100644 << 16
-            archive.writestr(info, payload)
+            archive.writestr(info, payload, compresslevel=9)
     with zipfile.ZipFile(path) as archive:
         if archive.testzip() is not None:
             raise ValueError("archive CRC failed: " + path.name)
