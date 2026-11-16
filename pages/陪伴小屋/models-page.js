@@ -101,8 +101,22 @@ window.CompanionModelsPage = (() => {
   let root = null, path = null, taskPath = null, key = null, state = null, version = 0, windowAvailable = true;
   const current = (ticket, s) => ticket === version && state === s && root?.isConnected;
   const taskOf = (s, kind) => s.status?.tasks.find(task => task.kind === kind) || null;
-  const configSource = source => ({ default: "插件默认", host_conversation: "AstrBot 会话", installation: "安装级", role: "角色级", window: "当前对象" }[source] || "上级配置");
-  const windowLabel = s => s.status?.scope_kind === "group" ? "当前群聊微调" : "当前私聊微调";
+  const configSource = source => ({ default: "插件默认", host_conversation: "AstrBot 会话", installation: "全局默认", role: "角色默认", window: "会话设置" }[source] || "上级配置");
+  const windowLabel = () => "仅此会话";
+  function modelScopeHint(s, task = null, draft = null) {
+    const workbench = window.CompanionWorkbench;
+    const object = workbench.scopeObjectForEndpoint(PREFIX + taskPath);
+    const layer = draft?.layer || s.layer;
+    const lines = [`保存到：${workbench.saveScopeLabel(layer, object)}`];
+    if (task && draft) {
+      for (const name of fields) {
+        const field = task.fields[name];
+        if (field && draft.inherited[name]) lines.push(`${fieldLabel[name]}继承自：${configSource(field.inherited_source || "default")}`);
+      }
+    }
+    lines.push("下一次任务生效");
+    return workbench.scopeHintMarkup(lines.join("\n"));
+  }
   const adoption = state => ({ applied: "已采用", next_task: "下次任务", consumer_not_started: "尚未运行", failed: "采用失败", pending: "等待采用", restart_required: "需重启" }[state] || state);
   const taskName = kind => names.get(kind) || { group: "其他任务", label: "其他模型任务", description: "V2 注册任务" };
   const taskGroups = s => {
@@ -360,7 +374,7 @@ window.CompanionModelsPage = (() => {
     decision: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><circle cx="12" cy="12" r="5"/><path d="m8.5 8.5 7 7M15.5 8.5l-7 7"/>' };
   const groupIcon = name => ({ "对话": ICONS.reply, "主动与整理": ICONS.memory, "生活与成长": ICONS.life, "私人书写": ICONS.write }[name] || ICONS.lane);
   function topbar(s) {
-    return `<div class="model-topbar"><span class="model-topbar-t">${esc([window.CompanionProduct.roleLabel?.(),window.CompanionProduct.target?.()?window.CompanionProduct.targetLabel(window.CompanionProduct.target()):"角色默认 · 未选择窗口"].filter(Boolean).join(" · "))} · 任务模型</span>
+    return `<div class="model-topbar"><span class="model-topbar-t">${esc(Object.entries(window.CompanionWorkbench.scopeObjectForEndpoint(PREFIX + taskPath)).filter(([name,value]) => value && (name !== "target" || windowAvailable)).map(([,value]) => value).join(" · ") || "当前配置")} · 任务模型</span>
       <span class="model-pill ${s.status?.host_state === "running" ? "ok" : "warn"}">${esc(s.status?.host_state === "running" ? "运行中" : s.status?.host_state || "未连接")}</span>
       <button type="button" class="button small" data-model-action="refresh" ${s.loading || s.busy ? "disabled" : ""}>刷新配置</button></div>`; }
   function overview(s) { const tasks = snapshot(s), custom = tasks.filter(task => taskFields(task).some(name => task.fields[name].explicit)).length;
@@ -374,7 +388,7 @@ window.CompanionModelsPage = (() => {
   function toolbar(s) { const count = selected(s).length;
     return `<div class="model-toolbar"><label class="model-search"><span>搜索任务</span>
         <input type="search" data-model-search value="${esc(s.query)}" placeholder="名称、用途或任务键"></label>
-      <div class="model-switches" role="group" aria-label="配置作用域">${[["role", "角色默认"], ["window", windowLabel(s)]].map(([layer, label]) => `<button type="button" data-model-layer="${layer}" aria-pressed="${s.layer === layer}" class="${s.layer === layer ? "active" : ""}" ${s.busy || s.loading || layer === "window" && !windowAvailable ? "disabled" : ""}>${label}</button>`).join("")}</div>
+      <div class="model-switches" role="group" aria-label="配置作用域">${[["role", "角色默认"], ["window", windowLabel(s)]].map(([layer, label]) => `<button type="button" data-model-layer="${layer}" aria-pressed="${s.layer === layer}" class="${s.layer === layer ? "active" : ""}" ${s.busy || s.loading || layer === "window" && !windowAvailable ? "disabled" : ""}>${label}</button>`).join("")}${modelScopeHint(s)}</div>
       <label class="model-provider-filter"><span>模型提供方</span><select data-model-provider-filter aria-label="按模型提供方筛选">
         <option value="" ${s.providerFilter ? "" : "selected"}>全部提供方</option>${(s.status?.providers || []).map(provider => `<option value="${esc(provider.id)}" ${s.providerFilter === provider.id ? "selected" : ""}>${esc(providerLabel(provider))}</option>`).join("")}</select></label>
       <div class="model-switches" role="group" aria-label="视图">${[["tasks", "按任务"], ["providers", "按提供方"]].map(([id, label]) => `<button type="button" data-model-view="${id}" aria-pressed="${s.view === id}" class="${s.view === id ? "active" : ""}">${label}</button>`).join("")}</div>
@@ -407,10 +421,6 @@ window.CompanionModelsPage = (() => {
     const selected = draft.inherited[name] ? task.fields[name].inherited_value : draft.values[name];
     return `${name === "fallback" ? '<option value="">不使用备用模型</option>' : ''}${providers.map(provider => `<option value="${esc(provider.id)}" ${selected === provider.id ? "selected" : ""}>${esc(providerLabel(provider))}</option>`).join("")}
       ${selected && !providers.some(p => p.id === selected) ? `<option value="${esc(selected)}" selected>${esc(selected)} · 当前不可用</option>` : ""}`; }
-  function sourceCell(s, task, draft) { const field = task.fields.provider;
-    if (draft.inherited.provider) return `<span class="model-source inherit">跟随 ${esc(configSource(field.inherited_source || "default"))}</span>`;
-    if (field.explicit) return `<span class="model-source own">${draft.layer === "role" ? "角色单独设置" : windowLabel(s) + "单独设置"}</span>`;
-    return `<span class="model-source pending">待保存</span>`; }
   function conflictNotice(task, draft) {
     if (!draft.stale) return "";
     const value = field => String(field ?? "").slice(0, 200) || "空";
@@ -435,7 +445,7 @@ window.CompanionModelsPage = (() => {
       <div class="model-sc-ft"><code>${esc(task.kind)}</code><span class="model-grow"></span>
         ${draft.stale && !draft.pending ? `<button type="button" class="button small" data-model-action="rebase" data-model-kind="${esc(task.kind)}">已核对，保留草稿</button>` : ""}
         <button type="button" class="button small" data-model-action="discard" data-model-kind="${esc(task.kind)}" ${locked || draft.pending ? "disabled" : ""}>放弃</button>
-        <button type="button" class="button small primary" data-model-action="save-one" data-model-kind="${esc(task.kind)}" ${locked || (!draft.pending && (draft.stale || !dirty(task, draft))) ? "disabled" : ""}>${draft.pending ? "核对保存" : "保存"}</button>
+        <span class="wb-save-context"><button type="button" class="button small primary" data-model-action="save-one" data-model-kind="${esc(task.kind)}" ${locked || (!draft.pending && (draft.stale || !dirty(task, draft))) ? "disabled" : ""}>${draft.pending ? "核对保存" : "保存"}</button>${modelScopeHint(s, task, draft)}</span>
       </div></article>`;
   }
   function fnCard(s, task) { const info = taskName(task.kind), draft = s.drafts.get(task.kind), locked = s.loading || s.busy || s.denied;
@@ -476,7 +486,6 @@ window.CompanionModelsPage = (() => {
           ${fields.map(name => `<label><input type="checkbox" data-model-inherit="${name}" data-model-kind="${esc(task.kind)}" ${draft.inherited[name] ? "checked" : ""} ${fieldLocked ? "disabled" : ""}>${esc(fieldLabel[name])}</label>`).join("")}</div>
       </div>
       <div class="model-sc-rf">
-        <div class="r"><b>来源</b><span>${sourceCell(s, task, draft)}</span></div>
         <div class="r"><b>当前使用</b><span class="model-mono">${esc(main || "未设置")}${fallback ? " → " + esc(fallback) : ""}</span></div>
         <div class="r"><b>采用</b><span class="model-state ${draft?.pending ? "warn" : ""}">${esc(draft?.pending ? "待核对原保存" : adoption(task.application_state))}</span></div>
       </div>
@@ -486,7 +495,7 @@ window.CompanionModelsPage = (() => {
         <span class="model-grow"></span>
         ${draft.stale && !draft.pending ? `<button type="button" class="button small" data-model-action="rebase" data-model-kind="${esc(task.kind)}">已核对，保留草稿</button>` : ""}
         <button type="button" class="button small" data-model-action="discard" data-model-kind="${esc(task.kind)}" ${locked || draft.pending ? "disabled" : ""}>放弃</button>
-        <button type="button" class="button small primary" data-model-action="save-one" data-model-kind="${esc(task.kind)}" ${locked || (!draft.pending && (draft.stale || !dirty(task, draft))) ? "disabled" : ""}>${draft.pending ? "核对保存" : "保存"}</button>
+        <span class="wb-save-context"><button type="button" class="button small primary" data-model-action="save-one" data-model-kind="${esc(task.kind)}" ${locked || (!draft.pending && (draft.stale || !dirty(task, draft))) ? "disabled" : ""}>${draft.pending ? "核对保存" : "保存"}</button>${modelScopeHint(s, task, draft)}</span>
       </div>
     </article>`; }
   function taskCards(s) { const rows = visible(s); if (!rows.length) return '<p class="model-empty">没有匹配的任务。</p>';
@@ -2481,7 +2490,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (s.tab === "search") { searchInput(s, event); return; }
     if (s.tab === "laya") { layaInput(s, event); return; }
     fnInput(event); }
-  function click(event) { const s = state; if (!s || !root?.isConnected) return;
+  function click(event) { if (window.CompanionWorkbench.scopeHintClick(event)) return; const s = state; if (!s || !root?.isConnected) return;
     const tab = event.target.closest("[data-model-tab]");
     if (tab) { const id = tab.dataset.modelTab; if (s.tab !== id) { s.tab = id;
         if (id !== "fn" && !path) { render(); return; }
@@ -2493,6 +2502,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (s.tab === "laya") { layaClick(s, event); return; }
     fnClick(event); }
   function providerHover(event) {
+    window.CompanionWorkbench.scopeHintReset(event);
     const s = state; if (!s || !root?.isConnected) return;
     const pill = event.target.closest?.("[data-provider-pill]");
     if (event.type === "pointerover") {
@@ -2508,7 +2518,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       item.classList.toggle("is-hovered", !!s.hoverProvider && item.dataset.providerPill === s.hoverProvider));
   }
   /* ---------- lifecycle ---------- */
-  function unmount() { version++; if (root) { root.removeEventListener("input", input); root.removeEventListener("change", input); root.removeEventListener("click", click); root.removeEventListener("pointerover", providerHover); root.removeEventListener("pointerout", providerHover); }
+  function unmount() { version++; if (root) { window.CompanionWorkbench.dismissScopeHints(root); root.removeEventListener("input", input); root.removeEventListener("change", input); root.removeEventListener("click", click); root.removeEventListener("pointerover", providerHover); root.removeEventListener("pointerout", providerHover); root.removeEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.removeEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.removeEventListener("focusout", window.CompanionWorkbench.scopeHintReset); }
     if (state) { state.loading = false; state.busy = false; }
     root = null; state = null; path = taskPath = key = null; }
   function mount(element, options = {}) { unmount(); root = element; if (!root) return; const product = window.CompanionProduct;
@@ -2550,7 +2560,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     state.expOpen = { ...restoreExpanded(key), ...(state.expOpen || {}) }; state.voice.lastTest ||= null; state.voice.editorValues ||= {}; state.voice.ttsTestResults ||= {}; state.voice.ttsTesting ||= false; state.voice.createDraft ||= { type: "", id: "" }; state.image.endpointTests ||= {}; state.image.endpointTestKeys ||= {}; state.image.endpointTesting ||= null; state.configDraft ||= null; state.peak ||= { on: true, provider: "", start: "09:00", end: "12:00" }; state.testing ||= new Set(); state.peak.windows ||= "09:00-12:00\n14:00-18:00"; state.laya ||= { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "" }; state.search ||= { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "" }; state.hoverProvider = "";
     states.set(key, state);
     state.sub = ["map", "cfg", "pol"].includes(options.sub) ? options.sub : "map";
-    root.addEventListener("input", input); root.addEventListener("change", input); root.addEventListener("click", click); root.addEventListener("pointerover", providerHover); root.addEventListener("pointerout", providerHover); render();
+    root.addEventListener("input", input); root.addEventListener("change", input); root.addEventListener("click", click); root.addEventListener("pointerover", providerHover); root.addEventListener("pointerout", providerHover); root.addEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.addEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.addEventListener("focusout", window.CompanionWorkbench.scopeHintReset); render();
     if (state.tab && state.tab !== "fn") { if (!path) { render(); return; } if (state.tab === "voice" && !state.voice.loaded) voiceRefresh(state); else if (state.tab === "image" && !state.image.loaded) imageRefresh(state); else if (state.tab === "search" && !state.search.loaded) searchRefresh(state); else if (state.tab === "laya" && !state.laya.loaded) layaRefresh(state); }
     else { refresh().catch(() => {}); } }
   /* Only the mounted scope can block navigation. Retained drafts belonging to

@@ -2,7 +2,7 @@
 (() => {
   const state = {roleKey: "", root: null, people: [], selectedKey: "", person: null, section: null,
     contactSection: null, contactDrafts: {}, contactDirty: new Set(), contactPending: null,
-    loading: false, busy: false, error: "", message: "", failed: false, dirty: new Set(), drafts: {}, pending: null, ticket: 0};
+    loading: false, busy: false, error: "", message: "", failed: false, dirty: new Set(), drafts: {}, pending: null, ticket: 0, confirmation: null};
   const esc = value => String(value ?? "").replace(/[&<>\"']/g, char => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;"}[char]));
   const product = () => window.CompanionProduct;
   const routeOf = person => ({platform: person.platform, bot_id: person.bot_id,
@@ -12,6 +12,44 @@
   const operationKey = () => window.crypto?.randomUUID?.()
     || `relationship-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+  const fieldLabels = {default_nickname: "对用户的称呼", role_relation: "关系定位",
+    user_gender: "性别", user_birthday: "生日", user_occupation: "职业", interaction: "相处方式",
+    extra: "其他补充", enabled: "主动联系", automatic_enabled: "后台主动联系",
+    quiet_enabled: "私聊免打扰", note: "个人联系偏好", style_prompt: "表达偏好"};
+  const hint = (text, label = "查看生效范围") => window.CompanionWorkbench.scopeHintMarkup(text, label);
+  const isDirty = () => state.dirty.size > 0 || state.contactDirty.size > 0;
+  const changedFields = () => [...state.dirty, ...state.contactDirty].map(name => fieldLabels[name] || name);
+  function discardChanges() {
+    state.drafts = {...(state.section?.settings || {})};
+    state.contactDrafts = {...(state.contactSection?.settings || {})};
+    state.dirty.clear();
+    state.contactDirty.clear();
+    state.pending = null;
+    state.contactPending = null;
+    render();
+    return true;
+  }
+  async function saveBeforeLeave() {
+    if (state.loading || state.busy) return {error: "正在处理，请稍后再试。"};
+    if (state.dirty.size) await save();
+    if (state.dirty.size) return {error: state.error || "关系资料尚未保存。"};
+    if (state.contactDirty.size) await saveContact();
+    return isDirty() ? {error: state.error || "主动联系设置尚未保存。"} : true;
+  }
+  function confirmChanges() {
+    if (state.confirmation) return state.confirmation;
+    if (state.loading || state.busy) return Promise.resolve(false);
+    if (!isDirty()) return Promise.resolve(true);
+    state.confirmation = Promise.resolve(window.CompanionConfirm({
+      title: "还有未保存的改动",
+      message: "可以保存后继续，或放弃这些改动。",
+      details: [{title: `${product().roleLabel(product().role())} 与 ${state.person.display_name || state.person.native_account_id} 的关系`, fields: changedFields()}],
+      confirmText: "放弃并继续", cancelText: "继续编辑",
+      onSave: saveBeforeLeave, onConfirm: discardChanges, danger: true,
+    })).then(ok => ok === true).finally(() => { state.confirmation = null; });
+    return state.confirmation;
+  }
+
   function render() {
     const root = state.root;
     if (!root) return;
@@ -19,7 +57,7 @@
     const role = api.role();
     const person = state.person;
     const options = state.people.length > 1
-      ? `<label class="self-relationship-picker"><span>核心用户</span><select data-self-core-picker aria-label="选择核心用户"><option value="">选择核心用户</option>${state.people.map(item => `<option value="${esc(routeKey(item))}"${person && routeKey(person) === routeKey(item) ? " selected" : ""}>${esc(item.display_name || item.native_account_id || "未命名用户")} · ${esc(item.platform || "未知平台")} ${esc(item.native_account_id || "")}</option>`).join("")}</select></label>`
+      ? `<label class="self-relationship-picker"><span>核心用户</span><select data-self-core-picker aria-label="选择核心用户"${state.loading || state.busy ? " disabled" : ""}><option value="">选择核心用户</option>${state.people.map(item => `<option value="${esc(routeKey(item))}"${person && routeKey(person) === routeKey(item) ? " selected" : ""}>${esc(item.display_name || item.native_account_id || "未命名用户")}${state.people.some(other => other !== item && other.display_name === item.display_name) ? ` · ${esc(item.account_name || item.account_id || item.native_account_id)}` : ""}</option>`).join("")}</select></label>`
       : "";
     const error = state.error ? `<p class="self-relationship-feedback is-error" role="alert">${esc(state.error)}</p>` : "";
     const message = state.message ? `<p class="self-relationship-feedback${state.failed ? " is-error" : ""}" role="status">${esc(state.message)}</p>` : "";
@@ -42,7 +80,7 @@
     const platform = api.platformLabel?.({platform_id: person.platform}) || person.platform || "未知平台";
     const account = person.account_name || person.account_id || "未知账号";
     const name = person.display_name || person.native_account_id || "未命名用户";
-    const identity = `<header class="self-relationship-identity"><span class="self-relationship-avatar" aria-hidden="true"><i data-lucide="user-round"></i></span><div class="self-relationship-identity-main"><div class="self-relationship-name-row"><h3>${esc(name)}</h3><span class="self-relationship-badge">核心用户</span>${options}</div><div class="self-relationship-meta"><span><b>平台</b>${esc(platform)}</span><span><b>用户账号</b>${esc(person.native_account_id || "—")}</span><span><b>Bot 账号</b>${esc(account)}</span><span><b>当前角色</b>${esc(api.roleLabel(role))}</span></div></div><button type="button" class="self-relationship-refresh" data-self-relationship-action="reload" aria-label="重新读取" title="重新读取"><i data-lucide="refresh-cw"></i></button></header>`;
+    const identity = `<header class="self-relationship-identity"><span class="self-relationship-avatar" aria-hidden="true"><i data-lucide="user-round"></i></span><div class="self-relationship-identity-main"><div class="self-relationship-name-row"><h3>${esc(name)}</h3><span class="self-relationship-badge">核心用户</span>${options}</div><div class="self-relationship-meta"><span><b>角色</b>${esc(api.roleLabel(role))}</span><span><b>Bot</b>${esc(account)}</span>${hint(`平台：${platform}；用户账号：${person.native_account_id || "—"}。这里只选择关系资料的编辑对象，不会切换页面的会话。`, "查看用户信息")}</div></div><button type="button" class="self-relationship-refresh" data-self-relationship-action="reload" aria-label="重新读取" title="重新读取"><i data-lucide="refresh-cw"></i></button></header>`;
     const settings = state.section?.settings || {};
     const fields = [
       ["default_nickname", "对用户的称呼", "line", 100],
@@ -60,35 +98,36 @@
     const contactFields = [
       ["enabled", "主动联系", "toggle"],
       ["automatic_enabled", "后台主动联系", "toggle"],
-      ["quiet_enabled", "此窗口免打扰", "toggle"],
+      ["quiet_enabled", "私聊免打扰", "toggle"],
       ["note", "个人联系偏好", "area"],
       ["style_prompt", "表达偏好", "area"],
     ];
     const contactControls = contactFields.map(([name, label, kind]) => {
       const provenance = state.contactSection?.provenance?.[name] || {};
       const explicit = provenance.explicit === true;
-      const source = explicit ? "此窗口单独设置"
-        : provenance.layer === "relationship" ? "沿用既有用户设置" : "跟随全局默认";
+      const source = explicit ? "此私聊单独设置"
+        : provenance.layer === "relationship" ? "继承自该用户的关系设置"
+        : provenance.layer === "role" ? "继承自角色默认" : "继承自全局默认";
       const current = state.contactDrafts[name] ?? contactSettings[name];
-      if (kind === "toggle") return `<label class="self-contact-switch">
+      if (kind === "toggle") return `<div class="self-contact-switch"><label>
         <input type="checkbox" data-self-contact-field="${name}"${current === true ? " checked" : ""}
           aria-label="${label}"${state.loading || state.busy || !state.contactSection ? " disabled" : ""}>
-        <span><strong>${label}</strong><small>${source}</small></span></label>`;
-      return `<label class="self-relationship-field is-wide"><span>${label}<small>${source}</small></span>
-        <textarea data-self-contact-field="${name}" rows="${name === "note" ? 3 : 4}" maxlength="2000"
-          ${state.loading || state.busy || !state.contactSection ? " disabled" : ""}>${esc(current ?? "")}</textarea></label>`;
+        <strong>${label}</strong></label>${hint(source, `${label}的来源`)}</div>`;
+      return `<div class="self-relationship-field is-wide"><div class="self-contact-field-label"><label for="self-contact-${name}">${label}</label>${hint(source, `${label}的来源`)}</div>
+        <textarea id="self-contact-${name}" data-self-contact-field="${name}" rows="${name === "note" ? 3 : 4}" maxlength="2000"
+          ${state.loading || state.busy || !state.contactSection ? " disabled" : ""}>${esc(current ?? "")}</textarea></div>`;
     }).join("");
-    const contactPanel = state.contactSection ? `<section class="self-contact-settings" aria-label="当前私聊窗口的主动联系设置">
-      <header class="self-contact-heading"><h4>主动联系</h4><span>当前私聊窗口</span></header>
+    const contactPanel = state.contactSection ? `<section class="self-contact-settings" aria-label="该用户私聊的主动联系设置">
+      <header class="self-contact-heading"><h4>主动联系</h4><span>${esc(name)}的私聊</span></header>
       <div class="self-contact-fields">${contactControls}</div>
       <footer class="self-relationship-actions"><span>${state.contactDirty.size ? `${state.contactDirty.size} 项未保存`
-        : state.loading ? "正在读取…" : "已同步"}</span><button type="button" class="button small primary"
+        : state.loading ? "正在读取…" : "已同步"}</span><div class="self-save-actions wb-save-context">${hint(`保存到：${api.roleLabel(role)} 与 ${name}的私聊。Bot：${account}。`)}<button type="button" class="button small primary" title="${esc(`保存到：${api.roleLabel(role)} 与 ${name}的私聊`)}"
           data-self-relationship-action="save-contact"${state.contactDirty.size && !state.busy && !state.loading ? "" : " disabled"}>
-          ${state.busy && state.contactPending ? "保存中…" : "保存联系设置"}</button></footer>
+          ${state.busy && state.contactPending ? "保存中…" : "保存"}</button></div></footer>
     </section>` : "";
     const waiting = state.loading && !state.section
       ? `<p class="self-relationship-empty" role="status">正在读取关系资料…</p>` : "";
-    const actions = `<footer class="self-relationship-actions"><span>${state.dirty.size ? `${state.dirty.size} 项未保存` : state.loading ? "正在读取…" : "已同步"}</span><button type="button" class="button small primary" data-self-relationship-action="save"${state.dirty.size && state.section && !state.busy && !state.loading ? "" : " disabled"}>${state.busy ? "保存中" : "保存资料"}</button></footer>`;
+    const actions = `<footer class="self-relationship-actions"><span>${state.dirty.size ? `${state.dirty.size} 项未保存` : state.loading ? "正在读取…" : "已同步"}</span><div class="self-save-actions wb-save-context">${hint(`保存到：${api.roleLabel(role)} 与 ${name}的关系。Bot：${account}。`)}<button type="button" class="button small primary" title="${esc(`保存到：${api.roleLabel(role)} 与 ${name}的关系`)}" data-self-relationship-action="save"${state.dirty.size && state.section && !state.busy && !state.loading ? "" : " disabled"}>${state.busy ? "保存中" : "保存"}</button></div></footer>`;
     root.innerHTML = `${identity}${error}${message}${waiting}<div class="self-relationship-fields">${controls}</div>${actions}${contactPanel}`;
     window.lucide?.createIcons();
   }
@@ -131,15 +170,15 @@
       const directory = await api.acquaintanceDirectory();
       if (ticket !== state.ticket) return;
       const matching = (directory.persons || []).filter(person => person.private_target === true
-        && person.role_id === role?.role_id && (!owner?.bot_id || person.bot_id === owner.bot_id)
+        && person.role_id === role?.role_id && person.bot_id === owner?.bot_id
         && person.identity_tier === "core");
-      const bySubject = new Map();
+      const byRoute = new Map();
       for (const person of matching) {
-        const existing = bySubject.get(person.subject_id);
+        const existing = byRoute.get(routeKey(person));
         if (!existing || person.settings_available === true && !existing.settings_available)
-          bySubject.set(person.subject_id, person);
+          byRoute.set(routeKey(person), person);
       }
-      state.people = [...bySubject.values()].sort((a, b) =>
+      state.people = [...byRoute.values()].sort((a, b) =>
         String(a.display_name || a.native_account_id).localeCompare(String(b.display_name || b.native_account_id), "zh-CN"));
       const selected = state.people.find(person => routeKey(person) === state.selectedKey)
         || (state.people.length === 1 ? state.people[0] : null);
@@ -260,6 +299,11 @@
   }
 
   function bind(root) {
+    root.addEventListener("focusin", event => window.CompanionWorkbench.scopeHintReset(event));
+    root.addEventListener("focusout", event => window.CompanionWorkbench.scopeHintReset(event));
+    root.addEventListener("pointerover", event => window.CompanionWorkbench.scopeHintReset(event));
+    root.addEventListener("pointerout", event => window.CompanionWorkbench.scopeHintReset(event));
+    root.addEventListener("keydown", event => window.CompanionWorkbench.scopeHintKeydown(event));
     root.addEventListener("input", event => {
       const contact = event.target.closest?.("[data-self-contact-field]");
       if (contact && contact.type !== "checkbox") { updateContactField(contact); return; }
@@ -275,13 +319,14 @@
       const count = root.querySelector(".self-relationship-actions>span");
       if (count) count.textContent = state.dirty.size ? `${state.dirty.size} 项未保存` : "已同步";
     });
-    root.addEventListener("change", event => {
+    root.addEventListener("change", async event => {
       const contact = event.target.closest?.("[data-self-contact-field]");
       if (contact) { updateContactField(contact); return; }
       const picker = event.target.closest?.("[data-self-core-picker]");
       if (!picker) return;
       const person = state.people.find(item => routeKey(item) === picker.value);
-      if (!person) return;
+      picker.value = state.selectedKey;
+      if (!person || person === state.person || !await confirmChanges()) return;
       state.person = person;
       state.selectedKey = routeKey(person);
       state.section = null;
@@ -311,8 +356,9 @@
       }
     });
     root.addEventListener("click", event => {
+      if (window.CompanionWorkbench.scopeHintClick(event)) return;
       const action = event.target.closest?.("[data-self-relationship-action]")?.dataset.selfRelationshipAction;
-      if (action === "reload") void readDirectory();
+      if (action === "reload") void confirmChanges().then(ok => { if (ok) return readDirectory(); });
       if (action === "save") void save();
       if (action === "save-contact") void saveContact();
     });
@@ -329,6 +375,9 @@
     const roleKey = JSON.stringify([role?.role_id || "", owner?.bot_id || ""]);
     if (roleKey !== state.roleKey) {
       state.roleKey = roleKey;
+      ++state.ticket;
+      state.loading = false;
+      state.busy = false;
       state.selectedKey = "";
       state.person = null;
       state.section = null;
@@ -346,7 +395,7 @@
   }
 
   document.addEventListener("companion:relationship-profile-updated", () => {
-    if (!state.person || !state.root?.isConnected) return;
+    if (!state.person || !state.root?.isConnected || isDirty() || state.busy) return;
     const ticket = ++state.ticket;
     state.loading = true;
     render();
@@ -357,5 +406,5 @@
       }
     });
   });
-  window.CompanionSelfRelationship = {mount};
+  window.CompanionSelfRelationship = {mount, isDirty, changedFields, saveBeforeLeave, discardChanges};
 })();

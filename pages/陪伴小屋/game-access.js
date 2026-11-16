@@ -29,7 +29,7 @@ window.CompanionGameAccess = (() => {
     const label = [product.scopeLabel?.(), target && targetLabel(target)].filter(Boolean).join(" · ");
     root.innerHTML = `<section class="extension-live-panel" aria-label="当前私聊游戏权限">
       <h3>当前私聊游戏权限</h3><p>${esc(label || "当前私聊窗口")}</p>
-      ${choices.length > 1 ? `<label>授权对象 <select data-game-access-target aria-label="选择游戏授权的私聊窗口" ${busy ? "disabled" : ""}>
+      ${choices.length ? `<label>授权对象 <select data-game-access-target aria-label="选择游戏授权的私聊窗口" ${busy ? "disabled" : ""}>
         ${target?.scope_kind !== "private" ? '<option value="">请选择私聊窗口</option>' : ""}
         ${choices.map(item => `<option value="${esc(item.target_id)}" ${item.target_id === target?.target_id ? "selected" : ""}>${esc(targetLabel(item))}</option>`).join("")}
       </select></label>` : ""}

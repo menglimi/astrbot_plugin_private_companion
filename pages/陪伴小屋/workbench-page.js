@@ -1,13 +1,12 @@
 /* 统一配置工作台 · 内核
    取代此前 reply / expression / semantic / config-editor 各自实现的保存生命周期。
    各页只声明「字段 + 作用范围 + 接口」，草稿、脏状态、幂等重试、版本冲突、
-   层轨与幽灵值由本文件统一负责。
+   范围与来源提示由本文件统一负责。
 
    设计要点：
    - 声明式字段：kind/minimum/maximum 全部来自后端下发的 `fields` 契约，
      页面不再硬编码一份可能与校验器漂移的范围。
-   - 层轨：后端下发 `layers`（继承链，外→内）与 `provenance`（每字段实际来源）。
-     本文件把它画成可交互的层轨，并让悬停某层时其余层退后。
+   - 范围：按后端 write_layer 与 provenance 展示保存目标和当前来源，详细信息按需展开。
    - 幂等：保存沿用 operation_key + edit_token，结果未确认时锁编辑并只重试原请求。
    - 草稿：sessionStorage 按 installation + operator + 当前对象/角色 + group 隔离，切页不丢。 */
 "use strict";
@@ -25,11 +24,8 @@ window.CompanionWorkbench = (() => {
     installation: "所有角色共用", role: "只对这个角色生效",
     relationship: "只对这个人生效", window: "只在这个对话生效", scope: "生效范围",
   };
-  const LAYER_SHORT_LABELS = {
-    installation: "安装", role: "角色", relationship: "关系", window: "窗口",
-  };
   const LAYER_ORIGINS = {
-    installation: "所有角色", role: "这个角色", relationship: "这个人", window: "这个对话",
+    installation: "全局默认", role: "角色默认", relationship: "用户关系设置", window: "会话设置",
   };
   const KIND = {
     boolean: "bool", integer: "int", text: "text", probability: "float", weight: "float",
@@ -525,22 +521,100 @@ window.CompanionWorkbench = (() => {
     ? Number((value / 100).toFixed(Math.max(0, item.decimals + 2))) : value;
 
   /* === 渲染 === */
-  function railMarkup(state, name, item, provenance, container) {
-    const source = provenance?.[name]?.layer ?? null;
-    const writeLayer = item.writeLayer || container.writeLayer;
-    const nodes = container.layers.map(layer => {
-      const sourceClass = layer === source ? " is-source" : "";
-      const editable = item.editable.length && !item.editable.includes(layer) ? " is-locked" : " is-editable";
-      const label = LAYER_LABELS[layer] || layer;
-      const shortLabel = LAYER_SHORT_LABELS[layer] || layer;
-      const inherits = (!item.editable.length || item.editable.includes(layer))
-        ? (layer === writeLayer ? "本次保存写入这一层" : `${label}层可写`)
-        : `${shortLabel}层不适用于这一字段`;
-      return `<span class="wb-node${sourceClass}${editable}" data-layer="${e(layer)}"`
-        + ` title="${e(label)}层 · ${e(layer === source ? "当前生效值来自这里" : inherits)}"></span>`;
-    }).join("");
-    return `<div class="wb-rail${container.drawRails ? "" : " is-drawn"}" data-rail="${e(name)}"`
-      + ` aria-hidden="true">${nodes}</div>`;
+  let hintSequence = 0;
+  function scopeHintMarkup(text, label = "查看保存范围与来源") {
+    const id = `wb-context-${++hintSequence}`;
+    return `<span class="wb-context"><button type="button" class="wb-context-toggle" data-scope-hint`
+      + ` aria-label="${e(label)}" aria-expanded="false" aria-controls="${id}" aria-describedby="${id}">ⓘ</button>`
+      + `<span class="wb-context-tip" id="${id}" role="tooltip" popover="manual">${e(text)}</span></span>`;
+  }
+  function hintContext(target) {
+    return target.closest?.(".wb-context") || target.closest?.(".wb-save-context")?.querySelector(".wb-context");
+  }
+  function showScopeHint(context) {
+    const tip = context?.querySelector(".wb-context-tip");
+    if (!tip) return;
+    tip.showPopover();
+    const trigger = context.querySelector("[data-scope-hint]").getBoundingClientRect();
+    const bounds = tip.getBoundingClientRect(), gap = 8;
+    const width = document.documentElement.clientWidth, height = document.documentElement.clientHeight;
+    tip.style.left = `${Math.max(gap, Math.min(trigger.left, width - bounds.width - gap))}px`;
+    tip.style.top = `${Math.max(gap, trigger.bottom + gap + bounds.height <= height
+      ? trigger.bottom + gap : trigger.top - bounds.height - gap)}px`;
+  }
+  function hideScopeHint(context) {
+    context?.querySelector(".wb-context-tip")?.hidePopover();
+  }
+  function dismissScopeHints(root) {
+    root?.querySelectorAll(".wb-context").forEach(context => {
+      context.classList.remove("is-open");
+      context.querySelector("[data-scope-hint]")?.setAttribute("aria-expanded", "false");
+      hideScopeHint(context);
+    });
+  }
+  function scopeHintClick(event) {
+    const button = event.target.closest?.("[data-scope-hint]");
+    if (!button) return false;
+    event.stopPropagation?.();
+    const context = button.closest(".wb-context");
+    const open = button.getAttribute("aria-expanded") !== "true";
+    button.setAttribute("aria-expanded", String(open));
+    context.classList.toggle("is-open", open);
+    context.classList.toggle("is-dismissed", !open);
+    if (open) showScopeHint(context); else hideScopeHint(context);
+    return true;
+  }
+  function scopeHintKeydown(event) {
+    if (event.key !== "Escape") return false;
+    const context = hintContext(event.target);
+    if (!context) return false;
+    context.classList.remove("is-open");
+    context.classList.add("is-dismissed");
+    context.querySelector("[data-scope-hint]")?.setAttribute("aria-expanded", "false");
+    hideScopeHint(context);
+    event.preventDefault();
+    event.stopPropagation?.();
+    return true;
+  }
+  function scopeHintReset(event) {
+    const context = hintContext(event.target);
+    if (!context) return;
+    if (["pointerout", "focusout"].includes(event.type)) {
+      const wrapper = context.closest(".wb-save-context") || context;
+      if (wrapper.contains(event.relatedTarget)) return;
+      if (!context.classList.contains("is-open")) hideScopeHint(context);
+      return;
+    }
+    context.classList.remove("is-dismissed");
+    if (event.type === "pointerover" && event.pointerType === "touch") return;
+    if (event.type === "focusin" && !event.target.matches(":focus-visible")) return;
+    showScopeHint(context);
+  }
+  function scopeObjectForEndpoint(endpoint) {
+    const product = window.CompanionProduct;
+    const match = String(endpoint || "").match(/\/targets\/([^/]+)\/roles\/([^/]+)(?:\/|$)/);
+    const target = match && product?.targets?.().find(item => item.target_id === match[1]);
+    const role = target?.roles?.find(item => item.role_id === match[2]);
+    return {role: role ? product.roleLabel?.(role) || role.role_name || "当前角色" : "",
+      target: target ? product.targetLabel?.(target) || target.display_name || "所选会话" : "",
+      account: target ? product.accountLabel?.(target) || target.account_name || "" : ""};
+  }
+  function saveScopeLabel(layer, object = {}) {
+    const label = {installation: "全局默认设置", role: object.role ? `${object.role}的角色默认` : "当前角色默认",
+      relationship: `${object.role || "当前角色"}与${object.target || "所选用户"}的关系设置`,
+      window: object.target ? `${object.target}的覆盖设置` : "当前窗口覆盖"}[layer] || "当前配置";
+    const details = [layer === "window" && object.role ? `角色：${object.role}` : "",
+      layer !== "installation" && object.account ? `Bot：${object.account}` : ""].filter(Boolean);
+    return label + (details.length ? `（${details.join(" · ")}）` : "");
+  }
+  function fieldScopeMarkup(state, name, item, provenance, container) {
+    const source = provenance?.[name]?.layer;
+    const lines = [`保存到：${saveScopeLabel(item.writeLayer || container.writeLayer, container.scopeObject)}`];
+    if (source) lines.push(`${provenance[name].explicit === false ? "继承自" : "当前值来自"}：${LAYER_ORIGINS[source] || source}`);
+    if (provenance?.[name]?.explicit === false && state.draft[name] !== state.base?.[name]) {
+      lines.push(`覆盖前的继承值：${displayValue(item, state.base?.[name])}`);
+    }
+    return scopeHintMarkup(lines.join("\n"), `${item.label || name}的保存范围与来源`);
   }
 
   function controlMarkup(item, value, locked, state) {
@@ -901,20 +975,7 @@ window.CompanionWorkbench = (() => {
     const inherited = provenance.explicit === false && provenance.layer !== null;
     const layerEditable = !item.editable.length || item.editable.includes(item.writeLayer || container.writeLayer);
     const locked = state.locked() || !layerEditable;
-    /* 控件已显示当前值；只有草稿覆盖继承值时，额外标出被替换的来源值。 */
-    let label = item.label || name;
-    if (inherited && container.presentation !== "journal") {
-      const ghost = state.base?.[name];
-      const shown = displayValue(item, ghost);
-      label = e(item.label || name);
-      if (value !== ghost) {
-        label += ` <span class="wb-ghost" title="当前草稿覆盖前的继承值">继承值 ${e(shown)}</span>`;
-      }
-    } else {
-      label = e(item.label || name);
-    }
-    const chip = inherited
-      ? `<span class="wb-chip">继承自${e(LAYER_ORIGINS[provenance.layer] || LAYER_LABELS[provenance.layer] || provenance.layer)}</span>` : "";
+    const label = e(item.label || name);
     const reset = inherited && !locked
       ? `<button type="button" class="wb-reset" data-wb-reset="${e(name)}">${icon("undo-2")}恢复继承</button>` : "";
     const dirty = state.base && value !== state.base[name] ? " is-dirty" : "";
@@ -926,12 +987,11 @@ window.CompanionWorkbench = (() => {
     const helpId = `${state.instanceId}-help-${name}`;
     const errorId = `${state.instanceId}-error-${name}`;
     return `<div class="wb-field${dirty}${inheritClass}${layerEditable ? "" : " is-layer-locked"}" data-wb-row="${e(name)}"${visible ? "" : " hidden"}>`
-      + (container.presentation === "journal" ? "" : railMarkup(state, name, item, state.status?.provenance, container))
-      + `<div class="wb-field-main"><span class="wb-label">${label}</span>`
+      + `<div class="wb-field-main"><span class="wb-label">${label}${fieldScopeMarkup(state, name, item, state.status?.provenance, container)}</span>`
       + (item.help && container.presentation !== "journal" ? `<p class="wb-help" id="${e(helpId)}">${e(item.help)}</p>` : "")
       + `<div class="wb-control">${controlMarkup(item, value, locked, state)}</div>`
       + `<p class="wb-field-error" id="${e(errorId)}" data-wb-field-error></p></div>`
-      + `<div class="wb-field-side">${chip}${reset}</div></div>`;
+      + `<div class="wb-field-side">${reset}</div></div>`;
   }
 
   function cardMarkup(state, container, titleAbove = "") {
@@ -1018,10 +1078,6 @@ window.CompanionWorkbench = (() => {
     const body = s.status ? blocks
       : `<div class="wb-skeleton" role="status" aria-label="正在读取设置">`
         + `<div class="wb-skeleton-row"></div><div class="wb-skeleton-row"></div><div class="wb-skeleton-row"></div></div>`;
-    const legend = !journal && s.status && container.layers.length > 1
-      ? `<div class="wb-rail-legend">${container.layers.map(layer =>
-          `<b>${e(LAYER_SHORT_LABELS[layer] || layer)}</b>`).join("<span>·</span>")}`
-        + `</div>` : "";
      const pendingText = s.pending
        ? (s.pendingReason
          ? `保存结果尚未确认（${s.pendingReason}）。可能已经写入；核对会沿用同一个操作标识，不会重复保存。`
@@ -1030,34 +1086,30 @@ window.CompanionWorkbench = (() => {
     const writeLayers = s.status ? [...new Set(Object.values(container.fields)
       .filter(item => !item.editable.length || item.editable.includes(item.writeLayer || container.writeLayer))
       .map(item => item.writeLayer || container.writeLayer))] : [];
-    const saveScopes = {installation:"全局默认设置", role:"当前角色默认",
-      relationship:"当前角色与所选用户的关系设置", window:"当前窗口覆盖"};
     const scopeLabel = s.status ? (writeLayers.length ? writeLayers : [container.writeLayer])
-      .map(layer => saveScopes[layer] || "当前配置").join("、")
+      .map(layer => saveScopeLabel(layer, container.scopeObject)).join("、")
       + (container.scopeNote ? " · " + container.scopeNote : "") : "";
     const apply = s.status?.apply_mode === "next_task" ? "下一个任务生效" : "立即生效";
     const heading = journal ? "" : `<header class="wb-card-head"><div class="wb-card-copy">`
       + `${titleAbove === container.title ? "" : `<h3>${e(container.title)}</h3>`}${container.note ? `<p>${e(container.note)}</p>` : ""}</div>`
-      + (scopeLabel ? `<span class="wb-scope">${e(scopeLabel)} · ${e(apply)}</span>` : "")
       + `</header>`;
     return `<section class="wb-card${journal ? " wb-journal" : ""}" data-wb-card="${e(container.group)}">`
       + heading + `<div class="wb-card-body">`
        + (s.pending ? `<div class="wb-pending"><p>${e(pendingText)}</p>`
            + `<button type="button" class="button small" data-wb-action="retry"${s.busy ? " disabled" : ""}>核对原保存结果</button></div>` : "")
-      + legend + body
+      + body
       + `<div class="wb-actions">`
-      + `<button type="button" class="wb-save${s.busy ? " is-busy" : ""}${s.savedState || ""}"`
+      + `<span class="wb-save-context"><button type="button" class="wb-save${s.busy ? " is-busy" : ""}${s.savedState || ""}"`
       + ` data-wb-action="save"${s.locked() || Object.keys(s.conflicts).length ? " disabled" : ""}>`
       + `<span class="wb-save-label">${e(s.busy ? "保存中…" : s.stale ? "核对最新配置" : "保存")}</span>`
       + `<svg class="wb-ring" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7"></circle></svg>`
       + `<svg class="wb-check" viewBox="0 0 19 19" aria-hidden="true"><path d="M4 10l4 4 7-9"></path></svg>`
-      + `</button>`
+      + `</button>${scopeLabel ? scopeHintMarkup(`保存到：${scopeLabel}\n${apply}`) : ""}</span>`
       + `<button type="button" class="button" data-wb-action="reset"${s.locked() || !s.dirty() ? " disabled" : ""}>使用已保存配置</button>`
       + (container.resettable
         ? `<button type="button" class="button" data-wb-action="inherit"${s.locked() ? " disabled" : ""}>全部恢复继承</button>`
         : "")
       + `<span class="wb-actions-note">${e(Object.keys(s.conflicts).length ? `${Object.keys(s.conflicts).length} 项修改待核对` : s.stale ? "改动已保留，待核对当前配置" : s.dirty() ? "有未保存的改动" : "与已保存一致")}</span>`
-      + (journal && scopeLabel ? `<span class="wb-scope">${e(scopeLabel)}</span>` : "")
       + `</div></div></section>`;
   }
 
@@ -1085,7 +1137,7 @@ window.CompanionWorkbench = (() => {
       prefetch = null, unavailable = "", statusRestriction = null,
       audit = null, onStatus = null, scopeKey: scopeKeyOverride = null,
       /* 可选补充说明；保存范围始终由后端 scope 和字段 write_layer 确定。 */
-      scopeNote = "",
+      scopeNote = "", scopeObject = null,
       /* 有分区的读取键不是 `settings`、保存端点不是 `/configure`、
          令牌字段与重置字段也各有叫法。这些在 spec 里声明，不一处分叉一份内核。
          `resetKey` 默认不发送：只有真的支持恢复继承的分区才声明它，
@@ -1124,7 +1176,7 @@ window.CompanionWorkbench = (() => {
        status: null, draft: null, base: null, pending: null, pendingReason: "",
       busy: false, loading: false, denied: false, stale: false, conflicts: {},
       notice: "", bad: false, ok: false, savedState: "", ticket: 0,
-      drawRails: true, container: null, timer: null,
+      container: null, timer: null,
       instanceId: `wb-${++instanceSequence}`, activeGroupId: initialSection, resetFields: [],
       visibleGroupIds: null,
     };
@@ -1268,12 +1320,12 @@ window.CompanionWorkbench = (() => {
         ? status.layers : ["installation", "role", "window"];
       return {
         group, title, note, order: names, fields, layers, groups, scopeNote, navigationLimit,
+        scopeObject: typeof scopeObject === "function" ? scopeObject() : scopeObject || scopeObjectForEndpoint(endpoint),
         presentation, sectionTabPrefix,
         writeLayer: status.scope || layers[layers.length - 1],
         /* 只有声明了 resetKey 的分区才提供「全部恢复继承」：
            没有这条协议的分区点了会写出错误请求。 */
         resettable: Boolean(resetKey),
-        drawRails: state.drawRails,
       };
     }
 
@@ -1417,19 +1469,8 @@ window.CompanionWorkbench = (() => {
           + `<p class="wb-notice">${icon("info")}<span>正在读取设置…</span></p></div>`;
         return;
       }
-      const wasDrawing = state.drawRails;
       state.resetFields = resets_;
       root.innerHTML = `<div class="wb">${noticeMarkup(state)}${conflictMarkup()}${cardMarkup(state, state.container, root.closest?.(".console-section, .decision-stage")?.querySelector?.(":scope > header h2")?.textContent?.trim())}</div>`;
-      /* 层轨绘制只做一次：重绘之后不再重播。 */
-      if (wasDrawing && state.status) {
-        state.drawRails = false;
-        const rails = root.querySelectorAll(".wb-rail");
-        rails.forEach((node, index) => {
-          node.classList.add("is-drawing");
-          node.style.animationDelay = `${Math.min(index, 8) * 22}ms`;
-        });
-        setTimeout(() => rails.forEach(node => node.classList.remove("is-drawing")), 900);
-      }
       window.lucide?.createIcons({nodes: root.querySelectorAll("[data-lucide]")});
       wireFieldDescriptions(root);
       /* 台词气泡的 textarea 按内容自动长高；重绘后统一量一次。 */
@@ -1517,6 +1558,7 @@ window.CompanionWorkbench = (() => {
     }
 
     function onSectionKeydown(event) {
+      if (scopeHintKeydown(event)) return;
       /* Ctrl/Command+S 保存当前分区。
        * 表单有二十多个字段时，键盘用户改完一项要一路 Tab 到按钮；
        * 而浏览器自己的「保存网页」对话框会在这个习惯动作里弹出来。
@@ -1582,28 +1624,6 @@ window.CompanionWorkbench = (() => {
       });
     }
 
-    /* 悬停：亮起该层，其余退后。用 data 属性驱动，交给 CSS。
-       具名函数，这样 unmount 能真的把它们摘掉——匿名闭包摘不掉，
-       宿主换绑到同一个元素上时就会越叠越多份。 */
-    function onHover(event) {
-      const node = event.target.closest?.(".wb-node");
-      if (!node) return;
-      const row = node.closest(".wb-field");
-      if (!row) return;
-      row.dataset.focusLayer = node.dataset.layer || "";
-      row.querySelectorAll(".wb-node").forEach(item =>
-        item.classList.toggle("is-focus", item === node));
-    }
-
-    function onUnhover(event) {
-      const node = event.target.closest?.(".wb-node");
-      if (!node) return;
-      const row = node.closest(".wb-field");
-      if (!row) return;
-      delete row.dataset.focusLayer;
-      row.querySelectorAll(".wb-node").forEach(item => item.classList.remove("is-focus"));
-    }
-
     /* 已绑定的宿主元素。用实例级的 WeakSet 而不是元素上的 data 属性：
        data 标记在「同一个元素、内容被重写」时会把重新绑定误判成重复绑定，
        而 WeakSet 既不泄漏，也跟元素一起消失。 */
@@ -1617,20 +1637,25 @@ window.CompanionWorkbench = (() => {
       root.addEventListener("change", onInput);
       root.addEventListener("click", onClick);
       root.addEventListener("keydown", onSectionKeydown);
-      root.addEventListener("mouseover", onHover);
-      root.addEventListener("mouseout", onUnhover);
+      root.addEventListener("focusin", scopeHintReset);
+      root.addEventListener("pointerover", scopeHintReset);
+      root.addEventListener("pointerout", scopeHintReset);
+      root.addEventListener("focusout", scopeHintReset);
     }
 
     function unbind() {
       const root = mountPoint();
       if (!root || !bound.has(root)) return;
+      dismissScopeHints(root);
       bound.delete(root);
       root.removeEventListener("input", onInput);
       root.removeEventListener("change", onInput);
       root.removeEventListener("click", onClick);
       root.removeEventListener("keydown", onSectionKeydown);
-      root.removeEventListener("mouseover", onHover);
-      root.removeEventListener("mouseout", onUnhover);
+      root.removeEventListener("focusin", scopeHintReset);
+      root.removeEventListener("pointerover", scopeHintReset);
+      root.removeEventListener("pointerout", scopeHintReset);
+      root.removeEventListener("focusout", scopeHintReset);
     }
 
     /* 勾选后只更新这一个来源清单：整卡重绘会夺走刚点过的复选框焦点。
@@ -1823,6 +1848,7 @@ window.CompanionWorkbench = (() => {
     }
 
     function onClick(event) {
+      if (scopeHintClick(event)) return;
       const conflict = event.target.closest("[data-wb-conflict]");
       if (conflict) { resolveConflict(conflict.dataset.wbConflict, conflict.dataset.wbChoice); return; }
       const clearDate = event.target.closest("[data-wb-date-clear]");
@@ -2729,8 +2755,7 @@ window.CompanionWorkbench = (() => {
 
     /* 宿主页面每次 render() 会整块重写 innerHTML，把本工作台的 DOM 一起冲掉。
        实例仍活着（status/draft 都在），所以只需要重新绑定并重绘——
-       不要再读一次：那会让「切个区域再切回来」变成一次多余往返，
-       也会把页面其他地方正在用的层轨动画重播一遍。
+       不重复读取，避免切换区域产生多余往返。
        endpoint 变了（换了对象或角色）才需要真正重挂。 */
     function attach() {
       bind();
@@ -2749,7 +2774,7 @@ window.CompanionWorkbench = (() => {
        state.status = null; state.container = null; state.draft = null; state.base = null;
        state.pendingReason = "";
       state.busy = false; state.loading = false; state.notice = ""; state.bad = false;
-      state.ok = false; state.savedState = ""; state.drawRails = true;
+      state.ok = false; state.savedState = "";
       state.stale = false; state.conflicts = {};
       state.visibleGroupIds = null;
       resets_ = [];
@@ -2789,7 +2814,7 @@ window.CompanionWorkbench = (() => {
     return handle;
   }
 
-  return {create, errors, LAYER_LABELS, contract, valid, toDisplay, fromDisplay, choiceText,
+  return {create, dismissScopeHints, scopeHintMarkup, scopeHintClick, scopeHintKeydown, scopeHintReset, scopeObjectForEndpoint, saveScopeLabel, errors, LAYER_LABELS, contract, valid, toDisplay, fromDisplay, choiceText,
     /* 来源清单的点击裁决是纯函数，事件处理器与测试共用它，避免界面与写回值各算一套。 */
     resolveSourceToggle,
     /* 词条解析也对外：配置覆盖自检要拿它验证注册默认值读得懂，避免审计脚本

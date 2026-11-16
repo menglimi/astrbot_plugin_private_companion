@@ -13,7 +13,7 @@ const settle = async () => {
 const status = (token, consented = false, manage = true) => ({edit_token:token, can_manage:manage,
   games:[{game_type:"gomoku", consented, invokable:consented}]});
 
-function harness(request) {
+function harness(request, single = false) {
   let selected = "first", sequence = 0;
   const calls = [];
   const product = {
@@ -24,7 +24,7 @@ function harness(request) {
       {target_id:"second",scope_kind:"private",participant_id:"995051631",roles:[{role_id:"star"}]},
       {target_id:"other-role",scope_kind:"private",participant_id:"100",roles:[{role_id:"other"}]},
       {target_id:"group",scope_kind:"group",group_id:"200",roles:[{role_id:"star"}]},
-    ],
+    ].filter(item => !single || item.target_id !== "second"),
     target: () => product.targets().find(item => item.target_id === selected),
     targetLabel: target => `私聊 ${target.participant_id}`,
     accountLabel: () => "QQ 3491542998",
@@ -118,4 +118,16 @@ test("失效的授权快照会自动更新再保存", async () => {
   assert.equal(commands[1].edit_token, "fresh-token");
   assert.notEqual(commands[0].operation_key, commands[1].operation_key);
   assert.match(root.innerHTML, /撤回五子棋/);
+});
+
+test("只有一个私聊时也提供明确选择入口，不自动授权", async () => {
+  const h = harness(async () => status("token"), true);
+  h.select("group");
+  const root = h.node(); h.access.mount(root); await settle();
+  assert.match(root.innerHTML, /data-game-access-target/);
+  assert.match(root.innerHTML, /请选择私聊窗口/);
+  await h.change(root, "first"); await settle();
+  assert.match(root.innerHTML, /value="first" selected/);
+  assert.equal(h.calls.filter(call => call.method === "POST").length, 0);
+  h.access.unmount();
 });

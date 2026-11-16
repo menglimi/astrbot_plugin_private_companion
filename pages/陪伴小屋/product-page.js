@@ -278,6 +278,22 @@ window.CompanionProduct = (() => {
   let releaseAppearanceContext = null;
   let generation = 0, changed = () => {}, loading = false, notice = "";
   const workspaceFrames = new Map();
+  const workspaceDraftRequests = new Map();
+  let workspaceDraftSequence = 0;
+  function workspaceDirtyDrafts() {
+    return [...workspaceFrames].filter(([owner,context])=>owner.isConnected && context.draft?.dirty)
+      .map(([owner,context])=>({id:"workspace-"+context.kind,title:context.draft.title||"成员资料",
+        fields:context.draft.fields||[],save:()=>workspaceDraftAction(owner,context,"save"),
+        discard:()=>workspaceDraftAction(owner,context,"discard")}));
+  }
+  function workspaceDraftAction(owner,context,action) {
+    return new Promise(resolve=>{
+      const requestId="draft-"+(++workspaceDraftSequence);
+      const timer=setTimeout(()=>{workspaceDraftRequests.delete(requestId);resolve({error:"操作回执未收到，请回到成员详情核对。"});},65000);
+      workspaceDraftRequests.set(requestId,{owner,context,resolve,timer});
+      owner.contentWindow.postMessage({channel:"companion-workspace",kind:"draft-action",requestId,action},"*");
+    });
+  }
   const workspaceBundleLoads = new Map();
   let growthPage = null, growthCursor = null, growthBusy = false;
   const pendingGrowth = new Map();
@@ -1123,6 +1139,10 @@ window.CompanionProduct = (() => {
   }
   function unmountWorkspace() {
     for(const context of workspaceFrames.values())clearTimeout(context.loadTimer);
+    for(const pending of workspaceDraftRequests.values()){
+      clearTimeout(pending.timer);pending.resolve({error:"成员编辑页面已关闭，请重新读取后核对保存结果。"});
+    }
+    workspaceDraftRequests.clear();
     workspaceFrames.clear();
   }
   function setWorkspaceLoadState(owner, state, message) {
@@ -1267,7 +1287,8 @@ window.CompanionProduct = (() => {
     owner.contentWindow.postMessage({channel:"companion-workspace",kind:"context",
       context:{pluginName:HOST,pageName:context.kind,tab:context.tab,
         confirm:typeof window.CompanionConfirm==="function",
-        display:{role_name:roleLabel(),subject_name:subjectLabel(target()),scope_kind:context.scope_kind,
+        selection:{...selected},member_edit:context.member_edit||null,
+        display:{role_name:roleLabel(),account_name:accountLabel(roleTarget()||{}),subject_name:subjectLabel(target()),scope_kind:context.scope_kind,
           target_label:target()?targetLabel(target()):"窗口未选择"}}},"*");
   }
   function rebindWorkspaceContexts() {
@@ -1322,6 +1343,16 @@ window.CompanionProduct = (() => {
       || (!["host","identity","designer"].includes(context.kind)&&scopeKey()!==context.key))throw fail("scope_changed");};
     const send=payload=>{if(workspaceFrames.get(owner)?.lifetime===context.lifetime&&owner.isConnected)
       owner.contentWindow.postMessage({channel:"companion-workspace",...payload},"*");};
+    if(message.kind==="draft-state"){
+      if(context.kind==="identity")context.draft=message.draft;
+      return;
+    }
+    if(message.kind==="draft-action-result"){
+      const pending=workspaceDraftRequests.get(message.requestId);
+      if(pending?.owner!==owner || pending.context!==context)return;
+      clearTimeout(pending.timer);workspaceDraftRequests.delete(message.requestId);pending.resolve(message.result);
+      return;
+    }
     if(message.kind==="ready"){
       clearTimeout(context.loadTimer);
       setWorkspaceLoadState(owner,"ready");
@@ -1362,6 +1393,17 @@ window.CompanionProduct = (() => {
     if(message.kind==="navigate"){
       valid();
       const target=message.target;
+      if(target?.tab==="member-edit"){
+        if(context.kind!=="identity")return;
+        const choice=roleChoices().find(item=>item.target.bot_id===target.bot_id && item.role.role_id===target.role_id);
+        if(!choice){send({kind:"navigate-failed",message:"该角色已不在角色目录中，请重新读取账号与会话。"});return;}
+        if(await chooseRoleKey(roleChoiceKey(choice),true)===false)return;
+        context.member_edit={subject_id:target.subject_id,platform:target.platform,bot_id:target.bot_id,
+          account_id:target.account_id,role_id:target.role_id};
+        sendWorkspaceContext(owner,context);
+        context.member_edit=null;
+        return;
+      }
       if(["group-reply","group-memory"].includes(target?.tab)){
         const navigationFailure=text=>send({kind:"navigate-failed",tab:target.tab,message:text});
         const destination=catalog?.targets.find(item=>item.scope_kind==="group"
@@ -1628,7 +1670,7 @@ window.CompanionProduct = (() => {
     accounts:()=>catalog?.accounts||[], personas:()=>catalog?.personas||[],
     targetLabel,subjectLabel,platformLabel,accountLabel,roleLabel,scopeLabel,actorLabel,executorLabel,
     get manifest(){return manifest;},get data(){return data;},stateCard,scheduleCard,capabilityCard,growthCard,memoryCard,
-    workspace,unmountWorkspace,mountWorkspace,workspaceAddress,providerAddress,extensionsMarkup,providersMarkup,capabilitiesMarkup,providerDetail,growthMarkup,
+    workspace,workspaceDirtyDrafts,unmountWorkspace,mountWorkspace,workspaceAddress,providerAddress,extensionsMarkup,providersMarkup,capabilitiesMarkup,providerDetail,growthMarkup,
     extension:id=>manifest?.extensions?.find(p=>p.capability_id===id),
     provider:id=>manifest?.providers?.find(p=>p.capability_id===id),
     capability:id=>manifest?.extensions?.find(p=>p.capability_id===id)||manifest?.providers?.find(p=>p.capability_id===id),

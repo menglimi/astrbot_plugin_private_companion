@@ -4,6 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
+const workbench = fs.readFileSync(path.resolve(__dirname, '../pages/陪伴小屋/workbench-page.js'), 'utf8');
 const source = fs.readFileSync(path.resolve(__dirname, '../pages/陪伴小屋/models-page.js'), 'utf8');
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const TOKEN = 'a'.repeat(64);
@@ -94,6 +95,7 @@ function harness() {
     createObjectURL: blob => { audioBlobs.push(blob); return `blob:preview-${audioBlobs.length}`; },
     revokeObjectURL: url => revokedAudioUrls.push(url),
   };
+  vm.runInNewContext(workbench, {window, setTimeout, clearTimeout});
   vm.runInNewContext(source, {window, crypto: window.crypto, AbortController, setTimeout, clearTimeout});
   function root() {
     const handlers = {};

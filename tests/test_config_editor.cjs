@@ -562,8 +562,8 @@ test('life settings expose their role and window write layers independently', as
   assert.deepEqual(plain(instance.state.container.fields.diary_enabled.editable), ['window']);
   assert.doesNotMatch(harnessed.painted.life, /data-wb-field="diary_enabled"[^>]* disabled/);
   assert.match(harnessed.painted.life, /data-wb-field="sleep_enabled"[^>]*>/);
-  assert.match(harnessed.painted.life, /class="wb-scope">[^<]*当前角色默认/);
-  assert.match(harnessed.painted.life, /class="wb-scope">[^<]*当前窗口覆盖/);
+  assert.match(harnessed.painted.life, /class="wb-context-tip"[^>]*>保存到：[^<]*当前角色默认/);
+  assert.match(harnessed.painted.life, /class="wb-context-tip"[^>]*>保存到：[^<]*当前窗口覆盖/);
 });
 
 test('a section the route never answered is refused instead of half-applied', async () => {
@@ -1133,9 +1133,8 @@ test('learning policies are role-scoped and selectors only filter records', () =
   assert.doesNotMatch(page, /role_growth/,
     'per-person growth permissions belong to the private member editor');
   assert.match(page, /learningTab==='strategy'/);
-  assert.match(page, /const scopeControls=scopeKey\?learningScopeControls/,
-    'object selection is rendered only by the record tabs');
-  assert.match(page, /learningRoleControls\(scopeKey,'筛选记录',scopeControls\)/);
+  assert.doesNotMatch(page, /data-learning-scope-target|learningScopeControls|learningRoleControls/,
+    'record tabs use the shared conversation selector');
 });
 
 test('role learning policies use the selected role config route', async () => {
@@ -1761,9 +1760,10 @@ test('the skill group is role-shared and has no window override', async () => {
     + JSON.stringify(Object.keys(harnessed.painted)));
   /* This policy is shared by the selected role and writable at its role layer. */
   assert.match(painted, /当前角色默认/, 'scope label was: '
-    + (/<span class="wb-scope">([^<]*)</.exec(painted) || [])[1]);
+    + (/<span class="wb-context-tip"[^>]*>(保存到：[^<]*)</.exec(painted) || [])[1]);
   assert.match(painted, /<h3>技能领域<\/h3>/);
-  assert.match(painted, /data-layer="role"/);
+  assert.match(painted, /保存到：当前角色默认/);
+  assert.doesNotMatch(painted, /data-layer=|wb-rail/);
   assert.doesNotMatch(painted, /当前会话可覆盖|data-layer="window"/);
   assert.doesNotMatch(painted, /scope_key|binding_revision|operation_id/);
   /* 两个字段都不能在分组里弄丢。 */
@@ -2132,7 +2132,7 @@ test('inherited contact values render once and show the old value only after a d
   instance.state.draft.screen_glance_daily_limit = 2;
   instance.attach();
   row = fieldRow(harnessed.painted['proactive.contact'], 'screen_glance_daily_limit');
-  assert.match(row, /class="wb-ghost"[^>]*>继承值 1/);
+  assert.match(row, /覆盖前的继承值：1/);
   assert.doesNotMatch(row, /wb-live/);
 });
 
@@ -2205,7 +2205,7 @@ test('the contact section renders all 173 editable fields exactly once', async (
 test('the contact card clearly identifies global defaults and personal overrides', async () => {
   const harnessed = await contactLoaded();
   const painted = harnessed.painted['proactive.contact'];
-  assert.match(painted, /<span class="wb-scope">全局默认设置/);
+  assert.match(painted, /<span class="wb-context-tip"[^>]*>保存到：全局默认设置/);
   assert.match(painted, /全局默认；个人偏好在私聊用户页调整/);
   assert.match(painted, /每个私聊窗口每日最多实际联系/);
   assert.doesNotMatch(painted, /max_attempts_24h|每日最多主动模型调用|proactive_persona_judge_daily_limit/);
@@ -2582,8 +2582,8 @@ test('group-only roles show unavailable configuration sections without sending r
 
 test('configuration cards label the actual write layer instead of their inherited role layer', async () => {
   const h = harness(); await loaded(h);
-  const roleScope = /<span class="wb-scope">([^<]*)</.exec(h.painted.quota)?.[1];
-  const windowScope = /<span class="wb-scope">([^<]*)</.exec(h.painted.image_review)?.[1];
+  const roleScope = /<span class="wb-context-tip"[^>]*>(保存到：[^<]*)</.exec(h.painted.quota)?.[1];
+  const windowScope = /<span class="wb-context-tip"[^>]*>(保存到：[^<]*)</.exec(h.painted.image_review)?.[1];
   assert.match(roleScope, /当前角色默认/);
   assert.match(windowScope, /当前窗口覆盖/);
   assert.doesNotMatch(windowScope, /角色共享/);

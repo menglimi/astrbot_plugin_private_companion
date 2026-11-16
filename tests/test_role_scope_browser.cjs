@@ -60,7 +60,6 @@ test("完整小屋按当前 Bot 与角色切换工作区", {skip:chromium ? fals
     await page.waitForFunction(id=>window.CompanionProduct.selection().bot_id === "bot-"+id,id);
   };
   const expectRole = async id => {
-    assert.equal(await page.locator(".role-context strong").textContent(),labels[id]);
     assert.equal(await page.locator("[data-role-card-name]").textContent(),labels[id]);
   };
   const openModelConfig = async () => {
@@ -72,11 +71,12 @@ test("完整小屋按当前 Bot 与角色切换工作区", {skip:chromium ? fals
     await page.evaluate(key=>CompanionProduct.chooseRoleKey(key),roleKey("a"));
     await page.locator("#semanticExpressionWorkspace").getByText(labels.a+"的表情",{exact:true}).waitFor();
     await expectRole("a");
-    await page.locator("[data-role-window]").selectOption("group-a");
+    assert.equal(await page.locator("[data-role-window]").count(),0);
+    await page.evaluate(()=>CompanionProduct.choose("group-a","shared-role"));
     await selectRole("b");
     await page.locator("#semanticExpressionWorkspace").getByText(labels.b+"的表情",{exact:true}).waitFor();
     await expectRole("b");
-    assert.equal(await page.locator("[data-role-window]").inputValue(),"");
+    assert.equal(await page.locator("[data-role-window]").count(),0);
     assert.equal(await page.evaluate(()=>CompanionProduct.selection().target_id),null);
     assert.equal(await page.locator("#semanticExpressionWorkspace").getByText(labels.a+"的表情",{exact:true}).count(),0);
   });
@@ -84,6 +84,8 @@ test("完整小屋按当前 Bot 与角色切换工作区", {skip:chromium ? fals
   await t.test("成长链路只显示当前角色显式选择的窗口", async () => {
     await navigate("learning","chain");
     await expectRole("b");
+    assert.equal(await page.locator("[data-role-window]").count(),1);
+    assert.equal(await page.locator("[data-learning-scope-target]").count(),0);
     await page.getByText("请选择当前角色的私聊窗口以查看成长记录。",{exact:true}).waitFor();
     await page.locator("[data-role-window]").selectOption("private-b");
     await page.locator("#learningWorkspace").getByText(labels.b+"的成长",{exact:true}).first().waitFor();
@@ -97,6 +99,8 @@ test("完整小屋按当前 Bot 与角色切换工作区", {skip:chromium ? fals
 
   await t.test("事实与经历切换后清除旧窗口并按新窗口重读", async () => {
     await navigate("memory");
+    assert.equal(await page.locator("[data-role-window]").count(),1);
+    assert.equal(await page.locator("#memory-target").count(),0);
     await page.locator("#memoryWorkspace").getByText(labels.a+"的事实",{exact:true}).first().waitFor();
     await selectRole("b");
     await expectRole("b");
@@ -104,6 +108,22 @@ test("完整小屋按当前 Bot 与角色切换工作区", {skip:chromium ? fals
     assert.equal(await page.locator("#memoryWorkspace").getByText(labels.a+"的事实",{exact:true}).count(),0);
     await page.locator("[data-role-window]").selectOption("private-b");
     await page.locator("#memoryWorkspace").getByText(labels.b+"的事实",{exact:true}).first().waitFor();
+  });
+
+  await t.test("会话入口只出现在需要它的页面与表达分区", async () => {
+    await navigate("expression","reaction");
+    assert.equal(await page.locator("[data-role-window]").count(),0);
+    await page.locator('[data-expression-module="expression-text"]').click();
+    assert.equal(await page.locator("[data-role-window]").count(),1);
+    await page.locator('[data-expression-module="expression-reaction"]').click();
+    assert.equal(await page.locator("[data-role-window]").count(),0);
+    await navigate("learning","strategy");
+    assert.equal(await page.locator("[data-role-window]").count(),0);
+    await navigate("data","storage");
+    assert.equal(await page.locator(".role-context-badge").textContent(),"全局");
+    assert.equal(await page.locator("[data-role-window]").count(),0);
+    await navigate("data","port");
+    assert.equal(await page.locator("[data-role-window]").count(),1);
   });
 
   await t.test("模型页切换账号，群窗口使用群接口，未选窗口禁用窗口覆盖", async () => {

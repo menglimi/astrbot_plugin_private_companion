@@ -48,3 +48,6 @@ body.room-editing .product-scope{display:none}
 .role-context label { display:flex; align-items:center; gap:8px; min-width:0; }
 .role-context select { max-width:min(420px,65vw); color:var(--t-text); background:var(--t-surface-soft); border:1px solid var(--t-line); border-radius:6px; padding:6px; }
 .role-context p { flex-basis:100%; margin:0; font-size:12px; color:var(--t-text-soft); }
+
+.role-context-badge { padding-block:6px; background:transparent; border-bottom:0; }
+.role-context-badge span { border:1px solid var(--t-line); border-radius:999px; padding:2px 8px; }

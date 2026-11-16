@@ -335,7 +335,6 @@ window.CompanionMemoryPage = (() => {
   /* ================= 视图：页头 ================= */
 
   function headMarkup() {
-    const target = current();
     /* 页头不放说明句。
        切到哪个视图，标题就是那件事，左侧轨道已经写了它是干什么的；
        再加一行「这里可以……每条都带……」是把导航重说一遍，占掉了第一屏。
@@ -346,12 +345,6 @@ window.CompanionMemoryPage = (() => {
     };
     return `<header class="mem-head">
       <div class="mem-head-title"><h2>${e(AREA_TITLE[data.area])}</h2></div>
-      <div class="mem-scope">
-        <label>会话对象<select id="memory-target" ${!data.catalog?"disabled":""}>${
-          `<option value="-1" ${data.target<0?"selected":""}>未选择窗口</option>` + (data.catalog?.targets.map((t,i)=>`<option value="${i}" ${i===data.target?"selected":""}>${e((window.CompanionProduct?.targetLabel?.(t) || (t.scope_kind === "group"?"群聊 ":"私聊 ")+(t.display_name || (/^\d+$/.test(String(t.participant_id || t.group_id || "")) ? t.participant_id || t.group_id : "当前对象"))) + " · " + (window.CompanionProduct?.accountLabel?.(t) || t.account_name || "当前账号"))}</option>`).join("") || '<option>尚未读取目标</option>'
-        )}</select></label>
-        <span>小屋角色 · ${e(window.CompanionProduct?.roleLabel?.() || '未选择角色')}</span>
-      </div>
     </header>`;
   }
 
@@ -1488,21 +1481,6 @@ window.CompanionMemoryPage = (() => {
       }
     } finally { if (live(ticket)) { data.busy = false; render(); schedule(); } }
   }
-  async function changeScope(targetIndex, roleIndex) {
-    const product=window.CompanionProduct;
-    if(targetIndex<0){if(await product?.clearWindow?.()===false)render();return;}
-    const target=data.catalog?.targets[targetIndex],chosenRole=target?.roles[roleIndex];
-    if(!chosenRole)return;
-    if(await product?.choose(target.target_id,chosenRole.role_id,true)===false){render();return;}
-    ++version; stopTimer();
-    const catalog = data.catalog;
-    data = {...blank(),catalog,target:targetIndex,role:roleIndex,ready:true};
-    if (role()?.memory_api) {
-      try { data.pending = restorePending(); data.pendingMutation=restoreMutation(); data.detailId = data.pending?.tracked_batch_id || null; load(); }
-      catch (error) { failure(error); render(); }
-    } else render();
-  }
-
   /* ================= 事件 ================= */
 
   async function switchArea(area) {
@@ -1605,7 +1583,6 @@ window.CompanionMemoryPage = (() => {
 
   function change(event) {
     const el = event.target;
-    if (el.id === "memory-target") { changeScope(Number(el.value),0); return; }
     if (el.id === "memory-export-include") { data.exportIncludeArchived = el.checked; return; }
   }
 

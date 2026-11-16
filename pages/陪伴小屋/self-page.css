@@ -158,7 +158,7 @@
 .self-relationship-badge{display:inline-flex;align-items:center;min-height:24px;padding:2px calc(var(--sp-3) * .75);border:1px solid color-mix(in srgb,var(--t-accent) 35%,var(--t-line));
   border-radius:var(--r-pill);background:var(--t-accent-quiet);color:var(--t-accent-ink);font-size:var(--fs-micro);white-space:nowrap}
 .self-relationship-meta{display:flex;flex-wrap:wrap;gap:calc(var(--sp-1) * 1.5)}
-.self-relationship-meta span{display:inline-flex;align-items:center;gap:calc(var(--sp-1) * 1.25);max-width:100%;padding:var(--sp-1) var(--sp-2);border:1px solid var(--t-line);
+.self-relationship-meta>span{display:inline-flex;align-items:center;gap:calc(var(--sp-1) * 1.25);max-width:100%;padding:var(--sp-1) var(--sp-2);border:1px solid var(--t-line);
   border-radius:var(--r-xs);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-micro);overflow-wrap:anywhere}
 .self-relationship-meta b{color:var(--t-text-faint);font-weight:500}
 .self-relationship-picker{display:flex;align-items:center;gap:calc(var(--sp-1) * 1.5);min-width:min(100%,250px);max-width:100%;color:var(--t-text-faint);font-size:var(--fs-micro)}
@@ -189,7 +189,8 @@
 .self-contact-switch{display:flex;align-items:center;gap:var(--sp-2);min-width:0;min-height:42px;padding:var(--sp-2) var(--sp-3);
   border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface-soft);color:var(--t-text-soft);cursor:pointer}
 .self-contact-switch input{flex:none;width:18px;height:18px;accent-color:var(--t-accent)}
-.self-contact-switch span{display:grid;gap:2px;min-width:0}
+.self-contact-switch>label{display:flex;align-items:center;gap:var(--sp-2);flex:1;min-width:0}
+.self-contact-field-label,.self-save-actions{display:flex;align-items:center;gap:var(--sp-2)}
 .self-contact-switch strong{color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:600}
 .self-contact-switch small,.self-relationship-field>span small{display:block;color:var(--t-text-faint);font-size:var(--fs-micro);font-weight:400}
 .self-contact-switch:focus-within{outline:2px solid var(--t-accent);outline-offset:2px}

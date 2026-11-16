@@ -5520,38 +5520,10 @@ body.state-connected{min-width:320px}
 .config-editor-host{display:block;min-width:0}
 
 /* workbench.css */
-/* 统一配置工作台 · 外观与动效层
-   全部走 tokens.css 的语义令牌，不写死颜色。
-
-   核心概念是「配置继承链」：每个字段的值来自 安装 → 角色 → 关系 → 窗口 中的
-   某一层。本文件把这个不可见的机制画成可见的层轨（.wb-rail），让「谁覆盖了谁」
-   一眼可读，而不是压成一行小字。
-
-   动效原则：只在回答人的动作时出现，不做入场堆叠。
-   1. .wb-rail 首次绘制时逐段落位（整片唯一一次非交互动效）
-   2. 悬停层轨节点：该层亮起，被它覆盖的层结霜退后
-   3. 幽灵值：继承来的值显示为半透明加删除线，旁边浮出实际生效值
-   4. 保存按钮形变为进度环，回执为幂等重放时勾画两遍
-   全部受 data-motion 维度与 prefers-reduced-motion 约束。 */
-
-/* === 工作台容器 === */
+/* 统一配置工作台：字段与保存动作的范围详情按需展开，样式使用主题令牌。 */
 .wb{display:flex;flex-direction:column;gap:var(--sp-5);min-width:0}
-
-/* 工作台卡片**不画卡片**。
- *
- * 它总是挂在 console-section 里，外层已有分区标题与分隔线；自己再画一张
- * 带边框的卡、配一个 h3 + 一段 p，就是同一屏里第二层框、第二层标题、
- * 第二层同灰度说明。全页共有 13 个这样的分区，叠起来就是「一片框」。
- * 现在只保留它的语义结构（卡头 / 卡体），视觉重量交给外层分区。
- *
- * 作用范围药丸 .wb-scope 保留：它是有信息的（这次保存写到哪一层），
- * 而且只有它一件用这种形状，不与别的框重复。 */
-/* 卡片的 overflow 用 clip 而不是 hidden。
- * sticky 的参照物是「最近的滚动容器」；overflow:hidden 会把卡片自己变成
- * 一个不可滚动的滚动容器，于是卡片里的吸底动作条永远吸不住（它的参照盒就是
- * 卡片本身，而卡片并不滚）。clip 只裁剪、不建立滚动容器，视觉一样、
- * 吸底生效。同一条理由见 shell.css 的 .shell-panel。 */
-.wb-card{overflow:clip}
+/* 外层已有分区标题；工作台只保留结构，提示允许越过卡片边界。 */
+.wb-card{overflow:visible}
 .wb-card-head{
   display:flex;align-items:baseline;justify-content:space-between;
   gap:var(--sp-3);flex-wrap:wrap;margin:0 0 var(--sp-3);
@@ -5605,16 +5577,7 @@ body.state-connected{min-width:320px}
 .wb-section-panel .wb-group>.wb-help{margin-bottom:var(--sp-3);max-width:64ch}
 @keyframes wb-section-enter{from{opacity:.55;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 
-/* 作用范围药丸：告诉人这次保存会写到哪一层 */
-.wb-scope{
-  display:inline-flex;align-items:center;gap:var(--sp-1);flex:none;
-  padding:3px var(--sp-2);border-radius:var(--r-pill);
-  border:1px solid var(--t-line-firm);background:var(--t-surface-raised);
-  color:var(--t-text-soft);font-size:var(--fs-micro);
-}
-.wb-scope::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--t-accent)}
-
-/* === 字段行：层轨 + 控件 === */
+/* === 字段行 === */
 /* 字段按可用宽度自动分列：标量字段两三个一行，长控件整幅通栏。
    此前是单列纵向堆叠——一组九个数字字段要滚九屏，而每个数字框还各自
    拉伸到整幅宽，右侧全是空白。列宽 300px 是「标签 + 数字框 + 范围」放得下
@@ -5637,59 +5600,23 @@ body.state-connected{min-width:320px}
 .wb-field:has(.wb-order-editor){grid-column:1/-1}
 .wb-field.is-inherited{background:linear-gradient(90deg,var(--t-surface-soft) 0%,transparent 62%)}
 
-/* --- 层轨：四段色块，实际生效层亮起 --- */
-.wb-rail{
-  display:flex;flex-direction:column;gap:2px;
-  width:11px;flex:none;align-self:stretch;min-height:34px;
-  padding-top:2px;
-}
-.wb-node{
-  flex:1;min-height:5px;border-radius:var(--r-2xs);
-  background:var(--t-line-firm);opacity:.42;
-  transition:opacity var(--dur) ease,background var(--dur) ease,transform var(--dur) ease;
-  position:relative;
-}
-/* 生效层：实心且略外扩，是唯一的视觉重音 */
-.wb-node.is-source{background:var(--t-accent);opacity:1;transform:scaleX(1.28)}
-.wb-node.is-editable{box-shadow:inset 0 0 0 1px var(--t-line-firm)}
-.wb-node.is-locked{background:repeating-linear-gradient(45deg,var(--t-line-firm) 0 2px,transparent 2px 4px)}
-/* 悬停某层：该层亮起（即使不是生效层），其余结霜退后 */
-.wb-field[data-focus-layer] .wb-node{opacity:.2;transform:none}
-.wb-field[data-focus-layer] .wb-node[data-layer=""]{opacity:.2}
-.wb-field .wb-node.is-focus{background:var(--t-accent);opacity:.72;transform:scaleX(1.2)}
-.wb-field .wb-node.is-focus.is-source{opacity:1}
-
-/* 首次绘制：层轨自上而下逐段落位，一次而已 */
-@keyframes wb-carve{from{transform:scaleY(.2);opacity:0}to{transform:scaleY(1);opacity:1}}
-.wb-rail.is-drawing .wb-node{animation:wb-carve .34s cubic-bezier(.2,.8,.2,1) both}
-.wb-rail.is-drawing .wb-node:nth-child(2){animation-delay:.06s}
-.wb-rail.is-drawing .wb-node:nth-child(3){animation-delay:.12s}
-.wb-rail.is-drawing .wb-node:nth-child(4){animation-delay:.18s}
-/* .is-source 用 scaleX，与 carve 的 scaleY 可共存，绘制结束后交回 */
-.wb-rail.is-drawing .wb-node.is-source{animation-name:wb-carve-source}
-@keyframes wb-carve-source{
-  from{transform:scale(.2,.2);opacity:0}
-  to{transform:scaleX(1.28) scaleY(1);opacity:1}
-}
-
-/* 层轨的图例：只在第一行出现 */
-.wb-rail-legend{
-  display:flex;align-items:center;gap:var(--sp-1);
-  padding:0 var(--sp-2) var(--sp-2) 0;color:var(--t-text-faint);font-size:var(--fs-micro);
-}
-.wb-rail-legend b{font-weight:500;color:var(--t-text-soft)}
+/* 范围信息按需查看；按钮可聚焦，也可在触屏上展开。 */
+.wb-context{position:relative;display:inline-flex;align-items:center;vertical-align:middle;font-weight:400}
+.wb-context-toggle{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;
+  padding:0;border:0;background:transparent;color:var(--t-text-faint);font:inherit;cursor:pointer;border-radius:50%}
+.wb-context-toggle:focus-visible{outline:2px solid var(--t-accent);outline-offset:2px;color:var(--t-text)}
+.wb-context-tip{position:fixed;inset:auto;margin:0;z-index:80;box-sizing:border-box;
+  width:max-content;max-width:min(320px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow:auto;padding:10px 12px;
+  background:var(--t-surface);color:var(--t-text);border:1px solid var(--t-line-firm);border-radius:var(--r-sm,8px);
+  box-shadow:0 6px 22px #0002;font-size:var(--fs-tiny,12px);line-height:1.65;white-space:pre-line;overflow-wrap:anywhere;text-align:start}
+.wb-context-tip:not(:popover-open){display:none}
+.wb-save-context{display:inline-flex;align-items:center;gap:4px}
 
 /* --- 字段主体 --- */
 .wb-field-main{min-width:0;display:flex;flex-direction:column;gap:var(--sp-2)}
 .wb-label{
   display:flex;align-items:baseline;gap:var(--sp-2);flex-wrap:wrap;
   color:var(--t-text);font-size:var(--fs-body);font-weight:500;
-}
-/* 继承来的值：幽灵态 */
-.wb-label .wb-ghost{
-  color:var(--t-text-faint);font-weight:400;
-  text-decoration:line-through;text-decoration-color:var(--t-line-firm);
-  opacity:.62;
 }
 .wb-help{color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.7;margin:0}
 
@@ -5854,13 +5781,8 @@ body.state-connected{min-width:320px}
 .wb-order-index{color:var(--t-text-faint);font-size:var(--fs-micro);text-align:center;font-variant-numeric:tabular-nums}
 .wb-order-tools{display:grid;grid-template-columns:minmax(130px,1fr) auto auto;gap:var(--sp-1);align-items:center}
 
-/* 字段右侧状态：分列之后单元格变窄，芯片与「恢复继承」允许换行，
-   否则它们会把控件挤成一条缝。 */
+/* 字段右侧的恢复继承操作允许换行。 */
 .wb-field-side{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-1);flex:none;padding-top:2px}
-.wb-chip{
-  padding:3px var(--sp-2);border-radius:var(--r-xs);font-size:var(--fs-micro);line-height:1.5;white-space:nowrap;
-  background:var(--t-surface-sunken);color:var(--t-text-faint);
-}
 .wb-reset{
   display:inline-flex;align-items:center;gap:var(--sp-1);
   padding:var(--sp-1) var(--sp-2);border-radius:var(--r-xs);font-size:var(--fs-micro);
@@ -6032,7 +5954,6 @@ body.state-connected{min-width:320px}
 
 /* === 动效维度与无障碍 === */
 @media (prefers-reduced-motion:reduce){
-  .wb-rail.is-drawing .wb-node{animation:none!important}
   .wb-section-panel:not([hidden]){animation:none!important}
   .wb-section-tab,.wb-section-tab>svg{transition:none!important}
   .wb-keyword{animation:none}
@@ -6045,14 +5966,10 @@ body.state-connected{min-width:320px}
   .wb-ledger-trigger.has-drafts .wb-ledger-dot{animation:none!important}
   .wb-skeleton-row{animation:none!important}
 }
-:root[data-motion="off"] .wb-rail.is-drawing .wb-node,
-:root[data-motion="low"] .wb-rail.is-drawing .wb-node{animation:none!important}
 :root[data-motion="off"] .wb-keyword,
 :root[data-motion="low"] .wb-keyword{animation:none!important}
 :root[data-motion="off"] .wb-replacement-chip,
 :root[data-motion="low"] .wb-replacement-chip{animation:none!important}
-:root[data-motion="off"] .wb-node,
-:root[data-motion="low"] .wb-node{transition-duration:0s!important}
 :root[data-motion="off"] .wb-keyword-add,
 :root[data-motion="low"] .wb-keyword-add,
 :root[data-motion="off"] .wb-word-special,
@@ -6095,8 +6012,8 @@ body.state-connected{min-width:320px}
   .wb-segmented{width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
   /* 窄屏回落单列：两列会把标签与数字框挤到换行，反而更难读。 */
   .wb-fields{grid-template-columns:minmax(0,1fr);gap:0}
-  .wb-field{grid-template-columns:auto minmax(0,1fr);gap:var(--sp-2)}
-  .wb-field-side{grid-column:2;justify-content:flex-start;padding-top:0}
+  .wb-field{grid-template-columns:minmax(0,1fr);gap:var(--sp-2)}
+  .wb-field-side{grid-column:1;justify-content:flex-start;padding-top:0}
   .wb-reset{opacity:1}
   .wb-actions>.wb-save{flex:1}
   .wb-actions-note{margin-left:0;flex-basis:100%}
@@ -6195,16 +6112,14 @@ body.state-connected{min-width:320px}
   .wb-tag-form input[type=text]{min-width:0}
 }
 
-/* 2026-11 视觉校准：配置项回到「标题在左、控件在右」的舒展行距，
-   参考 7.1.8 redesign 的 row 节奏，但保留当前工作台的分层轨道。 */
+/* 配置项标题在左、控件在右；范围提示附在标题旁。 */
 .wb-fields{grid-template-columns:minmax(0,1fr);gap:0;max-width:1040px}
-.wb-field{grid-template-columns:12px minmax(0,1fr) auto;align-items:center;
+.wb-field{grid-template-columns:minmax(0,1fr) auto;align-items:center;
   gap:var(--sp-2) var(--sp-4);padding:14px var(--sp-2) 14px 0}
-/* journal 形态不渲染左侧轨道，若仍让 main 自动落位，它会挤进 12px 轨道，
-   标题被压成一字一行、控件跑到最右侧。显式把 main 放到内容列。 */
-.wb-field>.wb-field-main{grid-column:2}
+/* 主体占据内容列，恢复继承动作单独排列。 */
+.wb-field>.wb-field-main{grid-column:1}
 @media (min-width:721px){
-  .wb-field>.wb-field-side{grid-column:3}
+  .wb-field>.wb-field-side{grid-column:2}
 }
 /* 自我页的 journal 是单列卡片，不能沿用工作台的第 2 列。 */
 .self-page .wb-journal .wb-field>.wb-field-main{grid-column:1}
@@ -6231,7 +6146,7 @@ body.state-connected{min-width:320px}
 .wb-control input[type=number],.wb-control input[type=text],.wb-control input[type=time],.wb-control select{max-width:none;width:100%}
 .wb-field:has(textarea) .wb-control>*,.wb-field:has(.wb-word-editor) .wb-control>*{width:100%}
 @media (max-width:720px){
-  .wb-field{grid-template-columns:10px minmax(0,1fr);align-items:start}
+  .wb-field{grid-template-columns:minmax(0,1fr);align-items:start}
   .wb-field-main{grid-template-columns:minmax(0,1fr)}
   .wb-field-main>.wb-control{grid-column:1;grid-row:auto;justify-self:stretch;max-width:none}
   .wb-control{justify-content:flex-start}
@@ -8768,6 +8683,9 @@ body.room-editing .product-scope{display:none}
 .role-context label { display:flex; align-items:center; gap:8px; min-width:0; }
 .role-context select { max-width:min(420px,65vw); color:var(--t-text); background:var(--t-surface-soft); border:1px solid var(--t-line); border-radius:6px; padding:6px; }
 .role-context p { flex-basis:100%; margin:0; font-size:12px; color:var(--t-text-soft); }
+
+.role-context-badge { padding-block:6px; background:transparent; border-bottom:0; }
+.role-context-badge span { border:1px solid var(--t-line); border-radius:999px; padding:2px 8px; }
 
 /* native-extension-panel.css */
 .detail-dialog.detail-dialog-native-extension {
@@ -18561,7 +18479,7 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
 .self-relationship-badge{display:inline-flex;align-items:center;min-height:24px;padding:2px calc(var(--sp-3) * .75);border:1px solid color-mix(in srgb,var(--t-accent) 35%,var(--t-line));
   border-radius:var(--r-pill);background:var(--t-accent-quiet);color:var(--t-accent-ink);font-size:var(--fs-micro);white-space:nowrap}
 .self-relationship-meta{display:flex;flex-wrap:wrap;gap:calc(var(--sp-1) * 1.5)}
-.self-relationship-meta span{display:inline-flex;align-items:center;gap:calc(var(--sp-1) * 1.25);max-width:100%;padding:var(--sp-1) var(--sp-2);border:1px solid var(--t-line);
+.self-relationship-meta>span{display:inline-flex;align-items:center;gap:calc(var(--sp-1) * 1.25);max-width:100%;padding:var(--sp-1) var(--sp-2);border:1px solid var(--t-line);
   border-radius:var(--r-xs);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-micro);overflow-wrap:anywhere}
 .self-relationship-meta b{color:var(--t-text-faint);font-weight:500}
 .self-relationship-picker{display:flex;align-items:center;gap:calc(var(--sp-1) * 1.5);min-width:min(100%,250px);max-width:100%;color:var(--t-text-faint);font-size:var(--fs-micro)}
@@ -18592,7 +18510,8 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
 .self-contact-switch{display:flex;align-items:center;gap:var(--sp-2);min-width:0;min-height:42px;padding:var(--sp-2) var(--sp-3);
   border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface-soft);color:var(--t-text-soft);cursor:pointer}
 .self-contact-switch input{flex:none;width:18px;height:18px;accent-color:var(--t-accent)}
-.self-contact-switch span{display:grid;gap:2px;min-width:0}
+.self-contact-switch>label{display:flex;align-items:center;gap:var(--sp-2);flex:1;min-width:0}
+.self-contact-field-label,.self-save-actions{display:flex;align-items:center;gap:var(--sp-2)}
 .self-contact-switch strong{color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:600}
 .self-contact-switch small,.self-relationship-field>span small{display:block;color:var(--t-text-faint);font-size:var(--fs-micro);font-weight:400}
 .self-contact-switch:focus-within{outline:2px solid var(--t-accent);outline-offset:2px}

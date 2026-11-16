@@ -27,8 +27,7 @@ test("学习工作台按导航加载每个真实数据模块", () => {
   const rendererStart = app.indexOf('function renderLearningPage(){');
   const rendererEnd = app.indexOf('/* 2026-09-30 接回：', rendererStart);
   const renderer = app.slice(rendererStart, rendererEnd);
-  assert.match(renderer, /const scopeControls=scopeKey\?learningScopeControls/);
-  assert.match(renderer, /learningRoleControls\(scopeKey,'筛选记录',scopeControls\)/);
+  assert.doesNotMatch(renderer, /data-learning-scope-target|learningScopeControls|learningRoleControls/);
   const strategyStart = renderer.indexOf("learningTab==='strategy'");
   const reviewStart = renderer.indexOf("learningTab==='review'", strategyStart);
   assert.ok(strategyStart >= 0 && reviewStart > strategyStart);
@@ -207,10 +206,10 @@ test('学习记录与表情库只跟随小屋的 Bot 和角色，成长记录要
   assert.equal(context.learningScope('growth'), null);
   assert.deepEqual(Array.from(context.learningReviewSources({includeGroups: true}), source => source.target.target_id), ['a-private', 'a-group']);
   assert.deepEqual(Array.from(context.learningExpressionSources(), source => source.target.target_id), ['a-private', 'a-group']);
-  context.changeLearningScope('growth', 'target', 'a-private');
+  product.choose('a-private', 'same-role');
   assert.equal(context.learningScope('growth').target.target_id, 'a-private');
   selected = {bot_id: 'bot-b', role_id: 'same-role', target_id: null};
   assert.equal(context.learningScope('expression').target.target_id, 'b-private');
   assert.deepEqual(Array.from(context.learningReviewSources({includeGroups: true}), source => source.target.target_id), ['b-private']);
-  assert.equal(context.changeLearningScope('growth', 'target', 'a-private'), false);
+  assert.equal(context.learningChoices('growth').some(item => item.target.target_id === 'a-private'), false);
 });

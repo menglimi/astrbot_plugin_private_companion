@@ -1363,3 +1363,45 @@ test("cancelling the draft guard on a group shortcut leaves the current page wit
   assert.equal(h.identity.messages.filter(message => message.kind === "navigate-failed").length, 0);
   h.product.unmountWorkspace();
 });
+
+test("member navigation switches the cottage role and sends the exact member route", async () => {
+  const h=await harness(null,[],{multipleRoles:true});
+  h.product.mountWorkspace();
+  const choice=h.product.roleChoices().find(item=>item.role.role_id==="another-role");
+  assert.ok(choice);
+  const target={tab:"member-edit",subject_id:"member-a",platform:"qq-main",bot_id:choice.target.bot_id,
+    role_id:"another-role",account_id:"100"};
+  await h.events.message({source:h.identity.contentWindow,data:{channel:"companion-workspace",kind:"navigate",target}});
+  assert.equal(h.product.selection().role_id,"another-role");
+  const last=h.identity.messages.filter(item=>item.kind==="context").at(-1).context;
+  assert.equal(last.selection.role_id,"another-role");
+  assert.equal(last.member_edit.subject_id,"member-a");
+});
+
+test("workspace drafts join the outer guard and only the owning frame can resolve a save", async () => {
+  const h=await harness(); h.product.mountWorkspace();
+  await h.events.message({source:h.identity.contentWindow,data:{channel:"companion-workspace",kind:"draft-state",
+    draft:{dirty:true,title:"璃与用户甲",fields:["备注"]}}});
+  const drafts=h.product.workspaceDirtyDrafts();
+  assert.equal(drafts.length,1);assert.equal(drafts[0].title,"璃与用户甲");
+  const saving=drafts[0].save();
+  const request=h.identity.messages.at(-1);
+  assert.equal(request.kind,"draft-action");assert.equal(request.action,"save");
+  await h.events.message({source:h.host.contentWindow,data:{channel:"companion-workspace",kind:"draft-action-result",
+    requestId:request.requestId,result:true}});
+  await h.events.message({source:h.identity.contentWindow,data:{channel:"companion-workspace",kind:"draft-action-result",
+    requestId:request.requestId,result:{error:"未保存"}}});
+  assert.equal((await saving).error,"未保存");
+  await h.events.message({source:h.identity.contentWindow,data:{channel:"companion-workspace",kind:"draft-state",draft:{dirty:false}}});
+  assert.equal(h.product.workspaceDirtyDrafts().length,0);
+});
+
+test("unmounting a workspace ends pending draft actions and clears their timers",async()=>{
+  const h=await harness();h.product.mountWorkspace();
+  await h.events.message({source:h.identity.contentWindow,data:{channel:"companion-workspace",kind:"draft-state",
+    draft:{dirty:true,title:"成员资料"}}});
+  const pending=h.product.workspaceDirtyDrafts()[0].save();
+  h.product.unmountWorkspace();
+  assert.match((await pending).error,/已关闭/);
+  assert.equal(h.product.workspaceDirtyDrafts().length,0);
+});
