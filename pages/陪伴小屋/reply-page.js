@@ -1313,9 +1313,7 @@ window.CompanionReplyPage = (() => {
         '<p>普通聊天的图片、视频和文件由 AstrBot 核心管线送入本轮请求。视频默认开启：支持视频输入的 Gemini 类模型直接读取整段原视频；其他模型用宿主自带的 ffmpeg 抽帧后作为图片送入同一轮请求，不依赖外部视频插件。超时或抽帧失败时本轮不带视频继续，不会阻塞文字回复。本页的转述和文件读取设置用于 V2 独立任务及历史兼容。</p></aside>'
       : '<aside class="reply-scope-note" role="note" data-reply-part="scope">' +
         expressionScopeNote(options.expressionModule) + '</aside>';
-    const owner=product.roleTarget?.(),chosen=product.target?.();
-    const scopeText=[product.roleLabel?.(),owner&&product.accountLabel?.(owner),chosen?.scope_kind==="group"?product.targetLabel(chosen)+" · 本群覆盖":"角色默认 · 各窗口可覆盖"].filter(Boolean).join(" · ");
-    root.innerHTML = '<p class="reply-scope-note">'+e(scopeText)+'</p>'+scopeNote + '<div data-reply-part="settings"></div>'
+    root.innerHTML = scopeNote + '<div data-reply-part="settings"></div>'
       + (options.view === "expression" || !options.view
         ? '<div data-reply-part="preview"></div>' : "") + diagnostics;
     root.addEventListener("input", onInput);

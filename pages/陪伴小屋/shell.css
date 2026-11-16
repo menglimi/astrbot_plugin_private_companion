@@ -849,8 +849,8 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region {
   top: var(--role-card-top, auto);
   right: var(--role-card-right, var(--shell-pad));
   bottom: var(--role-card-bottom, var(--shell-pad));
-  width: var(--shell-pip-w);
-  height: var(--shell-pip-h);
+  width: min(var(--shell-pip-w), var(--role-card-max-width, 100vw));
+  height: min(var(--shell-pip-h), var(--role-card-max-height, 100dvh));
   gap: 0;
   z-index: 15;
   visibility: visible;
@@ -859,8 +859,8 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region {
   transition: opacity var(--dur-fast, .16s ease);
 }
 body:not(.room-editing) #homeShell[data-away="true"] .stage-region .room-stage {
-  height: var(--shell-pip-h);
-  min-height: var(--shell-pip-h);
+  height: min(var(--shell-pip-h), var(--role-card-max-height, 100dvh));
+  min-height: min(var(--shell-pip-h), var(--role-card-max-height, 100dvh));
   margin: 0;
   border-radius: var(--r-md);
   border-color: var(--t-line-firm, var(--t-line));

@@ -5520,7 +5520,7 @@ body.state-connected{min-width:320px}
 .config-editor-host{display:block;min-width:0}
 
 /* workbench.css */
-/* 统一配置工作台：字段与保存动作的范围详情按需展开，样式使用主题令牌。 */
+/* 统一配置工作台：层轨显示继承链，字段与保存动作的范围详情按需展开。 */
 .wb{display:flex;flex-direction:column;gap:var(--sp-5);min-width:0}
 /* 外层已有分区标题；工作台只保留结构，提示允许越过卡片边界。 */
 .wb-card{overflow:visible}
@@ -5599,6 +5599,48 @@ body.state-connected{min-width:320px}
 .wb-field:has(.wb-source-picker),
 .wb-field:has(.wb-order-editor){grid-column:1/-1}
 .wb-field.is-inherited{background:linear-gradient(90deg,var(--t-surface-soft) 0%,transparent 62%)}
+
+/* --- 层轨：四段色块，实际生效层亮起 --- */
+.wb-rail{
+  display:flex;flex-direction:column;gap:2px;
+  width:11px;flex:none;align-self:stretch;min-height:34px;
+  padding-top:2px;
+}
+.wb-node{
+  flex:1;min-height:5px;border-radius:var(--r-2xs);
+  background:var(--t-line-firm);opacity:.42;
+  transition:opacity var(--dur) ease,background var(--dur) ease,transform var(--dur) ease;
+  position:relative;
+}
+/* 生效层：实心且略外扩，是唯一的视觉重音 */
+.wb-node.is-source{background:var(--t-accent);opacity:1;transform:scaleX(1.28)}
+.wb-node.is-editable{box-shadow:inset 0 0 0 1px var(--t-line-firm)}
+.wb-node.is-locked{background:repeating-linear-gradient(45deg,var(--t-line-firm) 0 2px,transparent 2px 4px)}
+/* 悬停某层：该层亮起（即使不是生效层），其余结霜退后 */
+.wb-field[data-focus-layer] .wb-node{opacity:.2;transform:none}
+.wb-field[data-focus-layer] .wb-node[data-layer=""]{opacity:.2}
+.wb-field .wb-node.is-focus{background:var(--t-accent);opacity:.72;transform:scaleX(1.2)}
+.wb-field .wb-node.is-focus.is-source{opacity:1}
+
+/* 首次绘制：层轨自上而下逐段落位，一次而已 */
+@keyframes wb-carve{from{transform:scaleY(.2);opacity:0}to{transform:scaleY(1);opacity:1}}
+.wb-rail.is-drawing .wb-node{animation:wb-carve .34s cubic-bezier(.2,.8,.2,1) both}
+.wb-rail.is-drawing .wb-node:nth-child(2){animation-delay:.06s}
+.wb-rail.is-drawing .wb-node:nth-child(3){animation-delay:.12s}
+.wb-rail.is-drawing .wb-node:nth-child(4){animation-delay:.18s}
+/* .is-source 用 scaleX，与 carve 的 scaleY 可共存，绘制结束后交回 */
+.wb-rail.is-drawing .wb-node.is-source{animation-name:wb-carve-source}
+@keyframes wb-carve-source{
+  from{transform:scale(.2,.2);opacity:0}
+  to{transform:scaleX(1.28) scaleY(1);opacity:1}
+}
+
+/* 层轨的图例：只在第一行出现 */
+.wb-rail-legend{
+  display:flex;align-items:center;gap:var(--sp-1);
+  padding:0 var(--sp-2) var(--sp-2) 0;color:var(--t-text-faint);font-size:var(--fs-micro);
+}
+.wb-rail-legend b{font-weight:500;color:var(--t-text-soft)}
 
 /* 范围信息按需查看；按钮可聚焦，也可在触屏上展开。 */
 .wb-context{position:relative;display:inline-flex;align-items:center;vertical-align:middle;font-weight:400}
@@ -5954,6 +5996,7 @@ body.state-connected{min-width:320px}
 
 /* === 动效维度与无障碍 === */
 @media (prefers-reduced-motion:reduce){
+  .wb-rail.is-drawing .wb-node{animation:none!important}
   .wb-section-panel:not([hidden]){animation:none!important}
   .wb-section-tab,.wb-section-tab>svg{transition:none!important}
   .wb-keyword{animation:none}
@@ -5966,6 +6009,10 @@ body.state-connected{min-width:320px}
   .wb-ledger-trigger.has-drafts .wb-ledger-dot{animation:none!important}
   .wb-skeleton-row{animation:none!important}
 }
+:root[data-motion="off"] .wb-rail.is-drawing .wb-node,
+:root[data-motion="low"] .wb-rail.is-drawing .wb-node{animation:none!important}
+:root[data-motion="off"] .wb-node,
+:root[data-motion="low"] .wb-node{transition-duration:0s!important}
 :root[data-motion="off"] .wb-keyword,
 :root[data-motion="low"] .wb-keyword{animation:none!important}
 :root[data-motion="off"] .wb-replacement-chip,
@@ -6012,8 +6059,8 @@ body.state-connected{min-width:320px}
   .wb-segmented{width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
   /* 窄屏回落单列：两列会把标签与数字框挤到换行，反而更难读。 */
   .wb-fields{grid-template-columns:minmax(0,1fr);gap:0}
-  .wb-field{grid-template-columns:minmax(0,1fr);gap:var(--sp-2)}
-  .wb-field-side{grid-column:1;justify-content:flex-start;padding-top:0}
+  .wb-field{grid-template-columns:auto minmax(0,1fr);gap:var(--sp-2)}
+  .wb-field-side{grid-column:2;justify-content:flex-start;padding-top:0}
   .wb-reset{opacity:1}
   .wb-actions>.wb-save{flex:1}
   .wb-actions-note{margin-left:0;flex-basis:100%}
@@ -6114,12 +6161,12 @@ body.state-connected{min-width:320px}
 
 /* 配置项标题在左、控件在右；范围提示附在标题旁。 */
 .wb-fields{grid-template-columns:minmax(0,1fr);gap:0;max-width:1040px}
-.wb-field{grid-template-columns:minmax(0,1fr) auto;align-items:center;
+.wb-field{grid-template-columns:12px minmax(0,1fr) auto;align-items:center;
   gap:var(--sp-2) var(--sp-4);padding:14px var(--sp-2) 14px 0}
-/* 主体占据内容列，恢复继承动作单独排列。 */
-.wb-field>.wb-field-main{grid-column:1}
+/* 层轨占据首列，主体与恢复继承动作分别排列。 */
+.wb-field>.wb-field-main{grid-column:2}
 @media (min-width:721px){
-  .wb-field>.wb-field-side{grid-column:2}
+  .wb-field>.wb-field-side{grid-column:3}
 }
 /* 自我页的 journal 是单列卡片，不能沿用工作台的第 2 列。 */
 .self-page .wb-journal .wb-field>.wb-field-main{grid-column:1}
@@ -6146,7 +6193,7 @@ body.state-connected{min-width:320px}
 .wb-control input[type=number],.wb-control input[type=text],.wb-control input[type=time],.wb-control select{max-width:none;width:100%}
 .wb-field:has(textarea) .wb-control>*,.wb-field:has(.wb-word-editor) .wb-control>*{width:100%}
 @media (max-width:720px){
-  .wb-field{grid-template-columns:minmax(0,1fr);align-items:start}
+  .wb-field{grid-template-columns:10px minmax(0,1fr);align-items:start}
   .wb-field-main{grid-template-columns:minmax(0,1fr)}
   .wb-field-main>.wb-control{grid-column:1;grid-row:auto;justify-self:stretch;max-width:none}
   .wb-control{justify-content:flex-start}
@@ -9326,7 +9373,7 @@ body.room-editing .product-scope{display:none}
 /* semantic-page.css */
 .semantic-section{border-top:1px solid var(--t-text-soft);padding:var(--sp-5) 0;margin-top:var(--sp-4)}
 .semantic-heading,.semantic-toolbar,.semantic-actions{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap}
-.semantic-heading h3{margin:0;font-size:var(--fs-title)}.semantic-heading span,.semantic-meta,.semantic-import span,.semantic-row small{color:var(--t-text-soft);font-size:var(--fs-body)}
+.semantic-heading h3{display:flex;align-items:center;gap:var(--sp-2);margin:0;font-size:var(--fs-title)}.semantic-heading span,.semantic-meta,.semantic-import span,.semantic-row small{color:var(--t-text-soft);font-size:var(--fs-body)}
 .semantic-feedback{min-height:20px;color:var(--t-ok-ink);font-size:var(--fs-body)}.semantic-state{font-size:var(--fs-body);background:var(--t-surface-soft);color:var(--t-ok-ink);padding:var(--sp-1) var(--sp-2);border-radius:var(--r-2xs)}.semantic-state.lexical_fallback{background:var(--t-warn-quiet);color:var(--t-warn-ink)}.semantic-state.disabled{background:var(--t-surface-soft);color:var(--t-text-soft)}
 .semantic-flags{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-1) var(--sp-4);margin:var(--sp-4) 0}
 .semantic-toggle{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);padding:var(--sp-2) 0;font-size:var(--fs-body)}.semantic-toggle input{width:17px;height:17px;accent-color:var(--t-ok-ink)}
@@ -18210,8 +18257,8 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region {
   top: var(--role-card-top, auto);
   right: var(--role-card-right, var(--shell-pad));
   bottom: var(--role-card-bottom, var(--shell-pad));
-  width: var(--shell-pip-w);
-  height: var(--shell-pip-h);
+  width: min(var(--shell-pip-w), var(--role-card-max-width, 100vw));
+  height: min(var(--shell-pip-h), var(--role-card-max-height, 100dvh));
   gap: 0;
   z-index: 15;
   visibility: visible;
@@ -18220,8 +18267,8 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region {
   transition: opacity var(--dur-fast, .16s ease);
 }
 body:not(.room-editing) #homeShell[data-away="true"] .stage-region .room-stage {
-  height: var(--shell-pip-h);
-  min-height: var(--shell-pip-h);
+  height: min(var(--shell-pip-h), var(--role-card-max-height, 100dvh));
+  min-height: min(var(--shell-pip-h), var(--role-card-max-height, 100dvh));
   margin: 0;
   border-radius: var(--r-md);
   border-color: var(--t-line-firm, var(--t-line));

@@ -1,11 +1,12 @@
 /* 统一配置工作台 · 内核
    取代此前 reply / expression / semantic / config-editor 各自实现的保存生命周期。
    各页只声明「字段 + 作用范围 + 接口」，草稿、脏状态、幂等重试、版本冲突、
-   范围与来源提示由本文件统一负责。
+   层轨与范围来源提示由本文件统一负责。
 
    设计要点：
    - 声明式字段：kind/minimum/maximum 全部来自后端下发的 `fields` 契约，
      页面不再硬编码一份可能与校验器漂移的范围。
+   - 层轨：按后端 layers 与 provenance 展示继承链及当前生效层，悬停可查看层级。
    - 范围：按后端 write_layer 与 provenance 展示保存目标和当前来源，详细信息按需展开。
    - 幂等：保存沿用 operation_key + edit_token，结果未确认时锁编辑并只重试原请求。
    - 草稿：sessionStorage 按 installation + operator + 当前对象/角色 + group 隔离，切页不丢。 */
@@ -23,6 +24,9 @@ window.CompanionWorkbench = (() => {
   const LAYER_LABELS = {
     installation: "所有角色共用", role: "只对这个角色生效",
     relationship: "只对这个人生效", window: "只在这个对话生效", scope: "生效范围",
+  };
+  const LAYER_SHORT_LABELS = {
+    installation: "安装", role: "角色", relationship: "关系", window: "窗口",
   };
   const LAYER_ORIGINS = {
     installation: "全局默认", role: "角色默认", relationship: "用户关系设置", window: "会话设置",
@@ -521,6 +525,24 @@ window.CompanionWorkbench = (() => {
     ? Number((value / 100).toFixed(Math.max(0, item.decimals + 2))) : value;
 
   /* === 渲染 === */
+  function railMarkup(state, name, item, provenance, container) {
+    const source = provenance?.[name]?.layer ?? null;
+    const writeLayer = item.writeLayer || container.writeLayer;
+    const nodes = container.layers.map(layer => {
+      const sourceClass = layer === source ? " is-source" : "";
+      const editable = item.editable.length && !item.editable.includes(layer) ? " is-locked" : " is-editable";
+      const label = LAYER_LABELS[layer] || layer;
+      const shortLabel = LAYER_SHORT_LABELS[layer] || layer;
+      const inherits = (!item.editable.length || item.editable.includes(layer))
+        ? (layer === writeLayer ? "本次保存写入这一层" : `${label}层可写`)
+        : `${shortLabel}层不适用于这一字段`;
+      return `<span class="wb-node${sourceClass}${editable}" data-layer="${e(layer)}"`
+        + ` title="${e(label)}层 · ${e(layer === source ? "当前生效值来自这里" : inherits)}"></span>`;
+    }).join("");
+    return `<div class="wb-rail${container.drawRails ? "" : " is-drawn"}" data-rail="${e(name)}"`
+      + ` aria-hidden="true">${nodes}</div>`;
+  }
+
   let hintSequence = 0;
   function scopeHintMarkup(text, label = "查看保存范围与来源") {
     const id = `wb-context-${++hintSequence}`;
@@ -987,6 +1009,7 @@ window.CompanionWorkbench = (() => {
     const helpId = `${state.instanceId}-help-${name}`;
     const errorId = `${state.instanceId}-error-${name}`;
     return `<div class="wb-field${dirty}${inheritClass}${layerEditable ? "" : " is-layer-locked"}" data-wb-row="${e(name)}"${visible ? "" : " hidden"}>`
+      + (container.presentation === "journal" ? "" : railMarkup(state, name, item, state.status?.provenance, container))
       + `<div class="wb-field-main"><span class="wb-label">${label}${fieldScopeMarkup(state, name, item, state.status?.provenance, container)}</span>`
       + (item.help && container.presentation !== "journal" ? `<p class="wb-help" id="${e(helpId)}">${e(item.help)}</p>` : "")
       + `<div class="wb-control">${controlMarkup(item, value, locked, state)}</div>`
@@ -1078,6 +1101,10 @@ window.CompanionWorkbench = (() => {
     const body = s.status ? blocks
       : `<div class="wb-skeleton" role="status" aria-label="正在读取设置">`
         + `<div class="wb-skeleton-row"></div><div class="wb-skeleton-row"></div><div class="wb-skeleton-row"></div></div>`;
+    const legend = !journal && s.status && container.layers.length > 1
+      ? `<div class="wb-rail-legend">${container.layers.map(layer =>
+          `<b>${e(LAYER_SHORT_LABELS[layer] || layer)}</b>`).join("<span>·</span>")}`
+        + `</div>` : "";
      const pendingText = s.pending
        ? (s.pendingReason
          ? `保存结果尚未确认（${s.pendingReason}）。可能已经写入；核对会沿用同一个操作标识，不会重复保存。`
@@ -1097,7 +1124,7 @@ window.CompanionWorkbench = (() => {
       + heading + `<div class="wb-card-body">`
        + (s.pending ? `<div class="wb-pending"><p>${e(pendingText)}</p>`
            + `<button type="button" class="button small" data-wb-action="retry"${s.busy ? " disabled" : ""}>核对原保存结果</button></div>` : "")
-      + body
+      + legend + body
       + `<div class="wb-actions">`
       + `<span class="wb-save-context"><button type="button" class="wb-save${s.busy ? " is-busy" : ""}${s.savedState || ""}"`
       + ` data-wb-action="save"${s.locked() || Object.keys(s.conflicts).length ? " disabled" : ""}>`
@@ -1176,7 +1203,7 @@ window.CompanionWorkbench = (() => {
        status: null, draft: null, base: null, pending: null, pendingReason: "",
       busy: false, loading: false, denied: false, stale: false, conflicts: {},
       notice: "", bad: false, ok: false, savedState: "", ticket: 0,
-      container: null, timer: null,
+      drawRails: true, container: null, timer: null,
       instanceId: `wb-${++instanceSequence}`, activeGroupId: initialSection, resetFields: [],
       visibleGroupIds: null,
     };
@@ -1326,6 +1353,7 @@ window.CompanionWorkbench = (() => {
         /* 只有声明了 resetKey 的分区才提供「全部恢复继承」：
            没有这条协议的分区点了会写出错误请求。 */
         resettable: Boolean(resetKey),
+        drawRails: state.drawRails,
       };
     }
 
@@ -1469,8 +1497,19 @@ window.CompanionWorkbench = (() => {
           + `<p class="wb-notice">${icon("info")}<span>正在读取设置…</span></p></div>`;
         return;
       }
+      const wasDrawing = state.drawRails;
       state.resetFields = resets_;
       root.innerHTML = `<div class="wb">${noticeMarkup(state)}${conflictMarkup()}${cardMarkup(state, state.container, root.closest?.(".console-section, .decision-stage")?.querySelector?.(":scope > header h2")?.textContent?.trim())}</div>`;
+      /* 层轨绘制只做一次：重绘之后不再重播。 */
+      if (wasDrawing && state.status) {
+        state.drawRails = false;
+        const rails = root.querySelectorAll(".wb-rail");
+        rails.forEach((node, index) => {
+          node.classList.add("is-drawing");
+          node.style.animationDelay = `${Math.min(index, 8) * 22}ms`;
+        });
+        setTimeout(() => rails.forEach(node => node.classList.remove("is-drawing")), 900);
+      }
       window.lucide?.createIcons({nodes: root.querySelectorAll("[data-lucide]")});
       wireFieldDescriptions(root);
       /* 台词气泡的 textarea 按内容自动长高；重绘后统一量一次。 */
@@ -1624,6 +1663,28 @@ window.CompanionWorkbench = (() => {
       });
     }
 
+    /* 悬停：亮起该层，其余退后。用 data 属性驱动，交给 CSS。
+       具名函数，这样 unmount 能真的把它们摘掉——匿名闭包摘不掉，
+       宿主换绑到同一个元素上时就会越叠越多份。 */
+    function onHover(event) {
+      const node = event.target.closest?.(".wb-node");
+      if (!node) return;
+      const row = node.closest(".wb-field");
+      if (!row) return;
+      row.dataset.focusLayer = node.dataset.layer || "";
+      row.querySelectorAll(".wb-node").forEach(item =>
+        item.classList.toggle("is-focus", item === node));
+    }
+
+    function onUnhover(event) {
+      const node = event.target.closest?.(".wb-node");
+      if (!node) return;
+      const row = node.closest(".wb-field");
+      if (!row) return;
+      delete row.dataset.focusLayer;
+      row.querySelectorAll(".wb-node").forEach(item => item.classList.remove("is-focus"));
+    }
+
     /* 已绑定的宿主元素。用实例级的 WeakSet 而不是元素上的 data 属性：
        data 标记在「同一个元素、内容被重写」时会把重新绑定误判成重复绑定，
        而 WeakSet 既不泄漏，也跟元素一起消失。 */
@@ -1637,6 +1698,8 @@ window.CompanionWorkbench = (() => {
       root.addEventListener("change", onInput);
       root.addEventListener("click", onClick);
       root.addEventListener("keydown", onSectionKeydown);
+      root.addEventListener("mouseover", onHover);
+      root.addEventListener("mouseout", onUnhover);
       root.addEventListener("focusin", scopeHintReset);
       root.addEventListener("pointerover", scopeHintReset);
       root.addEventListener("pointerout", scopeHintReset);
@@ -1652,6 +1715,8 @@ window.CompanionWorkbench = (() => {
       root.removeEventListener("change", onInput);
       root.removeEventListener("click", onClick);
       root.removeEventListener("keydown", onSectionKeydown);
+      root.removeEventListener("mouseover", onHover);
+      root.removeEventListener("mouseout", onUnhover);
       root.removeEventListener("focusin", scopeHintReset);
       root.removeEventListener("pointerover", scopeHintReset);
       root.removeEventListener("pointerout", scopeHintReset);
@@ -2774,7 +2839,7 @@ window.CompanionWorkbench = (() => {
        state.status = null; state.container = null; state.draft = null; state.base = null;
        state.pendingReason = "";
       state.busy = false; state.loading = false; state.notice = ""; state.bad = false;
-      state.ok = false; state.savedState = "";
+      state.ok = false; state.savedState = ""; state.drawRails = true;
       state.stale = false; state.conflicts = {};
       state.visibleGroupIds = null;
       resets_ = [];

@@ -874,12 +874,17 @@ function roleContextMarkup(){
     ${product.selectionNotice?.()?`<p role="status">${escapeHTML(product.selectionNotice())}</p>`:''}
   </section>`;
 }
+function insertRoleContext(host,markup){
+  const heading=host.querySelector('.shell-panel-head');
+  if(heading)heading.insertAdjacentHTML('afterend',markup);
+  else host.insertAdjacentHTML('afterbegin',markup);
+}
 function updateRoleContext(){
   const host=$('#shellPanel');
   const node=host?.querySelector('.role-context');
   const markup=roleContextMarkup();
   if(node)node.outerHTML=markup;
-  else if(markup&&host&&!host.hidden)host.insertAdjacentHTML('afterbegin',markup);
+  else if(markup&&host&&!host.hidden)insertRoleContext(host,markup);
 }
 window.addEventListener('companion:scope-changed',updateRoleContext);
 function paintPanel(){
@@ -899,7 +904,7 @@ function paintPanel(){
       :section?renderSectionPanel(section)
       :view?renderViewPanel(view)
       :renderHomePanel();
-    if(host.innerHTML.trim())host.insertAdjacentHTML('afterbegin',roleContextMarkup());
+    if(host.innerHTML.trim())insertRoleContext(host,roleContextMarkup());
     host.hidden=!host.innerHTML.trim();
     if(fromRail&&!host.hidden){
       const heading=host.querySelector('.shell-panel-head h2');

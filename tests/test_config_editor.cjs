@@ -1763,7 +1763,8 @@ test('the skill group is role-shared and has no window override', async () => {
     + (/<span class="wb-context-tip"[^>]*>(保存到：[^<]*)</.exec(painted) || [])[1]);
   assert.match(painted, /<h3>技能领域<\/h3>/);
   assert.match(painted, /保存到：当前角色默认/);
-  assert.doesNotMatch(painted, /data-layer=|wb-rail/);
+  assert.match(painted, /data-layer="role"/);
+  assert.match(painted, /class="wb-rail/);
   assert.doesNotMatch(painted, /当前会话可覆盖|data-layer="window"/);
   assert.doesNotMatch(painted, /scope_key|binding_revision|operation_id/);
   /* 两个字段都不能在分组里弄丢。 */

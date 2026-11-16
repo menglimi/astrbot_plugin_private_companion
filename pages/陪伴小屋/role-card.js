@@ -6,9 +6,11 @@ window.CompanionRoleCard = (() => {
   const DRAG_DISTANCE = 5;
 
   function clampPosition(position, size, viewport) {
+    const left = (viewport.left || 0) + MARGIN;
+    const top = (viewport.top || 0) + MARGIN;
     return {
-      left: Math.min(Math.max(MARGIN, position.left), Math.max(MARGIN, viewport.width - size.width - MARGIN)),
-      top: Math.min(Math.max(MARGIN, position.top), Math.max(MARGIN, viewport.height - size.height - MARGIN)),
+      left: Math.min(Math.max(left, position.left), Math.max(left, (viewport.left || 0) + viewport.width - size.width - MARGIN)),
+      top: Math.min(Math.max(top, position.top), Math.max(top, (viewport.top || 0) + viewport.height - size.height - MARGIN)),
     };
   }
 
@@ -31,7 +33,22 @@ window.CompanionRoleCard = (() => {
     const controls = "button, a, select, input, label";
 
     const isAway = () => Boolean(shell.section) && !document.body.classList.contains("room-editing");
-    const viewport = () => ({width: window.innerWidth, height: window.innerHeight});
+    const main = root.querySelector(".shell-body");
+    const rail = root.querySelector("#homeShell > .rail");
+    function contentBounds() {
+      const rect = main.getBoundingClientRect();
+      const left = Math.max(0, rect.left);
+      const right = Math.min(window.innerWidth, rect.right);
+      let top = Math.max(0, rect.top);
+      const bottom = Math.min(window.innerHeight, rect.bottom);
+      if (rail) {
+        const navigation = rail.getBoundingClientRect();
+        if (navigation.left < right && navigation.right > left && navigation.top <= top) {
+          top = Math.max(top, navigation.bottom);
+        }
+      }
+      return {left, top, width: right - left, height: bottom - top};
+    }
     const currentKey = () => product.role() && product.roleTarget()
       ? product.roleChoiceKey({target: product.roleTarget(), role: product.role()}) : "";
 
@@ -69,14 +86,19 @@ window.CompanionRoleCard = (() => {
         left: anchor.right - size.width,
         top: anchor.top - size.height - MARGIN >= MARGIN ? anchor.top - size.height - MARGIN : anchor.bottom + MARGIN,
       };
-      const placed = clampPosition(candidate, size, viewport());
+      const placed = clampPosition(candidate, size, contentBounds());
       menu.style.left = `${placed.left}px`;
       menu.style.top = `${placed.top}px`;
     }
 
     function fitPosition() {
       if (!isAway()) return;
-      if (position) applyPosition(clampPosition(position, scene.getBoundingClientRect(), viewport()));
+      const bounds = contentBounds();
+      region.style.setProperty("--role-card-max-width", `${Math.max(0, bounds.width - MARGIN * 2)}px`);
+      region.style.setProperty("--role-card-max-height", `${Math.max(0, bounds.height - MARGIN * 2)}px`);
+      const rect = scene.getBoundingClientRect();
+      const next = clampPosition(position || rect, rect, bounds);
+      if (position || next.left !== rect.left || next.top !== rect.top) applyPosition(next);
       placeMenu();
     }
 
@@ -129,6 +151,7 @@ window.CompanionRoleCard = (() => {
     reset.addEventListener("click", () => {
       applyPosition(null);
       savePosition();
+      fitPosition();
       closeMenu({focus: true});
     });
     menu.addEventListener("keydown", event => {
@@ -154,7 +177,7 @@ window.CompanionRoleCard = (() => {
       drag.moved = true;
       event.preventDefault();
       region.dataset.roleCardDragging = "true";
-      applyPosition(clampPosition({left: drag.left + dx, top: drag.top + dy}, scene.getBoundingClientRect(), viewport()));
+      applyPosition(clampPosition({left: drag.left + dx, top: drag.top + dy}, scene.getBoundingClientRect(), contentBounds()));
       placeMenu();
     });
     function endDrag(event) {
@@ -177,11 +200,15 @@ window.CompanionRoleCard = (() => {
     }, true);
 
     window.addEventListener("resize", fitPosition);
+    window.addEventListener("scroll", fitPosition, {passive: true});
+    const layoutObserver = new ResizeObserver(fitPosition);
+    layoutObserver.observe(main);
+    if (rail) layoutObserver.observe(rail);
     window.addEventListener("companion:scope-changed", render);
     window.addEventListener("companion:browser-preferences-changed", render);
     shell.onChange(() => { closeMenu(); requestAnimationFrame(fitPosition); });
     render();
-    return {render, resetPosition: () => { applyPosition(null); savePosition(); }, fitPosition};
+    return {render, resetPosition: () => { applyPosition(null); savePosition(); fitPosition(); }, fitPosition};
   }
 
   return {mount, clampPosition};

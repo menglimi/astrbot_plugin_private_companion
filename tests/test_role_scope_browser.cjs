@@ -85,6 +85,7 @@ test("完整小屋按当前 Bot 与角色切换工作区", {skip:chromium ? fals
     await navigate("learning","chain");
     await expectRole("b");
     assert.equal(await page.locator("[data-role-window]").count(),1);
+    assert.equal(await page.locator("#shellPanel > .shell-panel-head + .role-context + .shell-panel-body").count(),1);
     assert.equal(await page.locator("[data-learning-scope-target]").count(),0);
     await page.getByText("请选择当前角色的私聊窗口以查看成长记录。",{exact:true}).waitFor();
     await page.locator("[data-role-window]").selectOption("private-b");
@@ -100,6 +101,7 @@ test("完整小屋按当前 Bot 与角色切换工作区", {skip:chromium ? fals
   await t.test("事实与经历切换后清除旧窗口并按新窗口重读", async () => {
     await navigate("memory");
     assert.equal(await page.locator("[data-role-window]").count(),1);
+    assert.equal(await page.locator("#shellPanel > .shell-panel-head + .role-context + .shell-panel-body").count(),1);
     assert.equal(await page.locator("#memory-target").count(),0);
     await page.locator("#memoryWorkspace").getByText(labels.a+"的事实",{exact:true}).first().waitFor();
     await selectRole("b");
@@ -113,8 +115,23 @@ test("完整小屋按当前 Bot 与角色切换工作区", {skip:chromium ? fals
   await t.test("会话入口只出现在需要它的页面与表达分区", async () => {
     await navigate("expression","reaction");
     assert.equal(await page.locator("[data-role-window]").count(),0);
+    const expression=page.locator("#semanticExpressionWorkspace");
+    const settingsHint=expression.getByRole("button",{name:"查看表情设置范围与使用说明"});
+    await settingsHint.waitFor();
+    assert.equal(await expression.locator(".semantic-feedback").count(),0);
+    const settingsTip=expression.locator("[role=tooltip]").filter({hasText:"所有账号与角色共用"});
+    assert.equal(await settingsTip.isVisible(),false);
+    await settingsHint.hover();
+    await settingsTip.waitFor({state:"visible"});
+    await settingsHint.focus();
+    await page.keyboard.press("Escape");
+    await settingsTip.waitFor({state:"hidden"});
+    const galleryHint=expression.getByRole("button",{name:"查看表情库范围"});
+    await galleryHint.focus();
+    await expression.locator("[role=tooltip]").filter({hasText:"图库属于当前小屋角色"}).waitFor({state:"visible"});
     await page.locator('[data-expression-module="expression-text"]').click();
     assert.equal(await page.locator("[data-role-window]").count(),1);
+    assert.equal(await page.locator("#shellPanel > .shell-panel-head + .role-context + .shell-panel-body").count(),1);
     await page.locator('[data-expression-module="expression-reaction"]').click();
     assert.equal(await page.locator("[data-role-window]").count(),0);
     await navigate("learning","strategy");
@@ -124,6 +141,7 @@ test("完整小屋按当前 Bot 与角色切换工作区", {skip:chromium ? fals
     assert.equal(await page.locator("[data-role-window]").count(),0);
     await navigate("data","port");
     assert.equal(await page.locator("[data-role-window]").count(),1);
+    assert.equal(await page.locator("#shellPanel > .shell-panel-head + .role-context + .shell-panel-body").count(),1);
   });
 
   await t.test("模型页切换账号，群窗口使用群接口，未选窗口禁用窗口覆盖", async () => {

@@ -14,7 +14,7 @@ const read = filename => fs.readFileSync(path.join(source, filename), "utf8");
 const stage = read("index.html").match(/<section class="stage-region"[\s\S]*?<\/section>/)[0];
 const css = ["tokens.css", "styles.css", "shell.css"].map(read).join("\n");
 const html = `<!doctype html><html data-theme-ready data-room-ready><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body>
-<div id="homeShell" data-away="true"><div class="shell-body">${stage}<section class="shell-panel">配置内容</section></div></div>
+<div id="homeShell" data-away="true"><nav class="rail" aria-label="插件导航">导航</nav><div class="shell-body">${stage}<section class="shell-panel">配置内容</section></div></div>
 <script>
 (async()=>{
 const request=async(method,patch)=>{
@@ -158,8 +158,14 @@ test("小屋角色卡片浏览器交互", {skip: chromium ? false : "未安装 p
     await page.mouse.move(0, 0, {steps: 5});
     await page.mouse.up();
     box = await page.locator("#stageScene").boundingBox();
-    assert.equal(box.x, 8);
+    const mainLeft = await page.locator(".shell-body").evaluate(node => node.getBoundingClientRect().left);
+    assert.equal(box.x, mainLeft + 8);
     assert.equal(box.y, 8);
+    await page.evaluate(() => { document.querySelector("#homeShell").dataset.rail = "expanded"; });
+    await page.waitForFunction(() => document.querySelector("#stageScene").getBoundingClientRect().left >= document.querySelector(".rail").getBoundingClientRect().right + 8);
+    box = await page.locator("#stageScene").boundingBox();
+    assert.ok(box.x > mainLeft + 8);
+    await page.evaluate(() => { delete document.querySelector("#homeShell").dataset.rail; });
     await page.mouse.move(box.x + 50, box.y + 70);
     await page.mouse.down();
     await page.mouse.move(995, 695, {steps: 5});
@@ -174,6 +180,37 @@ test("小屋角色卡片浏览器交互", {skip: chromium ? false : "未安装 p
     await page.locator("[data-role-card-reset]").click();
     assert.equal(await page.evaluate(() => CompanionProduct.browserPreferences().room_card_position), null);
     assert.equal(await page.evaluate(() => document.querySelector(".stage-region").style.getPropertyValue("--role-card-left")), "");
+    await page.setViewportSize({width: 160, height: 150});
+    await page.waitForFunction(() => {
+      const card = document.querySelector("#stageScene").getBoundingClientRect();
+      const navigation = document.querySelector(".rail").getBoundingClientRect();
+      return card.left >= 8 && card.right <= innerWidth - 8
+        && card.top >= navigation.bottom + 8 && card.bottom <= innerHeight - 8;
+    });
+    box = await page.locator("#stageScene").boundingBox();
+    assert.ok(box.width < 176 && box.height < 104);
+  });
+
+  await t.test("旧位置落在侧栏或视口外时，刷新后移回主区", async () => {
+    await page.setViewportSize({width: 1000, height: 700});
+    for (const position of [{left: 0, top: 0}, {left: 1800, top: 1200}]) {
+      await page.evaluate(async position => {
+        await CompanionProduct.saveBrowserPreferences({room_card_position:position});
+      }, position);
+      await page.reload();
+      await page.waitForFunction(() => {
+        const card = document.querySelector("#stageScene").getBoundingClientRect();
+        const main = document.querySelector(".shell-body").getBoundingClientRect();
+        return window.CompanionRoleCard && card.left >= main.left + 8 && card.right <= innerWidth - 8
+          && card.top >= 8 && card.bottom <= innerHeight - 8;
+      });
+      const card = await page.locator("#stageScene").boundingBox();
+      await page.mouse.move(card.x + 50, card.y + 70);
+      await page.mouse.down();
+      await page.mouse.move(card.x + 80, card.y + 40, {steps: 3});
+      await page.mouse.up();
+      assert.equal(await page.evaluate(() => window.homeClicks), 0);
+    }
   });
 
   await t.test("触摸设备显示入口，点击切换不返回小屋", async () => {
@@ -182,6 +219,15 @@ test("小屋角色卡片浏览器交互", {skip: chromium ? false : "未安装 p
     await phone.goto(url);
     await phone.locator("[data-role-card-name]").getByText("角色甲",{exact:true}).waitFor();
     assert.equal(await phone.locator("#stageScene").isVisible(), true);
+    let box = await phone.locator("#stageScene").boundingBox();
+    await phone.mouse.move(box.x + 50, box.y + 70);
+    await phone.mouse.down();
+    await phone.mouse.move(0, 0, {steps: 5});
+    await phone.mouse.up();
+    box = await phone.locator("#stageScene").boundingBox();
+    const navigationBottom = await phone.locator(".rail").evaluate(node => node.getBoundingClientRect().bottom);
+    assert.ok(box.y >= navigationBottom + 8);
+    assert.equal(box.x, 8);
     assert.equal(await phone.locator("[data-role-card-switch]").evaluate(node => getComputedStyle(node).opacity), "1");
     await phone.locator("[data-role-card-switch]").tap();
     assert.equal(await phone.locator("#roleCardMenu").isVisible(), true);
