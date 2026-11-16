@@ -366,10 +366,7 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         self.assert_no_reply_work(event)
 
     async def test_native_generated_image_builds_qzone_upload_request(self):
-        from companion_v2.capabilities.models import CapabilityAuthorizationState
-        from companion_v2.capabilities.repositories import CapabilityRepository
-        from companion_v2.execution.models import require
-        from companion_v2.qzone.capability import CAPABILITIES, EXTENSION, PUBLISH_ACTION, package_descriptor
+        from companion_v2.capabilities.qzone_access import QzoneAccess
         from companion_v2.qzone.images import album_images
         from companion_v2.qzone.protocol import credential_from_cookies, parse_cookie_text, upload_image_request
         from companion_v2.sharing.planner import ShareCatalog, SharePlanner
@@ -379,25 +376,17 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         received = await self.call(event, request, "image.generate", {"prompt": "自拍"}, "qzone-selfie")
         result = self.result(received, "red")
         artifact_id = json.loads(result["payload"])["native"]["artifacts"][0]["artifact_id"]
-        self.grant(self.important, SCOPE, PUBLISH_ACTION)
-
-        package = package_descriptor()
-        capabilities = CapabilityRepository(self.runtime)
-        require(capabilities.register_descriptor(package, registered_at=self.clock.now()))
-        require(capabilities.acquire(extension_id=EXTENSION, package_id=package.package_id,
-                                     package_version=package.package_version, expected_revision=0,
-                                     observed_at=self.clock.now()))
-        require(capabilities.set_role_enabled(extension_id=EXTENSION,
-            role=self.context.role_binding.role, bot_id=SCOPE.bot_id, enabled=True,
-            expected_revision=0, observed_at=self.clock.now()))
-        for capability in CAPABILITIES:
-            require(capabilities.set_authorization(extension_id=EXTENSION, capability_id=capability,
-                subject=self.context.actor.subject, scope=SCOPE,
-                state=CapabilityAuthorizationState.ACTIVE, expected_revision=0,
-                observed_at=self.clock.now()))
-
         planner = SharePlanner(sources=SourceRepository(self.runtime), assets=AssetRepository(self.runtime),
                                catalog=ShareCatalog())
+        with self.assertRaises(TaskError) as denied:
+            album_images(self.app, self.context, self.clock.now(), [artifact_id], planner=planner)
+        self.assertEqual(denied.exception.code, "authorization_denied")
+
+        access = QzoneAccess(self.app, self.context)
+        status = access.status(self.core, self.clock.now())
+        installed = access.configure(self.core, {"operation_key": "enable-image-share",
+            "edit_token": status["edit_token"], "enabled": True}, self.clock.now())["status"]
+        self.assertTrue(installed["publish_granted"])
         images, candidates = album_images(self.app, self.context, self.clock.now(), [artifact_id], planner=planner)
         self.assertEqual(len(images), 1)
         self.assertEqual(len(candidates), 1)
@@ -409,6 +398,13 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         self.assertEqual(base64.b64decode(upload.data["picfile"], validate=True), image_bytes("red"))
         self.assertEqual(upload.data["filename"], f"{images[0].content_hash[:16]}.png")
         self.assertEqual(upload.data["qzonetoken"], "TOKEN")
+
+        revoked = access.configure(self.core, {"operation_key": "revoke-image-share",
+            "edit_token": installed["edit_token"], "enabled": False}, self.clock.now())["status"]
+        self.assertFalse(revoked["publish_granted"])
+        with self.assertRaises(TaskError) as denied:
+            album_images(self.app, self.context, self.clock.now(), [artifact_id], planner=planner)
+        self.assertEqual(denied.exception.code, "authorization_revoked")
         self.assert_no_reply_work(event)
 
     async def test_corrupt_native_artifact_receipt_is_refused_without_crashing(self):
