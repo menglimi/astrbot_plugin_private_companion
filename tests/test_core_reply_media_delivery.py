@@ -79,6 +79,12 @@ class NativeReplyMessagesTests(unittest.TestCase):
 
         self.assertEqual(kinds(groups), [[Reply, Record, Plain]])
 
+    def test_qq_official_text_and_voice_are_separate_messages(self):
+        chain = MessageChain(chain=[Plain("你好"), Record(file=silent_wav())])
+        groups = native_reply_messages(_Event("qq_official"), chain)
+
+        self.assertEqual(kinds(groups), [[Plain], [Record]])
+
     def test_image_attachment_still_splits_from_the_caption(self):
         chain = MessageChain(chain=[Plain("你好"), Image.fromURL("https://example.invalid/a.png")])
         groups = native_reply_messages(_Event(), chain)
