@@ -228,7 +228,7 @@ class OutboundDelivery:
     async def deliver(self, run):
         if self.private_account_router is not None:
             request = DeliveryRequest.restore(self._row(run.task.spec.request_ref)["request_json"])
-            if not self.private_account_router.ready(request):
+            if not self.private_account_router.ready(request, delivery_id=run.task.spec.request_ref):
                 # No sender was entered and no effect begun: use the supervisor's
                 # established bounded backoff/deadline, keeping this exact outbox.
                 return TaskResult("failed", retryable=True)
