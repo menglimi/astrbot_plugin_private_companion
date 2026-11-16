@@ -216,22 +216,6 @@ class AstrBotMultiController:
         if (not self._terminated and not self._stopped_by_user and self._accepting
                 and session is not None and session.application.state == "running"):
             await session.account_recovery.refresh()
-    def native_bridges_current(self):
-        """Whether both running bridges still point at AstrBot's selected clients."""
-        session = self.session
-        if session is None or session.application.state != "running":
-            return False
-        for bridge in (session.bridge, session.bridge.groups):
-            if not bridge.platforms:
-                return False
-            for platform_id, (platform, client) in bridge.platforms.items():
-                try:
-                    if (self.context.get_platform_inst(platform_id) is not platform
-                            or platform.get_client() is not client):
-                        return False
-                except Exception:
-                    return False
-        return True
 
     @property
     def profile_root(self):
@@ -342,12 +326,7 @@ class AstrBotMultiController:
         await self._open_async()
         return await asyncio.to_thread(self._resolve_proactive_diagnostic_target)
 
-    async def proactive_diagnostic_targets(self):
-        """Current exact private recipients whose native identity is CORE."""
-        await self._open_async()
-        return await asyncio.to_thread(self._proactive_diagnostic_targets)
-
-    def _proactive_diagnostic_targets(self):
+    def _resolve_proactive_diagnostic_target(self):
         settings = self._settings()
         if self.runtime is None or self.authority is None:
             raise TaskError("setup_binding_confirmation_required",
@@ -360,7 +339,7 @@ class AstrBotMultiController:
             (AuthorizationTier.CORE.value,),
         )}
         candidates = []
-        for target in settings.targets:
+        for target in settings.primary_targets:
             if target.participant_id == "*":
                 continue
             subject = self.authority.subject(target)
@@ -373,11 +352,6 @@ class AstrBotMultiController:
             if actor.subject == subject:
                 candidates.append(target)
 
-        return candidates
-
-    def _resolve_proactive_diagnostic_target(self):
-        candidates = [target for target in self._proactive_diagnostic_targets()
-                      if target in self._settings().primary_targets]
         if len(candidates) != 1:
             code = "setup_core_window_ambiguous" if candidates else "setup_binding_confirmation_required"
             reason = ("more than one configured private target belongs to a core administrator"
@@ -1251,32 +1225,7 @@ class AstrBotMultiController:
                     return Outcome.failed("host_manually_stopped", "the operator stopped this host")
                 self._stopped_by_user = False
                 if self.session is not None and self.session.application.state == "running":
-                    if self._accepting and self.native_bridges_current():
-                        return Outcome.success({"state": "running", "replayed": True})
-                    previous_session = self.session
-                    self._accepting = False
-                    self.refresh_settings()
-                    self._settings()
-                    manifest, _ = await self._probe(include_conversations=False, include_window_personas=False)
-                    async with self._control_lock:
-                        if self.session is not previous_session or self._terminated:
-                            raise TaskError("host_session_changed", "the shared host changed during native reconnect")
-                        await self._open_async()
-                        try:
-                            await asyncio.to_thread(self.authority.require_manifest, manifest)
-                        except TaskError as error:
-                            if error.code == "host_binding_changed" and self._confirmed_core_window():
-                                await asyncio.to_thread(self._adopt_confirmed_mapping, manifest)
-                            else:
-                                raise
-                    report = await previous_session.close(grace_seconds=0.5)
-                    if report.state != "stopped":
-                        raise TaskError("host_must_stop", "the shared host did not finish stopping after native reconnect")
-                    async with self._control_lock:
-                        if self.session is not previous_session:
-                            raise TaskError("host_session_changed", "the shared host changed during native reconnect")
-                        self.last_session, self.session = previous_session, None
-                    logger.info("[CompanionV2] 平台连接已更新，重建私聊与群聊 Bridge")
+                    return Outcome.success({"state": "running", "replayed": True})
                 self._idle()
                 # Model settings can be changed from another workspace while
                 # this host is stopped. Re-read them here so retrying Start
@@ -1317,11 +1266,6 @@ class AstrBotMultiController:
             self._settings()
             if self.session is not session:
                 raise TaskError("host_session_changed", "the initialized host changed before it could resume")
-            if not self.native_bridges_current():
-                raise TaskError("host_account_changed", "native platform/client changed during startup")
-            readiness = self.startup_readiness()
-            if readiness is not None:
-                raise TaskError(readiness, "a configured native account disconnected during startup")
             self._accepting, self.last_failure = True, None
             targets = len(self.settings.all_targets)
         return Outcome.success({"state": "running", "targets": targets, "startup": result.unwrap()})

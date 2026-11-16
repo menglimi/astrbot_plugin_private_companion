@@ -1404,6 +1404,7 @@ test("unmounting a workspace ends pending draft actions and clears their timers"
   h.product.unmountWorkspace();
   assert.match((await pending).error,/已关闭/);
   assert.equal(h.product.workspaceDirtyDrafts().length,0);
+});
 test("identity account-link bridge forwards all four exact routes with their original payloads", async () => {
   const h = await harness(); h.product.mountWorkspace();
   const params = {subject_id: "synthetic-user", platform: "qq", bot_id: "bot-a", account_id: "100", role_id: "synthetic-role"};
