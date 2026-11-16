@@ -99,11 +99,12 @@ class OutboundDelivery:
         self.owners = MappingProxyType({o.name: o for o in owners})
         self.on_delivered = None
         self.on_receipt = None
+        self.private_account_router = None
         self.tasks = None
         self.operations = OperationRepository(runtime)
         self.registrations = tuple(TaskRegistration(TaskDefinition(o.kind, "delivery", o.action,
             Lane.BACKGROUND, side_effect=SideEffect.MESSAGE_DELIVERY, binding=sender.binding,
-            timeout_seconds=60, max_attempts=1, concurrency=concurrency), self.validate) for o in owners)
+            timeout_seconds=60, max_attempts=3 if o.name == "proactive.contact" else 1, concurrency=concurrency), self.validate) for o in owners)
 
     def attach(self, tasks):
         if self.tasks is not None or tasks.runtime is not self.runtime:
@@ -225,9 +226,19 @@ class OutboundDelivery:
                 self._operation_state(self._row(identifier), OperationState.UNKNOWN)
 
     async def deliver(self, run):
+        if self.private_account_router is not None:
+            request = DeliveryRequest.restore(self._row(run.task.spec.request_ref)["request_json"])
+            if not self.private_account_router.ready(request):
+                # No sender was entered and no effect begun: use the supervisor's
+                # established bounded backoff/deadline, keeping this exact outbox.
+                return TaskResult("failed", retryable=True)
         envelope = self._dispatch(run)
         try:
-            receipt = await self.sender.send(envelope)
+            if self.private_account_router is not None:
+                request = DeliveryRequest.restore(self._row(envelope.part_id)["request_json"])
+                receipt = await self.private_account_router.send(envelope, request, self.sender)
+            else:
+                receipt = await self.sender.send(envelope)
             if not isinstance(receipt, DeliveryReceipt) or (receipt.part_id, receipt.operation_id) != (envelope.part_id, envelope.operation_id):
                 raise TaskError("delivery_receipt_mismatch", "sender returned no receipt for this dispatch")
             require(self.record_receipt(receipt))
@@ -244,6 +255,8 @@ class OutboundDelivery:
     def record_receipt(self, receipt: DeliveryReceipt):
         with self.runtime.transaction() as connection:
             row = self._row(receipt.part_id)
+            if self.private_account_router is not None:
+                receipt = self.private_account_router.normalize_receipt(receipt)
             if (row["operation_id"] != receipt.operation_id or row["origin_key"] != receipt.origin_key
                     or row["payload_hash"] != receipt.payload_hash or row["sender_json"] != encode(receipt.sender)
                     or row["dispatched_at"] is None):

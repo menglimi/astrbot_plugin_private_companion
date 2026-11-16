@@ -856,7 +856,9 @@ class ProactiveContacts:
         if request.owner != GROUP or request.context.scope.account_id is None:
             return
         rejected = receipt.status == "not_sent" and receipt.failure_code == "qq_eventchecker_1200"
-        self.platform_circuit.record(request.context, at=self.tasks.now(),
+        router = getattr(self.delivery, "private_account_router", None)
+        actual = router.actual_context(request.delivery_id) if router is not None else None
+        self.platform_circuit.record(actual or request.context, at=self.tasks.now(),
             failure_code=receipt.failure_code if rejected else None,
             reset_failures=(receipt.status in ("delivered", "accepted")
                             or receipt.status == "not_sent" and not rejected))
