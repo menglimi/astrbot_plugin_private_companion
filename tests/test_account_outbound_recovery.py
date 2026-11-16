@@ -165,4 +165,3 @@ class QueuedReminderRecoveryTests(AgendaBackgroundFixture, unittest.IsolatedAsyn
         await self.until(lambda: self.runtime.read_one("SELECT state FROM execution_tasks WHERE task_id = ?",
                                                      (row["task_id"],))[0] == "expired")
         self.assertEqual(self.sent, [])
-

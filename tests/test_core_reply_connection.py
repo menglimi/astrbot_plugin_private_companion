@@ -160,4 +160,3 @@ class CoreReplyConnectionTests(unittest.IsolatedAsyncioTestCase):
                 async for _ in runner._handle_function_tools():
                     pass
         self.assertEqual(calls, [])
-

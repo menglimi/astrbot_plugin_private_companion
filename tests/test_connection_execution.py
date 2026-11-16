@@ -75,4 +75,3 @@ class ConnectionExecutionTests(ExecutionFixture, unittest.IsolatedAsyncioTestCas
         self.assertEqual((result.state, result.effect, result.operation_id),
                          ("uncertain", "unknown", "original-operation"))
         self.assertIsNone((await runner.run_once(Lane.FOREGROUND)).unwrap().task)
-
