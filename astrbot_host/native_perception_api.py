@@ -25,6 +25,7 @@ from companion_v2.foundation.refs import ScopeKind
 from companion_v2.proactive.management import ContactManagement
 from companion_v2.proactive.material_pool import read_proactive_contact_traces, read_role_material_pool
 from companion_v2.role_work.state.management import StateManagement
+from companion_v2.role_work.state.configuration import GROUP as STATE_GROUP, target_for as state_target_for
 
 from .management_identity import dashboard_operator
 
@@ -411,8 +412,12 @@ class NativePerceptionWebAPI:
     async def runtime_snapshot(self):
         from .web_api import outcome_response
         try:
-            if request.query:
-                raise TaskError("perception_request_invalid", "target overrides are not accepted")
+            query = request.query
+            if (set(query.keys()) - {"scope"}
+                    or any(len(query.getlist(key)) != 1 for key in query.keys())
+                    or query.get("scope", "window") not in ("role", "window")):
+                raise TaskError("perception_request_invalid", "invalid runtime scope")
+            role_only = query.get("scope") == "role"
             username = request.username
             if type(username) is not str or not username.strip() or username.startswith("api_key:"):
                 raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
@@ -425,12 +430,21 @@ class NativePerceptionWebAPI:
                     raise TaskError("staging_not_initialized", "load a V2 profile first")
                 operator = dashboard_operator(controller.runtime, username, at=controller.now())
                 app, context = session.application, session.profile.target
-                status = self._status(app, context, operator)
                 observed_at = controller.now()
-                model_settings = status["model"]["settings"]
+                if role_only:
+                    StateManagement(app, context).life.authorize(operator)
+                    configuration = require(app.configuration.read(operator, target=state_target_for(context),
+                        group_id=STATE_GROUP, observed_at=observed_at))
+                    settings = {name: configuration.values[STATE_GROUP + "." + name]
+                                for name in ENVIRONMENT_STATUS_FIELDS}
+                    model_settings = require(PerceptionManagement(app, context).status(operator))["settings"]
+                    environment_settings = settings
+                else:
+                    status = self._status(app, context, operator)
+                    model_settings = status["model"]["settings"]
+                    environment_settings = status["environment"]["settings"]
                 calendar = {"status": "disabled"}
                 if model_settings["calendar_enabled"]:
-                    environment_settings = status["environment"]["settings"]
                     calendar = {"status": "available", **project_local_date(
                         observed_at, model_settings["calendar_timezone"],
                         configured_annual_calendars(environment_settings["planning_annual_calendars"]),
@@ -442,12 +456,14 @@ class NativePerceptionWebAPI:
                         solar_term_port=getattr(getattr(app, "messages", None), "solar_term_port", None))}
                 result = {"observed_at": observed_at.isoformat(),
                           "calendar": calendar,
-                          "weather": await self._weather_snapshot(
-                              app, status["environment"]["settings"]),
-                          "screen": self._screen_snapshot(app, context, observed_at),
-                          "reality": self._reality_snapshot(app, context, operator, observed_at),
-                          "camera": self._reality_camera_snapshot(app, context, operator, observed_at),
-                          "other_injections": self._other_injections(app, context)}
+                          "weather": await self._weather_snapshot(app, environment_settings)}
+                if not role_only:
+                    result.update({
+                        "screen": self._screen_snapshot(app, context, observed_at),
+                        "reality": self._reality_snapshot(app, context, operator, observed_at),
+                        "camera": self._reality_camera_snapshot(app, context, operator, observed_at),
+                        "other_injections": self._other_injections(app, context),
+                    })
                 return outcome_response(Outcome.success(result))
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))

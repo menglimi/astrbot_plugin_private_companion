@@ -8,13 +8,22 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from astrbot.api import logger
-from astrbot.api.web import request
+from astrbot.api.web import json_response, request
 from companion_v2.execution.models import TaskError, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind, ScopeRef
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 
 from .management_identity import dashboard_operator
+from .browser_preferences import (
+    BROWSER_PREFERENCE_KEYS,
+    BROWSER_PREFERENCE_MAX_AGE,
+    MAX_BROWSER_PREFERENCES_BYTES,
+    browser_preference_cookie_name,
+    encode_browser_preferences,
+    read_browser_preferences,
+    valid_browser_preference,
+)
 from .display_names import display_names
 from .group_remarks import GroupRemarks
 from .identity_derivation import role_display_name
@@ -60,7 +69,11 @@ class PageWebAPI:
                 (PREFIX + "/page/display-preferences", self.display_preferences, ["GET"],
                  "Read this Dashboard account's Companion display preferences"),
                 (PREFIX + "/page/display-preferences", self.save_display_preferences, ["POST"],
-                 "Save this Dashboard account's Companion display preferences")]
+                 "Save this Dashboard account's Companion display preferences"),
+                (PREFIX + "/page/browser-preferences", self.browser_preferences, ["GET"],
+                 "Read this browser's Companion role and card preferences"),
+                (PREFIX + "/page/browser-preferences", self.save_browser_preferences, ["POST"],
+                 "Save Companion role and card preferences in this browser's cookies")]
 
     async def workspace_entry(self):
         """Refresh the current page's short-lived resource token through AstrBot.
@@ -152,9 +165,9 @@ class PageWebAPI:
                 or len(username.strip()) > 128):
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
         if request.plugin_name != PREFIX.lstrip("/"):
-            raise TaskError("page_request_invalid", "display preferences are only available to this plugin")
+            raise TaskError("page_request_invalid", "page preferences are only available to this plugin")
         if request.query:
-            raise TaskError("page_request_invalid", "display preferences do not accept query overrides")
+            raise TaskError("page_request_invalid", "page preferences do not accept query overrides")
         if getattr(self.controller, "_terminated", False):
             raise TaskError("staging_host_terminated", "plugin is stopped")
         return username.strip()
@@ -256,6 +269,54 @@ class PageWebAPI:
         except OSError:
             return outcome_response(Outcome.failed(
                 "display_preferences_unavailable", "the display preferences could not be saved"))
+
+    def _browser_preference_cookie_name(self):
+        username = self._display_preferences_identity()
+        runtime = getattr(self.controller, "runtime", None)
+        if runtime is None:
+            raise TaskError("staging_not_initialized", "load the explicit V2 profile first")
+        return browser_preference_cookie_name(runtime.installation_id, username)
+
+    async def browser_preferences(self):
+        from .web_api import outcome_response
+
+        try:
+            name = self._browser_preference_cookie_name()
+            preferences = read_browser_preferences(request.cookies, name)
+            return json_response(outcome_response(Outcome.success({"preferences": preferences})),
+                                 headers={"Cache-Control": "no-store"})
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+
+    async def save_browser_preferences(self):
+        from .web_api import outcome_response
+
+        try:
+            name = self._browser_preference_cookie_name()
+            raw = await request.body()
+            if len(raw) > MAX_BROWSER_PREFERENCES_BYTES:
+                raise ValueError("request is too large")
+            value = json.loads(raw.decode("utf-8"))
+            if (type(value) is not dict or not value or not set(value) <= set(BROWSER_PREFERENCE_KEYS)
+                    or any(not valid_browser_preference(key, item) for key, item in value.items())):
+                raise ValueError("invalid browser preferences")
+            preferences = read_browser_preferences(request.cookies, name) | value
+            encoded = encode_browser_preferences(preferences)
+            response = json_response(outcome_response(Outcome.success({"preferences": preferences})),
+                                     headers={"Cache-Control": "no-store"})
+            if all(item is None for item in preferences.values()):
+                response.delete_cookie(name, path=request.path, httponly=True, samesite="lax")
+            else:
+                response.set_cookie(name, encoded, path=request.path,
+                                    max_age=BROWSER_PREFERENCE_MAX_AGE,
+                                    expires=BROWSER_PREFERENCE_MAX_AGE,
+                                    httponly=True, samesite="lax")
+            return response
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+            return outcome_response(Outcome.failed(
+                "browser_preferences_invalid", "check the browser preferences and retry"))
 
     async def targets(self):
         from .web_api import outcome_response

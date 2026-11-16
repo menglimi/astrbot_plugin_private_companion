@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 from tests.test_main_no_reply import ENTRY
 from astrbot.core.config import DEFAULT_CONFIG
-from astrbot.core.message.components import Image, Plain, Record
+from astrbot.core.message.components import Image, Plain, Record, Reply
 from astrbot.core.message.message_event_result import MessageEventResult, ResultContentType
 from astrbot.core.pipeline.process_stage.stage import ProcessStage
 from astrbot.core.pipeline.respond.stage import RespondStage
@@ -48,9 +48,9 @@ class PipelineEvent(AstrMessageEvent):
 
 
 class CoreAgentFixture:
-    def __init__(self, plugin, *, streaming=False, response_text=None):
+    def __init__(self, plugin, *, streaming=False, response_text=None, native_tool_text=None):
         self.plugin, self.streaming = plugin, streaming
-        self.response_text = response_text
+        self.response_text, self.native_tool_text = response_text, native_tool_text
         self.requests = []
 
     async def process(self, event):
@@ -61,6 +61,12 @@ class CoreAgentFixture:
         self.requests.append(req)
         if event.is_stopped():
             return
+        if self.native_tool_text is not None:
+            from astrbot.core.message.message_event_result import MessageChain
+            from astrbot_host.core_reply_idempotency import remember_native_tool_message
+
+            remember_native_tool_message(event, MessageChain(chain=[Plain(self.native_tool_text),
+                                                               Record(file="base64://YQ==")]))
         if streaming:
             async def chunks():
                 yield MessageEventResult().message("嘿嘿，")
@@ -81,7 +87,8 @@ class CoreAgentFixture:
 
 class CoreReplyPipelineTests(unittest.IsolatedAsyncioTestCase):
     async def run_pipeline(self, *, streaming=False, authorize=None, segmented=False, tts=False, dual=False,
-                           presentation=None, companion_segmenting=False, voice_policy=None, response_text=None):
+                           presentation=None, companion_segmenting=False, voice_policy=None, response_text=None,
+                           native_tool_text=None, native_image=True, native_quote=False):
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
         target = NS(key="target", target_id="target")
         observed = []
@@ -118,7 +125,7 @@ class CoreReplyPipelineTests(unittest.IsolatedAsyncioTestCase):
         config["t2i"] = False
         config["provider_tts_settings"].update(enable=tts, dual_output=dual, use_file_service=False)
         config["platform_settings"]["reply_with_mention"] = False
-        config["platform_settings"]["reply_with_quote"] = False
+        config["platform_settings"]["reply_with_quote"] = native_quote
         config["platform_settings"]["reply_prefix"] = ""
         config["platform_settings"]["segmented_reply"].update(
             enable=segmented, split_mode="regex", regex=r"[^\n]+", interval="0,0", interval_method="random",
@@ -133,7 +140,9 @@ class CoreReplyPipelineTests(unittest.IsolatedAsyncioTestCase):
                                   get_using_tts_provider_async=get_tts_provider)))
         process = ProcessStage()
         process.ctx = pipeline_context
-        agent = CoreAgentFixture(plugin, streaming=streaming, response_text=response_text)
+        plugin.context = NS(get_config=lambda _: config)
+        agent = CoreAgentFixture(plugin, streaming=streaming, response_text=response_text,
+                                 native_tool_text=native_tool_text)
         process.agent_sub_stage = agent
         decorate = decorate_module.ResultDecorateStage()
         await decorate.initialize(pipeline_context)
@@ -143,8 +152,13 @@ class CoreReplyPipelineTests(unittest.IsolatedAsyncioTestCase):
         async def add_native_image(current):
             current.get_result().chain.append(Image.fromURL("https://example.invalid/image.png"))
 
-        handlers = [NS(handler_module_path="core_test", handler_name="native_image", handler=add_native_image),
-                    NS(handler_module_path="core_test", handler_name="v2_guard", handler=plugin.guard_companion_core_delivery)]
+        handlers = ([NS(handler_module_path="core_test", handler_name="native_image", handler=add_native_image)]
+                    if native_image else [])
+        handlers.extend([
+            NS(handler_module_path="core_test", handler_name="v2_guard", handler=plugin.guard_companion_core_delivery),
+            NS(handler_module_path="core_test", handler_name="v2_tool_repeat",
+               handler=plugin.suppress_companion_native_tool_repeat),
+        ])
         async def after_send(current, *_):
             await plugin.observe_companion_core_reply_sent(current)
             return False
@@ -174,6 +188,30 @@ class CoreReplyPipelineTests(unittest.IsolatedAsyncioTestCase):
                          [["嘿嘿！"], ["再摸一下！"], []])
         self.assertTrue(any(isinstance(c, Image) for c in event.sent[-1]))
         plugin.staging.receive_claimed.assert_not_awaited()
+
+    async def test_native_segmentation_skips_an_already_sent_voice_tool_body(self):
+        body = "第一段。\n\n第二段。"
+        plugin, event, _ = await self.run_pipeline(
+            segmented=True, companion_segmenting=True, response_text=body,
+            native_tool_text=body, native_image=False)
+        self.assertEqual(event.sent, [])
+        plugin.staging.session.voice.assert_not_awaited()
+
+    async def test_native_tool_match_does_not_remove_a_decorated_image_reply(self):
+        body = "第一段。\n\n第二段。"
+        _, event, _ = await self.run_pipeline(
+            segmented=True, companion_segmenting=True, response_text=body,
+            native_tool_text=body)
+        self.assertTrue(any(isinstance(part, Image) for chain in event.sent for part in chain))
+        self.assertTrue(any(isinstance(part, Plain) for chain in event.sent for part in chain))
+
+    async def test_native_tool_match_keeps_a_host_quoted_reply(self):
+        body = "第一段。\n\n第二段。"
+        _, event, _ = await self.run_pipeline(
+            segmented=True, companion_segmenting=True, response_text=body,
+            native_tool_text=body, native_image=False, native_quote=True)
+        self.assertTrue(any(isinstance(part, Reply) for chain in event.sent for part in chain))
+        self.assertTrue(any(isinstance(part, Plain) for chain in event.sent for part in chain))
 
     async def test_native_tts_only_observes_actually_sent_record_text(self):
         plugin, event, agent = await self.run_pipeline(tts=True, companion_segmenting=True)

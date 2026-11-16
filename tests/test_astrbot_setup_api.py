@@ -397,6 +397,39 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(kwargs["administrator_test"])
         self.assertFalse(kwargs["diagnostic_source_backed"])
         self.assertEqual(kwargs["diagnostic_origin"], diagnostic_origin)
+        self.assertNotIn("diagnostic_allow_linked_accounts", kwargs, "old callers default to a pinned diagnostic")
+        request.body.return_value = json.dumps({"purpose": "news", "confirm_delivery": True,
+            "synthetic_event": True, "allow_linked_accounts": True}).encode("utf-8")
+        with patch("astrbot_host.setup_api.request", request), \
+             patch("astrbot_host.setup_api.ContactManagement", ContactManager), \
+             patch("astrbot_host.setup_api.dashboard_operator", return_value=object()):
+            forwarded = await api.proactive_diagnostic()
+        self.assertEqual(forwarded["data"]["state"], "passed", forwarded)
+        self.assertTrue(app.proactive.contact.await_args.kwargs["diagnostic_allow_linked_accounts"])
+        self.assertTrue(forwarded["data"]["allow_linked_accounts"])
+        task.reason = "owner_result"
+        app.proactive.observe = lambda *_args: Outcome.success({"skipped": False, "delivery": "cancelled",
+            "judge": None, "judge_allowed": None, "judge_reason": None, "receipt_ref": None,
+            "route_rejections": [{"member": {"platform": "napcat", "account_id": "bot-a", "native_account_id": "peer-a"},
+                                  "code": "account_link_transport_unavailable"}]})
+        with patch("astrbot_host.setup_api.request", request), \
+             patch("astrbot_host.setup_api.ContactManagement", ContactManager), \
+             patch("astrbot_host.setup_api.dashboard_operator", return_value=object()):
+            rejected = (await api.proactive_diagnostic())["data"]
+        self.assertEqual(rejected["code"], "account_link_all_unavailable")
+        self.assertIn("napcat · bot-a · peer-a", rejected["error"])
+        self.assertIn("平台连接不可用", rejected["error"])
+        self.assertNotIn("owner_result", rejected["error"])
+        delivery_stage = next(s for s in rejected["stages"] if s["stage"] == "delivery")
+        self.assertEqual(delivery_stage["state"], "failed")
+        self.assertIn("account_link_transport_unavailable", delivery_stage["detail"])
+        before = app.proactive.contact.await_count
+        request.body.return_value = json.dumps({"purpose": "news", "confirm_delivery": True,
+            "synthetic_event": True, "allow_linked_accounts": "true"}).encode("utf-8")
+        with patch("astrbot_host.setup_api.request", request):
+            invalid = await api.proactive_diagnostic()
+        self.assertEqual(invalid["data"]["code"], "proactive_test_confirmation_required")
+        self.assertEqual(app.proactive.contact.await_count, before)
 
     async def test_proactive_diagnostic_recovers_recipient_from_current_core_identity(self):
         context = NS(scope=NS(kind=ScopeKind.PRIVATE))
@@ -856,6 +889,67 @@ class AstrBotSetupFlowTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TaskError) as setup_ambiguous:
             await self.api._setup_context()
         self.assertEqual(setup_ambiguous.exception.code, "setup_core_window_ambiguous")
+
+    async def test_diagnostic_recipient_selection_is_independent_and_revalidates_core_identity(self):
+        await self.controller.terminate()
+        self.config["staging"]["enabled"] = False
+        self.config["multi_host"] = {"enabled": True, "installation_id": "test-recipient-choice"}
+        self.controller = AstrBotMultiController(self.native, self.config, self.root,
+                                                 native_types=self.types, now=lambda: NOW)
+        self.api = SetupWebAPI(self.controller)
+        self.native.persona_manager.get_persona_v3_by_id = lambda key: self.native.persona if key == "original" else None
+        self.attach_config_writer()
+        await self.bind_core_window()
+        self.assertIsNone((await self.controller.start()).failure)
+        first = self.controller.settings.targets[0]
+        original_binding = self.controller._parked_binding()
+        document = await self.call("proactive_recipients")
+        self.assertEqual(document["data"]["selected_target_id"], first.target_id)
+        self.assertFalse(document["data"]["selection_required"])
+
+        from dataclasses import replace
+        from astrbot_host.multi_settings import PrivateTarget
+        from companion_v2.identity_policy.models import AuthorizationTier
+        from companion_v2.identity_policy.object_access import ObjectAccessPolicy
+        second = PrivateTarget("second-core", first.platform_id, first.account_id, first.bot_id, "201")
+        outsider = PrivateTarget("not-core", first.platform_id, first.account_id, first.bot_id, "202")
+        self.controller.settings = replace(self.controller.settings, targets=(first, second, outsider))
+        self.controller.session.sync_settings(self.controller.settings)
+        actor = self.controller.authority.ensure_actor(second)
+        self.controller.authority.ensure_actor(outsider)
+        policy = ObjectAccessPolicy(self.controller.runtime)
+        policy.set_tier(actor.subject, AuthorizationTier.CORE, expected_revision=policy.revision, observed_at=NOW)
+        document = (await self.call("proactive_recipients"))["data"]
+        self.assertEqual({row["target_id"] for row in document["candidates"]}, {first.target_id, second.target_id})
+        self.assertTrue(document["selection_required"])
+        with self.assertRaises(TaskError) as missing:
+            await self.api._proactive_diagnostic_target()
+        self.assertEqual(missing.exception.code, "proactive_recipient_required")
+        self.assertEqual((await self.call("save_proactive_recipient", {"target_id": outsider.target_id}))["data"]["code"],
+                         "proactive_recipient_invalid")
+        self.assertEqual((await self.call("save_proactive_recipient", {"target_id": second.target_id}, username="api_key:test"))["data"]["code"],
+                         "dashboard_identity_required")
+        saved = await self.call("save_proactive_recipient", {"target_id": second.target_id})
+        self.assertEqual(saved["data"]["selected_target_id"], second.target_id)
+        self.api = SetupWebAPI(self.controller)  # disk preference survives API recreation
+        self.assertEqual(await self.api._proactive_diagnostic_target(), second)
+        _session, context, _instruction = await self.api._proactive_diagnostic_context(second)
+        self.assertEqual(context.scope.native_scope_id, "201")
+        self.assertEqual(self.controller._parked_binding(), original_binding, "test selection must not rebind setup")
+        async with self.api._test_lock:
+            self.assertEqual((await self.call("save_proactive_recipient", {"target_id": first.target_id}))["data"]["code"],
+                             "proactive_test_busy")
+        # Revoked CORE status is never trusted just because a target was saved.
+        policy.set_tier(actor.subject, AuthorizationTier.STANDARD, expected_revision=policy.revision, observed_at=NOW)
+        with self.assertRaises(TaskError) as revoked:
+            await self.api._proactive_diagnostic_context(second)
+        self.assertEqual(revoked.exception.code, "proactive_recipient_changed")
+        self.assertEqual(await self.api._proactive_diagnostic_target(), first, "sole remaining CORE is automatic")
+        # Even a stale confirmed setup window must not block a unique live CORE.
+        write_binding(self.controller.binding_root, PendingBinding(first.platform_id, first.account_id, "999", "original", True))
+        self.assertEqual(await self.api._proactive_diagnostic_target(), first)
+        _session, context, _instruction = await self.api._proactive_diagnostic_context(first)
+        self.assertEqual(context.scope.native_scope_id, first.participant_id)
 
     async def test_active_test_is_persisted_and_never_replayed(self):
         await self.enter_model_step()

@@ -22,7 +22,7 @@ from companion_v2.conversation.voice_reply import VoiceReplyDelivery
 from companion_v2.delivery.media import ImageDeliveryEnvelope, payload_hash
 from companion_v2.execution.models import digest
 from companion_v2.foundation.refs import SourceRef, VersionRef
-from tests.native_adapter_support import NativeFixture
+from tests.native_adapter_support import FakePlatform, NativeFixture
 from tests.test_management_access import NOW
 
 
@@ -30,6 +30,20 @@ RECORD = {"type": "record", "data": {"file": "base64://YQ=="}}
 
 
 class VoiceSenderTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_connection_rebuild_during_voice_does_not_send_old_content(self):
+        envelope = await self.original()
+        original = self.native.platform
+
+        async def voice(*_args):
+            self.native.platform = FakePlatform()
+            return RECORD
+
+        self.native_sender.voice = voice
+        receipt = await self.native_sender.send(envelope)
+        self.assertEqual(receipt.status, "not_sent")
+        self.assertEqual(original.client._api._wsr_api.calls, [])
+        self.assertEqual(self.native.platform.client._api._wsr_api.calls, [])
+
     async def original(self):
         await super().envelope()
         return DeliveryEnvelope("part-base", "operation-base", self.native_context, 1, "你好", digest("你好"),

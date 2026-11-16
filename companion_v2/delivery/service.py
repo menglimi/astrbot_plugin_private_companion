@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import logging
 from types import MappingProxyType
@@ -99,16 +99,24 @@ class OutboundDelivery:
         self.owners = MappingProxyType({o.name: o for o in owners})
         self.on_delivered = None
         self.on_receipt = None
+        self.private_account_router = None
         self.tasks = None
+        self._connection_available = None
+        self._pending_cursor = ("", "")
+        self._waiting_for_connections = False
         self.operations = OperationRepository(runtime)
         self.registrations = tuple(TaskRegistration(TaskDefinition(o.kind, "delivery", o.action,
             Lane.BACKGROUND, side_effect=SideEffect.MESSAGE_DELIVERY, binding=sender.binding,
-            timeout_seconds=60, max_attempts=1, concurrency=concurrency), self.validate) for o in owners)
+            timeout_seconds=60, max_attempts=3 if o.name == "proactive.contact" else 1, concurrency=concurrency), self.validate) for o in owners)
 
     def attach(self, tasks):
         if self.tasks is not None or tasks.runtime is not self.runtime:
             raise ValueError("delivery must attach once to its original supervisor")
         self.tasks = tasks
+
+    def bind_connection_gate(self, available):
+        """Keep unstarted reminders available for recovery within their deadline."""
+        self._connection_available = available
 
     def contains(self, delivery_id):
         return self.runtime.read_one("SELECT 1 FROM background_deliveries WHERE delivery_id = ?", (delivery_id,)) is not None
@@ -225,9 +233,19 @@ class OutboundDelivery:
                 self._operation_state(self._row(identifier), OperationState.UNKNOWN)
 
     async def deliver(self, run):
+        if self.private_account_router is not None:
+            request = DeliveryRequest.restore(self._row(run.task.spec.request_ref)["request_json"])
+            if not self.private_account_router.ready(request, delivery_id=run.task.spec.request_ref):
+                # No sender was entered and no effect begun: use the supervisor's
+                # established bounded backoff/deadline, keeping this exact outbox.
+                return TaskResult("failed", retryable=True)
         envelope = self._dispatch(run)
         try:
-            receipt = await self.sender.send(envelope)
+            if self.private_account_router is not None:
+                request = DeliveryRequest.restore(self._row(envelope.part_id)["request_json"])
+                receipt = await self.private_account_router.send(envelope, request, self.sender)
+            else:
+                receipt = await self.sender.send(envelope)
             if not isinstance(receipt, DeliveryReceipt) or (receipt.part_id, receipt.operation_id) != (envelope.part_id, envelope.operation_id):
                 raise TaskError("delivery_receipt_mismatch", "sender returned no receipt for this dispatch")
             require(self.record_receipt(receipt))
@@ -244,6 +262,8 @@ class OutboundDelivery:
     def record_receipt(self, receipt: DeliveryReceipt):
         with self.runtime.transaction() as connection:
             row = self._row(receipt.part_id)
+            if self.private_account_router is not None:
+                receipt = self.private_account_router.normalize_receipt(receipt)
             if (row["operation_id"] != receipt.operation_id or row["origin_key"] != receipt.origin_key
                     or row["payload_hash"] != receipt.payload_hash or row["sender_json"] != encode(receipt.sender)
                     or row["dispatched_at"] is None):
@@ -321,16 +341,36 @@ class OutboundDelivery:
         if len(excluded) > 32:
             raise ValueError("delivery exclusions must be bounded")
         exclusions = "" if not excluded else " AND d.task_id NOT IN (" + ",".join("?" for _ in excluded) + ")"
-        rows = self.runtime.read_all("""SELECT d.request_json, d.task_id FROM background_deliveries d
+        scan = 32 if self._connection_available is not None else limit
+        cursor = self._pending_cursor if self._connection_available is not None else ("", "")
+        rows = self.runtime.read_all("""SELECT d.request_json, d.task_id, d.delivery_id,
+            t.next_run_at, t.deadline_at FROM background_deliveries d
             JOIN execution_tasks t ON t.task_id = d.task_id WHERE d.state = 'pending'
             AND t.state IN ('created', 'retry_scheduled') AND t.next_run_at <= ?
+            AND (t.next_run_at, d.delivery_id) > (?, ?)
             AND (SELECT COUNT(*) FROM execution_attempts a WHERE a.slot_held = 1 AND a.kind = t.kind)
                 < json_extract(t.record_json, '$.definition.concurrency')
             AND (SELECT COUNT(*) FROM execution_attempts a WHERE a.slot_held = 1 AND a.kind = t.kind
                  AND a.scope_key = json_extract(t.record_json, '$.scope_key'))
                 < json_extract(t.record_json, '$.definition.per_scope_concurrency')""" + exclusions +
-            " ORDER BY t.next_run_at, d.delivery_id LIMIT ?", (stamp(self.tasks.now()), *excluded, limit))
-        return tuple((DeliveryRequest.restore(row["request_json"]).context, row["task_id"]) for row in rows)
+            " ORDER BY t.next_run_at, d.delivery_id LIMIT ?", (stamp(self.tasks.now()), *cursor, *excluded, scan))
+        selected = []
+        self._waiting_for_connections = False
+        for row in rows:
+            self._pending_cursor = row["next_run_at"], row["delivery_id"]
+            request = DeliveryRequest.restore(row["request_json"])
+            if (self._connection_available is not None and request.owner == "agenda.reminder"
+                    and request.deadline_at > self.tasks.now()
+                    and not self._connection_available(request.context)):
+                self._waiting_for_connections = True
+                continue
+            selected.append((request.context, row["task_id"]))
+            if len(selected) >= limit:
+                break
+        else:
+            if len(rows) < scan:
+                self._pending_cursor = ("", "")
+        return tuple(selected)
 
     def next_wake(self, *, excluded=()):
         """Earliest queued delivery that can use its original kind/scope slot."""
@@ -347,7 +387,10 @@ class OutboundDelivery:
                  AND a.scope_key = json_extract(t.record_json, '$.scope_key'))
                 < json_extract(t.record_json, '$.definition.per_scope_concurrency')""" + exclusions,
             (self.tasks.limits.background_slots, *excluded))
-        return datetime.fromisoformat(row["next_at"]) if row and row["next_at"] else None
+        next_at = datetime.fromisoformat(row["next_at"]) if row and row["next_at"] else None
+        if next_at is not None and self._waiting_for_connections:
+            return max(next_at, self.tasks.now() + timedelta(seconds=1))
+        return next_at
 
     def cancel_unstarted(self, task_id, *, reason):
         with self.runtime.transaction() as connection:

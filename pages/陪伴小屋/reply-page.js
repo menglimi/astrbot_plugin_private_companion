@@ -573,6 +573,11 @@ window.CompanionReplyPage = (() => {
   function renderDiagnostics() {
     const host = parts().diagnostics;
     if (!host) return;
+    const product = window.CompanionProduct;
+    if (product.selection && !product.selection()?.target_id) {
+      host.innerHTML = '<p class="reply-scope-note">请先选择当前角色的窗口，再查看该窗口的回复诊断。</p>';
+      return;
+    }
     const recent = Array.isArray(state.status?.recent) ? state.status.recent : [];
     const stateLabels = {complete: "已完成", blocked: "受阻", closed: "已关闭", ready: "待投递",
       sealed: "已封存", collecting: "收集中", generating: "生成中", running: "生成中", delivering: "投递中",
@@ -700,7 +705,9 @@ window.CompanionReplyPage = (() => {
       if (instance?.state?.draft) instance.state.draft.rules_enabled = true;
       if (instance?.state?.base) instance.state.base.rules_enabled = true;
     }
-    state.status = status || null;
+    const product = window.CompanionProduct;
+    state.status = status && product.selection && !product.selection()?.target_id
+      ? {...status, recent:[], participation_recent:[]} : status || null;
     notifyStatus();
     if (!status) return;
     renderDiagnostics();
@@ -1273,6 +1280,10 @@ window.CompanionReplyPage = (() => {
     if (typeof endpoint !== "string" || !endpoint.startsWith(PREFIX) || !identity.operator_id
         || /[?#%\\:]/.test(endpoint)
         || endpoint.split("/").slice(1).some(part => !part || part === "." || part === "..")) {
+      if (!product.selection?.()?.target_id && product.roleTarget?.()?.scope_kind === "group") {
+        root.innerHTML = '<div class="reply-empty">当前角色只有群聊入口。请在上方选择具体群聊，再编辑本群覆盖；角色默认回复设置需要该角色的私聊入口。</div>';
+        return;
+      }
       root.innerHTML = options.view === "decision"
         ? '<div class="reply-empty">当前对象没有可用的群聊回应决策设置工作区。请先选择已初始化的会话对象和角色。</div>'
         : options.view === "perception"
@@ -1297,7 +1308,7 @@ window.CompanionReplyPage = (() => {
     const diagnostics = [undefined, "expression", "decision"].includes(options.view)
       ? '<div data-reply-part="diagnostics"></div>' : "";
     const scopeNote = options.view === "decision"
-      ? '<aside class="reply-scope-note" role="note"><strong>基础唤醒后才进行决策</strong><p>答疑默认关闭，弱相关词默认留空。群唤醒设置跟随角色，同一角色的群窗口共用；在私聊窗口调整也会更新该角色的群设置。明确 @、引用或直接呼唤优先，其他候选由 Laya 结合有效开关与近期群历史判断是否旁听。私聊收尾沉默只处理纯道别、致谢或简短应声，且角色上一轮已经收尾；带问题、请求、图片或新内容的消息不受影响。私聊纯文本防抖与合并总窗口在「参与节奏 → 私聊节奏 · 连续输入」中配置；图片、语音、视频、文件、引用和命令不参与合并。</p></aside>' : options.view === "perception"
+      ? '<aside class="reply-scope-note" role="note"><strong>基础唤醒后才进行决策</strong><p>答疑默认关闭，弱相关词默认留空。角色默认供各群继承；选中具体群时编辑本群覆盖，已单独设置的群字段不随角色默认改变。明确 @、引用或直接呼唤优先，其他候选由 Laya 结合有效开关与近期群历史判断是否旁听。私聊收尾沉默只处理纯道别、致谢或简短应声，且角色上一轮已经收尾；带问题、请求、图片或新内容的消息不受影响。私聊纯文本防抖与合并总窗口在「参与节奏 → 私聊节奏 · 连续输入」中配置；图片、语音、视频、文件、引用和命令不参与合并。</p></aside>' : options.view === "perception"
       ? '<aside class="reply-scope-note" role="note"><strong>普通聊天的视频已由本插件原生理解</strong>' +
         '<p>普通聊天的图片、视频和文件由 AstrBot 核心管线送入本轮请求。视频默认开启：支持视频输入的 Gemini 类模型直接读取整段原视频；其他模型用宿主自带的 ffmpeg 抽帧后作为图片送入同一轮请求，不依赖外部视频插件。超时或抽帧失败时本轮不带视频继续，不会阻塞文字回复。本页的转述和文件读取设置用于 V2 独立任务及历史兼容。</p></aside>'
       : '<aside class="reply-scope-note" role="note" data-reply-part="scope">' +

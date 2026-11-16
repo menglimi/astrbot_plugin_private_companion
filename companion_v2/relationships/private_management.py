@@ -185,7 +185,10 @@ class PrivateMemberSettings:
             except Exception:
                 logger.exception("[CompanionV2] 私聊成员配置分区读取失败 section=%s", name)
                 section_errors[name] = {"code": "member_settings_section_failed"}
-        return {"sections": sections, "section_errors": section_errors}
+        from .account_links import PrivateAccountLinks
+        group = PrivateAccountLinks(self.app.runtime).group_for(self.context)
+        return {"sections": sections, "section_errors": section_errors,
+                "account_links": {"id": group["id"], "sharing": group.get("sharing", {})} if group else None}
 
     def _replayed_section_operation(self, name, editor, operator, section_key):
         targets = [editor._target()]

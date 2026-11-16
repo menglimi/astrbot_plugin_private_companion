@@ -62,6 +62,13 @@ window.CompanionNativePerceptionPage = (() => {
      凭据字段）；宿主返回新 revision 后 merge 会自然替换对应快照。 */
   const stateByScope = new Map();
   const cacheKey = () => `${scope}:${path}`;
+  function selectedWindowRole() {
+    const selected=product.selection?.(),target=product.target?.();
+    if(!selected?.target_id||target?.scope_kind!=="private"||target.target_id!==selected.target_id
+      ||target.bot_id!==selected.bot_id)return null;
+    const role=product.windowRole?.();
+    return role?.role_id===selected.role_id?role:null;
+  }
   function rememberState() {
     if (status) stateByScope.set(cacheKey(), {status, drafts});
   }
@@ -112,12 +119,13 @@ window.CompanionNativePerceptionPage = (() => {
   function publicSnapshot() {
     if (!status) return {ready:false, loading:!notices.load, error:notices.load || ""};
     const environment = status.environment.settings || {}, model = status.model.settings || {};
-    const contactStatus = status.contact || {};
+    const windowSelected=!!selectedWindowRole();
+    const contactStatus = windowSelected?status.contact||{}:{};
     const contact = contactStatus.settings || {};
     let locationName = "";
     try { locationName = JSON.parse(environment.planning_weather_location || "{}").name || ""; } catch (_) {}
     return {
-      ready:true,
+      ready:true,windowRequired:!windowSelected,
       environment:{weatherReady:!!status.environment.sources?.weather_ready,
         alertsReady:!!status.environment.sources?.alerts_ready, locationName,
         weatherEnabled:environment.planning_weather_enabled === true,
@@ -127,7 +135,7 @@ window.CompanionNativePerceptionPage = (() => {
         lunarEnabled:model.lunar_enabled === true, solarTermsEnabled:model.automatic_solar_terms_enabled === true,
         almanacEnabled:model.almanac_enabled === true, platformEnabled:model.platform_enabled === true,
         routeEnabled:model.model_route_enabled === true, modalitiesEnabled:model.configured_modalities_enabled === true},
-      contact:{dateCheckinEnabled:contact.date_checkin_enabled === true,
+      contact:windowSelected?{dateCheckinEnabled:contact.date_checkin_enabled === true,
         dates:typeof contactStatus.dates === "string" ? contactStatus.dates
           : typeof contact.important_dates === "string" ? contact.important_dates : "[]",
         lookaheadDays:Number.isInteger(contactStatus.lookaheadDays)
@@ -135,8 +143,8 @@ window.CompanionNativePerceptionPage = (() => {
             ? contact.important_date_lookahead_days : 0,
         timezone:contact.quiet_timezone || "",
         balanceAwarenessEnabled:contact.balance_awareness_enabled === true,
-        automaticAllowed:status.contact?.effective?.automatic_allowed === true},
-      news:{ready:!!status.news.source?.ready, assembled:!!(status.news.source?.assembled ?? status.news.source?.ready),
+        automaticAllowed:status.contact?.effective?.automatic_allowed === true}:{},
+      news:windowSelected?{ready:!!status.news.source?.ready, assembled:!!(status.news.source?.assembled ?? status.news.source?.ready),
         label:status.news.source?.label || "",
         sourceKind:status.news.source?.kind || contact.news_source_kind || "",
         networkStatus:status.news.diagnostic?.network_status || "not_checked",
@@ -150,7 +158,7 @@ window.CompanionNativePerceptionPage = (() => {
         lastAttemptAt:status.news.diagnostic?.last_attempt_at || "",
         lastCheckedAt:status.news.diagnostic?.last_checked_at || "",
         lastSuccessAt:status.news.diagnostic?.last_success_at || status.news.diagnostic?.last_checked_at || "",
-        failureCode:status.news.diagnostic?.failure?.code || ""},
+        failureCode:status.news.diagnostic?.failure?.code || ""}:{},
     };
   }
   function publishStatus() {
@@ -230,6 +238,7 @@ window.CompanionNativePerceptionPage = (() => {
   function renderSection(section) {
     const node = nodes?.[section]; if (!node) return;
     if (!product.hosted()) { node.innerHTML = '<p class="memory-notice" role="status">角色与会话目录暂未读到。</p><div class="native-perception-actions"><button class="button small" type="button" data-workspace-retry>重新读取</button></div>'; return; }
+    if(section==="news"&&!selectedWindowRole()){node.innerHTML='<p class="memory-notice">请先选择当前角色的私聊窗口，再查看资讯与联系状态。</p>';return;}
     if (!path) { node.innerHTML = '<p class="memory-notice">请选择有管理权限的私聊对象和角色。</p>'; return; }
     if (!status) {
       node.innerHTML = `<p class="memory-notice" role="status">${esc(notices.load || "正在读取当前配置…")}</p><button class="button small" type="button" data-native-action="refresh">重新读取</button>`;
@@ -323,6 +332,7 @@ window.CompanionNativePerceptionPage = (() => {
   }
   async function save(section) {
     if (!path || !status || busy) return;
+    if(section==="news"&&!selectedWindowRole())return;
     const draft = drafts[section];
     if (draft.stale) { notices[section] = errors.configuration_revision_conflict; renderSection(section); return; }
     if (!draft.pending) {
@@ -352,7 +362,7 @@ window.CompanionNativePerceptionPage = (() => {
     } finally { if (active(ticket)) { busy = false; render(); } }
   }
   async function diagnose() {
-    if (!path || !status || busy) return;
+    if (!path || !status || busy || !selectedWindowRole()) return;
     const ticket = generation;
     busy = true; notices.news = "正在检查资讯源…"; render();
     try {
@@ -378,8 +388,8 @@ window.CompanionNativePerceptionPage = (() => {
   function mount(places) {
     unmount(); nodes = places; scope = product.scopeKey();
     abort = new AbortController();
-    try { path = product.hosted() && product.role()?.perception_native_api
-      ? relative(product.role().perception_native_api) : ""; }
+    try {const role=selectedWindowRole()||product.role();path = product.hosted() && role?.perception_native_api
+      ? relative(role.perception_native_api) : ""; }
     catch (failure) { path = ""; notices.load = failure.message; }
     const cached = path ? stateByScope.get(cacheKey()) : null;
     if (cached?.status && cached?.drafts) {

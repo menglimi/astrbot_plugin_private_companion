@@ -60,7 +60,7 @@ def native_reply_messages(event, message):
         return (message,)
     chain = _without_emotion_markers(chain)
     getter = getattr(event, "get_platform_name", None)
-    qq = callable(getter) and getter() == "aiocqhttp"
+    qq = callable(getter) and getter() in {"aiocqhttp", "qq_official", "qq_official_webhook"}
     groups, current = [], []
     for part in chain:
         reaction = getattr(part, "_companion_v2_reaction_attachment", None)

@@ -57,6 +57,34 @@ class AgendaBackgroundFixture(HostFixture):
 
 
 class AgendaBackgroundTests(AgendaBackgroundFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_offline_account_keeps_reminder_pending_until_recovery(self):
+        host = self.host()
+        app = host.application
+        connected = False
+        app.agenda_background.bind_connection_gate(lambda _: connected)
+        occurrence, _ = self.reminder(app)
+        await self.start(host)
+        app.agenda_background.advance().unwrap()
+        self.assertIsNone(self.dispatch(occurrence))
+        self.assertEqual(app.agenda.repository.occurrence(occurrence)["state"], "scheduled")
+        self.assertEqual(self.sent, [])
+        connected = True
+        app.notify()
+        await self.delivered(app, occurrence)
+        self.assertEqual(len(self.sent), 1)
+
+    async def test_reminder_expires_normally_while_account_remains_offline(self):
+        host = self.host()
+        app = host.application
+        app.agenda_background.bind_connection_gate(lambda _: False)
+        occurrence, _ = self.reminder(app)
+        await self.start(host)
+        self.clock.advance(timedelta(seconds=app.agenda_background.policy.lateness_seconds + 1))
+        app.agenda_background.advance().unwrap()
+        self.assertEqual(self.dispatch(occurrence)["state"], "skipped")
+        self.assertEqual(self.dispatch(occurrence)["reason"], "missed_deadline")
+        self.assertEqual(self.sent, [])
+
     async def test_due_reminder_automatically_uses_shared_task_sender_and_receipt(self):
         host = self.host()
         app = host.application

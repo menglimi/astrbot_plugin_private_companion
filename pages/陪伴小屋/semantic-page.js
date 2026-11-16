@@ -205,7 +205,7 @@ window.CompanionSemanticPage = (() => {
     const heading=view==="expression"?"表情配图":group?"群词义与语义设置":"语义理解与学习素材";
     let html='<div class="settings-heading"><div><h2>'+heading+'</h2></div><span class="semantic-state '+escape(state.state)+'">'+escape({ready:"嵌入已就绪",lexical_fallback:"关键词回退",disabled:"已停用"}[state.state]||"状态待核对")+'</span></div>';
     if(message)html+='<p class="semantic-feedback'+(conflict?" semantic-conflict":"")+'" role="status">'+escape(message)+'</p>';
-    html+='<section class="semantic-section"><div class="semantic-heading"><h3>'+(view==="expression"?"表情使用与自动收录":"语义模型与学习")+'</h3></div><form id="semanticSettings">';
+    html+='<section class="semantic-section"><div class="semantic-heading"><h3>'+(view==="expression"?"表情使用与自动收录":"语义模型与学习")+(view==="expression"?window.CompanionWorkbench.scopeHintMarkup("表情使用、自动收录与检索策略由所有账号与角色共用。\n表情先由角色模型决定要不要用；这里的概率只在模型已经要图之后生效，不是每条回复/主动消息的带图率。主动消息还要开启「允许主动消息带图」。", "查看表情设置范围与使用说明"):"")+'</h3></div><form id="semanticSettings">';
     html+='<div class="semantic-flags">'+currentViewFlags.map(([id,label])=>toggle(id,label,shown[id])).join("")+'</div>';
     const currentViewSelects=visibleSelects();
     if(currentViewProviders.length||currentViewNumbers.length||currentViewSelects.length)html+='<div class="semantic-providers">';
@@ -216,7 +216,6 @@ window.CompanionSemanticPage = (() => {
     currentViewSelects.forEach(([id,label,choices])=>html+='<label>'+label+'<select name="'+id+'">'+choices.map(([value,text])=>'<option value="'+escape(value)+'" '+(shown[id]===value?'selected':'')+'>'+escape(text)+'</option>').join('')+'</select></label>');
     if(currentViewProviders.length||currentViewNumbers.length||currentViewSelects.length)html+='</div>';
     if(currentViewProviders.length&&!(state.providers?.embedding||[]).length)html+='<p class="semantic-meta">没有读到向量模型。请先在 AstrBot 的模型服务页添加 embedding 类型的 Provider，再回到这里选择。</p>';
-    if(view==="expression")html+='<p class="semantic-meta">表情先由角色模型决定要不要用；这里的概率只在模型已经要图之后生效，不是每条回复/主动消息的带图率。主动消息还要开启「允许主动消息带图」。</p>';
     html+='<div class="semantic-actions"><button class="button primary" type="submit" '+(busy?"disabled":"")+'>'+(draft?'保存草稿':'保存配置')+'</button>';
     /* 冲突时更要能放弃：否则用户只剩「按新版本再存一次」一条路。 */
     if(draft)html+='<button class="button" type="button" data-semantic="discard">放弃草稿</button>';
@@ -230,7 +229,7 @@ window.CompanionSemanticPage = (() => {
     const reactionEnabled=Math.max(0,Number(reactionCatalog.enabled||0));
     const reactionTotalValue=Number(reactionCatalog.total);
     const reactionTotal=Math.max(0,Number.isFinite(reactionTotalValue)&&reactionTotalValue>0?reactionTotalValue:reactionEnabled);
-    if(kinds.length)html+='<section class="semantic-section"><div class="semantic-heading"><h3>'+(view==="expression"?"表情库":"群词义素材")+'</h3><span>'+(view==="expression"?'可用 '+reactionEnabled+' / '+reactionTotal+' 项':'群词义 '+(state.catalog?.slang?.enabled||0)+' 项')+'</span></div>';
+    html+='<section class="semantic-section"><div class="semantic-heading"><h3>'+(view==="expression"?"表情库":"群词义素材")+(view==="expression"?window.CompanionWorkbench.scopeHintMarkup("图库属于当前小屋角色；切换小屋角色即可查看其表情。", "查看表情库范围"):"")+'</h3><span>'+(view==="expression"?'可用 '+reactionEnabled+' / '+reactionTotal+' 项':'群词义 '+(state.catalog?.slang?.enabled||0)+' 项')+'</span></div>';
     if(group&&state.sessions?.length)html+='<label class="semantic-session">群会话<select id="semanticSession" aria-label="群会话">'+state.sessions.map((id,index)=>'<option value="'+escape(id)+'" '+(id===state.session_id?'selected':'')+'>'+escape(id===target()?.group_id?'主群会话':'群会话 '+(index+1))+'</option>').join('')+'</select></label>';
     if(kinds.length&&!state.selection_ready)html+='<p class="memory-notice">当前群会话尚无可验证的成员输入；收到群消息后即可管理。</p>';
     else if(kinds.length) {
@@ -436,7 +435,11 @@ window.CompanionSemanticPage = (() => {
     scope=selectedScopeKey||product.scopeKey();state=null;result=null;after={};loaded={};deletedIds=new Set();sessionId="";editing=null;message="";busy=false;
     view=["learning","expression"].includes(options?.view)?options.view:"all";
     kind=view==="learning"&&target()?.scope_kind==="group"?"slang":"reaction";abort=new AbortController();
+    for(const type of ["focusin","focusout","pointerover","pointerout"])
+      node.addEventListener(type,window.CompanionWorkbench.scopeHintReset,{signal:abort.signal});
+    node.addEventListener("keydown",window.CompanionWorkbench.scopeHintKeydown,{signal:abort.signal});
     node.addEventListener("click",async event=>{
+      if(window.CompanionWorkbench.scopeHintClick(event))return;
       const item=event.target.closest("[data-semantic-open]");if(item){kind=item.dataset.semanticKind||kind;open(item.dataset.semanticOpen);return;}
       const tab=event.target.closest("[data-semantic-kind]");if(tab){kind=tab.dataset.semanticKind;result=null;editing=null;after={};loaded={};message="";load();return;}
       const command=event.target.closest("[data-semantic]")?.dataset.semantic;
@@ -572,7 +575,7 @@ window.CompanionSemanticPage = (() => {
     });
   }
   function shownValue(id){return (draft?{...state.settings,...draft}:state.settings)[id];}
-  function unmount(){generation++;abort?.abort();abort=null;root=null;scope=null;state=null;editing=null;busy=false;selectedTarget=null;selectedSelection=null;selectedScopeKey="";globalSettingsOnly=false;}
+  function unmount(){if(root)window.CompanionWorkbench.dismissScopeHints(root);generation++;abort?.abort();abort=null;root=null;scope=null;state=null;editing=null;busy=false;selectedTarget=null;selectedSelection=null;selectedScopeKey="";globalSettingsOnly=false;}
   /* 页面级未保存守卫（page-guards.js）：草稿存在就说明有未提交的改法。
      unmount 已经把 draft 之外的引用清掉，这里跟着 root 一起判断。 */
   function isDirty(){return !!draft&&!!root;}

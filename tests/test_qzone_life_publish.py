@@ -45,6 +45,18 @@ class DecisionTests(unittest.TestCase):
         published = state(last_action_at={"publish": "2026-11-07T02:00:00+00:00"})
         self.assertTrue(life_publish.decide(settings(), published, now=NOW).due)
 
+    def test_failed_try_uses_short_retry_window_instead_of_full_interval(self):
+        future = state(last_action_at={
+            life_publish.ATTEMPT_KEY: "2026-11-09T03:55:00+00:00",
+            life_publish.RETRY_KEY: "2026-11-09T04:25:00+00:00",
+        })
+        self.assertEqual(life_publish.decide(settings(), future, now=NOW).reason, "retry_wait")
+        ready = state(last_action_at={
+            life_publish.ATTEMPT_KEY: "2026-11-09T03:25:00+00:00",
+            life_publish.RETRY_KEY: "2026-11-09T03:55:00+00:00",
+        })
+        self.assertTrue(life_publish.decide(settings(), ready, now=NOW).due)
+
     def test_due_when_every_gate_is_open(self):
         self.assertEqual(life_publish.decide(settings(), state(), now=NOW),
                          life_publish.Decision(True, "due", DAY))

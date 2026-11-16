@@ -82,6 +82,7 @@ class MultiFixture:
         self.assertTrue(initialized.is_success, initialized.failure)
         started = await self.controller.start()
         self.assertTrue(started.is_success, started.failure)
+        await self.controller.session.account_recovery.refresh(wait=True)
         return self.controller.session.application
 
     def event(self, target="first", identifier="event-1", text="我不喝咖啡", **changes):

@@ -579,7 +579,8 @@ class ReplyConfigurationOwner(RoleSharedSettingsOwner):
                     groups_key: replace(groups, value="\n".join(selected),
                         source=legacy.source, explicit=legacy.explicit,
                         source_revision=legacy.source_revision)})
-        return snapshot
+        from companion_v2.relationships.account_link_settings import overlay_snapshot
+        return overlay_snapshot(self.runtime, target, fields, snapshot)
 
     def preview_set(self, target, fields, *, changes):
         target = self._stable_group_target(target)

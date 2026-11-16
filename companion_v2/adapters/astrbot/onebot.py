@@ -1,6 +1,7 @@
 """Pinned OneBot reverse-WebSocket delivery with actual API message references."""
 
 import asyncio
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import logging
 import re
@@ -51,6 +52,7 @@ class OneBotTextSender:
         self.voice = voice
         self.voice_delivery = voice_delivery
         self.reaction_image_format = reaction_image_format or (lambda: "image")
+        self._connection_lease = ContextVar("companion_onebot_delivery_connection", default=None)
 
     def local_sender(self):
         return LocalSender(self.binding, self.send, supports_images=self.supports_images, supports_poke=True)
@@ -77,9 +79,19 @@ class OneBotTextSender:
         # Recheck withdrawal, task ownership, sender binding and group admission
         # after all host awaits and immediately before the native side effect.
         envelope.before_dispatch()
+        lease = self._connection_lease.get()
+        if lease is not None:
+            self.bridge.connections.assert_current(lease)
         return api
 
     async def send(self, envelope):
+        token = self._connection_lease.set(None)
+        try:
+            return await self._send(envelope)
+        finally:
+            self._connection_lease.reset(token)
+
+    async def _send(self, envelope):
         started = perf_counter()
 
         def receipt(status, platform_ref=None, failure_code=None):
@@ -124,6 +136,7 @@ class OneBotTextSender:
                 return not_sent("envelope_binding_mismatch")
             stage = "route_authorization"
             action, target = self.route(context)
+            self._connection_lease.set(self.bridge.connections.acquire((scope.platform, scope.account_id)))
             authorization = self.authorize()
             if isinstance(authorization, Outcome):
                 require(authorization)

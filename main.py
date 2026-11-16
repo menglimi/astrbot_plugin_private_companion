@@ -131,7 +131,8 @@ CORE_REPLY_IDENTITY_FAILURE_PREFIXES = (
     "host_persona_", "host_conversation_", "host_native_lookup_timeout", "host_core_reply_capture_failed",
 )
 RETRYABLE_HOST_STARTUP_CODES = frozenset({
-    "host_platform_unavailable", "host_account_unavailable", "host_persona_unavailable",
+    "host_platform_unavailable", "host_platform_changed", "host_account_unavailable",
+    "host_account_changed", "host_persona_unavailable",
     "host_persona_window_unbound", "host_conversation_changed", "host_startup_failed",
     "staging_preflight_failed",
 })
@@ -495,6 +496,8 @@ class PrivateCompanionV2StagingPlugin(Star):
             self._schedule_host_start()
 
     async def _try_start_host(self) -> bool:
+        if getattr(self.staging, "_stopped_by_user", False):
+            return True
         try:
             readiness = self.staging.startup_readiness()
         except Exception as error:
@@ -520,7 +523,7 @@ class PrivateCompanionV2StagingPlugin(Star):
             if not loaded.unwrap()["loaded"]:
                 # Account/persona mappings are sufficient to create the shared
                 # installation. The old core-window binding was only a first-run bootstrap.
-                initialized = await self.staging.initialize_profile()
+                initialized = await self.staging.initialize_profile(automatic=True)
                 if initialized.failure is not None:
                     if initialized.failure.code == "host_terminated":
                         return True
@@ -530,9 +533,11 @@ class PrivateCompanionV2StagingPlugin(Star):
                     return not retry
                 initialized_profile = True
 
-        started = await self.staging.start()
+        if getattr(self.staging, "_stopped_by_user", False):
+            return True
+        started = await self.staging.start(automatic=True)
         if started.failure is not None:
-            if started.failure.code == "host_terminated":
+            if started.failure.code in ("host_terminated", "host_manually_stopped"):
                 return True
             retry = self._retry_startup_failure(started.failure.code)
             self._note_startup_failure("start", started.failure.code,
@@ -572,12 +577,14 @@ class PrivateCompanionV2StagingPlugin(Star):
                            code, error_type or "unknown", detail or "unavailable")
 
     def _schedule_host_start(self) -> None:
-        if self.staging._terminated:
+        if self.staging._terminated or getattr(self.staging, "_stopped_by_user", False):
             return
         session = self.staging.session
         if (self.staging._accepting and session is not None
                 and session.application.state == "running"):
-            return
+            if self.staging.native_bridges_current():
+                return
+            self.staging._accepting = False
         task = self._host_start_task
         if task is None or task.done():
             self._host_start_task = asyncio.create_task(
@@ -608,6 +615,7 @@ class PrivateCompanionV2StagingPlugin(Star):
     @filter.on_platform_loaded()
     async def on_companion_platform_loaded(self) -> None:
         if self.staging.settings is not None and self.staging.settings.enabled:
+            await self.staging.recover_accounts()
             self._schedule_host_start()
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=240000)
@@ -688,6 +696,13 @@ class PrivateCompanionV2StagingPlugin(Star):
         event_ref = prepared.get("event_ref")
         origin_key = prepared.get("origin_key")
         channel = prepared.get("channel")
+        session = getattr(self.staging, "session", None)
+        connection_callbacks = {}
+        if prepared.get("connection_lease") is not None:
+            connection_callbacks = {
+                "assert_connection_current": lambda: session.assert_connection_current(prepared),
+                "wait_connection_changed": lambda: session.wait_connection_changed(prepared),
+            }
 
         async def authorize_core_send(current):
             return await self.staging.authorize_core_reply(event, target, current)
@@ -739,6 +754,7 @@ class PrivateCompanionV2StagingPlugin(Star):
 
         observer = getattr(getattr(self.staging, "session", None), "core_reply_observations", None)
         return {
+            **connection_callbacks,
             "authorize": authorize_core_send,
             "on_denied": note_core_send_denied,
             "on_sent": observe_core_send,
@@ -1808,6 +1824,40 @@ class PrivateCompanionV2StagingPlugin(Star):
         activate_core_reply_delivery_guard(event)
         activate_core_reply_tracking(event)
         activate_core_reply_segmentation(event)
+
+    @filter.on_decorating_result(priority=999999)
+    async def suppress_companion_native_tool_repeat(self, event: AstrMessageEvent):
+        """Check the complete final result before AstrBot splits or speaks it."""
+        state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+        result = event.get_result()
+        if (not isinstance(state, dict) or not state.get("delivery_guard_active")
+                or getattr(getattr(result, "result_content_type", None), "name", None) != "LLM_RESULT"
+                or not getattr(result, "chain", None)):
+            return
+        get_config = getattr(getattr(self, "context", None), "get_config", None)
+        if not callable(get_config):
+            return
+        config = get_config(event.unified_msg_origin)
+        settings = config.get("platform_settings") if isinstance(config, Mapping) else None
+        if not isinstance(settings, Mapping):
+            return
+        if (config.get("t2i") or getattr(result, "use_t2i_", False)
+                or settings.get("reply_prefix") or settings.get("reply_with_quote")
+                or settings.get("reply_with_mention")):
+            return
+        if event.get_platform_name() == "aiocqhttp":
+            try:
+                if len(result.get_plain_text()) > int(settings["forward_threshold"]):
+                    return
+            except (KeyError, TypeError, ValueError):
+                return
+        from astrbot.core.message.message_event_result import MessageChain
+        from .astrbot_host.core_reply_voice import capture_core_voice_message
+        from .astrbot_host.core_reply_idempotency import should_drop_native_tool_response
+
+        visible = capture_core_voice_message(event, MessageChain(chain=list(result.chain)))
+        if should_drop_native_tool_response(event, visible):
+            result.chain.clear()
 
     def _observe_session(self, event: AstrMessageEvent) -> None:
         try:

@@ -40,3 +40,14 @@ body.room-editing .product-scope{display:none}
   flex-wrap: wrap;
   gap:var(--sp-2);
 }
+
+.role-context { display:flex; flex-wrap:wrap; align-items:center; gap:12px 24px; padding:12px 20px; border-bottom:1px solid var(--t-line); background:var(--t-surface); }
+.role-context > div { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px; }
+.role-context span,.role-context small,.role-context label { color:var(--t-text-soft); font-size:12px; }
+.role-context strong { color:var(--t-text-strong); }
+.role-context label { display:flex; align-items:center; gap:8px; min-width:0; }
+.role-context select { max-width:min(420px,65vw); color:var(--t-text); background:var(--t-surface-soft); border:1px solid var(--t-line); border-radius:6px; padding:6px; }
+.role-context p { flex-basis:100%; margin:0; font-size:12px; color:var(--t-text-soft); }
+
+.role-context-badge { padding-block:6px; background:transparent; border-bottom:0; }
+.role-context-badge span { border:1px solid var(--t-line); border-radius:999px; padding:2px 8px; }
