@@ -517,7 +517,12 @@ class LocalRoleTools:
     @staticmethod
     def _visible(row):
         if row["state"] in ("started", "unknown"):
-            return {"state": "unknown", "code": "original_tool_result_unknown", "effect": row["effect"]}
+            saved = json.loads(row["result_json"]) if row["result_json"] else None
+            if (isinstance(saved, dict) and saved.get("state") == "unknown"
+                    and saved.get("effect") == row["effect"]):
+                return saved
+            return {"state": "unknown", "code": "original_tool_result_unknown", "effect": row["effect"],
+                    "retry_disposition": "external_effect_unknown"}
         return json.loads(row["result_json"])
 
     def _validate_result(self, row, request, context, at):

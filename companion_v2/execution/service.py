@@ -583,11 +583,12 @@ class TaskSupervisor:
         if data["operation_id"] is not None and result.operation_id not in (None, data["operation_id"]):
             raise TaskError("task_operation_conflict", "result belongs to a different owner operation")
         data.update(effect=result.effect, result_ref=result.result_ref, receipt_ref=result.receipt_ref,
-                    operation_id=result.operation_id or data["operation_id"])
+                    operation_id=result.operation_id or data["operation_id"],
+                    retry_disposition=result.retry_disposition)
         state, reason = result.status, "owner_result"
         if data.get("cancellation_requested") and result.effect in ("none", "not_committed"):
             state, reason = "cancelled", "stopped_without_commit"
-        elif result.retryable and result.effect in ("none", "not_committed"):
+        elif result.disposition_allows_retry and result.effect in ("none", "not_committed"):
             next_run = now + timedelta(seconds=entry.definition.backoff_seconds)
             if next_run >= datetime.fromisoformat(row["deadline_at"]):
                 state, reason = "expired", "retry_would_exceed_deadline"

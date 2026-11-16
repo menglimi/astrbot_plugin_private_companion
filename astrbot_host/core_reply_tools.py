@@ -632,10 +632,13 @@ class CoreReplyToolSession:
         except TaskError as error:
             if isinstance(result, dict) and result.get("effect") in ("committed", "unknown"):
                 return encode({key: value for key, value in {**result, "material_state": "unavailable", "code": error.code}.items()
-                               if key in {"state", "effect", "invocation_id", "operation_id", "receipt_ref", "material_state", "code"}})
-            return encode({"state": "failed", "effect": "none", "code": error.code})
+                               if key in {"state", "effect", "invocation_id", "operation_id", "receipt_ref", "material_state",
+                                          "code", "retry_disposition", "reason", "next_step"}})
+            return encode({"state": "failed", "effect": "none", "code": error.code,
+                           "retry_disposition": "input_invalid" if error.code == "invalid_tool_arguments" else "stop"})
         except (ValueError, ValidationError):
-            return encode({"state": "failed", "effect": "none", "code": "invalid_tool_arguments"})
+            return encode({"state": "failed", "effect": "none", "code": "invalid_tool_arguments",
+                           "retry_disposition": "input_invalid"})
 
     def _read(self, owner, action, arguments):
         app, context = self.application, self.context
