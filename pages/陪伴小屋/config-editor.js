@@ -213,7 +213,7 @@ window.CompanionConfigEditors = (() => {
               "feed_recent_posts", "comment_recent_posts"]},
     {id: "throttle", title: "发布节流",
      help: "总闸与「允许发说说」都打开后才生效。这几项限制的是频率与条数，不放宽任何一项能力开关。",
-     fields: ["action_min_interval_minutes", "max_actions_per_tick", "publish_max_daily"]},
+     fields: ["action_min_interval_minutes", "max_actions_per_tick", "daily_limits_enabled", "publish_max_daily"]},
     {id: "life", title: "生活说说",
      help: "低频把角色自己的生活发到空间。检查到点时先记一次尝试，再写草稿、走和手动发说说完全相同的发布链路与审计；失败或结果未知都不会立刻重来。",
      fields: ["life_publish_enabled", "life_publish_probability", "life_publish_min_interval_hours",
@@ -1602,8 +1602,8 @@ window.CompanionConfigEditors = (() => {
      * 值按角色共享，窗口层只作为旧值的回落，
      * 卡片右上角由内核显示实际写入层，无需另外声明 scopeNote。
      *
-     * 注册表里这一组是 47 项：9 项全局 + 7 个主题各 5 项。主题那 35 项由下面
-     * 两张表拼出来——47 个字段名手写一遍，漏一个不会有任何报错，只会让审计
+     * 七个主题各 5 项由下面两张表拼出来——所有字段名手写一遍，
+     * 漏一个不会有任何报错，只会让审计
      * 报「没有控件声明」；场景取值也必须与后端 topics.py 的 TOPIC_SPECS 一致，
      * 多写一个合法的场景 id 会在后端整组校验时被拒（那个场景不属于这个主题）。 */
     qzone: {
@@ -1618,6 +1618,7 @@ window.CompanionConfigEditors = (() => {
         comment_recent_posts: "回复前回看自己的说说条数",
         action_min_interval_minutes: "两次同类公开动作最短间隔（分钟）",
         max_actions_per_tick: "单轮公开动作上限",
+        daily_limits_enabled: "启用每日次数限制",
         publish_max_daily: "每日说说上限",
         topic_auto_enabled: "允许模型自行发布",
         topic_require_confirmation: "主题必须人工确认",
@@ -1644,21 +1645,22 @@ window.CompanionConfigEditors = (() => {
         comment_recent_posts: "回复前回看自己最近几条说说，用来判断上下文，1 到 20。",
         action_min_interval_minutes: "点赞、回复、发说说共用这一条间隔，5 到 1440 分钟；调小只是允许更频繁，不代表会真的更频繁。",
         max_actions_per_tick: "一轮里最多做几个公开动作，1 到 5。调大不会放宽间隔，也不会放宽每日上限。",
-        publish_max_daily: "每天最多发几条说说，1 到 10；达到上限后当天不再发。",
+        daily_limits_enabled: "开启时同时执行说说总数、各主题和生活说说的每日上限；关闭后每日次数不限，冷却间隔、内容去重和发布授权仍然生效。",
+        publish_max_daily: "仅在「启用每日次数限制」开启时生效：每天最多发几条说说，1 到 10；达到上限后当天不再发。",
         topic_auto_enabled: "开启后才允许模型在无需人工确认的情况下自行发布；默认关闭，关着时模型提出的主题必须有人确认。",
         topic_require_confirmation: "开启时模型提出的主题必须有人确认才能发布；默认开启，只有上面那项打开且这一项关闭，模型才可能不经过确认就发。",
         topic_prompt_guidance: "给模型的补充表达指引（例如口吻、篇幅、不要写什么）；只影响怎么写，不改主题目录、场景放行与任何授权。",
         life_publish_enabled: "开启后按下面的间隔与概率把角色自己的生活写成说说；还需要「启用 QQ 空间」和「允许发说说」同时打开，发布时仍会再查一次主题门槛与额度。",
         life_publish_probability: "每次到点检查时的发布概率，0 到 1 之间；0 表示永不自动发，1 表示每次到点都发。",
         life_publish_min_interval_hours: "两条成功说说的最短间隔，1 到 168 小时；只按成功发布计算，草稿或已知发布失败不会占满整个间隔。",
-        life_publish_max_daily: "生活说说每天最多发几条，1 到 10；与「每日说说上限」同时生效时，先撞到哪条算哪条。",
+        life_publish_max_daily: "仅在「启用每日次数限制」开启时生效：生活说说每天最多发几条，1 到 10；与「每日说说上限」同时生效时，先撞到哪条算哪条。",
         life_publish_retry_minutes: "草稿或已知发布失败后，隔多少分钟允许再试，5 到 180；结果未知仍会按更长的间隔等待，避免重复发布。",
         life_publish_style_prompt: "只影响生活说说的语气与写法（例如更口语、少用感叹号）；不改变主题、授权、间隔与任何事实边界。",
         ...Object.fromEntries(QZONE_TOPIC_SECTIONS.flatMap(({prefix, title, scenes}) => [
           [prefix + "_enabled", "关闭后这个主题的说说一律不发，模型提出的该主题会被拒；不影响其他主题。"],
           [prefix + "_scenes", `这个主题允许出现在哪些场景，用半角逗号分隔，只能填该主题自己的场景：${qzoneSceneWords(scenes)}。留空、重复或写了别的场景会被后端拒绝；多个场景之间没有优先级。`],
           [prefix + "_min_confidence", "主题判定置信度门槛，0 到 1 之间的小数；低于它就不发这一条。「发说说」里由人手动选择的主题按 1 处理。"],
-          [prefix + "_daily_max", "这个主题每天最多发几条，0 到 10；0 表示这个主题今天一条都不发。与「每日说说上限」同时生效时，先撞到哪条算哪条。"],
+          [prefix + "_daily_max", "仅在「启用每日次数限制」开启时生效：这个主题每天最多发几条，0 到 10；0 表示这个主题一条都不发。与「每日说说上限」同时生效时，先撞到哪条算哪条。"],
           [prefix + "_cooldown_minutes", "这个主题两次发布之间的最短间隔，0 到 1440 分钟；0 表示不按主题单独限制间隔。"],
         ])),
       },

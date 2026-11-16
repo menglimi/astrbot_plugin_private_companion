@@ -3021,11 +3021,15 @@ function qzoneSwitchMarkup(settings){
 function qzoneLimitsMarkup(settings){
   const parts=[['每次读取动态',settings.feed_recent_posts,'条'],
     ['同类动作最短间隔',settings.action_min_interval_minutes,'分钟'],
-    ['每轮最多动作',settings.max_actions_per_tick,'个'],
-    ['每日最多说说',settings.publish_max_daily,'条']].filter(([,value])=>Number.isFinite(value));
+    ['每轮最多动作',settings.max_actions_per_tick,'个']].filter(([,value])=>Number.isFinite(value));
+  if(settings.daily_limits_enabled===false){
+    parts.push(['每日说说次数','无限','']);
+  }else if(Number.isFinite(settings.publish_max_daily)){
+    parts.push(['每日最多说说',settings.publish_max_daily,'条']);
+  }
   if(!parts.length)return '';
   return `<p class="action-qzone-limits">${I('clock-3')}<span>`
-    +`${parts.map(([label,value,unit])=>`${label} ${escapeHTML(String(value))} ${unit}`).join(' · ')}</span></p>`;
+    +`${parts.map(([label,value,unit])=>`${label} ${escapeHTML(String(value))}${unit?' '+unit:''}`).join(' · ')}</span></p>`;
 }
 /* 主题策略：说清「谁在决定主题」，以及目录里有几个主题是开着的。
  * 措辞不能暗示「已经在自动发布」——自动发布要同时满足两项设置，光看

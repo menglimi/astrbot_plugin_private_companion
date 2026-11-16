@@ -74,7 +74,8 @@ def decide(settings, state, *, now, day=None):
         cap = max(1, int(settings.get("life_publish_max_daily") or 1))
     except (TypeError, ValueError):
         cap = 1
-    if state.publish_day == day and state.publish_count >= cap:
+    if (settings.get("daily_limits_enabled", True) and state.publish_day == day
+            and state.publish_count >= cap):
         return Decision(False, "daily_limit", day)
     # A failed draft/publish gets a short, explicit retry window instead of
     # occupying the full publishing interval.  Unknown publish results use a

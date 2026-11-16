@@ -125,7 +125,8 @@ def action_reason(state, settings, *, kind, at, day):
     if kind == "publish":
         if not settings.get("publish_enabled"):
             return "发空间未开启"
-        if state.publish_day == day and state.publish_count >= int(settings.get("publish_max_daily") or 1):
+        if (settings.get("daily_limits_enabled", True) and state.publish_day == day
+                and state.publish_count >= int(settings.get("publish_max_daily") or 1)):
             return "今天的说说已经发过了"
     last = _moment(state.last_action_at.get(kind))
     gap = timedelta(minutes=int(settings.get("action_min_interval_minutes") or 30))
@@ -207,7 +208,8 @@ def topic_reason(state, settings, *, topic, scene, confidence, topic_confirmed, 
         daily_max = int(settings.get(f"{topic_key}_daily_max", settings.get("publish_max_daily") or 1))
     except (TypeError, ValueError):
         daily_max = 1
-    if topic_day == day and state.topic_publish_count.get(topic_key, 0) >= daily_max:
+    daily_count = state.topic_publish_count.get(topic_key, 0) if topic_day == day else 0
+    if settings.get("daily_limits_enabled", True) and daily_count >= daily_max:
         return "qzone_topic_daily_limit", "这个主题今天的发布额度已经用完"
     last = _moment(state.topic_last_action_at.get(topic_key))
     try:
