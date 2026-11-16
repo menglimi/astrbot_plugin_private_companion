@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const http = require("node:http");
+const {cookiePreferences} = require("./fixtures/browser_preferences_server.cjs");
 
 let chromium;
 try { ({chromium} = require("playwright")); } catch (_) {}
@@ -15,6 +16,12 @@ const css = ["tokens.css", "styles.css", "shell.css"].map(read).join("\n");
 const html = `<!doctype html><html data-theme-ready data-room-ready><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body>
 <div id="homeShell" data-away="true"><div class="shell-body">${stage}<section class="shell-panel">配置内容</section></div></div>
 <script>
+(async()=>{
+const request=async(method,patch)=>{
+  const response=await fetch("/preferences",{method,headers:{"Content-Type":"application/json"},...(method==="POST"?{body:JSON.stringify(patch)}:{})});
+  return (await response.json()).preferences;
+};
+let preferences=await request("GET");
 const choices = [
   {target:{bot_id:"bot-a",account_name:"账号甲"},role:{role_id:"shared-role",role_name:"角色甲"}},
   {target:{bot_id:"bot-b",account_name:"账号乙"},role:{role_id:"shared-role",role_name:"角色乙"}}
@@ -28,23 +35,35 @@ window.CompanionProduct = {
   roleChoices:() => choices,
   roleChoiceKey:choice => JSON.stringify([choice.target.bot_id,choice.role.role_id]),
   roleLabel:role => role.role_name, accountLabel:target => target.account_name,
-  preferenceKey:name => "card-test:"+name,
+  browserPreferences:() => preferences,
+  browserPreferencesIdentity:() => "card-test",
+  browserPreferencesNotice:() => "",
+  saveBrowserPreferences:async patch => {preferences={...preferences,...patch};await request("POST",patch);return true;},
   chooseRoleKey:async key => {
     if (!window.roleGuard) return false;
     current=choices.findIndex(choice=>CompanionProduct.roleChoiceKey(choice)===key);
     window.dispatchEvent(new CustomEvent("companion:scope-changed"));
   }
 };
-</script><script>${read("role-card.js")}</script>
-<script>
+
+${read("role-card.js")}
+
 document.querySelector("#stageScene").addEventListener("click",event=>{
   if(event.target.closest("button, a, select, input, label"))return;
   window.homeClicks++;
 });
+})();
 </script></body></html>`;
 
 test("小屋角色卡片浏览器交互", {skip: chromium ? false : "未安装 playwright"}, async t => {
-  const server = http.createServer((_, response) => {
+  const server = http.createServer(async (request, response) => {
+    if (request.url === "/preferences") {
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify(cookiePreferences(request,response,request.method,raw ? JSON.parse(raw) : {})));
+      return;
+    }
     response.setHeader("Content-Type", "text/html; charset=utf-8");
     response.end(html);
   });
@@ -59,6 +78,7 @@ test("小屋角色卡片浏览器交互", {skip: chromium ? false : "未安装 p
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(url);
+  await page.locator("[data-role-card-name]").getByText("角色甲",{exact:true}).waitFor();
 
   await t.test("常显角色名，悬停和键盘聚焦显示切换入口，按账号区分同名角色", async () => {
     assert.equal(await page.locator("[data-role-card-name]").textContent(), "角色甲");
@@ -115,10 +135,15 @@ test("小屋角色卡片浏览器交互", {skip: chromium ? false : "未安装 p
     await page.mouse.up();
     assert.equal(await page.evaluate(() => window.homeClicks), 1);
     box = await page.locator("#stageScene").boundingBox();
-    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("card-test:room-card-position")));
+    const stored = await page.evaluate(() => CompanionProduct.browserPreferences().room_card_position);
+    await page.waitForFunction(async expected => {
+      const {preferences}=await (await fetch("/preferences")).json();
+      return JSON.stringify(preferences.room_card_position)===JSON.stringify(expected);
+    },stored);
     assert.ok(Math.abs(stored.left - box.x) < 1);
     assert.ok(Math.abs(stored.top - box.y) < 1);
     await page.reload();
+    await page.waitForFunction(()=>window.CompanionProduct?.browserPreferences().room_card_position);
     const restored = await page.locator("#stageScene").boundingBox();
     assert.ok(Math.abs(restored.x - box.x) < 1);
     assert.ok(Math.abs(restored.y - box.y) < 1);
@@ -147,7 +172,7 @@ test("小屋角色卡片浏览器交互", {skip: chromium ? false : "未安装 p
     await page.locator("#stageScene").hover();
     await page.locator("[data-role-card-switch]").click();
     await page.locator("[data-role-card-reset]").click();
-    assert.equal(await page.evaluate(() => localStorage.getItem("card-test:room-card-position")), null);
+    assert.equal(await page.evaluate(() => CompanionProduct.browserPreferences().room_card_position), null);
     assert.equal(await page.evaluate(() => document.querySelector(".stage-region").style.getPropertyValue("--role-card-left")), "");
   });
 
@@ -155,6 +180,7 @@ test("小屋角色卡片浏览器交互", {skip: chromium ? false : "未安装 p
     const mobile = await browser.newContext({viewport: {width: 390, height: 700}, isMobile: true, hasTouch: true});
     const phone = await mobile.newPage();
     await phone.goto(url);
+    await phone.locator("[data-role-card-name]").getByText("角色甲",{exact:true}).waitFor();
     assert.equal(await phone.locator("#stageScene").isVisible(), true);
     assert.equal(await phone.locator("[data-role-card-switch]").evaluate(node => getComputedStyle(node).opacity), "1");
     await phone.locator("[data-role-card-switch]").tap();

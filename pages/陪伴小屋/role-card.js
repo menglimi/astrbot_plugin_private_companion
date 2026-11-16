@@ -23,7 +23,8 @@ window.CompanionRoleCard = (() => {
     const reset = root.querySelector("[data-role-card-reset]");
     if (!region || !scene || !toggle || !product) return null;
     let position = null;
-    let storageKey = null;
+    let preferenceIdentity = null;
+    let preferencePosition = "null";
     let drag = null;
     let suppressClick = false;
     let startedOnControl = false;
@@ -35,11 +36,7 @@ window.CompanionRoleCard = (() => {
       ? product.roleChoiceKey({target: product.roleTarget(), role: product.role()}) : "";
 
     function savePosition() {
-      if (!storageKey) return;
-      try {
-        if (position) window.localStorage.setItem(storageKey, JSON.stringify(position));
-        else window.localStorage.removeItem(storageKey);
-      } catch (_) { /* 浏览器禁止存储时，本次打开仍可拖动卡片。 */ }
+      return product.saveBrowserPreferences({room_card_position:position});
     }
 
     function applyPosition(next) {
@@ -55,11 +52,12 @@ window.CompanionRoleCard = (() => {
     }
 
     function restorePosition() {
-      const nextKey = product.preferenceKey("room-card-position");
-      if (nextKey === storageKey) return;
-      storageKey = nextKey;
-      let stored = null;
-      try { stored = storageKey ? JSON.parse(window.localStorage.getItem(storageKey) || "null") : null; } catch (_) {}
+      const nextIdentity = product.browserPreferencesIdentity();
+      const stored = product.browserPreferences().room_card_position;
+      const nextPosition = JSON.stringify(stored);
+      if (nextIdentity === preferenceIdentity && nextPosition === preferencePosition) return;
+      preferenceIdentity = nextIdentity;
+      preferencePosition = nextPosition;
       applyPosition(stored && Number.isFinite(stored.left) && Number.isFinite(stored.top) ? stored : null);
     }
 
@@ -102,7 +100,8 @@ window.CompanionRoleCard = (() => {
       }));
       select.value = currentKey();
       select.disabled = choices.length < 2;
-      status.textContent = choices.length ? "角色设置与资料跟随这里的选择。" : "尚无可选角色。";
+      status.textContent = product.browserPreferencesNotice()
+        || (choices.length ? "角色设置与资料跟随这里的选择。" : "尚无可选角色。");
       requestAnimationFrame(fitPosition);
     }
 
@@ -179,6 +178,7 @@ window.CompanionRoleCard = (() => {
 
     window.addEventListener("resize", fitPosition);
     window.addEventListener("companion:scope-changed", render);
+    window.addEventListener("companion:browser-preferences-changed", render);
     shell.onChange(() => { closeMenu(); requestAnimationFrame(fitPosition); });
     render();
     return {render, resetPosition: () => { applyPosition(null); savePosition(); }, fitPosition};

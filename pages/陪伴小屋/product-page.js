@@ -267,7 +267,13 @@ window.CompanionProduct = (() => {
   const fail = (code, confirmed = false) => Object.assign(new Error(errors[code] || "暂不可读取，请刷新核对。"),
     {code, ...(confirmed ? {confirmed:true} : {})});
   let bridge, catalog, manifest, data = {}, failures = {}, failureCodes = {}, selected = {target_id:null,role_id:null,bot_id:null};
-  let selectionGuard = () => true, selectionIntent = 0, selectionIdentity = null, selectionNotice = "";
+  let selectionGuard = () => true, selectionIntent = 0, selectionNotice = "";
+  let browserPreferenceIdentity = null, browserPreferenceNotice = "";
+  let browserPreferenceValues = {selection:null, room_card_position:null};
+  const loadedBrowserPreferences = new Set();
+  let browserPreferenceWrites = Promise.resolve();
+  let browserPreferenceRevision = 0;
+  const unsavedBrowserPreferences = new Map();
   let bridgeReady = false;
   let releaseAppearanceContext = null;
   let generation = 0, changed = () => {}, loading = false, notice = "";
@@ -422,8 +428,8 @@ window.CompanionProduct = (() => {
   const target = () => catalog?.targets.find(item => item.target_id === selected.target_id
     && item.bot_id === selected.bot_id);
   const roleChoiceKey = choice => JSON.stringify([choice.target.bot_id, choice.role.role_id]);
-  const preferenceKey = name => catalog?.installation_id && catalog?.operator_id
-    ? "companion-v2-" + name + ":" + JSON.stringify([catalog.installation_id, catalog.operator_id]) : null;
+  const browserIdentity = () => catalog?.installation_id && catalog?.operator_id
+    ? JSON.stringify([catalog.installation_id, catalog.operator_id]) : null;
   const selectedChoice = () => roleChoices().find(item => item.target.bot_id === selected.bot_id
     && item.role.role_id === selected.role_id);
   const windowRole = () => target()?.roles.find(item => item.role_id === selected.role_id) || null;
@@ -471,11 +477,61 @@ window.CompanionProduct = (() => {
   };
   const scopeKey = () => JSON.stringify([catalog?.installation_id, catalog?.operator_id,
     selected.bot_id, selected.target_id, selected.role_id]);
+  function browserPreferencesFeedback(message) {
+    if (browserPreferenceNotice === message) return;
+    browserPreferenceNotice = message;
+    if (typeof window.dispatchEvent === "function" && typeof window.CustomEvent === "function")
+      window.dispatchEvent(new window.CustomEvent("companion:browser-preferences-changed"));
+    changed({kind:"browser-preferences", message});
+  }
+  function restoreBrowserPreferences(preferences) {
+    for (const name of ["selection", "room_card_position"]) {
+      if (loadedBrowserPreferences.has(name)) continue;
+      browserPreferenceValues[name] = preferences?.[name] ?? null;
+      loadedBrowserPreferences.add(name);
+    }
+  }
+  function saveBrowserPreferences(patch) {
+    const identity = browserPreferenceIdentity;
+    if (!identity) return Promise.resolve(false);
+    const update = JSON.parse(JSON.stringify(patch));
+    Object.assign(browserPreferenceValues, update);
+    for (const name of Object.keys(update)) loadedBrowserPreferences.add(name);
+    const revision = ++browserPreferenceRevision;
+    for (const name of Object.keys(update)) unsavedBrowserPreferences.set(name, revision);
+    // Keep writes ordered: an older response must not replace a newer Cookie.
+    browserPreferenceWrites = browserPreferenceWrites.then(async () => {
+      if (identity !== browserPreferenceIdentity) return false;
+      const revisions = new Map(unsavedBrowserPreferences);
+      if (!revisions.size) return true;
+      const snapshot = JSON.parse(JSON.stringify(Object.fromEntries(
+        [...revisions.keys()].map(name => [name, browserPreferenceValues[name]]))));
+      try {
+        // Save outstanding edits together, including edits from a failed request.
+        await api("POST", "page/browser-preferences", snapshot);
+        const result = await api("GET", "page/browser-preferences");
+        const saved = result?.preferences;
+        const matches = Object.entries(snapshot).every(([name, value]) => value === null
+          ? saved?.[name] === null
+          : saved?.[name] && Object.entries(value).every(([key, item]) => saved[name][key] === item));
+        if (!matches) throw fail("browser_preferences_not_saved");
+        if (identity === browserPreferenceIdentity) {
+          restoreBrowserPreferences(saved);
+          for (const [name, savedRevision] of revisions)
+            if (unsavedBrowserPreferences.get(name) === savedRevision) unsavedBrowserPreferences.delete(name);
+          if (!unsavedBrowserPreferences.size) browserPreferencesFeedback("");
+        }
+        return true;
+      } catch (_) {
+        if (identity === browserPreferenceIdentity) browserPreferencesFeedback(
+          "浏览器 Cookie 未能保存，角色、窗口或卡片位置的更改可能在重新打开后丢失。请检查浏览器 Cookie 设置与连接。");
+        return false;
+      }
+    });
+    return browserPreferenceWrites;
+  }
   function persistSelection() {
-    const key = preferenceKey("selection");
-    if (!key) return;
-    try { localStorage.setItem(key, JSON.stringify(selected)); }
-    catch { selectionNotice = "浏览器未开放本地存储，当前角色选择只能保留到本次页面关闭。"; }
+    return saveBrowserPreferences({selection:selected.bot_id && selected.role_id ? {...selected} : null});
   }
   function notifyScope() {
     if (typeof window.dispatchEvent === "function" && typeof window.CustomEvent === "function")
@@ -598,22 +654,23 @@ window.CompanionProduct = (() => {
   }
   const workspaceDiagnosis = () => ({...workspaceState(), hint: workspaceHint(),
     targets: (catalog?.targets || []).length});
-  function chooseDefault() {
-    const key = preferenceKey("selection");
-    let preferred = selected;
+  function chooseDefault(preferencesResult) {
+    const key = browserIdentity();
     selectionNotice = "";
-    if (key !== selectionIdentity) {
-      selectionIdentity = key;
-      preferred = {target_id:null, role_id:null, bot_id:null};
-      if (key) {
-        try {
-          const saved = localStorage.getItem(key);
-          if (saved) preferred = JSON.parse(saved) || preferred;
-        } catch {
-          selectionNotice = "上次角色选择未能从浏览器恢复，请重新选择。";
-        }
-      }
+    const identityChanged = key !== browserPreferenceIdentity;
+    if (identityChanged) {
+      unsavedBrowserPreferences.clear();
+      loadedBrowserPreferences.clear();
+      browserPreferenceIdentity = key;
+      browserPreferenceValues = {selection:null, room_card_position:null};
+      browserPreferenceNotice = "";
     }
+    if (preferencesResult?.status === "fulfilled") {
+      restoreBrowserPreferences(preferencesResult.value?.preferences);
+      if (!unsavedBrowserPreferences.size) browserPreferenceNotice = "";
+    } else if (loadedBrowserPreferences.size < 2)
+      browserPreferenceNotice = "暂时未能读取浏览器 Cookie 中的角色和卡片位置，请检查连接后重新读取。";
+    const preferred = browserPreferenceValues.selection || {target_id:null, role_id:null, bot_id:null};
     const choices = roleChoices();
     const matched = choices.find(item => item.role.role_id === preferred.role_id
       && item.target.bot_id === preferred.bot_id);
@@ -624,8 +681,10 @@ window.CompanionProduct = (() => {
       bot_id:choice?.target.bot_id ?? null};
     if (preferred.role_id && !matched) selectionNotice = "上次选择的角色或账号已不可用，已选择当前可用角色；窗口未选择。";
     else if (preferred.target_id && !context) selectionNotice = "上次选择的窗口已不可用，当前角色保持不变；请重新选择窗口。";
-    persistSelection();
     notifyScope();
+    // A failed read must not overwrite the previous Cookie with a default role.
+    return !loadedBrowserPreferences.has("selection")
+      ? Promise.resolve(false) : persistSelection();
   }
   let summaryRequest = 0;
   const SUMMARY_CACHE_MS = 45000;
@@ -732,6 +791,7 @@ window.CompanionProduct = (() => {
       const settle = promise => promise.then(value => ({status:"fulfilled",value}), reason => ({status:"rejected",reason}));
       const preferencesRevision = preferencesTouched, preferencesChangedBeforeLoad = preferencesRevision > 0;
       const preferencesTask = settle(api("GET","page/display-preferences"));
+      const browserPreferencesTask = settle(api("GET","page/browser-preferences"));
       const manifestTask = settle(api("GET","integration/manifest"));
       const directoryTask = settle(api("GET","page/targets"));
       preferencesTask.then(result => {
@@ -742,13 +802,14 @@ window.CompanionProduct = (() => {
         if (saved) applyDisplayPreferences(saved);
         else if (!preferencesAreDefault()) scheduleDisplayPreferencesSave();
       });
-      const directoryResult = await directoryTask;
+      const [directoryResult, browserPreferencesResult] = await Promise.all([directoryTask, browserPreferencesTask]);
       if (ticket !== generation) return;
       let summaryTask = null;
       if (directoryResult.status === "fulfilled") {
         const directory = directoryResult.value;
         if (!Array.isArray(directory.targets) || !directory.installation_id || directory.targets.some(t => !Array.isArray(t.roles))) throw fail("invalid_response");
-        catalog = directory; chooseDefault(); notice = "";
+        catalog = directory; await chooseDefault(browserPreferencesResult); notice = "";
+        if (ticket !== generation) return;
         loading = false; changed();
         summaryTask = loadSummary(ticket);
       } else notice = errors[directoryResult.reason?.code] || "暂时无法读取授权对象。请在账号与会话中检查连接。";
@@ -763,7 +824,8 @@ window.CompanionProduct = (() => {
   async function refreshDirectoryAfterMapping() {
     if (!bridgeReady || !bridge) return;
     const ticket = ++generation;
-    const results = await Promise.allSettled([api("GET", "page/targets"), api("GET", "integration/manifest")]);
+    const results = await Promise.allSettled([api("GET", "page/targets"), api("GET", "integration/manifest"),
+      api("GET", "page/browser-preferences")]);
     if (ticket !== generation) return;
     if (results[0].status !== "fulfilled") throw results[0].reason;
     const directory = results[0].value;
@@ -771,7 +833,8 @@ window.CompanionProduct = (() => {
         || directory.targets.some(item => !Array.isArray(item.roles))) throw fail("invalid_response");
     catalog = directory;
     if (results[1].status === "fulfilled") manifest = results[1].value;
-    chooseDefault();
+    await chooseDefault(results[2]);
+    if (ticket !== generation) return;
     growthPage = null; growthCursor = null;
     rebindWorkspaceContexts();
     loading = false; changed();
@@ -845,13 +908,14 @@ window.CompanionProduct = (() => {
       return false;
     }
     const ticket = ++generation;
-    selected = next; selectionNotice = ""; persistSelection();
+    selected = next; selectionNotice = "";
+    const preferencesSave = persistSelection();
     data = {}; failures = {}; failureCodes = {}; growthPage = null; growthCursor = null;
     rebindWorkspaceContexts();
     loading = false;
     notifyScope();
     if (!quiet) changed();
-    await loadSummary(ticket);
+    await Promise.all([loadSummary(ticket), preferencesSave]);
     if(ticket === generation) {if(!quiet) changed(); else renderScope();}
     return ticket === generation;
   }
@@ -885,7 +949,7 @@ window.CompanionProduct = (() => {
   function connection() {
     return {state:loading?"checking":catalog?"connected":manifest?"ready":"unavailable",
       label:loading?"小屋 · 正在读取":catalog?"小屋 · 管理接口可用":manifest?"小屋 · 待初始化":"小屋 · 连接待检查",
-      detail:selectionNotice || notice || `已读取 ${catalog?.targets.length||0} 个管理对象 · ${(manifest?.summary?.connected_count)||0} 项拓展状态已读取`};
+      detail:selectionNotice || browserPreferenceNotice || notice || `已读取 ${catalog?.targets.length||0} 个管理对象 · ${(manifest?.summary?.connected_count)||0} 项拓展状态已读取`};
   }
   function identity() { return {installation_id: catalog?.installation_id || null, operator_id: catalog?.operator_id || null}; }
   /* Show selectors only when the loaded directory has a real choice to make. */
@@ -1547,7 +1611,9 @@ window.CompanionProduct = (() => {
   const stateLabel = value => states[value] || "";
   const unavailableReason = name => unavailable(name);
   return {hosted,unwrap,connect,refreshSummary,refreshIntegrations,manageExtension,choose,clearWindow,chooseRole,chooseRoleKey,setSelectionGuard,selection:()=>({...selected}),
-    roleSelection,windowRole,roleChoiceKey,preferenceKey,selectionNotice:()=>selectionNotice,
+    roleSelection,windowRole,roleChoiceKey,selectionNotice:()=>selectionNotice,
+    browserPreferences:()=>JSON.parse(JSON.stringify(browserPreferenceValues)),saveBrowserPreferences,
+    browserPreferencesIdentity:()=>browserPreferenceIdentity,browserPreferencesNotice:()=>browserPreferenceNotice,
     scopeKey,role,target,roleTarget,roleChoices,identity,connection,renderScope,scopeVisible,
     /* 首次使用引导走同一套桥接与错误翻译，别让它自己再实现一遍超时与判据。 */
     request:api,acquaintanceDirectory,refreshDirectory:refreshDirectoryAfterMapping,

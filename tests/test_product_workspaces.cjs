@@ -97,8 +97,10 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
   }
   if (options.mutateCatalog) options.mutateCatalog(catalog);
   const storage = options.storage || new Map();
-  const storageKey = "companion-v2-selection:" + JSON.stringify([catalog.installation_id, catalog.operator_id]);
-  if (options.savedSelection) storage.set(storageKey, JSON.stringify(options.savedSelection));
+  const cookieStorage = options.cookieStorage || new Map();
+  const cookieKey = JSON.stringify([catalog.installation_id, catalog.operator_id]);
+  const readBrowserPreferences = () => JSON.parse(cookieStorage.get(cookieKey) || '{"selection":null,"room_card_position":null}');
+  if (options.savedSelection) cookieStorage.set(cookieKey, JSON.stringify({selection:options.savedSelection,room_card_position:null}));
   const scopeEvents = [];
   const navigations = [];
   let largeText = false;
@@ -128,6 +130,7 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
           return {status: "error", data: {code: options.summaryErrors[endpoint]}};
         }
         if (endpoint === "page/display-preferences") return options.displayPreferences || {preferences: null};
+        if (endpoint === "page/browser-preferences") return {preferences:readBrowserPreferences()};
         if (endpoint === "page/workspace-entry") return options.workspaceEntry || {content_path:
           "/api/plugin/page/content/astrbot_plugin_private_companion/%E9%99%AA%E4%BC%B4%E5%B0%8F%E5%B1%8B/?asset_token=fresh"};
         if (endpoint === "page/targets") return options.directoryUnavailable
@@ -137,6 +140,11 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
       },
       apiPost: async (endpoint, body) => {
         calls.push({method: "POST", endpoint, body});
+        if (endpoint === "page/browser-preferences") {
+          if (options.browserPreferencesPost) await options.browserPreferencesPost(body);
+          if (options.cookiesBlocked !== true) cookieStorage.set(cookieKey, JSON.stringify({...readBrowserPreferences(),...body}));
+          return {preferences:readBrowserPreferences()};
+        }
         if (options.postResponder) return options.postResponder(endpoint, body);
         if (options.postFailure) throw options.postFailure;
         return {status: "ok", data: {preferences: body}};
@@ -217,7 +225,7 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
     return events.message({source: owner.contentWindow, data: {channel: "companion-workspace",
       kind: "request", requestId, method, path: endpoint, body, timeoutMs}});
   }
-  return {product, storage, storageKey, scopeEvents, calls, timers, warnings, loadedScripts, fetchCalls, frames, addFrame, identity, relationships, host, persona, events, request, document, window, stageRole, navigations, updates, catalog,
+  return {product, storage, cookieStorage, cookieKey, scopeEvents, calls, timers, warnings, loadedScripts, fetchCalls, frames, addFrame, identity, relationships, host, persona, events, request, document, window, stageRole, navigations, updates, catalog,
     largeText: () => largeText,
     setDirectory(directory) {nextDirectory = directory;},
     hostTheme(isDark) {
@@ -714,7 +722,8 @@ test("directory failures keep the cottage title and a recovered single role has 
   await h.product.connect();h.product.renderScope();
   assert.match(h.stageRole.innerHTML, /小伴的小屋/);
   assert.doesNotMatch(h.stageRole.innerHTML, /<select/);
-  assert(h.calls.every(call => call.method === "GET"));
+  assert(h.calls.every(call => call.method === "GET"
+    || (call.method === "POST" && call.endpoint === "page/browser-preferences")));
 });
 
 test("reconnect paints the cached section summary before refreshing it", async () => {
@@ -1140,27 +1149,27 @@ test("a role switch retains only a compatible explicitly selected window", async
   assert.equal(h.product.selection().target_id, null, "selecting a role does not implicitly select its representative window");
 });
 
-test("browser selection restores the exact bot, role and explicit window", async () => {
-  const storage = new Map();
-  const first = await harness(null, [], {storage, pairedMode:true, multipleRoles:true, unselectedWindow:true});
+test("Cookie selection restores the exact bot, role and explicit window", async () => {
+  const cookieStorage = new Map();
+  const first = await harness(null, [], {cookieStorage, storageUnavailable:true, pairedMode:true, multipleRoles:true, unselectedWindow:true});
   await first.product.choose("group", "synthetic-role");
-  const second = await harness(null, [], {storage, pairedMode:true, multipleRoles:true, unselectedWindow:true});
+  const second = await harness(null, [], {cookieStorage, storageUnavailable:true, pairedMode:true, multipleRoles:true, unselectedWindow:true});
   assert.equal(second.product.selection().target_id, "group");
   assert.equal(second.product.selection().bot_id, "bot-a");
   assert.equal(second.product.selection().role_id, "synthetic-role");
   await second.product.clearWindow();
-  const third = await harness(null, [], {storage, pairedMode:true, unselectedWindow:true});
+  const third = await harness(null, [], {cookieStorage, storageUnavailable:true, pairedMode:true, unselectedWindow:true});
   assert.equal(third.product.selection().target_id, null);
 });
 
 test("browser selection is isolated by installation and Dashboard operator", async () => {
-  const storage = new Map();
-  const first = await harness(null, [], {storage, pairedMode:true});
+  const cookieStorage = new Map();
+  const first = await harness(null, [], {cookieStorage, pairedMode:true});
   await first.product.choose("group", "synthetic-role");
   for (const changes of [{installation_id:"another-installation"}, {operator_id:"dashboard:another-admin"}]) {
-    const other = await harness(null, [], {storage, pairedMode:true, unselectedWindow:true,
+    const other = await harness(null, [], {cookieStorage, pairedMode:true, unselectedWindow:true,
       mutateCatalog:directory => Object.assign(directory, changes)});
-    assert.notEqual(other.product.preferenceKey("selection"), first.product.preferenceKey("selection"));
+    assert.notEqual(other.product.browserPreferencesIdentity(), first.product.browserPreferencesIdentity());
     assert.equal(other.product.selection().target_id, null);
   }
 });
@@ -1171,7 +1180,7 @@ test("an obsolete saved window keeps its role and asks for a new window", async 
   assert.equal(h.product.selection().role_id, "synthetic-role");
   assert.equal(h.product.selection().target_id, null);
   assert.match(h.product.selectionNotice(), /窗口已不可用/);
-  assert.equal(JSON.parse(h.storage.get(h.storageKey)).target_id, null);
+  assert.equal(JSON.parse(h.cookieStorage.get(h.cookieKey)).selection.target_id, null);
 });
 
 test("an obsolete saved bot cannot resolve a matching role ID from another account", async () => {
@@ -1209,11 +1218,105 @@ test("a late draft decision cannot replace a more recent selection intent", asyn
   assert.equal(h.product.selection().target_id, "group");
 });
 
-test("a blocked localStorage still permits selection and explains that it cannot persist", async () => {
-  const h = await harness(null, [], {unselectedWindow:true,storageUnavailable:true,multipleRoles:true});
+test("blocked Cookies still permit selection and explain that it cannot persist", async () => {
+  const h = await harness(null, [], {unselectedWindow:true,storageUnavailable:true,cookiesBlocked:true,multipleRoles:true});
   await h.product.chooseRole("another-role");
   assert.equal(h.product.selection().role_id, "another-role");
-  assert.match(h.product.selectionNotice(), /本地存储/);
+  assert.match(h.product.browserPreferencesNotice(), /Cookie 未能保存/);
+});
+
+test("a failed Cookie read does not overwrite preferences and a later reconnect restores them", async () => {
+  const options = {unselectedWindow:true,multipleRoles:true,getFailure:new Error("offline"),
+    getFailureEndpoint:"page/browser-preferences",
+    savedSelection:{bot_id:"bot-a",role_id:"another-role",target_id:"first"}};
+  const h = await harness(null, [], options);
+  assert.match(h.product.browserPreferencesNotice(), /未能读取/);
+  assert.equal(JSON.parse(h.cookieStorage.get(h.cookieKey)).selection.role_id, "another-role");
+  assert.equal(h.product.selection().target_id, null);
+  delete options.getFailure;
+  await h.product.connect();
+  assert.equal(h.product.selection().role_id, "another-role");
+  assert.equal(h.product.selection().target_id, "first");
+  assert.equal(h.product.browserPreferencesNotice(), "");
+});
+
+test("rapid role and position changes save in order within the same Cookie", async () => {
+  const options = {unselectedWindow:true,multipleRoles:true,pairedMode:true,storageUnavailable:true};
+  const h = await harness(null, [], options);
+  let started, release;
+  const pending = new Promise(resolve => { started=resolve; });
+  options.browserPreferencesPost = () => {
+    delete options.browserPreferencesPost;
+    started();
+    return new Promise(resolve => { release=resolve; });
+  };
+  const earlier = h.product.chooseRole("another-role");
+  await pending;
+  const latest = h.product.choose("group", "synthetic-role");
+  const position = h.product.saveBrowserPreferences({room_card_position:{left:200,top:160}});
+  release();
+  await Promise.all([earlier, latest, position]);
+  const saved = JSON.parse(h.cookieStorage.get(h.cookieKey));
+  assert.equal(saved.selection.role_id, "synthetic-role");
+  assert.equal(saved.selection.target_id, "group");
+  assert.deepEqual(saved.room_card_position, {left:200,top:160});
+  await h.product.clearWindow();
+  assert.deepEqual(JSON.parse(h.cookieStorage.get(h.cookieKey)).room_card_position, saved.room_card_position);
+  await h.product.saveBrowserPreferences({room_card_position:null});
+  assert.equal(JSON.parse(h.cookieStorage.get(h.cookieKey)).selection.role_id, "synthetic-role");
+  assert.equal(h.storage.size, 0, "role and card preferences never use localStorage");
+});
+
+test("a later successful Cookie write clears the storage failure notice", async () => {
+  const options = {unselectedWindow:true,multipleRoles:true,cookiesBlocked:true};
+  const h = await harness(null, [], options);
+  assert.match(h.product.browserPreferencesNotice(), /Cookie 未能保存/);
+  options.cookiesBlocked = false;
+  await h.product.chooseRole("another-role");
+  assert.equal(h.product.browserPreferencesNotice(), "");
+  assert.equal(JSON.parse(h.cookieStorage.get(h.cookieKey)).selection.role_id, "another-role");
+});
+
+test("saving only the card after a failed initial read does not replace the saved role on reconnect", async () => {
+  const options = {unselectedWindow:true,multipleRoles:true,getFailure:new Error("offline"),
+    getFailureEndpoint:"page/browser-preferences",
+    savedSelection:{bot_id:"bot-a",role_id:"another-role",target_id:"first"}};
+  const h = await harness(null, [], options);
+  delete options.getFailure;
+  await h.product.saveBrowserPreferences({room_card_position:{left:180,top:220}});
+  await h.product.connect();
+  assert.equal(h.product.selection().role_id, "another-role");
+  assert.equal(h.product.selection().target_id, "first");
+  const saved = JSON.parse(h.cookieStorage.get(h.cookieKey));
+  assert.equal(saved.selection.role_id, "another-role");
+  assert.deepEqual(saved.room_card_position, {left:180,top:220});
+});
+
+test("saving the role also retries a failed card-position edit in the same Cookie", async () => {
+  const options = {unselectedWindow:true,multipleRoles:true};
+  const h = await harness(null, [], options);
+  options.cookiesBlocked = true;
+  assert.equal(await h.product.saveBrowserPreferences({room_card_position:{left:100,top:100}}), false);
+  options.cookiesBlocked = false;
+  await h.product.chooseRole("another-role");
+  const saved = JSON.parse(h.cookieStorage.get(h.cookieKey));
+  assert.equal(saved.selection.role_id, "another-role");
+  assert.deepEqual(saved.room_card_position, {left:100,top:100});
+  assert.equal(h.product.browserPreferencesNotice(), "");
+});
+
+test("a role save after an initial read failure also restores the untouched card Cookie", async () => {
+  const options = {unselectedWindow:true,multipleRoles:true,getFailure:new Error("offline"),
+    getFailureEndpoint:"page/browser-preferences"};
+  const h = await harness(null, [], options);
+  h.cookieStorage.set(h.cookieKey, JSON.stringify({selection:null,room_card_position:{left:120,top:230}}));
+  delete options.getFailure;
+  await h.product.chooseRole("another-role");
+  assert.equal(h.product.browserPreferences().room_card_position.left, 120);
+  assert.equal(h.product.browserPreferencesNotice(), "");
+  await h.product.connect();
+  assert.equal(h.product.selection().role_id, "another-role");
+  assert.equal(h.product.browserPreferences().room_card_position.top, 230);
 });
 
 

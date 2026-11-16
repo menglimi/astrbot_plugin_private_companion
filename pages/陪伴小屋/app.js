@@ -485,6 +485,7 @@ async function probeHost(){
   });
 }
 function onProductChanged(reason){
+  if(reason?.kind==='browser-preferences'){updateHostChrome();if(reason.message)toast(reason.message);return;}
   if(reason?.kind==='display-preferences-error'){toast(reason.message||'外观偏好没有保存成功，请检查连接后重试。');return;}
   integrationSnapshot=product.manifest;
   if(arrangementDraft||reason?.kind==='host-mappings'&&($('.product-workspace-frame')||$('#legacyMigrationWorkspace'))){
