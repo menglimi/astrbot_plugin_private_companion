@@ -28,6 +28,7 @@ class MultiLifeFixture(MultiFixture):
     async def start(self):
         result = await self.controller.start()
         self.assertTrue(result.is_success, result.failure)
+        await self.controller.session.account_recovery.refresh(wait=True)
         return self.controller.session.application
 
     async def request(self, target="first", role="role-a", *, data=None, username="admin", query="", gate=None):
