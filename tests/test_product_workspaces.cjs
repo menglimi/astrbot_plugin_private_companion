@@ -61,6 +61,8 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
     growth_api: "/" + HOST + "/targets/first/roles/synthetic-role/growth",
     memory_api: "/" + HOST + "/targets/first/roles/synthetic-role/memory",
     persona_api: "/" + HOST + "/targets/first/roles/synthetic-role/persona",
+    model_api: "/" + HOST + "/targets/first/roles/synthetic-role/model",
+    config_api: "/" + HOST + "/targets/first/roles/synthetic-role/config",
     relationships_api: options.groupMode ? null : "/" + HOST + "/" + relationshipApi,
     group_memory_api: null,
     reply_api: "/" + HOST + "/targets/first/roles/synthetic-role/reply"};
@@ -69,6 +71,8 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
     roles: [privateRole]};
   const groupRole = {...privateRole, state_api: null, life_api: null, growth_api: null, memory_api: null,
     relationships_api: null, reply_api: "/" + HOST + "/targets/group/roles/synthetic-role/reply",
+    model_api: "/" + HOST + "/targets/group/roles/synthetic-role/model",
+    role_config_api: "/" + HOST + "/targets/group/roles/synthetic-role/config",
     group_memory_api: "/" + HOST + "/targets/group/roles/synthetic-role/group-memory"};
   const groupTarget = {target_id: "group", scope_kind: "group", group_id: "300", platform_id: "qq-main",
     bot_id: "bot-a", account_id: "100", display_name: "读书群", roles: [groupRole]};
@@ -91,11 +95,18 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
       persona_ids: ["夜航"], state_api: "/" + HOST + "/targets/first/roles/another-role/state"};
     catalog.targets[0].roles.push(extra);
   }
+  if (options.mutateCatalog) options.mutateCatalog(catalog);
+  const storage = options.storage || new Map();
+  const storageKey = "companion-v2-selection:" + JSON.stringify([catalog.installation_id, catalog.operator_id]);
+  if (options.savedSelection) storage.set(storageKey, JSON.stringify(options.savedSelection));
+  const scopeEvents = [];
   const navigations = [];
   let largeText = false;
   const window = {
     location: {href: "http://localhost/api/plugin/page/content/astrbot_plugin_private_companion/cottage/"},
     addEventListener(type, handler) { events[type] = handler; },
+    CustomEvent: class { constructor(type, init) { this.type=type; this.detail=init?.detail; } },
+    dispatchEvent(event) { scopeEvents.push(event); },
     navigate: (...route) => navigations.push(route),
     matchMedia: () => ({matches: false}),
     CompanionWorkspaceBundle: options.lazyBundles ? undefined
@@ -172,10 +183,19 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
     setTimeout: pageSetTimeout, clearTimeout: pageClearTimeout, console: pageConsole,
     fetch: pageFetch,
     matchMedia: () => ({matches: false}),
-    localStorage: {getItem: key => key === "companion-v2-theme" ? savedTheme : null, setItem() {}, removeItem() {}}});
+    localStorage: {getItem(key) {
+      if (options.storageUnavailable) throw new Error("SecurityError");
+      return key === "companion-v2-theme" ? savedTheme : storage.get(key) ?? null;
+    }, setItem(key, value) {
+      if (options.storageUnavailable) throw new Error("SecurityError");
+      storage.set(key, value);
+    }, removeItem(key) { storage.delete(key); }}});
   const product = window.CompanionProduct;
   const updates = [];
   await product.connect(reason => updates.push(reason));
+  // Workspace fixtures explicitly open their initial window; the cottage itself starts without one.
+  if (!options.unselectedWindow && !options.directoryUnavailable)
+    await product.choose("first", product.selection().role_id, true);
   calls.length = 0;
   function addFrame(kind) {
     const messages = [];
@@ -197,7 +217,7 @@ async function harness(savedTheme = null, extensions = [], options = {}) {
     return events.message({source: owner.contentWindow, data: {channel: "companion-workspace",
       kind: "request", requestId, method, path: endpoint, body, timeoutMs}});
   }
-  return {product, calls, timers, warnings, loadedScripts, fetchCalls, frames, addFrame, identity, relationships, host, persona, events, request, document, window, stageRole, navigations, updates, catalog,
+  return {product, storage, storageKey, scopeEvents, calls, timers, warnings, loadedScripts, fetchCalls, frames, addFrame, identity, relationships, host, persona, events, request, document, window, stageRole, navigations, updates, catalog,
     largeText: () => largeText,
     setDirectory(directory) {nextDirectory = directory;},
     hostTheme(isDark) {
@@ -553,7 +573,7 @@ test("the cottage selects a role without asking for a conversation target", asyn
   assert.match(h.stageRole.innerHTML, /小伴的小屋/);
   assert.match(h.stageRole.innerHTML, /aria-label="切换人格或角色"/);
   assert.match(h.stageRole.innerHTML, /小伴的小屋/);
-  assert.match(h.stageRole.innerHTML, /<option[^>]*>夜航<\/option>/);
+  assert.match(h.stageRole.innerHTML, /<option[^>]*>夜航 · QQ 100<\/option>/);
   assert.doesNotMatch(h.stageRole.innerHTML, /会话对象|product-target|data-product-refresh|账号与会话/);
   assert.equal(h.product.roleChoices().length, 2);
 });
@@ -599,7 +619,7 @@ test("choosing a role updates the cottage title and role-scoped data", async () 
   h.product.renderScope();
   assert.equal(h.product.role().role_id, "another-role");
   assert.match(h.stageRole.innerHTML, /夜航的小屋/);
-  assert.match(h.stageRole.innerHTML, /value="another-role" selected/);
+  assert.match(h.stageRole.innerHTML, /value="\[&quot;bot-a&quot;,&quot;another-role&quot;\]" selected/);
 });
 
 test("role-wide state routes survive a group context while group actions keep group routes", async () => {
@@ -611,6 +631,9 @@ test("role-wide state routes survive a group context while group actions keep gr
   assert.equal(h.product.role().group_memory_api,
     "/" + HOST + "/targets/group/roles/synthetic-role/group-memory");
   assert.equal(h.product.roleTarget().target_id, "first");
+  assert.match(h.product.role().model_api, /targets\/group\/roles\/synthetic-role\/model$/);
+  assert.match(h.product.windowRole().role_config_api, /targets\/group\/roles\/synthetic-role\/config$/);
+  assert.match(h.product.role().config_api, /targets\/first\/roles\/synthetic-role\/config$/);
   assert(h.calls.some(call => call.endpoint === "targets/first/roles/synthetic-role/state"),
     "the role state summary uses the private-backed role endpoint");
   assert(!h.calls.some(call => call.endpoint === relationshipApi),
@@ -915,8 +938,10 @@ test("mapping save refreshes directory, capabilities and summary while keeping a
   assert.equal(h.updates.at(-1).kind, "host-mappings");
   assert.equal(h.host.messages.at(-1).kind, "host-mappings-refreshed");
   await h.request(h.host, "GET", "accounts", "fresh-accounts");
-  await h.request(h.relationships, "GET", "relationships", "fresh-relationships");
   assert.equal(h.host.messages.at(-1).ok, true);
+  assert.equal(h.product.selection().target_id, null);
+  await h.product.choose("replacement", "merged-role", true);
+  await h.request(h.relationships, "GET", "relationships", "fresh-relationships");
   assert.equal(h.relationships.messages.at(-1).ok, true);
   assert.equal(h.calls.at(-1).endpoint, "targets/replacement/roles/merged-role/relationships");
 });
@@ -1068,4 +1093,170 @@ test("the identity workspace relays only its member configuration and authorizat
   await h.request(h.identity, "GET", "accounts/group-target", "rejected-group-target-read");
   assert.equal(h.identity.messages.at(-1).ok, false, "group target settings are write-only from the identity workspace");
   assert.equal(h.calls.length, 6);
+});
+
+
+test("a first visit selects a role without inventing a current window", async () => {
+  const h = await harness(null, [], {pairedMode:true, unselectedWindow:true});
+  assert.deepEqual(JSON.parse(JSON.stringify(h.product.selection())),
+    {target_id:null, role_id:"synthetic-role", bot_id:"bot-a"});
+  assert.equal(h.product.target(), undefined);
+  assert.equal(h.product.windowRole(), null);
+  assert.equal(h.product.roleSelection().target_id, "first");
+  assert.match(h.product.role().state_api, /targets\/first\//);
+  assert.match(h.product.workspace("relationships"), /窗口未选择/);
+  assert.doesNotMatch(h.product.workspace("relationships"), /product-workspace-frame/);
+});
+
+test("the same role ID on two bots remains two independent choices", async () => {
+  const h = await harness(null, [], {mutateCatalog(directory) {
+    const first = directory.targets[0];
+    directory.targets.push({...first, bot_id:"bot-b", account_id:"101", target_id:"second",
+      roles:first.roles.map(role => ({...role, state_api:role.state_api.replace("first", "second")}))});
+  }});
+  const choices = h.product.roleChoices();
+  assert.equal(choices.length, 2);
+  const second = choices.find(choice => choice.target.bot_id === "bot-b");
+  await h.product.chooseRoleKey(h.product.roleChoiceKey(second));
+  assert.equal(h.product.selection().bot_id, "bot-b");
+  assert.equal(h.product.selection().target_id, null);
+  assert.equal(h.product.roleTarget().target_id, "second");
+  assert.match(h.product.role().state_api, /targets\/second\//);
+  h.product.renderScope();
+  assert.match(h.stageRole.innerHTML, /小伴 · QQ 100/);
+  assert.match(h.stageRole.innerHTML, /小伴 · QQ 101/);
+  assert.equal((h.stageRole.innerHTML.match(/ selected/g) || []).length, 1);
+  assert.equal(h.scopeEvents.at(-1).detail.bot_id, "bot-b");
+});
+
+test("a role switch retains only a compatible explicitly selected window", async () => {
+  const h = await harness(null, [], {pairedMode:true, multipleRoles:true});
+  await h.product.chooseRole("another-role");
+  assert.equal(h.product.selection().target_id, "first", "both roles are mapped to the selected private window");
+  await h.product.choose("group", "synthetic-role");
+  await h.product.chooseRole("another-role");
+  assert.equal(h.product.selection().target_id, null, "an incompatible group must not turn into a private window");
+  await h.product.chooseRole("synthetic-role");
+  assert.equal(h.product.selection().target_id, null, "selecting a role does not implicitly select its representative window");
+});
+
+test("browser selection restores the exact bot, role and explicit window", async () => {
+  const storage = new Map();
+  const first = await harness(null, [], {storage, pairedMode:true, multipleRoles:true, unselectedWindow:true});
+  await first.product.choose("group", "synthetic-role");
+  const second = await harness(null, [], {storage, pairedMode:true, multipleRoles:true, unselectedWindow:true});
+  assert.equal(second.product.selection().target_id, "group");
+  assert.equal(second.product.selection().bot_id, "bot-a");
+  assert.equal(second.product.selection().role_id, "synthetic-role");
+  await second.product.clearWindow();
+  const third = await harness(null, [], {storage, pairedMode:true, unselectedWindow:true});
+  assert.equal(third.product.selection().target_id, null);
+});
+
+test("browser selection is isolated by installation and Dashboard operator", async () => {
+  const storage = new Map();
+  const first = await harness(null, [], {storage, pairedMode:true});
+  await first.product.choose("group", "synthetic-role");
+  for (const changes of [{installation_id:"another-installation"}, {operator_id:"dashboard:another-admin"}]) {
+    const other = await harness(null, [], {storage, pairedMode:true, unselectedWindow:true,
+      mutateCatalog:directory => Object.assign(directory, changes)});
+    assert.notEqual(other.product.preferenceKey("selection"), first.product.preferenceKey("selection"));
+    assert.equal(other.product.selection().target_id, null);
+  }
+});
+
+test("an obsolete saved window keeps its role and asks for a new window", async () => {
+  const h = await harness(null, [], {unselectedWindow:true,
+    savedSelection:{bot_id:"bot-a",role_id:"synthetic-role",target_id:"removed-group"}});
+  assert.equal(h.product.selection().role_id, "synthetic-role");
+  assert.equal(h.product.selection().target_id, null);
+  assert.match(h.product.selectionNotice(), /窗口已不可用/);
+  assert.equal(JSON.parse(h.storage.get(h.storageKey)).target_id, null);
+});
+
+test("an obsolete saved bot cannot resolve a matching role ID from another account", async () => {
+  const h = await harness(null, [], {unselectedWindow:true,
+    savedSelection:{bot_id:"removed-bot",role_id:"synthetic-role",target_id:"first"}});
+  assert.equal(h.product.selection().bot_id, "bot-a");
+  assert.equal(h.product.selection().target_id, null);
+  assert.match(h.product.selectionNotice(), /角色或账号已不可用/);
+});
+
+test("role and window changes use the same draft guard and cancellation preserves selection", async () => {
+  const h = await harness(null, [], {pairedMode:true,multipleRoles:true});
+  const before = JSON.stringify(h.product.selection());
+  let attempts = 0;
+  h.product.setSelectionGuard(async () => { attempts++; return false; });
+  assert.equal(await h.product.chooseRole("another-role"), false);
+  assert.equal(await h.product.choose("group", "synthetic-role", true), false);
+  assert.equal(await h.product.clearWindow(), false);
+  assert.equal(attempts, 3);
+  assert.equal(JSON.stringify(h.product.selection()), before);
+  h.product.setSelectionGuard(async () => true);
+  assert.equal(await h.product.choose("group", "synthetic-role"), true);
+  assert.equal(h.product.selection().target_id, "group");
+});
+
+test("a late draft decision cannot replace a more recent selection intent", async () => {
+  const h = await harness(null, [], {pairedMode:true,multipleRoles:true});
+  let allowFirst;
+  h.product.setSelectionGuard(() => new Promise(resolve => { allowFirst=resolve; }));
+  const earlier = h.product.chooseRole("another-role");
+  h.product.setSelectionGuard(() => true);
+  await h.product.choose("group", "synthetic-role");
+  allowFirst(true);
+  assert.equal(await earlier, false);
+  assert.equal(h.product.selection().target_id, "group");
+});
+
+test("a blocked localStorage still permits selection and explains that it cannot persist", async () => {
+  const h = await harness(null, [], {unselectedWindow:true,storageUnavailable:true,multipleRoles:true});
+  await h.product.chooseRole("another-role");
+  assert.equal(h.product.selection().role_id, "another-role");
+  assert.match(h.product.selectionNotice(), /本地存储/);
+});
+
+
+test("reselecting the current role cancels a pending role-switch intent", async () => {
+  const h = await harness(null, [], {multipleRoles:true});
+  let allow;
+  h.product.setSelectionGuard(() => new Promise(resolve => { allow=resolve; }));
+  const earlier = h.product.chooseRole("another-role");
+  assert.equal(await h.product.chooseRole("synthetic-role"), true);
+  allow(true);
+  assert.equal(await earlier, false);
+  assert.equal(h.product.selection().role_id, "synthetic-role");
+});
+
+
+test("a group-only role without an explicit window exposes only APIs that support role defaults", async () => {
+  const h = await harness(null, [], {groupMode:true,unselectedWindow:true});
+  assert.equal(h.product.selection().target_id, null);
+  assert.equal(h.product.windowRole(), null);
+  assert.equal(h.product.role().reply_api, null, "group reply settings are always window overrides");
+  assert.equal(h.product.role().group_memory_api, null, "group archive needs an explicit group selection");
+  assert.equal(h.product.role().model_api, h.catalog.targets[0].roles[0].model_api,
+    "the group model API supports layer=role without private targets");
+  assert.equal(h.product.role().config_api, h.catalog.targets[0].roles[0].config_api,
+    "the group config API exposes role-owned system.prompts");
+  assert.equal(h.product.roleSelection().target_id, "first");
+  await h.product.choose("first", "synthetic-role");
+  assert.equal(h.product.role().reply_api, h.catalog.targets[0].roles[0].reply_api);
+  assert.equal(h.product.role().group_memory_api, h.catalog.targets[0].roles[0].group_memory_api);
+  await h.product.clearWindow();
+  assert.equal(h.product.role().reply_api, null);
+});
+
+
+test("cancelling the draft guard on a group shortcut leaves the current page without a mapping error", async () => {
+  const h = await harness(null, [], {pairedMode:true});
+  h.product.mountWorkspace();
+  h.product.setSelectionGuard(() => false);
+  await h.events.message({source:h.identity.contentWindow, data:{channel:"companion-workspace",
+    kind:"navigate", target:{tab:"group-reply", platform_id:"qq-main", bot_id:"bot-a",
+      account_id:"100", group_id:"300", role_id:"synthetic-role"}}});
+  assert.equal(h.product.selection().target_id, "first");
+  assert.deepEqual(h.navigations, []);
+  assert.equal(h.identity.messages.filter(message => message.kind === "navigate-failed").length, 0);
+  h.product.unmountWorkspace();
 });

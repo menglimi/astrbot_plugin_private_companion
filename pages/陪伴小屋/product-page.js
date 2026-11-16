@@ -266,7 +266,8 @@ window.CompanionProduct = (() => {
   }
   const fail = (code, confirmed = false) => Object.assign(new Error(errors[code] || "暂不可读取，请刷新核对。"),
     {code, ...(confirmed ? {confirmed:true} : {})});
-  let bridge, catalog, manifest, data = {}, failures = {}, failureCodes = {}, selected = {target_id:null,role_id:null};
+  let bridge, catalog, manifest, data = {}, failures = {}, failureCodes = {}, selected = {target_id:null,role_id:null,bot_id:null};
+  let selectionGuard = () => true, selectionIntent = 0, selectionIdentity = null, selectionNotice = "";
   let bridgeReady = false;
   let releaseAppearanceContext = null;
   let generation = 0, changed = () => {}, loading = false, notice = "";
@@ -418,7 +419,14 @@ window.CompanionProduct = (() => {
       if (owner.isConnected) owner.contentWindow.postMessage({channel:"companion-workspace",...payload},"*");
     }
   }
-  const target = () => catalog?.targets.find(item => item.target_id === selected.target_id);
+  const target = () => catalog?.targets.find(item => item.target_id === selected.target_id
+    && item.bot_id === selected.bot_id);
+  const roleChoiceKey = choice => JSON.stringify([choice.target.bot_id, choice.role.role_id]);
+  const preferenceKey = name => catalog?.installation_id && catalog?.operator_id
+    ? "companion-v2-" + name + ":" + JSON.stringify([catalog.installation_id, catalog.operator_id]) : null;
+  const selectedChoice = () => roleChoices().find(item => item.target.bot_id === selected.bot_id
+    && item.role.role_id === selected.role_id);
+  const windowRole = () => target()?.roles.find(item => item.role_id === selected.role_id) || null;
   const targetPreference = item => [
     item.scope_kind === "private" ? 1 : 0,
     item.scope_kind === "private" && item.participant_id && item.participant_id !== "*" ? 1 : 0,
@@ -426,14 +434,16 @@ window.CompanionProduct = (() => {
   ];
   const prefersTarget = (candidate, current) => {
     const left = targetPreference(candidate), right = targetPreference(current);
-    return left.some((value, index) => value !== right[index] && value > right[index]);
+    const index = left.findIndex((value, position) => value !== right[position]);
+    return index !== -1 && left[index] > right[index];
   };
   const roleChoices = () => {
     const choices = new Map();
     for (const item of catalog?.targets || []) for (const persona of item.roles || []) {
-      const previous = choices.get(persona.role_id);
+      const key = roleChoiceKey({target:item, role:persona});
+      const previous = choices.get(key);
       if (!previous || prefersTarget(item, previous.target)) {
-        choices.set(persona.role_id, {target:item, role:persona});
+        choices.set(key, {target:item, role:persona});
       }
     }
     return [...choices.values()].sort((a,b) => roleLabel(a.role).localeCompare(roleLabel(b.role), "zh-CN")
@@ -443,17 +453,34 @@ window.CompanionProduct = (() => {
     const current = target();
     if (current?.scope_kind === "private" && current.participant_id !== "*"
         && current.roles.some(item => item.role_id === selected.role_id)) return current;
-    return roleChoices().find(item => item.role.role_id === selected.role_id)?.target || null;
+    return selectedChoice()?.target || null;
   };
+  const roleSelection = () => ({target_id:roleTarget()?.target_id ?? null,
+    role_id:selected.role_id, bot_id:selected.bot_id});
   const role = () => {
-    const current = target()?.roles.find(item => item.role_id === selected.role_id);
-    const owner = roleTarget()?.roles.find(item => item.role_id === selected.role_id);
+    const current = windowRole(), ownerTarget = roleTarget();
+    const owner = ownerTarget?.roles.find(item => item.role_id === selected.role_id);
     if (!owner) return current;
+    // A group reply route edits only that window; group model routes also expose
+    // role defaults, and group config routes expose role-owned system prompts.
+    if (!target() && ownerTarget.scope_kind === "group")
+      return {...owner, reply_api:null, group_memory_api:null};
     if (target()?.scope_kind !== "group" || owner === current) return owner;
-    return {...owner, reply_api:current.reply_api || owner.reply_api,
-      group_memory_api:current.group_memory_api || null};
+    return {...owner, reply_api:current?.reply_api || null, model_api:current?.model_api || null,
+      role_config_api:current?.role_config_api || null, group_memory_api:current?.group_memory_api || null};
   };
-  const scopeKey = () => JSON.stringify([catalog?.installation_id, selected.target_id, selected.role_id]);
+  const scopeKey = () => JSON.stringify([catalog?.installation_id, catalog?.operator_id,
+    selected.bot_id, selected.target_id, selected.role_id]);
+  function persistSelection() {
+    const key = preferenceKey("selection");
+    if (!key) return;
+    try { localStorage.setItem(key, JSON.stringify(selected)); }
+    catch { selectionNotice = "浏览器未开放本地存储，当前角色选择只能保留到本次页面关闭。"; }
+  }
+  function notifyScope() {
+    if (typeof window.dispatchEvent === "function" && typeof window.CustomEvent === "function")
+      window.dispatchEvent(new window.CustomEvent("companion:scope-changed", {detail:{...selected}}));
+  }
   /* 后端 outcome_response() 把机器码同时放在 message 与 data.code 上，因为页面桥
      只转发 message、会丢掉信封其余字段。所以取码要看两处，不能只认 data.code；
      下面 api() 里的英文措辞兜底只是老桥接形态的退路。 */
@@ -572,19 +599,41 @@ window.CompanionProduct = (() => {
   const workspaceDiagnosis = () => ({...workspaceState(), hint: workspaceHint(),
     targets: (catalog?.targets || []).length});
   function chooseDefault() {
+    const key = preferenceKey("selection");
+    let preferred = selected;
+    selectionNotice = "";
+    if (key !== selectionIdentity) {
+      selectionIdentity = key;
+      preferred = {target_id:null, role_id:null, bot_id:null};
+      if (key) {
+        try {
+          const saved = localStorage.getItem(key);
+          if (saved) preferred = JSON.parse(saved) || preferred;
+        } catch {
+          selectionNotice = "上次角色选择未能从浏览器恢复，请重新选择。";
+        }
+      }
+    }
     const choices = roleChoices();
-    const choice = choices.find(item => item.role.role_id === selected.role_id) || choices[0];
-    const current = target();
-    const context = current?.roles.some(item => item.role_id === choice?.role.role_id)
-      ? current : choice?.target;
-    selected = {target_id:context?.target_id ?? null, role_id:choice?.role.role_id ?? null};
+    const matched = choices.find(item => item.role.role_id === preferred.role_id
+      && item.target.bot_id === preferred.bot_id);
+    const choice = matched || choices[0];
+    const context = matched && catalog.targets.find(item => item.target_id === preferred.target_id
+      && item.bot_id === choice.target.bot_id && item.roles.some(roleItem => roleItem.role_id === choice.role.role_id));
+    selected = {target_id:context?.target_id ?? null, role_id:choice?.role.role_id ?? null,
+      bot_id:choice?.target.bot_id ?? null};
+    if (preferred.role_id && !matched) selectionNotice = "上次选择的角色或账号已不可用，已选择当前可用角色；窗口未选择。";
+    else if (preferred.target_id && !context) selectionNotice = "上次选择的窗口已不可用，当前角色保持不变；请重新选择窗口。";
+    persistSelection();
+    notifyScope();
   }
   let summaryRequest = 0;
   const SUMMARY_CACHE_MS = 45000;
   const SUMMARY_CACHE_KEY = "companion-product-summary.v2";
   const summaryCache = new Map();
   function summaryCacheKey() {
-    return [catalog?.installation_id || "", selected.target_id || "", selected.role_id || ""].join(":");
+    return JSON.stringify([catalog?.installation_id, catalog?.operator_id,
+      selected.bot_id, selected.target_id, selected.role_id]);
   }
   function readSummaryCache(key) {
     const memory = summaryCache.get(key);
@@ -714,7 +763,6 @@ window.CompanionProduct = (() => {
   async function refreshDirectoryAfterMapping() {
     if (!bridgeReady || !bridge) return;
     const ticket = ++generation;
-    const previous = {...selected};
     const results = await Promise.allSettled([api("GET", "page/targets"), api("GET", "integration/manifest")]);
     if (ticket !== generation) return;
     if (results[0].status !== "fulfilled") throw results[0].reason;
@@ -723,10 +771,7 @@ window.CompanionProduct = (() => {
         || directory.targets.some(item => !Array.isArray(item.roles))) throw fail("invalid_response");
     catalog = directory;
     if (results[1].status === "fulfilled") manifest = results[1].value;
-    const retained = catalog.targets.find(item => item.target_id === previous.target_id
-      && item.roles.some(roleItem => roleItem.role_id === previous.role_id));
-    if (retained) selected = previous;
-    else chooseDefault();
+    chooseDefault();
     growthPage = null; growthCursor = null;
     rebindWorkspaceContexts();
     loading = false; changed();
@@ -746,8 +791,8 @@ window.CompanionProduct = (() => {
     const currentRole = role();
     if (kind === "designer") return "/" + HOST + "/persona-designer";
     if (kind === "identity") return typeof catalog?.acquaintance_api === "string" ? catalog.acquaintance_api : "";
-    if (kind === "relationships" && target()?.scope_kind === "group")
-      return currentRole?.group_memory_api || "";
+    if (kind === "relationships") return target()?.scope_kind === "group"
+      ? windowRole()?.group_memory_api || "" : windowRole()?.relationships_api || "";
     return currentRole?.[kind + "_api"] || "";
   }
 
@@ -776,8 +821,8 @@ window.CompanionProduct = (() => {
       extension_id: item.extension_id, action, expected_revision: expectedRevision, operation_key: operationKey,
       // 装配后由服务端补一次角色启用；装配按钮开在当前角色的小屋里，所以把
       // 当前选中的角色和目标一起送过去，避免多角色安装时猜默认角色。
-      ...(selected.role_id && selected.target_id
-        ? {role_id: selected.role_id, target_id: selected.target_id} : {}),
+      ...(selected.role_id && roleTarget()
+        ? {role_id:selected.role_id, target_id:roleTarget().target_id} : {}),
     });
     await refreshIntegrations();
     return result;
@@ -791,33 +836,56 @@ window.CompanionProduct = (() => {
     if (typeof catalog?.acquaintance_api !== "string") return Promise.reject(fail("invalid_response"));
     return api("GET", relative(catalog.acquaintance_api));
   }
-  async function choose(targetId, roleId, quiet=false) {
-    const next = catalog?.targets.find(t => t.target_id === targetId);
-    if (!next?.roles.some(r => r.role_id === roleId)) return;
-    if (selected.target_id === targetId && selected.role_id === roleId) return;
+  async function applySelection(next, quiet=false) {
+    const intent = ++selectionIntent, before = generation;
+    if (selected.target_id === next.target_id && selected.role_id === next.role_id
+        && selected.bot_id === next.bot_id) return true;
+    if (await selectionGuard() !== true || intent !== selectionIntent || before !== generation) {
+      renderScope();
+      return false;
+    }
     const ticket = ++generation;
-    selected = {target_id:targetId,role_id:roleId}; data = {}; failures = {}; failureCodes = {}; growthPage = null; growthCursor = null;
+    selected = next; selectionNotice = ""; persistSelection();
+    data = {}; failures = {}; failureCodes = {}; growthPage = null; growthCursor = null;
     rebindWorkspaceContexts();
-    loading = true;
-    if (!quiet) changed();
     loading = false;
+    notifyScope();
     if (!quiet) changed();
     await loadSummary(ticket);
     if(ticket === generation) {if(!quiet) changed(); else renderScope();}
+    return ticket === generation;
   }
-  function chooseRole(roleId, quiet=false) {
+  function choose(targetId, roleId, quiet=false) {
+    const next = catalog?.targets.find(item => item.target_id === targetId);
+    if (!next?.roles.some(item => item.role_id === roleId)) return Promise.resolve(false);
+    return applySelection({target_id:targetId, role_id:roleId, bot_id:next.bot_id}, quiet);
+  }
+  function clearWindow(quiet=false) {
+    return applySelection({...selected, target_id:null}, quiet);
+  }
+  function chooseRole(roleId, quiet=false, botId=selected.bot_id) {
+    const candidates = roleChoices().filter(item => item.role.role_id === roleId);
+    const choice = candidates.find(item => item.target.bot_id === botId)
+      || (candidates.length === 1 ? candidates[0] : null);
+    if (!choice || (arguments.length >= 3 && choice.target.bot_id !== botId)) return Promise.resolve(false);
     const current = target();
-    const context = current?.roles.some(item => item.role_id === roleId)
-      ? current : roleChoices().find(item => item.role.role_id === roleId)?.target;
-    if (context) return choose(context.target_id, roleId, quiet);
+    const context = current?.bot_id === choice.target.bot_id && current.roles.some(item => item.role_id === roleId)
+      ? current : null;
+    return applySelection({target_id:context?.target_id ?? null, role_id:roleId,
+      bot_id:choice.target.bot_id}, quiet);
   }
+  function chooseRoleKey(key, quiet=false) {
+    const choice = roleChoices().find(item => roleChoiceKey(item) === key);
+    return choice ? chooseRole(choice.role.role_id, quiet, choice.target.bot_id) : Promise.resolve(false);
+  }
+  function setSelectionGuard(guard) { selectionGuard = typeof guard === "function" ? guard : () => true; }
   /* 连接状态。这里**不再有 preview 分支**——「设计预览」曾经是个永久状态，
      一旦进去就无限显示「连接 AstrBot 后显示真实角色」，而桥往往只是还没注入。
      现在只有四种真实状态，且都带可执行的下一步。 */
   function connection() {
     return {state:loading?"checking":catalog?"connected":manifest?"ready":"unavailable",
       label:loading?"小屋 · 正在读取":catalog?"小屋 · 管理接口可用":manifest?"小屋 · 待初始化":"小屋 · 连接待检查",
-      detail:notice || `已读取 ${catalog?.targets.length||0} 个管理对象 · ${(manifest?.summary?.connected_count)||0} 项拓展状态已读取`};
+      detail:selectionNotice || notice || `已读取 ${catalog?.targets.length||0} 个管理对象 · ${(manifest?.summary?.connected_count)||0} 项拓展状态已读取`};
   }
   function identity() { return {installation_id: catalog?.installation_id || null, operator_id: catalog?.operator_id || null}; }
   /* Show selectors only when the loaded directory has a real choice to make. */
@@ -865,11 +933,12 @@ window.CompanionProduct = (() => {
     return plan.executor_is_current ? "当前私聊窗口" : "同一角色的其他私聊窗口";
   }
   function renderScope(fallbackRole = "陪伴") {
+    notifyScope();
     const root = document.getElementById("stageRole"); if(!root) return;
     const choices = roleChoices();
     const currentLabel = role() ? roleLabel() : fallbackRole;
     if (catalog && role() && choices.length > 1) {
-      root.innerHTML = `<label class="stage-role-picker"><span class="stage-role-title"><i data-lucide="house" aria-hidden="true"></i><span>${e(currentLabel)}的小屋</span></span><i class="stage-role-caret" data-lucide="chevron-down" aria-hidden="true"></i><select id="product-role" aria-label="切换人格或角色" ${loading?"disabled":""}>${choices.map(item=>`<option value="${e(item.role.role_id)}" ${item.role.role_id===selected.role_id?"selected":""}>${e(roleLabel(item.role))}</option>`).join("")}</select></label>`;
+      root.innerHTML = `<label class="stage-role-picker"><span class="stage-role-title"><i data-lucide="house" aria-hidden="true"></i><span>${e(currentLabel)}的小屋</span></span><i class="stage-role-caret" data-lucide="chevron-down" aria-hidden="true"></i><select id="product-role" aria-label="切换人格或角色" ${loading?"disabled":""}>${choices.map(item=>`<option value="${e(roleChoiceKey(item))}" ${item.role.role_id===selected.role_id&&item.target.bot_id===selected.bot_id?"selected":""}>${e(roleLabel(item.role)+" · "+accountLabel(item.target))}</option>`).join("")}</select></label>`;
       return;
     }
     root.innerHTML = `<h2 class="stage-role-title"><i data-lucide="house" aria-hidden="true"></i><span>${e(currentLabel)}的小屋</span></h2>`;
@@ -978,8 +1047,8 @@ window.CompanionProduct = (() => {
       </section>`;
     }
     if(name==="identity" && !catalog.acquaintance_api) return empty("关系网入口尚未加载，请重新读取角色与会话。");
-    const endpoint = name==="relationships" && target()?.scope_kind==="group"
-      ? role()?.group_memory_api : role()?.[name+"_api"];
+    if (name === "relationships" && !target()) return empty("窗口未选择，请先选择要查看关系资料的群聊或私聊窗口。");
+    const endpoint = workspaceApi(name);
     if(!["host","identity","designer"].includes(name) && !endpoint) return empty(unavailable(name));
     return `<section class="product-workspace" data-workspace="${name}" data-workspace-tab="${e(tab)}" data-load-state="loading" aria-busy="true"><div class="product-workspace-loading" role="status" aria-live="polite"><span class="product-workspace-spinner" aria-hidden="true"></span><span data-workspace-status>正在打开${e(title)}…</span><button class="button small" type="button" data-workspace-load-retry hidden>重试</button></div><iframe title="${title}工作区" class="product-workspace-frame" sandbox="allow-scripts allow-forms"></iframe></section>`;
   }
@@ -1123,20 +1192,19 @@ window.CompanionProduct = (() => {
   }
   function workspaceContext(owner) {
     const kind=owner.parentElement.dataset.workspace;
-    const selectedTarget=target(),selectedRole=role();
-    const groupArchive=kind==="relationships"&&selectedTarget?.scope_kind==="group";
+    const selectedTarget=target();
     return {key:scopeKey(),kind,tab:owner.parentElement.dataset.workspaceTab,
       scope_kind:selectedTarget?.scope_kind,
       accounts_api:catalog?.accounts_api,
       api:kind==="designer"?"/"+HOST+"/persona-designer":kind==="identity"?catalog?.acquaintance_api
-        :groupArchive?selectedRole?.group_memory_api:selectedRole?.[kind+"_api"]};
+        :workspaceApi(kind)};
   }
   function sendWorkspaceContext(owner, context) {
     owner.contentWindow.postMessage({channel:"companion-workspace",kind:"context",
       context:{pluginName:HOST,pageName:context.kind,tab:context.tab,
         confirm:typeof window.CompanionConfirm==="function",
         display:{role_name:roleLabel(),subject_name:subjectLabel(target()),scope_kind:context.scope_kind,
-          target_label:target()?targetLabel(target()):"当前会话"}}},"*");
+          target_label:target()?targetLabel(target()):"窗口未选择"}}},"*");
   }
   function rebindWorkspaceContexts() {
     for (const [owner, previous] of workspaceFrames) {
@@ -1242,7 +1310,7 @@ window.CompanionProduct = (() => {
           return;
         }
         try{
-          await choose(destination.target_id,role.role_id,true);
+          if (await choose(destination.target_id,role.role_id,true) === false) return;
         }catch{
           navigationFailure("打开本群配置时未能切换角色，请重新读取群聊目录后重试。");
           return;
@@ -1459,7 +1527,7 @@ window.CompanionProduct = (() => {
     finally{growthBusy=false;form.querySelectorAll("button").forEach(el=>el.disabled=false);}
   });
   document.addEventListener("change",event=>{
-    if(event.target.id==="product-role")chooseRole(event.target.value);
+    if(event.target.id==="product-role")chooseRoleKey(event.target.value);
   });
   document.addEventListener("click",event=>{
     const el=event.target.closest("button");if(!el)return;
@@ -1478,7 +1546,9 @@ window.CompanionProduct = (() => {
   const stateValues   = () => data.state?.state?.values || null;
   const stateLabel = value => states[value] || "";
   const unavailableReason = name => unavailable(name);
-  return {hosted,unwrap,connect,refreshSummary,refreshIntegrations,manageExtension,choose,chooseRole,selection:()=>({...selected}),scopeKey,role,target,roleTarget,roleChoices,identity,connection,renderScope,scopeVisible,
+  return {hosted,unwrap,connect,refreshSummary,refreshIntegrations,manageExtension,choose,clearWindow,chooseRole,chooseRoleKey,setSelectionGuard,selection:()=>({...selected}),
+    roleSelection,windowRole,roleChoiceKey,preferenceKey,selectionNotice:()=>selectionNotice,
+    scopeKey,role,target,roleTarget,roleChoices,identity,connection,renderScope,scopeVisible,
     /* 首次使用引导走同一套桥接与错误翻译，别让它自己再实现一遍超时与判据。 */
     request:api,acquaintanceDirectory,refreshDirectory:refreshDirectoryAfterMapping,
     errorLabel:code=>errors[code]||"当前设置未能确认，请刷新并核对账号、人格与模型。",
