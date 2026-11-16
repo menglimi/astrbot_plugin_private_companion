@@ -59,7 +59,8 @@ window.CompanionStateEditor = (() => {
         ?Number.isInteger(value)&&value>=1&&value<=10:typeof value==="boolean"):maintenance?.validField(key,value));
     if(command.action==="configure_role")return sameKeys(command,["action","operation_key","role_edit_token","changes"])
       &&typeof command.role_edit_token==="string"&&command.changes&&Object.keys(command.changes).length>0
-      &&Object.entries(command.changes).every(([key,value])=>!fields.includes(key)&&maintenance?.validField(key,value));
+      &&Object.entries(command.changes).every(([key,value])=>!windowFields.has(key)
+        &&(fields.includes(key)?typeof value==="boolean":maintenance?.validField(key,value)));
     if(command.action==="cycle.align")return sameKeys(command,["action","operation_key","expected_revision","view_token","settings_token","data"])
       &&Number.isInteger(command.expected_revision)&&command.expected_revision>=0&&typeof command.view_token==="string"&&typeof command.settings_token==="string"
       &&sameKeys(command.data,["applicability","day"])&&["applicable","not_applicable","unknown","auto"].includes(command.data.applicability)
@@ -99,8 +100,10 @@ window.CompanionStateEditor = (() => {
     const usable=item=>item?.kind==="role_plan"&&item.state!=="cancelled"&&typeof item.view_token==="string";
     const say=(text,bad=false)=>{message=text;error=bad;};
     const emit=()=>{if(alive)changed();};
+    const windowSelected=()=>scope?.window_selected===true;
+    const editableFields=kind=>configFields(kind).filter(name=>windowSelected()||!windowFields.has(name));
     function setScope(value) {
-      const key=JSON.stringify([value.installation_id,value.operator_id,value.path]);
+      const key=JSON.stringify([value.installation_id,value.operator_id,value.path,value.window_selected===true]);
       if(scope?.key===key)return;
       scope={...value,key,storage:"companion-state-edit.v1:"+key};
       status=draft=null;pending=stored(scope.storage);busy=false;message="";error=false;
@@ -124,7 +127,7 @@ window.CompanionStateEditor = (() => {
       try {
         let values=draft.kind==="contact"?contact.normalized(draft.values):draft.values;
         if(configKinds.has(draft.kind)&&draft.kind!=="settings")values=maintenance.normalized(draft.kind,values,draft.weatherLocationParts);
-        if(draft.kind==="settings")values={...values,typing_refresh_seconds:Number(values.typing_refresh_seconds)};
+        if(draft.kind==="settings"&&windowSelected())values={...values,typing_refresh_seconds:Number(values.typing_refresh_seconds)};
         const changed=Object.keys(draft.base).some(key=>!sameValue(values[key],draft.base[key]));
         if(draft.kind==="weather"&&draft.weatherLocationParts)
           return changed||JSON.stringify(draft.weatherLocationParts)!==JSON.stringify(maintenance.weatherLocationParts(draft.base.planning_weather_location));
@@ -143,15 +146,14 @@ window.CompanionStateEditor = (() => {
       if(draft&&draft.kind!==kind&&draftDirty()){say("请先保存或取消当前修改，再切换配置。",true);emit();return;}
       if(kind==="cycle"&&resetView)maintenance?.resetPhase();
       if(kind==="contact") {
-        if(!contact?.supported(status.contact))return;
+        if(!windowSelected()||!contact?.supported(status.contact))return;
         const base=Object.fromEntries(contact.fields(status.contact).map(key=>[key,status.contact.settings[key]]));
         draft={kind,base,token:status.contact.edit_token,values:{...base},purposes:structuredClone(contact.purposes(status.contact)),stale:false};
       } else if(configKinds.has(kind)) {
-        const token=kind==="settings"?status.edit_token:status.role_edit_token;
+        const token=kind==="settings"&&windowSelected()?status.edit_token:status.role_edit_token;
         if(typeof token!=="string")return;
-        if(kind==="home"&&typeof status.edit_token!=="string")return;
         if(kind!=="settings"&&!maintenance?.fields(kind).every(key=>maintenance.validField(key,status.settings?.[key])))return;
-        const base=Object.fromEntries(configFields(kind).map(key=>[key,status.settings[key]]));
+        const base=Object.fromEntries(editableFields(kind).map(key=>[key,status.settings[key]]));
         draft={kind,base,token,windowToken:status.edit_token,roleToken:status.role_edit_token,
           values:{...base},implicit:!notify,currentPhase:status.state?.cycle_timeline?.phase,
           ...(kind==="weather"?{weatherLocationParts:maintenance.weatherLocationParts(base.planning_weather_location)}:{}),stale:false};
@@ -221,15 +223,16 @@ window.CompanionStateEditor = (() => {
       }
       if(configKinds.has(draft.kind)) {
         let values;
-        if(draft.kind==="settings"){
+        if(draft.kind==="settings"&&windowSelected()){
           const seconds=Number(draft.values.typing_refresh_seconds);
           if(!Number.isInteger(seconds)||seconds<1||seconds>10)throw new Error("刷新间隔请填写 1–10 之间的整数秒。");
           values={...draft.values,typing_refresh_seconds:seconds};
-        }else values=maintenance.normalized(draft.kind,draft.values,draft.weatherLocationParts);
+        }else if(draft.kind==="settings")values={...draft.values};
+        else values=maintenance.normalized(draft.kind,draft.values,draft.weatherLocationParts);
         if(draft.kind==="weather"&&values.planning_weather_enabled
           &&!values.planning_weather_location)
           throw new Error("请先在本页填写角色天气地点，再启用天气感知。");
-        const changes=Object.fromEntries(configFields(draft.kind).filter(key=>values[key]!==draft.base[key]).map(key=>[key,values[key]]));
+        const changes=Object.fromEntries(editableFields(draft.kind).filter(key=>values[key]!==draft.base[key]).map(key=>[key,values[key]]));
         if(!Object.keys(changes).length)return null;
         const windowOnly=windowFields;
         const hasRole=Object.keys(changes).some(key=>!windowOnly.has(key));
@@ -250,6 +253,10 @@ window.CompanionStateEditor = (() => {
       let body;
       try {body=recover?pending:command();}catch(problem){say(problem.message,true);emit();return;}
       if(!body){draft=null;say("没有需要保存的修改。");emit();return;}
+      if(!windowSelected()&&(body.action==="contact.configure"
+        ||Object.keys(body.changes||{}).some(name=>windowFields.has(name)))){
+        say("请先明确选择当前角色的私聊窗口，再保存窗口设置。",true);emit();return;
+      }
       if(!recover)body={...body,operation_key:crypto.randomUUID()};
       const original={...scope},request=structuredClone(body);
       pendingKind=recover?pendingKind:draft?.kind;
@@ -287,11 +294,11 @@ window.CompanionStateEditor = (() => {
         draft={kind:"contact",base,token:fresh.contact.edit_token,purposes:structuredClone(contact.purposes(fresh.contact)),
           values:{...base,...Object.fromEntries(touched.map(key=>[key,previous.values[key]]))},stale:false};
       } else if(configKinds.has(previous.kind)) {
-        const names=configFields(previous.kind),touched=names.filter(key=>String(previous.values[key])!==String(previous.base[key]));
+        const names=editableFields(previous.kind),touched=names.filter(key=>String(previous.values[key])!==String(previous.base[key]));
         const base=Object.fromEntries(names.map(key=>[key,fresh.settings[key]]));
         const weatherLocationChanged=previous.kind==="weather"&&JSON.stringify(previous.weatherLocationParts)
           !==JSON.stringify(maintenance.weatherLocationParts(previous.base.planning_weather_location));
-        draft={kind:previous.kind,base,token:previous.kind==="settings"?fresh.edit_token:fresh.role_edit_token,
+        draft={kind:previous.kind,base,token:previous.kind==="settings"&&windowSelected()?fresh.edit_token:fresh.role_edit_token,
           windowToken:fresh.edit_token,roleToken:fresh.role_edit_token,
           values:{...base,...Object.fromEntries(touched.map(key=>[key,previous.values[key]]))},currentPhase:fresh.state?.cycle_timeline?.phase,
           ...(previous.kind==="weather"?{weatherLocationParts:weatherLocationChanged?{...previous.weatherLocationParts}
@@ -348,8 +355,8 @@ window.CompanionStateEditor = (() => {
     function form({after="",grouped=false}={}) {
       if(!draft)return "";
       const disabled=busy||!!pending,settings=draft.kind==="settings";
-      const content=draft.kind==="contact"?contact.form(draft,e):maintenance?.titles[draft.kind]?maintenance.form(draft,e):settings?`<div class="state-edit-fields"><label class="state-checkbox"><input type="checkbox" id="state-typing-enabled" data-state-field="typing_enabled" ${draft.values.typing_enabled?"checked":""}>启用当前私聊窗口的正在输入提示</label><p class="state-edit-note">身份校验通过后开始，持续到最后一段发送结束，包含模型等待与分段间隔。</p>
-        <label for="state-typing-seconds">输入提示刷新间隔（秒）<input id="state-typing-seconds" type="number" min="1" max="10" step="1" required data-state-field="typing_refresh_seconds" value="${e(draft.values.typing_refresh_seconds)}"></label>
+      const content=draft.kind==="contact"?contact.form(draft,e):maintenance?.titles[draft.kind]?maintenance.form(draft,e):settings?`<div class="state-edit-fields">${windowSelected()?`<label class="state-checkbox"><input type="checkbox" id="state-typing-enabled" data-state-field="typing_enabled" ${draft.values.typing_enabled?"checked":""}>启用当前私聊窗口的正在输入提示</label><p class="state-edit-note">身份校验通过后开始，持续到最后一段发送结束，包含模型等待与分段间隔。</p>
+        <label for="state-typing-seconds">输入提示刷新间隔（秒）<input id="state-typing-seconds" type="number" min="1" max="10" step="1" required data-state-field="typing_refresh_seconds" value="${e(draft.values.typing_refresh_seconds)}"></label>`:'<p class="state-edit-note">未选择私聊窗口；正在输入提示需选择窗口后设置。</p>'}
         <label class="state-checkbox"><input type="checkbox" id="state-presence-enabled" data-state-field="presence_enabled" ${draft.values.presence_enabled?"checked":""}>启用角色 QQ 自定义短状态</label>
         <label class="state-checkbox"><input type="checkbox" id="state-online-status-enabled" data-state-field="online_status_enabled" ${draft.values.online_status_enabled?"checked":""}>启用角色 QQ 在线状态</label></div>
         <p class="state-edit-help">正在输入只跟随当前私聊窗口；QQ 在线状态和自定义短状态按角色保存，切换私聊窗口或新建会话都不会丢失。启用后会更新该角色绑定的 QQ 账号：在线状态按角色模拟状态上报在线／离开／忙碌，自定义短状态显示公开短文案；两者共用同一路展示，同一时刻只报一种，日程里写了公开文案时以日程为准，否则在线状态优先于短状态。</p>`
@@ -369,9 +376,8 @@ window.CompanionStateEditor = (() => {
       const kind=kinds[feature];
       if(!kind)return "";
       const title=maintenance?.titles[kind]||"QQ 展示设置";
-      const tokenReady=kind==="settings"?typeof status.edit_token==="string":typeof status.role_edit_token==="string"
-        &&(kind!=="home"||typeof status.edit_token==="string");
-      const unavailable=!tokenReady||(kind==="settings"?!fields.every(key=>key==="typing_refresh_seconds"?Number.isInteger(status.settings?.[key])&&status.settings[key]>=1&&status.settings[key]<=10:typeof status.settings?.[key]==="boolean")
+      const tokenReady=typeof (kind==="settings"&&windowSelected()?status.edit_token:status.role_edit_token)==="string";
+      const unavailable=!tokenReady||(kind==="settings"?!editableFields(kind).every(key=>key==="typing_refresh_seconds"?Number.isInteger(status.settings?.[key])&&status.settings[key]>=1&&status.settings[key]<=10:typeof status.settings?.[key]==="boolean")
         :kind==="align"?!maintenance.canAlign(status):!maintenance?.fields(kind)?.length
           ||!maintenance.fields(kind).every(key=>maintenance.validField(key,status.settings?.[key])));
       const editing=draft&&(draft.kind===kind||feature==="cycle"&&draft.kind==="align"||feature==="planning"&&draft.kind==="wording");
@@ -435,6 +441,7 @@ window.CompanionStateEditor = (() => {
         ${pending?`<div class="state-pending" role="status"><strong>${busy?"请求处理中":"有一笔保存尚待核对"}</strong><p>${e(pendingText)}</p><div class="state-edit-actions">
           <button type="button" class="memory-button" data-state-edit="recover" ${busy||loading?"disabled":""}>用原请求核对</button>
           <button type="button" class="memory-button" data-state-edit="dismiss" ${busy?"disabled":""}>结束核对</button></div></div>`:""}`;
+      if(section==="contact"&&!windowSelected())return '<p class="memory-notice">请先选择当前角色的私聊窗口，再查看联系安排。</p>';
       if(section==="contact")return `<section class="panel state-edit-panel state-contact-panel">${contact?.summary(status.contact,e)||"<p>联系设置组件尚未加载，请刷新页面。</p>"}${category==="contact"?feedback:""}
         ${draft&&category==="contact"?form():`<button type="button" class="memory-button" data-state-edit="contact" ${locked||!contact?.supported(status.contact)?"disabled":""}>编辑联系安排</button>`}</section>
         ${pending&&category!=="contact"?`<section class="panel state-edit-panel"><h3>原设置请求待核对</h3>${feedback}</section>`:""}`;
@@ -450,7 +457,7 @@ window.CompanionStateEditor = (() => {
       // Plan mutations and presentation settings have separate drafts and panels.
       const presentationMarkup=showPresentation?`<section id="state-presentation" class="panel state-edit-panel"><header><h3>QQ 展示设置</h3></header>
         ${category==="presentation"?feedback:""}
-        ${draft&&category==="presentation"?form():`<button type="button" class="memory-button" data-state-edit="settings" ${locked||typeof status.edit_token!=="string"?"disabled":""}>编辑展示设置</button>`}
+        ${draft&&category==="presentation"?form():`<button type="button" class="memory-button" data-state-edit="settings" ${locked||typeof (windowSelected()?status.edit_token:status.role_edit_token)!=="string"?"disabled":""}>编辑展示设置</button>`}
         </section>`:"";
       const calendarMarkup=showPlanning?calendarEditor?.markup({items:plans,locked,escape:e})||"":"";
       const planningMarkup=showPlanning&&maintenance?.planningSummary?`<section id="state-planning" class="panel state-edit-panel state-planning-panel">${maintenance.planningSummary(status,e)}${category==="planning"&&draft?.kind!=="wording"?feedback:""}

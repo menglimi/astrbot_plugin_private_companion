@@ -205,6 +205,7 @@ window.CompanionSemanticPage = (() => {
     const heading=view==="expression"?"表情配图":group?"群词义与语义设置":"语义理解与学习素材";
     let html='<div class="settings-heading"><div><h2>'+heading+'</h2></div><span class="semantic-state '+escape(state.state)+'">'+escape({ready:"嵌入已就绪",lexical_fallback:"关键词回退",disabled:"已停用"}[state.state]||"状态待核对")+'</span></div>';
     if(message)html+='<p class="semantic-feedback'+(conflict?" semantic-conflict":"")+'" role="status">'+escape(message)+'</p>';
+    if(view==="expression")html+='<p class="semantic-feedback">表情使用、自动收录与检索策略：所有账号与角色共用。下方图库属于当前小屋角色。</p>';
     html+='<section class="semantic-section"><div class="semantic-heading"><h3>'+(view==="expression"?"表情使用与自动收录":"语义模型与学习")+'</h3></div><form id="semanticSettings">';
     html+='<div class="semantic-flags">'+currentViewFlags.map(([id,label])=>toggle(id,label,shown[id])).join("")+'</div>';
     const currentViewSelects=visibleSelects();
@@ -230,7 +231,8 @@ window.CompanionSemanticPage = (() => {
     const reactionEnabled=Math.max(0,Number(reactionCatalog.enabled||0));
     const reactionTotalValue=Number(reactionCatalog.total);
     const reactionTotal=Math.max(0,Number.isFinite(reactionTotalValue)&&reactionTotalValue>0?reactionTotalValue:reactionEnabled);
-    if(kinds.length)html+='<section class="semantic-section"><div class="semantic-heading"><h3>'+(view==="expression"?"表情库":"群词义素材")+'</h3><span>'+(view==="expression"?'可用 '+reactionEnabled+' / '+reactionTotal+' 项':'群词义 '+(state.catalog?.slang?.enabled||0)+' 项')+'</span></div>';
+    if(kinds.length)if(view==="expression")html+='<p class="semantic-feedback">表情使用、自动收录与检索策略：所有账号与角色共用。下方图库属于当前小屋角色。</p>';
+    html+='<section class="semantic-section"><div class="semantic-heading"><h3>'+(view==="expression"?"表情库":"群词义素材")+'</h3><span>'+(view==="expression"?'可用 '+reactionEnabled+' / '+reactionTotal+' 项':'群词义 '+(state.catalog?.slang?.enabled||0)+' 项')+'</span></div>';
     if(group&&state.sessions?.length)html+='<label class="semantic-session">群会话<select id="semanticSession" aria-label="群会话">'+state.sessions.map((id,index)=>'<option value="'+escape(id)+'" '+(id===state.session_id?'selected':'')+'>'+escape(id===target()?.group_id?'主群会话':'群会话 '+(index+1))+'</option>').join('')+'</select></label>';
     if(kinds.length&&!state.selection_ready)html+='<p class="memory-notice">当前群会话尚无可验证的成员输入；收到群消息后即可管理。</p>';
     else if(kinds.length) {

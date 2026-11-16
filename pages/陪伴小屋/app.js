@@ -65,7 +65,6 @@ let maintenancePane='';
 let dataPane='storage';
 let tokenTaskSettingsJump=0;
 let lifeWorkspaceTab='archive', replyPane='', learningTab='overview', navigationInitialized=false;
-const learningScopes={};
 let learningRecordFocus=null;
 let expressionModule='expression-text';
 let observationFilter='records', furnitureFilter='all', furnitureQuery='';
@@ -148,9 +147,9 @@ async function compressRoleAvatar(file){
 document.addEventListener('change',event=>{
   const picker=event.target.closest?.('[data-self-role]');
   if(!picker||typeof product.chooseRole!=='function')return;
-  const roleId=picker.value,current=product.role();
-  if(!roleId||roleId===(current?current.role_id:''))return;
-  const pending=product.chooseRole(roleId);
+  const key=picker.value;
+  if(!key)return;
+  const pending=product.chooseRoleKey(key);
   if(pending&&typeof pending.catch==='function'){
     pending.catch(()=>{toast('角色切换失败，请重新读取后重试');});
   }
@@ -306,6 +305,7 @@ function pageLeaveDecision(){
   if(weather===false)return false;
   return confirmDrafts();
 }
+product.setSelectionGuard?.(pageLeaveDecision);
 function restoreNavigationPath(){
   const href=currentNavigationHref();
   if(location.hash!==href){try{history.replaceState(null,'',href);}catch{}}
@@ -419,10 +419,7 @@ function syncFromHash(){
   const [next,tab,subtab]=hash.split('/');
   return navigate(next,tab,subtab,{replace:true,scroll:false});
 }
-/* 角色名徽标。它原先是个下拉，用来在示例角色 chengxi/wangshu 之间切换——
-   那是本地预览的遗留物。连上宿主后角色由会话对象决定，页面里再放一个
-   「切换角色」按钮只会让人以为可以改。所以现在它是纯展示徽标，
-   只在有真实角色（或预览示例角色）时显示名字，不提供切换。 */
+/* 页标题展示当前小屋角色；切换入口位于小屋与浮动卡片。 */
 function pageHeading(title,subtitle,extra='',showRole=false){return `<div class="page-heading"><div class="page-heading-copy"><div class="title-line"><h1>${escapeHTML(title)}</h1>${showRole?`<span class="role-badge">${roleName()}</span>`:''}</div>${subtitle?`<p class="subtitle">${escapeHTML(subtitle)}</p>`:''}</div>${extra}</div>`;}
 function publishCatalogSnapshot(){
   try{
@@ -845,6 +842,23 @@ function renderViewPanel(name){
 
 /* 面板整体换内容。加一个轻量的入场动画，让「换页」有落点；
    小屋不参与这个动画——它常在，动了会显得整页在跳。 */
+function roleContextMarkup(){
+  const role=product.role(),owner=product.roleTarget();
+  if(!role||!owner)return '';
+  const selected=product.selection();
+  const windows=product.targets().filter(target=>target.bot_id===owner.bot_id
+    &&target.roles.some(item=>item.role_id===role.role_id));
+  return `<section class="role-context" aria-label="当前小屋范围">
+    <div><span>小屋角色</span><strong>${escapeHTML(product.roleLabel(role))}</strong><small>${escapeHTML(product.accountLabel(owner))}</small></div>
+    <label>当前窗口<select data-role-window aria-label="当前角色的会话窗口"><option value=""${!selected.target_id?' selected':''}>未选择窗口</option>${windows.map(target=>`<option value="${escapeHTML(target.target_id)}"${selected.target_id===target.target_id?' selected':''}>${escapeHTML(product.targetLabel(target))}</option>`).join('')}</select></label>
+    ${product.selectionNotice?.()?`<p role="status">${escapeHTML(product.selectionNotice())}</p>`:''}
+  </section>`;
+}
+function updateRoleContext(){
+  const node=$('#shellPanel .role-context');
+  if(node)node.outerHTML=roleContextMarkup();
+}
+window.addEventListener('companion:scope-changed',updateRoleContext);
 function paintPanel(){
   const host=$('#shellPanel');
   if(!host)return;
@@ -862,6 +876,7 @@ function paintPanel(){
       :section?renderSectionPanel(section)
       :view?renderViewPanel(view)
       :renderHomePanel();
+    if(host.innerHTML.trim())host.insertAdjacentHTML('afterbegin',roleContextMarkup());
     host.hidden=!host.innerHTML.trim();
     if(fromRail&&!host.hidden){
       const heading=host.querySelector('.shell-panel-head h2');
@@ -1181,7 +1196,7 @@ function renderShell(){
      首页时它是场景，不该出现在 Tab 序列里。 */
   const scene=$('#stageScene');
   if(scene){
-    if(away){scene.tabIndex=0;scene.setAttribute('role','button');scene.setAttribute('aria-label','回到小屋');}
+    if(away){scene.tabIndex=0;scene.setAttribute('role','group');scene.setAttribute('aria-label','角色小屋卡片，按 Enter 返回小屋');}
     else{scene.removeAttribute('tabindex');scene.removeAttribute('role');scene.removeAttribute('aria-label');}
   }
   /* 布局刚变（缩略 ↔ 放大），canvas 尺寸要重新量。等下一帧是因为
@@ -3923,7 +3938,7 @@ function renderGovernanceOriginal(){
      角色时出现；选中后走产品层同一个 chooseRole，工作区会随之重新绑定。 */
   const selfRoleChoices=typeof product.roleChoices==='function'?product.roleChoices():[];
   const selfRoleSwitch=selfRoleChoices.length>1
-    ?`<label class="self-role-switch"><span>切换角色</span><select data-self-role aria-label="切换当前角色">${selfRoleChoices.map((item,index)=>`<option value="${escapeHTML(item.role.role_id)}"${item.role.role_id===(role?role.role_id:'')?' selected':''}>${escapeHTML(product.roleLabel(item.role,index))}</option>`).join('')}</select></label>`
+    ?`<label class="self-role-switch"><span>切换角色</span><select data-self-role aria-label="切换当前角色">${selfRoleChoices.map((item,index)=>`<option value="${escapeHTML(product.roleChoiceKey(item))}"${item.role.role_id===(role?role.role_id:'')&&item.target.bot_id===product.roleTarget()?.bot_id?' selected':''}>${escapeHTML(product.roleLabel(item.role,index)+' · '+product.accountLabel(item.target))}</option>`).join('')}</select></label>`
     :'';
   return `<div class="self-page${selfPane==='questionnaire'?' is-questionnaire-focus':''}">
     <section class="journal-cover" aria-label="当前角色">
@@ -4816,60 +4831,39 @@ function roleConfigApi(role){
   if(typeof direct==='string'&&direct.startsWith('/astrbot_plugin_private_companion/'))return direct;
   return '';
 }
+function matchesCottageRole(target,role){
+  const owner=product.roleTarget?.(),selected=product.role?.();
+  return Boolean(owner&&selected&&target.bot_id===owner.bot_id&&role.role_id===selected.role_id);
+}
 function learningChoices(key){
-  return (window.CompanionProduct?.targets?.()||[]).flatMap(target=>(target.roles||[])
-    .filter(role=>learningRoleApi(target,role,key))
+  return (product.targets?.()||[]).flatMap(target=>(target.roles||[])
+    .filter(role=>matchesCottageRole(target,role)&&learningRoleApi(target,role,key))
     .map(role=>({target,role:{...role,bot_id:target.bot_id}})));
 }
 function learningScope(key){
   const choices=learningChoices(key);
-  if(!choices.length)return null;
-  let selected=learningScopes[key];
-  if(!selected||!choices.some(item=>item.target.target_id===selected.target_id&&item.role.role_id===selected.role_id)){
-    const first=choices[0];
-    selected=learningScopes[key]={target_id:first.target.target_id,role_id:first.role.role_id};
-  }
-  const found=choices.find(item=>item.target.target_id===selected.target_id&&item.role.role_id===selected.role_id);
-  return found?{...found,key:JSON.stringify([key,found.target.target_id,found.role.role_id])}:null;
+  const selection=key==='expression'?product.roleSelection?.():product.selection();
+  const found=choices.find(item=>item.target.target_id===selection?.target_id&&item.role.role_id===selection?.role_id);
+  return found?{...found,key:JSON.stringify([key,found.target.bot_id,found.target.target_id,found.role.role_id])}:null;
 }
 function learningScopeControls(key,label){
   const choices=learningChoices(key),selected=learningScope(key);
-  if(!choices.length)return `<div class="learning-hub-empty" role="status">暂无可读取的${escapeHTML(label)}范围。</div>`;
-  const product=window.CompanionProduct;
-  const targets=[...new Map(choices.map(item=>[item.target.target_id,item.target])).values()];
-  const targetLabel=target=>product?.targetLabel?.(target)||product?.subjectLabel?.(target)||target.target_id;
-  const roleLabel=(role,index)=>product?.roleLabel?.(role,index)||role.role_name||role.role_id;
-  if(key==='expression'){
-    const roles=[...new Map(choices.map(item=>[item.role.role_id,item.role])).values()];
-    return `<div class="learning-scope-controls"><label><span>角色</span><select data-learning-scope-role="expression" aria-label="表达学习角色">${roles.map((role,index)=>`<option value="${escapeHTML(role.role_id)}" ${role.role_id===selected?.role.role_id?'selected':''}>${escapeHTML(roleLabel(role,index))}</option>`).join('')}</select></label></div>`;
-  }
-  return `<div class="learning-scope-controls" aria-label="${escapeHTML(label)}范围">
-    <label><span>对象</span><select data-learning-scope-target="${escapeHTML(key)}" aria-label="筛选对象">
-      ${targets.map(target=>`<option value="${escapeHTML(target.target_id)}" ${target.target_id===selected?.target.target_id?'selected':''}>${escapeHTML(targetLabel(target))}</option>`).join('')}
-    </select></label>
-    <label><span>角色</span><select data-learning-scope-role="${escapeHTML(key)}" aria-label="筛选角色">
-      ${(selected?.target.roles||[]).filter(role=>learningRoleApi(selected.target,role,key))
-        .map((role,index)=>`<option value="${escapeHTML(role.role_id)}" ${role.role_id===selected?.role.role_id?'selected':''}>${escapeHTML(roleLabel(role,index))}</option>`).join('')}
-    </select></label>
-  </div>`;
+  const role=product.role?.(),owner=product.roleTarget?.();
+  const roleLabel=role?product.roleLabel(role)+' · '+product.accountLabel(owner):'未选择角色';
+  if(key==='expression')return `<p class="learning-record-scope">${escapeHTML(roleLabel)} · 本角色各窗口的表达学习与表情库</p>`;
+  return `<div class="learning-scope-controls" aria-label="${escapeHTML(label)}范围"><span>${escapeHTML(roleLabel)}</span>
+    <label><span>会话窗口</span><select data-learning-scope-target="${escapeHTML(key)}" aria-label="筛选当前角色的会话窗口"><option value="">未选择窗口</option>
+      ${choices.map(item=>`<option value="${escapeHTML(item.target.target_id)}"${item.target.target_id===selected?.target.target_id?' selected':''}>${escapeHTML(product.targetLabel(item.target))}</option>`).join('')}
+    </select></label></div>`;
 }
 function learningRoleControls(key,label,controls){
-  if(!learningScope(key))return '';
-  const content=controls||learningScopeControls(key,label);
-  return `<section class="learning-record-scope" aria-label="${escapeHTML(label)}"><h2>${escapeHTML(label)}</h2>${content}</section>`;
+  return `<section class="learning-record-scope" aria-label="${escapeHTML(label)}"><h2>${escapeHTML(label)}</h2>${controls||learningScopeControls(key,label)}</section>`;
 }
 function changeLearningScope(key,field,value){
-  const choices=learningChoices(key);
-  if(field==='target'){
-    const first=choices.find(item=>item.target.target_id===value);
-    if(!first)return false;
-    learningScopes[key]={target_id:first.target.target_id,role_id:first.role.role_id};
-    return true;
-  }
-  const found=choices.find(item=>(key==='expression'||item.target.target_id===learningScopes[key]?.target_id)&&item.role.role_id===value);
-  if(!found)return false;
-  learningScopes[key]={target_id:found.target.target_id,role_id:found.role.role_id};
-  return true;
+  if(field!=='target')return false;
+  if(!value)return product.clearWindow();
+  const found=learningChoices(key).find(item=>item.target.target_id===value);
+  return found?product.choose(found.target.target_id,found.role.role_id):false;
 }
 function learningRecordLabel(product,target,role,index){
   const raw=product.targetLabel?.(target)||product.subjectLabel?.(target)||target.target_id;
@@ -4883,7 +4877,7 @@ function learningReviewSources({includeGroups=false,scopeKey=null}={}){
   const sources=(product?.targets?.()||[]).flatMap(target=>{
     const group=target.scope_kind==='group';
     if(group&&!includeGroups)return [];
-    return (target.roles||[]).filter(role=>typeof role.reply_api==='string'&&role.reply_api
+    return (target.roles||[]).filter(role=>matchesCottageRole(target,role)&&typeof role.reply_api==='string'&&role.reply_api
       &&(group||typeof role.growth_api==='string'&&role.growth_api))
       .map((role,index)=>({api:role.growth_api||'',growthApi:role.growth_api||'',replyApi:role.reply_api,
         key:JSON.stringify([target.target_id,role.role_id]),target,role,
@@ -4897,7 +4891,7 @@ function learningReviewSources({includeGroups=false,scopeKey=null}={}){
 function learningExpressionSources(){
   const product=window.CompanionProduct;
   const sources=(product?.targets?.()||[]).flatMap(target=>(target.roles||[])
-    .filter(role=>typeof role.reply_api==='string'&&role.reply_api)
+    .filter(role=>matchesCottageRole(target,role)&&typeof role.reply_api==='string'&&role.reply_api)
     .map((role,index)=>({key:JSON.stringify([target.target_id,role.role_id]),
       scopeKey:JSON.stringify([target.target_id,role.role_id]),replyApi:role.reply_api,target,role,
       label:learningRecordLabel(product,target,role,index)})));
@@ -4905,9 +4899,12 @@ function learningExpressionSources(){
   return selected?sources.filter(item=>item.role.role_id===selected.role.role_id
     &&item.target.bot_id===selected.target.bot_id):[];
 }
-window.addEventListener('companion:learning-open',event=>{
-  learningRecordFocus={target_id:event.detail?.target_id,role_id:event.detail?.role_id,
-    growth_id:event.detail?.growth_id};
+window.addEventListener('companion:learning-open',async event=>{
+  const detail=event.detail||{};
+  const source=learningChoices('growth').find(item=>item.target.target_id===detail.target_id
+    &&item.role.role_id===detail.role_id);
+  if(!source||await product.choose(source.target.target_id,source.role.role_id,true)===false)return;
+  learningRecordFocus={target_id:detail.target_id,role_id:detail.role_id,growth_id:detail.growth_id};
   navigate('manage','learning','chain');
 });
 /* 策略按当前角色保存；记录页按来源汇总，不把某个私聊当作策略归属。 */
@@ -4946,7 +4943,7 @@ function renderLearningPage(){
   }else{
     content=learningReviewSources({scopeKey:'growth'}).length
       ?`${recordControls}<section class="learning-chain-top" aria-label="成长记录工作台"><section id="learningWorkspace" class="learning-workspace" aria-label="成长记录与进展"></section></section>`
-      :`<div class="learning-hub-empty" role="status">暂无成长记录</div>`;
+      :`${recordControls}<div class="learning-hub-empty" role="status">请选择当前角色的私聊窗口以查看成长记录。</div>`;
   }
   return `<div class="learning-hub">${nav}<header class="learning-hub-head"><h1>学习与反思 <span>· ${escapeHTML(titles[learningTab]||'总览')}</span></h1></header><section class="learning-hub-panel" aria-label="${escapeHTML(titles[learningTab]||'总览')}">${content}</section></div>`;
 }
@@ -5128,7 +5125,7 @@ async function loadContentWorks(){
   if(!host)return;
   host.innerHTML='<p class="muted-text">正在读取作品列表…</p>';
   try{
-    const selection=product.selection?.()||{};
+    const selection=product.roleSelection?.()||{};
     if(!selection.target_id||!selection.role_id)throw Object.assign(new Error('works_request_invalid'),{code:'works_request_invalid'});
     const data=await product.request('GET','works',{target_id:selection.target_id,role_id:selection.role_id});
     if(!data||typeof data!=='object')throw Object.assign(new Error('works_unavailable'),{code:'works_unavailable'});
@@ -5868,11 +5865,12 @@ document.addEventListener('change',event=>{
     return;
   }
   if(el.dataset.learningScopeTarget){
-    if(changeLearningScope(el.dataset.learningScopeTarget,'target',el.value))paintPanel();
+    void changeLearningScope(el.dataset.learningScopeTarget,'target',el.value);
     return;
   }
-  if(el.dataset.learningScopeRole){
-    if(changeLearningScope(el.dataset.learningScopeRole,'role',el.value))paintPanel();
+  if(el.matches?.('[data-role-window]')){
+    const changing=el.value?product.choose(el.value,product.selection().role_id):product.clearWindow();
+    void changing.then(ok=>{if(!ok)updateRoleContext();});
     return;
   }
   /* 发说说的主题与场景：都是「选择」而不是「输入」，所以走 change。

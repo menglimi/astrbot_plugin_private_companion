@@ -32,11 +32,14 @@ function status(token = "revision-1", timezone = "Asia/Shanghai", locationName =
   };
 }
 
-function harness() {
+function harness(windowKind="private") {
   const requests = [];
   const window = {
     CompanionProduct: {hosted:() => true, scopeKey:() => "role-1",
-      role:() => ({perception_native_api:"/astrbot_plugin_private_companion/perception-native"}),
+      selection:()=>({target_id:windowKind==="none"?null:"target-1",bot_id:"bot-1",role_id:"role-1"}),
+      target:()=>windowKind==="none"?null:({target_id:"target-1",bot_id:windowKind==="other_bot"?"bot-2":"bot-1",scope_kind:windowKind==="group"?"group":"private"}),
+      windowRole:()=>({role_id:"role-1",perception_native_api:"/astrbot_plugin_private_companion/perception-native"}),
+      role:() => ({role_id:"role-1",perception_native_api:"/astrbot_plugin_private_companion/perception-native"}),
       /* 页面取桥先问 bridgeNow()，没有再 await bridgeFor()。 */
       bridgeNow:() => window.AstrBotPluginPage,
       bridgeFor:() => ({then:resolve => resolve(window.AstrBotPluginPage)})},
@@ -93,6 +96,29 @@ test("news status is diagnostic only and leaves one configuration editor below",
   assert.doesNotMatch(news.innerHTML, /data-native-field/);
   assert.doesNotMatch(news.innerHTML, /<form/);
   page.unmount();
+});
+
+for(const windowKind of ["none","group","other_bot"])test(`native perception keeps role settings but hides private contact data for ${windowKind}`,async()=>{
+  const {requests,calendar,news,page}=harness(windowKind);
+  const current=status();
+  current.contact.dates='[{"label":"另一个窗口的日期"}]';
+  requests[0].resolve({status:"ok",data:current});
+  await flush();
+  assert.match(calendar.innerHTML,/提供农历日期/);
+  assert.match(news.innerHTML,/请先选择当前角色的私聊窗口/);
+  assert.doesNotMatch(news.innerHTML,/橘鸦AI早报|data-native-action="diagnose"/);
+  let snapshot;
+  const unsubscribe=page.subscribe(value=>{snapshot=value;});
+  assert.equal(snapshot.windowRequired,true);
+  assert.deepEqual(JSON.parse(JSON.stringify(snapshot.contact)),{});
+  assert.deepEqual(JSON.parse(JSON.stringify(snapshot.news)),{});
+  news.click("diagnose");
+  assert.equal(requests.length,1,"no diagnostic request may use the representative private window");
+  calendar.toggle("lunar_enabled",false);calendar.submit();
+  assert.equal(requests[1].body.section,"model");
+  const saved=status("revision-2");saved.model.settings.lunar_enabled=false;
+  requests[1].resolve({status:"ok",data:{status:saved,result:{}}});await flush();
+  unsubscribe();page.unmount();
 });
 
 test("news diagnostics distinguish a failed latest attempt from the last success", async () => {

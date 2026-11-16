@@ -47,6 +47,8 @@ window.CompanionWorkbench = (() => {
   const CHOICES = new Map();
 
   const errors = {
+    configuration_window_selection_required: "此设置包含按窗口或用户关系生效的内容。请先在上方选择窗口，再查看和保存。",
+    configuration_window_selection_mismatch: "此设置对应的私聊与所选窗口不同。请在上方选择需要配置的私聊窗口后编辑。",
     configuration_revision_conflict: "配置已经更新。草稿已保留，读取新版本后再核对。",
     configuration_request_invalid: "请求格式有误，请刷新后重试。",
     configuration_target_unavailable: "所选会话当前不可用，请在账号与会话中重新选择。",
@@ -1025,15 +1027,14 @@ window.CompanionWorkbench = (() => {
          ? `保存结果尚未确认（${s.pendingReason}）。可能已经写入；核对会沿用同一个操作标识，不会重复保存。`
          : "保存结果尚未确认。可能已经写入；核对会沿用同一个操作标识，不会重复保存。")
        : "";
-     const scopeLabel = s.status
-      ? (container.scopeNote || (s.status.scope === "installation" ? "插件安装全局"
-        : s.status.scope === "role" ? "安装与角色"
-        /* 默认写窗口、但角色层同样可写的组（技能领域、日记与作息）：值是角色共享的，
-           只有本会话覆盖才落在窗口层，所以不能只标「当前会话」。
-           角色层之上还有关系层的组（主动联系偏好）由分区自己声明 scopeNote：
-           默认这句会说成「角色共享」，漏掉真正管着这段关系的那一层。 */
-        : (s.status.layers || []).includes("role") ? "角色共享 · 本会话可覆盖" : "当前会话"))
-      : "";
+    const writeLayers = s.status ? [...new Set(Object.values(container.fields)
+      .filter(item => !item.editable.length || item.editable.includes(item.writeLayer || container.writeLayer))
+      .map(item => item.writeLayer || container.writeLayer))] : [];
+    const saveScopes = {installation:"全局默认设置", role:"当前角色默认",
+      relationship:"当前角色与所选用户的关系设置", window:"当前窗口覆盖"};
+    const scopeLabel = s.status ? (writeLayers.length ? writeLayers : [container.writeLayer])
+      .map(layer => saveScopes[layer] || "当前配置").join("、")
+      + (container.scopeNote ? " · " + container.scopeNote : "") : "";
     const apply = s.status?.apply_mode === "next_task" ? "下一个任务生效" : "立即生效";
     const heading = journal ? "" : `<header class="wb-card-head"><div class="wb-card-copy">`
       + `${titleAbove === container.title ? "" : `<h3>${e(container.title)}</h3>`}${container.note ? `<p>${e(container.note)}</p>` : ""}</div>`
@@ -1081,11 +1082,9 @@ window.CompanionWorkbench = (() => {
       visibility = {}, listFields = {}, chipOptions = {}, navigationLimit = 8,
       presentation = "", sectionTabPrefix = "", initialSection = null,
       mount: mountPoint, endpoint, order = null, pollMs = 0, query = null,
-      prefetch = null,
+      prefetch = null, unavailable = "", statusRestriction = null,
       audit = null, onStatus = null, scopeKey: scopeKeyOverride = null,
-      /* 分组用一层继承链，但「值是谁共享的」不一定等于链上有没有角色层：
-         主动联系偏好还有关系层，卡片右上角要说清这一点，所以允许分区声明自己的
-         生效范围文案；不声明时仍按链自动判断。 */
+      /* 可选补充说明；保存范围始终由后端 scope 和字段 write_layer 确定。 */
       scopeNote = "",
       /* 有分区的读取键不是 `settings`、保存端点不是 `/configure`、
          令牌字段与重置字段也各有叫法。这些在 spec 里声明，不一处分叉一份内核。
@@ -1270,7 +1269,7 @@ window.CompanionWorkbench = (() => {
       return {
         group, title, note, order: names, fields, layers, groups, scopeNote, navigationLimit,
         presentation, sectionTabPrefix,
-        writeLayer: layers[layers.length - 1],
+        writeLayer: status.scope || layers[layers.length - 1],
         /* 只有声明了 resetKey 的分区才提供「全部恢复继承」：
            没有这条协议的分区点了会写出错误请求。 */
         resettable: Boolean(resetKey),
@@ -2341,6 +2340,9 @@ window.CompanionWorkbench = (() => {
     }
 
     async function refresh(options = {}) {
+      if (unavailable) {
+        state.denied = true; state.loading = false; state.notice = unavailable; paint(); return;
+      }
       /* 已经有一次读取在途时不再叠加：挂载与显式刷新都会走到这里，
          而重复请求既浪费往返，也会让后到的旧快照覆盖新快照。 */
       if (state.loading || state.busy || (state.pending && state.status)) return;
@@ -2370,7 +2372,8 @@ window.CompanionWorkbench = (() => {
             /* /config multiplexes sections for the page's selected target; without
                this the server would edit the active private profile while the page
                shows a group. Other workbench routes identify their group in the path. */
-            const selection = requestSection ? (window.CompanionProduct?.selection?.() || {}) : {};
+            const selection = requestSection && endpoint === "/astrbot_plugin_private_companion/config"
+              ? (window.CompanionProduct?.selection?.() || {}) : {};
             const targetQuery = selection.target_id
               ? {target_id: selection.target_id, ...(selection.role_id ? {role_id: selection.role_id} : {})} : null;
             payload = await api("GET", endpoint, null,
@@ -2399,6 +2402,8 @@ window.CompanionWorkbench = (() => {
             || typeof token !== "string" || token.length !== 64) {
           throw error("invalid_response");
         }
+        const restriction = statusRestriction?.(value);
+        if (restriction) throw error(restriction);
         const nextContainer = buildContainer(value);
         /* 读取侧的令牌名可能与发送侧不同（见 writeTokenKey）。存进 status 时
            统一成 edit_token，后续只读这一个名字；发送时再翻回 writeTokenKey。 */
@@ -2488,6 +2493,10 @@ window.CompanionWorkbench = (() => {
     }
 
     async function save(retry) {
+      const restriction = state.status && statusRestriction?.(state.status);
+      if (restriction) {
+        state.denied = true; state.notice = localized(error(restriction)); state.bad = false; paint(); return;
+      }
       if (state.busy || state.loading || state.denied) return;
        if (!retry) {
          if (state.pending) { state.notice = ""; state.bad = false; paint(); return; }
@@ -2562,7 +2571,7 @@ window.CompanionWorkbench = (() => {
            reply/expression/memory routes identify their group in the path and
            reject unknown body keys. Keep the discriminator opt-in. */
         if (requestSection) body.section = request.section || requestSection;
-        if (requestSection) {
+        if (requestSection && endpoint === "/astrbot_plugin_private_companion/config") {
           const selection = window.CompanionProduct?.selection?.() || {};
           if (selection.target_id) body.target_id = selection.target_id;
           if (selection.role_id) body.role_id = selection.role_id;
@@ -2657,6 +2666,8 @@ window.CompanionWorkbench = (() => {
     }
 
     async function saveField(name, value) {
+      const restriction = state.status && statusRestriction?.(state.status);
+      if (restriction) return {state:"unavailable", message:localized(error(restriction))};
       if (state.pending) return {state: "unknown", message: state.pendingReason || state.pending.pending_reason || ""};
       if (state.busy || state.loading || state.denied || !state.status) return {state: "unavailable"};
       if (!state.draft || !state.container?.fields[name]) return {state: "unavailable"};
@@ -2699,6 +2710,7 @@ window.CompanionWorkbench = (() => {
           + `<span>请从已登录的 AstrBot 管理界面打开陪伴小屋，连接 V2 运行实例后调整这些设置。</span></p>`;
         return;
       }
+      if (unavailable) { void refresh(); return; }
       if (typeof endpoint !== "string" || !endpoint.startsWith(PREFIX)) {
         const root = mountPoint();
         if (root) root.innerHTML = `<p class="wb-notice is-error">${icon("alert-circle")}`

@@ -16,9 +16,9 @@ window.CompanionGameAccess = (() => {
   let root, path = "", scope = "", status, generation = 0, busy = false, notice = "";
   const current = ticket => ticket === generation && root?.isConnected && scope === product.scopeKey();
   function privateChoices() {
-    const roleId = product.selection?.().role_id;
+    const roleId = product.selection?.().role_id,botId=product.selection?.().bot_id;
     return (product.targets?.() || []).filter(target => target.scope_kind === "private"
-      && target.roles?.some(role => role.role_id === roleId));
+      && (!botId||target.bot_id===botId) && target.roles?.some(role => role.role_id === roleId));
   }
   function targetLabel(target) {
     return [product.accountLabel?.(target), product.targetLabel?.(target)].filter(Boolean).join(" · ");
@@ -95,7 +95,10 @@ window.CompanionGameAccess = (() => {
     const ticket = generation, node = root, roleId = product.selection().role_id;
     busy = true; notice = "正在切换私聊窗口…"; render();
     try {
-      await product.choose(choice.target_id, roleId, true);
+      if (await product.choose(choice.target_id, roleId, true) === false) {
+        if (ticket === generation && root === node) { busy = false; notice = ""; render(); }
+        return;
+      }
       if (ticket === generation && node?.isConnected && root === node) mount(node);
     } catch (error) {
       if (ticket === generation && root === node) {
@@ -112,7 +115,7 @@ window.CompanionGameAccess = (() => {
   function mount(node) {
     unmount(); root = node; if (!root) return;
     scope = product.scopeKey();
-    const base = product.role()?.game_access_api;
+    const base = (product.windowRole ? product.windowRole() : product.role())?.game_access_api;
     path = base ? product.relative(base) : "";
     root.addEventListener("click", click);
     root.addEventListener("change", change);

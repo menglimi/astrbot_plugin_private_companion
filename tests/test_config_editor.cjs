@@ -158,8 +158,8 @@ const NEW_KINDS = {
   },
   life: {
     group: 'role.life',
-    scope: 'role',
-    layers: ['installation', 'role'],
+    scope: 'window',
+    layers: ['installation', 'role', 'window'],
     editable: Object.fromEntries(['enabled', 'diary_enabled', 'diary_time', 'timezone',
       'sleep_enabled', 'sleep_time', 'sleep_timezone', 'sleep_variation_minutes', 'sleep_window_minutes', 'sleep_minutes',
       'reading_enabled', 'derive_enabled', 'diary_style_prompt', 'dream_theme_candidates',
@@ -168,7 +168,7 @@ const NEW_KINDS = {
       'rest_reply_llm_threshold', 'rest_reply_active_windows', 'rest_reply_awake_grace_minutes',
       'enable_rest_backlog_reply', 'rest_backlog_max_messages'].map(name => [name,
       ['sleep_enabled', 'sleep_time', 'sleep_timezone', 'sleep_variation_minutes', 'sleep_window_minutes', 'sleep_minutes'].includes(name)
-        ? ['role', 'window'] : ['window']])),
+        ? ['role'] : ['window']])),
     settings: {enabled: false, diary_enabled: true, diary_time: '23:50', timezone: 'Asia/Shanghai',
       sleep_enabled: false, sleep_time: '00:30', sleep_timezone: 'Asia/Shanghai', sleep_variation_minutes: 20, sleep_window_minutes: 120, sleep_minutes: 480,
       reading_enabled: false, derive_enabled: true,
@@ -272,6 +272,7 @@ function newSection(kind, changes = {}, token = TOKEN('a')) {
     const editable = (spec.editable || {})[name] || editableLayers;
     const entry = {kind: type, default: spec.settings[name], apply_mode: 'immediate',
       editable_layers: editable};
+    if (kind === 'life') entry.write_layer = editable[0];
     if (low !== undefined) Object.assign(entry, {minimum: low, maximum: high});
     return [name, entry];
   }));
@@ -341,7 +342,8 @@ function harness(kinds = ['quota', 'image_review'], views = {}, endpointOverride
     CompanionProduct: {
       hosted: () => true, role: () => ({role_id: 'role-a', reply_api: PREFIX + 'reply',
         config_api: options.configApi}),
-      roleTarget: () => ({bot_id: 'bot-a'}),
+      roleTarget: () => ({bot_id: 'bot-a', scope_kind:options.roleScope || 'private'}),
+      ...(Object.hasOwn(options, 'selection') ? {selection:() => options.selection} : {}),
       acquaintanceDirectory: options.people ? async () => ({persons: options.people}) : undefined,
       identity: () => ({installation_id: 'inst', operator_id: 'admin'}),
       scopeKey: () => options.scopeKey || 'scope-a',
@@ -550,14 +552,18 @@ test('the server publishes the inheritance chain and per-field provenance', asyn
   assert.equal(instance.state.container.fields.group_max_daily.maximum, 100);
 });
 
-test('role life defaults keep window-only fields disabled in the role editor', async () => {
+test('life settings expose their role and window write layers independently', async () => {
   const harnessed = harness(['life']);
   const [instance] = await loaded(harnessed, ['life']);
-  assert.equal(instance.state.container.writeLayer, 'role');
-  assert.deepEqual(plain(instance.state.container.fields.sleep_enabled.editable), ['role', 'window']);
+  assert.equal(instance.state.container.writeLayer, 'window');
+  assert.equal(instance.state.container.fields.sleep_enabled.writeLayer, 'role');
+  assert.equal(instance.state.container.fields.diary_enabled.writeLayer, 'window');
+  assert.deepEqual(plain(instance.state.container.fields.sleep_enabled.editable), ['role']);
   assert.deepEqual(plain(instance.state.container.fields.diary_enabled.editable), ['window']);
-  assert.match(harnessed.painted.life, /data-wb-field="diary_enabled"[^>]* disabled/);
+  assert.doesNotMatch(harnessed.painted.life, /data-wb-field="diary_enabled"[^>]* disabled/);
   assert.match(harnessed.painted.life, /data-wb-field="sleep_enabled"[^>]*>/);
+  assert.match(harnessed.painted.life, /class="wb-scope">[^<]*当前角色默认/);
+  assert.match(harnessed.painted.life, /class="wb-scope">[^<]*当前窗口覆盖/);
 });
 
 test('a section the route never answered is refused instead of half-applied', async () => {
@@ -1684,8 +1690,8 @@ test('the library section separates the switches from the bounds they govern', a
   assert.match(painted, /data-wb-group="preference"/);
   assert.match(painted, /data-wb-group="triggers"/);
   assert.match(painted, /关闭书架后，下面各项都不起作用/);
-  /* 书架按角色保存，所以标签是「安装与角色」而不是「当前会话」。 */
-  assert.match(painted, /安装与角色/);
+  /* 书架按角色保存，所以标签是「当前角色默认」而不是「当前会话」。 */
+  assert.match(painted, /当前角色默认/);
   assert.doesNotMatch(painted, /当前会话/);
   /* 间隔先于概率这条顺序必须在页面上说清，否则用户会把概率设成 1 却等不到开口。 */
   assert.match(painted, /先看最短间隔，再看概率/);
@@ -1711,7 +1717,7 @@ test('the wardrobe section separates its switches, ceilings and the operator wor
   assert.match(painted, /data-wb-group="material"/);
   assert.match(painted, /data-wb-group="words"/);
   assert.match(painted, /关闭后既不进提示词，也不接受新的识图入库/);
-  assert.match(painted, /安装与角色/);
+  assert.match(painted, /当前角色默认/);
   assert.doesNotMatch(painted, /当前会话/);
   /* 条目本体在数据表里，页面只出现开关与上限：一个字段都不能丢。 */
   const container = harnessed.editors.state.instances[0].state.container;
@@ -1734,7 +1740,7 @@ test('the reference section keeps the daily outfit switch independent', async ()
   assert.match(painted, /不等于同意每天都出一张穿搭图/);
   assert.match(painted, /允许群聊使用参考图/);
   assert.match(painted, /配置里不存文件路径/);
-  assert.match(painted, /安装与角色/);
+  assert.match(painted, /当前角色默认/);
   const container = harnessed.editors.state.instances[0].state.container;
   const rendered = plain(container.groups.flatMap(group => group.fields));
   assert.deepEqual(rendered.sort(), plain(Object.keys(NEW_KINDS['photo.reference'].settings)).sort());
@@ -1754,7 +1760,7 @@ test('the skill group is role-shared and has no window override', async () => {
   assert.ok(painted, 'the skills section must paint into its own host, keys: '
     + JSON.stringify(Object.keys(harnessed.painted)));
   /* This policy is shared by the selected role and writable at its role layer. */
-  assert.match(painted, /安装与角色/, 'scope label was: '
+  assert.match(painted, /当前角色默认/, 'scope label was: '
     + (/<span class="wb-scope">([^<]*)</.exec(painted) || [])[1]);
   assert.match(painted, /<h3>技能领域<\/h3>/);
   assert.match(painted, /data-layer="role"/);
@@ -1779,7 +1785,7 @@ test('expression learning exposes separate private and group cadence with a shar
   assert.match(painted, /私聊学习扫描间隔/);
   assert.match(painted, /群聊学习扫描间隔/);
   assert.match(painted, /角色群聊每日学习批次/);
-  assert.match(painted, /安装与角色/);
+  assert.match(painted, /当前角色默认/);
   const rendered = plain(harnessed.editors.state.instances[0].state.container.groups
     .flatMap(group => group.fields)).sort();
   assert.deepEqual(rendered, Object.keys(NEW_KINDS['expression.learning'].settings).sort());
@@ -2465,7 +2471,7 @@ test('the self journal reflows to its container width and wraps long controls', 
 test('the self page can switch the current role in place', () => {
   assert.match(app, /const selfRoleChoices=typeof product\.roleChoices==='function'\?product\.roleChoices\(\):\[\]/);
   assert.match(app, /data-self-role aria-label="切换当前角色"/);
-  assert.match(app, /product\.chooseRole\(roleId\)/);
+  assert.match(app, /product\.chooseRoleKey\(key\)/);
   assert.match(selfStyle, /\.self-role-switch\{/);
   assert.match(selfStyle, /\.self-role-switch select\{/);
 });
@@ -2483,4 +2489,102 @@ test('the live self profile uses journal panels and its chapter navigation stays
   assert.match(workbench, /lunarDateIndex/);
   assert.match(workbench, /这个年份没有对应的农历日期/);
   assert.doesNotMatch(app, /selfwriteCanvas|data-selfwrite-source|角色自述/);
+});
+
+
+test('without a selected window, role settings remain editable and window settings have no form or save path', async () => {
+  const h = harness(['quota', 'image_review'], {}, '', {selection:{target_id:null,role_id:'role-a'}});
+  const [roleEditor, windowEditor] = await loaded(h);
+  assert.equal(roleEditor.state.status.scope, 'role');
+  assert.equal(roleEditor.state.denied, false);
+  assert.equal(windowEditor.state.status, null);
+  assert.equal(windowEditor.state.denied, true);
+  assert.match(h.painted.image_review, /请先在上方选择窗口/);
+  assert.doesNotMatch(h.painted.image_review, /data-wb-field|data-wb-action="save"/);
+  assert.equal((await h.editors.saveField('image_review', 'group_nsfw_image_review_mode', 'dual')).state, 'unavailable');
+  assert.equal(h.requests.filter(request => request.method === 'POST').length, 0);
+});
+
+test('a mixed card with per-field window writes requires an explicit window even when its section scope is role', async () => {
+  const response = payload('quota');
+  response.sections.quota.fields = {...response.sections.quota.fields,
+    group_max_daily:{...QUOTA_FIELDS.group_max_daily, write_layer:'window', editable_layers:['role','window']}};
+  const h = harness(['quota'], {}, '', {selection:{target_id:null,role_id:'role-a'}});
+  const [editor] = await loaded(h, ['quota'], {quota:{response}});
+  assert.equal(editor.state.denied, true);
+  assert.equal(editor.state.status, null);
+  assert.match(h.painted.quota, /按窗口或用户关系生效/);
+  assert.equal((await editor.saveField('private_owner_max_daily', 5)).state, 'unavailable');
+  assert.equal(h.requests.filter(request => request.method === 'POST').length, 0);
+});
+
+test('relationship writes require a selected window and role-inherited disabled window fields do not', async () => {
+  const relation = payload('image_review'); relation.sections.image_review.scope = 'relationship';
+  relation.sections.image_review.fields = Object.fromEntries(Object.entries(REVIEW_FIELDS)
+    .map(([name, field]) => [name, {...field, editable_layers:['role','relationship','window']}]));
+  const role = payload('quota');
+  role.sections.quota.fields = {...role.sections.quota.fields,
+    group_max_daily:{...QUOTA_FIELDS.group_max_daily, editable_layers:['window']}};
+  const h = harness(['image_review', 'quota'], {}, '', {selection:{target_id:null,role_id:'role-a'}});
+  const [relationship, quota] = await loaded(h, ['image_review', 'quota'],
+    {image_review:{response:relation}, quota:{response:role}});
+  assert.equal(relationship.state.status, null);
+  assert.equal(quota.state.status.scope, 'role');
+  assert.equal(quota.state.denied, false);
+  assert.match(h.painted.quota, /data-wb-field="group_max_daily"[^>]* disabled/);
+});
+
+test('mixed life settings require an explicit window even when only role sleep fields are shown', async () => {
+  const h = harness(['life'], {life:{order:['sleep_enabled','sleep_time']}}, '',
+    {selection:{target_id:null,role_id:'role-a'}});
+  const [editor] = await loaded(h, ['life']);
+  assert.equal(editor.state.status, null);
+  assert.equal(editor.state.denied, true);
+  assert.match(h.painted.life, /请先在上方选择窗口/);
+  assert.equal((await editor.saveField('sleep_enabled', true)).state, 'unavailable');
+  assert.equal(h.requests.filter(request => request.method === 'POST').length, 0);
+});
+
+test('a selected group cannot edit window fields through a representative private route', async () => {
+  const endpoint = PREFIX + 'targets/private-a/roles/role-a/config';
+  const h = harness(['image_review'], {}, '', {configApi:endpoint,
+    selection:{target_id:'group-a',role_id:'role-a'}});
+  const [editor] = await loaded(h, ['image_review'], {image_review:{route:'targets/private-a/roles/role-a/config'}});
+  assert.equal(editor.state.status, null);
+  assert.match(h.painted.image_review, /对应的私聊与所选窗口不同/);
+  assert.equal((await editor.saveField('group_nsfw_image_review_mode', 'dual')).state, 'unavailable');
+});
+
+test('losing the explicit window after a read cannot save through the old representative route', async () => {
+  const options = {selection:{target_id:'private-a',role_id:'role-a'},
+    configApi:PREFIX+'targets/private-a/roles/role-a/config'};
+  const h = harness(['image_review'], {}, '', options);
+  const [editor] = await loaded(h, ['image_review'], {image_review:{route:'targets/private-a/roles/role-a/config'}});
+  assert.equal(editor.state.status.scope, 'window');
+  options.selection = {target_id:null,role_id:'role-a'};
+  assert.equal((await editor.saveField('group_nsfw_image_review_mode', 'dual')).state, 'unavailable');
+  assert.equal(h.requests.filter(request => request.method === 'POST').length, 0);
+});
+
+test('group-only roles show unavailable configuration sections without sending requests', async () => {
+  const endpoint = PREFIX + 'targets/group-a/roles/role-a/config';
+  const h = harness(['life', 'quota'], {}, endpoint, {roleScope:'group',configApi:endpoint,
+    selection:{target_id:null,role_id:'role-a'},batchRead:true});
+  h.editors.paint(); await h.editors.read(); await drains();
+  assert.equal(h.requests.length, 0);
+  assert.match(h.painted.life, /只有群聊入口/);
+  assert.match(h.painted.quota, /尚无角色默认接口/);
+  assert.equal(h.window.CompanionConfigEditors.endpointFor(h.window.CompanionProduct, '', ['system.prompts']), endpoint);
+  assert.equal(h.window.CompanionConfigEditors.endpointFor(h.window.CompanionProduct, '', ['life']), null);
+  assert.equal(h.window.CompanionConfigEditors.endpointFor(h.window.CompanionProduct, endpoint, ['life']), null);
+  assert.equal(h.window.CompanionConfigEditors.endpointFor(h.window.CompanionProduct, '', ['reaction']), PREFIX+'config');
+});
+
+test('configuration cards label the actual write layer instead of their inherited role layer', async () => {
+  const h = harness(); await loaded(h);
+  const roleScope = /<span class="wb-scope">([^<]*)</.exec(h.painted.quota)?.[1];
+  const windowScope = /<span class="wb-scope">([^<]*)</.exec(h.painted.image_review)?.[1];
+  assert.match(roleScope, /当前角色默认/);
+  assert.match(windowScope, /当前窗口覆盖/);
+  assert.doesNotMatch(windowScope, /角色共享/);
 });

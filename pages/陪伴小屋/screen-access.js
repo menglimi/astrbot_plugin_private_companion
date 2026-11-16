@@ -37,7 +37,7 @@ window.CompanionScreenAccess = (() => {
   const statusKey = (scope, route) => `${scope}:${route}`;
   const current = ticket => ticket === generation && node?.isConnected && path && path === currentPath();
   function currentPath() {
-    try { return product.relative(product.role()?.screen_access_api || ""); } catch (_) { return ""; }
+    try { return product.relative((product.windowRole ? product.windowRole() : product.role())?.screen_access_api || ""); } catch (_) { return ""; }
   }
   function errorText(error) { return messages[error?.code] || messages[error?.message] || "暂时无法核对屏幕授权，请重新读取。"; }
   function identityLine() {
@@ -45,9 +45,9 @@ window.CompanionScreenAccess = (() => {
     return [product.scopeLabel?.(), target && product.targetLabel?.(target)].filter(Boolean).join(" · ") || "当前私聊窗口";
   }
   function privateWindows() {
-    const roleId = product.selection?.().role_id;
+    const roleId = product.selection?.().role_id,botId=product.selection?.().bot_id;
     return (product.targets?.() || []).filter(target => target.scope_kind === "private"
-      && target.roles?.some(role => role.role_id === roleId));
+      && (!botId||target.bot_id===botId) && target.roles?.some(role => role.role_id === roleId));
   }
   function scopeIssue() {
     const target = product.target();

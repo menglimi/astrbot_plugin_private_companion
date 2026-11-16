@@ -27,6 +27,16 @@ window.CompanionPerceptionOverviewPage = (() => {
      最近成功读数。只挑选可安全展示的字段；API 令牌和 edit token 永不缓存。 */
   const balanceCache = new Map();
   let overviewRouteKey = "";
+  function selectedWindowRole() {
+    const selected=product.selection?.(),target=product.target?.();
+    if(!selected?.target_id||target?.scope_kind!=="private"||target.target_id!==selected.target_id
+      ||target.bot_id!==selected.bot_id)return null;
+    const role=product.windowRole?.();
+    return role?.role_id===selected.role_id?role:null;
+  }
+  function roleSnapshot(value) {
+    return value&&!selectedWindowRole()?{...value,windowRequired:true,contact:{},news:{}}:value;
+  }
   function activeScopeKey() {
     try {
       const scoped = product.scopeKey?.();
@@ -1373,7 +1383,7 @@ window.CompanionPerceptionOverviewPage = (() => {
       </article>`;
     }).join("")}</section>
     <p class="perception-board-hint">点击任意感知条目卡片，可在下方单独查看该项的当前内容与设置；点击卡片右上角「分区设置」可切换整组配置。</p>`;
-    root.innerHTML = `${barMarkup}${boardMarkup}`;
+    root.innerHTML = `${barMarkup}${!selectedWindowRole()?'<p class="memory-notice">未选择私聊窗口；当前显示角色配置，窗口感知与撤回记录需选择当前角色的私聊窗口后查看。</p>':""}${boardMarkup}`;
     syncSelection();
     if (activePreviewItemId) preview(activePreviewItemId);
     if (balanceSource) renderBalanceSource();
@@ -1390,6 +1400,7 @@ window.CompanionPerceptionOverviewPage = (() => {
     const recallWorkspace = page?.querySelector("#perceptionRecallWorkspace");
     if (recallWorkspace) recallWorkspace.innerHTML = recallState === "loading"
       ? `<p class="memory-notice" role="status">正在读取当前窗口的撤回记录…</p>`
+      : recallState === "window_required" ? '<p class="memory-notice" role="status">请先选择当前角色的私聊窗口，再查看撤回记录。</p>'
       : recallState === "error" ? `<p class="memory-notice" role="status">这个角色窗口的撤回记录暂不可读（${esc(recallError || "原因未知")}）；检查角色窗口授权和撤回转录开关。</p>`
         : recallStatus?.enabled === false ? `<p class="memory-notice" role="status">撤回转录未启用。配置开启后，只读记录会在设定时限内显示。</p>`
           : recalls.length ? `<ul>${recalls.map(item => `<li class="perception-recall-item"><span><strong>${esc(item.local_time || ageLabel(item.withdrawn_at))}</strong><small>${item.author ? `发送账号 ${esc(item.author)}` : "当前会话记录"}</small></span><p>${esc(item.text || "（无可展示文本）")}</p></li>`).join("")}</ul>`
@@ -1499,7 +1510,9 @@ window.CompanionPerceptionOverviewPage = (() => {
     semanticState = "loading"; render();
     try {
       const bridge = product.bridgeNow?.() || await product.bridgeFor();
-      const value = product.unwrap(await bridge.apiGet("semantic", {...product.selection(), kind:"reaction"}));
+      const selected=product.roleSelection?.();
+      if(!selected?.target_id||!selected?.role_id)throw new Error("semantic_role_required");
+      const value = product.unwrap(await bridge.apiGet("semantic", {target_id:selected.target_id,role_id:selected.role_id,kind:"reaction"}));
       if (!validRoot(ticket)) return;
       if (!value || typeof value !== "object") throw new Error("invalid semantic status");
       semanticStatus = value; semanticState = "ready"; rememberOverview("semanticStatus", value, "semanticState", "ready");
@@ -1512,9 +1525,11 @@ window.CompanionPerceptionOverviewPage = (() => {
   }
   async function refreshRecalls(ticket = generation) {
     if (!validRoot(ticket)) return;
+    const role=selectedWindowRole();
+    if(!role){recallStatus=null;recallState="window_required";recallError="";forgetOverview("recallStatus","recallState");render();return;}
     recallState = "loading"; render();
     try {
-      const replyApi = product.role?.()?.reply_api;
+      const replyApi = role.reply_api;
       if (typeof replyApi !== "string" || !replyApi) throw new Error("recall_scope_denied");
       const route = product.relative(replyApi).replace(/\/$/, "") + "/recalls";
       const response = product.request
@@ -1585,9 +1600,11 @@ window.CompanionPerceptionOverviewPage = (() => {
   }
   async function refreshRuntime(ticket = generation) {
     if (!validRoot(ticket)) return;
+    const role=selectedWindowRole();
+    if(!role){runtimeSnapshot=null;runtimeState="window_required";forgetOverview("runtimeSnapshot","runtimeState");render();return;}
     runtimeState = "loading"; render();
     try {
-      const endpoint = product.role()?.perception_native_api;
+      const endpoint = role.perception_native_api;
       if (typeof endpoint !== "string" || !endpoint) throw new Error("missing perception runtime route");
       const route = endpoint.replace(/\/$/, "") + "/runtime";
       const value = product.unwrap(await product.request("GET", product.relative(route)));
@@ -1864,13 +1881,14 @@ window.CompanionPerceptionOverviewPage = (() => {
     balanceWorkspace = root.parentElement?.querySelector("#perceptionBalanceSourceWorkspace") || null;
     const ticket = ++generation;
     const cached = overviewCache.get(`${scope}:${overviewRouteKey}`) || {};
-    snapshot = cached.snapshot || null; runtimeSnapshot = cached.runtimeSnapshot || null;
+    snapshot = roleSnapshot(cached.snapshot || null); runtimeSnapshot = cached.runtimeSnapshot || null;
     runtimeState = cached.runtimeState || "loading";
     modelStatus = cached.modelStatus || null; modelState = cached.modelState || "loading";
     voiceStatus = cached.voiceStatus || null; voiceState = cached.voiceState || "loading";
     imageStatus = cached.imageStatus || null; imageState = cached.imageState || "loading";
     semanticStatus = cached.semanticStatus || null; semanticState = cached.semanticState || "loading";
     recallStatus = cached.recallStatus || null; recallState = cached.recallState || "loading";
+    if(!selectedWindowRole()){runtimeSnapshot=recallStatus=null;runtimeState=recallState="window_required";}
     mihomeStatus = cached.mihomeStatus || null; mihomeState = cached.mihomeState || "loading";
     huaweiHealth = cached.huaweiHealth || null; huaweiHealthState = cached.huaweiHealthState || "loading";
     materialPool = cached.materialPool || null; materialPoolState = cached.materialPoolState || "loading";
@@ -1885,7 +1903,7 @@ window.CompanionPerceptionOverviewPage = (() => {
       if (!validRoot(ticket)) return;
       /* native 页刚挂载时会先发 loading。已有成功快照时保留它，避免切页
          回来出现一整块空白；明确失败仍清掉旧快照并展示失败状态。 */
-      if (next?.ready === true || !snapshot || (next?.loading === false && next?.error)) snapshot = next;
+      if (next?.ready === true || !snapshot || (next?.loading === false && next?.error)) snapshot = roleSnapshot(next);
       if (snapshot?.ready === true) rememberOverview("snapshot", snapshot);
       else if (next?.loading === false && next?.error) forgetOverview("snapshot");
       render();
