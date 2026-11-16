@@ -18365,6 +18365,29 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
   #homeShell[data-away="true"] .stage-region .room-stage::after { opacity: 1; }
 }
 
+/* 右侧贴靠只留下把手；裁剪移动中的场景，避免制造横向滚动。 */
+.stage-role-card-handle { display:none; }
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region .room-stage {
+  transform:translateX(var(--role-card-offset, 0px));
+}
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region:is([data-role-card-overflow="true"], [data-role-card-settling="true"]) {
+  overflow:clip;
+}
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-card-docked="true"] {
+  pointer-events:none;
+}
+body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-handle:not([hidden]) {
+  display:flex;align-items:center;justify-content:center;
+  position:absolute;right:0;top:50%;transform:translateY(-50%);
+  width:28px;height:min(56px, 100%);padding:0;
+  border:1px solid var(--t-line-firm);border-right:0;border-radius:var(--r-md) 0 0 var(--r-md);
+  background:var(--t-surface);color:var(--t-text);box-shadow:var(--t-shadow-lift);
+  pointer-events:auto;touch-action:none;cursor:grab;user-select:none;z-index:5;
+  font-size:26px;line-height:1;
+}
+.stage-role-card-handle:focus-visible { outline:2px solid var(--t-focus);outline-offset:-3px; }
+body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-card-dragging="true"] .stage-role-card-handle { opacity:0;cursor:grabbing; }
+
 /* self-page.css */
 /* 自我页 · 角色手帐。只在本页调整配置控件，保留工作台的保存与继承协议。 */
 .self-page{display:grid;gap:var(--sp-4);width:100%;max-width:1120px;min-width:0;margin-inline:auto;container:self-journal / inline-size}

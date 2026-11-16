@@ -168,7 +168,7 @@ test("小屋角色卡片浏览器交互", {skip: chromium ? false : "未安装 p
     await page.evaluate(() => { delete document.querySelector("#homeShell").dataset.rail; });
     await page.mouse.move(box.x + 50, box.y + 70);
     await page.mouse.down();
-    await page.mouse.move(995, 695, {steps: 5});
+    await page.mouse.move(850, 695, {steps: 5});
     await page.mouse.up();
     await page.setViewportSize({width: 400, height: 500});
     await page.waitForFunction(() => document.querySelector("#stageScene").getBoundingClientRect().right <= innerWidth);
@@ -213,6 +213,132 @@ test("小屋角色卡片浏览器交互", {skip: chromium ? false : "未安装 p
     }
   });
 
+  const settled = async target => {
+    await target.waitForFunction(() => !document.querySelector(".stage-region").hasAttribute("data-role-card-settling"));
+  };
+  const dragToRight = async (target, overflow) => {
+    const box = await target.locator("#stageScene").boundingBox();
+    const right = await target.locator(".shell-body").evaluate(node => Math.min(innerWidth, node.getBoundingClientRect().right));
+    await target.mouse.move(box.x + 20, box.y + 70);
+    await target.mouse.down();
+    await target.mouse.move(right - box.width + overflow + 20, box.y + 70, {steps: 5});
+  };
+
+  await t.test("右侧越过一半收起，未过一半回到主区，隐藏卡片不遮挡内容", async () => {
+    await page.reload();
+    await page.waitForFunction(() => window.CompanionRoleCard);
+    const clicks = await page.evaluate(() => window.homeClicks);
+    const width = (await page.locator("#stageScene").boundingBox()).width;
+    await dragToRight(page, width / 2 - 10);
+    await page.mouse.up();
+    await settled(page);
+    assert.equal(await page.locator(".stage-region").getAttribute("data-role-card-docked"), "false");
+    let card = await page.locator("#stageScene").boundingBox();
+    assert.ok(card.x + card.width <= 992);
+    await dragToRight(page, width / 2);
+    await page.mouse.up();
+    await settled(page);
+    assert.equal(await page.locator(".stage-region").getAttribute("data-role-card-docked"), "true");
+    assert.equal(await page.locator("[data-role-card-handle]").isVisible(), true);
+    assert.equal(await page.locator("#stageScene").evaluate(node => node.inert), true);
+    assert.equal(await page.evaluate(() => window.homeClicks), clicks);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    assert.equal(await page.evaluate(() => {
+      const card = document.querySelector("#stageScene").getBoundingClientRect();
+      const node = document.elementFromPoint(innerWidth - card.width / 2, card.top + card.height / 2);
+      return !node.closest(".stage-region");
+    }), true);
+    const stored = await page.evaluate(() => CompanionProduct.browserPreferences().room_card_position);
+    assert.ok(stored.left + width <= 992);
+    await page.locator("[data-role-card-handle]").click();
+    await settled(page);
+    assert.equal(await page.locator(".stage-region").getAttribute("data-role-card-docked"), "false");
+    assert.equal(await page.locator("[data-role-card-handle]").isVisible(), false);
+    assert.equal(await page.evaluate(() => window.homeClicks), clicks);
+    card = await page.locator("#stageScene").boundingBox();
+    await page.mouse.click(card.x + 50, card.y + 70);
+    assert.equal(await page.evaluate(() => window.homeClicks), clicks + 1);
+    await dragToRight(page, width / 2 + 10);
+    await page.mouse.up();
+    await settled(page);
+    await page.locator("[data-role-card-handle]").focus();
+    await page.locator("[data-role-card-handle]").press("Enter");
+    await settled(page);
+    assert.equal(await page.locator("[data-role-card-handle]").isVisible(), false);
+    assert.equal(await page.evaluate(() => window.homeClicks), clicks + 1);
+    await dragToRight(page, width / 2 + 10);
+    await page.mouse.up();
+    await settled(page);
+    await page.evaluate(() => {
+      CompanionShell.section = "";
+      document.querySelector("#homeShell").dataset.away = "false";
+      window.shellChanged();
+    });
+    await page.waitForFunction(() => !document.querySelector("#stageScene").inert);
+    assert.equal(await page.locator("[data-role-card-handle]").isVisible(), false);
+    await page.evaluate(() => {
+      CompanionShell.section = "expression";
+      document.querySelector("#homeShell").dataset.away = "true";
+      window.shellChanged();
+    });
+    await page.waitForFunction(() => document.querySelector("#stageScene").getBoundingClientRect().right <= innerWidth);
+  });
+
+  await t.test("把手向左拖动恢复且不误返回，收起时缩放仍可操作，刷新恢复展开位置", async () => {
+    const width = (await page.locator("#stageScene").boundingBox()).width;
+    await dragToRight(page, width / 2 + 10);
+    await page.mouse.up();
+    await settled(page);
+    await page.setViewportSize({width: 400, height: 500});
+    await page.waitForFunction(() => {
+      const rect = document.querySelector("[data-role-card-handle]").getBoundingClientRect();
+      return rect.right <= innerWidth && rect.bottom <= innerHeight;
+    });
+    const handle = await page.locator("[data-role-card-handle]").boundingBox();
+    assert.ok(handle.x >= 0 && handle.x + handle.width <= 400);
+    assert.ok(handle.y >= 0 && handle.y + handle.height <= 500);
+    const clicks = await page.evaluate(() => window.homeClicks);
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handle.x + handle.width / 2 - 12, handle.y + handle.height / 2, {steps: 3});
+    await page.mouse.up();
+    await settled(page);
+    assert.equal(await page.locator(".stage-region").getAttribute("data-role-card-docked"), "false");
+    assert.equal(await page.evaluate(() => window.homeClicks), clicks);
+    await dragToRight(page, (await page.locator("#stageScene").boundingBox()).width / 2 + 10);
+    await page.mouse.up();
+    await settled(page);
+    await page.reload();
+    await page.waitForFunction(() => window.CompanionRoleCard);
+    assert.equal(await page.locator("[data-role-card-handle]").isVisible(), false);
+    const card = await page.locator("#stageScene").boundingBox();
+    assert.ok(card.x >= 8 && card.x + card.width <= 392);
+    await page.setViewportSize({width: 1000, height: 700});
+  });
+
+  await t.test("拖动中取消或失去捕获不会误收起", async () => {
+    await page.setViewportSize({width: 1000, height: 700});
+    await page.reload();
+    await page.waitForFunction(() => window.CompanionRoleCard);
+    for (const mode of ["pointercancel", "lostpointercapture"]) {
+      const before = await page.locator("#stageScene").boundingBox();
+      await page.locator("#stageScene").evaluate(node => {
+        node.addEventListener("pointerdown", event => { window.activeDragPointer = event.pointerId; }, {once:true});
+      });
+      await dragToRight(page, before.width / 2 + 10);
+      await page.locator("#stageScene").evaluate((node, mode) => {
+        if (mode === "pointercancel") node.dispatchEvent(new PointerEvent(mode, {pointerId:window.activeDragPointer}));
+        else node.releasePointerCapture(window.activeDragPointer);
+      }, mode);
+      await page.mouse.up();
+      await settled(page);
+      assert.equal(await page.locator(".stage-region").getAttribute("data-role-card-docked"), "false");
+      const after = await page.locator("#stageScene").boundingBox();
+      assert.ok(Math.abs(after.x - before.x) < 1);
+      assert.ok(Math.abs(after.y - before.y) < 1);
+    }
+  });
+
   await t.test("触摸设备显示入口，点击切换不返回小屋", async () => {
     const mobile = await browser.newContext({viewport: {width: 390, height: 700}, isMobile: true, hasTouch: true});
     const phone = await mobile.newPage();
@@ -233,6 +359,23 @@ test("小屋角色卡片浏览器交互", {skip: chromium ? false : "未安装 p
     assert.equal(await phone.locator("#roleCardMenu").isVisible(), true);
     await phone.locator("[data-role-card-choice]").selectOption(JSON.stringify(["bot-b", "shared-role"]));
     assert.equal(await phone.locator("[data-role-card-name]").textContent(), "角色乙");
+    assert.equal(await phone.evaluate(() => window.homeClicks), 0);
+    const client = await mobile.newCDPSession(phone);
+    const touch = async (type, x, y) => client.send("Input.dispatchTouchEvent", {
+      type, touchPoints: type === "touchEnd" ? [] : [{x, y, id:1}],
+    });
+    box = await phone.locator("#stageScene").boundingBox();
+    await touch("touchStart", box.x + 20, box.y + 70);
+    await touch("touchMove", 390 - box.width / 2 + 30, box.y + 70);
+    await touch("touchEnd");
+    await settled(phone);
+    assert.equal(await phone.locator(".stage-region").getAttribute("data-role-card-docked"), "true");
+    const handle = await phone.locator("[data-role-card-handle]").boundingBox();
+    await touch("touchStart", handle.x + handle.width / 2, handle.y + handle.height / 2);
+    await touch("touchMove", handle.x + handle.width / 2 - 30, handle.y + handle.height / 2);
+    await touch("touchEnd");
+    await settled(phone);
+    assert.equal(await phone.locator(".stage-region").getAttribute("data-role-card-docked"), "false");
     assert.equal(await phone.evaluate(() => window.homeClicks), 0);
     await mobile.close();
   });

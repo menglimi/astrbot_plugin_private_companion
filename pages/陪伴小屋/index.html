@@ -97,7 +97,7 @@
        其中相对地址；只有确认官方配置未开启性能模式后才由 performance-gate.js
        激活，低配置设备不会下载 3D 体素包和整套工作区脚本。 -->
   <template id="companion-full-assets">
-    <link rel="stylesheet" href="bundle.css?v=8f9f7231f88006ba">
+    <link rel="stylesheet" href="bundle.css?v=3fec9d3ba9592610">
 
 
 
@@ -389,6 +389,7 @@
           </div>
           <div class="voxel-hint home-only"><i data-lucide="mouse"></i>拖动旋转 · 滚轮缩放 · 点击家具查看</div>
         </div>
+        <button type="button" class="stage-role-card-handle" data-role-card-handle aria-label="展开小屋卡片" title="点击展开，或向左拖出小屋卡片" aria-controls="stageScene" hidden><span aria-hidden="true">‹</span></button>
         <div class="stage-role-card-menu" id="roleCardMenu" hidden>
           <label for="roleCardChoice">切换小屋角色</label>
           <select id="roleCardChoice" data-role-card-choice aria-label="选择 Bot 账号与角色"></select>
