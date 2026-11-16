@@ -1498,8 +1498,12 @@ window.CompanionProduct = (() => {
         if(!allowed)throw fail("invalid_response");
         mapped="persona-designer"+path.slice("designer".length);
       } else if(context.kind==="identity") {
-        const allowed=(method==="GET"&&["acquaintance","acquaintance/authorization","acquaintance/settings","acquaintance/strangers"].includes(path))
-           ||(method==="POST"&&["acquaintance/authorization","acquaintance/settings","acquaintance/identity","acquaintance/admin-name","acquaintance/stranger-target"].includes(path));
+        // Each embedded member feature must cross this outer bridge too.
+        // Keep exact method/path pairs; never allow the entire route prefix.
+        const allowed=(method==="GET"&&["acquaintance","acquaintance/authorization","acquaintance/settings","acquaintance/strangers",
+          "acquaintance/account-links","acquaintance/account-links/history"].includes(path))
+           ||(method==="POST"&&["acquaintance/authorization","acquaintance/settings","acquaintance/identity","acquaintance/admin-name","acquaintance/stranger-target",
+             "acquaintance/account-links","acquaintance/account-links/unlink"].includes(path));
         if(!allowed)throw fail("invalid_response");
         mapped=relative(roleApi)+path.slice("acquaintance".length);
       } else if(context.kind==="relationships"&&context.scope_kind==="group") {

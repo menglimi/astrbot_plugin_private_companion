@@ -52,7 +52,7 @@ const baseSettings = () => ({
 /* 上界：只保留后面两条通用断言用得到的字段。 */
 function harness({nativeApi = NATIVE, configApi = CONFIG, sessionStore = new Map(), localStorageStore = new Map(),
   sessionStorageBlocked = false, localStorageBlocked = false, historyBlocked = false,
-  historyEntry = {current: null}} = {}) {
+  historyEntry = {current: null}, recipients = {candidates:[{target_id:"core-1", label:"测试管理员 · QQ / bot"}], selected_target_id:"core-1"}} = {}) {
   const requests = [];
   const clipboardWrites = [];
   let selectedScopeKey = JSON.stringify(['install-1', 'target-1', 'role-1']);
@@ -70,7 +70,10 @@ function harness({nativeApi = NATIVE, configApi = CONFIG, sessionStore = new Map
     },
     AstrBotPluginPage: {
       ready: () => Promise.resolve({pluginName: HOST}),
-      apiGet: (route, params) => new Promise((resolve, reject) => requests.push({method: 'GET', route, params, resolve, reject})),
+      apiGet: (route, params) => new Promise((resolve, reject) => {
+        requests.push({method:'GET', route, params, resolve, reject});
+        if (route === 'setup/proactive-recipients' && recipients !== null) resolve({status:'ok', data:recipients});
+      }),
       apiPost: (route, values) => new Promise((resolve, reject) => requests.push({method: 'POST', route, values, resolve, reject})),
     },
     document: {
@@ -292,12 +295,14 @@ test('开口闸门设置只在开口闸门视图展示', async () => {
   h.setGateSettingsArea(area);
 
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-view]' ? {dataset: {view: 'tests'}} : null}});
+  await h.settle();
   assert.equal(area.hidden, true, '消息测试视图不能把回复闸门显示在测试内容下方');
 
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-view]' ? {dataset: {view: 'gates'}} : null}});
   assert.equal(area.hidden, false, '选中开口闸门后才显示对应配置');
 
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-view]' ? {dataset: {view: 'tests'}} : null}});
+  await h.settle();
   assert.equal(area.hidden, true, '离开开口闸门视图后配置随之隐藏');
 });
 
@@ -1305,6 +1310,7 @@ test('消息测试是一级视图，未读到设置时也可以打开', async ()
   h.page.state.data.ready = false;
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-view]'
     ? {dataset: {view: 'tests'}} : null}});
+  await h.settle();
   assert.equal(h.page.state.data.view, 'tests');
   assert.ok(h.element.innerHTML.includes('ct-tests'), '静态测试指令不应依赖后端设置状态');
   assert.ok(h.element.innerHTML.includes('ct-head-test'), '页头应保留消息测试直达入口');
@@ -1572,6 +1578,7 @@ test('消息测试支持按类别、覆盖状态和内容筛选', async () => {
     : selector === '.ct-test-empty' ? empty : null;
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-view]'
     ? {dataset: {view: 'tests'}} : null}});
+  await h.settle();
   const html = h.element.innerHTML;
   assert.ok(html.includes('data-test-search'));
   assert.ok(html.includes('data-test-bucket-filter'));
@@ -1611,6 +1618,7 @@ test('复制主动消息测试指令只写入剪贴板，不调用模型或发�
   await boot(h);
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-view]'
     ? {dataset: {view: 'tests'}} : null}});
+  await h.settle();
   const requestCount = h.requests.length;
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-test-copy]'
     ? {dataset: {testCopy: 'news'}} : null}});
@@ -1629,12 +1637,13 @@ test('主动消息类型卡片可确认后运行真实诊断并显示结果', as
   await boot(h);
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-view]'
     ? {dataset: {view: 'tests'}} : null}});
+  await h.settle();
   const requestCount = h.requests.length;
 
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-test-run]'
     ? {dataset: {testRun: 'news'}} : null}});
   assert.ok(h.element.innerHTML.includes('运行「外部资讯」测试？'));
-  assert.ok(h.element.innerHTML.includes('真实投递到核心管理员 QQ 私聊'));
+  assert.ok(h.element.innerHTML.includes('真实投递到所选核心管理员私聊'));
   assert.equal(h.requests.length, requestCount, '打开确认框时不能提前调用模型或发送接口');
 
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-test-action]'
@@ -1644,7 +1653,7 @@ test('主动消息类型卡片可确认后运行真实诊断并显示结果', as
   assert.equal(request.method, 'POST');
   assert.equal(request.route, 'setup/proactive-diagnostic');
   assert.deepEqual(JSON.parse(JSON.stringify(request.values)), {
-    purpose: 'news', confirm_delivery: true, synthetic_event: false,
+    purpose: 'news', confirm_delivery: true, synthetic_event: false, target_id:'core-1', allow_linked_accounts:false,
   });
   assert.equal(h.page.state.data.testBusy, 'news');
 
@@ -1670,7 +1679,7 @@ test('主动消息类型卡片可确认后运行真实诊断并显示结果', as
   assert.match(h.element.innerHTML, /测试通过 · 已投递/);
   assert.match(h.element.innerHTML, /真实资讯抓取/);
   assert.match(h.element.innerHTML, /本次取得的真实来源/);
-  assert.match(h.element.innerHTML, /已投递到核心管理员私聊/);
+  assert.match(h.element.innerHTML, /已投递到所选核心管理员私聊/);
   assert.match(h.element.innerHTML, /诊断步骤/);
   assert.match(h.element.innerHTML, /人格复核/);
   assert.match(h.element.innerHTML, /平台已确认投递/);
@@ -1694,6 +1703,7 @@ test('手机地点和带图主动消息映射到各自的扩展诊断链路', as
     await boot(h);
     h.element.dispatch('click', {target: {closest: sel => sel === '[data-view]'
       ? {dataset: {view: 'tests'}} : null}});
+  await h.settle();
     h.element.dispatch('click', {target: {closest: sel => sel === '[data-test-run]'
       ? {dataset: {testRun: id}} : null}});
     assert.match(h.element.innerHTML, confirmationText);
@@ -1702,7 +1712,7 @@ test('手机地点和带图主动消息映射到各自的扩展诊断链路', as
     await h.settle();
     const request = h.requests.at(-1);
     assert.equal(request.route, 'setup/proactive-diagnostic');
-    assert.deepEqual(JSON.parse(JSON.stringify(request.values)), expected);
+    assert.deepEqual(JSON.parse(JSON.stringify(request.values)), {...expected, target_id:"core-1", allow_linked_accounts:false});
     h.reply(request, {state: 'failed', purpose: expected.purpose, stages: []});
     await h.settle();
     h.page.unmount();
@@ -1714,6 +1724,7 @@ test('失败诊断标明卡点、前序步骤、原因和下一步', async () =>
   await boot(h);
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-view]'
     ? {dataset: {view: 'tests'}} : null}});
+  await h.settle();
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-test-run]'
     ? {dataset: {testRun: 'news'}} : null}});
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-test-action]'
@@ -1748,6 +1759,7 @@ test('天气和屏幕默认真实来源，显式合成选择才使用虚构事�
     const h = harness();
     await boot(h);
     h.element.dispatch('click', {target: {closest: sel => sel === '[data-view]' ? {dataset: {view: 'tests'}} : null}});
+  await h.settle();
     if (id === 'news') {
       const mode = {value: 'synthetic', dataset: {testMode: id}, closest: sel => sel === '[data-test-mode]' ? mode : null};
       h.element.dispatch('change', {target: mode});
@@ -1770,6 +1782,7 @@ test('主动测试结果未知时跨页面刷新保留锁，并要求核实后�
   await boot(h);
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-view]'
     ? {dataset: {view: 'tests'}} : null}});
+  await h.settle();
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-test-run]'
     ? {dataset: {testRun: 'care'}} : null}});
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-test-action]'
@@ -1791,6 +1804,7 @@ test('主动测试结果未知时跨页面刷新保留锁，并要求核实后�
   assert.equal(restored.page.state.data.testUncertain, true);
   restored.element.dispatch('click', {target: {closest: sel => sel === '[data-view]'
     ? {dataset: {view: 'tests'}} : null}});
+  await restored.settle();
   assert.match(restored.element.innerHTML, /核实后解除测试锁/);
   const count = restored.requests.length;
   restored.element.dispatch('click', {target: {closest: sel => sel === '[data-test-run]'
@@ -1812,6 +1826,7 @@ test('无法持久化防重状态时不启动主动消息测试', async () => {
   await boot(h);
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-view]'
     ? {dataset: {view: 'tests'}} : null}});
+  await h.settle();
   const count = h.requests.length;
   h.element.dispatch('click', {target: {closest: sel => sel === '[data-test-run]'
     ? {dataset: {testRun: 'news'}} : null}});
@@ -1957,4 +1972,110 @@ test('卸载后事件与状态都清干净，重复挂载不叠加', async () =>
   /* 卸载时的票号自增必须让在飞确认被丢弃：重新挂载后仍能正常读。 */
   await boot(h);
   assert.equal(h.page.state.data.ready, true);
+});
+
+
+test('多个核心管理员必须选择保存，未保存不能运行；请求固定已保存目标', async () => {
+  const h = harness({recipients:null});
+  await boot(h);
+  h.element.dispatch('click', {target:{closest:sel => sel === '[data-view]' ? {dataset:{view:'tests'}} : null}});
+  await h.settle();
+  const candidates = [{target_id:'core-a', label:'甲 · QQ / bot'}, {target_id:'core-b', label:'乙 · 微信 / bot'}];
+  h.reply(h.requests.at(-1), {candidates, selected_target_id:'', selection_required:true});
+  await h.settle();
+  assert.match(h.element.innerHTML, /data-test-recipient aria-label="选择测试收件人"/);
+  const run = () => h.element.dispatch('click', {target:{closest:sel => sel === '[data-test-run]' ? {dataset:{testRun:'affection'}} : null}});
+  run();
+  assert.equal(h.page.state.data.confirmTest, '');
+  const field = {value:'core-b', closest:sel => sel === '[data-test-recipient]' ? field : null};
+  h.element.dispatch('change', {target:field});
+  run();
+  assert.equal(h.page.state.data.confirmTest, '', 'draft is not a saved recipient');
+  h.element.dispatch('click', {target:{closest:sel => sel === '[data-test-recipient-save]' ? {} : null}});
+  await h.settle();
+  const save = h.requests.at(-1);
+  assert.equal(save.route, 'setup/proactive-recipient');
+  assert.deepEqual(JSON.parse(JSON.stringify(save.values)), {target_id:'core-b'});
+  h.reply(save, {candidates, selected_target_id:'core-b', selection_required:false});
+  await h.settle();
+  run();
+  assert.match(h.element.innerHTML, /乙 · 微信 \/ bot/);
+  h.element.dispatch('click', {target:{closest:sel => sel === '[data-test-action]' ? {dataset:{testAction:'confirm'}} : null}});
+  await h.settle();
+  const request = h.requests.at(-1);
+  assert.equal(request.route, 'setup/proactive-diagnostic');
+  assert.equal(request.values.target_id, 'core-b');
+  assert.match(h.element.innerHTML, /data-test-recipient aria-label="选择测试收件人" disabled/);
+  h.reply(request, {state:'passed', purpose:'affection'});
+  await h.settle();
+});
+
+test('唯一核心管理员自动使用，不显示选择框；收件人读取失败时禁止测试', async () => {
+  const h = harness();
+  await boot(h);
+  h.element.dispatch('click', {target:{closest:sel => sel === '[data-view]' ? {dataset:{view:'tests'}} : null}});
+  await h.settle();
+  assert.match(h.element.innerHTML, /唯一核心管理员，自动使用/);
+  assert.doesNotMatch(h.element.innerHTML, /<select data-test-recipient/);
+  const failed = harness({recipients:null});
+  await boot(failed);
+  failed.element.dispatch('click', {target:{closest:sel => sel === '[data-view]' ? {dataset:{view:'tests'}} : null}});
+  await failed.settle();
+  failed.fail(failed.requests.at(-1), 'proactive_recipients_unavailable');
+  await failed.settle();
+  assert.match(failed.element.innerHTML, /收件人读取失败/);
+  failed.element.dispatch('click', {target:{closest:sel => sel === '[data-test-run]' ? {dataset:{testRun:'news'}} : null}});
+  assert.equal(failed.page.state.data.confirmTest, '');
+});
+
+
+test('关联转发开关沿用页面开关样式，明确确认后随本次测试发送且不修改生产配置', async () => {
+  const h = harness();
+  await boot(h);
+  h.element.dispatch('click', {target:{closest:sel => sel === '[data-view]' ? {dataset:{view:'tests'}} : null}});
+  await h.settle();
+  assert.equal(h.page.state.data.testAllowLinkedAccounts, false);
+  assert.match(h.element.innerHTML, /class="ct-switch ct-test-forward-switch"/);
+  assert.match(h.element.innerHTML, /允许转发到关联账号/);
+  const count = h.requests.length;
+  const toggle = {checked:true, closest:sel => sel === '[data-test-allow-links]' ? toggle : null};
+  h.element.dispatch('change', {target:toggle});
+  assert.equal(h.page.state.data.testAllowLinkedAccounts, true);
+  assert.equal(h.requests.length, count, 'switch is a per-test option, not a production configuration edit');
+  h.element.dispatch('click', {target:{closest:sel => sel === '[data-test-run]' ? {dataset:{testRun:'affection'}} : null}});
+  assert.match(h.element.innerHTML, /可能转发到关联账号/);
+  h.element.dispatch('click', {target:{closest:sel => sel === '[data-test-action]' ? {dataset:{testAction:'confirm'}} : null}});
+  await h.settle();
+  const request = h.requests.at(-1);
+  assert.equal(request.route, 'setup/proactive-diagnostic');
+  assert.equal(request.values.allow_linked_accounts, true);
+  assert.match(h.element.innerHTML, /data-test-allow-links checked disabled/);
+  toggle.checked = false;
+  h.element.dispatch('change', {target:toggle});
+  assert.equal(h.page.state.data.testAllowLinkedAccounts, true, 'cannot switch routing while running');
+  h.reply(request, {state:'passed', purpose:'affection', purpose_label:'想念与亲近',
+    delivery_targets:[{platform_id:'wechat', account_id:'bot-b', participant_id:'peer-b', delivery_state:'delivered'}]});
+  await h.settle();
+  assert.match(h.element.innerHTML, /关联策略起点/);
+  assert.match(h.element.innerHTML, /实际投递目标：peer-b · wechat \/ bot-b/);
+});
+
+
+test('路由拒绝沿用诊断步骤展示具体账号和原因，发送前终止不再显示待检查', async () => {
+  const h = harness();
+  await boot(h);
+  h.element.dispatch('click', {target:{closest:sel => sel === '[data-view]' ? {dataset:{view:'tests'}} : null}});
+  await h.settle();
+  h.element.dispatch('click', {target:{closest:sel => sel === '[data-test-run]' ? {dataset:{testRun:'affection'}} : null}});
+  h.element.dispatch('click', {target:{closest:sel => sel === '[data-test-action]' ? {dataset:{testAction:'confirm'}} : null}});
+  await h.settle();
+  const detail = 'napcat · bot-a · peer-a：该账号的平台连接不可用（account_link_transport_unavailable）';
+  h.reply(h.requests.at(-1), {state:'failed', purpose:'affection', purpose_label:'想念与亲近',
+    delivery_state:'cancelled', stage:'delivery', code:'account_link_all_unavailable', error:detail,
+    stages:[{stage:'delivery', state:'failed', detail}, {stage:'receipt', state:'failed'}]});
+  await h.settle();
+  assert.match(h.element.innerHTML, /napcat · bot-a · peer-a/);
+  assert.match(h.element.innerHTML, /该账号的平台连接不可用/);
+  assert.match(h.element.innerHTML, /data-state="failed"/);
+  assert.doesNotMatch(h.element.innerHTML, /owner_result/);
 });

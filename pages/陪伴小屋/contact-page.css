@@ -189,12 +189,12 @@
 .ct-test-overview .ct-test-boundary{flex-basis:100%;color:var(--t-text-faint);font-size:var(--fs-tiny)}
 .ct-test-tools{display:grid;grid-template-columns:minmax(220px,1fr) repeat(2,minmax(140px,190px)) auto;gap:var(--sp-3);align-items:end}
 .ct-test-tools label{display:flex;flex-direction:column;gap:var(--sp-1);min-width:0;color:var(--t-text-faint);font-size:var(--fs-tiny)}
-.ct-test-tools input,.ct-test-tools select{
+.ct-test-tools input,.ct-test-tools select,.ct-test-recipient select{
   width:100%;min-width:0;box-sizing:border-box;padding:var(--sp-2) var(--sp-3);
   border:1px solid var(--t-line-firm);border-radius:var(--r-xs);background:var(--t-surface-raised);
   color:var(--t-text);font:inherit;font-size:var(--fs-body)
 }
-.ct-test-tools input:focus,.ct-test-tools select:focus{outline:2px solid var(--t-focus);outline-offset:1px;border-color:var(--t-accent)}
+.ct-test-tools input:focus,.ct-test-tools select:focus,.ct-test-recipient select:focus{outline:2px solid var(--t-focus);outline-offset:1px;border-color:var(--t-accent)}
 .ct-test-result-count{padding:var(--sp-2) 0;color:var(--t-text-faint);font-size:var(--fs-tiny);white-space:nowrap;font-variant-numeric:tabular-nums}
 .ct-tests-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(390px,100%),1fr));gap:var(--ct-v-block);align-items:stretch}
 .ct-test-card{
@@ -1226,3 +1226,13 @@
   .ct-dial.is-entering{opacity:1;transform:none}
   .ct-tier:hover{transform:none}
 }
+
+/* Test recipients use the same controls, borders and theme as message tests. */
+.ct-test-recipient { display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:16px 0; border-bottom:1px solid var(--t-line); margin-bottom:16px; }
+.ct-test-recipient label { display:grid; gap:6px; flex:1 1 280px; min-width:0; }
+.ct-test-recipient select { width:100%; max-width:100%; }
+.ct-test-recipient small, .ct-test-recipient-error { flex-basis:100%; }
+
+.ct-test-recipient-error { color:var(--t-risk); }
+
+.ct-test-recipient label.ct-test-forward-switch { display:flex; flex:1 1 100%; }

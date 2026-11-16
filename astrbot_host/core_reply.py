@@ -246,6 +246,8 @@ def prepare_core_reply_event(
                 return None
             if state["send_unknown"]:
                 raise TaskError("core_reply_delivery_unknown", "the platform send outcome is unknown; do not replay this reply")
+            from .core_reply_idempotency import NATIVE_TOOL_CHECKED_ATTR, should_drop_native_tool_response
+            native_tool_checked = getattr(message, NATIVE_TOOL_CHECKED_ATTR, False)
             from .core_reply_reaction_delivery import capture_core_reaction_intent
             capture_core_reaction_intent(event, message)
             from .core_reply_voice import capture_core_voice_message
@@ -257,6 +259,8 @@ def prepare_core_reply_event(
                 return None
             if state.get("_voice_authored") and hasattr(message, "chain"):
                 object.__setattr__(message, "_companion_v2_voice_source", voice_source)
+            if not native_tool_checked and should_drop_native_tool_response(event, message):
+                return None
             callback = state.get("prepare_send")
             if callback is not None:
                 message = callback(state["prepared"], message, authorize_delivery,
@@ -267,8 +271,7 @@ def prepare_core_reply_event(
             from .core_reply_media_delivery import native_reply_messages, native_wire_message
             from .core_reply_voice import commit_pending_voice_claim, release_pending_voice_claim
             from .core_reply_idempotency import (record_core_reply_delivery,
-                                                  should_drop_core_reply_duplicate,
-                                                  should_drop_native_tool_duplicate)
+                                                  should_drop_core_reply_duplicate)
             result = None
             for part in native_reply_messages(event, message):
                 # A repeat right after an accepted body is the same delivery twice.
@@ -277,8 +280,6 @@ def prepare_core_reply_event(
                 # Dropping it here keeps the send accounting honest: no attempt, no
                 # notification and no behavior record for a body that never leaves.
                 if should_drop_core_reply_duplicate(event, part):
-                    continue
-                if should_drop_native_tool_duplicate(event, part):
                     continue
                 try:
                     await authorize_delivery()

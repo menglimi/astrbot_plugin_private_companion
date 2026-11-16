@@ -130,6 +130,8 @@ function harness() {
     };
   }
   return {page: window.CompanionModelsPage, requests, root, store, audioBlobs, revokedAudioUrls, product: window.CompanionProduct};
+  return {page: window.CompanionModelsPage, product: window.CompanionProduct,
+    requests, root, store, audioBlobs, revokedAudioUrls};
 }
 
 test('embedded migration models read and save through the explicit destination endpoint', async () => {
@@ -1686,6 +1688,49 @@ test('search service binds and saves an AstrBot DeepSeek Provider id', async () 
   assert.match(node.innerHTML, /后续搜索立即生效/);
   assert.equal(page.isDirty(), false);
   page.unmount();
+});
+
+test('group Laya reads global settings and offers a visible same-role conversation switch', async () => {
+  const h = harness(), node = h.root(), chosen = [];
+  const group = {target_id: 'group', scope_kind: 'group', roles: [{role_id: 'role'}]};
+  const privateTarget = {target_id: 'private', scope_kind: 'private', roles: [{role_id: 'role'}]};
+  h.product.selection = () => ({target_id: 'group', role_id: 'role'});
+  h.product.target = () => group;
+  h.product.targets = () => [group, privateTarget];
+  h.product.targetLabel = target => target.scope_kind === 'group' ? '群聊 测试群' : '私聊 测试用户';
+  h.product.choose = (targetId, roleId) => chosen.push([targetId, roleId]);
+  h.page.mount(node, {endpoint: '/astrbot_plugin_private_companion/host/targets/group/roles/role/model'});
+  h.requests[0].resolve({...status(), scope_kind: 'group'});
+  await flush();
+  node.click('[data-model-tab]', {modelTab: 'laya'});
+  h.requests.find(item => item.route.endsWith('/laya')).resolve(layaRemoteStatus());
+  h.requests.find(item => item.route.endsWith('/laya/logs')).resolve({events: [], available: false});
+  await flush();
+
+  assert.match(node.innerHTML, /群聊 测试群/);
+  assert.match(node.innerHTML, /data-laya-target/);
+  assert.match(node.innerHTML, /私聊 测试用户/);
+  assert.match(node.innerHTML, /当前群聊的近期决策记录暂不能按会话汇总/);
+  assert.match(node.innerHTML, /Laya 决策模型/);
+  node.change('[data-laya-target]', {value: 'private'});
+  assert.deepEqual(chosen, [['private', 'role']]);
+  h.page.unmount();
+});
+
+test('Laya configuration still renders when the log request fails', async () => {
+  const h = harness(), node = h.root();
+  h.page.mount(node);
+  h.requests[0].resolve(status());
+  await flush();
+  node.click('[data-model-tab]', {modelTab: 'laya'});
+  h.requests.find(item => item.route === 'model/laya').resolve(layaRemoteStatus());
+  h.requests.find(item => item.route === 'model/laya/logs').reject(new Error('logs_unavailable'));
+  await flush();
+
+  assert.match(node.innerHTML, /Laya 决策模型/);
+  assert.match(node.innerHTML, /近期记录暂不可用；Laya 配置仍可查看和保存/);
+  assert.doesNotMatch(node.innerHTML, /无法读取 Laya 配置/);
+  h.page.unmount();
 });
 
 test('Laya local page explains CPU-only torch and disables the broken test', async () => {

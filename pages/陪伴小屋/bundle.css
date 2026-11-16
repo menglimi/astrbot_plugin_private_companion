@@ -2198,12 +2198,12 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
 .ct-test-overview .ct-test-boundary{flex-basis:100%;color:var(--t-text-faint);font-size:var(--fs-tiny)}
 .ct-test-tools{display:grid;grid-template-columns:minmax(220px,1fr) repeat(2,minmax(140px,190px)) auto;gap:var(--sp-3);align-items:end}
 .ct-test-tools label{display:flex;flex-direction:column;gap:var(--sp-1);min-width:0;color:var(--t-text-faint);font-size:var(--fs-tiny)}
-.ct-test-tools input,.ct-test-tools select{
+.ct-test-tools input,.ct-test-tools select,.ct-test-recipient select{
   width:100%;min-width:0;box-sizing:border-box;padding:var(--sp-2) var(--sp-3);
   border:1px solid var(--t-line-firm);border-radius:var(--r-xs);background:var(--t-surface-raised);
   color:var(--t-text);font:inherit;font-size:var(--fs-body)
 }
-.ct-test-tools input:focus,.ct-test-tools select:focus{outline:2px solid var(--t-focus);outline-offset:1px;border-color:var(--t-accent)}
+.ct-test-tools input:focus,.ct-test-tools select:focus,.ct-test-recipient select:focus{outline:2px solid var(--t-focus);outline-offset:1px;border-color:var(--t-accent)}
 .ct-test-result-count{padding:var(--sp-2) 0;color:var(--t-text-faint);font-size:var(--fs-tiny);white-space:nowrap;font-variant-numeric:tabular-nums}
 .ct-tests-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(390px,100%),1fr));gap:var(--ct-v-block);align-items:stretch}
 .ct-test-card{
@@ -3235,6 +3235,16 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
   .ct-dial.is-entering{opacity:1;transform:none}
   .ct-tier:hover{transform:none}
 }
+
+/* Test recipients use the same controls, borders and theme as message tests. */
+.ct-test-recipient { display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:16px 0; border-bottom:1px solid var(--t-line); margin-bottom:16px; }
+.ct-test-recipient label { display:grid; gap:6px; flex:1 1 280px; min-width:0; }
+.ct-test-recipient select { width:100%; max-width:100%; }
+.ct-test-recipient small, .ct-test-recipient-error { flex-basis:100%; }
+
+.ct-test-recipient-error { color:var(--t-risk); }
+
+.ct-test-recipient label.ct-test-forward-switch { display:flex; flex:1 1 100%; }
 
 /* learning-page.css */
 /* 陪伴小屋 · 学习与反思（培育轨道）
@@ -8057,7 +8067,12 @@ body.reduce-motion .action-page *::after{animation:none!important;transition-dur
 .model-eb .st{margin-left:auto;letter-spacing:0}
 .model-editor-actions{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
 .model-laya-pane{grid-template-columns:repeat(auto-fit,minmax(min(440px,100%),1fr));align-items:start}
-.model-laya-pane>.model-card:first-child{grid-column:1/-1}
+.model-laya-pane>.model-card:first-child,.model-laya-pane>.model-laya-context+.model-card{grid-column:1/-1}
+.model-laya-context{grid-column:1/-1;display:flex;align-items:center;gap:var(--sp-2);min-width:0;padding:0 0 var(--sp-2);border-bottom:1px solid var(--m-line)}
+.model-laya-context>span{flex:none;color:var(--m-ink3);font-size:var(--fs-tiny)}
+.model-laya-context>strong{min-width:0;overflow-wrap:anywhere;font-size:var(--fs-tiny);font-weight:600}
+.model-laya-context select{max-width:min(100%,420px);min-width:0}
+@media(max-width:600px){.model-laya-context{align-items:stretch;flex-direction:column}.model-laya-context select{max-width:100%;width:100%}}
 .model-laya-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:var(--sp-3)}
 .model-laya-result{display:grid;gap:var(--sp-2);border:1px solid var(--m-line);background:var(--m-card2);border-radius:var(--r-sm);padding:var(--sp-3);min-width:0}
 .model-laya-result b{font-size:var(--fs-tiny);color:var(--m-ink3)}

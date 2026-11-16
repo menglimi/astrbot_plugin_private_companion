@@ -148,8 +148,7 @@ class PrivateDebounce:
         return Reservation(pending, ticket)
 
     @staticmethod
-    def private_plain_text(event):
-        """Return text only when the complete native private message is Plain."""
+    def _private_text_parts(event):
         message_obj = getattr(event, "message_obj", None)
         kind = getattr(getattr(message_obj, "type", None), "value",
                        getattr(message_obj, "type", None))
@@ -161,31 +160,48 @@ class PrivateDebounce:
             return None
         if not parts:
             return None
-        texts = []
+        getter = getattr(event, "get_platform_name", None)
+        official = callable(getter) and getter() in {"qq_official", "qq_official_webhook"}
+        bodies = []
         for part in parts:
             kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
             text = getattr(part, "text", None)
-            if kind != "Plain" or not isinstance(text, str):
+            if kind == "Plain" and isinstance(text, str):
+                bodies.append(part)
+            elif not (official and kind == "At" and getattr(part, "qq", None) == "qq_official"):
                 return None
-            texts.append(text)
-        text = "".join(texts)
+        return (parts, bodies) if bodies else None
+
+    @staticmethod
+    def private_plain_text(event):
+        """Read plain private text, including QQ Official's synthetic bot mention."""
+        parsed = PrivateDebounce._private_text_parts(event)
+        if parsed is None:
+            return None
+        text = "".join(part.text for part in parsed[1])
         return text if text.strip() else None
 
     @staticmethod
     def replace_private_plain_text(event, text):
         """Replace only the body while retaining the latest native event identity."""
         message_obj = getattr(event, "message_obj", None)
-        try:
-            parts = tuple(message_obj.message)
-        except (AttributeError, TypeError):
+        parsed = PrivateDebounce._private_text_parts(event)
+        if parsed is None:
             return False
-        if not parts or any(
-                getattr(getattr(part, "type", None), "value", getattr(part, "type", None)) != "Plain"
-                or not isinstance(getattr(part, "text", None), str) for part in parts):
-            return False
+        parts, bodies = parsed
         try:
-            parts[0].text = text
-            message_obj.message = [parts[0]]
+            bodies[0].text = text
+            output = []
+            body_added = False
+            for part in parts:
+                kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
+                if kind == "Plain":
+                    if not body_added:
+                        output.append(part)
+                        body_added = True
+                else:
+                    output.append(part)
+            message_obj.message = output
             message_obj.message_str = text
             event.message_str = text
         except (AttributeError, TypeError):

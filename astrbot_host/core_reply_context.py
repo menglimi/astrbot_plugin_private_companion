@@ -329,6 +329,12 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
                  "这段摘要只用于理解当前发言者，不要向群内其他人复述私聊原文、称呼、关系细节或时间；"
                  "不要声称这些内容是在群里说的，也不要据此推断其他人的私聊。\n"
                  + private_group_context.strip())
+    def account_link_context():
+        from companion_v2.relationships.account_link_context import linked_context
+        return linked_context(application, context, at=at,
+                              before=_input_received_at(native_input, at))
+
+    optional("account_links", account_link_context)
     optional("cross_window", lambda: _cross_window_section(
         messages, context, at, getattr(native_input, "text", "")))
     optional("knowledge_reference", lambda: _material_section("角色知识资料", system_text("knowledge", KNOWLEDGE_INSTRUCTION),

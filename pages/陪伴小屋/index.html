@@ -97,7 +97,7 @@
        其中相对地址；只有确认官方配置未开启性能模式后才由 performance-gate.js
        激活，低配置设备不会下载 3D 体素包和整套工作区脚本。 -->
   <template id="companion-full-assets">
-    <link rel="stylesheet" href="bundle.css?v=044b60d000f583bd">
+    <link rel="stylesheet" href="bundle.css?v=de0dd8b6c8a64f7b">
 
 
 
@@ -151,7 +151,6 @@
     <script defer src="home-sidebar.js?v=planning-feedback-20261019"></script>
     <script defer src="persona-designer-memory.js?v=persona-recreation-20261101"></script>
     <script defer src="product-page.js?v=group-navigation-20261103"></script>
-    <script defer src="role-card.js?v=role-scope-card"></script>
     <script defer src="confirmation-dialog.js?v=consolidated-20261024-r1"></script>
     <script defer src="native-extension-management.js?v=mobile-mihome-controls-20261026"></script>
     <script defer src="native-extension-panel.js?v=mobile-pairing-confirm-20261030"></script>
@@ -376,10 +375,6 @@
         <div class="home-environment home-only" data-home-environment aria-label="角色地点、天气与当地时间"></div>
         <div class="room-stage" id="stageScene">
           <div id="stageRole" class="stage-role" aria-live="polite"><h2 class="stage-role-title"><i data-lucide="house" aria-hidden="true"></i><span>陪伴的小屋</span></h2></div>
-          <div class="stage-role-card-heading">
-            <span class="stage-role-card-name" data-role-card-name aria-live="polite">尚未选择角色</span>
-            <button type="button" class="stage-role-card-switch" data-role-card-switch aria-label="切换角色" title="切换角色" aria-expanded="false" aria-controls="roleCardMenu"><i data-lucide="users-round" aria-hidden="true"></i></button>
-          </div>
           <div class="voxel-room" data-voxel-room role="group" aria-label="可旋转、可点选家具的体素小屋"></div>
           <!-- 镜头复位与家具布置常驻场景右上角：它们只作用于小屋本身，
                放进容器才不会在速览条移到下方后显得无处安放。 -->
@@ -387,14 +382,10 @@
             <button class="stage-overlay-button" data-voxel-reset title="镜头复位，回到小屋全景"><i data-lucide="rotate-ccw"></i>重置</button>
             <button class="stage-overlay-button" data-detail="arrange" title="布置房间"><i data-lucide="armchair"></i>布置</button>
           </div>
+          <!-- 缩略态不再另放一颗「回到小屋」：小屋本身可点、可聚焦（app.js 给它
+               role=button 与 aria-label），面板标题栏里也有一颗带文字的。
+               原来这里第三颗按钮压在 196×118 的画中画上，三个入口说同一件事。 -->
           <div class="voxel-hint home-only"><i data-lucide="mouse"></i>拖动旋转 · 滚轮缩放 · 点击家具查看</div>
-        </div>
-        <button type="button" class="stage-role-card-handle" data-role-card-handle aria-label="展开小屋卡片" title="点击展开，或向左拖出小屋卡片" aria-controls="stageScene" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button>
-        <div class="stage-role-card-menu" id="roleCardMenu" hidden>
-          <label for="roleCardChoice">切换小屋角色</label>
-          <select id="roleCardChoice" data-role-card-choice aria-label="选择 Bot 账号与角色"></select>
-          <p class="stage-role-card-status" data-role-card-status role="status"></p>
-          <button type="button" class="stage-role-card-reset" data-role-card-reset>恢复卡片默认位置</button>
         </div>
         <div class="stage-furniture-strip home-only" id="stageFurniture" aria-label="小屋家具"></div>
       </section>

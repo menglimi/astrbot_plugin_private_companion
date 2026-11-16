@@ -1147,8 +1147,15 @@ window.CompanionModelsPage = (() => {
       return '<div class="model-alert">当前接入方式是「远程 HTTP 服务」，但地址以 <code>/v1/chat/completions</code> 结尾。请改为 <code>/v1/systemone</code>，或切换到「OpenAI 兼容网关」；后端会拒绝这种跨协议配置。</div>';
     return ""; }
   async function layaRefresh(s) { const l = s.laya, ticket = version; if (l.loading) return; l.loading = true; l.notice = "正在读取 Laya 配置…"; render();
-    try { const [data, history] = await Promise.all([api("GET", path + "/laya"), api("GET", path + "/laya/logs")]); if (!current(ticket, s)) return;
-      if (!layaDirty(l) || l.stale) l.draft = layaDraftFrom(data); l.data = {...data, decision_fields: layaDraftFrom(data).decision_fields}; l.logs = history.events || []; l.loaded = true; l.stale = false; l.bad = false; l.notice = "已读取 Laya 接入状态与近期记录。"; }
+    try { const [config, history] = await Promise.allSettled([api("GET", path + "/laya"), api("GET", path + "/laya/logs")]); if (!current(ticket, s)) return;
+      if (config.status === "rejected") throw config.reason;
+      const data = config.value;
+      if (!layaDirty(l) || l.stale) l.draft = layaDraftFrom(data); l.data = {...data, decision_fields: layaDraftFrom(data).decision_fields};
+      l.logs = history.status === "fulfilled" ? history.value.events || [] : [];
+      l.logsUnavailable = history.status === "fulfilled" && history.value.available === false;
+      l.logsError = history.status === "rejected";
+      l.loaded = true; l.stale = false; l.bad = false;
+      l.notice = l.logsError ? "Laya 配置已读取；近期记录暂不可用。" : "已读取 Laya 接入状态。"; }
     catch (err) { if (!current(ticket, s)) return; l.bad = true; l.notice = fail(err, "无法读取 Laya 配置。"); }
     finally { l.loading = false; if (current(ticket, s)) render(); } }
   async function layaSave(s) { const l = s.laya; if (l.busy || l.loading || !l.data || l.stale || !layaDirty(l)) return;
@@ -1202,7 +1209,11 @@ window.CompanionModelsPage = (() => {
       /* 先把失败原因画出来，再补拉运行记录；日志读取慢时用户也不会一直停在等待态。 */
       render(); await layaRefreshQuiet(s, ticket); }
     finally { l.busy = false; if (current(ticket, s)) render(); } }
-  async function layaRefreshQuiet(s, ticket) { try { const [data, history] = await Promise.all([api("GET", path + "/laya"), api("GET", path + "/laya/logs")]); if (current(ticket, s)) { s.laya.data = data; s.laya.draft = layaDraftFrom(data); s.laya.logs = history.events || []; } } catch {} }
+  async function layaRefreshQuiet(s, ticket) { const [config, history] = await Promise.allSettled([api("GET", path + "/laya"), api("GET", path + "/laya/logs")]);
+    if (!current(ticket, s)) return;
+    if (config.status === "fulfilled") { s.laya.data = config.value; s.laya.draft = layaDraftFrom(config.value); }
+    if (history.status === "fulfilled") { s.laya.logs = history.value.events || []; s.laya.logsUnavailable = history.value.available === false; s.laya.logsError = false; }
+    else s.laya.logsError = true; }
   /* ---------- DeepSeek search binding ---------- */
   const searchDirty = x => !!x.data && !!x.draft
     && (x.draft.deepseek_provider_id !== x.data.deepseek_provider_id
@@ -1291,6 +1302,8 @@ window.CompanionModelsPage = (() => {
       meta.push("当前服务未返回行动概率，阈值未强制执行");
     return `<div class="model-laya-result"><b>决策结果${meta.length ? ` · ${esc(meta.join(" · "))}` : ""}</b><code>${esc(JSON.stringify(decision, null, 2))}</code></div>`; }
   function layaHistoryMarkup(l) { const events = Array.isArray(l.logs) ? l.logs : [];
+    if (l.logsError) return '<p class="model-laya-history-empty">近期记录暂不可用；Laya 配置仍可查看和保存。</p>';
+    if (l.logsUnavailable) return '<p class="model-laya-history-empty">当前群聊的近期决策记录暂不能按会话汇总；全局 Laya 配置仍可在此管理。</p>';
     if (!events.length) return '<p class="model-laya-history-empty">暂无 Laya 调用记录。</p>';
     const labels = {ok: "成功", skipped: "跳过", failed: "失败"}, sources = {conversation: "实际对话", dashboard_preview: "页面预览", probe: "连接测试"};
     const diagnostic = (label, value, empty) => `<div><small>${label}</small><code>${value == null ? empty : esc(JSON.stringify(value, null, 2))}</code></div>`;
@@ -1306,7 +1319,15 @@ window.CompanionModelsPage = (() => {
         : '<small>该记录生成于详细诊断字段启用前。</small>';
       return `<li data-state="${esc(event.status)}"><details><summary><span><strong>${esc(labels[event.status] || event.status)}</strong><small>${esc(time)} · ${esc(sources[event.source] || event.source || "未知来源")} · ${esc(event.mode)}</small></span><b>${event.elapsed_ms == null ? "—" : esc(event.elapsed_ms) + " ms"}</b></summary><div><small>${esc(event.reason_code || "分类结果")}</small>${enabledMarkup}<code>${esc(detail)}</code>${diagnostics}</div></details></li>`;
     }).join("")}</ol>`; }
-  function layaPane(s) { const l = s.laya; if (!l.data) return `<div class="model-card"><p class="model-empty">${esc(l.notice || "正在读取 Laya 配置…")}</p></div>`;
+  function layaContextMarkup() { const product = window.CompanionProduct, currentTarget = product?.target?.();
+    if (!currentTarget) return "";
+    const selection = product.selection?.(), choices = (product.targets?.() || []).filter(item =>
+      item.roles?.some(role => role.role_id === selection?.role_id));
+    const label = product.targetLabel?.(currentTarget) || "当前会话";
+    return `<div class="model-laya-context"><span>当前会话</span>${choices.length > 1
+      ? `<select data-laya-target aria-label="切换查看会话">${choices.map(item => `<option value="${esc(item.target_id)}" ${item.target_id === currentTarget.target_id ? "selected" : ""}>${esc(product.targetLabel(item))}</option>`).join("")}</select>`
+      : `<strong>${esc(label)}</strong>`}</div>`; }
+  function layaPane(s) { const l = s.laya, context = layaContextMarkup(); if (!l.data) return `<div class="model-subpane model-laya-pane">${context}<div class="model-card"><p class="model-empty">${esc(l.notice || "正在读取 Laya 配置…")}</p></div></div>`;
     const dirty = layaDirty(l), installed = l.data.package_installed, mode = l.draft?.mode || l.data.mode;
     const gpuUnavailable = mode === "local" && l.data.local_runtime_state === "gpu_unavailable";
     const runtimeLabel = gpuUnavailable ? "CUDA 不可用" : mode === "local" ? "本地 Python" : mode === "jev" ? "OpenAI 兼容网关" : mode === "workers_ai" ? "Cloudflare Workers AI" : "远程 HTTP";
@@ -1320,7 +1341,7 @@ window.CompanionModelsPage = (() => {
       : mode === "remote" ? "远程管理" : l.data.model_cache_ready ? "已缓存" : "首次调用下载";
     const torchText = [l.data.torch_version, l.data.cuda_version ? `CUDA ${l.data.cuda_version}` : "无 CUDA"]
       .filter(Boolean).join(" · ");
-    return `<div class="model-subpane model-laya-pane">
+    return `<div class="model-subpane model-laya-pane">${context}
       <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">可选能力 · 语义决策</span><h3>Laya 决策模型</h3><p class="model-note">在回复前判断是否接话、等待、沉默及表达形式。配置全局生效；仅群聊候选进入 Laya 判断，私聊始终走 AstrBot 核心回复，另由回复页的私聊收尾判断在纯道别时安静。模型不输出时间、段数等数值；行动概率只用于下方可选的连续接话阈值，执行仍遵循宿主配置和权限。接入方式支持本地 Laya 包、远程 HTTP 服务、OpenAI 兼容网关与 Cloudflare Workers AI，四者共用同一份决策合同；Laya 与 TypeSafe 官方 Jev 都走 SystemOne。</p></div><button type="button" class="button small" data-laya-refresh ${l.loading || l.busy ? "disabled" : ""}>刷新</button></div>
         <div class="model-kpis">${kpi(!l.data.enabled ? "未启用" : mode === "local" && l.data.local_runtime_state === "warming" ? "正在预热" : "已启用", "运行状态", l.data.enabled ? "g" : "a")}${kpi(packageKpi, mode === "local" ? "Python 包" : "依赖来源")}${kpi(modelKpi, mode === "jev" || mode === "workers_ai" ? "判断模型" : "模型权重")}${kpi(runtimeLabel, "接入方式", gpuUnavailable ? "r" : "")}</div>
         ${gpuUnavailable ? `<div class="model-alert"><b>本地 Laya 当前不可用：</b>当前 AstrBot Python 使用的是 CPU 版 PyTorch${torchText ? `（${esc(torchText)}）` : ""}。Laya 本地模式需要 CUDA；请安装与驱动匹配的 CUDA 版 PyTorch 后重启 AstrBot，或在上方把接入方式切到「远程 HTTP 服务」或「OpenAI 兼容网关」。
@@ -1348,9 +1369,13 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
         <div class="model-state">上游源码与版本：<a href="https://github.com/NandhaKishorM/laya" target="_blank" rel="noreferrer">NandhaKishorM/laya</a> · <a href="https://huggingface.co/convaiinnovations/laya-multilingual" target="_blank" rel="noreferrer">Multilingual 权重</a></div>
       </div>`}
       <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">调用预览</span><h3>测试一次语义决策</h3></div></div><label class="model-fd"><span class="model-cap">测试消息<em>只提交这段文字与固定的文本类型事实</em></span><textarea data-laya-preview rows="4" ${l.busy || l.loading ? "disabled" : ""}>${esc(l.previewText || "")}</textarea></label><div class="model-editor-actions"><button type="button" class="button primary" data-laya-decide ${l.busy || l.loading || !l.data.enabled ? "disabled" : ""}>调用 Laya</button></div>${l.preview ? layaResult(l.preview) : ""}</div>
-      <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">运行记录 · 最近 50 条</span><h3>Laya 调用日志</h3></div></div>${layaHistoryMarkup(l)}</div>
+      <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">${l.logsUnavailable ? "当前会话" : "运行记录 · 最近 50 条"}</span><h3>Laya 调用日志</h3></div></div>${layaHistoryMarkup(l)}</div>
     </div>`; }
   function layaInput(s, event) { const l = s.laya, t = event.target;
+    if (event.type === "change" && t.matches("[data-laya-target]")) {
+      const product = window.CompanionProduct, roleId = product?.selection?.()?.role_id;
+      if (roleId) void product.choose(t.value, roleId);
+      return; }
     if (t.matches("[data-laya-preview]")) { l.previewText = t.value; return; }
     if (t.matches("[data-laya-decision]") && l.draft) { l.draft.decision_fields[t.dataset.layaDecision] = t.checked; if (event.type === "change") { l.bad = false; render(); } return; }
     const key = t.dataset.layaField; if (!key || !l.draft || l.loading || l.busy) return;

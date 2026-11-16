@@ -83,7 +83,12 @@
 .model-eb .st{margin-left:auto;letter-spacing:0}
 .model-editor-actions{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
 .model-laya-pane{grid-template-columns:repeat(auto-fit,minmax(min(440px,100%),1fr));align-items:start}
-.model-laya-pane>.model-card:first-child{grid-column:1/-1}
+.model-laya-pane>.model-card:first-child,.model-laya-pane>.model-laya-context+.model-card{grid-column:1/-1}
+.model-laya-context{grid-column:1/-1;display:flex;align-items:center;gap:var(--sp-2);min-width:0;padding:0 0 var(--sp-2);border-bottom:1px solid var(--m-line)}
+.model-laya-context>span{flex:none;color:var(--m-ink3);font-size:var(--fs-tiny)}
+.model-laya-context>strong{min-width:0;overflow-wrap:anywhere;font-size:var(--fs-tiny);font-weight:600}
+.model-laya-context select{max-width:min(100%,420px);min-width:0}
+@media(max-width:600px){.model-laya-context{align-items:stretch;flex-direction:column}.model-laya-context select{max-width:100%;width:100%}}
 .model-laya-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:var(--sp-3)}
 .model-laya-result{display:grid;gap:var(--sp-2);border:1px solid var(--m-line);background:var(--m-card2);border-radius:var(--r-sm);padding:var(--sp-3);min-width:0}
 .model-laya-result b{font-size:var(--fs-tiny);color:var(--m-ink3)}
