@@ -54,3 +54,4 @@ class ContactJob:
     plan: dict | None = None
     plan_call_id: str | None = None
     plan_usage_known: bool = False
+    diagnostic_allow_linked_accounts: bool = False
