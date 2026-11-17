@@ -335,6 +335,16 @@ def configured_default_persona_id(context, umo):
     configuration = context.get_config(umo=umo)
     if not isinstance(configuration, dict):
         return "default"
+    agent = configuration.get("agent", {})
+    if isinstance(agent, dict) and agent:
+        agent_config = agent.get("config", {})
+        if isinstance(agent_config, dict):
+            if agent.get("runtime") == "astrbot":
+                persona = agent_config.get("persona", {})
+                selected = persona.get("persona_id", "default") if isinstance(persona, dict) else "default"
+            else:
+                selected = agent_config.get("persona_id", "default")
+            return selected or "default"
     runner = configuration.get("agent_runner", {})
     runner_config = runner.get("config", {}) if isinstance(runner, dict) else {}
     if isinstance(runner_config, dict) and runner:
@@ -348,6 +358,27 @@ def configured_default_persona_id(context, umo):
     if not isinstance(provider_settings, dict):
         provider_settings = {}
     return provider_settings.get("default_personality") or "default"
+
+
+async def resolve_host_persona_selection(resolver, *, umo, conversation_persona_id,
+                                         platform_name, provider_settings):
+    """Normalize AstrBot's session persona resolver across its two public contracts."""
+    try:
+        parameters = inspect.signature(resolver).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    options = {"umo": umo, "platform_name": platform_name}
+    if ("conversation_persona_id" in parameters or "provider_settings" in parameters
+            or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+            or not parameters):
+        options.update(conversation_persona_id=conversation_persona_id,
+                       provider_settings=provider_settings)
+    result = resolver(**options)
+    if inspect.isawaitable(result):
+        result = await result
+    if not isinstance(result, tuple) or len(result) not in (3, 4) or type(result[-1]) is not bool:
+        raise TaskError("host_persona_invalid", "AstrBot returned an invalid selected persona")
+    return result[0], result[1], result[-1]
 
 
 @dataclass(frozen=True)
@@ -814,9 +845,11 @@ class NativePrivateBridge:
                 settings = self.context.get_config(umo=umo).get("provider_settings", {})
                 resolver = getattr(manager, "resolve_selected_persona", None)
                 if callable(resolver):
-                    selected, persona, _, special = await bounded_native_lookup(resolver(
-                        umo=umo, conversation_persona_id=conversation_persona_id,
-                        platform_name=self.platform_name(account), provider_settings=settings), operation="persona")
+                    selected, persona, special = await bounded_native_lookup(
+                        resolve_host_persona_selection(
+                            resolver, umo=umo, conversation_persona_id=conversation_persona_id,
+                            platform_name=self.platform_name(account), provider_settings=settings),
+                        operation="persona")
                     if special:
                         selected, persona = None, None
                 else:
