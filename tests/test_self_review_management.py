@@ -39,7 +39,7 @@ OPERATOR = SimpleNamespace(subject=SubjectRef("install-1", SubjectKind.HUMAN, "o
 ITEM_FIELDS = {"item_id", "run_id", "kind", "observation", "next_action", "confidence",
                "expires_at", "created_at", "state", "summary", "evidence", "automatic",
                "unavailable_reason", "actions", "view_token"}
-PAGE_FIELDS = {"items", "expired_in_page", "policy", "next_cursor", "context_key", "role_id"}
+PAGE_FIELDS = {"items", "expired_in_page", "policy", "enabled", "next_cursor", "context_key", "role_id"}
 
 
 def order_key(item):
@@ -102,6 +102,10 @@ class SelfReviewListTests(unittest.TestCase):
         app = SimpleNamespace(runtime=self.runtime, role_self_review_evidence=FakeEvidence(),
                               role_self_review=None, notify=lambda: None,
                               role_growth=SimpleNamespace(runtime=self.runtime))
+        from companion_v2.role_work.journal.self_review_service import SelfReviewService
+        service = SelfReviewService(self.runtime)
+        service.app = app
+        app.role_self_review = service
         management = SelfReviewManagement(app)
         # Authorization and the clock are not what these contracts cover.
         management.management._authorize = lambda operator, context, at: (OWNER, 4)
@@ -355,13 +359,13 @@ class SelfReviewListTests(unittest.TestCase):
                                ("not-a-timestamp", run_id + ":item:0"))
         item = self.page(state="active")["items"][0]
         self.assertEqual(item["expires_at"], "not-a-timestamp")
-        self.assertEqual(item["actions"], [])
+        self.assertEqual(item["actions"], ["withdraw"])
 
     def test_an_active_guidance_can_be_kept_long_term(self):
         run_id = self.insert_run(day=0, state="accepted", live_hours=24)
         item_id = run_id + ":item:0"
         item = self.page()["items"][0]
-        self.assertEqual(item["actions"], ["retain"])
+        self.assertEqual(item["actions"], ["withdraw", "retain"])
 
         result = self.management.command(operator=OPERATOR, context=CONTEXT, item_id=item_id,
                                          action="retain", view_token=item["view_token"],
@@ -376,7 +380,7 @@ class SelfReviewListTests(unittest.TestCase):
 
         # 已经长期保留的行不再提供按钮，重复提交也不会再改期限。
         fresh = self.page()["items"][0]
-        self.assertEqual(fresh["actions"], [])
+        self.assertEqual(fresh["actions"], ["withdraw"])
         again = self.management.command(operator=OPERATOR, context=CONTEXT, item_id=item_id,
                                         action="retain", view_token=fresh["view_token"],
                                         operation_key="retain-twice")
@@ -387,13 +391,37 @@ class SelfReviewListTests(unittest.TestCase):
         run_id = self.insert_run(day=2, state="accepted", live_hours=1)
         item_id = run_id + ":item:0"
         item = self.page(state="active")["items"][0]
-        self.assertEqual(item["actions"], [])
+        self.assertEqual(item["actions"], ["withdraw"])
         result = self.management.command(operator=OPERATOR, context=CONTEXT, item_id=item_id,
                                          action="retain", view_token=item["view_token"],
                                          operation_key="retain-expired")
         self.assertFalse(result.is_success)
         self.assertEqual(result.failure.code, "self_review_expired")
 
+    def test_accepted_guidance_can_be_withdrawn_and_keeps_history(self):
+        run_id = self.insert_run(day=0, state="accepted", live_hours=24)
+        item_id = run_id + ":item:0"
+        item = self.page()["items"][0]
+        result = self.management.command(operator=OPERATOR, context=CONTEXT, item_id=item_id,
+                                         action="withdraw", view_token=item["view_token"],
+                                         operation_key="withdraw-once")
+        self.assertTrue(result.is_success, result.failure)
+        self.assertEqual(result.unwrap()["state"], "withdrawn")
+        self.assertEqual(self.page()["items"], [])
+        decided = self.page(state="decided")["items"]
+        self.assertEqual([row["item_id"] for row in decided], [item_id])
+        self.assertEqual(decided[0]["state"], "withdrawn")
+
+    def test_the_switch_is_visible_and_can_disable_the_whole_feature(self):
+        enabled = self.management.settings(operator=OPERATOR, context=CONTEXT)
+        self.assertTrue(enabled.is_success, enabled.failure)
+        self.assertTrue(enabled.unwrap()["enabled"])
+        disabled = self.management.settings_command(operator=OPERATOR, context=CONTEXT, enabled=False)
+        self.assertTrue(disabled.is_success, disabled.failure)
+        self.assertFalse(disabled.unwrap()["enabled"])
+        self.assertFalse(self.management.settings(operator=OPERATOR, context=CONTEXT).unwrap()["enabled"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

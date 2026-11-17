@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 window.CompanionMaintenancePage = (() => {
   const PREFIX = "/astrbot_plugin_private_companion";
   const MEMORY_SAMPLE_INTERVAL_MS = 10000;
@@ -582,7 +582,17 @@ window.CompanionMaintenancePage = (() => {
     const product = window.CompanionProduct;
     const bridge = product?.bridgeNow?.() || await product?.bridgeFor?.();
     if (!bridge) throw new Error("页面桥尚未就绪，请重新读取。");
-    const response = method === "GET" ? await bridge.apiGet(path) : await bridge.apiPost(path, body || {});
+    /* The Dashboard bridge owns the plugin prefix and rejects `?` inside the
+       endpoint.  Split query fields out and pass them through the bridge's
+       query argument instead. */
+    const [rawRoute, rawQuery = ""] = String(path || "").split("?", 2);
+    const route = rawRoute.replace(/^\/+/, "");
+    if (!route) throw new Error("当前页面没有可用的插件接口。");
+    const query = {};
+    for (const [key, value] of new URLSearchParams(rawQuery)) query[key] = value;
+    const response = method === "GET"
+      ? await bridge.apiGet(route, Object.keys(query).length ? query : undefined)
+      : await bridge.apiPost(route, body || {});
     let value = response;
     for (let depth = 0; depth < 3; depth += 1) {
       if (value?.status === "error") {
@@ -4317,3 +4327,5 @@ window.CompanionMaintenancePage = (() => {
 
   return {mount, unmount};
 })();
+
+
