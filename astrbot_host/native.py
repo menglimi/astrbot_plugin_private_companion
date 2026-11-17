@@ -19,7 +19,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import Aioc
 from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
 from astrbot.core.provider.sources.gemini_source import ProviderGoogleGenAI
 from astrbot.core.message.components import Image, Reply, Forward, Record, Video, File
-from astrbot.core.db.po import ConversationV2
+from astrbot.core.db import po as native_po
 from sqlmodel import select
 
 from companion_v2.adapters.astrbot.native import (
@@ -91,8 +91,12 @@ async def load_persona_snapshot_selection(context, umo, conversation_id):
         async with database.get_db() as session:
             session_ready = time.perf_counter()
             query_started = session_ready
-            result = await session.execute(select(ConversationV2.persona_id).where(
-                ConversationV2.conversation_id == conversation_id))
+            # AstrBot 4.30 retains V2 only to migrate data; active rows use V3.
+            conversation = getattr(native_po, "ConversationV3", None)
+            if conversation is None:
+                conversation = native_po.ConversationV2
+            result = await session.execute(select(conversation.persona_id).where(
+                conversation.conversation_id == conversation_id))
             query_finished = time.perf_counter()
             row = result.one_or_none()
             result_finished = time.perf_counter()
