@@ -503,6 +503,9 @@ class MultiHostSession:
             persona_window_snapshot_update=persona_window_snapshot_update,
             private_session_lookup=private_session_lookup,
             file_settings=lambda scope, role: file_intake_settings(runtime, scope, role))
+        # Connection refresh updates bridge.platforms in place. Keep the pairs
+        # assembled for this session so adapter reloads remain detectable.
+        self.native_bridge_pairs = (dict(self.bridge.platforms), dict(self.bridge.groups.platforms))
         from .account_recovery import AccountRecovery
         self.account_recovery = AccountRecovery(self)
         self.model = AstrBotTextProvider(native_context, bridge=self.bridge,
