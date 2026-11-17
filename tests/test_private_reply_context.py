@@ -10,7 +10,8 @@ from tests.multi_host_support import MultiFixture
 from astrbot.core.agent.message import Message, dump_messages_with_checkpoints
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA
 from astrbot_host.core_reply_perception import (
-    inject_core_reply_perception_context, inject_core_reply_perception_policy,
+    _compact_private_reply_context, inject_core_reply_perception_context,
+    inject_core_reply_perception_policy,
 )
 from companion_v2.conversation.private_reply_context import (
     capture_private_reply_context, merged_input_sequence,
@@ -159,6 +160,36 @@ class MergedInputSequenceTests(unittest.TestCase):
         self.assertEqual([item["text"] for item in result], ["看看", "当然"])
         self.assertLess(result[0]["received_at"], result[1]["received_at"])
         self.assertEqual(merged_input_sequence([(NS(created_at=float("nan")), "bad")]), [])
+
+    def test_history_compaction_preserves_distinct_equal_turns(self):
+        context = {"before_input": [
+            {"speaker": "assistant", "text": "好啊", "at": "first", "turn_id": "long-turn-1"},
+            {"speaker": "assistant", "text": "好啊", "at": "second", "turn_id": "long-turn-2"},
+        ], "after_input": [], "last_sent_reply_turn_id": "long-turn-2"}
+        partial = _compact_private_reply_context(context, NS(contexts=[
+            {"role": "assistant", "content": "好啊"},
+        ]))
+        self.assertEqual([entry["text"] for entry in partial["before_input"]], ["好啊", "好啊"])
+        self.assertNotEqual(partial["before_input"][0]["turn_id"],
+                            partial["before_input"][1]["turn_id"])
+        self.assertNotIn("long-turn", json.dumps(partial))
+
+        complete = _compact_private_reply_context(context, NS(contexts=[
+            {"role": "assistant", "content": "好啊"},
+            {"role": "assistant", "content": "好啊"},
+        ]))
+        self.assertTrue(all(entry["text_in_host_history"] for entry in complete["before_input"]))
+        self.assertTrue(all("text" not in entry for entry in complete["before_input"]))
+        self.assertEqual(complete["last_sent_reply_turn_id"], complete["before_input"][1]["turn_id"])
+
+    def test_current_input_uses_exact_current_prompt_once(self):
+        context = {"before_input": [], "after_input": [], "current_inputs": [
+            {"text": "好啊", "received_at": "today"}], "last_sent_reply_turn_id": None}
+        exact = _compact_private_reply_context(context, NS(contexts=[], prompt="好啊"))
+        self.assertEqual(exact["current_inputs"], [
+            {"received_at": "today", "text_in_current_prompt": True}])
+        changed = _compact_private_reply_context(context, NS(contexts=[], prompt="好"))
+        self.assertEqual(changed["current_inputs"][0]["text"], "好啊")
 
 
 if __name__ == "__main__":
