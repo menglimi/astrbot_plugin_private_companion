@@ -319,6 +319,7 @@ class TaskResult:
     receipt_ref: str | None = None
     operation_id: str | None = None
     retryable: bool = False
+    retry_disposition: str | None = None
 
     def __post_init__(self):
         if self.status not in ("succeeded", "failed", "uncertain"):
@@ -330,16 +331,40 @@ class TaskResult:
                 _opaque(getattr(self, name), field=name)
         if type(self.retryable) is not bool:
             raise ValueError("retryable must be a boolean")
+        if self.retry_disposition is not None and self.retry_disposition not in (
+                "safe_retry", "stop", "human_confirmation_required", "input_invalid",
+                "external_effect_unknown"):
+            raise ValueError("unsupported task retry disposition")
+        disposition = self.retry_disposition
+        if disposition is None:
+            disposition = ("external_effect_unknown" if self.status == "uncertain" else
+                           "safe_retry" if self.retryable else "stop" if self.status == "failed" else None)
+        if (self.status == "succeeded" and disposition is not None
+                or self.status == "uncertain" and disposition != "external_effect_unknown"
+                or self.status == "failed" and disposition == "external_effect_unknown"):
+            raise ValueError("retry disposition must match the result state")
+        object.__setattr__(self, "retry_disposition", disposition)
         if self.effect in ("committed", "not_committed") and self.receipt_ref is None:
             raise ValueError("an owner receipt must support a known effect result")
         if self.effect == "committed" and (self.status != "succeeded" or not self.operation_id):
             raise ValueError("an atomic commit requires its owner operation and success receipt")
         if self.status == "uncertain" and self.retryable:
             raise ValueError("unknown results cannot be automatically retried")
+        if self.retry_disposition == "safe_retry" and self.status != "failed":
+            raise ValueError("only a known failure may request a safe retry")
+        if self.disposition_allows_retry and self.effect == "unknown":
+            raise ValueError("unknown effects cannot request a retry")
         if self.effect == "unknown" and self.status != "uncertain":
             raise ValueError("unknown effects require an uncertain result")
         if self.retryable and self.status != "failed":
             raise ValueError("only a known failure may request retry")
+        # Explicit owner decisions take precedence over the legacy boolean.
+        object.__setattr__(self, "retryable", disposition == "safe_retry")
+
+    @property
+    def disposition_allows_retry(self):
+        """Whether the owner explicitly classified this result as safely retryable."""
+        return self.retry_disposition == "safe_retry"
 
 
 @dataclass(frozen=True)

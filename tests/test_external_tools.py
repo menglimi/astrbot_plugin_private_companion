@@ -135,7 +135,84 @@ class ExternalFixture(MessageFixture):
         return batch, run, completion
 
 
+class ExternalResponseTests(unittest.TestCase):
+    def test_failure_dispositions_are_bounded_and_match_the_outcome(self):
+        response = ExternalToolResponse("invocation", "origin", "arguments", descriptor().binding,
+            "failed", receipt_ref="provider-receipt", error_code="qzone_topic_confirmation_required")
+        self.assertEqual(response.retry_disposition, "human_confirmation_required")
+        for disposition in ("", "retry_sometimes", "external_effect_unknown"):
+            with self.subTest(disposition=disposition), self.assertRaises(ValueError):
+                replace(response, retry_disposition=disposition)
+        for code in ("qzone_topic_disabled", "qzone_topic_daily_limit", "qzone_auth_blocked"):
+            with self.subTest(code=code):
+                self.assertEqual(replace(response, error_code=code, retry_disposition=None).retry_disposition, "stop")
+        invalid = replace(response, error_code="qzone_scene_invalid", retry_disposition=None)
+        self.assertEqual(invalid.retry_disposition, "input_invalid")
+        for code in ([], {}, "", "secret=value", "x" * 97):
+            with self.subTest(code=code), self.assertRaises(ValueError):
+                replace(response, error_code=code, retry_disposition=None)
+
+
 class ExternalToolTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_owner_stop_keeps_code_receipt_identity_and_durable_disposition(self):
+        async def refuse(invocation):
+            return self.response(invocation, state="failed", error_code="qzone_auth_blocked",
+                                 operation_id="original-owner-operation", retry_disposition="stop")
+        self.extension_behavior = refuse
+        _, run, completion = await self.stage(tool_call("original", effectful=True), tool_call("changed-id", effectful=True))
+        results = [json.loads((await self.tools.execute_async(run, completion.call_id, call)).result_json)
+                   for call in completion.tool_calls]
+        first, replay = results
+        self.assertEqual((first["state"], first["effect"], first["code"], first["retry_disposition"]),
+                         ("failed", "not_committed", "qzone_auth_blocked", "stop"))
+        self.assertEqual(replay, {**first, "replayed": True})
+        self.assertEqual(first["operation_id"], "original-owner-operation")
+        self.assertIsNotNone(first["receipt_ref"])
+        row = self.rows()[0]
+        self.assertEqual(self.extension._result(row).retry_disposition, "stop")
+        self.assertEqual(len(self.extension_calls), 1)
+
+    async def test_human_confirmation_blocks_changed_arguments_in_the_same_turn(self):
+        async def refuse(invocation):
+            return self.response(invocation, state="failed", error_code="qzone_topic_confirmation_required",
+                                 retry_disposition="human_confirmation_required")
+        self.extension_behavior = refuse
+        _, run, completion = await self.stage(tool_call("original", effectful=True),
+                                              tool_call("changed-id", effectful=True, query="different text"))
+        results = [json.loads((await self.tools.execute_async(run, completion.call_id, call)).result_json)
+                   for call in completion.tool_calls]
+        self.assertEqual(results[1], {**results[0], "replayed": True})
+        self.assertEqual(len(self.extension_calls), 1)
+
+    async def test_input_invalid_can_be_corrected_without_repeating_the_same_failure(self):
+        async def invoke(invocation):
+            if json.loads(invocation.arguments_json)["query"] == "bad":
+                return self.response(invocation, state="failed", error_code="qzone_scene_invalid",
+                                     retry_disposition="input_invalid")
+            return self.response(invocation)
+        self.extension_behavior = invoke
+        _, run, completion = await self.stage(tool_call("bad", query="bad"), tool_call("same", query="bad"),
+                                              tool_call("corrected", query="good"))
+        results = [json.loads((await self.tools.execute_async(run, completion.call_id, call)).result_json)
+                   for call in completion.tool_calls]
+        self.assertEqual(results[1], {**results[0], "replayed": True})
+        self.assertEqual(results[2]["state"], "succeeded")
+        self.assertEqual(len(self.extension_calls), 2)
+
+    async def test_safe_retry_cannot_replenish_the_external_child_attempt_budget(self):
+        async def refuse(invocation):
+            return self.response(invocation, state="failed", error_code="provider_busy", retry_disposition="safe_retry")
+        self.extension_behavior = refuse
+        _, run, completion = await self.stage(tool_call("first", effectful=True), tool_call("second", effectful=True))
+        results = [json.loads((await self.tools.execute_async(run, completion.call_id, call)).result_json)
+                   for call in completion.tool_calls]
+        self.assertEqual(results[0]["retry_disposition"], "safe_retry")
+        self.assertEqual(results[1], {**results[0], "replayed": True})
+        child = self.tasks.read(self.context, self.rows()[0]["task_id"]).unwrap()
+        self.assertEqual((child.state, child.reason, child.attempt_no), ("dead_letter", "attempt_budget_exhausted", 1))
+        self.assertEqual(self.extension._result(self.rows()[0]).retry_disposition, "safe_retry")
+        self.assertEqual(len(self.extension_calls), 1)
+
     async def test_group_catalog_filter_audit_is_bounded_and_uses_codes_only(self):
         group_context = SimpleNamespace(scope=SimpleNamespace(kind=ScopeKind.GROUP))
 
@@ -213,7 +290,12 @@ class ExternalToolTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
         row = self.rows()[0]
         self.assertEqual((row["state"], row["effect"]), ("unknown", "unknown"))
         self.assertEqual(self.tasks.read(self.context, row["task_id"]).unwrap().state, "uncertain")
-        self.assertEqual(json.loads(self.called[-1][1].tool_history[-1].result_json)["code"], "external_effect_unresolved")
+        history = self.called[-1][1].tool_history
+        original = json.loads(history[0].result_json)
+        repeated = json.loads(history[-1].result_json)
+        self.assertEqual(repeated, {**original, "replayed": True})
+        self.assertEqual((repeated["state"], repeated["effect"], repeated["retry_disposition"]),
+                         ("unknown", "unknown", "external_effect_unknown"))
 
     async def test_read_timeout_and_provider_exception_stay_unknown(self):
         async def broken(invocation):
