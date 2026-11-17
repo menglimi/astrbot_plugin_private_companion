@@ -331,9 +331,9 @@ window.CompanionHomeSidebar = (() => {
       ? row(item.item, item.item.tone === "current" || item.item.order === 0)
       : `<li class="home-agenda-gap"${item.current ? ` data-current="true" aria-current="time"` : ""}><span class="home-agenda-gap-mark" aria-hidden="true"></span><div class="home-agenda-gap-body"><time>${minuteLabel(item.start)} – ${minuteLabel(item.end)} · ${e(durationLabel(item.end-item.start))}</time><strong>${item.current ? (items.length ? "当前未安排" : "今日暂无安排") : "未安排时段"}</strong><small>${item.next ? `这段时间没有已记录安排 · 下一项 ${e(clock(item.next.start, zone))}` : "当天暂无后续安排"}</small></div></li>`).join("")
       : `<li class="home-agenda-item"><span class="home-agenda-dot" aria-hidden="true"></span><div class="home-agenda-body"><strong>${emptyTitle}</strong></div></li>`;
-    // One summary, one "up next" heading, one collapsed history.  The old
-    // header repeated "已落幕" three times and the act counter started at 02
-    // because it included hidden elapsed items.
+    // One summary, one "up next" heading, one collapsed history.  The previous
+    // header repeated the finished count three times and the act counter started
+    // at 02 because it included hidden elapsed items.
     const summary = `<div class="home-agenda-summary"><span><b>${items.length}</b> 项安排</span>${elapsed.length ? `<span>已结束 ${elapsed.length}</span>` : ""}<span class="is-accent">接下来 ${live.length}</span></div>`;
     const programHead = `<div class="home-agenda-program-head"><h3>接下来</h3><span>${live.length} 项</span></div>`;
     return `${summary}
