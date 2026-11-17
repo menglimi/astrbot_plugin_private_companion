@@ -134,6 +134,7 @@ RETRYABLE_HOST_STARTUP_CODES = frozenset({
     "host_platform_unavailable", "host_platform_changed", "host_account_unavailable",
     "host_account_changed", "host_persona_unavailable",
     "host_persona_window_unbound", "host_conversation_changed", "host_startup_failed",
+    "host_provider_unavailable",
     "staging_preflight_failed",
 })
 # A denied final send is the one refusal the user feels as silence, and it is

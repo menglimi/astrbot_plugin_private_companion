@@ -524,10 +524,20 @@ class CalendarPlanning:
         local = self.tasks.now().astimezone(ZoneInfo(settings["planning_timezone"]))
         slot = "daily:" + settings["planning_timezone"] + ":" + local.date().isoformat() + ":settings:" + self.app.role_state.planning_settings_token(context)
         daily_result, _, next_review = planning_observation.daily_observation(self, context, slot, local)
+        last_result = self.results.get(role_key, self.results.get(context.key)) or planning_observation.stored_result(self, context)
+        # A successful manual daily run is the final state of the day too.  The
+        # automatic marker points at the earlier failed task, so without this
+        # the page kept saying "planning incomplete" after a manual success.
+        if (daily_result is not None and last_result is not None
+                and last_result.get("state") == "succeeded"
+                and last_result.get("mode") in (None, "daily")
+                and str(last_result.get("observed_at", "")) > str(daily_result.get("observed_at", ""))):
+            daily_result = last_result
+            next_review = None
         return {"enabled": settings["planning_enabled"], "calendar_enabled": settings["calendar_enabled"],
             "schedule_simulation_mode": settings["schedule_simulation_mode"],
             "running": role_key in self.workers,
-            "last_result": self.results.get(role_key, self.results.get(context.key)) or planning_observation.stored_result(self, context),
+            "last_result": last_result,
             "daily_result": daily_result, "next_review_at": next_review.isoformat() if next_review else None,
             "next_check": next_check.isoformat() if next_check is not None else None}
 
