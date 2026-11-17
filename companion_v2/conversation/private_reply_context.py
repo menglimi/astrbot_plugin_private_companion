@@ -10,6 +10,8 @@ from .native_history import dialogue
 
 INSTRUCTION = (
     "private_reply_context 按真实输入时间和原生发送回调整理私聊时序，记录有界，不证明对方已读。"
+    "turn_id 是本次请求内的短引用，同一值才表示同一轮；text_in_host_history 表示正文已在宿主历史中，"
+    "text_in_current_prompt 表示正文就是本轮原话，省略重复正文不代表消息未发送。"
     "理解本轮短话时，先看 before_input 中在最早一条合并输入到达前已发出的内容；同一 turn_id 的多个气泡属于同一次回复。"
     "last_sent_reply_turn_id 只是最近发送的时间锚点，具体承接对象仍结合原话、明确引用、否定和话题判断。"
     "after_input 中的消息是在本轮输入之后才发出的，不能把用户较早的应声或确认解释成对这些后来内容的回答。"

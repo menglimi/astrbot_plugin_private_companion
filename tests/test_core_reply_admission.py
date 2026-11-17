@@ -1,11 +1,14 @@
 """Core reply admission remains outside V2 batch generation and delivery."""
 
+import json
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from companion_v2.conversation.foreground import ContextContribution, ContributionState
 from companion_v2.foundation.outcome import Outcome
+from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA
+from astrbot_host.core_reply_perception import inject_core_reply_perception_context
 from tests.group_host_support import GroupFixture, group_config
 from tests.multi_host_support import MultiFixture
 from tests.native_adapter_support import FakeEvent
@@ -398,6 +401,20 @@ class PrivateCoreReplyAdmissionTests(MultiFixture, unittest.IsolatedAsyncioTestC
         self.assertIn("proactive_inspirations", prepared["context_sections"])
         owner.capture_contribution.assert_called_once()
         self.assertEqual(self.native.provider.client.state.calls, [])
+
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, {"prepared": prepared})
+        request = NS(prompt="刚才那条在哪看到的", contexts=[], extra_user_content_parts=[])
+        await inject_core_reply_perception_context(event, request, application=self.app)
+        payload = json.loads(request.extra_user_content_parts[-1].text
+                             .removeprefix("<companion_v2_context>\n")
+                             .removesuffix("\n</companion_v2_context>"))
+        background = payload["companion_background"]
+        self.assertIsInstance(background, dict)
+        inspiration = next(section for section in background["sections"]
+                           if section.get("title") == "本窗口主动灵感清单")
+        self.assertEqual(inspiration["materials"][0]["content"]["items"][0]["text"],
+                         "竟然发现这么漂亮的星图")
+        self.assertNotIn('\\"items\\"', request.extra_user_content_parts[-1].text)
 
     async def test_private_calendar_uses_configured_timezone_without_calling_external_port(self):
         from companion_v2.conversation.perception_settings import DEFAULTS

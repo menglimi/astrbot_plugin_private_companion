@@ -1242,6 +1242,7 @@ class MultiHostSession:
                     except Exception as error:
                         logger.warning("[CompanionV2] 核心回复文字设置暂不可读，保留宿主发送 error_type=%s", type(error).__name__)
                 prompt_instruction, stable_prompt_instruction = "", ""
+                prompt_context_instruction, prompt_context_blocks = "", ()
                 context_sections, expression_signal_ids = (), ()
                 perception_options = None
                 perception_context, perception_instructions, perception_guidance = "", (), ""
@@ -1276,6 +1277,8 @@ class MultiHostSession:
                             group_trigger=group_trigger,
                             private_group_context=private_group_context)
                         prompt_instruction = getattr(prompt, "context_instruction", prompt.instruction)
+                        prompt_context_instruction = prompt_instruction
+                        prompt_context_blocks = getattr(prompt, "context_blocks", ())
                         stable_prompt_instruction = getattr(prompt, "stable_instruction", "")
                         context_sections = prompt.sections
                         expression_signal_ids = getattr(prompt, "expression_signal_ids", ())
@@ -1353,6 +1356,8 @@ class MultiHostSession:
                     "connection_lease": connection_lease,
                     "instruction": captured.instruction,
                     "prompt_instruction": prompt_instruction,
+                    "prompt_context_instruction": prompt_context_instruction,
+                    "prompt_context_blocks": prompt_context_blocks,
                     "stable_prompt_instruction": stable_prompt_instruction,
                     "target_id": target.target_id,
                     "channel": channel,
