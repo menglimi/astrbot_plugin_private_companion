@@ -123,10 +123,11 @@ EXCLUDED_FILES = {
     "docs/INTEGRATION_ACCEPTANCE_V2_0.md",
     # The migration acceptance note contains counts from a real private data set.
     "docs/V670_TO_V700_MIGRATION_20261019.md",
-    # Historical configuration inventories: useful in git, not in the runtime ZIP.
-    "docs/V1_V2_CONFIG_RESOLVED_20260928.csv",
+    # Keep the resolved ledger: packaged migration acceptance reads it to audit
+    # the runtime rule tables. Other historical inventories are source-only.
     "docs/V1_V2_CONFIG_VERIFIED_20260927.csv",
     "docs/V2_CONFIG_SURFACE_20260928.csv",
+    "docs/V1_CONFIG_BY_SEGMENT_20260925.csv",
     "fixtures/reply_efficiency_preview.json",
     # This standalone mini-game is not part of the companion plugin release.
     "tests/bubble_bonbon_smoke.mjs",
@@ -282,7 +283,7 @@ def zip_entries(path, entries):
             info = zipfile.ZipInfo(name, date_time=(2026, 9, 25, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o100644 << 16
-            archive.writestr(info, payload)
+            archive.writestr(info, payload, compresslevel=9)
     with zipfile.ZipFile(path) as archive:
         if archive.testzip() is not None:
             raise ValueError("archive CRC failed: " + path.name)
