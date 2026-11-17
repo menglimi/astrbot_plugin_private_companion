@@ -14,7 +14,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE_ID = "astrbot_plugin_private_companion"
-VERSION = "7.2.1"
+VERSION = "7.2.2"
 RELEASE_SCHEMA = "companion.v2.release.v2"
 MARKET_MAX_BYTES = 16_000_000
 NATIVE_EXTENSION_FILES = {
@@ -94,7 +94,7 @@ NATIVE_HASH_FILES = {
 }
 LEGACY_PROVIDER_IDS = frozenset("astrbot_plugin_" + name + "_companion" for name in
     ("content", "image", "reality", "screen", "together", "game", "live_stream"))
-CORE_DIRS = ("companion_v2", "astrbot_host", "pages", "docs", "tests", "fixtures", "tools", "skills")
+CORE_DIRS = ("companion_v2", "astrbot_host", "pages", "docs", "fixtures", "tools", "skills")
 ROOT_FILES = {
     "metadata.yaml", "_conf_schema.json", "README.md", "CHANGELOG.md", "CONTRIBUTING.md",
     "requirements.txt", "requirements-optional-input.txt", "requirements-optional-mic.txt",
