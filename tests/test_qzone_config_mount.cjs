@@ -314,6 +314,17 @@ async function enterActionPage(page, {warm = false} = {}) {
   }
 }
 
+test("每日次数关闭时概览显示无限，旧设置仍显示原上限", () => {
+  const page = loadPage();
+  assert.match(page.run("qzoneLimitsMarkup({publish_max_daily:1})"), /每日最多说说 1 条/);
+  assert.match(page.run("qzoneLimitsMarkup({daily_limits_enabled:true,publish_max_daily:2})"), /每日最多说说 2 条/);
+  const unlimited = page.run("qzoneLimitsMarkup({daily_limits_enabled:false,publish_max_daily:1,action_min_interval_minutes:30})");
+  assert.match(unlimited, /每日说说次数 无限/);
+  assert.match(unlimited, /同类动作最短间隔 30 分钟/);
+  assert.doesNotMatch(unlimited, /每日最多说说/);
+  assert.match(page.run("qzoneLimitsMarkup({daily_limits_enabled:false})"), /每日说说次数 无限/);
+});
+
 test("已安装但尚未授权时显示授权入口，并阻止读取和发布动作", async () => {
   const page = loadPage();
   await enterActionPage(page);

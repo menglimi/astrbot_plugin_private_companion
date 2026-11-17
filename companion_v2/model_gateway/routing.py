@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
+from threading import RLock
 from types import MappingProxyType
 
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget, ConfigurationSnapshot
@@ -54,9 +55,12 @@ class ResolvedModelPlan:
 
 class ModelRouter:
     def __init__(self, configuration: ConfigurationService, profiles: tuple[ModelTaskProfile, ...],
-                 providers: tuple[LocalProvider, ...], *, default_provider_resolver=None):
+                 providers: tuple[LocalProvider, ...], *, default_provider_resolver=None,
+                 provider_lookup=None):
         self.configuration = configuration
         self.default_provider_resolver = default_provider_resolver
+        self.provider_lookup = provider_lookup
+        self._provider_lock = RLock()
         self.profiles = MappingProxyType({p.kind: p for p in profiles})
         self.providers = MappingProxyType({p.binding.provider: p for p in providers})
         if not profiles or len(self.profiles) != len(profiles) or len(self.providers) != len(providers):
@@ -71,6 +75,23 @@ class ModelRouter:
             validate_targets(checked_rules(profile.replacement_rules), self.providers,
                              capabilities=profile.capabilities)
 
+    def provider_for(self, provider_id):
+        """Adopt a newly loaded provider through the trusted host adapter."""
+        if type(provider_id) is not str or not provider_id:
+            return None
+        provider = self.providers.get(provider_id)
+        if provider is not None or self.provider_lookup is None:
+            return provider
+        with self._provider_lock:
+            provider = self.providers.get(provider_id)
+            if provider is None:
+                provider = self.provider_lookup(provider_id)
+                if provider is not None:
+                    if not isinstance(provider, LocalProvider) or provider.binding.provider != provider_id:
+                        raise TaskError("model_provider_unavailable", "host returned a mismatched model adapter")
+                    self.providers = MappingProxyType({**self.providers, provider_id: provider})
+            return provider
+
     def provider_default(self, context, profile, snapshot=None):
         """Read the host's current conversation route before sealing a model plan."""
         if self.default_provider_resolver is None:
@@ -81,7 +102,7 @@ class ModelRouter:
             if primary.source is not None and (fallback.source is not None or profile.default_fallback):
                 return None
         provider_id = self.default_provider_resolver(context, profile)
-        if provider_id is not None and provider_id not in self.providers:
+        if provider_id is not None and self.provider_for(provider_id) is None:
             raise TaskError("model_provider_unavailable", "the current host conversation model has no local adapter")
         return provider_id
 
@@ -121,8 +142,13 @@ class ModelRouter:
 
     def _validate_route_targets(self, profile, values, *, max_output_tokens=None):
         try:
-            validate_targets(checked_rules(values["replacement_rules"]), self.providers,
+            rules = checked_rules(values["replacement_rules"])
+            for rule in rules:
+                self.provider_for(rule.provider_id)
+            validate_targets(rules, self.providers,
                              capabilities=profile.capabilities, max_output_tokens=max_output_tokens)
+        except TaskError:
+            raise
         except ValueError as error:
             raise TaskError("model_route_invalid", str(error)) from error
 
@@ -139,7 +165,7 @@ class ModelRouter:
         primary = match.provider_id if match else values["provider"]
         provider_ids = (primary,) + ((values["fallback"],)
             if values["fallback"] and values["fallback"] != primary else ())
-        selected = tuple(self.providers.get(provider_id) for provider_id in provider_ids)
+        selected = tuple(self.provider_for(provider_id) for provider_id in provider_ids)
         if any(provider is None for provider in selected):
             raise TaskError("model_provider_unavailable", "configured provider has no local adapter")
         return match, selected, in_scope
@@ -199,7 +225,7 @@ class ModelRouter:
                 if basis == "explicit":
                     self._validate_route_targets(profile, values, max_output_tokens=ceiling)
             else:
-                if provider_id not in self.providers:
+                if self.provider_for(provider_id) is None:
                     raise TaskError("model_provider_unavailable", "the selected review provider has no local adapter")
                 match, selected, in_scope = None, (self.providers[provider_id],), False
                 ceiling, basis = self._output_ceiling(profile, routed_snapshot, values, self.providers)

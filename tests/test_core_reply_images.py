@@ -158,8 +158,7 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         from astrbot.core.pipeline.process_stage.follow_up import _ACTIVE_AGENT_RUNNERS
         from astrbot.core.provider.entities import LLMResponse, ProviderRequest
         from astrbot.core.star.context import Context
-        from astrbot.core.tools.message_tools import SendMessageToUserTool
-        from astrbot_host.core_reply_native_send import inject_core_reply_send_tool
+        from astrbot_host.core_reply_native_send import SendMessageToUserTool, inject_core_reply_send_tool
         from astrbot_host.core_reply_tool_dispatch import observe_core_tool_dispatch_begin, restore_core_tool_dispatch
         from tests.test_core_reply_pipeline import PipelineEvent
 
@@ -287,6 +286,87 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         selected = page["items"][0]
         self.app.messages.sources.revoke(selected.parent, expected_governance_revision=1,
                                          observed_at=self.clock.now()).unwrap()
+        self.assertEqual(len(album.album_page(self.context, self.clock.now())["items"]), 1)
+        self.assert_no_reply_work(event)
+
+    async def test_native_album_retains_originals_after_provider_package_upgrade(self):
+        event, request = self.prepare("native-image-upgrade")
+        generated = self.result(await self.call(event, request, "image.generate",
+            {"prompt": "红色"}, "upgrade-generate"), "red")
+        artifact = json.loads(generated["payload"])["native"]["artifacts"][0]["artifact_id"]
+        edited = self.result(await self.call(event, request, "image.edit",
+            {"prompt": "蓝色", "artifact_id": artifact}, "upgrade-edit"), "blue")
+        album = self.app.messages.generated_images
+        external = self.app.tools.external
+        old_providers = dict(external.providers)
+        old_package = old_providers["image.generate"].descriptor.package
+        new_package = replace(old_package, package_version=old_package.package_version + ".upgrade",
+                              artifact_hash="upgraded-image-package")
+        capabilities = CapabilityRepository(self.runtime)
+        require(capabilities.register_descriptor(new_package, registered_at=self.clock.now()))
+        require(capabilities.update(extension_id=new_package.extension_id, package_id=new_package.package_id,
+            package_version=new_package.package_version, expected_revision=1, observed_at=self.clock.now()))
+        providers = {}
+        for action, provider in old_providers.items():
+            if provider.descriptor.package != old_package:
+                providers[action] = provider
+                continue
+            old = provider.descriptor
+            schema = json.loads(old.tool.parameters_json)
+            schema["properties"]["new_option"] = {"type": "string"}
+            tool = replace(old.tool, description=old.tool.description + " (updated)", parameters_json=encode(schema))
+            binding = replace(old.binding, version=new_package.package_version, generation="new-generation")
+            descriptor = replace(old, package=new_package, tool=tool, binding=binding)
+            providers[action] = replace(provider, descriptor=descriptor, current_binding=lambda binding=binding: binding)
+        external.providers = providers
+
+        first = album.album_page(self.context, self.clock.now(), limit=1)
+        second = album.album_page(self.context, self.clock.now(), limit=1, cursor=first["next_cursor"])
+        items = (*first["items"], *second["items"])
+        self.assertEqual({item.image_id for item in items}, {
+            "generated-image:" + generated["invocation_id"] + ":0",
+            "generated-image:" + edited["invocation_id"] + ":0"})
+        self.assertEqual(album.album_image(self.context, self.clock.now(), artifact).content, image_bytes("red"))
+        for item in items:
+            self.assertEqual(album.album_image(self.context, self.clock.now(), item.image_id), item)
+        self.assertEqual(len(self.image_backend.calls), 2)
+
+        key = "astrbot.core-tool." + generated["invocation_id"]
+        operation = json.loads(self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key=?", (key,))["value"])
+        task_id = operation["task_id"]
+        record = self.runtime.read_one("SELECT record_json FROM execution_tasks WHERE task_id=?", (task_id,))["record_json"]
+        forged = json.loads(record)
+        forged["definition"]["version"] = "forged"
+        with self.runtime.transaction() as connection:
+            connection.execute("UPDATE execution_tasks SET record_json=? WHERE task_id=?", (encode(forged), task_id))
+        with self.assertRaises(TaskError):
+            album.album_image(self.context, self.clock.now(), artifact)
+        with self.runtime.transaction() as connection:
+            connection.execute("UPDATE execution_tasks SET record_json=? WHERE task_id=?", (record, task_id))
+
+        declaration = json.loads(operation["provider_json"])
+        declaration["package"]["artifact_hash"] = "forged-package"
+        with self.runtime.transaction() as connection:
+            connection.execute("UPDATE runtime_metadata SET value=? WHERE key=?",
+                (encode({**operation, "provider_json": encode(declaration)}), key))
+        with self.assertRaises(TaskError):
+            album.album_image(self.context, self.clock.now(), artifact)
+        with self.runtime.transaction() as connection:
+            connection.execute("UPDATE runtime_metadata SET value=? WHERE key=?", (encode(operation), key))
+
+        provider = providers["image.generate"]
+        changed_binding = replace(provider.descriptor.binding, provider="other-provider")
+        providers["image.generate"] = replace(provider, descriptor=replace(provider.descriptor, binding=changed_binding),
+                                               current_binding=lambda: changed_binding)
+        with self.assertRaises(TaskError):
+            album.album_image(self.context, self.clock.now(), artifact)
+        providers["image.generate"] = provider
+
+        selected = album.album_image(self.context, self.clock.now(), artifact)
+        self.app.messages.sources.revoke(selected.parent, expected_governance_revision=1,
+                                         observed_at=self.clock.now()).unwrap()
+        with self.assertRaises(TaskError):
+            album.album_image(self.context, self.clock.now(), artifact)
         self.assertEqual(len(album.album_page(self.context, self.clock.now())["items"]), 1)
         self.assert_no_reply_work(event)
 

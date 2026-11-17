@@ -77,6 +77,11 @@ function section(kind, changes = {}, token = TOKEN('a')) {
 /* 2026-09-28 新接入的四个分区。默认值、类型与边界都照真实注册表抄，
    否则夹具给出与后端不一致的合同，就测不出「页面按后端下发的范围校验」这件事。 */
 const NEW_KINDS = {
+  qzone: {
+    group: 'qzone', scope: 'role', layers: ['role', 'window'], editableLayers: ['role', 'window'],
+    settings: {daily_limits_enabled: true, publish_max_daily: 1},
+    fields: {daily_limits_enabled: ['boolean'], publish_max_daily: ['integer', 1, 10]},
+  },
   'expression.learning': {
     group: 'expression.learning', scope: 'role', layers: ['installation', 'role'],
     editableLayers: ['installation', 'role', 'window'],
@@ -1151,6 +1156,25 @@ test('role learning policies use the selected role config route', async () => {
 });
 
 /* ==== 2026-09-28 新接入的四个分区 ==== */
+
+test('QQ 空间每日次数开关可关闭、保存并显示中文解释', async () => {
+  const harnessed = harness(['qzone']);
+  const [instance] = await loaded(harnessed, ['qzone']);
+  const markup = harnessed.painted.qzone;
+  assert.match(markup, /启用每日次数限制/);
+  assert.match(markup, /关闭后每日次数不限/);
+  assert.match(fieldRow(markup, 'daily_limits_enabled'), /已开启/);
+  instance.state.draft.daily_limits_enabled = false;
+  const saving = instance.save(false);
+  await drains();
+  assert.deepEqual(plain(harnessed.requests[1].body.changes), {daily_limits_enabled: false});
+  harnessed.requests[1].resolve({result: {operation_id: 'qzone-daily', replayed: false},
+    status: newSection('qzone', {daily_limits_enabled: false}, TOKEN('b'))});
+  await saving;
+  await drains();
+  assert.equal(instance.state.base.daily_limits_enabled, false);
+  assert.match(fieldRow(harnessed.painted.qzone, 'daily_limits_enabled'), /已关闭/);
+});
 
 test('target-owned sections use their registered scope and role route', async () => {
   const installationKinds = new Set(['proactive.contact', 'reaction', 'budget']);

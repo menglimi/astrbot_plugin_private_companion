@@ -11,13 +11,15 @@
 <body>
   <main>
     <header>
+      <div class="eyebrow">核心管理员 · 角色级</div>
       <div class="host-controls"><button id="start-host" class="secondary" type="button">启动当前配置</button>
         <button id="stop-host" class="quiet" type="button">停止运行</button>
         <button id="refresh" class="secondary" type="button">刷新记录</button></div></header>
     <section class="scope" aria-label="当前范围">
-      <div><span>角色</span><strong id="role">—</strong></div><div><span>私聊对象</span><strong id="participant">—</strong></div>
+      <div><span>角色</span><strong id="role">—</strong></div><div><span>执行窗口</span><strong id="participant">—</strong></div>
       <div><span>运行状态</span><strong id="host-state">正在连接…</strong></div><div><span>生活日程</span><strong id="routine-state">—</strong></div>
     </section>
+    <p class="muted scope-note">日记、梦境与生活记录按角色保存；执行窗口只决定到点事件和主动投递的落点，不改变日记归属。</p>
     <p id="next-routines" class="muted schedule-hint"></p>
     <section class="sleep-plan" aria-label="角色共享作息">
       <div><span>自动睡眠范围</span><strong id="sleep-scope">正在读取…</strong></div>

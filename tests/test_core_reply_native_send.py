@@ -10,9 +10,8 @@ from astrbot.core.agent.tool import ToolSet
 from astrbot.core.astr_agent_context import AstrAgentContext
 from astrbot.core.provider.entities import ProviderRequest
 from astrbot.core.star.context import Context
-from astrbot.core.tools.message_tools import SendMessageToUserTool
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA, prepare_core_reply_event
-from astrbot_host.core_reply_native_send import inject_core_reply_send_tool
+from astrbot_host.core_reply_native_send import SendMessageToUserTool, inject_core_reply_send_tool
 from companion_v2.execution.models import TaskError
 from companion_v2.conversation.voice_reply import VoiceReplyPolicy
 from companion_v2.foundation.outcome import Outcome

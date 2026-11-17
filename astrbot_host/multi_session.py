@@ -503,6 +503,9 @@ class MultiHostSession:
             persona_window_snapshot_update=persona_window_snapshot_update,
             private_session_lookup=private_session_lookup,
             file_settings=lambda scope, role: file_intake_settings(runtime, scope, role))
+        # Connection refresh updates bridge.platforms in place. Keep the pairs
+        # assembled for this session so adapter reloads remain detectable.
+        self.native_bridge_pairs = (dict(self.bridge.platforms), dict(self.bridge.groups.platforms))
         from .account_recovery import AccountRecovery
         self.account_recovery = AccountRecovery(self)
         self.model = AstrBotTextProvider(native_context, bridge=self.bridge,
@@ -513,15 +516,14 @@ class MultiHostSession:
             maximum_input_estimate=common.maximum_input_estimate, output_parameter=common.output_parameter,
             streaming=common.streaming)
         self.model._current()
+        self._model_defaults = TextProviderSettings(common.provider_id, common.tariff,
+            max(common.max_output_tokens, PROVIDER_OUTPUT_FLOOR), common.maximum_input_estimate,
+            common.output_parameter, common.streaming)
         self.model = attach_native_video(native_context, bridge=self.bridge, native_types=native_types,
-            text=self.model, settings=TextProviderSettings(common.provider_id, common.tariff,
-                max(common.max_output_tokens, PROVIDER_OUTPUT_FLOOR), common.maximum_input_estimate,
-                common.output_parameter, common.streaming))
+            text=self.model, settings=self._model_defaults)
         self.models = (self.model,) + assemble_providers(native_context, bridge=self.bridge,
             native_types=native_types, primary_id=common.provider_id, additional=common.additional_providers,
-            defaults=TextProviderSettings(common.provider_id, common.tariff,
-                max(common.max_output_tokens, PROVIDER_OUTPUT_FLOOR),
-                common.maximum_input_estimate, common.output_parameter, common.streaming))
+            defaults=self._model_defaults)
         fallback_provider_id, replacement_rules = loaded_routing(common.fallback_provider_id,
             common.replacement_rules, (model.binding.provider for model in self.models))
         profiles = (ModelTaskProfile(REPLY_KIND, Lane.FOREGROUND, common.provider_id, common.task_prompt,
@@ -574,6 +576,7 @@ class MultiHostSession:
             profiles=profiles, providers=tuple(model.local_provider() for model in self.models), budget=common.budget,
             budget_soft=common.budget_soft,
             default_provider_resolver=conversation_provider_resolver(native_context),
+            provider_lookup=self._load_model_provider,
             sender=LocalSender(self.sender_binding, self.send, supports_images=True, supports_poke=True), policy=common.policy, limits=common.limits, now=now,
             tool_port=tool_port, segmentation=common.segmentation,
             # 记忆归属读的是别家插件自己公开的声明；跨插件读取只在这一个适配函数里，
@@ -623,6 +626,15 @@ class MultiHostSession:
             self.core_reply_observations = CoreReplyObservations(self)
         except Exception as error:
             logger.warning("[CompanionV2] 原生聊天观察初始化降级 error_type=%s", type(error).__name__)
+
+    def _load_model_provider(self, provider_id):
+        if self.bridge.context.get_provider_by_id(provider_id) is None:
+            return None
+        models = assemble_providers(self.bridge.context, bridge=self.bridge, native_types=self.types,
+            primary_id=self.settings.common.provider_id,
+            additional=self.settings.common.additional_providers, defaults=self._model_defaults,
+            only_ids=(provider_id,))
+        return models[0].local_provider() if models else None
 
     def scope(self, target, conversation_id):
         return ScopeRef(self.runtime.installation_id, target.platform_id, ScopeKind.PRIVATE, target.participant_id,

@@ -754,7 +754,9 @@ class CalendarPlanningTests(StateFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failed["state"], "failed")
         self.assertTrue((await planner.run(context, instruction, mode=mode, slot=original_slot, automatic=True))["replayed"])
         self.assertEqual(planner.status(context)["daily_result"]["code"], "provider_wait_timed_out")
-        self.assertEqual(datetime.fromisoformat(planner.status(context)["next_review_at"]).hour, 6)
+        self.assertEqual(datetime.fromisoformat(planner.status(context)["next_review_at"]).hour, 0)
+        self.assertLessEqual(datetime.fromisoformat(planner.status(context)["next_review_at"]),
+                             self.clock.now() + timedelta(minutes=5))
         self.assertEqual(len(self.called), 1)
 
         restarted = CalendarPlanning(self.runtime)
@@ -811,7 +813,7 @@ class CalendarPlanningTests(StateFixture, unittest.IsolatedAsyncioTestCase):
         await planner.run(context, instruction, mode=opportunity[0], slot=opportunity[1], automatic=True)
         self.assertEqual(planner.opportunity(context, settings, self.clock.now())[0], "horizon")
         self.assertEqual(len(self.called), 2)
-        self.assertEqual(datetime.fromisoformat(planner.status(context)["next_review_at"]).hour, 18)
+        self.assertEqual(datetime.fromisoformat(planner.status(context)["next_review_at"]).hour, 13)
 
     async def test_daily_review_reports_the_actual_wait_within_a_daypart(self):
         app, context, _ = await self.ready()
@@ -824,11 +826,11 @@ class CalendarPlanningTests(StateFixture, unittest.IsolatedAsyncioTestCase):
         await planner.run(context, app.state_maintenance.bindings[context.key][1],
                           mode=mode, slot=slot, automatic=True)
         next_review = datetime.fromisoformat(planner.status(context)["next_review_at"])
-        self.assertEqual(next_review, NOW + timedelta(hours=1))
-        self.clock.advance(timedelta(minutes=59))
+        self.assertEqual(next_review, NOW + timedelta(minutes=5))
+        self.clock.advance(timedelta(minutes=4))
         self.assertEqual(planner.opportunity(context, settings, self.clock.now())[0], "horizon")
         self.clock.advance(timedelta(minutes=1))
-        self.assertEqual(planner.opportunity(context, settings, self.clock.now())[1], slot + ":review:6")
+        self.assertEqual(planner.opportunity(context, settings, self.clock.now())[1], slot + ":retry:5")
         self.assertEqual(len(self.called), 1)
 
     async def test_shutdown_cancels_planning_and_restart_keeps_attempt_ledger(self):
