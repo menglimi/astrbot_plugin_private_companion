@@ -23,7 +23,7 @@ DEFAULTS = {
     "planning_timezone": "Asia/Shanghai",
     "planning_horizon_days": 90,
     "planning_refine_minutes": 15,
-    "planning_max_items": 12,
+    "planning_max_items": 32,
     "planning_prompt": "",
     "planning_annual_calendars": "",
     "planning_weather_enabled": False,
