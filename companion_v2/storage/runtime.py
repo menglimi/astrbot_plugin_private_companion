@@ -1,4 +1,4 @@
-﻿"""A V2-owned SQLite lifecycle with fail-closed schema upgrades."""
+"""A V2-owned SQLite lifecycle with fail-closed schema upgrades."""
 
 from __future__ import annotations
 
@@ -345,6 +345,15 @@ CONFIGURATION_STORE_STATEMENTS = (
         FOREIGN KEY(consumer_id) REFERENCES configuration_consumers(consumer_id)
     )""",
 )
+
+
+# Newer releases may append defaulted columns without changing semantics.  The
+# data root is allowed to stay at one of these additive versions when an older
+# code package is loaded; rejecting it strands an otherwise readable database.
+FORWARD_COMPATIBLE_SCHEMA_VERSIONS = frozenset({
+    "companion-v2.storage.v69",
+    "companion-v2.storage.v70",
+})
 
 
 class StorageRuntime:
@@ -1703,12 +1712,14 @@ class StorageRuntime:
                 self._migrate_v67_to_v68(connection)
                 version = SCHEMA_VERSION_V68
                 existing_tables = _existing_tables(connection)
-            if version != SCHEMA_VERSION:
+            forward_compatible = version in FORWARD_COMPATIBLE_SCHEMA_VERSIONS
+            if version != SCHEMA_VERSION and not forward_compatible:
                 raise StorageOpenError("V2 data root has an incompatible schema version")
             missing = V68_REQUIRED_TABLES.difference(existing_tables)
             if missing:
                 raise StorageOpenError("V2 data root is missing required schema objects")
-            _validate_table_shapes(connection, V68_SCHEMA_STATEMENTS, V68_REQUIRED_TABLES)
+            _validate_table_shapes(connection, V68_SCHEMA_STATEMENTS, V68_REQUIRED_TABLES,
+                                   allow_extra=forward_compatible)
             # Each schema migration runs a full integrity check at its boundary.
             # Rechecking every page and foreign key on every normal startup makes
             # open time grow with the data store, even when the schema is current.
@@ -3256,6 +3267,8 @@ def _validate_table_shapes(
     connection: sqlite3.Connection,
     statements: tuple[str, ...],
     tables: frozenset[str],
+    *,
+    allow_extra: bool = False,
 ) -> None:
     # Let SQLite interpret its DDL so column checks cannot drift from the schema.
     expected = sqlite3.connect(":memory:")
@@ -3273,8 +3286,21 @@ def _validate_table_shapes(
             for pragma in ("table_info", "foreign_key_list"):
                 query = f'PRAGMA {pragma}("{table}")'
                 actual_rows = [tuple(row) for row in connection.execute(query)]
-                if actual_rows != expected.execute(query).fetchall():
-                    raise StorageOpenError(f"V2 table structure does not match: {table}")
+                expected_rows = [tuple(row) for row in expected.execute(query).fetchall()]
+                if actual_rows == expected_rows:
+                    continue
+                # Newer additive releases may append a defaulted column.  Accept
+                # that shape without weakening the strict check for the current
+                # schema or allowing a changed/removed declared column.
+                if (allow_extra and pragma == "table_info"
+                        and len(actual_rows) > len(expected_rows)
+                        and actual_rows[:len(expected_rows)] == expected_rows
+                        and all(row[4] is not None or row[3] == 0 for row in actual_rows[len(expected_rows):])):
+                    continue
+                if (allow_extra and pragma == "foreign_key_list"
+                        and all(row in actual_rows for row in expected_rows)):
+                    continue
+                raise StorageOpenError(f"V2 table structure does not match: {table}")
             # Runtime owners may add optimization indexes after the schema is
             # current (the native-conversation module indexes conversation_batches).
             # An extra index cannot corrupt the declared shape, so require every
