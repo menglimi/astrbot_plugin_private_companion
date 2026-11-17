@@ -7,7 +7,7 @@ from companion_v2.adapters.astrbot.memory_owner import read_memory_owner
 from companion_v2.adapters.astrbot.memory_providers import memory_provider_registry
 from companion_v2.foundation.refs import ScopeKind
 
-from .external_memory import memory_read_request
+from .external_memory import memory_read_request, authorize_memory_request, validate_memory_request
 
 
 V2_PLUGIN_ID = "astrbot_plugin_private_companion"
@@ -58,13 +58,21 @@ async def read_external_memory_summary(controller, context) -> dict[str, Any]:
             return _unavailable("unsupported_scope", entry.provider_id, entry.display_name, "private_target_required")
         try:
             request = memory_read_request(context, purpose="summary", max_chars=0)
+            session = controller.session or controller.last_session
+            request = authorize_memory_request(session.application, context, providers, entry, request)
             raw = await providers.invoke(entry, "summary", request)
+            validate_memory_request(providers, request)
             if (not isinstance(raw, Mapping) or not isinstance(raw.get("counts"), Mapping)
                     or raw.get("state", "ready") != "ready" or raw.get("ok", True) is not True):
                 raise ValueError("memory summary requires counts")
             counts = {key: _count(raw["counts"].get(key)) for key in (*SUMMARY_CATEGORIES, "total")}
-        except Exception:
-            return _unavailable("unavailable", entry.provider_id, entry.display_name, "summary_read_failed")
+        except Exception as error:
+            code = getattr(error, "code", "")
+            allowed = {"linked_memory_provider_upgrade_required", "account_link_memory_scope_unavailable",
+                       "account_link_memory_scope_changed", "account_link_memory_access_denied",
+                       "memory_read_authorization_required", "memory_read_authorization_changed"}
+            return _unavailable("unavailable", entry.provider_id, entry.display_name,
+                                code if code in allowed else "summary_read_failed")
         return {"state": "ready", "provider": entry.provider_id, "display_name": entry.display_name,
                 "reason": "", "counts": counts,
                 "categories": [{"key": key, "count": counts[key]} for key in SUMMARY_CATEGORIES]}

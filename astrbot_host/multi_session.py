@@ -604,6 +604,8 @@ class MultiHostSession:
         self.application.outbound.bind_connection_gate(connection_guard.available)
         from companion_v2.relationships.account_link_context import persona_for
         self.application.private_account_link_persona = lambda member: persona_for(self.settings, member)
+        self.application.private_account_link_resolve = self._linked_private_context
+        self.application.private_account_link_memory_identity = self._linked_memory_identity
         self.application.runtime.private_account_link_persona = lambda member: self.application.private_account_link_persona(member)
         from companion_v2.relationships.account_link_delivery import PrivateAccountDelivery
         self.application.outbound.private_account_router = PrivateAccountDelivery(
@@ -1579,6 +1581,17 @@ class MultiHostSession:
         if member_for(context) != member:
             raise TaskError("account_link_route_changed", "current identity no longer matches the associated account")
         return context
+
+    def _linked_memory_identity(self, context):
+        # Resolve the live adapter, including its account-qualified session check.
+        # The configured adapter ID is not necessarily the native login ID.
+        platform = self.bridge.platform(context.scope)
+        if platform.meta().name == "wechat_native":
+            owner = str(getattr(platform, "bot_self_id", "") or "").strip()
+            if not owner or owner == "self":
+                raise TaskError("account_link_memory_scope_unavailable", "native WeChat login identity is unavailable")
+            return {"owner_bot_id": owner, "platform_name": "wechat_native"}
+        return {"owner_bot_id": context.scope.account_id, "platform_name": platform.meta().name}
 
     def _linked_private_available(self, context):
         self.authorize(context)
