@@ -110,6 +110,10 @@ _ALIASES = {
         "关掉": "manage_group", "关闭主链": "group_llm_block", "开启主链": "group_llm_release",
         "恢复主链": "group_llm_release", "撤回消息": "manage_group", "防撤回": "manage_group",
         "转述撤回": "manage_group", "撤回转述": "manage_group",
+        "开启生图": "group_image_enable", "打开生图": "group_image_enable",
+        "允许生图": "group_image_enable", "群生图开启": "group_image_enable",
+        "关闭生图": "group_image_disable", "关掉生图": "group_image_disable",
+        "禁止生图": "group_image_disable", "群生图关闭": "group_image_disable",
     },
 }
 
@@ -145,7 +149,8 @@ _HELP = (
     "陪伴画图 <描述>、陪伴合照 <修改要求>；重要日期用 陪伴 日期列表、日期添加 <名称> <日期>、日期删除 <名称>；"
     "日期列表也会列出每日反思自动记下的互动纪念日；探索笔记用 陪伴 探索笔记 查看。\n"
     "语种：陪伴 切换语种 中文/日语/英语（只改当前私聊窗口）；群聊用 陪伴群 切换语种 日语。\n"
-    "群聊：陪伴群 状态、话题、黑话 <词>、片段 <线索>、LLM状态；关闭LLM / 开启LLM 需安装管理员。\n"
+    "群聊：陪伴群 状态、话题、黑话 <词>、片段 <线索>、LLM状态；关闭LLM / 开启LLM 需安装管理员；"
+    "生图权限用 陪伴群 开启生图 / 关闭生图，需安装管理员。\n"
     "查询依赖本轮实际授权工具；其他配置、权限、清理与重置请在陪伴小屋对应页面操作。"
 )
 
@@ -306,7 +311,8 @@ def command_instruction(command: FunctionalCommand | None) -> str:
 
 _EXECUTED_INTENTS = frozenset({"memory_clear", "dates_list", "dates_add", "dates_remove",
                                "voice_language", "exploration_notes"})
-GROUP_CONTROL_INTENTS = frozenset({"group_llm_block", "group_llm_release", "group_llm_status"})
+GROUP_CONTROL_INTENTS = frozenset({"group_llm_block", "group_llm_release", "group_llm_status",
+                                   "group_image_enable", "group_image_disable"})
 _RECEIPT_EXTRA = "_companion_v2_functional_command_receipt"
 
 _FAILURE_TEXT = {

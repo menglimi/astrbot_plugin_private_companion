@@ -49,6 +49,64 @@ def _status_text(current):
             f"操作者 {current.get('operator') or '未知'}。发送「陪伴群 开启LLM」恢复。")
 
 
+async def _set_group_image(controller, session, target, route, enable, at):
+    """Turn every gate needed for group image requests on/off together.
+
+    A single chat command must not leave the role photo switch, request policy,
+    native image action switch or capability consent disagreeing.  Group image
+    permission is stored on role image-output settings, so the installation
+    default and every configured role are written together; a role override
+    must not silently keep the old value.
+    """
+    from companion_v2.configuration.models import ConfigLayer, ConfigTarget
+    from companion_v2.conversation.media.output_settings import (
+        ImageOutputConfigurationOwner, configuration_fields,
+    )
+    from companion_v2.foundation.refs import SubjectKind, SubjectRef
+
+    installation = session.runtime.installation_id
+    owner = ImageOutputConfigurationOwner(session.runtime)
+    fields = configuration_fields()
+    role_ids = tuple(dict.fromkeys(
+        str(getattr(persona, "role_id", "") or "")
+        for persona in getattr(getattr(session, "settings", None), "personas", ())
+    ))
+    targets = [ConfigTarget(installation, ConfigLayer.INSTALLATION)]
+    targets.extend(ConfigTarget(installation, ConfigLayer.ROLE,
+                                SubjectRef(installation, SubjectKind.BOT, role_id),
+                                bot_id=target.bot_id)
+                   for role_id in role_ids if role_id)
+    for config_target in targets:
+        snapshot = owner.read(config_target, fields)
+        current = {key.rsplit(".", 1)[-1]: item.value for key, item in snapshot.fields.items()}
+        changes = {"conversation.image_output.group_enabled": bool(enable)}
+        if enable:
+            changes.update({
+                "conversation.image_output.allow_user_requests": True,
+                "conversation.image_output.request_permission": "everyone",
+            })
+            if current.get("trigger_mode") == "off":
+                changes["conversation.image_output.trigger_mode"] = "rules"
+        owner.write(config_target, fields, changes=changes, reset=(),
+                    expected_revision=snapshot.revision, observed_at=at)
+
+    native = getattr(session, "native_tool_port", None) or getattr(controller, "native_extensions", None)
+    if native is not None and hasattr(native, "set_image_enabled"):
+        from .native_extensions.image_settings import read_image_settings, write_image_settings
+        path = getattr(native, "image_settings_path", None)
+        settings = read_image_settings(path)
+        if enable:
+            settings = {**settings, "image.generate": True, "image.edit": True}
+            write_image_settings(path, settings)
+            native.set_image_enabled(settings)
+            lease = native._lease("image") if hasattr(native, "_lease") else None
+            if lease is not None and hasattr(native, "_ensure_installation"):
+                native._ensure_installation(lease)
+            if hasattr(native, "reconcile_service"):
+                await native.reconcile_service("image")
+    return enable
+
+
 async def receive_group_llm_command(controller, event, *, target=None):
     """Return None when this is not a handled group LLM command."""
     command = parse_group_control(message_text(event))
@@ -68,7 +126,21 @@ async def receive_group_llm_command(controller, event, *, target=None):
                           bot_id=target.bot_id, group_id=target.group_id)
     block = GroupLLMBlock(session.runtime, now=controller.now)
     at = controller.now()
-    if command.intent == "group_llm_status":
+    if command.intent in ("group_image_enable", "group_image_disable"):
+        if not _core_sender(session, route, target, at=at):
+            text = "未执行：只有安装管理员可以更改本群生图权限。"
+        else:
+            enabled = command.intent == "group_image_enable"
+            try:
+                await _set_group_image(controller, session, target, route, enabled, at)
+            except Exception as error:  # noqa: BLE001 - report a stable command failure
+                code = getattr(error, "code", "group_image_command_failed")
+                text = f"未执行：生图配置保存失败（{code}）。"
+            else:
+                text = ("已开启本群生图：角色生图、用户请求、群聊生图、全员权限和原生图片开关已一起打开。"
+                        if enabled else
+                        "已关闭本群生图：群成员不能再请求生图，私聊生图和主动生图不受影响。")
+    elif command.intent == "group_llm_status":
         text = _status_text(block.status(key))
     else:
         if not _core_sender(session, route, target, at=at):
