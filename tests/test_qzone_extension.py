@@ -535,6 +535,9 @@ class AccessTests(unittest.TestCase):
         self.assertTrue(status["role_enabled"])
         self.assertTrue(all(status["consented"].values()))
         self.assertTrue(status["invoke_granted"])
+        self.assertTrue(status["publish_granted"])
+        self.assertTrue(self.identities.authorize(self.context.actor, scope=self.scope,
+                                                  capability="qzone.post.publish", observed_at=NOW).is_success)
         self.assertEqual(status["reason"], "")
         scanned = asyncio.run(self.service.scan(self.context, scope="own"))
         self.assertEqual(scanned["count"], 2)
@@ -542,6 +545,9 @@ class AccessTests(unittest.TestCase):
         self.assertTrue(self.configure(True, key="op-1", command=self.last_command)["replayed"])
         revoked = self.configure(False, key="op-2")["status"]
         self.assertFalse(any(revoked["consented"].values()))
+        self.assertFalse(revoked["publish_granted"])
+        self.assertFalse(self.identities.authorize(self.context.actor, scope=self.scope,
+                                                   capability="qzone.post.publish", observed_at=NOW).is_success)
         self.assertTrue(revoked["installed"])
         with self.assertRaises(TaskError):
             asyncio.run(self.service.scan(self.context, scope="own"))
@@ -553,6 +559,28 @@ class AccessTests(unittest.TestCase):
             self.access.configure(self.operator, {"operation_key": "op-4", "edit_token": status["edit_token"],
                                                   "enabled": False}, NOW)
         self.assertEqual(caught.exception.code, "qzone_access_changed")
+
+    def test_reconfiguring_an_enabled_install_restores_a_missing_publish_grant(self):
+        installed = self.configure(True, key="install-before-upgrade")["status"]
+        settings = dict(self.settings.values)
+        publish = next(grant for grant in self.identities.snapshot().grants
+                       if grant.capability == "qzone.post.publish")
+        self.identities.revoke_grant(publish.grant_id, revoked_at=NOW,
+                                    expected_revision=self.identities.revision)
+        missing = self.access.status(self.operator, NOW)
+        self.assertTrue(missing["installed"] and missing["active"] and missing["role_enabled"])
+        self.assertEqual(missing["consented"], installed["consented"])
+        self.assertTrue(missing["invoke_granted"])
+        self.assertFalse(missing["publish_granted"])
+        self.assertEqual(missing["reason"], "qzone_grant_missing")
+
+        restored = self.configure(True, key="repair-existing-install")["status"]
+        self.assertTrue(restored["publish_granted"])
+        self.assertEqual(restored["reason"], "")
+        self.assertEqual(restored["consented"], installed["consented"])
+        self.assertEqual(self.settings.values, settings)
+        revoked = self.configure(False, key="revoke-repaired-install")["status"]
+        self.assertFalse(revoked["publish_granted"])
 
     def test_a_malformed_command_is_refused(self):
         for command in ({}, {"operation_key": "k", "edit_token": "t"}, {"operation_key": "k", "edit_token": "t",

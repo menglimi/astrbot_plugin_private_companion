@@ -264,8 +264,16 @@ class CoreReplyToolExecutor:
         result = row.get("result") or {"state": "unknown", "effect": row["effect"], "invocation_id": row["invocation_id"]}
         if row["state"] == "succeeded":
             task = require(self.tasks.read(context, row["task_id"]))
-            if task.state != "succeeded" or task.result_ref != row["invocation_id"]:
+            task_row = self.runtime.read_one("SELECT record_json FROM execution_tasks WHERE task_id = ?",
+                                             (row["task_id"],))
+            task_data = json.loads(task_row["record_json"]) if task_row is not None else {}
+            if (task.state, task.effect, task.operation_id, task.result_ref, task_data.get("receipt_ref")) != (
+                    "succeeded", row["effect"], result.get("operation_id"), row["invocation_id"],
+                    result.get("receipt_ref")):
                 raise TaskError("core_tool_result_unresolved", "the original task has not accepted its result")
+            if (result.get("state"), result.get("effect"), result.get("invocation_id")) != (
+                    row["state"], row["effect"], row["invocation_id"]):
+                raise TaskError("core_tool_result_unresolved", "the native receipt no longer matches its operation")
             try:
                 reference = source_from_document(row["source"])
                 source = require(self.application.messages.sources.read(reference, resolved=context.actor,

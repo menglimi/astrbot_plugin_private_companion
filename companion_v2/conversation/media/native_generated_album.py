@@ -2,12 +2,22 @@
 
 import json
 import sqlite3
+from dataclasses import replace
 
-from companion_v2.execution.models import TaskError, encode
+from companion_v2.capabilities.native import SCHEMA as NATIVE_SCHEMA
+from companion_v2.execution.models import TaskError, TaskSpec, digest, encode, require
 from companion_v2.conversation.media.models import CapturedImage, ImageDescriptor
 from companion_v2.conversation.messages import source_from_document
 from companion_v2.conversation.native_tool_results import PREFIX, operation_row
+from companion_v2.sources.models import GovernanceState
 from companion_v2.storage.image_payloads import load_image
+
+
+def _operation_or_none(runtime, invocation_id):
+    try:
+        return operation_row(runtime, invocation_id)
+    except (TaskError, TypeError, ValueError, KeyError, UnicodeError, sqlite3.Error):
+        return None
 
 
 def _active(owner, table, *, id_value, lineage_value, revision_value,
@@ -84,13 +94,22 @@ def _origin_keys(owner, context):
             data = json.loads(row["context_json"] or "{}")
         except (TypeError, ValueError):
             continue
-        binding = data.get("role_binding") or {}
-        candidate_role = binding.get("role") or {}
-        candidate_scope = binding.get("scope") or {}
+        if type(data) is not dict:
+            continue
+        binding = data.get("role_binding")
+        if type(binding) is not dict:
+            continue
+        candidate_role = binding.get("role")
+        candidate_scope = binding.get("scope")
+        if type(candidate_role) is not dict or type(candidate_scope) is not dict:
+            continue
         if candidate_role.get("subject_id") != role.subject_id:
             continue
-        if (candidate_scope.get("platform"), candidate_scope.get("account_id"),
-                candidate_scope.get("bot_id")) != (scope.platform, scope.account_id, scope.bot_id):
+        if (candidate_scope.get("installation_id"), candidate_scope.get("platform"),
+                candidate_scope.get("kind"), candidate_scope.get("account_id"),
+                candidate_scope.get("bot_id")) != (
+                    scope.installation_id, scope.platform, scope.kind.value,
+                    scope.account_id, scope.bot_id):
             continue
         key = row["context_key"]
         if key and key not in keys:
@@ -103,52 +122,249 @@ def _origin_keys(owner, context):
 def _selection(owner, context):
     from .generated import IMAGE_ACTIONS
     keys = _origin_keys(owner, context)
-    placeholders = ",".join("?" for _ in keys)
     return ("""FROM runtime_metadata m JOIN execution_tasks t ON t.task_id = json_extract(m.value, '$.task_id')
-        WHERE substr(m.key, 1, ?) = ? AND json_extract(m.value, '$.origin_key') IN (""" + placeholders + """)
+        WHERE substr(m.key, 1, ?) = ? AND json_extract(m.value, '$.origin_key') IN
+            (SELECT value FROM json_each(?))
         AND json_extract(m.value, '$.action') IN (?,?,?)""",
-            (len(PREFIX), PREFIX, *keys, *sorted(IMAGE_ACTIONS)))
+            (len(PREFIX), PREFIX, encode(keys), *sorted(IMAGE_ACTIONS)))
+
+
+def _trusted_native_receipt(owner, context, at, row):
+    """Return the governed source receipt for one settled native operation.
+
+    The provider's ``imgart_*`` identifier is only a transport handle.  The
+    source published by the native result handler is the durable receipt that
+    binds that handle to the operation and to the adopted image manifest.
+    """
+    raw = row.get("result_source_json") if isinstance(row, dict) else None
+    if not raw:
+        return None
+    try:
+        parent = source_from_document(json.loads(raw))
+    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+        return None
+    try:
+        # Keep the album projection behind the same execution-ledger checks as
+        # ``native_tool_results.snapshot``.  A source receipt alone is not
+        # sufficient: the task, invocation, and accepted result must still be
+        # the exact operation that produced it.
+        current = _operation_or_none(owner.runtime, row["invocation_id"])
+        if current is None or current != {key: value for key, value in row.items() if key != "scan_id"}:
+            return None
+        if current.get("state") != "succeeded" or current.get("action") not in {
+                "image.generate", "image.edit", "image.mask_edit"}:
+            return None
+        if current["origin_key"] not in _origin_keys(owner, context):
+            return None
+        external = owner._external()
+        descriptor = external._descriptor(current)
+        external.admit(descriptor, context, at)
+        require(external.tasks.check_context_access(context, action="conversation.reply", observed_at=at))
+        task = owner.runtime.read_one(
+            "SELECT * FROM execution_tasks WHERE task_id = ? AND origin_key = ?",
+            (current["task_id"], current["origin_key"]),
+        )
+        if task is None or task["origin_key"] != current["origin_key"]:
+            return None
+        data = json.loads(task["record_json"])
+        definition = replace(descriptor.definition(), kind=PREFIX + digest(descriptor), owner="astrbot.core-tool")
+        if data.get("definition") != json.loads(encode(definition)):
+            return None
+        spec = TaskSpec.restore(data["spec"])
+        if (spec.kind, spec.request_ref, spec.context.key) != (
+                definition.kind, current["invocation_id"], current["origin_key"]):
+            return None
+        if task["state"] != "succeeded" or (
+                data.get("effect"), data.get("operation_id"), data.get("result_ref"),
+                data.get("receipt_ref")) != (
+                    current["effect"], current["operation_id"], current["invocation_id"],
+                    current["receipt_ref"]):
+            return None
+        from companion_v2.conversation.external_tools import _SourceAccess
+        source = require(owner.messages.sources.read(
+            parent, resolved=context.actor, capability=descriptor.binding.capability,
+            observed_at=at, authorizer=_SourceAccess(external, descriptor, context)))
+        if (source.reference != parent or source.reference.scope != context.scope
+                or source.audience != context.audience
+                or source.state is not GovernanceState.ACTIVE
+                or digest(source) != current["result_hash"]
+                or source.content_hash != digest(source.payload)):
+            return None
+        payload = source.payload
+        document = json.loads(payload)
+        native = document.get("native") if type(document) is dict else None
+        if type(native) is not dict:
+            return None
+        if (native.get("schema") != NATIVE_SCHEMA
+                or native.get("operation_id") != row.get("operation_id")
+                or native.get("receipt_ref") != row.get("receipt_ref")
+                or encode(native.get("binding")) != row.get("provider_json")):
+            return None
+        result = native.get("result")
+        artifacts = native.get("artifacts")
+        if type(result) is not dict or type(artifacts) is not list:
+            return None
+        required = {"artifact_id", "operation_id", "content_hash", "mime_type", "size_bytes"}
+        if any(type(item) is not dict or set(item) != required for item in artifacts):
+            return None
+        if (result.get("operation_id") != row.get("operation_id")
+                or result.get("original_invocation_id") != row.get("invocation_id")
+                or result.get("operation") != row.get("action", "").removeprefix("image.")
+                or result.get("artifact_ids") != [item["artifact_id"] for item in artifacts]):
+            return None
+        if (len({item["artifact_id"] for item in artifacts}) != len(artifacts)
+                or any(item["operation_id"] != row.get("operation_id") for item in artifacts)):
+            return None
+        return source.reference, artifacts
+    except (OSError, TaskError, TypeError, ValueError, KeyError, UnicodeError, sqlite3.Error):
+        return None
+
+
+def _validated_native_images(owner, context, at, row):
+    receipt = _trusted_native_receipt(owner, context, at, row)
+    if receipt is None:
+        return None
+    parent, artifacts = receipt
+    try:
+        captured = _payload_images(owner, row)
+    except (OSError, TypeError, ValueError, KeyError, AttributeError, sqlite3.Error, TaskError):
+        return None
+    if (len(captured) != len(artifacts)
+            or [item.descriptor.position for item in captured] != list(range(len(artifacts)))):
+        return None
+    for image, metadata in zip(captured, artifacts):
+        descriptor = image.descriptor
+        if (metadata["operation_id"] != row.get("operation_id")
+                or metadata["content_hash"] != descriptor.content_hash
+                or metadata["mime_type"] != descriptor.mime_type
+                or metadata["size_bytes"] != descriptor.byte_count):
+            return None
+    return parent, captured, artifacts
+
+
+def artifact(owner, context, at, artifact_id):
+    """Resolve a native ``imgart_*`` handle through its governed album entry."""
+    from .generated import GeneratedAlbumImage, IMAGE_ACTIONS
+
+    if (type(artifact_id) is not str or not artifact_id.startswith("imgart_")
+            or not 8 <= len(artifact_id) <= 180):
+        raise TaskError("generated_image_missing", "the selected album image is unavailable")
+    keys = _origin_keys(owner, context)
+    actions = tuple(sorted(IMAGE_ACTIONS))
+    query = (
+        """WITH scoped_sources AS (
+            SELECT json_extract(m.value, '$.invocation_id') AS invocation_id,
+                CASE WHEN json_valid(s.payload_json) THEN json_extract(s.payload_json, '$') ELSE '' END AS payload
+            FROM runtime_metadata m
+            JOIN execution_tasks t ON t.task_id = json_extract(m.value, '$.task_id')
+            JOIN sources s
+              ON s.source_id = json_extract(m.value, '$.source.source_id')
+             AND s.lineage_id = json_extract(m.value, '$.source.version.lineage_id')
+             AND s.source_revision = json_extract(m.value, '$.source.version.revision')
+            WHERE substr(m.key, 1, ?) = ?
+              AND json_extract(m.value, '$.origin_key') IN (SELECT value FROM json_each(?))
+        """
+        + " AND json_extract(m.value, '$.action') IN (" + ",".join("?" for _ in actions) + ")"
+        + """ AND json_extract(m.value, '$.state') = 'succeeded'
+              AND json_extract(m.value, '$.task_id') IS NOT NULL
+              AND s.state = 'active'
+        ), candidate_artifacts AS (
+            SELECT invocation_id,
+                CASE WHEN json_valid(payload) THEN
+                    CASE WHEN json_type(payload, '$.native.artifacts') = 'array'
+                         THEN json_extract(payload, '$.native.artifacts') ELSE '[]' END
+                    ELSE '[]' END AS artifacts
+            FROM scoped_sources
+        )
+        SELECT DISTINCT candidate_artifacts.invocation_id
+        FROM candidate_artifacts, json_each(candidate_artifacts.artifacts) AS artifact
+        WHERE CASE WHEN artifact.type = 'object'
+                   THEN json_extract(artifact.value, '$.artifact_id') = ?
+                   ELSE 0 END
+        ORDER BY candidate_artifacts.invocation_id""")
+    rows = owner.runtime.read_all(query, (len(PREFIX), PREFIX, encode(keys), *actions, artifact_id))
+    resolved = None
+    for selected in rows:
+        row = _operation_or_none(owner.runtime, selected["invocation_id"])
+        if (row is None or row.get("state") != "succeeded"
+                or row.get("action") not in IMAGE_ACTIONS):
+            continue
+        validated = _validated_native_images(owner, context, at, row)
+        if validated is None:
+            continue
+        parent, captured, artifacts = validated
+        matching = [index for index, item in enumerate(artifacts)
+                    if item["artifact_id"] == artifact_id]
+        if len(matching) != 1:
+            continue
+        index = matching[0]
+        if resolved is not None:
+            raise TaskError("generated_image_missing", "the selected album image is unavailable")
+        resolved = GeneratedAlbumImage(
+            "generated-image:" + row["invocation_id"] + ":" + str(index),
+            row["created_at"], row["action"], captured[index].descriptor,
+            captured[index].content, parent=parent)
+    if resolved is not None:
+        return resolved
+    raise TaskError("generated_image_missing", "the selected album image is unavailable")
 
 
 def page(owner, context, at, *, before=None, limit=24):
     from .generated import GeneratedAlbumImage
-    selection, values = _selection(owner, context)
-    selection += " AND json_extract(m.value, '$.state') = 'succeeded'"
-    if before is not None:
-        selection += " AND (t.created_at < ? OR (t.created_at = ? AND json_extract(m.value, '$.invocation_id') <= ?))"
-        values += (before["created_at"], before["created_at"], before["invocation_id"])
-    rows = owner.runtime.read_all("SELECT json_extract(m.value, '$.invocation_id') AS invocation_id " + selection
-        + " ORDER BY t.created_at DESC, invocation_id DESC LIMIT 128", values)
     items = []
-    for selected in rows:
-        row = operation_row(owner.runtime, selected["invocation_id"])
-        captured = _payload_images(owner, row)
-        if not captured:
-            continue
-        parent = source_from_document(json.loads(row["result_source_json"]))
-        for image in captured:
-            if before is not None and (row["created_at"], row["invocation_id"], image.descriptor.position) >= (
-                    before["created_at"], before["invocation_id"], before["position"]):
-                continue
-            items.append(GeneratedAlbumImage("generated-image:" + row["invocation_id"] + ":" + str(image.descriptor.position),
-                row["created_at"], row["action"], image.descriptor, image.content, parent=parent))
-        if len(items) > limit:
+    scan_before = before
+    first_scan = True
+    while True:
+        selection, values = _selection(owner, context)
+        selection += " AND json_extract(m.value, '$.state') = 'succeeded'"
+        if scan_before is not None:
+            operator = "<=" if first_scan else "<"
+            selection += (" AND (t.created_at < ? OR (t.created_at = ? AND "
+                          "json_extract(m.value, '$.invocation_id') " + operator + " ?))")
+            values += (scan_before["created_at"], scan_before["created_at"], scan_before["invocation_id"])
+        rows = owner.runtime.read_all("SELECT json_extract(m.value, '$.invocation_id') AS invocation_id, t.created_at " + selection
+            + " ORDER BY t.created_at DESC, invocation_id DESC LIMIT 128", values)
+        if not rows:
             break
-    return items, len(rows) == 128
+        for selected in rows:
+            row = _operation_or_none(owner.runtime, selected["invocation_id"])
+            validated = _validated_native_images(owner, context, at, row)
+            if validated is None:
+                continue
+            parent, captured, _ = validated
+            for image in captured:
+                if before is not None and (row["created_at"], row["invocation_id"], image.descriptor.position) >= (
+                        before["created_at"], before["invocation_id"], before["position"]):
+                    continue
+                items.append(GeneratedAlbumImage(
+                    "generated-image:" + row["invocation_id"] + ":" + str(image.descriptor.position),
+                    row["created_at"], row["action"], image.descriptor, image.content, parent=parent))
+            if len(items) > limit:
+                return items, True
+        if len(rows) < 128:
+            break
+        scan_before = {"created_at": rows[-1]["created_at"],
+                       "invocation_id": rows[-1]["invocation_id"]}
+        first_scan = False
+    return items, False
 
 
 def image(owner, context, at, invocation_id, position):
     from .generated import GeneratedAlbumImage, IMAGE_ACTIONS
-    row = operation_row(owner.runtime, invocation_id)
-    if row is None or row["origin_key"] not in _origin_keys(owner, context) \
-            or row["action"] not in IMAGE_ACTIONS:
-        raise TaskError("generated_image_missing", "the native album image is unavailable")
-    for captured in _payload_images(owner, row):
-        if captured.descriptor.position == position:
-            parent = source_from_document(json.loads(row["result_source_json"]))
+    row = _operation_or_none(owner.runtime, invocation_id)
+    if (row is None or row.get("state") != "succeeded"
+            or row["origin_key"] not in _origin_keys(owner, context)
+            or row["action"] not in IMAGE_ACTIONS):
+        raise TaskError("generated_image_missing", "the selected album image is unavailable")
+    validated = _validated_native_images(owner, context, at, row)
+    if validated is None:
+        raise TaskError("generated_image_missing", "the selected album image is unavailable")
+    parent, images, _ = validated
+    for image in images:
+        if image.descriptor.position == position:
             return GeneratedAlbumImage("generated-image:" + invocation_id + ":" + str(position),
-                row["created_at"], row["action"], captured.descriptor, captured.content, parent=parent)
-    raise TaskError("generated_image_missing", "the native album image is unavailable")
+                row["created_at"], row["action"], image.descriptor, image.content, parent=parent)
+    raise TaskError("generated_image_missing", "the selected album image is unavailable")
 
 
 def diagnostics(owner, context, *, limit):
@@ -156,4 +372,5 @@ def diagnostics(owner, context, *, limit):
     count = owner.runtime.read_one("SELECT COUNT(*) AS total " + selection, values)
     rows = owner.runtime.read_all("SELECT json_extract(m.value, '$.invocation_id') AS invocation_id " + selection
         + " ORDER BY t.created_at DESC, invocation_id DESC LIMIT ?", (*values, limit))
-    return int(count["total"]), [operation_row(owner.runtime, row["invocation_id"]) for row in rows]
+    return int(count["total"]), [operation for row in rows
+        if (operation := _operation_or_none(owner.runtime, row["invocation_id"])) is not None]

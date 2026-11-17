@@ -54,6 +54,16 @@ def snapshot(external, row, context, at):
     current = operation_row(external.runtime, row["invocation_id"])
     if current is None or current != {key: value for key, value in row.items() if key != "scan_id"}:
         raise TaskError("external_invocation_unavailable", "the native operation changed")
+    saved = external.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?", (PREFIX + row["invocation_id"],))
+    native = json.loads(saved["value"]) if saved is not None else {}
+    native_result = native.get("result")
+    if current["state"] in ("succeeded", "failed", "unknown") and (
+            not isinstance(native_result, dict)
+            or (native_result.get("state"), native_result.get("effect"), native_result.get("invocation_id"),
+                native_result.get("operation_id"), native_result.get("receipt_ref")) != (
+                    current["state"], current["effect"], current["invocation_id"],
+                    current["operation_id"], current["receipt_ref"])):
+        raise TaskError("external_invocation_unavailable", "the native receipt changed")
     descriptor = external._descriptor(current)
     external.admit(descriptor, context, at)
     if current["origin_key"] != context.key:
@@ -73,8 +83,10 @@ def snapshot(external, row, context, at):
     result.update(state=state, code=current["error_code"])
     material = None
     if state == "succeeded":
-        if (task["state"], data["effect"], data.get("operation_id"), data.get("result_ref")) != (
-                "succeeded", current["effect"], current["operation_id"], current["invocation_id"]):
+        if (task["state"], data["effect"], data.get("operation_id"), data.get("result_ref"),
+                data.get("receipt_ref")) != (
+                "succeeded", current["effect"], current["operation_id"], current["invocation_id"],
+                current["receipt_ref"]):
             raise TaskError("external_task_unresolved", "the native task has not accepted its final receipt")
         from .external_tools import _SourceAccess
         reference = source_from_document(json.loads(current["result_source_json"]))
