@@ -99,6 +99,9 @@ class ReflectionManagement:
             if changed.rowcount != 1:
                 raise TaskError("memory_reflection_changed", "reflection changed during discard")
         return {"batch_id": batch_id, "state": "abandoned", "discarded": True}
+
+    @outcome
+    def enqueue(self, context, *, batch_id, operation_key):
         with self.reflection.runtime.transaction():
             self._row(context, batch_id)
             text(operation_key, "operation_key", 256)

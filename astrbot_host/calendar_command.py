@@ -15,6 +15,9 @@ _COMMANDS = {
     "生成日程": ("daily", False),
     "刷新日程": ("daily", True),
     "重新生成日程": ("daily", True),
+    "生成周日程": ("horizon", False),
+    "刷新周日程": ("horizon", True),
+    "重新生成周日程": ("horizon", True),
 }
 
 
@@ -72,7 +75,8 @@ def calendar_result_text(report):
         saved = report.get("saved", 0)
         rejected = report.get("rejected", ())
         replaced = report.get("replaced", 0)
-        text = "今天的日程已生成，共写入 %d 项。" % saved
+        horizon = report.get("mode") == "horizon"
+        text = ("未来日程已生成，共写入 %d 项。" if horizon else "今天的日程已生成，共写入 %d 项。") % saved
         if replaced:
             text += "已替换 %d 项旧的自动日程。" % replaced
         if rejected:

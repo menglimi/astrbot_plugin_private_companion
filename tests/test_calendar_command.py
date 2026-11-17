@@ -17,11 +17,15 @@ class CalendarCommandTests(unittest.TestCase):
             ("/陪伴 生成日程", False),
             ("刷新日程", True),
             ("重新生成日程", True),
+            ("生成周日程", False),
+            ("刷新周日程", True),
+            ("重新生成周日程", True),
         ):
             with self.subTest(text=text):
                 command = parse_calendar_command(text)
                 self.assertIsNotNone(command)
-                self.assertEqual((command.mode, command.refresh), ("daily", refresh))
+                self.assertEqual((command.mode, command.refresh),
+                                 ("horizon" if "周" in text else "daily", refresh))
 
         for text in ("帮我生成日程", "生成日程谢谢", "生成日程 明天", "/生成日程 now", ""):
             with self.subTest(text=text):
@@ -30,6 +34,8 @@ class CalendarCommandTests(unittest.TestCase):
     def test_reply_reports_committed_result_or_replay(self):
         self.assertEqual(calendar_result_text({"state": "succeeded", "saved": 3, "replaced": 2}),
                          "今天的日程已生成，共写入 3 项。已替换 2 项旧的自动日程。")
+        self.assertEqual(calendar_result_text({"state": "succeeded", "mode": "horizon", "saved": 4}),
+                         "未来日程已生成，共写入 4 项。")
         self.assertIn("没有重复写入", calendar_result_text({"state": "already_attempted"}))
 
     def test_calendar_and_automatic_planning_switches_have_distinct_guidance(self):
