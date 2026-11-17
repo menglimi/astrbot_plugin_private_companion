@@ -158,8 +158,7 @@ class CoreReplyImagesTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         from astrbot.core.pipeline.process_stage.follow_up import _ACTIVE_AGENT_RUNNERS
         from astrbot.core.provider.entities import LLMResponse, ProviderRequest
         from astrbot.core.star.context import Context
-        from astrbot.core.tools.message_tools import SendMessageToUserTool
-        from astrbot_host.core_reply_native_send import inject_core_reply_send_tool
+        from astrbot_host.core_reply_native_send import SendMessageToUserTool, inject_core_reply_send_tool
         from astrbot_host.core_reply_tool_dispatch import observe_core_tool_dispatch_begin, restore_core_tool_dispatch
         from tests.test_core_reply_pipeline import PipelineEvent
 
