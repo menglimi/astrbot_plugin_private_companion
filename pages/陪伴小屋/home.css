@@ -524,6 +524,13 @@
 .home-agenda-gap[data-current="true"] .home-agenda-gap-body strong{color:var(--t-accent-ink)}
 .home-agenda-more>summary{color:var(--t-accent-ink);font-size:var(--fs-micro)}
 .home-agenda-more>ol{margin-top:var(--sp-2)}
+.home-agenda-summary{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:0 0 var(--sp-2);color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.5}
+.home-agenda-summary b{color:var(--t-text);font-weight:650;font-variant-numeric:tabular-nums}
+.home-agenda-summary .is-accent{margin-left:auto;color:var(--t-accent-ink);font-weight:600}
+.home-agenda-now{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:0 0 var(--sp-3);padding:7px 10px;border:1px dashed var(--t-line-firm);border-radius:var(--r-xs);background:color-mix(in srgb,var(--t-surface-soft) 55%,transparent);font-size:var(--fs-micro);line-height:1.55}
+.home-agenda-now>span{color:var(--t-accent-ink);font-weight:600}
+.home-agenda-now time{color:var(--t-text-soft);font-variant-numeric:tabular-nums}
+.home-agenda-now.is-empty{border-color:transparent;background:transparent;padding:0;color:var(--t-text-faint)}
 
 
 /* 桌面右栏只有约 270px 宽：把时间收到标题上方，避免 88px 时间列把标题挤成竖排。 */
