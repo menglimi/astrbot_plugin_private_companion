@@ -1161,13 +1161,15 @@
       && item.route.account_id === member.account_id && item.route.role_id === member.role_id;
     async function read() {
       if (links.loading || links.busy) return;
-      links.loading = true; links.error = ""; redraw(state);
+      links.loading = true; links.error = ""; links.notice = ""; redraw(state);
       try {
         const data = unwrap(await bridge.apiGet(apiPath, parameters(person)));
         links.data = data; links.pending = null;
         links.selected = new Set((data.candidates || []).filter(item => isCurrent(item)
           || data.group?.members.some(member => matchesMember(item, member))).map(candidateKey));
         links.shareContext = data.group?.share_context === true;
+        links.shareMemory = data.group?.memory?.enabled === true;
+        links.memoryHistory = data.group?.memory?.history || "since_enabled";
         links.sharing = Object.fromEntries(["profile", "reply", "contact"].map(name =>
           [name, new Set(data.group?.sharing?.[name] || [])]));
         links.shareIdentity = data.group?.identity?.enabled === true;
@@ -1186,12 +1188,16 @@
     if (!links.loaded && !links.loading) queueMicrotask(read);
     if (links.loading) box.append(element("p", "正在读取可关联账号…"));
     if (links.error) box.append(element("p", links.error, "member-feedback error"));
+    if (links.notice) {
+      const notice = element("p", links.notice, "member-block-note");
+      notice.setAttribute("role", "status"); box.append(notice);
+    }
     const refresh = element("button", links.pending ? "重新核对服务端状态（丢弃本地草稿）" : "重新读取关联账号", "secondary");
     refresh.type = "button"; refresh.disabled = links.loading || links.busy;
     refresh.addEventListener("click", () => void read()); box.append(refresh);
     if (!links.data || links.loading) return box;
     const data = links.data;
-    if (data.group) box.append(element("p", `已关联 ${data.group.members.length} 个账号。共享从开启时生效，不导入旧历史。`));
+    if (data.group) box.append(element("p", `已关联 ${data.group.members.length} 个账号。聊天上下文仅共享开启后的新对话；长期记忆按单独授权的范围读取。`));
     const choices = element("fieldset", undefined, "member-link-section"); choices.disabled = links.busy || Boolean(links.pending);
     choices.append(element("legend", "选择关联账号（最多 16 个）"));
     for (const candidate of data.candidates || []) {
@@ -1211,6 +1217,26 @@
     share.addEventListener("change", () => {links.shareContext = share.checked;});
     contextLabel.append(element("span", "共享聊天上下文（仅开启后的新对话）"), share);
     choices.append(contextLabel); box.append(choices);
+    if (data.supported?.memory) {
+      const section = element("fieldset", undefined, "member-link-section");
+      section.disabled = links.busy || Boolean(links.pending);
+      section.append(element("legend", "共享长期记忆"));
+      const row = element("label", undefined, "member-switch-row");
+      const toggle = element("input"); toggle.type = "checkbox"; toggle.checked = links.shareMemory;
+      toggle.addEventListener("change", () => {links.shareMemory = toggle.checked; redraw(state);});
+      row.append(element("span", "允许关联账号读取长期记忆（默认关闭）"), toggle); section.append(row);
+      const history = element("select"); history.setAttribute("aria-label", "长期记忆共享范围"); history.disabled = !links.shareMemory;
+      for (const [value, label] of [["since_enabled", "仅共享开启后的记忆"], ["all", "包含已有历史记忆（需单独确认）"]]) {
+        const option = element("option", label); option.value = value; option.selected = links.memoryHistory === value;
+        history.append(option);
+      }
+      history.value = links.memoryHistory;
+      history.addEventListener("change", () => {links.memoryHistory = history.value;});
+      const historyLabel = element("label", undefined, "member-field member-link-select");
+      historyLabel.append(element("span", "共享范围", "member-field-caption"), history); section.append(historyLabel);
+      section.append(element("p", "只共享读取权限，不合并或复制原记忆。关闭或解除关联后停止跨账号读取；缺少明确机器人、人格和来源窗口的旧记忆不跨账号开放。", "member-block-note"));
+      box.append(section);
+    }
     if (data.supported?.settings) {
       const sharing = element("fieldset", undefined, "member-link-section"); sharing.disabled = links.busy || Boolean(links.pending);
       sharing.append(element("legend", "共享设置（默认关闭，可逐字段选择）"));
@@ -1319,60 +1345,93 @@
       routing.append(element("p", "只影响主动联系。确认未发送才可回退；超时、已受理或结果不明不会跨平台重发。分段消息一旦发送即固定同一账号。发送前全部不可用时沿用原任务的限次重试与截止时间；已进入发送且均确认未发出的，保留原投递失败状态。", "member-block-note"));
       box.append(routing);
     }
+    async function confirmChange(title, message, confirmText) {
+      const options = {title, message, confirmText, cancelText: "取消"};
+      if (typeof bridge.confirm === "function") {
+        try {
+          const confirmed = await bridge.confirm(options);
+          if (confirmed === true || confirmed === false) return confirmed;
+        } catch { /* No host confirmation: keep consent explicit in the workspace. */ }
+      }
+      return new Promise(resolve => {links.confirmation = {options, resolve}; redraw(state);});
+    }
     async function write(unlink = false) {
       if (links.busy || links.loading) return;
-      if (!links.pending) {
-        const members = (data.candidates || []).filter(item => links.selected.has(candidateKey(item)))
-          .map(item => ({subject_id: item.subject_id, route: item.route}));
-        if (!unlink && (members.length < 2 || members.length > 16)) {
-          links.error = "请选择当前账号和至少一个其他账号，总数不超过 16 个。"; redraw(state); return;
-        }
-        if (unlink && !window.confirm("解除整组账号关联？之后不再读取其他账号的新对话，原记录和原设置不会删除。")) return;
-        const extras = {};
-        if (!unlink && data.supported?.settings) {
-          extras.sharing = Object.fromEntries(Object.entries(links.sharing).map(([key, values]) => [key, [...values].sort()]));
-          const newlyShared = Object.entries(extras.sharing).some(([key, values]) => values.some(value => !data.group?.sharing?.[key]?.includes(value)));
-          const chosenSeed = (data.candidates || []).find(item => candidateKey(item) === links.seedKey && links.selected.has(candidateKey(item)));
-          if ((newlyShared || links.shareIdentity && !data.group?.identity?.enabled) && !chosenSeed) {
-            links.error = "请选择一个已关联账号作为新共享值的初始来源。"; redraw(state); return;
-          }
-          const seed = chosenSeed || (data.candidates || []).find(isCurrent);
-          extras.seed = {subject_id: seed.subject_id, route: seed.route};
-        }
-        if (!unlink && data.supported?.identity) {
-          const changedMembers = members.length !== (data.group?.members.length || 0)
-            || !(data.candidates || []).filter(item => links.selected.has(candidateKey(item)))
-              .every(item => data.group?.members.some(member => matchesMember(item, member)));
-          const requiresConfirmation = links.shareIdentity && (!data.group?.identity?.enabled || changedMembers);
-          if (requiresConfirmation && !window.confirm("共享身份与权限将影响所有选中账号的私聊权限与身份级别，仅限同一人格；原账号明确禁令仍优先，不会授予系统管理员权限。确认开启？")) return;
-          extras.identity = {enabled: links.shareIdentity, ...(requiresConfirmation ? {confirmation: "share-private-identity-and-permissions"} : {})};
-        }
-        if (!unlink && data.supported?.proactive) {
-          const preferred = (data.candidates || []).find(item => candidateKey(item) === links.preferredKey && links.selected.has(candidateKey(item)));
-          if (links.proactiveMode === "specified" && !preferred) {
-            links.error = "请选择一个已关联账号作为主动联系优先账号。"; redraw(state); return;
-          }
-          extras.proactive = {mode: links.proactiveMode, preferred: links.proactiveMode === "specified"
-            ? {subject_id: preferred.subject_id, ...preferred.route, native_account_id: preferred.native_account_id} : null};
-          if (links.proactiveMode === "random") {
-            const selected = (data.candidates || []).filter(item => links.selected.has(candidateKey(item)));
-            const weights = selected.map(item => ({member: {subject_id: item.subject_id, ...item.route,
-              native_account_id: item.native_account_id}, weight: links.weights[candidateKey(item)]}));
-            if (weights.some(entry => !Number.isInteger(entry.weight) || entry.weight < 0 || entry.weight > 1000)
-                || !weights.some(entry => entry.weight > 0)) {
-              links.error = "随机权重须为 0–1000 的整数，且至少一个关联账号的权重大于 0。"; redraw(state); return;
-            }
-            extras.proactive.weights = weights;
-          }
-        }
-        links.pending = {path: apiPath + (unlink ? "/unlink" : ""), command: {...parameters(person),
-          route: routeOf(person), operation_key: operation(), expected_revision: data.revision,
-          ...(!unlink ? {members, share_context: links.shareContext, ...extras} : {})}};
-        // parameters() is for query strings. Mutation bodies carry one route object.
-        for (const key of ["platform", "bot_id", "account_id", "role_id"]) delete links.pending.command[key];
-      }
-      links.busy = true; links.error = ""; redraw(state);
+      // Lock before awaiting consent, not only before the API call.
+      links.busy = true; links.error = ""; links.notice = ""; redraw(state);
       try {
+        if (!links.pending) {
+          const members = (data.candidates || []).filter(item => links.selected.has(candidateKey(item)))
+            .map(item => ({subject_id: item.subject_id, route: item.route}));
+          if (!unlink && (members.length < 2 || members.length > 16)) {
+            links.error = "请选择当前账号和至少一个其他账号，总数不超过 16 个。"; redraw(state); return;
+          }
+          if (unlink && !await confirmChange("解除整组账号关联",
+            "之后不再读取其他账号的新对话和共享长期记忆，原记录和原设置不会删除。", "确认解除")) {
+            links.notice = "已取消解除关联，原设置未改变。"; return;
+          }
+          const extras = {};
+          if (!unlink && data.supported?.memory) {
+            const old = data.group?.memory;
+            const unchangedMembers = data.group?.members?.length === members.length
+              && (data.candidates || []).filter(item => links.selected.has(candidateKey(item)))
+                .every(item => data.group.members.some(member => matchesMember(item, member)));
+            extras.memory = {enabled: links.shareMemory, history: links.memoryHistory};
+            if (links.shareMemory && (!old?.enabled || old.history !== links.memoryHistory || !unchangedMembers)) {
+              const history = links.memoryHistory === "all";
+              if (!await confirmChange(history ? "共享已有历史长期记忆" : "共享开启后的长期记忆",
+                history ? "允许这些关联账号读取彼此已有的历史长期记忆？不会合并或改写原记录。"
+                  : "允许这些关联账号读取本次开启之后的新长期记忆？关闭或解除关联即可停止跨账号读取。", "确认共享")) {
+                links.notice = "已取消长期记忆共享确认，本次设置尚未保存。"; return;
+              }
+              extras.memory.confirmation = history ? "include-existing-linked-memory" : "share-linked-long-term-memory";
+            }
+          }
+          if (!unlink && data.supported?.settings) {
+            extras.sharing = Object.fromEntries(Object.entries(links.sharing).map(([key, values]) => [key, [...values].sort()]));
+            const newlyShared = Object.entries(extras.sharing).some(([key, values]) => values.some(value => !data.group?.sharing?.[key]?.includes(value)));
+            const chosenSeed = (data.candidates || []).find(item => candidateKey(item) === links.seedKey && links.selected.has(candidateKey(item)));
+            if ((newlyShared || links.shareIdentity && !data.group?.identity?.enabled) && !chosenSeed) {
+              links.error = "请选择一个已关联账号作为新共享值的初始来源。"; redraw(state); return;
+            }
+            const seed = chosenSeed || (data.candidates || []).find(isCurrent);
+            extras.seed = {subject_id: seed.subject_id, route: seed.route};
+          }
+          if (!unlink && data.supported?.identity) {
+            const changedMembers = members.length !== (data.group?.members.length || 0)
+              || !(data.candidates || []).filter(item => links.selected.has(candidateKey(item)))
+                .every(item => data.group?.members.some(member => matchesMember(item, member)));
+            const requiresConfirmation = links.shareIdentity && (!data.group?.identity?.enabled || changedMembers);
+            if (requiresConfirmation && !await confirmChange("共享身份与权限",
+              "共享身份与权限将影响所有选中账号的私聊权限与身份级别，仅限同一人格；原账号明确禁令仍优先，不会授予系统管理员权限。", "确认共享")) {
+              links.notice = "已取消身份与权限共享确认，本次设置尚未保存。"; return;
+            }
+            extras.identity = {enabled: links.shareIdentity, ...(requiresConfirmation ? {confirmation: "share-private-identity-and-permissions"} : {})};
+          }
+          if (!unlink && data.supported?.proactive) {
+            const preferred = (data.candidates || []).find(item => candidateKey(item) === links.preferredKey && links.selected.has(candidateKey(item)));
+            if (links.proactiveMode === "specified" && !preferred) {
+              links.error = "请选择一个已关联账号作为主动联系优先账号。"; redraw(state); return;
+            }
+            extras.proactive = {mode: links.proactiveMode, preferred: links.proactiveMode === "specified"
+              ? {subject_id: preferred.subject_id, ...preferred.route, native_account_id: preferred.native_account_id} : null};
+            if (links.proactiveMode === "random") {
+              const selected = (data.candidates || []).filter(item => links.selected.has(candidateKey(item)));
+              const weights = selected.map(item => ({member: {subject_id: item.subject_id, ...item.route,
+                native_account_id: item.native_account_id}, weight: links.weights[candidateKey(item)]}));
+              if (weights.some(entry => !Number.isInteger(entry.weight) || entry.weight < 0 || entry.weight > 1000)
+                  || !weights.some(entry => entry.weight > 0)) {
+                links.error = "随机权重须为 0–1000 的整数，且至少一个关联账号的权重大于 0。"; redraw(state); return;
+              }
+              extras.proactive.weights = weights;
+            }
+          }
+          links.pending = {path: apiPath + (unlink ? "/unlink" : ""), command: {...parameters(person),
+            route: routeOf(person), operation_key: operation(), expected_revision: data.revision,
+            ...(!unlink ? {members, share_context: links.shareContext, ...extras} : {})}};
+          // parameters() is for query strings. Mutation bodies carry one route object.
+          for (const key of ["platform", "bot_id", "account_id", "role_id"]) delete links.pending.command[key];
+        }
         unwrap(await bridge.apiPost(links.pending.path, links.pending.command));
         links.pending = null; links.busy = false;
         await read();
@@ -1393,6 +1452,22 @@
     if (data.group && !links.pending) {
       const unlink = element("button", "解除整组关联", "secondary member-link-unlink"); unlink.type = "button"; unlink.disabled = links.busy;
       unlink.addEventListener("click", () => void write(true)); actions.append(unlink);
+    }
+    if (links.confirmation) {
+      const confirmation = links.confirmation;
+      const prompt = element("fieldset", undefined, "member-link-section");
+      prompt.setAttribute("role", "group"); prompt.setAttribute("aria-label", confirmation.options.title);
+      prompt.append(element("legend", confirmation.options.title), element("p", confirmation.options.message, "member-block-note"));
+      const buttons = element("div", undefined, "member-savebar member-link-actions");
+      const finish = accepted => {
+        if (links.confirmation !== confirmation) return;
+        links.confirmation = null; confirmation.resolve(accepted); redraw(state);
+      };
+      const cancel = element("button", confirmation.options.cancelText, "secondary"); cancel.type = "button";
+      cancel.addEventListener("click", () => finish(false));
+      const accept = element("button", confirmation.options.confirmText, "member-primary"); accept.type = "button";
+      accept.addEventListener("click", () => finish(true));
+      buttons.append(cancel, accept); prompt.append(buttons); box.append(prompt);
     }
     box.append(element("p", "关闭上下文共享或解除关联后，后续请求不再注入其他账号的新对话；已发送给模型的内容无法撤回。"));
     return box;

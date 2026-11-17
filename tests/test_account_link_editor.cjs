@@ -17,27 +17,31 @@ const route = suffix => ({platform: "qq-" + suffix, bot_id: "bot-" + suffix, acc
 const person = {subject_id: "user-a", ...route("a")};
 const candidates = ["a", "b"].map(s => ({subject_id: "user-" + s, route: route(s), label: "Account " + s}));
 const member = candidate => ({subject_id: candidate.subject_id, ...candidate.route, native_account_id: candidate.label});
-function fixture({group = null, failPost = false, confirm = true, features = false} = {}) {
+function fixture({group = null, failPost = false, confirm = true, features = false, memory = false, hostConfirm = true} = {}) {
   let counter = 0;
-  const jobs = [], posts = [], state = {};
+  const jobs = [], posts = [], confirmations = [], state = {};
   const data = {revision: 0, group, candidates, ...(features ? {
     supported: {settings: true, identity: true, proactive: true},
     fields: {profile: ["relationship.profile.default_nickname", "relationship.profile.extra"],
-      reply: ["conversation.presentation.style_prompt"], contact: ["proactive.contact.enabled"]}} : {})};
+      reply: ["conversation.presentation.style_prompt"], contact: ["proactive.contact.enabled"]}} : {}), ...(memory ? {supported: {memory: true}} : {})};
   const bridge = {apiGet: async () => ({status: "ok", data}), apiPost: async (url, body) => {
     posts.push({url, body: structuredClone(body)});
     if (failPost) throw new Error("ambiguous timeout");
     return {status: "ok", data: {revision: 1, group}};
   }};
+  if (hostConfirm) bridge.confirm = async options => {
+    confirmations.push(structuredClone(options));
+    return typeof confirm === "function" ? confirm(options) : confirm;
+  };
   const context = vm.createContext({ROOT: "acquaintance", current: {services: {bridge}},
     element: (tag, text, cls) => new Element(tag, text, cls), queueMicrotask: fn => jobs.push(fn),
     routeKey: p => JSON.stringify([p.platform, p.bot_id, p.account_id, p.role_id]),
     parameters: p => ({subject_id: p.subject_id, ...route("a")}), routeOf: p => route("a"),
     operation: () => "operation-" + (++counter), redraw: () => {}, errorText: (_, fallback) => fallback,
-    window: {confirm: () => confirm}, unwrap: envelope => envelope.data,
+    window: {confirm: () => {throw new Error("native confirm blocked by sandbox");}}, unwrap: envelope => envelope.data,
   });
   vm.runInContext(slice + "\nthis.pane = accountLinksPane;", context);
-  return {state, posts, bridge, data, async render() {
+  return {state, posts, bridge, data, confirmations, async render() {
     context.pane(state, person);
     while (jobs.length) await jobs.shift()();
     return context.pane(state, person);
@@ -203,4 +207,118 @@ test("saved random weights are restored when reopening", async () => {
       {member: member(candidates[0]), weight: 0}, {member: member(candidates[1]), weight: 8}]}}});
   const pane = await f.render();
   assert.deepEqual(all(pane).filter(e => e.tag === "input" && e.type === "number").map(e => e.value), ["0", "8"]);
+});
+
+async function memoryFixture(options = {}) {
+  const f = fixture({memory: true, ...options}); const pane = await f.render();
+  const account = all(pane).filter(e => e.tag === "input")[1];
+  account.checked = true; account.events.change();
+  return f;
+}
+test("long-term memory is a separate opt-in with labeled existing controls", async () => {
+  const f = await memoryFixture(); const pane = await f.render();
+  assert.equal(f.state.accountLinks.shareMemory, false);
+  assert.equal(f.state.accountLinks.memoryHistory, "since_enabled");
+  const select = all(pane).find(e => e.tag === "select");
+  assert.equal(select.disabled, true); assert.equal(select["aria-label"], "长期记忆共享范围");
+  const label = all(pane).find(e => e.tag === "label" && e.children.includes(select));
+  assert.ok(label.className.includes("member-field"));
+  button(pane, "保存账号关联与共享开关").events.click(); await settle();
+  assert.deepEqual(f.posts[0].body.memory, {enabled: false, history: "since_enabled"});
+  assert.equal(f.posts[0].body.share_context, false);
+});
+test("new memory sharing and historical sharing use distinct confirmations", async () => {
+  for (const history of ["since_enabled", "all"]) {
+    const f = await memoryFixture(); f.state.accountLinks.shareMemory = true;
+    f.state.accountLinks.memoryHistory = history;
+    const pane = await f.render();
+    button(pane, "保存账号关联与共享开关").events.click(); await settle();
+    assert.equal(f.posts[0].body.memory.confirmation, history === "all"
+      ? "include-existing-linked-memory" : "share-linked-long-term-memory");
+  }
+});
+test("declining memory confirmation sends no mutation", async () => {
+  const f = await memoryFixture({confirm: false}); f.state.accountLinks.shareMemory = true;
+  const pane = await f.render(); button(pane, "保存账号关联与共享开关").events.click(); await settle();
+  assert.equal(f.posts.length, 0);
+});
+test("saved memory range is restored independently of chat context", async () => {
+  const f = await memoryFixture({group: {members: candidates.map(member), share_context: false,
+    memory: {enabled: true, history: "all"}}});
+  assert.equal(f.state.accountLinks.shareMemory, true); assert.equal(f.state.accountLinks.memoryHistory, "all");
+  assert.equal(f.state.accountLinks.shareContext, false);
+});
+
+
+test("sandboxed memory save uses the host dialog for both ranges, never native confirm", async () => {
+  for (const history of ["since_enabled", "all"]) {
+    const f = await memoryFixture();
+    f.state.accountLinks.shareMemory = true; f.state.accountLinks.memoryHistory = history;
+    const pane = await f.render(); button(pane, "保存账号关联与共享开关").events.click(); await settle();
+    assert.equal(f.confirmations.length, 1);
+    assert.equal(f.confirmations[0].title, history === "all" ? "共享已有历史长期记忆" : "共享开启后的长期记忆");
+    assert.equal(f.posts.length, 1);
+    assert.equal(f.posts[0].body.memory.confirmation, history === "all"
+      ? "include-existing-linked-memory" : "share-linked-long-term-memory");
+    assert.equal(f.state.accountLinks.busy, false);
+  }
+});
+
+test("waiting for host consent locks editing and blocks duplicate saves", async () => {
+  let answer;
+  const f = await memoryFixture({confirm: () => new Promise(resolve => {answer = resolve;})});
+  f.state.accountLinks.shareMemory = true;
+  let pane = await f.render(); const save = button(pane, "保存账号关联与共享开关");
+  save.events.click(); save.events.click(); await settle();
+  assert.equal(f.confirmations.length, 1); assert.equal(f.posts.length, 0);
+  pane = await f.render(); assert.equal(button(pane, "保存账号关联与共享开关").disabled, true);
+  assert.ok(all(pane).filter(e => e.tag === "fieldset").every(e => e.disabled));
+  answer(true); await settle(); assert.equal(f.posts.length, 1); assert.equal(f.state.accountLinks.busy, false);
+});
+
+test("unavailable host confirmation falls back to explicit inline consent, not silent cancellation", async () => {
+  for (const options of [{hostConfirm: false}, {confirm: null}, {confirm: () => {throw new Error("host unavailable");}}]) {
+    const f = await memoryFixture(options); f.state.accountLinks.shareMemory = true;
+    let pane = await f.render(); button(pane, "保存账号关联与共享开关").events.click(); await settle();
+    assert.equal(f.posts.length, 0); assert.ok(f.state.accountLinks.confirmation);
+    pane = await f.render();
+    const prompt = all(pane).find(e => e["aria-label"] === "共享开启后的长期记忆");
+    assert.ok(prompt); assert.equal(prompt.className, "member-link-section");
+    button(prompt, "确认共享").events.click(); button(prompt, "确认共享").events.click(); await settle();
+    assert.equal(f.posts.length, 1); assert.equal(f.state.accountLinks.confirmation, null);
+    assert.equal(f.state.accountLinks.busy, false);
+  }
+});
+
+test("inline cancellation sends nothing, unlocks the draft and allows a later save", async () => {
+  const f = await memoryFixture({hostConfirm: false}); f.state.accountLinks.shareMemory = true;
+  let pane = await f.render(); button(pane, "保存账号关联与共享开关").events.click(); await settle();
+  pane = await f.render(); button(pane, "取消").events.click(); await settle();
+  assert.equal(f.posts.length, 0); assert.equal(f.state.accountLinks.busy, false);
+  assert.match(f.state.accountLinks.notice, /已取消/);
+  pane = await f.render(); button(pane, "保存账号关联与共享开关").events.click(); await settle();
+  pane = await f.render(); button(pane, "确认共享").events.click(); await settle();
+  assert.equal(f.posts.length, 1);
+});
+
+test("identity and unlink consent also use the host confirmation bridge in a sandbox", async () => {
+  const f = fixture({features: true}); let pane = await f.render();
+  f.state.accountLinks.selected.add(keyFor(candidates[1])); f.state.accountLinks.shareIdentity = true;
+  f.state.accountLinks.seedKey = keyFor(candidates[0]);
+  button(pane, "保存账号关联与共享开关").events.click(); await settle();
+  assert.equal(f.confirmations[0].title, "共享身份与权限");
+  assert.equal(f.posts[0].body.identity.confirmation, "share-private-identity-and-permissions");
+  const g = fixture({group: {members: candidates.map(member)}}); pane = await g.render();
+  button(pane, "解除整组关联").events.click(); await settle();
+  assert.equal(g.confirmations[0].title, "解除整组账号关联"); assert.equal(g.posts.length, 1);
+  assert.ok(g.posts[0].url.endsWith("/unlink"));
+});
+
+test("retrying an ambiguous confirmed memory save reuses its consent and operation key", async () => {
+  const f = await memoryFixture({failPost: true}); f.state.accountLinks.shareMemory = true;
+  let pane = await f.render(); button(pane, "保存账号关联与共享开关").events.click(); await settle();
+  assert.equal(f.posts.length, 1); assert.equal(f.confirmations.length, 1);
+  pane = await f.render(); button(pane, "重试原操作（不重复创建）").events.click(); await settle();
+  assert.equal(f.posts.length, 2); assert.equal(f.confirmations.length, 1);
+  assert.deepEqual(f.posts[0], f.posts[1]);
 });

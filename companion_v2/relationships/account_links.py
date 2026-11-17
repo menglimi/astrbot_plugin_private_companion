@@ -55,7 +55,7 @@ class PrivateAccountLinks:
 
     def configure(self, context, contexts, *, persona_id, expected_revision,
                   share_context, operation_key, operator_id, at, sharing=None, seed=None, initial_values=None,
-                  identity=None, proactive=None, command_hash=None):
+                  identity=None, proactive=None, memory=None, command_hash=None):
         # The host resolves current identities/personas; no client-supplied scope
         # or subject is trusted to construct a new identity here.
         if (type(share_context) is not bool or type(persona_id) is not str or not persona_id
@@ -71,6 +71,10 @@ class PrivateAccountLinks:
             raise TaskError("account_link_persona_mismatch", "link distinct private accounts of one persona only")
         members.sort(key=member_key)
         payload = {"members": members, "persona_id": persona_id, "share_context": share_context}
+        if memory is not None:
+            from .account_link_memory import validate_policy
+            validate_policy(memory)
+            payload["memory"] = memory
         if sharing is not None:
             from .account_link_settings import validate_sharing
             validate_sharing(sharing, initial_values or {})
@@ -151,6 +155,8 @@ class PrivateAccountLinks:
                 for key in ("sharing", "shared_values", "shared_revision", "identity", "proactive", "configuration_targets"):
                     if key not in group and previous and key in previous:
                         group[key] = deepcopy(previous[key])
+                from .account_link_memory import apply_policy
+                apply_policy(group, previous, at)
                 initial = group.pop("initial_values", None)
                 if initial is not None:
                     active = {key for keys in group["sharing"].values() for key in keys}
