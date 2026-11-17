@@ -1234,8 +1234,5 @@ class CompanionApplication:
                 if self.owns_runtime:
                     self.runtime.close()
                     self._storage_closed = True
-                if self.configuration_store is not None:
-                    self.runtime.attach_configuration_store(None)
-                    self.configuration_store.close()
-                    self.configuration_store = None
+                # An externally owned runtime keeps both stores for stopped views.
             return ShutdownReport(self.state, handles, self._storage_closed)

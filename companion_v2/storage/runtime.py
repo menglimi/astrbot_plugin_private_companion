@@ -548,6 +548,7 @@ class StorageRuntime:
         )
 
     def close(self) -> None:
+        """Close this runtime and its attached configuration store."""
         started = time.perf_counter()
         with self._reader_condition:
             self._reader_closing = True
@@ -564,10 +565,14 @@ class StorageRuntime:
             if self._connection is not None:
                 self._connection.close()
                 self._connection = None
+            configuration_store = self._configuration_store
+            self._configuration_store = None
         finally:
             finished = time.perf_counter()
             self._lock.release()
             self._report_slow_operation("close", started, lock_acquired, finished)
+        if configuration_store is not None:
+            configuration_store.close()
 
     def __enter__(self) -> "StorageRuntime":
         return self
