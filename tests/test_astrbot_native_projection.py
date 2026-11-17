@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import Column, MetaData, String, Table
 from astrbot.core.db import po as native_po
+from companion_v2.adapters.astrbot.native import configured_default_persona_id
 
 # Establish an isolated AstrBot data root before importing the host adapter.
 from tests import test_astrbot_staging_host as _support
@@ -54,6 +55,14 @@ class NativeAdapterProjectionTests(unittest.TestCase):
         self.assertTrue(callable(native_types.persona_snapshot_lookup))
         self.assertTrue(callable(native_types.session_persona_override_lookup))
         self.assertIs(native_types.persona_selection_lookup, resolve_native_persona_selection)
+
+    def test_new_host_agent_configuration_supplies_default_persona(self):
+        context = SimpleNamespace(get_config=lambda *, umo: {
+            "agent": {"runtime": "astrbot", "config": {"persona": {"persona_id": "current"}}},
+            "provider_settings": {"default_personality": "legacy"},
+        })
+
+        self.assertEqual(configured_default_persona_id(context, "qq:FriendMessage:200"), "current")
 
 
 class ConversationPersonaProjectionTests(unittest.IsolatedAsyncioTestCase):
@@ -114,3 +123,20 @@ class ConversationPersonaProjectionTests(unittest.IsolatedAsyncioTestCase):
         persona_id = await resolve_native_persona_selection(context, "qq:FriendMessage:200", "[%None]")
 
         self.assertEqual(persona_id, "[%None]")
+
+    async def test_new_host_resolver_uses_session_configuration_contract(self):
+        async def resolver(*, umo, platform_name):
+            self.assertEqual((umo, platform_name), ("qq:FriendMessage:200", "aiocqhttp"))
+            return "current", {"name": "current"}, False
+
+        platform = SimpleNamespace(meta=lambda: SimpleNamespace(name="aiocqhttp"))
+        context = SimpleNamespace(
+            persona_manager=SimpleNamespace(resolve_selected_persona=resolver),
+            get_config=lambda *, umo: {"agent": {"runtime": "astrbot"}},
+            get_platform_inst=lambda platform_id: platform,
+        )
+
+        selected = await resolve_native_persona_selection(
+            context, "qq:FriendMessage:200", "old-conversation-persona")
+
+        self.assertEqual(selected, "current")

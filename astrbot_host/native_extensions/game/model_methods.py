@@ -1,5 +1,6 @@
 """V2 game model services."""
 from __future__ import annotations
+from companion_v2.adapters.astrbot.native import resolve_host_persona_selection
 from .common import *
 from .native_context import room_background
 from ..usage import tracked_text_chat
@@ -152,8 +153,9 @@ class GameModelMethods:
                         settings = config.get('provider_settings', {})
                         if isinstance(settings, dict):
                             provider_settings = settings
-                resolved = await self._resolve_maybe_awaitable(resolver(umo=room.session_id, conversation_persona_id=conversation_persona_id, platform_name=room.session_id.split(':', 1)[0], provider_settings=provider_settings))
-                persona = resolved[1] if isinstance(resolved, (tuple, list)) else resolved
+                _, persona, _ = await resolve_host_persona_selection(
+                    resolver, umo=room.session_id, conversation_persona_id=conversation_persona_id,
+                    platform_name=room.session_id.split(':', 1)[0], provider_settings=provider_settings)
                 return self._persona_text(persona)
             except Exception as exc:
                 logger.debug('[GameCompanion] 按会话解析人格失败，尝试兼容回退: %s', exc)

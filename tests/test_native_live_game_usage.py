@@ -73,6 +73,25 @@ class NativeLiveGameUsageTests(unittest.IsolatedAsyncioTestCase):
         saved = json.loads(self.game.token_usage.path.read_text(encoding="utf-8"))
         self.assertEqual(saved["totals"]["calls"], 3)
 
+    async def test_game_persona_prompt_uses_new_host_resolver_contract(self):
+        del self.game._persona_prompt
+
+        async def resolver(*, umo, platform_name):
+            self.assertEqual((umo, platform_name), (self.room.session_id, "qq"))
+            return "current", {"name": "current", "prompt": "当前人格提示词"}, False
+
+        self.context.persona_manager = NS(
+            resolve_selected_persona=resolver,
+            acm=NS(get_conf=lambda _umo: {}),
+            get_default_persona_v3=AsyncMock(side_effect=AssertionError("unexpected fallback")),
+        )
+        self.context.conversation_manager = NS(
+            get_curr_conversation_id=AsyncMock(return_value=None),
+            get_conversation=AsyncMock(side_effect=AssertionError("unexpected conversation lookup")),
+        )
+
+        self.assertEqual(await self.game._persona_prompt(self.room), "当前人格提示词")
+
     async def test_failed_or_unreported_game_attempts_stay_unknown_without_replay(self):
         self.provider.text_chat.side_effect = TimeoutError("synthetic provider timeout")
         with self.assertRaises(RuntimeError):
