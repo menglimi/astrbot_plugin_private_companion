@@ -1,7 +1,11 @@
 import unittest
+import sqlite3
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
+
+from sqlalchemy import Column, MetaData, String, Table
+from astrbot.core.db import po as native_po
 
 # Establish an isolated AstrBot data root before importing the host adapter.
 from tests import test_astrbot_staging_host as _support
@@ -32,6 +36,17 @@ class ProjectionDatabase:
         yield self.session
 
 
+class SqliteProjectionSession:
+    def __init__(self):
+        self.connection = sqlite3.connect(":memory:")
+        self.connection.execute("CREATE TABLE conversations_v3 (conversation_id TEXT, persona_id TEXT)")
+        self.connection.execute("INSERT INTO conversations_v3 VALUES ('conversation-1', 'new-persona')")
+
+    async def execute(self, statement):
+        cursor = self.connection.execute(str(statement), statement.compile().params)
+        return SimpleNamespace(one_or_none=cursor.fetchone)
+
+
 class NativeAdapterProjectionTests(unittest.TestCase):
     def test_native_types_expose_a_lightweight_persona_projection(self):
         native_types = installed_native_types()
@@ -50,6 +65,22 @@ class ConversationPersonaProjectionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(persona_id, "persona-1")
         self.assertEqual(tuple(database.session.statement.selected_columns.keys()), ("persona_id",))
+
+    async def test_new_host_uses_active_v3_table_when_legacy_table_is_absent(self):
+        table = Table("conversations_v3", MetaData(),
+                      Column("conversation_id", String), Column("persona_id", String))
+        model = SimpleNamespace(conversation_id=table.c.conversation_id,
+                                persona_id=table.c.persona_id)
+        session = SqliteProjectionSession()
+        database = ProjectionDatabase()
+        database.session = session
+        try:
+            with patch.object(native_po, "ConversationV3", model, create=True):
+                selected = await load_persona_snapshot_selection(
+                    SimpleNamespace(_db=database), "qq:FriendMessage:200", "conversation-1")
+        finally:
+            session.connection.close()
+        self.assertEqual(selected, "new-persona")
 
     async def test_empty_snapshot_uses_astrbot_selected_persona_precedence(self):
         configuration = {"agent_runner": {"runner_type": "local", "config": {"persona": {"persona_id": "runner-default"}}}}
