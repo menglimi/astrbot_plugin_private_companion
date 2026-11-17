@@ -45,7 +45,7 @@ window.CompanionSelfReviewPage = (() => {
   let root = null, bridge = null, generation = 0, operation = 0, data = null;
 
   function fresh() {
-    return {sources:[], items:[], stopped:[], policy:null, status:null, phase:"loading",
+    return {sources:[], items:[], stopped:[], policy:null, status:null, enabled:true, phase:"loading",
       loading:false, writing:false, confirming:"", notice:"", error:false, sourceErrors:[], expired:0};
   }
   function live(ticket) { return ticket === generation && root?.isConnected; }
@@ -157,7 +157,15 @@ window.CompanionSelfReviewPage = (() => {
   function actions(item, sourceKey) {
     const actionKey = sourceKey + "\u0000" + item.item_id;
     if (item.unavailable_reason) return `<span class="sr-state is-stopped">证据失效 · 暂停注入</span>`;
-    if (item.state !== "pending") return `<span class="sr-state${item.expires_at&&Date.parse(item.expires_at)<=Date.now()?" is-stopped":""}">${item.kind === "no_change" && item.state === "rejected" ? "已收起" : item.state === "accepted" ? item.expires_at&&Date.parse(item.expires_at)<=Date.now()?"已过期":"生效中" : "已驳回"}</span>`;
+    if (item.state !== "pending") {
+      const expired = item.expires_at && Date.parse(item.expires_at) <= Date.now();
+      const label = item.kind === "no_change" && item.state === "rejected" ? "已收起"
+        : item.state === "accepted" ? (expired ? "已过期" : "生效中") : item.state === "withdrawn" ? "已撤回" : "已驳回";
+      const choices = Array.isArray(item.actions) ? item.actions : [];
+      return `<span class="sr-state${expired ? " is-stopped" : ""}">${label}</span>
+        <div class="sr-actions">${choices.includes("withdraw")
+          ? `<button class="button small" type="button" data-review-action="withdraw" data-review-id="${e(item.item_id)}" data-review-source="${e(sourceKey)}">撤回指导</button>` : ""}</div>`;
+    }
     if (data.confirming === actionKey) return `<div class="sr-actions">
       <span>采纳后会在短期内作为该角色的工作指导。</span>
       <button class="button small primary" type="button" data-review-action="confirm" data-review-id="${e(item.item_id)}" data-review-source="${e(sourceKey)}">确认采纳</button>
@@ -216,6 +224,8 @@ window.CompanionSelfReviewPage = (() => {
     const failed=`<p class="sr-status is-error" role="status" aria-live="polite">${e(data.notice||UNFINISHED)}</p>
       <div class="sr-more"><button class="button small" type="button" data-review-refresh ${data.loading?"disabled":""}>重新读取</button></div>`;
     const read=`${data.notice?`<p class="sr-status${data.error?" is-error":""}" role="status" aria-live="polite">${e(data.notice)}</p>`:""}
+      <section class="sr-switch" aria-label="自我复盘开关"><label><input type="checkbox" data-review-enabled ${data.enabled?"checked":""} ${data.writing?"disabled":""}> <strong>启用自我复盘</strong></label>
+        <p>关闭后停止生成新的复盘建议，并停止把已采纳建议注入回复；历史记录仍可在下方查看。</p></section>
       ${data.sources.length?`<section class="sr-kpis" aria-label="复盘状态">${metrics.map(([label,value,unit])=>`<article><span>${label}</span><strong>${e(value)}${unit&&typeof value==="number"?` ${unit}`:""}</strong></article>`).join("")}</section>
         <section class="sr-mechanism"><header><h2>复盘运行机制</h2><span>${data.loading?"":"已连接"}</span></header><div>${mechanisms.map(([label,value])=>`<article><strong>${label}</strong><span>${e(value)}</span></article>`).join("")}</div></section>
         <section class="sr-effective"><header><h2>生效中的自我指导</h2><span>${valid.length} 条</span></header>${active}</section>${stopped}`
@@ -276,7 +286,8 @@ window.CompanionSelfReviewPage = (() => {
         const decided = append?{items:[]}:await api(source,"GET","/self-review",{state:"decided",limit:50});
         /* 「已经读过几页」要累加：append 只读一页，但它把已读页数 +1。 */
         return {source, rows, cursor, pages: append ? loadedBefore + 1 : pages,
-          policy:first?.policy||null, status:first?.status||null, decided};
+          policy:first?.policy||null, status:first?.status||null,
+          enabled:typeof first?.enabled==="boolean"?first.enabled:true, decided};
       }));
       if (!live(ticket) || query !== loadGeneration) return;
       results.forEach((settled, index) => {
@@ -286,11 +297,12 @@ window.CompanionSelfReviewPage = (() => {
           return;
         }
         succeeded++;
-        const {rows,cursor,pages,policy,status,decided}=settled.value;
+        const {rows,cursor,pages,policy,status,enabled,decided}=settled.value;
         source.next = cursor;
         source.pages = pages;
         if(!data.policy&&policy)data.policy=policy;
         if(!data.status&&status)data.status=status;
+        if(typeof enabled==="boolean")data.enabled=enabled;
         if (Number.isInteger(decided.expired_in_page)) expired += decided.expired_in_page;
         for (const item of rows) {
           const enriched = {...item, _sourceKey:source.key, _sourceLabel:source.label};
@@ -301,7 +313,7 @@ window.CompanionSelfReviewPage = (() => {
           } else fetched.push(enriched);
         }
         for(const item of Array.isArray(decided.items)?decided.items:[]){
-          if(item.state==="accepted"&&(item.unavailable_reason||item.expires_at&&Date.parse(item.expires_at)<=Date.now())){
+          if(item.state==="withdrawn"||item.state==="accepted"&&(item.unavailable_reason||item.expires_at&&Date.parse(item.expires_at)<=Date.now())){
             const enriched={...item,_sourceKey:source.key,_sourceLabel:source.label};
             const key=itemKey(enriched);
             if(!stoppedKeys.has(key)){data.stopped.push(enriched);stoppedKeys.add(key);}
@@ -337,7 +349,7 @@ window.CompanionSelfReviewPage = (() => {
      之后的 refresh 只重读已经读过的页，不再整表重来。 */
   function applyDecision(item, action) {
     if (!item) return;
-    if (action === "reject") {
+    if (action === "reject" || action === "withdraw") {
       data.items = data.items.filter(row => itemKey(row) !== itemKey(item));
       return;
     }
@@ -362,7 +374,7 @@ window.CompanionSelfReviewPage = (() => {
       if (!live(ticket)) return;
       applyDecision(item, action);
       await load({mode:"refresh", force:true});
-      if (live(ticket)) note(action === "accept" ? "已采纳，短期指导已生效。" : item.kind === "no_change" ? "结论已收起。" : "已驳回。");
+      if (live(ticket)) note(action === "accept" ? "已采纳，短期指导已生效。" : action === "withdraw" ? "已撤回，随后续请求停止注入。" : item.kind === "no_change" ? "结论已收起。" : "已驳回。");
     } catch (failure) {
       if (live(ticket)) note(reason(failure.code), true);
     } finally {
@@ -381,6 +393,26 @@ window.CompanionSelfReviewPage = (() => {
     else if (action.dataset.reviewAction === "cancel") { data.confirming = ""; render(); }
     else if (action.dataset.reviewAction === "confirm") decide(sourceKey, itemId, "accept");
     else if (action.dataset.reviewAction === "reject") decide(sourceKey, itemId, "reject");
+    else if (action.dataset.reviewAction === "withdraw") decide(sourceKey, itemId, "withdraw");
+  }
+  async function onToggle(event) {
+    const control = event.target.closest?.("[data-review-enabled]");
+    if (!control || !data || data.writing) return;
+    const source = data.sources[0];
+    if (!source) return;
+    const enabled = control.checked;
+    data.writing = true;
+    data.enabled = enabled;
+    note("");
+    render();
+    try {
+      await api(source, "POST", "/self-review/settings/command", {enabled});
+      if (data) note(enabled ? "已启用自我复盘。" : "已停用自我复盘：新建议与已有指导注入都已停止。");
+    } catch (failure) {
+      if (data) { data.enabled = !enabled; note(reason(failure.code), true); }
+    } finally {
+      if (data) { data.writing = false; render(); }
+    }
   }
   async function mount(host, options = {}) {
     unmount();
@@ -397,6 +429,7 @@ window.CompanionSelfReviewPage = (() => {
     }
     const ticket = ++generation;
     root.addEventListener("click", onClick);
+    root.addEventListener("change", onToggle);
     render();
     try {
       bridge = await ready(ticket);
@@ -413,7 +446,9 @@ window.CompanionSelfReviewPage = (() => {
     generation++;
     loadGeneration++;
     if (root) root.removeEventListener("click", onClick);
+    if (root) root.removeEventListener("change", onToggle);
     root = null; bridge = null; data = null;
   }
   return {mount, unmount, get state() { return {data}; }};
 })();
+

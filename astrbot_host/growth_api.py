@@ -1,4 +1,4 @@
-"""Authenticated commands for the pinned profile's role growth records."""
+﻿"""Authenticated commands for the pinned profile's role growth records."""
 
 import asyncio
 import json
@@ -52,6 +52,8 @@ class GrowthWebAPI:
                 (PREFIX + "/progress", self.progress, ["GET"], "Read pending growth progress reviews"),
                 (PREFIX + "/progress/command", self.progress_command, ["POST"], "Decide a growth progress review"),
                 (PREFIX + "/self-review", self.self_review, ["GET"], "Read role self-review candidates"),
+                (PREFIX + "/self-review/settings", self.self_review_settings, ["GET"], "Read the self-review switch"),
+                (PREFIX + "/self-review/settings/command", self.self_review_settings_command, ["POST"], "Enable or disable self-review"),
                 (PREFIX + "/self-review/command", self.self_review_command, ["POST"], "Decide a role self-review candidate")]
 
     async def _run(self, arguments, *, method):
@@ -236,3 +238,20 @@ class GrowthWebAPI:
         except (ValueError, TypeError, UnicodeError, RecursionError, OverflowError):
             return outcome_response(Outcome.failed("self_review_command_invalid", "invalid UTF-8 review command"))
         return await self._run(data, method="self_review_command")
+
+    async def self_review_settings(self):
+        return await self._run({}, method="self_review_settings")
+
+    async def self_review_settings_command(self):
+        from .web_api import outcome_response
+        try:
+            raw = await request.body()
+            if len(raw) > 10000:
+                raise ValueError("settings too large")
+            data = json.loads(raw.decode("utf-8"))
+            if type(data) is not dict or set(data) != {"enabled"} or type(data["enabled"]) is not bool:
+                raise ValueError("unexpected settings fields")
+        except (ValueError, TypeError, UnicodeError, RecursionError, OverflowError):
+            return outcome_response(Outcome.failed("self_review_command_invalid", "invalid self-review settings"))
+        return await self._run(data, method="self_review_settings_command")
+
