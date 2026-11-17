@@ -134,6 +134,7 @@ RETRYABLE_HOST_STARTUP_CODES = frozenset({
     "host_platform_unavailable", "host_platform_changed", "host_account_unavailable",
     "host_account_changed", "host_persona_unavailable",
     "host_persona_window_unbound", "host_conversation_changed", "host_startup_failed",
+    "host_provider_unavailable",
     "staging_preflight_failed",
 })
 # A denied final send is the one refusal the user feels as silence, and it is
@@ -582,7 +583,12 @@ class PrivateCompanionV2StagingPlugin(Star):
         session = self.staging.session
         if (self.staging._accepting and session is not None
                 and session.application.state == "running"):
-            if self.staging.native_bridges_current():
+            try:
+                bridges_current = self.staging.native_bridges_current()
+            except Exception as error:
+                logger.warning("[CompanionV2] 平台桥接状态检查失败 error_type=%s", type(error).__name__)
+                bridges_current = False
+            if bridges_current:
                 return
             self.staging._accepting = False
         task = self._host_start_task
@@ -1290,7 +1296,16 @@ class PrivateCompanionV2StagingPlugin(Star):
         config_getter = getattr(native, "get_config", None)
         if not all(callable(method) for method in (getter, all_providers, config_getter)):
             return
-        from astrbot.core.astr_main_agent import _provider_supports_modality
+        try:
+            from astrbot.core.astr_main_agent import _provider_supports_modality
+        except ModuleNotFoundError as error:
+            if error.name != "astrbot.core.astr_main_agent":
+                raise
+
+            def _provider_supports_modality(provider, modality):
+                config = getattr(provider, "provider_config", None)
+                modalities = config.get("modalities") if isinstance(config, Mapping) else None
+                return not modalities or isinstance(modalities, list) and modality in modalities
 
         selected = event.get_extra("selected_provider")
         current = getter(selected) if isinstance(selected, str) and selected else None
