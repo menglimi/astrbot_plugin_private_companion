@@ -39,6 +39,18 @@ class DecisionTests(unittest.TestCase):
         next_day = life_publish.decide(settings(), reached, now=NOW + timedelta(days=1))
         self.assertTrue(next_day.due)
 
+    def test_unlimited_daily_posts_still_observe_attempt_interval_and_switches(self):
+        unlimited = settings(daily_limits_enabled=False)
+        reached = state(publish_day=DAY, publish_count=20)
+        self.assertTrue(life_publish.decide(unlimited, reached, now=NOW).due)
+        self.assertEqual(life_publish.decide({**unlimited, "daily_limits_enabled": True},
+                                            reached, now=NOW).reason, "daily_limit")
+        attempted = state(publish_day=DAY, publish_count=20,
+                          last_action_at={life_publish.ATTEMPT_KEY: NOW.isoformat()})
+        self.assertEqual(life_publish.decide(unlimited, attempted, now=NOW).reason, "interval")
+        self.assertEqual(life_publish.decide({**unlimited, "life_publish_enabled": False},
+                                            reached, now=NOW).reason, "life_publish_disabled")
+
     def test_interval_counts_failed_attempts_not_only_published_posts(self):
         attempted = state(last_action_at={life_publish.ATTEMPT_KEY: "2026-11-09T02:00:00+00:00"})
         self.assertEqual(life_publish.decide(settings(), attempted, now=NOW).reason, "interval")

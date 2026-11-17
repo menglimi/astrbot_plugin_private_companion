@@ -33,8 +33,9 @@ DEFAULTS = {
     "max_actions_per_tick": 1,
     # How many of the role's own posts a comment reply may scan.
     "comment_recent_posts": 5,
-    # Daily ceiling for self-published posts. The wording of a post is a separate
-    # decision; this is only the safety cap.
+    # One switch governs the total, per-topic and life-publish daily ceilings.
+    "daily_limits_enabled": True,
+    # Daily ceiling for self-published posts when daily limits are enabled.
     "publish_max_daily": 1,
     # Topic classification is model guided.  The explicit confirmation gate
     # keeps an automatically drafted public post in a reviewable state.
@@ -76,7 +77,8 @@ for _topic in TOPIC_SPECS:
         f"{_key}_cooldown_minutes": (0, 1440),
     })
 BOOLEAN_FIELDS = ("enabled", "like_enabled", "comment_enabled", "publish_enabled",
-                  "topic_auto_enabled", "topic_require_confirmation", "life_publish_enabled") + tuple(
+                  "daily_limits_enabled", "topic_auto_enabled", "topic_require_confirmation",
+                  "life_publish_enabled") + tuple(
                       f"{item.topic.value}_enabled" for item in TOPIC_SPECS)
 INTEGER_FIELDS = tuple(LIMITS)
 PROBABILITY_FIELDS = ("life_publish_probability",) + tuple(
