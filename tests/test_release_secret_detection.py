@@ -1,13 +1,29 @@
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
-from tools.build_v2_release import CORE_DIRS, ROOT, allowed, checked_payload, sources
+from tools.build_v2_release import CORE_DIRS, ROOT, allowed, checked_payload, sources, zip_entries
 from tools.check_tracked_privacy import is_private_path
 
 
 class ReleaseSecretDetectionTests(unittest.TestCase):
+    def test_zip_entries_apply_requested_compression_to_custom_metadata(self):
+        payload = b"".join(("release-source-%s\n" % (index % 357)).encode()
+                           for index in range(2000))
+        with tempfile.TemporaryDirectory() as temporary:
+            archive_path = Path(temporary) / "release.zip"
+            reference_path = Path(temporary) / "reference.zip"
+            zip_entries(archive_path, {"source.py": payload})
+            with zipfile.ZipFile(reference_path, "w", compression=zipfile.ZIP_DEFLATED,
+                                 compresslevel=9) as reference:
+                reference.writestr("source.py", payload)
+            with zipfile.ZipFile(archive_path) as archive, zipfile.ZipFile(reference_path) as reference:
+                self.assertEqual(archive.read("source.py"), payload)
+                self.assertEqual(archive.getinfo("source.py").compress_size,
+                                 reference.getinfo("source.py").compress_size)
+
     def test_git_inventory_rejects_runtime_and_host_config(self):
         for name in (
             "data/cmd_config.json", "plugin_data/companion-7/state.db",
@@ -23,6 +39,10 @@ class ReleaseSecretDetectionTests(unittest.TestCase):
 
     def test_core_release_sources_include_astrbot_changelog(self):
         self.assertIn(ROOT / "CHANGELOG.md", sources(ROOT, CORE_DIRS))
+
+    def test_core_release_sources_include_migration_audit_ledger(self):
+        self.assertIn(ROOT / "docs" / "V1_V2_CONFIG_RESOLVED_20260928.csv",
+                      sources(ROOT, CORE_DIRS))
 
     def test_excludes_local_news_feed_capture_from_release_sources(self):
         root = Path("source-root")
@@ -40,6 +60,7 @@ class ReleaseSecretDetectionTests(unittest.TestCase):
             "pages/陪伴小屋/design-previews/old/index.html",
             "docs/RELEASE_V2_0.md",
             "docs/INTEGRATION_ACCEPTANCE_V2_0.md",
+            "docs/V1_CONFIG_BY_SEGMENT_20260925.csv",
             "docs/V670_TO_V700_MIGRATION_20261019.md",
             "fixtures/reply_efficiency_preview.json",
             "tests/bubble_bonbon_smoke.mjs",

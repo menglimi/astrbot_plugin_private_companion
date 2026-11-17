@@ -221,7 +221,7 @@ class CompanionApplication:
                  runtime_identity=None, presence_port=None, segmentation=SegmentationPolicy(), voice_policy=None,
                  weather_port=None, weather_alert_port=None, balance_port=None, news_port=None,
                  solar_term_port=None, budget_soft=None, capability_owners=(),
-                 qzone_transport=None, default_provider_resolver=None,
+                 qzone_transport=None, default_provider_resolver=None, provider_lookup=None,
                  knowledge=None, memory_owner=DEFAULT_MEMORY_OWNER, memory_push=DEFAULT_MEMORY_PUSH, wake_port=None,
                  search_port_factory=None, configuration_store=None, reference_owner_resolver=None):
         if type(owns_runtime) is not bool or not any(p.kind == REPLY_KIND and p.lane is Lane.FOREGROUND for p in profiles):
@@ -459,7 +459,8 @@ class CompanionApplication:
         self.messages.reply_images.enabled = sender.supports_images
         self.messages.reply_pokes = sender.supports_poke
         self.router = ModelRouter(self.configuration, profiles, providers,
-                                  default_provider_resolver=default_provider_resolver)
+                                  default_provider_resolver=default_provider_resolver,
+                                  provider_lookup=provider_lookup)
         self.gateway = LocalModelGateway(self.router, BudgetLedger(runtime, budget, budget_soft), self.tasks)
         self.authoring.attach(self.gateway, require_running=self.require_running)
         self.background_waiting = BackgroundTaskQueue(self.tasks)
@@ -1234,8 +1235,5 @@ class CompanionApplication:
                 if self.owns_runtime:
                     self.runtime.close()
                     self._storage_closed = True
-                if self.configuration_store is not None:
-                    self.runtime.attach_configuration_store(None)
-                    self.configuration_store.close()
-                    self.configuration_store = None
+                # An externally owned runtime keeps both stores for stopped views.
             return ShutdownReport(self.state, handles, self._storage_closed)

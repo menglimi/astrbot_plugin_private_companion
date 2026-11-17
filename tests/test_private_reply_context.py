@@ -78,6 +78,29 @@ class PrivateReplyContextTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["text"] for item in merged["current_inputs"]], ["看看", "当然"])
         self.assertEqual(merged["input_received_at"], stamp(second["native_input"].at))
 
+    async def test_one_segmented_turn_uses_one_history_slot(self):
+        _, first = await self.prepare("开始", "segmented-first")
+        self.clock.advance(timedelta(seconds=1))
+        for index in range(25):
+            await self.sent(first, f"气泡{index}")
+        self.clock.advance(timedelta(seconds=1))
+        _, second = await self.prepare("继续", "segmented-second")
+
+        before = self.capture(second)["before_input"]
+        self.assertEqual([item["text"] for item in before if item["speaker"] == "user"], ["开始"])
+        assistant = [item for item in before if item["speaker"] == "assistant"]
+        self.assertEqual(len(assistant), 1)
+        self.assertEqual(assistant[0]["text"].splitlines(), [f"气泡{index}" for index in range(25)])
+
+        await self.sent(second, "气泡24")
+        self.clock.advance(timedelta(seconds=1))
+        _, third = await self.prepare("还有呢", "segmented-third")
+        assistant = [item for item in self.capture(third)["before_input"]
+                     if item["speaker"] == "assistant"]
+        self.assertEqual(len(assistant), 2)
+        self.assertNotEqual(assistant[0]["turn_id"], assistant[1]["turn_id"])
+        self.assertEqual(assistant[1]["text"], "气泡24")
+
     async def test_drafts_stay_out_and_provider_context_is_temporary_and_refreshed(self):
         _, first = await self.prepare("来张自拍看看", "draft-first")
         self.clock.advance(timedelta(seconds=5))

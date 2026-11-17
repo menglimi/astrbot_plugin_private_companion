@@ -15,6 +15,7 @@ from companion_v2.conversation.media.models import CapturedImage, ImageDescripto
 from companion_v2.execution.models import TaskError, digest, encode, require
 from companion_v2.foundation.refs import ScopeKind, SourceRef, VersionRef
 from companion_v2.sources.models import SourceRecord
+from companion_v2.storage.image_payloads import load_image
 
 from ..media import inspect_image
 from .image_native.references import ReferenceSelectionError, edit_role, select_edit_tickets
@@ -215,7 +216,8 @@ class ImageReferenceLease:
                 or stored["source_lineage"] != ticket["reference"].version.lineage_id
                 or stored["source_revision"] != ticket["reference"].version.revision
                 or stored["descriptor_json"] != encode(ticket["descriptor"])
-                or hashlib.sha256(stored["content"]).hexdigest() != ticket["content_hash"]):
+                or hashlib.sha256(load_image(messages.runtime.data_root, stored["content"])).hexdigest()
+                != ticket["content_hash"]):
             raise TaskError("image_content_changed", "the original input image bytes have changed")
 
     def recheck(self):

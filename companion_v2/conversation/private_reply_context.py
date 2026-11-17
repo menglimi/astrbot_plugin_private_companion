@@ -20,6 +20,10 @@ INSTRUCTION = (
     "后来已发送的内容可用于了解处理进展、避免重复承诺或执行，不能反过来改写用户原意；"
     "用户明确转向、撤回、纠正或另指一条消息时按其本意接续，不把所有短话都当成同意。"
 )
+BEFORE_TURNS = 24
+AFTER_TURNS = 12
+# SegmentationPolicy accepts at most 64 bubbles in one reply turn.
+MAX_BUBBLES_PER_TURN = 64
 
 
 def _moment(value):
@@ -69,25 +73,39 @@ def capture_private_reply_context(messages, context, native_input, *, at, merged
             inputs = [{"text": native_input.text, "received_at": stamp(received)}]
         else:
             received = _moment(inputs[0]["received_at"])
-    earlier = dialogue(messages, context, now, end=stamp(received), limit=24, max_chars=3600,
+    earlier = dialogue(messages, context, now, end=stamp(received),
+                       limit=BEFORE_TURNS * MAX_BUBBLES_PER_TURN, max_chars=3600,
                        include_turns=True)
     later = dialogue(messages, context, now, start=stamp(received), end=stamp(now),
-                     limit=12, max_chars=1800, include_turns=True)
+                     limit=AFTER_TURNS * MAX_BUBBLES_PER_TURN, max_chars=1800,
+                     include_turns=True)
 
-    def project(items, *, after_input=False):
+    def project(items, *, after_input=False, limit):
         result = []
+        previous_speaker = None
         for item in items:
             if item["speaker"] == "user" and item["event_id"] == native_input.event_id:
+                previous_speaker = None
                 continue
             moment = _moment(item["at"])
             if moment is None or (moment > received) != after_input:
+                previous_speaker = None
                 continue
             if after_input and item["speaker"] != "assistant":
+                previous_speaker = None
                 continue
-            result.append({name: item[name] for name in ("speaker", "text", "at", "turn_id")})
-        return result
+            entry = {name: item[name] for name in ("speaker", "text", "at", "turn_id")}
+            if (entry["speaker"] == previous_speaker == "assistant" and entry["turn_id"]
+                    and result[-1]["turn_id"] == entry["turn_id"]):
+                result[-1]["text"] += "\n" + entry["text"]
+                result[-1]["at"] = entry["at"]
+            else:
+                result.append(entry)
+            previous_speaker = entry["speaker"]
+        return result[-limit:]
 
-    before, after = project(earlier), project(later, after_input=True)
+    before = project(earlier, limit=BEFORE_TURNS)
+    after = project(later, after_input=True, limit=AFTER_TURNS)
     last_reply = next((item["turn_id"] for item in reversed(before)
                        if item["speaker"] == "assistant"), None)
     return {"input_received_at": stamp(received), "captured_at": stamp(now),

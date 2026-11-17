@@ -3,6 +3,7 @@
 from dataclasses import replace
 from datetime import timedelta
 import json
+from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
 
@@ -93,6 +94,25 @@ class NativeRoutingSettingsTests(unittest.TestCase):
 
 
 class NativeMultiRoutingTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_new_astrbot_default_is_adopted_without_restarting_host(self):
+        application = await self.start_host()
+        added = FakeProvider()
+        added.provider_config["id"] = "added-after-start"
+        providers = {"native-model": self.native.provider, "added-after-start": added}
+        self.native.get_provider_by_id = providers.get
+        self.native.get_all_providers = lambda: list(providers.values())
+        self.native.get_using_provider = lambda _umo=None: added
+        context, _instruction = await self.controller.session.synchronize(
+            self.controller.settings.target("first"))
+
+        provider_id, _model, selected = application.router.selected_route(
+            context, "proactive.compose", NS(event=NS(), context=NS(materials=())),
+            at=self.clock.now())
+
+        self.assertEqual(provider_id, "added-after-start")
+        self.assertEqual(selected[0].binding.provider, "added-after-start")
+        self.assertIn("added-after-start", application.router.providers)
+
     async def test_probe_and_start_verify_additional_native_provider(self):
         backup = FakeProvider()
         backup.provider_config["id"] = "native-backup"

@@ -102,6 +102,21 @@ class CoreReplyDiagnosticToolsTests(NativeOwnerCalls, MultiFixture, unittest.Iso
         self.assertEqual(missing["code"], "repair_proposal_unavailable", missing)
         self.assert_no_reply_work()
 
+    async def test_inspect_branch_errors_are_safe_native_failures(self):
+        event = self.event(identifier="native-diagnostic-branch-errors")
+        _, request = await self.bind(event)
+        for index, arguments in enumerate((
+            {"check": "execution", "window_minutes": 60},
+            {"check": "capability", "capability_id": "image.generate"},
+            {"check": "storage", "private-secret-name": "private-secret-value"},
+        )):
+            with self.subTest(arguments=arguments):
+                result = await self.call(event, request, "diagnostics.inspect", arguments, f"invalid-branch-{index}")
+                self.assertEqual((result["state"], result["code"]), ("failed", "invalid_tool_arguments"), result)
+                self.assertNotIn("report", result)
+                self.assertNotIn("private-secret", str(result))
+        self.assert_no_reply_work()
+
     async def test_confirmation_tool_is_not_offered_for_natural_language(self):
         event = self.event(identifier="native-diagnostic-natural-confirm", text="请确认一下建议 repair-123")
         _, request = await self.bind(event)

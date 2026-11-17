@@ -155,7 +155,8 @@ def loaded_routing(fallback_provider_id, replacement_rules, provider_ids):
     return fallback, encoded
 
 
-def assemble_providers(context, *, bridge, native_types, primary_id, additional=(), defaults=None):
+def assemble_providers(context, *, bridge, native_types, primary_id, additional=(), defaults=None,
+                       only_ids=None):
     """Expose every loaded, verified AstrBot text provider to V2 routing.
 
     ``additional`` remains a compatibility layer for existing installations that
@@ -167,6 +168,7 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
     while the provider ceiling is the product ceiling ``MAX_MODEL_OUTPUT_TOKENS``.
     """
     additional = tuple(additional)
+    only_ids = frozenset(only_ids) if only_ids is not None else None
     overrides = {item.provider_id: item for item in additional}
     if len(overrides) != len(additional) or primary_id in overrides:
         raise ValueError("model provider profiles must have distinct IDs")
@@ -195,7 +197,8 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
             logger.warning("Loaded AstrBot provider has no readable ID and stays unavailable to V2 (%s)",
                            _unavailable_detail(error))
             continue
-        if not provider_id or provider_id in seen or provider_id == primary_id:
+        if (not provider_id or provider_id in seen or provider_id == primary_id
+                or only_ids is not None and provider_id not in only_ids):
             continue
         seen.add(provider_id)
         candidates.append((provider_id, native, adapter_kind))

@@ -18,6 +18,7 @@ class MultiLifeTests(MultiLifeFixture, unittest.IsolatedAsyncioTestCase):
     async def test_inventory_private_routes_and_two_accounts_two_personas_keep_own_books(self):
         app = await self.initialize(group_config())
         ids, receipts = set(), set()
+        titles = {}
         for target, role in self.paths:
             path = self.paths[(target, role)]
             if target.startswith("group-"):
@@ -35,10 +36,27 @@ class MultiLifeTests(MultiLifeFixture, unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((status["target_id"], status["role_id"], status["profile_id"]), (target, role, "shared-test"))
                 self.assertEqual(len(status["activities"]), 1)
                 self.assertTrue(status["activities"][0]["title"].startswith(target + role))
+                titles[target, role] = status["activities"][0]["title"]
                 self.assertEqual((status["running"], status["receipts"], status["journals"]), ([], [], []))
         self.assertEqual(self.native.provider.client.state.calls, [])
         self.assertEqual(self.native.selections, {"qq-main": "original", "qq-second": "original"})
         self.assertTrue(all(r.instruction is None for r in app.life_runtime.routines.values()))
+        store = app.configuration.store
+        (await self.controller.stop()).unwrap()
+        for _ in range(2):
+            for target in ("first", "second"):
+                for role in ("role-a", "role-b"):
+                    status = await self.status(target, role)
+                    self.assertEqual(status["host_state"], "stopped")
+                    self.assertTrue(status["config"]["enabled"])
+                    self.assertFalse(status["config"]["diary_enabled"])
+                    self.assertEqual(len(status["activities"]), 1)
+                    self.assertEqual(status["activities"][0]["title"], titles[target, role])
+                    self.assertEqual(status["running"], [])
+        self.assertEqual(app.life_runtime.active_handles, ())
+        self.assertEqual(self.native.provider.client.state.calls, [])
+        restarted = await self.start()
+        self.assertIs(restarted.configuration.store, store)
 
     async def test_request_identity_tokens_and_foreign_activity_are_rejected(self):
         app = await self.initialize()

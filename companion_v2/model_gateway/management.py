@@ -816,7 +816,7 @@ class ModelManagement:
         if fallback_explicit and len(set(selected)) != len(selected):
             raise TaskError("model_fallback_duplicate", "fallback must differ from the primary provider")
         for provider_id in selected:
-            provider = self.app.router.providers.get(provider_id)
+            provider = self.app.router.provider_for(provider_id)
             if provider is None:
                 raise TaskError("model_provider_unavailable", "the provider has no registered V2 adapter")
             if not set(profile.capabilities).issubset(provider.capabilities):
@@ -831,9 +831,13 @@ class ModelManagement:
                                 f"max_output_tokens is limited to {provider.maximum_output_tokens}"
                                 " by provider " + provider_id)
         try:
-            validate_targets(checked_rules(values["replacement_rules"]), self.app.router.providers,
-                             capabilities=profile.capabilities,
+            rules = checked_rules(values["replacement_rules"])
+            for rule in rules:
+                self.app.router.provider_for(rule.provider_id)
+            validate_targets(rules, self.app.router.providers, capabilities=profile.capabilities,
                              max_output_tokens=values["max_output_tokens"] if limit_explicit else None)
+        except TaskError:
+            raise
         except ValueError as error:
             raise TaskError("model_route_invalid", str(error)) from error
         return {profile.group + "." + name: value for name, value in changes.items()}, tuple(
