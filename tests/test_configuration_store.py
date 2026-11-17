@@ -7,7 +7,7 @@ import json
 import unittest
 
 from companion_v2.configuration.store import open_configuration_store
-from companion_v2.storage.runtime import StorageRuntime
+from companion_v2.storage.runtime import StorageOpenError, StorageRuntime
 
 
 NOW = datetime(2026, 11, 11, 9, 0, tzinfo=timezone.utc).isoformat()
@@ -45,7 +45,6 @@ class ConfigurationStoreTests(unittest.TestCase):
     def test_existing_rows_are_copied_into_the_side_store(self):
         store = open_configuration_store(self.runtime)
         self.assertIsNotNone(store)
-        self.addCleanup(store.close)
         value = store.read_one("SELECT value_json FROM configuration_values WHERE target_key = ? AND field_id = ?",
                                ("target-1", "output.prompt"))
         self.assertEqual(json.loads(value["value_json"]), "keep me")
@@ -60,12 +59,27 @@ class ConfigurationStoreTests(unittest.TestCase):
     def test_a_second_open_does_not_copy_twice_or_change_values(self):
         first = open_configuration_store(self.runtime)
         self.assertIsNotNone(first)
-        first.close()
         second = open_configuration_store(self.runtime)
-        self.assertIsNotNone(second)
-        self.addCleanup(second.close)
+        self.assertIs(second, first)
         count = second.read_one("SELECT COUNT(*) AS n FROM configuration_values", ())
         self.assertEqual(count["n"], 1)
+
+    def test_parent_close_releases_both_stores_and_reopen_preserves_side_values(self):
+        store = open_configuration_store(self.runtime)
+        self.assertIsNotNone(store)
+        with store.transaction() as connection:
+            connection.execute("UPDATE configuration_values SET value_json = ?", (json.dumps("side value"),))
+        self.runtime.close()
+        self.runtime.close()
+        for closed in (self.runtime, store):
+            with self.assertRaises(StorageOpenError):
+                closed.read_one("SELECT COUNT(*) AS n FROM configuration_values", ())
+        reopened = StorageRuntime.open(data_root=self.root, installation_id=INSTALLATION)
+        self.addCleanup(reopened.close)
+        restored = open_configuration_store(reopened)
+        self.assertIsNotNone(restored)
+        value = restored.read_one("SELECT value_json FROM configuration_values", ())
+        self.assertEqual(json.loads(value["value_json"]), "side value")
 
 
 if __name__ == "__main__":

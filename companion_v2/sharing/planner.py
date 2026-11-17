@@ -25,7 +25,9 @@ class ShareCatalog:
         if existing is None:
             self._candidates[candidate.candidate_id] = candidate
             return candidate
-        if existing != candidate:
+        # The preparation time records the first check, not material identity.
+        # SharePlanner revalidates current access before consulting this catalog.
+        if existing.material != candidate.material or existing.target_scope != candidate.target_scope:
             raise ValueError("candidate_id is already bound to different material")
         return existing
 

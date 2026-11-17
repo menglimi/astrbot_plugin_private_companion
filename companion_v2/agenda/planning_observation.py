@@ -6,7 +6,8 @@ import json
 from companion_v2.execution.models import encode, stamp
 
 
-REVIEW_HOURS = (6, 12, 18)
+REVIEW_HOURS = (0, 6, 12, 18)
+RETRY_MINUTES = (5, 15, 30)
 
 
 def result_key(planner, context):
@@ -81,7 +82,20 @@ def daily_observation(planner, context, slot, local):
             result = task_result(planner, context, identifier)
     if not needs_review(result):
         return result, None, None
-    earliest = datetime.fromisoformat(result["observed_at"]).astimezone(local.tzinfo) + timedelta(hours=1)
+    observed_at = datetime.fromisoformat(result["observed_at"]).astimezone(local.tzinfo)
+    # A model can corrupt one JSON response and then succeed immediately on a
+    # retry.  Give the failed automatic slot short backoff attempts before the
+    # sparse daypart review, instead of leaving the role without a plan for up
+    # to six hours.
+    for minutes in RETRY_MINUTES:
+        if local >= observed_at + timedelta(hours=1):
+            break
+        candidate = slot + ":retry:" + str(minutes)
+        if planner.attempted(context, candidate, automatic=True):
+            continue
+        ready_at = max(local, observed_at + timedelta(minutes=minutes))
+        return result, candidate if ready_at <= local else None, ready_at
+    earliest = observed_at + timedelta(hours=1)
     midnight = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     for index, hour in enumerate(REVIEW_HOURS):
         start = local.replace(hour=hour, minute=0, second=0, microsecond=0)

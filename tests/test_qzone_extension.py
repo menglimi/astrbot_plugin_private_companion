@@ -227,6 +227,27 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(Y.publish_reason(state, self.SETTINGS, text="下班路上买了花",
                                           at=NOW + timedelta(hours=2), day="2026-10-03"), "")
 
+    def test_unlimited_daily_posts_keep_accounting_spacing_and_duplicates(self):
+        settings = {**self.SETTINGS, "daily_limits_enabled": False}
+        day = "2026-10-02"
+        state = Y.QzoneRuntimeState(publish_day=day, publish_count=20)
+        state = Y.note_publish(state, text="今天很好", at=NOW, day=day, topic="life_documentary")
+        self.assertEqual(state.publish_count, 21)
+        self.assertEqual(state.topic_publish_count["life_documentary"], 1)
+        self.assertIn("分钟", Y.publish_reason(state, settings, text="下班路上买了花", at=NOW, day=day))
+        later = NOW + timedelta(hours=1)
+        self.assertEqual(Y.publish_reason(state, settings, text="下班路上买了花", at=later, day=day), "")
+        self.assertIn("重复", Y.publish_reason(state, settings, text="今天很好", at=later, day=day))
+        self.assertIn("发过", Y.publish_reason(state, {**settings, "daily_limits_enabled": True},
+                                              text="下班路上买了花", at=later, day=day))
+        media = Y.note_publish(state, text="一张照片", at=NOW, day=day, media_key="photo-1")
+        self.assertIn("重复", Y.publish_reason(media, settings, text="一张照片", at=later, day=day,
+                                              media_key="photo-1"))
+        self.assertEqual(Y.publish_reason(media, settings, text="另一张照片", at=later, day=day,
+                                          media_key="photo-2"), "")
+        self.assertIn("未开启", Y.publish_reason(state, {**settings, "publish_enabled": False},
+                                                text="下班路上买了花", at=later, day=day))
+
 
 class QzoneServiceFixture(unittest.TestCase):
     """One assembled service per test; the subclasses below add the cases."""
@@ -463,6 +484,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertFalse(values["enabled"])
         self.assertFalse(values["like_enabled"])
         self.assertFalse(values["publish_enabled"])
+        self.assertTrue(values["daily_limits_enabled"])
         self.assertEqual(values["feed_recent_posts"], 10)
         self.patch({GROUP + ".enabled": True, GROUP + ".publish_enabled": True, GROUP + ".feed_recent_posts": 7},
                    key="qzone-config-1").unwrap()
@@ -474,6 +496,17 @@ class ConfigurationTests(unittest.TestCase):
     def test_an_out_of_range_value_is_refused_before_it_is_stored(self):
         self.assertFalse(self.patch({GROUP + ".feed_recent_posts": 99}, key="qzone-config-2").is_success)
         self.assertEqual(self.settings.read(self.context, NOW)["feed_recent_posts"], 10)
+
+    def test_daily_limits_switch_roundtrips_and_rejects_non_boolean_values(self):
+        name = GROUP + ".daily_limits_enabled"
+        self.patch({name: False}, key="qzone-daily-unlimited").unwrap()
+        self.assertFalse(self.settings.read(self.context, NOW)["daily_limits_enabled"])
+        for index, value in enumerate(("false", 0)):
+            with self.subTest(value=value):
+                self.assertFalse(self.patch({name: value}, key=f"qzone-daily-invalid-{index}").is_success)
+                self.assertFalse(self.settings.read(self.context, NOW)["daily_limits_enabled"])
+        self.patch({name: True}, key="qzone-daily-limited").unwrap()
+        self.assertTrue(self.settings.read(self.context, NOW)["daily_limits_enabled"])
 
 
 class AccessTests(unittest.TestCase):
@@ -659,6 +692,30 @@ class TopicTests(unittest.TestCase):
         cooling = self.state(topic_last_action_at={"life_documentary": (NOW - timedelta(minutes=5)).isoformat()})
         self.assertEqual(self.reason(topic="life_documentary", scene="role_activity",
                                      state=cooling)[0], "qzone_topic_cooldown")
+
+    def test_zero_topic_daily_cap_blocks_first_post_on_any_day(self):
+        settings = self.settings(life_documentary_daily_max=0)
+        for state in (self.state(), self.state(topic_publish_day={"life_documentary": "2026-10-01"},
+                                              topic_publish_count={"life_documentary": 1})):
+            with self.subTest(state=state):
+                self.assertEqual(self.reason(topic="life_documentary", scene="role_activity",
+                                             settings=settings, state=state)[0], "qzone_topic_daily_limit")
+
+    def test_unlimited_daily_topics_keep_cooldowns_and_topic_enablement(self):
+        settings = self.settings(daily_limits_enabled=False, life_documentary_daily_max=0)
+        state = self.state(topic_publish_day={"life_documentary": "2026-10-02"},
+                           topic_publish_count={"life_documentary": 20})
+        self.assertEqual(self.reason(topic="life_documentary", scene="role_activity",
+                                     settings=settings, state=state)[0], "")
+        self.assertEqual(self.reason(topic="life_documentary", scene="role_activity", state=state,
+                                     settings={**settings, "daily_limits_enabled": True})[0],
+                         "qzone_topic_daily_limit")
+        cooling = self.state(topic_last_action_at={"life_documentary": NOW.isoformat()})
+        self.assertEqual(self.reason(topic="life_documentary", scene="role_activity",
+                                     settings=settings, state=cooling)[0], "qzone_topic_cooldown")
+        self.assertEqual(self.reason(topic="life_documentary", scene="role_activity", state=state,
+                                     settings={**settings, "life_documentary_enabled": False})[0],
+                         "qzone_topic_disabled")
 
     def test_the_decision_document_is_strict(self):
         decision = parse_decision({"topic": "help_interaction", "scene": "agenda", "confidence": 0.8,
