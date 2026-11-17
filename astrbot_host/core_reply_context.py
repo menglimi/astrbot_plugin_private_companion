@@ -5,7 +5,7 @@ This bridge only reads the domain owners' authorized background. It never
 admits a V2 reply batch, invokes a model or starts a worker.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 import json
 import logging
@@ -82,6 +82,23 @@ class CoreReplyPrompt:
     perception_guidance: str = ""
     stable_instruction: str = ""
     context_instruction: str = ""
+    context_blocks: tuple[dict, ...] = ()
+
+
+@dataclass(frozen=True)
+class _MaterialSection:
+    title: str
+    instruction: str
+    materials: tuple[dict, ...]
+
+    def render(self):
+        payload = json.dumps(self.materials, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":"), allow_nan=False)
+        return "\n\n【" + self.title + "】\n" + self.instruction + "\n" + payload
+
+    def structured(self):
+        return {"title": self.title, "instruction": self.instruction,
+                "materials": self.materials}
 
 
 def _ready(materials):
@@ -100,8 +117,35 @@ def _material_section(title, instruction, materials):
         except (TypeError, ValueError):
             payload = item.payload
         visible.append({"kind": item.purpose, "content": payload})
-    payload = json.dumps(visible, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    return "\n\n【" + title + "】\n" + instruction + "\n" + payload
+    return _MaterialSection(title, instruction, tuple(visible))
+
+
+def _linked_inspiration_material(material, sent_rounds):
+    """Reference a confirmed contact only when every displayed part is present."""
+    try:
+        payload = json.loads(material.payload)
+    except (TypeError, ValueError):
+        return material
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        return material
+    visible = []
+    for index, item in enumerate(payload["items"], 1):
+        if not isinstance(item, dict):
+            visible.append(item)
+            continue
+        entry = dict(item)
+        contact_id = entry.pop("contact_id", None)
+        if isinstance(contact_id, str) and contact_id:
+            entry["ref"] = "inspiration_" + str(index)
+            round_key = "delivery:" + digest(["proactive.contact", contact_id])
+            parts = sorted(sent_rounds.get(round_key, ()),
+                           key=lambda part: part.get("part", {}).get("sequence", 0))
+            if (parts and len(parts) == entry.get("confirmed_parts")
+                    and "".join(part.get("text", "") for part in parts) == entry.get("text")):
+                entry.pop("text", None)
+                entry["sent_ref"] = parts[0]["ref"]
+        visible.append(entry)
+    return replace(material, payload=encode({**payload, "items": visible}))
 
 
 def _capture_materials(owner, context, at):
@@ -236,7 +280,8 @@ def _input_received_at(native_input, fallback):
 def build_core_reply_prompt(application, context, native_input, *, at, keyword_materials=(), health_material=None,
                             external_memory=None, private_group_context="", group_trigger=None):
     """Build optional background independently; no failed section blocks reply."""
-    blocks, stable_blocks, sections, expression_signal_ids = [], [], [], []
+    blocks, stable_blocks, context_blocks, sections, expression_signal_ids = [], [], [], [], []
+    sent_rounds, sent_round_refs = {}, {}
     measured, started = [], time.monotonic()
     messages = application.messages
     perception_snapshot = {}
@@ -257,9 +302,10 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
 
     def optional(name, load, *, include_in_background=True, stable=False):
         began = time.monotonic()
-        block, state = None, "empty"
+        block, rendered, state = None, None, "empty"
         try:
             block = load()
+            rendered = block.render() if isinstance(block, _MaterialSection) else block
             state = "ready" if block else "empty"
         except Exception as error:
             state = "unavailable"
@@ -269,13 +315,15 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
         finally:
             measured.append({"owner": "private_companion.v2", "purpose": name, "state": state,
                             "elapsed_ms": round(max(0, time.monotonic() - began) * 1000),
-                            "chars": len(block) if isinstance(block, str) else
-                                     len(encode(block)) if block else 0})
+                            "chars": len(rendered) if isinstance(rendered, str) else
+                                     len(encode(rendered)) if rendered else 0})
         if block:
             if stable:
-                stable_blocks.append(block)
+                stable_blocks.append(rendered)
             elif include_in_background:
-                blocks.append(block)
+                blocks.append(rendered)
+                context_blocks.append(block.structured() if isinstance(block, _MaterialSection)
+                                      else {"text": rendered.strip()})
             sections.append(name)
         return block
 
@@ -463,9 +511,19 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             received_at = _input_received_at(native_input, at)
             snapshot = owner.capture(context, min(received_at, at), action="conversation.reply",
                                      limit=8, max_chars=3200)
-            items = owner.read(snapshot, context, at, action="conversation.reply")
-            materials = tuple(ContextContribution("core-sent-" + digest(item), "delivery.history",
-                "confirmed_background_message", ContributionState.READY, encode(item)) for item in items)
+            items = owner.read(snapshot, context, at, action="conversation.reply", round_metadata=True)
+            materials = []
+            for item in items:
+                visible = {key: value for key, value in item.items() if not key.startswith("_")}
+                round_key = item.get("_history_round")
+                if isinstance(round_key, str) and round_key:
+                    ref = sent_round_refs.setdefault(round_key, "sent_" + str(len(sent_round_refs) + 1))
+                    visible["ref"] = ref
+                    if isinstance(item.get("_history_part"), dict):
+                        visible["part"] = item["_history_part"]
+                    sent_rounds.setdefault(round_key, []).append(visible)
+                materials.append(ContextContribution("core-sent-" + digest(item), "delivery.history",
+                    "confirmed_background_message", ContributionState.READY, encode(visible)))
             return _material_section("本窗口已发送的主动消息与提醒", SENT_CONTINUATION_INSTRUCTION, materials)
 
         optional("sent_messages", sent_messages)
@@ -480,7 +538,7 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             if material is None:
                 return ""
             return _material_section("本窗口主动灵感清单", INSTRUCTION,
-                                     (material,))
+                                     (_linked_inspiration_material(material, sent_rounds),))
 
         optional("proactive_inspirations", inspirations)
         profile("relationship_profile", getattr(messages, "relationship_profile_context", None))
@@ -565,6 +623,7 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
         keyword_block = render_keyword_materials(keyword_materials)
         if keyword_block:
             blocks.append(keyword_block)
+            context_blocks.append({"text": keyword_block.strip()})
             sections.append("keyword_materials")
             measured.append({"owner": "private_companion.v2", "purpose": "keyword_materials",
                              "state": "ready", "elapsed_ms": 0, "chars": len(keyword_block)})
@@ -588,4 +647,5 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
         perception_guidance=perception.get("guidance", "") if isinstance(perception, dict) else "",
         stable_instruction=stable_instruction,
         context_instruction=context_instruction,
+        context_blocks=tuple(context_blocks),
     )

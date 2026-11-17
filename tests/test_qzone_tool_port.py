@@ -65,6 +65,41 @@ class QzoneToolPortFailureTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual((response.state, response.effect, response.error_code),
                          ("unknown", "unknown", "qzone_delivery_unknown"))
+        self.assertEqual(response.retry_disposition, "external_effect_unknown")
+        self.assertIsNone(response.receipt_ref)
+
+    async def test_topic_confirmation_failure_has_receipt_and_requires_human_action(self):
+        service = SimpleNamespace(now=lambda: NOW)
+        service.publish = AsyncMock(side_effect=TaskError(
+            "qzone_topic_confirmation_required", "需要人工确认主题和场景"))
+        application = SimpleNamespace(qzone=service)
+        port = QzoneToolPort(object())
+        port.application = application
+
+        with patch("companion_v2.qzone.images.album_images", return_value=((), ())):
+            response = await port.invoke("qzone:" + PUBLISH_ACTION, publish_invocation())
+
+        self.assertEqual((response.state, response.effect, response.error_code,
+                          response.retry_disposition),
+                         ("failed", "not_committed", "qzone_topic_confirmation_required",
+                          "human_confirmation_required"))
+        self.assertIsNotNone(response.receipt_ref)
+
+    async def test_unresolved_operation_maps_to_unknown_and_cannot_retry(self):
+        service = SimpleNamespace(now=lambda: NOW)
+        service.publish = AsyncMock(side_effect=TaskError(
+            "qzone_operation_unresolved", "原操作结果未知"))
+        application = SimpleNamespace(qzone=service)
+        port = QzoneToolPort(object())
+        port.application = application
+
+        with patch("companion_v2.qzone.images.album_images", return_value=((), ())):
+            response = await port.invoke("qzone:" + PUBLISH_ACTION, publish_invocation())
+
+        self.assertEqual((response.state, response.effect, response.error_code,
+                          response.retry_disposition),
+                         ("unknown", "unknown", "qzone_operation_unresolved",
+                          "external_effect_unknown"))
         self.assertIsNone(response.receipt_ref)
 
     async def test_read_failure_keeps_a_non_effectful_contract_and_error_code(self):

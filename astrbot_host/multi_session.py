@@ -503,6 +503,9 @@ class MultiHostSession:
             persona_window_snapshot_update=persona_window_snapshot_update,
             private_session_lookup=private_session_lookup,
             file_settings=lambda scope, role: file_intake_settings(runtime, scope, role))
+        # Connection refresh updates bridge.platforms in place. Keep the pairs
+        # assembled for this session so adapter reloads remain detectable.
+        self.native_bridge_pairs = (dict(self.bridge.platforms), dict(self.bridge.groups.platforms))
         from .account_recovery import AccountRecovery
         self.account_recovery = AccountRecovery(self)
         self.model = AstrBotTextProvider(native_context, bridge=self.bridge,
@@ -513,15 +516,14 @@ class MultiHostSession:
             maximum_input_estimate=common.maximum_input_estimate, output_parameter=common.output_parameter,
             streaming=common.streaming)
         self.model._current()
+        self._model_defaults = TextProviderSettings(common.provider_id, common.tariff,
+            max(common.max_output_tokens, PROVIDER_OUTPUT_FLOOR), common.maximum_input_estimate,
+            common.output_parameter, common.streaming)
         self.model = attach_native_video(native_context, bridge=self.bridge, native_types=native_types,
-            text=self.model, settings=TextProviderSettings(common.provider_id, common.tariff,
-                max(common.max_output_tokens, PROVIDER_OUTPUT_FLOOR), common.maximum_input_estimate,
-                common.output_parameter, common.streaming))
+            text=self.model, settings=self._model_defaults)
         self.models = (self.model,) + assemble_providers(native_context, bridge=self.bridge,
             native_types=native_types, primary_id=common.provider_id, additional=common.additional_providers,
-            defaults=TextProviderSettings(common.provider_id, common.tariff,
-                max(common.max_output_tokens, PROVIDER_OUTPUT_FLOOR),
-                common.maximum_input_estimate, common.output_parameter, common.streaming))
+            defaults=self._model_defaults)
         fallback_provider_id, replacement_rules = loaded_routing(common.fallback_provider_id,
             common.replacement_rules, (model.binding.provider for model in self.models))
         profiles = (ModelTaskProfile(REPLY_KIND, Lane.FOREGROUND, common.provider_id, common.task_prompt,
@@ -574,6 +576,7 @@ class MultiHostSession:
             profiles=profiles, providers=tuple(model.local_provider() for model in self.models), budget=common.budget,
             budget_soft=common.budget_soft,
             default_provider_resolver=conversation_provider_resolver(native_context),
+            provider_lookup=self._load_model_provider,
             sender=LocalSender(self.sender_binding, self.send, supports_images=True, supports_poke=True), policy=common.policy, limits=common.limits, now=now,
             tool_port=tool_port, segmentation=common.segmentation,
             # 记忆归属读的是别家插件自己公开的声明；跨插件读取只在这一个适配函数里，
@@ -601,6 +604,8 @@ class MultiHostSession:
         self.application.outbound.bind_connection_gate(connection_guard.available)
         from companion_v2.relationships.account_link_context import persona_for
         self.application.private_account_link_persona = lambda member: persona_for(self.settings, member)
+        self.application.private_account_link_resolve = self._linked_private_context
+        self.application.private_account_link_memory_identity = self._linked_memory_identity
         self.application.runtime.private_account_link_persona = lambda member: self.application.private_account_link_persona(member)
         from companion_v2.relationships.account_link_delivery import PrivateAccountDelivery
         self.application.outbound.private_account_router = PrivateAccountDelivery(
@@ -623,6 +628,15 @@ class MultiHostSession:
             self.core_reply_observations = CoreReplyObservations(self)
         except Exception as error:
             logger.warning("[CompanionV2] 原生聊天观察初始化降级 error_type=%s", type(error).__name__)
+
+    def _load_model_provider(self, provider_id):
+        if self.bridge.context.get_provider_by_id(provider_id) is None:
+            return None
+        models = assemble_providers(self.bridge.context, bridge=self.bridge, native_types=self.types,
+            primary_id=self.settings.common.provider_id,
+            additional=self.settings.common.additional_providers, defaults=self._model_defaults,
+            only_ids=(provider_id,))
+        return models[0].local_provider() if models else None
 
     def scope(self, target, conversation_id):
         return ScopeRef(self.runtime.installation_id, target.platform_id, ScopeKind.PRIVATE, target.participant_id,
@@ -1228,6 +1242,7 @@ class MultiHostSession:
                     except Exception as error:
                         logger.warning("[CompanionV2] 核心回复文字设置暂不可读，保留宿主发送 error_type=%s", type(error).__name__)
                 prompt_instruction, stable_prompt_instruction = "", ""
+                prompt_context_instruction, prompt_context_blocks = "", ()
                 context_sections, expression_signal_ids = (), ()
                 perception_options = None
                 perception_context, perception_instructions, perception_guidance = "", (), ""
@@ -1262,6 +1277,8 @@ class MultiHostSession:
                             group_trigger=group_trigger,
                             private_group_context=private_group_context)
                         prompt_instruction = getattr(prompt, "context_instruction", prompt.instruction)
+                        prompt_context_instruction = prompt_instruction
+                        prompt_context_blocks = getattr(prompt, "context_blocks", ())
                         stable_prompt_instruction = getattr(prompt, "stable_instruction", "")
                         context_sections = prompt.sections
                         expression_signal_ids = getattr(prompt, "expression_signal_ids", ())
@@ -1339,6 +1356,8 @@ class MultiHostSession:
                     "connection_lease": connection_lease,
                     "instruction": captured.instruction,
                     "prompt_instruction": prompt_instruction,
+                    "prompt_context_instruction": prompt_context_instruction,
+                    "prompt_context_blocks": prompt_context_blocks,
                     "stable_prompt_instruction": stable_prompt_instruction,
                     "target_id": target.target_id,
                     "channel": channel,
@@ -1567,6 +1586,17 @@ class MultiHostSession:
         if member_for(context) != member:
             raise TaskError("account_link_route_changed", "current identity no longer matches the associated account")
         return context
+
+    def _linked_memory_identity(self, context):
+        # Resolve the live adapter, including its account-qualified session check.
+        # The configured adapter ID is not necessarily the native login ID.
+        platform = self.bridge.platform(context.scope)
+        if platform.meta().name == "wechat_native":
+            owner = str(getattr(platform, "bot_self_id", "") or "").strip()
+            if not owner or owner == "self":
+                raise TaskError("account_link_memory_scope_unavailable", "native WeChat login identity is unavailable")
+            return {"owner_bot_id": owner, "platform_name": "wechat_native"}
+        return {"owner_bot_id": context.scope.account_id, "platform_name": platform.meta().name}
 
     def _linked_private_available(self, context):
         self.authorize(context)

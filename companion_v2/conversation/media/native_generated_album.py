@@ -5,7 +5,7 @@ import sqlite3
 from dataclasses import replace
 
 from companion_v2.capabilities.native import SCHEMA as NATIVE_SCHEMA
-from companion_v2.execution.models import TaskError, TaskSpec, digest, encode, require
+from companion_v2.execution.models import ProviderBinding, SideEffect, TaskError, TaskSpec, digest, encode, require
 from companion_v2.conversation.media.models import CapturedImage, ImageDescriptor
 from companion_v2.conversation.messages import source_from_document
 from companion_v2.conversation.native_tool_results import PREFIX, operation_row
@@ -129,6 +129,36 @@ def _selection(owner, context):
             (len(PREFIX), PREFIX, encode(keys), *sorted(IMAGE_ACTIONS)))
 
 
+def _album_descriptors(external, row):
+    """Restore the original declaration while authorizing the current provider."""
+    from companion_v2.conversation.external_tools import ExtensionToolDescriptor
+    from companion_v2.model_gateway.models import ToolSpec
+
+    provider = external.providers.get(row["action"])
+    if provider is None:
+        raise TaskError("tool_owner_unavailable", "the image provider is unavailable")
+    current = provider.descriptor
+    saved = json.loads(row["descriptor_json"])
+    package_data = saved["package"]
+    package = require(external.capabilities.descriptor(
+        extension_id=package_data["extension_id"], package_id=package_data["package_id"],
+        package_version=package_data["package_version"]))
+    if json.loads(encode(package)) != package_data:
+        raise TaskError("tool_owner_unavailable", "the original image package differs from its catalog")
+    original = ExtensionToolDescriptor(
+        tool=ToolSpec(**saved["tool"]), package=package, binding=ProviderBinding(**saved["binding"]),
+        source_owner=saved["source_owner"], side_effect=SideEffect(saved["side_effect"]),
+        timeout_seconds=saved["timeout_seconds"])
+    if (encode(original) != row["descriptor_json"] or encode(original.binding) != row["provider_json"]
+            or original.tool.action != row["action"]
+            or (original.package.extension_id, original.package.package_id, original.package.publisher_id,
+                original.binding.provider, original.binding.capability, original.source_owner) != (
+                current.package.extension_id, current.package.package_id, current.package.publisher_id,
+                current.binding.provider, current.binding.capability, current.source_owner)):
+        raise TaskError("tool_owner_unavailable", "the original image provider identity changed")
+    return original, current
+
+
 def _trusted_native_receipt(owner, context, at, row):
     """Return the governed source receipt for one settled native operation.
 
@@ -157,8 +187,8 @@ def _trusted_native_receipt(owner, context, at, row):
         if current["origin_key"] not in _origin_keys(owner, context):
             return None
         external = owner._external()
-        descriptor = external._descriptor(current)
-        external.admit(descriptor, context, at)
+        original_descriptor, current_descriptor = _album_descriptors(external, current)
+        external.admit(current_descriptor, context, at)
         require(external.tasks.check_context_access(context, action="conversation.reply", observed_at=at))
         task = owner.runtime.read_one(
             "SELECT * FROM execution_tasks WHERE task_id = ? AND origin_key = ?",
@@ -167,12 +197,13 @@ def _trusted_native_receipt(owner, context, at, row):
         if task is None or task["origin_key"] != current["origin_key"]:
             return None
         data = json.loads(task["record_json"])
-        definition = replace(descriptor.definition(), kind=PREFIX + digest(descriptor), owner="astrbot.core-tool")
+        definition = replace(original_descriptor.definition(), kind=PREFIX + digest(original_descriptor),
+                             owner="astrbot.core-tool")
         if data.get("definition") != json.loads(encode(definition)):
             return None
         spec = TaskSpec.restore(data["spec"])
-        if (spec.kind, spec.request_ref, spec.context.key) != (
-                definition.kind, current["invocation_id"], current["origin_key"]):
+        if (spec.task_id, spec.kind, spec.request_ref, spec.context.key) != (
+                current["task_id"], definition.kind, current["invocation_id"], current["origin_key"]):
             return None
         if task["state"] != "succeeded" or (
                 data.get("effect"), data.get("operation_id"), data.get("result_ref"),
@@ -182,9 +213,10 @@ def _trusted_native_receipt(owner, context, at, row):
             return None
         from companion_v2.conversation.external_tools import _SourceAccess
         source = require(owner.messages.sources.read(
-            parent, resolved=context.actor, capability=descriptor.binding.capability,
-            observed_at=at, authorizer=_SourceAccess(external, descriptor, context)))
-        if (source.reference != parent or source.reference.scope != context.scope
+            parent, resolved=context.actor, capability=current_descriptor.binding.capability,
+            observed_at=at, authorizer=_SourceAccess(external, current_descriptor, context)))
+        if (source.reference != parent or source.reference.owner != original_descriptor.source_owner
+                or source.reference.scope != context.scope
                 or source.audience != context.audience
                 or source.state is not GovernanceState.ACTIVE
                 or digest(source) != current["result_hash"]

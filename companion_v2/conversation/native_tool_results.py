@@ -6,6 +6,7 @@ from dataclasses import replace
 from companion_v2.execution.models import TaskError, TaskSpec, encode, digest, require
 from .foreground import PromptMaterial
 from .messages import source_from_document
+from .tool_failures import failure_guidance, retry_disposition_for
 
 
 PREFIX = "astrbot.core-tool."
@@ -29,7 +30,8 @@ def operation_row(runtime, invocation_id):
         "descriptor_json": native["provider_json"], "provider_json": encode(descriptor["binding"]),
         "result_source_json": encode(native.get("source")), "result_hash": native.get("source_hash"),
         "operation_id": result.get("operation_id"), "receipt_ref": result.get("receipt_ref"),
-        "error_code": result.get("code"), "created_at": task["created_at"],
+        "error_code": result.get("code"), "retry_disposition": result.get("retry_disposition"),
+        "created_at": task["created_at"],
         "finished_at": task["updated_at"] if native["state"] in ("succeeded", "failed", "unknown") else None}
 
 
@@ -57,7 +59,7 @@ def snapshot(external, row, context, at):
     saved = external.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?", (PREFIX + row["invocation_id"],))
     native = json.loads(saved["value"]) if saved is not None else {}
     native_result = native.get("result")
-    if current["state"] in ("succeeded", "failed", "unknown") and (
+    if (current["state"] in ("succeeded", "failed") or native_result is not None) and (
             not isinstance(native_result, dict)
             or (native_result.get("state"), native_result.get("effect"), native_result.get("invocation_id"),
                 native_result.get("operation_id"), native_result.get("receipt_ref")) != (
@@ -80,7 +82,10 @@ def snapshot(external, row, context, at):
         raise TaskError("external_task_mismatch", "the native task belongs to another operation")
     state = current["state"] if current["state"] in ("succeeded", "failed") else "unknown"
     result = {key: current[key] for key in ("invocation_id", "effect", "operation_id", "receipt_ref")}
-    result.update(state=state, code=current["error_code"])
+    result.update(state=state, code=current["error_code"],
+                  retry_disposition=current.get("retry_disposition") or
+                  retry_disposition_for(current["error_code"], state))
+    result.update(failure_guidance(current["error_code"], state, action=current["action"]))
     material = None
     if state == "succeeded":
         if (task["state"], data["effect"], data.get("operation_id"), data.get("result_ref"),

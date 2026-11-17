@@ -83,6 +83,19 @@ class PlatformReconnectTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIsNot(self.controller.session, previous)
         self.assertTrue(self.controller.native_bridges_current())
 
+    async def test_platform_loaded_checker_failure_does_not_fail_adapter_hook(self):
+        await self.start_host()
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        plugin.staging = self.controller
+        plugin._host_start_task = None
+
+        with patch.object(self.controller, "native_bridges_current", side_effect=AttributeError("missing")):
+            await plugin.on_companion_platform_loaded()
+            self.assertIsNotNone(plugin._host_start_task)
+            plugin._host_start_task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await plugin._host_start_task
+
     async def test_platform_loaded_waits_for_the_original_login_to_reconnect(self):
         await self.start_host()
         previous = self.controller.session

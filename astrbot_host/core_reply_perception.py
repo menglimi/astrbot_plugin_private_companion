@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import re
+from collections import Counter
 from collections.abc import Mapping
 from inspect import isawaitable
 from pathlib import Path
@@ -396,6 +397,98 @@ def _part_text(part):
     return getattr(part, "text", None) if getattr(part, "type", None) == "text" else None
 
 
+def _host_history_keys(request):
+    keys = []
+    for message in getattr(request, "contexts", ()) or ():
+        role = message.get("role") if isinstance(message, Mapping) else getattr(message, "role", None)
+        if role not in ("user", "assistant"):
+            continue
+        content = message.get("content") if isinstance(message, Mapping) else getattr(message, "content", None)
+        if isinstance(content, str):
+            value = content.strip()
+        elif isinstance(content, (list, tuple)) and content and all(
+                isinstance(_part_text(part), str) for part in content):
+            value = "".join(_part_text(part) for part in content).strip()
+        else:
+            continue
+        if value:
+            keys.append((role, value))
+    return keys
+
+
+def _compact_private_reply_context(context, request):
+    """Keep timing while omitting one-to-one matches in ordered host history."""
+    if not isinstance(context, dict):
+        return context
+    before = context.get("before_input", ())
+    if not isinstance(before, list):
+        return context
+    host = _host_history_keys(request)
+    native = [(item.get("speaker"), item.get("text", "").strip())
+              if isinstance(item, dict) and isinstance(item.get("text"), str) else (None, "")
+              for item in before]
+    native_counts, host_counts = Counter(native), Counter(host)
+    matched, bound = set(), len(host)
+    for index in range(len(native) - 1, -1, -1):
+        key = native[index]
+        if not key[1] or native_counts[key] != host_counts[key]:
+            continue
+        for position in range(bound - 1, -1, -1):
+            if host[position] == key:
+                matched.add(index)
+                bound = position
+                break
+
+    result, turns = dict(context), {}
+
+    def turn_ref(value):
+        if not isinstance(value, str) or not value:
+            return value
+        return turns.setdefault(value, "turn_" + str(len(turns) + 1))
+
+    for group in ("before_input", "after_input"):
+        entries = []
+        for index, item in enumerate(context.get(group, ())):
+            if not isinstance(item, dict):
+                entries.append(item)
+                continue
+            visible = dict(item)
+            if "turn_id" in visible:
+                visible["turn_id"] = turn_ref(visible["turn_id"])
+            if group == "before_input" and index in matched:
+                visible.pop("text", None)
+                visible["text_in_host_history"] = True
+            entries.append(visible)
+        result[group] = entries
+    inputs = context.get("current_inputs")
+    prompt = getattr(request, "prompt", None)
+    if (isinstance(inputs, list) and len(inputs) == 1 and isinstance(inputs[0], dict)
+            and isinstance(prompt, str) and isinstance(inputs[0].get("text"), str)
+            and inputs[0]["text"].strip() == prompt.strip() and prompt.strip()):
+        current = dict(inputs[0])
+        current.pop("text")
+        current["text_in_current_prompt"] = True
+        result["current_inputs"] = [current]
+    result["last_sent_reply_turn_id"] = turn_ref(context.get("last_sent_reply_turn_id"))
+    return result
+
+
+def _structured_background(prepared, turn_context):
+    base = prepared.get("prompt_context_instruction")
+    blocks = prepared.get("prompt_context_blocks")
+    current = turn_context.strip()
+    if not isinstance(base, str) or not base.strip() or not isinstance(blocks, (list, tuple)) or not blocks:
+        return current
+    prefix = base.strip()
+    if not current.startswith(prefix):
+        return current
+    result = {"sections": list(blocks)}
+    additional = current[len(prefix):].strip()
+    if additional:
+        result["additional_guidance"] = additional
+    return result
+
+
 def _restore_wake_prefix(event, request, original_text, prompt_text, native_context):
     """Restore only the exact wake prefix removed by the native waking stage."""
     if not getattr(event, "is_at_or_wake_command", False):
@@ -462,7 +555,7 @@ async def inject_core_reply_perception_context(event, request, *, native_context
                 capture_private_reply_context, application.messages, prepared.get("context"), original,
                 at=application.tasks.now(), merged_inputs=prepared.get("debounced_inputs", ()))
             if private_context is not None:
-                details["private_reply_context"] = private_context
+                details["private_reply_context"] = _compact_private_reply_context(private_context, request)
         except Exception:
             # Optional chronological evidence must not block the ordinary reply.
             pass
@@ -529,7 +622,7 @@ async def inject_core_reply_perception_context(event, request, *, native_context
             _restore_wake_prefix(event, request, original_text, prompt_text, native_context)
     turn_context = prepared.get("prompt_instruction")
     if isinstance(turn_context, str) and turn_context.strip():
-        details["companion_background"] = turn_context.strip()
+        details["companion_background"] = _structured_background(prepared, turn_context)
     participation_hint = _group_participation_hint(prepared)
     if participation_hint:
         details["group_participation_hint"] = participation_hint

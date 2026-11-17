@@ -6,7 +6,16 @@ from astrbot.core.agent.tool import ToolSet
 from astrbot.core.message.components import Image
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.platform.message_session import MessageSession
-from astrbot.core.tools.message_tools import SendMessageToUserTool
+try:
+    from astrbot.core.astr_agent_runtime.tools.message_tools import SendMessageToUserTool
+except ModuleNotFoundError as error:
+    if error.name not in {
+        "astrbot.core.astr_agent_runtime",
+        "astrbot.core.astr_agent_runtime.tools",
+        "astrbot.core.astr_agent_runtime.tools.message_tools",
+    }:
+        raise
+    from astrbot.core.tools.message_tools import SendMessageToUserTool
 
 from companion_v2.execution.models import TaskError, digest
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA, assert_core_reply_connection, sent_core_text

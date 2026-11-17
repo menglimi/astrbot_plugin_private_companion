@@ -40,7 +40,11 @@
     "backup-page.js": "d84998b8e8ee6a6a2a4d1f5690520e783abd94792f7beb8faf2d4b6b22f9f860",
     "behavior-page.css": "a3c0bd0cc4f19bdced5b301d35b32d17a36a45c967dc35d6859b283e8dfd0a73",
     "behavior-page.js": "dd4470f94dab971a4262bf873946c2f265b21a46fc34ebc1df7ac2cf19bc8479",
+<<<<<<< HEAD
     "bundle.css": "50d6036f28e7094b631104c18f9d566088168f9cf27ca8058ca94eaab53ccdfe",
+=======
+    "bundle.css": "0297dc4e7c1202a8571045e0a94a22d3b769349f77b2f6020ca02270fad00aca",
+>>>>>>> origin/main
     "calendar-editor.js": "c746b9aa9d6ffdd3792a0ee316a7576d1c8b70bdf8eb8d9678638106eee865b5",
     "care-page.js": "5ad27683726d727caf379d41634c1f4fc552c5f7815fa9ac79fae5a5d0ab7c2b",
     "care.css": "c46705bc5276fdaaafcc902590dc587aa69ea30038411c749a02b07f8cea0d70",
@@ -72,7 +76,11 @@
     "host-options.css": "f5dad033ba835a44008fe1f2d7e6114302c2c694ec598197e7f577b050974085",
     "huawei-health-page.js": "ab21d9aefb182aac53935ae3916e158af5a4539044d58ad541f85325cd651c56",
     "image-materials-page.js": "e69dff898f443616529aef67ffe90130e7f518ed140ea47f47adcb850cca041b",
+<<<<<<< HEAD
     "index.html": "42868871a2d0d7ca93dd578209c395a30ae55d9b1987c8b23a22a8dd0bcbe480",
+=======
+    "index.html": "10c66038f0454732a02c03e2f7deaf82633068d6110df8f362bfa17e8fc94e91",
+>>>>>>> origin/main
     "learning-hub.css": "8ce7e9afd69f75fead29750cbd11ff21c13a8b68872d91ef79a3f027aee0044d",
     "learning-overview.js": "e2bb1454a5fe76f2882463dec2150d6ee03579e61a1ec983992ac131d7fc69ae",
     "learning-page.css": "53023c0e6f097bfd7285a3084beec0d4d84b5f9fbefd415f84d0e5febee6b235",
@@ -150,7 +158,7 @@
     "workbench.css": "6cb3d6275ed61e5ed3ffe9b5fcc37782209ed7a5004b71d9d1d34a2de330ba61",
     "workspace-bundles/designer.js": "d1f03ff83b653da0f8a9e01abc3663d724fb8ef9da5dd10f21400629ce1cff10",
     "workspace-bundles/host.js": "2e5886e2e35fdb0d9b9e39f2a24634372dea90b637bafd68b337722a79fb67d1",
-    "workspace-bundles/identity.js": "a87f61cb5427da48d15a198868898badae0fedc64d25fa8df528a421df1fd233",
+    "workspace-bundles/identity.js": "a728c011fc186d9c4d20809b33b1946414a4281a2e3565e00a0647a79fc76196",
     "workspace-bundles/life.js": "c32594874c11022e75e308df16426fe74fdbd7fec09fac6cfff553fd34edabf9",
     "workspace-bundles/persona.js": "8f3abf6006a965d731946d8b6ac0263589e5f60192847bf889e37aca801aef00",
     "workspace-bundles/relationships.js": "9be9c4c9a38d366c2160694040e54446f79e18762787b58860c8229ea61aec63",
@@ -165,7 +173,7 @@
     "workspaces/host/style.css": "9c184a6e62cb8e5232d4bc854c91137ba7223b9270f646f2cb7d1e551d9b7eea",
     "workspaces/identity/app.js": "0515025bfe09a99d12a4a70c75c1971052ce7c4b87d9faf506d6cbfc182ae61b",
     "workspaces/identity/index.html": "590ac85de34cc9290fa40ad15c247123eaa0753cf7124c859c91953ecbbc7ca3",
-    "workspaces/identity/member-editor.js": "961ca0f8c0a5fe97bcf4b0eaa7e9b1a5a66e4fe9a4a3eeabad7db067182ed009",
+    "workspaces/identity/member-editor.js": "4f48ad880d2ad40b5da33db0d059e054cfca19550f2d84766a5293f358227956",
     "workspaces/identity/style.css": "3133c177fdfeeed3ce57f2fde3adc99410c040ba02e1917768e590e2aeda22c5",
     "workspaces/life/app.js": "e35af4a4bf75322919ab890fd63bc733efc4610ac57fdf77b713c81f753a81c5",
     "workspaces/life/index.html": "8b4c94ba7cdcb1b23bf4d615dc468dec3d1604e1d71f6e7505e92d9bcbef65d6",

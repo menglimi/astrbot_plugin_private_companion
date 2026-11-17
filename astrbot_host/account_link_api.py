@@ -68,7 +68,7 @@ class AccountLinkWebAPI:
                 return outcome_response(Outcome.success({**PrivateAccountLinks(self.controller.runtime).status(context),
                     "candidates": self._candidates(settings, context), "current": member_for(context),
                     "fields": catalog(),
-                    "supported": {"context": True, "settings": True, "identity": True, "proactive": True}}))
+                    "supported": {"context": True, "settings": True, "identity": True, "proactive": True, "memory": True}}))
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
@@ -112,7 +112,7 @@ class AccountLinkWebAPI:
                 fields = {"subject_id", "route", "operation_key", "expected_revision"}
                 if not unlink:
                     fields |= {"members", "share_context"}
-                body = await self.api._command(expected=fields, optional=() if unlink else ("sharing", "seed", "identity", "proactive"))
+                body = await self.api._command(expected=fields, optional=() if unlink else ("sharing", "seed", "identity", "proactive", "memory"))
                 context = self.api._context(body["subject_id"], body["route"])
                 links = PrivateAccountLinks(self.controller.runtime)
                 arguments = {key: body[key] for key in ("expected_revision", "operation_key")}
@@ -175,6 +175,8 @@ class AccountLinkWebAPI:
                         extras["identity"] = {**old, "enabled": value["enabled"]}
                         if value["enabled"]:
                             validate_identity(extras["identity"])
+                    if "memory" in body:
+                        extras["memory"] = body["memory"]
                     if "proactive" in body:
                         extras["proactive"] = body["proactive"]
                     with links.store.transaction():
