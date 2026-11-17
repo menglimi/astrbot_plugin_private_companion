@@ -582,7 +582,12 @@ class PrivateCompanionV2StagingPlugin(Star):
         session = self.staging.session
         if (self.staging._accepting and session is not None
                 and session.application.state == "running"):
-            if self.staging.native_bridges_current():
+            try:
+                bridges_current = self.staging.native_bridges_current()
+            except Exception as error:
+                logger.warning("[CompanionV2] 平台桥接状态检查失败 error_type=%s", type(error).__name__)
+                bridges_current = False
+            if bridges_current:
                 return
             self.staging._accepting = False
         task = self._host_start_task
