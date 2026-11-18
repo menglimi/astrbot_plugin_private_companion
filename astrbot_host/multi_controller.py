@@ -1,6 +1,7 @@
 """Shared-installation lifecycle and explicit native multi-target admission."""
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import json
@@ -217,8 +218,18 @@ class AstrBotMultiController:
                 and session is not None and session.application.state == "running"):
             await session.account_recovery.refresh()
 
+    def _sync_session_native_bridges(self, session):
+        connections = getattr(getattr(session, "bridge", None), "connections", None)
+        if callable(getattr(connections, "refresh", None)):
+            connections.refresh()
+        else:
+            self._connections_for().refresh()
+        sync = getattr(session, "sync_native_bridge_pairs", None)
+        if callable(sync):
+            sync()
+
     def native_bridges_current(self):
-        """Whether both running bridges still use their original native clients."""
+        """Whether bound native bridges still use their original native clients."""
         session = self.session
         if session is None or session.application.state != "running":
             return False
@@ -226,7 +237,7 @@ class AstrBotMultiController:
         if len(snapshots) != 2:
             return False
         for platforms in snapshots:
-            if not platforms:
+            if not isinstance(platforms, Mapping):
                 return False
             for platform_id, (platform, client) in platforms.items():
                 try:
@@ -854,9 +865,11 @@ class AstrBotMultiController:
                 task_context=context, topic="general",
                 deepseek_provider_resolver=search_provider_resolver,
                 source_priority=search_settings.source_priority())
+        connections = self._connections_for()
+        connections.refresh()
         self.session = MultiHostSession(self.runtime, self.context, settings=self.settings, personas=personas,
             authority=self.authority, native_types=self.native_types, provider_fingerprint=manifest["provider_fingerprint"],
-            connection_manager=self._connections_for(),
+            connection_manager=connections,
             runtime_instance_id="astrbot-multi-" + uuid4().hex, native_tool_port=self.native_extensions, now=self.now,
             persona_window_snapshot_lookup=self.session_topology.persona_selection_snapshot,
             persona_window_snapshot_update=self.session_topology.update_persona_selection_snapshot,
@@ -1246,6 +1259,9 @@ class AstrBotMultiController:
                 self._stopped_by_user = False
                 if self.session is not None and self.session.application.state == "running":
                     if self._accepting and self.native_bridges_current():
+                        # Refresh and latch any previously waiting account that has now
+                        # come online so subsequent client replacements are detected.
+                        self._sync_session_native_bridges(self.session)
                         return Outcome.success({"state": "running", "replayed": True})
                     previous_session = self.session
                     self._accepting = False
@@ -1308,6 +1324,8 @@ class AstrBotMultiController:
                             raise
                     if self.session is None or self.session.application.state != "new":
                         await self._assemble(manifest)
+                    else:
+                        self._sync_session_native_bridges(self.session)
                     session = self.session
                 return await self._start_initialized_session(session)
             except Exception as error:
