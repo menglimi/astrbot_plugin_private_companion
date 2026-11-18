@@ -43,6 +43,34 @@ def operation() -> OperationRef:
 
 
 class StorageRuntimeTests(unittest.TestCase):
+    def test_finished_worker_readers_are_reaped_and_closed(self) -> None:
+        with TemporaryDirectory(prefix="companion-v2-storage-") as temporary:
+            connections = []
+
+            def open_reader(runtime):
+                with runtime.read_snapshot() as connection:
+                    connection.execute("SELECT 1").fetchone()
+                    connections.append(connection)
+
+            def run_worker(runtime):
+                worker = threading.Thread(target=open_reader, args=(runtime,))
+                worker.start()
+                worker.join(5)
+                self.assertFalse(worker.is_alive())
+
+            try:
+                with StorageRuntime.open(data_root=Path(temporary), installation_id=INSTALLATION_ID) as runtime:
+                    run_worker(runtime)
+                    run_worker(runtime)
+                    self.assertEqual(len(connections), 2)
+                    with self.assertRaises(sqlite3.ProgrammingError):
+                        connections[0].execute("SELECT 1")
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    connections[1].execute("SELECT 1")
+            finally:
+                for connection in connections:
+                    connection.close()
+
     def test_wal_reader_does_not_wait_for_writer_and_never_sees_uncommitted_data(self) -> None:
         with TemporaryDirectory(prefix="companion-v2-storage-") as temporary:
             runtime = StorageRuntime.open(data_root=Path(temporary) / "v2-data", installation_id=INSTALLATION_ID)

@@ -31,7 +31,7 @@
 .storage-location-note.is-pending{color:var(--t-warn-ink)}
 .storage-retention{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2) var(--sp-4);margin:0;padding:0;border:0;min-width:0}
 .storage-retention label{display:flex;align-items:center;gap:var(--sp-2);color:var(--t-text);font-size:var(--fs-tiny);white-space:nowrap}
-.storage-retention input{width:76px;padding:var(--sp-2)}
+.storage-retention input[type="number"]{width:76px;padding:var(--sp-2)}
 .storage-retention small{flex-basis:100%}
 .storage-cleanup-preview{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-3);padding-top:var(--sp-3);border-top:1px solid var(--t-line)}
 .storage-cleanup-preview>div{display:grid;gap:var(--sp-1);min-width:0}

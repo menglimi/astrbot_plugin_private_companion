@@ -380,6 +380,22 @@ class DashboardRouteTests(unittest.IsolatedAsyncioTestCase):
         from astrbot_host.backup_api import backup_operation_lock
         self.assertFalse(backup_operation_lock(api.controller).locked())
 
+    async def test_delete_route_requires_confirmation_and_dashboard_identity(self) -> None:
+        installation = _installations(self)(external=True)
+        installation.runtime.backup_directory = installation.external
+        document = installation.create()
+        snapshot_id, digest = document["snapshot_id"], document["content_hash"]
+        api = self.backup_api.BackupWebAPI(self.controller(installation.runtime))
+        self.assertIn(self.backup_api.PREFIX + "/delete", [path for path, *_ in api.routes()])
+        self.request.body = self._body_for({"snapshot_id": snapshot_id, "confirmed_hash": digest})
+        self.assertEqual((await api.delete())["message"], "backup_request_invalid")
+        self.request.body = self._body_for({"snapshot_id": snapshot_id, "confirmed_hash": digest, "confirm": True})
+        with patch.object(self.request, "username", ""):
+            self.assertEqual((await api.delete())["message"], "dashboard_identity_required")
+        response = await api.delete()
+        self.assertEqual(response["status"], "ok", response)
+        self.assertEqual((await api.delete())["message"], "backup_snapshot_missing")
+
     async def test_a_second_operation_waits_for_the_first(self) -> None:
         """Two dashboard backups must not interleave: the write path shares the store."""
         installation = _installations(self)(external=True)
@@ -438,6 +454,25 @@ class DashboardRouteTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LegacySnapshotTests(unittest.TestCase):
+    def test_manual_delete_handles_legacy_pairs_but_refuses_foreign_and_incomplete_pairs(self) -> None:
+        installation = _installations(self)(external=True)
+        backup = installation.backup()
+        document = installation.legacy_pair()
+        snapshot_id = document["snapshot_id"]
+        sidecar = backup.directory / f"companion-v2-{snapshot_id}.json"
+        database = backup.directory / f"companion-v2-{snapshot_id}.sqlite3"
+        command = {"snapshot_id": snapshot_id, "confirmed_hash": document["content_hash"], "confirm": True}
+        sidecar.write_text(json.dumps({**document, "installation_id": "foreign"}), encoding="utf-8")
+        self.assertEqual(backup.delete(**command).failure.code, "backup_snapshot_missing")
+        self.assertTrue(database.is_file())
+        sidecar.write_text(json.dumps({**document, "byte_size": 1}), encoding="utf-8")
+        self.assertEqual(backup.delete(**command).failure.code, "backup_delete_incomplete")
+        self.assertTrue(database.is_file())
+        sidecar.write_text(json.dumps(document), encoding="utf-8")
+        self.assertTrue(backup.delete(**command).is_success)
+        self.assertFalse(sidecar.exists())
+        self.assertFalse(database.exists())
+
     def test_a_v1_snapshot_restores_the_main_database_and_says_what_it_skips(self) -> None:
         installation = _installations(self)(external=True)
         legacy = installation.legacy_pair()

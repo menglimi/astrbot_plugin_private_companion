@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import dataclasses
 import hashlib
 import json
@@ -252,7 +251,7 @@ def verify(release, destination):
                 if hashlib.sha256(payload).hexdigest() != digest:
                     raise ValueError("file hash mismatch: " + name)
                 if name.endswith(".py"):
-                    ast.parse(payload.decode("utf-8"), filename=name)
+                    compile(payload.decode("utf-8"), name, "exec", dont_inherit=True)
                     python_count += 1
                 relative_files[name] = payload
             runtime_contract = verify_runtime_sources(relative_files)

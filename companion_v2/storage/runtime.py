@@ -11,10 +11,9 @@ import re
 from pathlib import Path
 import sqlite3
 import sys
-from threading import Condition, Lock, RLock, current_thread, get_ident, local
+from threading import Condition, Lock, RLock, Thread, current_thread, get_ident, local
 import time
 from typing import Iterator
-from weakref import WeakKeyDictionary
 
 from .schema import (
     SCHEMA_VERSION_V68, MIGRATION_V67_TO_V68_ID, MIGRATION_V67_TO_V68_FINGERPRINT,
@@ -393,7 +392,8 @@ class StorageRuntime:
         self._read_snapshot_diagnostics = local()
         self._read_connections = local()
         self._reader_condition = Condition()
-        self._reader_connections = WeakKeyDictionary()
+        # Keep ownership until close, even after a temporary worker exits.
+        self._reader_connections: dict[Thread, sqlite3.Connection] = {}
         self._active_readers = 0
         self._reader_closing = False
         self._savepoint_sequence = 0
@@ -726,6 +726,13 @@ class StorageRuntime:
         try:
             connection = getattr(self._read_connections, "connection", None)
             if connection is None:
+                with self._reader_condition:
+                    # A dead owner cannot be using its connection. Reap it
+                    # before adding new readers so worker churn stays bounded.
+                    for owner in tuple(self._reader_connections):
+                        if not owner.is_alive():
+                            self._reader_connections[owner].close()
+                            del self._reader_connections[owner]
                 try:
                     connection = sqlite3.connect(
                         str(self._database_path), timeout=5.0, isolation_level=None,

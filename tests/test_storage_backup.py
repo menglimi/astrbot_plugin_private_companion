@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import Mock, patch
 
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.storage import backup as module
@@ -32,6 +33,19 @@ def _payload(backup: InstallationBackup, snapshot_id: str, relative: str = "comp
 
 
 class BackupTests(unittest.TestCase):
+    def test_readonly_probe_failure_closes_connection_before_trying_fallback(self) -> None:
+        readonly, fallback = Mock(), Mock()
+        readonly.execute.side_effect = sqlite3.DatabaseError("test read-only probe failure")
+
+        def connect(*args, **kwargs):
+            if kwargs.get("uri"):
+                return readonly
+            readonly.close.assert_called_once_with()
+            return fallback
+
+        with TemporaryDirectory() as temporary, patch.object(module.sqlite3, "connect", side_effect=connect):
+            self.assertIs(module._open_source_database(Path(temporary) / "source.sqlite3"), fallback)
+
     def test_a_snapshot_carries_rows_committed_after_the_database_file_starts(self) -> None:
         # The reason this module uses the backup API instead of copying the database
         # file: a row committed through the live connection must appear in the
@@ -95,6 +109,29 @@ class BackupTests(unittest.TestCase):
                 second = backup.restore(snapshot_id=manifest["snapshot_id"],
                                         confirmed_hash=manifest["content_hash"])
                 self.assertEqual(second.failure.code, "backup_restore_pending")
+            finally:
+                runtime.close()
+
+    def test_delete_only_confirmed_complete_snapshot_and_never_live_data(self) -> None:
+        with TemporaryDirectory() as temporary:
+            runtime = _open(temporary)
+            try:
+                backup = InstallationBackup(runtime, now=lambda: NOW)
+                snapshot = backup.create(note="target").unwrap()
+                other = backup.create(note="keep").unwrap()
+                command = {"snapshot_id": snapshot["snapshot_id"], "confirmed_hash": snapshot["content_hash"]}
+                self.assertEqual(backup.delete(**command).failure.code, "backup_delete_confirmation_required")
+                self.assertEqual(backup.delete(snapshot_id="../outside", confirmed_hash="0" * 64,
+                                               confirm=True).failure.code, "backup_snapshot_id_invalid")
+                self.assertEqual(backup.delete(snapshot_id=command["snapshot_id"], confirmed_hash="0" * 64,
+                                               confirm=True).failure.code, "backup_confirmation_mismatch")
+                self.assertTrue(backup.restore(**command).is_success)
+                self.assertEqual(backup.delete(**command, confirm=True).failure.code, "backup_restore_pending")
+                self.assertTrue(backup.cancel_pending(confirm=True).is_success)
+                self.assertTrue(backup.delete(**command, confirm=True).is_success)
+                self.assertFalse(_payload(backup, snapshot["snapshot_id"]).exists())
+                self.assertTrue(_payload(backup, other["snapshot_id"]).is_file())
+                self.assertIsNotNone(runtime.read_one("SELECT value FROM runtime_metadata WHERE key='schema_version'", ()))
             finally:
                 runtime.close()
 
