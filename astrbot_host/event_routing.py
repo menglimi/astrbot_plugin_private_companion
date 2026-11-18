@@ -16,6 +16,15 @@ from typing import Any
 
 _COMMAND_FILTER_NAMES = frozenset({"CommandFilter", "CommandGroupFilter"})
 COMPANION_INTAKE_PRIORITY = -230000
+GROUP_REPLY_GATE_EXTRA = "_companion_v2_group_reply_gate"
+
+
+def _set_call_llm(event: Any, value: bool) -> None:
+    setter = getattr(event, "should_call_llm", None)
+    if callable(setter):
+        setter(value)
+    else:
+        event.call_llm = value
 
 
 def suppress_default_reply(event: Any) -> None:
@@ -27,11 +36,68 @@ def suppress_default_reply(event: Any) -> None:
     and plugin-issued model requests remain available.
     """
 
-    setter = getattr(event, "should_call_llm", None)
-    if callable(setter):
-        setter(True)
-    else:
-        event.call_llm = True
+    _set_call_llm(event, True)
+
+
+def arm_group_reply_gate(event: Any) -> dict[str, Any] | None:
+    """Block AstrBot's default model while group admission is still pending.
+
+    Group admission is performed by the lower-priority companion intake handler,
+    but AstrBot may have another model-producing handler on the same event.  The
+    high-priority observer arms this gate before that work starts.  The original
+    flag is restored only by ``release_group_reply_gate`` after admission.
+    """
+    getter = getattr(event, "get_extra", None)
+    setter = getattr(event, "set_extra", None)
+    if not callable(getter) or not callable(setter):
+        return None
+    current = getter(GROUP_REPLY_GATE_EXTRA)
+    if isinstance(current, dict) and current.get("status") in {"pending", "suppressed"}:
+        return current
+    state = {
+        "status": "pending",
+        "previous_call_llm": bool(getattr(event, "call_llm", False)),
+    }
+    setter(GROUP_REPLY_GATE_EXTRA, state)
+    suppress_default_reply(event)
+    return state
+
+
+def release_group_reply_gate(event: Any) -> bool:
+    """Allow the default core model after a group turn is admitted."""
+    getter = getattr(event, "get_extra", None)
+    if not callable(getter):
+        return False
+    state = getter(GROUP_REPLY_GATE_EXTRA)
+    if not isinstance(state, dict) or state.get("status") != "pending":
+        return False
+    _set_call_llm(event, bool(state.get("previous_call_llm", False)))
+    state["status"] = "released"
+    return True
+
+
+def keep_group_reply_gate(event: Any) -> bool:
+    """Keep the default model suppressed after a group turn is declined."""
+    getter = getattr(event, "get_extra", None)
+    if not callable(getter):
+        return False
+    state = getter(GROUP_REPLY_GATE_EXTRA)
+    if not isinstance(state, dict) or state.get("status") not in {"pending", "suppressed"}:
+        return False
+    suppress_default_reply(event)
+    state["status"] = "suppressed"
+    return True
+
+
+def clear_group_reply_gate(event: Any) -> bool:
+    """Restore a pending gate when this event leaves the companion route."""
+    getter = getattr(event, "get_extra", None)
+    if not callable(getter):
+        return False
+    state = getter(GROUP_REPLY_GATE_EXTRA)
+    if not isinstance(state, dict) or state.get("status") != "pending":
+        return False
+    return release_group_reply_gate(event)
 
 
 def _belongs_to_module(module_path: object, module_name: str | None) -> bool:

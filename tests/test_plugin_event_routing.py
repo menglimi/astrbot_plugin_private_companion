@@ -26,6 +26,9 @@ from astrbot.core.star.star import star_map
 from astrbot.core.star.star_handler import (
     EventType, StarHandlerMetadata, StarHandlerRegistry, star_handlers_registry,
 )
+from astrbot_host.event_routing import (
+    GROUP_REPLY_GATE_EXTRA, arm_group_reply_gate, release_group_reply_gate,
+)
 
 
 PEER_MODULE = "_companion_event_routing_peer"
@@ -160,16 +163,34 @@ class PluginEventRoutingTests(unittest.IsolatedAsyncioTestCase):
         async def later_observer(event):
             self.peers.append("after")
 
+        async def model_probe(event):
+            # A lower-priority handler must see the temporary gate while the
+            # companion is still deciding whether this group turn is admitted.
+            self.peers.append("probe")
+            self.assertTrue(event.call_llm)
+
         self.add_peer(activity_counter)
+        self.add_peer(model_probe, priority=-100000)
         self.add_peer(later_observer, priority=-240000)
         event = LocalEvent("普通群消息", mention=True)
         await self.dispatch(event)
-        self.assertEqual(self.peers, ["before", "after"])
+        self.assertEqual(self.peers, ["before", "probe", "after"])
         self.assertFalse(event.is_stopped())
         self.assertTrue(event.call_llm)
         self.assertEqual(event.sent, [])
         self.assertEqual(self.model_requests, [])
         self.staging.receive_claimed.assert_not_awaited()
+
+    async def test_group_reply_gate_restores_default_flag_after_admission(self):
+        event = LocalEvent("普通群消息", mention=True)
+        self.assertFalse(event.call_llm)
+        state = arm_group_reply_gate(event)
+        self.assertEqual(state["status"], "pending")
+        self.assertTrue(event.call_llm)
+        self.assertEqual(event.get_extra(GROUP_REPLY_GATE_EXTRA), state)
+        self.assertTrue(release_group_reply_gate(event))
+        self.assertEqual(state["status"], "released")
+        self.assertFalse(event.call_llm)
 
     async def test_claimed_private_reply_preserves_later_detection_and_uses_core_model(self):
         async def private_observer(event):

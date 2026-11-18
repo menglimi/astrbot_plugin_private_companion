@@ -89,7 +89,9 @@ from .astrbot_host.group_debounce import GroupDebounce, group_plain_text, replac
 from companion_v2.adapters.astrbot.group import group_event_route
 from .astrbot_host.private_reply_followup import PrivateReplyFollowUps
 from .astrbot_host.event_routing import (
-    COMPANION_INTAKE_PRIORITY, competing_command_handler, suppress_default_reply,
+    COMPANION_INTAKE_PRIORITY, arm_group_reply_gate, clear_group_reply_gate,
+    competing_command_handler, keep_group_reply_gate, release_group_reply_gate,
+    suppress_default_reply,
 )
 from .astrbot_host.shared_host_migration import migrate_single_target_config
 from .astrbot_host.storage_location import prepare_storage_root, resolve_data_root
@@ -647,6 +649,12 @@ class PrivateCompanionV2StagingPlugin(Star):
         # the companion look like it owns a command it does not handle.
         if competing_command_handler(event, own_module=__name__) is not None:
             return
+        # Hold AstrBot's default model until the lower-priority intake has
+        # completed the existing debounce and group-admission checks. Without
+        # this early gate another model-producing handler can start first, and
+        # a later silence decision cannot cancel that already-running turn.
+        if self.staging.claims(event):
+            arm_group_reply_gate(event)
         result = await self.staging.observe_group_early(event)
         if result is not None and result.failure is None:
             try:
@@ -819,6 +827,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         if getattr(event, "_has_send_oper", False):
             return
         if not self.staging.claims(event):
+            clear_group_reply_gate(event)
             # 不是本插件的目标：这条消息从来没有进入它的预期范围，回复与否都不是
             # 它的失败，既不写台账也不出日志——平台日志不该被别人的群消息刷屏。
             if self._claims_target(event):
@@ -848,10 +857,12 @@ class PrivateCompanionV2StagingPlugin(Star):
         try:
             target = self.staging.target_for_event(event)
         except Exception as error:
+            clear_group_reply_gate(event)
             logger.warning("[CompanionV2] V2 原生路由暂不可用，继续 AstrBot 核心回复 error_type=%s",
                            type(error).__name__)
             return
         if target is None:
+            clear_group_reply_gate(event)
             return
         # AstrBot owns the persona and reply; V2 contributes optional background.
         event_ref = uuid4().hex
@@ -865,6 +876,11 @@ class PrivateCompanionV2StagingPlugin(Star):
             # is made, because a declined turn is exactly where the model echoes a
             # companion tool name our own history taught it.
             mark_managed_turn(event, channel=channel, event_ref=event_ref)
+        if channel == "group":
+            # The high-priority observer normally arms this gate. Keep a
+            # fallback here for direct/legacy dispatches that invoke intake
+            # without running the observer first.
+            arm_group_reply_gate(event)
         if channel == "private" and self._private_delivery_duplicate(event, target):
             # AstrBot can surface one platform message twice (adapter reconnect,
             # duplicate file acknowledgement).  The first delivery already owns
@@ -913,7 +929,7 @@ class PrivateCompanionV2StagingPlugin(Star):
                 manager = getattr(self, "_group_debounce", None)
                 if manager is not None:
                     manager.observe(str(getattr(target, "target_id", "") or ""), "", eligible=False)
-                suppress_default_reply(event)
+                keep_group_reply_gate(event)
                 if group_command.failure is not None:
                     self._record_no_reply(event, group_command.failure.code, origin_key=origin_key,
                                           channel=channel, event_ref=event_ref, stage="command")
@@ -926,7 +942,7 @@ class PrivateCompanionV2StagingPlugin(Star):
                 manager = getattr(self, "_group_debounce", None)
                 if manager is not None:
                     manager.observe(str(getattr(target, "target_id", "") or ""), "", eligible=False)
-                suppress_default_reply(event)
+                keep_group_reply_gate(event)
                 self._record_no_reply(event, "group_llm_blocked", origin_key=origin_key,
                                       channel=channel, event_ref=event_ref, stage="admission")
                 return
@@ -988,15 +1004,20 @@ class PrivateCompanionV2StagingPlugin(Star):
                     raise
                 if status == "superseded":
                     if not group_debounce_manager.superseded_by_same_event(group_pending, event):
-                        suppress_default_reply(event)
+                        keep_group_reply_gate(event)
+                    else:
+                        # The same event is being handled by the replacement
+                        # path; do not leave this event's temporary gate
+                        # blocking that path's core reply.
+                        release_group_reply_gate(event)
                     return
                 if status in {"closed", "aborted", "finished"}:
-                    suppress_default_reply(event)
+                    keep_group_reply_gate(event)
                     return
                 if group_debounced_entries and len(group_debounced_entries) > 1:
                     merged_text = group_debounce_manager.combined(group_pending, group_debounced_entries)
                     if not replace_group_plain_text(event, merged_text):
-                        suppress_default_reply(event)
+                        keep_group_reply_gate(event)
                         logger.warning("[CompanionV2] 群聊连续输入合并失败 target=%s", group_target)
                         return
                     logger.info("[CompanionV2] 群聊连续输入合并 target=%s count=%d",
@@ -1018,18 +1039,20 @@ class PrivateCompanionV2StagingPlugin(Star):
                             or candidate.failure.code == "host_group_preflight_failed"):
                         logger.info("[CompanionV2] V2 群回复材料暂不可用，继续 AstrBot 核心处理 event_ref=%s code=%s",
                                     event_ref, candidate.failure.code)
+                        release_group_reply_gate(event)
                         return
-                    suppress_default_reply(event)
+                    keep_group_reply_gate(event)
                     logger.warning("[CompanionV2] 群回复候选检查失败 event_ref=%s code=%s",
                                    event_ref, candidate.failure.code)
                     return
                 group_admission = candidate.unwrap()
             except Exception as error:
+                release_group_reply_gate(event)
                 logger.warning("[CompanionV2] 群回复候选检查异常，继续 AstrBot 核心处理 event_ref=%s error_type=%s",
                                event_ref, type(error).__name__)
                 return
             if not group_admission["admitted"]:
-                suppress_default_reply(event)
+                keep_group_reply_gate(event)
                 # 群聊「故意不说话」不写台账（那是 SUPPRESSED 的语义），但也不能
                 # 什么都不留：用户反馈「机器人不理我」时，这行是唯一能区分
                 # 「判了不该说」和「根本没走到这里」的线索。只写码值，不带正文。
@@ -1052,7 +1075,10 @@ class PrivateCompanionV2StagingPlugin(Star):
                 await debounce_manager.abort(debounce_pending, event=event)
                 if debounce_manager.superseded_by_same_event(debounce_pending, event):
                     return
-            suppress_default_reply(event)
+            if channel == "group":
+                keep_group_reply_gate(event)
+            else:
+                suppress_default_reply(event)
             self._record_no_reply(event, "session_reply_disabled", origin_key=origin_key,
                                   channel=channel, event_ref=event_ref, turn=event_ref)
             return
@@ -1144,6 +1170,8 @@ class PrivateCompanionV2StagingPlugin(Star):
                 prepare_kwargs["plan"] = core_reply_plan
             admission = await self.staging.prepare_core_reply(event, target, **prepare_kwargs)
         except Exception as error:
+            if channel == "group":
+                release_group_reply_gate(event)
             logger.warning("[CompanionV2] V2 回复材料准备失败，继续 AstrBot 核心回复 event_ref=%s error_type=%s",
                          event_ref, type(error).__name__)
             return
@@ -1152,8 +1180,13 @@ class PrivateCompanionV2StagingPlugin(Star):
             if _can_continue_astrbot_core_reply(failure.code):
                 logger.warning("[CompanionV2] V2 回复材料暂不可用，继续 AstrBot 核心回复 event_ref=%s code=%s",
                                event_ref, failure.code)
+                if channel == "group":
+                    release_group_reply_gate(event)
                 return
-            suppress_default_reply(event)
+            if channel == "group":
+                keep_group_reply_gate(event)
+            else:
+                suppress_default_reply(event)
             if failure.code == "private_access_dialogue_denied":
                 # Only this failed preparation owns the refused context; never
                 # let a concurrent event's notice or cooldown stand in for it.
@@ -1214,6 +1247,8 @@ class PrivateCompanionV2StagingPlugin(Star):
         prepare_core_reply_event(
             event, prepared, owner=self._core_reply_owner_token(),
             **self._core_reply_delivery_callbacks(event, prepared, target=target))
+        if channel == "group":
+            release_group_reply_gate(event)
         observer = getattr(getattr(self.staging, "session", None), "core_reply_observations", None)
         media = getattr(observer, "media", None)
         if callable(media):
