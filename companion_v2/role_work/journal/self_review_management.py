@@ -325,5 +325,3 @@ class SelfReviewManagement:
         if changed.rowcount != 1:
             raise TaskError("self_review_decided", "self-review item changed during decision")
         return {"item_id": row["item_id"], "state": "accepted", "expires_at": retained, "replayed": False}
-
-

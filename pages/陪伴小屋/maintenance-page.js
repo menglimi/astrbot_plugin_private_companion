@@ -4330,5 +4330,3 @@ window.CompanionMaintenancePage = (() => {
 
   return {mount, unmount};
 })();
-
-
