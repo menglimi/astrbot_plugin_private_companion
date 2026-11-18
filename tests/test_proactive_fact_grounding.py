@@ -364,6 +364,8 @@ class ProactiveFactGroundingTests(unittest.TestCase):
         self.assertIn("刚才你主动发出的消息", first)
         self.assertIn("春季新番预告", first)
         self.assertIn("不得声称不知道自己发了什么", first)
+        self.assertIn("本轮只接最新这条", first)
+        self.assertIn("不要补答", first)
         self.assertEqual(second, "")
 
     def test_structured_reply_context_owns_its_original_title(self) -> None:
