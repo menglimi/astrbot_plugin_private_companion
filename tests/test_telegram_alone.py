@@ -128,7 +128,8 @@ class TelegramAloneFixture(PreferredChannelFixture):
     def health(self):
         status = self.controller.status()
         return ((status["state"], status["accepting"], status["last_failure"]),
-                {row["platform_id"]: (row["available"], row["code"]) for row in status["accounts"]})
+                {row["platform_id"]: (row["state"] == "online", row["reason_code"] or None)
+                 for row in status["account_connections"]})
 
     def link_record(self):
         return self.controller.session.linked_conversations.get("owner-dialogue")
