@@ -195,24 +195,41 @@ def _is_gemini_stt_cache_only(event: Any) -> bool:
     return getter("_gemini_stt_cache_only") is True and getter("_gemini_stt_should_reply") is False
 
 
+def _is_explicit_non_hijacking_gemini_stt(event: Any) -> bool:
+    """Return True when upstream ``gemini_stt`` explicitly declared a non-hijacking turn."""
+    getter = getattr(event, "get_extra", None)
+    if not callable(getter):
+        return False
+    if getter("_gemini_stt_hijacked") is True or getter("_gemini_stt_non_hijacking") is False:
+        return False
+    return getter("_gemini_stt_hijacked") is False or getter("_gemini_stt_non_hijacking") is True
+
+
 def _should_skip_hijacked_gemini_stt(event: Any) -> bool:
     """Return True ONLY when an external STT plugin genuinely hijacked or replied to this turn.
 
     Non-hijacking ``astrbot_plugin_gemini_stt`` sets ``_gemini_stt_should_reply=True`` and
-    ``_gemini_stt_cache_only=False`` (and/or ``_gemini_stt_non_hijacking=True`` /
-    ``_gemini_stt_hijacked=False``) to signal that normal downstream companion/core handling
-    is allowed; that signal must never be mistaken for an external ``request_llm`` takeover.
+    ``_gemini_stt_cache_only=False`` alongside ``_gemini_stt_non_hijacking=True`` and
+    ``_gemini_stt_hijacked=False`` (both on success and under ``on_stt_fail="pass"`` /
+    ``"notify_pass"``; ``notify_pass`` may also set ``_gemini_stt_notify_only_sent=True`` and
+    fall back to ``event.send()`` which sets ``_has_send_oper=True``). Only legacy un-flagged
+    STT plugins treat ``_has_send_oper`` as a hijack takeover clue.
     """
-    if getattr(event, "_has_send_oper", False):
-        return True
     getter = getattr(event, "get_extra", None)
     if not callable(getter):
-        return False
+        return bool(getattr(event, "_has_send_oper", False))
     hijacked = getter("_gemini_stt_hijacked")
     non_hijacking = getter("_gemini_stt_non_hijacking")
-    if hijacked is False or non_hijacking is True:
-        return False
     if hijacked is True or non_hijacking is False:
+        return True
+    if hijacked is False or non_hijacking is True:
+        is_stopped = getattr(event, "is_stopped", None)
+        if callable(is_stopped) and is_stopped():
+            return True
+        if getter("provider_request") is not None:
+            return True
+        return False
+    if getattr(event, "_has_send_oper", False):
         return True
     is_stopped = getattr(event, "is_stopped", None)
     if callable(is_stopped) and is_stopped():
@@ -867,8 +884,9 @@ class PrivateCompanionV2StagingPlugin(Star):
                          getattr(competing, "handler_full_name", "unknown"))
             return
         # Ordinary listeners (e.g. prefix-free sign-in) run before intake.
-        # A plugin may answer without stopping propagation; respect that reply.
-        if getattr(event, "_has_send_oper", False):
+        # A plugin may answer without stopping propagation; respect that reply,
+        # unless upstream gemini_stt explicitly declared a non-hijacking turn (e.g. notify_pass).
+        if getattr(event, "_has_send_oper", False) and not _is_explicit_non_hijacking_gemini_stt(event):
             return
         if _is_gemini_stt_cache_only(event):
             suppress_default_reply(event)

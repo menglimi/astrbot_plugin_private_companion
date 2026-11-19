@@ -179,26 +179,38 @@ class GeminiSTTCompatibilityTests(GroupMediaFixture, unittest.IsolatedAsyncioTes
             )
             return ev, call_llm_marks
 
-        # 1) Non-hijacking gemini_stt (without & with explicit flags) MUST NOT skip companion intake.
+        # 1) Non-hijacking gemini_stt (without & with explicit flags, including notify_pass)
+        #    MUST NOT skip companion intake.
         non_hijack_cases = (
-            {"_gemini_stt_done": True, "_gemini_stt_status": "ok", "_gemini_stt_transcript": "今天吃什么",
-             "_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False},
-            {"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False, "_gemini_stt_non_hijacking": True},
-            {"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False, "_gemini_stt_hijacked": False},
-            {"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False,
-             "_gemini_stt_non_hijacking": True, "_gemini_stt_hijacked": False},
+            ({"_gemini_stt_done": True, "_gemini_stt_status": "ok", "_gemini_stt_transcript": "今天吃什么",
+              "_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False}, {}),
+            ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False, "_gemini_stt_non_hijacking": True}, {}),
+            ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False, "_gemini_stt_hijacked": False}, {}),
+            ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False,
+              "_gemini_stt_non_hijacking": True, "_gemini_stt_hijacked": False}, {}),
             # Empty CONTINUE result is not a reply takeover.
-            {"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False},
+            ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False},
+             {"result": MessageEventResult().continue_event()}),
+            # on_stt_fail="notify_pass" primary (send_message -> _has_send_oper=False) and
+            # fallback (event.send -> _has_send_oper=True) MUST both pass through to companion intake.
+            ({"_gemini_stt_status": "failed", "_gemini_stt_non_hijacking": True,
+              "_gemini_stt_hijacked": False, "_gemini_stt_notify_only_sent": True},
+             {"has_send_oper": False}),
+            ({"_gemini_stt_status": "failed", "_gemini_stt_non_hijacking": True,
+              "_gemini_stt_hijacked": False, "_gemini_stt_notify_only_sent": True},
+             {"has_send_oper": True}),
+            ({"_gemini_stt_status": "failed", "_gemini_stt_non_hijacking": True,
+              "_gemini_stt_hijacked": False},
+             {"has_send_oper": True}),
         )
-        for idx, extras in enumerate(non_hijack_cases):
+        for idx, (extras, kw) in enumerate(non_hijack_cases):
             claimed = []
             plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
             plugin.staging = NS(
                 claims=lambda ev, _c=claimed: (_c.append(ev), False)[-1],
                 target_for_event=lambda _ev: None,
             )
-            res = MessageEventResult().continue_event() if idx == 4 else None
-            ev, _ = make_event(extras, result=res)
+            ev, _ = make_event(extras, **kw)
             with patch.object(ENTRY, "refuse_stranger", new=AsyncMock(return_value=None)):
                 await plugin.receive_companion_message(ev)
             self.assertEqual(len(claimed), 1, f"non-hijacking case {idx} must enter companion intake")
@@ -217,13 +229,15 @@ class GeminiSTTCompatibilityTests(GroupMediaFixture, unittest.IsolatedAsyncioTes
             self.assertTrue(ev.call_llm)
             self.assertEqual(call_llm_marks, [True])
 
-        # 3) Explicit hijack or legacy hijack side-effects MUST skip companion intake.
+        # 3) Explicit hijack or legacy un-flagged hijack side-effects MUST skip companion intake.
         hijack_cases = (
             ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False, "_gemini_stt_hijacked": True}, {}),
             ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False, "_gemini_stt_non_hijacking": False}, {}),
+            ({"_gemini_stt_non_hijacking": True, "_gemini_stt_hijacked": True}, {"has_send_oper": True}),
             ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False, "provider_request": object()}, {}),
             ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False}, {"stopped": True}),
             ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False}, {"has_send_oper": True}),
+            ({"_gemini_stt_status": "failed"}, {"stopped": True}),
             ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False},
              {"result": MessageEventResult().message("外部已回复").set_result_content_type(ResultContentType.LLM_RESULT)}),
         )
