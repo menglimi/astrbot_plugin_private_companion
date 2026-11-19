@@ -69,6 +69,11 @@ window.CompanionHomeSidebar = (() => {
     return segments;
   }
   function timelineRows(items, now, zone, complete) {
+    // Keep the visible timeline chronological even when an API returns the
+    // day's occurrences newest-first.  The current/pending event stays pinned
+    // by its own timestamp instead of relying on caller order.
+    items = items.slice().sort((a, b) => (a.start ?? Infinity) - (b.start ?? Infinity)
+      || a.order - b.order || a.key.localeCompare(b.key));
     let cursor = minuteOfDay(now, zone), cursorKnown = true;
     const rows = [];
     for (const item of items) {

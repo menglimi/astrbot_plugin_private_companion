@@ -648,7 +648,7 @@
 }
 /* 自我页的 journal 是单列卡片，不能沿用工作台的第 2 列。 */
 .self-page .wb-journal .wb-field>.wb-field-main{grid-column:1}
-.wb-field-main{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,360px);
+.wb-field-main{display:grid;grid-template-columns:minmax(12em,1fr) minmax(180px,360px);
   align-items:center;column-gap:var(--sp-5);row-gap:var(--sp-1)}
 .wb-field-main>.wb-label{grid-column:1;grid-row:1;align-self:end}
 .wb-field-main>.wb-help{grid-column:1;grid-row:2;align-self:start}
@@ -660,6 +660,14 @@
 .wb-field:has(textarea) .wb-field-main,.wb-field:has(.wb-word-editor) .wb-field-main,
 .wb-field:has(.wb-keywords) .wb-field-main,.wb-field:has(.wb-source-picker) .wb-field-main,
 .wb-field:has(.wb-order-editor) .wb-field-main,.wb-field:has(.wb-date) .wb-field-main{grid-template-columns:minmax(0,1fr)}
+#replyWorkspace .wb-field-main{grid-template-columns:minmax(12em,1fr) minmax(180px,360px)}
+#replyWorkspace .wb-field-main>.wb-label{min-width:12em}
+#replyWorkspace .wb-field:has(textarea) .wb-field-main,
+#replyWorkspace .wb-field:has(.wb-word-editor) .wb-field-main,
+#replyWorkspace .wb-field:has(.wb-keywords) .wb-field-main,
+#replyWorkspace .wb-field:has(.wb-source-picker) .wb-field-main,
+#replyWorkspace .wb-field:has(.wb-order-editor) .wb-field-main,
+#replyWorkspace .wb-field:has(.wb-date) .wb-field-main{grid-template-columns:minmax(0,1fr)}
 .wb-field:has(textarea) .wb-field-main>.wb-control,.wb-field:has(.wb-word-editor) .wb-field-main>.wb-control,
 .wb-field:has(.wb-keywords) .wb-field-main>.wb-control,.wb-field:has(.wb-source-picker) .wb-field-main>.wb-control,
 .wb-field:has(.wb-order-editor) .wb-field-main>.wb-control,.wb-field:has(.wb-date) .wb-field-main>.wb-control{
