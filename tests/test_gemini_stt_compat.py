@@ -6,7 +6,7 @@ import base64
 from dataclasses import replace
 from types import SimpleNamespace as NS
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from astrbot.core.agent.message import TextPart
 from astrbot.core.message.components import File, Plain, Record, Video
@@ -163,16 +163,97 @@ class GeminiSTTCompatibilityTests(GroupMediaFixture, unittest.IsolatedAsyncioTes
         self.assertIn('"audio":true', ctx_json)
         self.assertIn('"source":"gemini_stt"', ctx_json)
 
-    async def test_main_intake_respects_gemini_stt_reply_ownership(self):
-        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
-        plugin.staging = NS(claims=lambda _ev: self.fail("should skip when gemini_stt already claimed reply"))
-        extras = {"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False}
-        event = NS(
-            _has_send_oper=False,
-            get_extra=extras.get,
-            message_obj=NS(raw_message={"post_type": "message"}, message=[]),
+    async def test_main_intake_accepts_non_hijacking_gemini_stt_and_respects_hijack_and_cache_only(self):
+        from astrbot.core.message.message_event_result import MessageEventResult, ResultContentType
+
+        def make_event(extras, *, has_send_oper=False, stopped=False, result=None):
+            call_llm_marks = []
+            ev = NS(
+                _has_send_oper=has_send_oper,
+                call_llm=False,
+                get_extra=extras.get,
+                is_stopped=lambda: stopped,
+                get_result=lambda: result,
+                should_call_llm=lambda val: (setattr(ev, "call_llm", val), call_llm_marks.append(val))[0],
+                message_obj=NS(type=NS(value="GroupMessage"), raw_message={"post_type": "message"}, message=[]),
+            )
+            return ev, call_llm_marks
+
+        # 1) Non-hijacking gemini_stt (without & with explicit flags) MUST NOT skip companion intake.
+        non_hijack_cases = (
+            {"_gemini_stt_done": True, "_gemini_stt_status": "ok", "_gemini_stt_transcript": "今天吃什么",
+             "_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False},
+            {"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False, "_gemini_stt_non_hijacking": True},
+            {"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False, "_gemini_stt_hijacked": False},
+            {"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False,
+             "_gemini_stt_non_hijacking": True, "_gemini_stt_hijacked": False},
+            # Empty CONTINUE result is not a reply takeover.
+            {"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False},
         )
-        await plugin.receive_companion_message(event)
+        for idx, extras in enumerate(non_hijack_cases):
+            claimed = []
+            plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+            plugin.staging = NS(
+                claims=lambda ev, _c=claimed: (_c.append(ev), False)[-1],
+                target_for_event=lambda _ev: None,
+            )
+            res = MessageEventResult().continue_event() if idx == 4 else None
+            ev, _ = make_event(extras, result=res)
+            with patch.object(ENTRY, "refuse_stranger", new=AsyncMock(return_value=None)):
+                await plugin.receive_companion_message(ev)
+            self.assertEqual(len(claimed), 1, f"non-hijacking case {idx} must enter companion intake")
+
+        # 2) Group voice suppression (cache_only=True & should_reply=False) suppresses reply & skips intake,
+        #    even when non_hijacking=True / hijacked=False flags are present.
+        for extras in (
+            {"_gemini_stt_should_reply": False, "_gemini_stt_cache_only": True},
+            {"_gemini_stt_should_reply": False, "_gemini_stt_cache_only": True,
+             "_gemini_stt_non_hijacking": True, "_gemini_stt_hijacked": False},
+        ):
+            plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+            plugin.staging = NS(claims=lambda _ev: self.fail("cache_only group suppression must skip intake"))
+            ev, call_llm_marks = make_event(extras)
+            await plugin.receive_companion_message(ev)
+            self.assertTrue(ev.call_llm)
+            self.assertEqual(call_llm_marks, [True])
+
+        # 3) Explicit hijack or legacy hijack side-effects MUST skip companion intake.
+        hijack_cases = (
+            ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False, "_gemini_stt_hijacked": True}, {}),
+            ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False, "_gemini_stt_non_hijacking": False}, {}),
+            ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False, "provider_request": object()}, {}),
+            ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False}, {"stopped": True}),
+            ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False}, {"has_send_oper": True}),
+            ({"_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False},
+             {"result": MessageEventResult().message("外部已回复").set_result_content_type(ResultContentType.LLM_RESULT)}),
+        )
+        for extras, kw in hijack_cases:
+            plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+            plugin.staging = NS(claims=lambda _ev: self.fail("hijacked turn must skip companion intake"))
+            ev, _ = make_event(extras, **kw)
+            await plugin.receive_companion_message(ev)
+
+    async def test_private_core_reply_reuses_gemini_stt_transcript_without_redundant_stt(self):
+        await self.start_host()
+        wav = audio_bytes()
+        locator = _b64_url(wav)
+        event = self.event(text="")
+        event.message_obj.message = [Record(file=locator), Plain("[语音消息]: 今天有点冷记得加衣服")]
+        event.message_obj.raw_message = {
+            "message": [{"type": "record", "data": {"file": locator, "url": ""}}],
+        }
+        extras = {
+            "_gemini_stt_done": True,
+            "_gemini_stt_status": "ok",
+            "_gemini_stt_transcript": "今天有点冷记得加衣服",
+            "_gemini_stt_should_reply": True,
+            "_gemini_stt_cache_only": False,
+        }
+        event.get_extra = extras.get
+        captured = await self.controller.session.bridge.capture_core_reply(event)
+        self.assertTrue(captured.is_success, captured.failure)
+        self.assertIn("今天有点冷记得加衣服", captured.unwrap().text)
+        self.assertNotIn("语音不可用", captured.unwrap().text)
 
 
 if __name__ == "__main__":

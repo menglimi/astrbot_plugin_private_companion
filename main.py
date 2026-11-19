@@ -170,6 +170,58 @@ def _can_continue_astrbot_core_reply(code):
     return False
 
 
+def _has_populated_event_result(event: Any) -> bool:
+    """Return True when an upstream handler already attached a concrete reply result on ``event``."""
+    getter = getattr(event, "get_result", None)
+    result = getter() if callable(getter) else None
+    if result is None:
+        return False
+    if isinstance(result, str):
+        return bool(result.strip())
+    is_stopped = getattr(result, "is_stopped", None)
+    if callable(is_stopped) and is_stopped():
+        return True
+    if getattr(result, "chain", None) or getattr(result, "async_stream", None) is not None:
+        return True
+    content_type = getattr(getattr(result, "result_content_type", None), "name", None)
+    return content_type in {"LLM_RESULT", "STREAMING_RESULT", "STREAMING_FINISH", "AGENT_RUNNER_ERROR"}
+
+
+def _is_gemini_stt_cache_only(event: Any) -> bool:
+    """Return True when upstream gemini_stt suppressed a group voice turn to cache-only."""
+    getter = getattr(event, "get_extra", None)
+    if not callable(getter):
+        return False
+    return getter("_gemini_stt_cache_only") is True and getter("_gemini_stt_should_reply") is False
+
+
+def _should_skip_hijacked_gemini_stt(event: Any) -> bool:
+    """Return True ONLY when an external STT plugin genuinely hijacked or replied to this turn.
+
+    Non-hijacking ``astrbot_plugin_gemini_stt`` sets ``_gemini_stt_should_reply=True`` and
+    ``_gemini_stt_cache_only=False`` (and/or ``_gemini_stt_non_hijacking=True`` /
+    ``_gemini_stt_hijacked=False``) to signal that normal downstream companion/core handling
+    is allowed; that signal must never be mistaken for an external ``request_llm`` takeover.
+    """
+    if getattr(event, "_has_send_oper", False):
+        return True
+    getter = getattr(event, "get_extra", None)
+    if not callable(getter):
+        return False
+    hijacked = getter("_gemini_stt_hijacked")
+    non_hijacking = getter("_gemini_stt_non_hijacking")
+    if hijacked is False or non_hijacking is True:
+        return False
+    if hijacked is True or non_hijacking is False:
+        return True
+    is_stopped = getattr(event, "is_stopped", None)
+    if callable(is_stopped) and is_stopped():
+        return True
+    if getter("provider_request") is not None:
+        return True
+    return _has_populated_event_result(event)
+
+
 @register(
     PLUGIN_NAME,
     "menglimi",
@@ -818,9 +870,11 @@ class PrivateCompanionV2StagingPlugin(Star):
         # A plugin may answer without stopping propagation; respect that reply.
         if getattr(event, "_has_send_oper", False):
             return
-        if (callable(getattr(event, "get_extra", None))
-                and event.get_extra("_gemini_stt_should_reply") is True
-                and not event.get_extra("_gemini_stt_cache_only")):
+        if _is_gemini_stt_cache_only(event):
+            suppress_default_reply(event)
+            logger.debug("[CompanionV2] 外部 gemini_stt 群语音概率门控设为仅缓存，跳过本轮回复")
+            return
+        if _should_skip_hijacked_gemini_stt(event):
             logger.debug("[CompanionV2] 外部 gemini_stt 已接管本轮语音回复，跳过重复受理")
             return
         if not self.staging.claims(event):

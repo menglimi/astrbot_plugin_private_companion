@@ -43,8 +43,10 @@ from astrbot_host.video.compressor import (
     compress_video,
     probe_duration,
     resolve_ffmpeg_tools,
+    sniff_video_container,
     video_capabilities_status,
 )
+from astrbot_host.video.container import inspect_container
 from astrbot_host.video.decoder import _ffmpeg_binary
 from astrbot_host.video.fusion import VideoFusionService
 from astrbot_host.video.limits import QueueTimeout, SingleFlight, SlotLimiter
@@ -415,6 +417,120 @@ class LimitsCacheCompressorTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(TaskError) as rejected:
                 compress_video(raw, suffix=".mp4", target_bytes=300 * 1024, max_duration_s=1.0, oversize_action="reject")
             self.assertEqual(rejected.exception.code, "host_video_limit")
+
+            # Fake .mp4 carrying a Matroska (.mkv) EBML container must transcode cleanly into real MP4.
+            mkv_src = Path(tmp) / "media_video_fake.mp4"
+            subprocess.run(
+                [
+                    ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+                    "-i", "color=c=green:s=160x120:r=10:d=1.0", "-f", "matroska", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", str(mkv_src),
+                ],
+                check=True,
+                timeout=15,
+            )
+            mkv_raw = mkv_src.read_bytes()
+            self.assertTrue(mkv_raw.startswith(b"\x1a\x45\xdf\xa3"))
+            transcoded = compress_video(mkv_raw, suffix=".mp4", target_bytes=10 * 1024 * 1024)
+            self.assertTrue(transcoded.compressed)
+            self.assertEqual(transcoded.mime_type, "video/mp4")
+            self.assertEqual(sniff_video_container(transcoded.content), "mp4")
+            self.assertGreater(inspect_container(transcoded.content).duration_ms, 0)
+
+    def test_valid_mp4_ftyp_fast_path_skips_subprocesses(self):
+        valid_mp4 = b"\x00\x00\x00\x1cftypisom\x00\x00\x02\x00isomiso2" + b"\x00" * 64
+        with patch("astrbot_host.video.compressor._run_subprocess", side_effect=AssertionError("must not spawn subprocess")):
+            res = compress_video(valid_mp4, suffix=".mp4", target_bytes=1024 * 1024)
+        self.assertFalse(res.compressed)
+        self.assertEqual(res.mime_type, "video/mp4")
+        self.assertEqual(res.content, valid_mp4)
+
+    def test_container_sniffing_and_deterministic_fake_mp4_transcode_via_magic_and_ffprobe(self):
+        import json as _json
+
+        self.assertEqual(sniff_video_container(b"\x1a\x45\xdf\xa3\x93B\x82\x88matroska"), "matroska")
+        self.assertEqual(sniff_video_container(b"RIFF\x20\x00\x00\x00AVI LIST"), "avi")
+        self.assertEqual(sniff_video_container(b"FLV\x01\x05\x00\x00\x00\x09"), "flv")
+        self.assertEqual(sniff_video_container(b"\x00\x00\x00\x14ftypqt  \x00\x00\x02\x00"), "quicktime")
+        self.assertEqual(sniff_video_container(b"\x00\x00\x00\x1cftypisom\x00\x00\x02\x00"), "mp4")
+        self.assertIsNone(sniff_video_container(b"complete-original-mp4"))
+
+        fake_mp4_ebml = b"\x1a\x45\xdf\xa3" + b"\x00" * 128
+        fake_mp4_unknown_magic = b"\x00\x00\x00\x00unknown-container-bytes" + b"\x00" * 64
+        valid_out_mp4 = b"\x00\x00\x00\x1cftypisom\x00\x00\x02\x00isomiso2" + b"\x00" * 32
+
+        # 1) EBML magic bytes named .mp4 (small size) & ffprobe matroska,webm -> triggers ffmpeg transcode
+        for payload in (fake_mp4_ebml, fake_mp4_unknown_magic):
+            commands = []
+
+            def fake_subproc(args, *, timeout):
+                commands.append(args)
+                exe = Path(args[0]).name.lower()
+                if "ffprobe" in exe:
+                    if "output-" in str(args[-1]):
+                        return 0, _json.dumps({"format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": "2.0"},
+                                               "streams": [{"codec_type": "video", "codec_name": "h264"}]}).encode(), b""
+                    return 0, _json.dumps({"format": {"format_name": "matroska,webm", "duration": "2.0"},
+                                           "streams": [{"codec_type": "video", "codec_name": "h264"}]}).encode(), b""
+                # ffmpeg encode writes dst at args[-1]
+                Path(args[-1]).write_bytes(valid_out_mp4)
+                return 0, b"", b""
+
+            with (
+                patch("astrbot_host.video.compressor.resolve_ffmpeg_tools", return_value=("ffmpeg", "ffprobe")),
+                patch("astrbot_host.video.compressor._run_subprocess", side_effect=fake_subproc),
+            ):
+                res = compress_video(payload, suffix=".mp4", target_bytes=10 * 1024 * 1024)
+            self.assertTrue(res.compressed)
+            self.assertEqual(res.mime_type, "video/mp4")
+            self.assertEqual(res.content, valid_out_mp4)
+            self.assertTrue(any("ffmpeg" in Path(cmd[0]).name.lower() for cmd in commands))
+
+        # 2) QuickTime (.mov) or non-MP4 codec inside .mp4 must also transcode, and missing ffmpeg fails loudly
+        with (
+            patch("astrbot_host.video.compressor.resolve_ffmpeg_tools", return_value=(None, None)),
+            self.assertRaises(TaskError) as missing_ff,
+        ):
+            compress_video(fake_mp4_ebml, suffix=".mp4", target_bytes=10 * 1024 * 1024)
+        self.assertEqual(missing_ff.exception.code, "host_video_ffmpeg_unavailable")
+
+    async def test_fusion_analyze_transcodes_fake_mp4_mkv_before_summarize(self):
+        import json as _json
+
+        fake_mp4_ebml = b"\x1a\x45\xdf\xa3" + b"\x00" * 128
+        valid_out_mp4 = b"\x00\x00\x00\x1cftypisom\x00\x00\x02\x00isomiso2" + b"\x00" * 32
+        seen_bytes = []
+
+        def fake_subproc(args, *, timeout):
+            exe = Path(args[0]).name.lower()
+            if "ffprobe" in exe:
+                return 0, _json.dumps({"format": {"format_name": "matroska,webm", "duration": "1.5"},
+                                       "streams": [{"codec_type": "video", "codec_name": "h264"}]}).encode(), b""
+            Path(args[-1]).write_bytes(valid_out_mp4)
+            return 0, b"", b""
+
+        async def fake_summarize(content, provider, model, settings, **kwargs):
+            seen_bytes.append((content, kwargs.get("mime_type")))
+            return "这段视频是一只猫在打盹。"
+
+        with TemporaryDirectory(prefix="v2-fusion-fake-mp4-") as tmp:
+            fusion = VideoFusionService(compress_cache=CompressCache(tmp, max_bytes=2 * 1024 * 1024))
+            self.addCleanup(fusion.close)
+            with (
+                patch("astrbot_host.video.compressor.resolve_ffmpeg_tools", return_value=("ffmpeg", "ffprobe")),
+                patch("astrbot_host.video.compressor._run_subprocess", side_effect=fake_subproc),
+            ):
+                outcome = await fusion.analyze_video(
+                    fake_mp4_ebml,
+                    suffix=".mp4",
+                    routes=((NS(provider_config={"id": "openai-v"}), "gpt-4o"),),
+                    settings={"video_understanding_target_mb": 10},
+                    summarize_fn=fake_summarize,
+                )
+        self.assertEqual(outcome.status, "summary")
+        self.assertEqual(outcome.text, "这段视频是一只猫在打盹。")
+        self.assertTrue(outcome.compressed)
+        self.assertEqual(seen_bytes, [(valid_out_mp4, "video/mp4")])
 
 
 class CoreFusionPerceptionPipelineTests(unittest.IsolatedAsyncioTestCase):

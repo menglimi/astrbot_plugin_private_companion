@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import math
 import os
 from pathlib import Path
@@ -22,7 +23,17 @@ DEFAULT_TARGET_BYTES = 10 * 1024 * 1024
 DEFAULT_MAX_DURATION_SECONDS = 120.0
 OVERSIZE_ACTIONS = frozenset({"compress", "truncate", "reject"})
 _DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+_FFMPEG_FORMAT_RE = re.compile(r"Input\s+#\d+,\s*([^,\s]+(?:,[^,\s]+)*),\s*from\b", re.IGNORECASE)
+_FFMPEG_VIDEO_CODEC_RE = re.compile(r"Stream\s+#[^\n]*?\bVideo:\s*([A-Za-z0-9_]+)", re.IGNORECASE)
+_MP4_VIDEO_CODECS = frozenset({"h264", "hevc", "h265", "mpeg4"})
 _EXCLUDED_SUFFIXES = frozenset({".ts", ".m2ts", ".mts"})
+
+
+@dataclass(frozen=True)
+class MediaProbeInfo:
+    duration_s: float | None = None
+    format_name: str | None = None
+    video_codec: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,14 +125,53 @@ def _run_subprocess(
         raise TaskError("host_video_compress_timeout", "视频处理超时，请稍后重试或缩短视频。") from None
 
 
-def probe_duration(
+def sniff_video_container(content: bytes | bytearray) -> str | None:
+    """Identify common video container formats from leading magic bytes without spawning subprocesses."""
+    raw = bytes(content) if isinstance(content, bytearray) else content
+    if not isinstance(raw, bytes) or len(raw) < 4:
+        return None
+    if raw.startswith(b"\x1a\x45\xdf\xa3"):
+        return "matroska"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"AVI ":
+        return "avi"
+    if raw.startswith(b"FLV"):
+        return "flv"
+    if raw.startswith(b"\x30\x26\xb2\x75\x8e\x66\xcf\x11"):
+        return "asf"
+    if raw.startswith(b"OggS"):
+        return "ogg"
+    if raw.startswith(b"\x00\x00\x01\xba"):
+        return "mpeg"
+    if len(raw) >= 376 and raw[0] == 0x47 and raw[188] == 0x47:
+        return "mpegts"
+    if len(raw) >= 12 and raw[4:8] == b"ftyp":
+        box_size = int.from_bytes(raw[:4], "big")
+        major_brand = raw[8:12]
+        if major_brand.startswith(b"qt"):
+            return "quicktime"
+        if box_size == 0 or box_size >= 12:
+            return "mp4"
+    if len(raw) >= 8 and raw[4:8] in (b"moov", b"wide", b"free", b"mdat", b"skip", b"pnot"):
+        return "quicktime"
+    return None
+
+
+def _parse_positive_duration(raw_value: object) -> float | None:
+    try:
+        value = float(str(raw_value).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def probe_media_info(
     path: Path,
     *,
     ffprobe: str | None = None,
     ffmpeg: str | None = None,
     timeout: float = 10.0,
-) -> float | None:
-    """Probe media duration in seconds using ``ffprobe`` or ``ffmpeg -i`` fallback."""
+) -> MediaProbeInfo:
+    """Probe duration, container format_name and primary video codec using ``ffprobe`` or ``ffmpeg -i``."""
     if ffprobe is None and ffmpeg is None:
         ffmpeg, ffprobe = resolve_ffmpeg_tools()
     if ffprobe:
@@ -132,20 +182,40 @@ def probe_duration(
                     "-v",
                     "error",
                     "-show_entries",
-                    "format=duration",
+                    "format=format_name,duration:stream=codec_type,codec_name",
                     "-of",
-                    "default=noprint_wrappers=1:nokey=1",
+                    "json",
                     str(path),
                 ],
                 timeout=timeout,
             )
             if code == 0:
-                text = stdout.decode("utf-8", errors="ignore").strip().splitlines()
+                text = stdout.decode("utf-8", errors="ignore").strip()
                 if text:
-                    value = float(text[0].strip())
-                    if math.isfinite(value) and value > 0:
-                        return value
-        except (TaskError, ValueError):
+                    try:
+                        payload = json.loads(text)
+                    except ValueError:
+                        payload = None
+                    if isinstance(payload, dict):
+                        fmt = payload.get("format") if isinstance(payload.get("format"), dict) else {}
+                        format_name = str(fmt.get("format_name") or "").strip().lower() or None
+                        duration_s = _parse_positive_duration(fmt.get("duration"))
+                        video_codec = None
+                        for stream in payload.get("streams") or ():
+                            if isinstance(stream, dict) and str(stream.get("codec_type") or "").lower() == "video":
+                                video_codec = str(stream.get("codec_name") or "").strip().lower() or None
+                                break
+                        if duration_s is not None or format_name is not None or video_codec is not None:
+                            return MediaProbeInfo(
+                                duration_s=duration_s,
+                                format_name=format_name,
+                                video_codec=video_codec,
+                            )
+                    else:
+                        duration_s = _parse_positive_duration(text.splitlines()[0].strip())
+                        if duration_s is not None:
+                            return MediaProbeInfo(duration_s=duration_s)
+        except TaskError:
             pass
     if ffmpeg:
         try:
@@ -153,15 +223,73 @@ def probe_duration(
                 [ffmpeg, "-nostdin", "-hide_banner", "-i", str(path)],
                 timeout=timeout,
             )
-            match = _DURATION_RE.search(stderr.decode("utf-8", errors="ignore"))
+            err_text = stderr.decode("utf-8", errors="ignore")
+            duration_s = None
+            match = _DURATION_RE.search(err_text)
             if match:
                 hours, minutes, secs = match.groups()
-                value = int(hours) * 3600 + int(minutes) * 60 + float(secs)
-                if math.isfinite(value) and value > 0:
-                    return value
-        except (TaskError, ValueError):
+                duration_s = _parse_positive_duration(int(hours) * 3600 + int(minutes) * 60 + float(secs))
+            fmt_match = _FFMPEG_FORMAT_RE.search(err_text)
+            format_name = fmt_match.group(1).strip().lower() if fmt_match else None
+            codec_match = _FFMPEG_VIDEO_CODEC_RE.search(err_text)
+            video_codec = codec_match.group(1).strip().lower() if codec_match else None
+            if duration_s is not None or format_name is not None or video_codec is not None:
+                return MediaProbeInfo(
+                    duration_s=duration_s,
+                    format_name=format_name,
+                    video_codec=video_codec,
+                )
+        except TaskError:
             pass
-    return None
+    return MediaProbeInfo()
+
+
+def probe_duration(
+    path: Path,
+    *,
+    ffprobe: str | None = None,
+    ffmpeg: str | None = None,
+    timeout: float = 10.0,
+) -> float | None:
+    """Probe media duration in seconds using ``ffprobe`` or ``ffmpeg -i`` fallback."""
+    return probe_media_info(path, ffprobe=ffprobe, ffmpeg=ffmpeg, timeout=timeout).duration_s
+
+
+def _is_probe_mp4(info: MediaProbeInfo, *, magic_kind: str | None) -> bool | None:
+    """Return False when ffprobe/ffmpeg metadata indicates a non-MP4 container or video codec."""
+    if info.format_name is None and info.video_codec is None:
+        return None
+    if info.format_name is not None:
+        formats = {token.strip().lower() for token in info.format_name.split(",") if token.strip()}
+        if "mp4" not in formats:
+            return False
+        # ffprobe groups QuickTime (.mov) and MP4 under "mov,mp4,m4a,3gp,3g2,mj2";
+        # require an actual ISO BMFF MP4 ftyp header (not QuickTime or missing ftyp).
+        if magic_kind != "mp4" and "mov" in formats:
+            return False
+    if info.video_codec is not None and info.video_codec not in _MP4_VIDEO_CODECS:
+        return False
+    return True
+
+
+def _resolve_actual_is_mp4(
+    ext: str,
+    magic_kind: str | None,
+    media_info: MediaProbeInfo,
+) -> bool:
+    """Combine extension, magic-byte sniffing and probe metadata before allowing MP4 passthrough."""
+    if ext != ".mp4":
+        return False
+    if magic_kind is not None and magic_kind != "mp4":
+        return False
+    probe_mp4 = _is_probe_mp4(media_info, magic_kind=magic_kind)
+    if probe_mp4 is False:
+        return False
+    if magic_kind == "mp4" or probe_mp4 is True:
+        return True
+    # Neither magic bytes nor ffprobe recognized a container (e.g. synthetic unit-test bytes);
+    # keep legacy .mp4 pass-through so downstream inspect_container governs real invalid payloads.
+    return True
 
 
 def will_truncate(
@@ -236,7 +364,7 @@ def _run_ffmpeg_encode(
     target_bytes: int,
     timeout: float,
 ) -> tuple[int, bytes]:
-    scale_filter = f"scale='min({max_width},iw)':-2"
+    scale_filter = f"scale='trunc(min({max_width},iw)/2)*2':-2"
     base_cmd = [
         ffmpeg,
         "-nostdin",
@@ -306,9 +434,10 @@ def compress_video(
     if ext in _EXCLUDED_SUFFIXES:
         raise TaskError("host_video_format_unsupported", "不支持 .ts 切片文件作为视频理解输入。")
     safe_target = max(256 * 1024, min(int(target_bytes), MAX_DATA_URI_BYTES))
-    non_mp4 = ext != ".mp4"
+    magic_kind = sniff_video_container(raw)
     action = oversize_action if oversize_action in OVERSIZE_ACTIONS else "compress"
-    if action == "compress" and not non_mp4 and len(raw) <= safe_target:
+    # Fast-path only verified ISO BMFF MP4 (ftyp) payloads within size budget (0 extra subprocesses).
+    if action == "compress" and ext == ".mp4" and magic_kind == "mp4" and len(raw) <= safe_target:
         return CompressionResult(
             content=raw,
             mime_type="video/mp4",
@@ -323,21 +452,23 @@ def compress_video(
     with tempfile.TemporaryDirectory(prefix="companion-video-prep-") as directory:
         src = Path(directory) / f"input{ext}"
         src.write_bytes(raw)
-        original_duration = probe_duration(src, ffprobe=ffprobe, ffmpeg=ffmpeg, timeout=min(10.0, timeout))
+        media_info = probe_media_info(src, ffprobe=ffprobe, ffmpeg=ffmpeg, timeout=min(10.0, timeout))
+        original_duration = media_info.duration_s
+        actual_is_mp4 = _resolve_actual_is_mp4(ext, magic_kind, media_info)
         plan = classify(
             len(raw),
             original_duration,
             target_bytes=safe_target,
             max_duration_s=max_duration_s,
             oversize_action=oversize_action,
-            force_transcode=non_mp4 and len(raw) > safe_target,
+            force_transcode=not actual_is_mp4,
         )
         if plan.decision == "reject":
             raise TaskError("host_video_limit", plan.reason)
         if not plan.should_transcode:
             return CompressionResult(
                 content=raw,
-                mime_type="video/mp4" if ext == ".mp4" else f"video/{ext.lstrip('.') or 'mp4'}",
+                mime_type="video/mp4" if actual_is_mp4 else f"video/{ext.lstrip('.') or 'mp4'}",
                 compressed=False,
                 truncated=False,
                 duration_s=original_duration,
@@ -345,7 +476,7 @@ def compress_video(
                 original_bytes=len(raw),
             )
         if not ffmpeg:
-            if len(raw) <= safe_target and plan.truncate_to is None:
+            if actual_is_mp4 and len(raw) <= safe_target and plan.truncate_to is None:
                 return CompressionResult(
                     content=raw,
                     mime_type="video/mp4",
@@ -357,7 +488,7 @@ def compress_video(
                 )
             raise TaskError(
                 "host_video_ffmpeg_unavailable",
-                "未检测到 ffmpeg，无法压缩或截断超出限制的视频。",
+                "未检测到 ffmpeg，无法转码非 MP4 视频或压缩超出限制的视频。",
             )
 
         effective_duration = plan.truncate_to or original_duration or 30.0
