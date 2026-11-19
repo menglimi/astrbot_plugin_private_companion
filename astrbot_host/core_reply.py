@@ -236,6 +236,17 @@ def prepare_core_reply_event(
         async def guarded_send(message: Any, *args: Any, **kwargs: Any) -> Any:
             if getattr(message, "type", None) in {"tool_call", "tool_result", "agent_stats", "reasoning", "break"}:
                 return await state["_original_send"](message, *args, **kwargs)
+            # Strip reaction-intent protocol before either branch: native
+            # bubble/stream adapters can submit each bubble through send()
+            # directly.  Leave other protocol cleanup to presentation so its
+            # diagnostics (removed-text/tool-call notes) still run.
+            raw_message = _plain_text(message)
+            folded = raw_message.casefold()
+            if "pc" in folded and "reaction" in folded and "expression" in folded:
+                from .core_reply_presentation import strip_internal_expression_message
+                message = strip_internal_expression_message(message)
+                if message is None:
+                    return None
             if not state.get("delivery_guard_active"):
                 from .core_reply_presentation import strip_internal_expression_message
                 message = strip_internal_expression_message(message)

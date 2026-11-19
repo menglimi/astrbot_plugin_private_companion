@@ -1,0 +1,12 @@
+{
+  "name": "companion-voxel-source",
+  "private": true,
+  "description": "Build inputs for pages/陪伴小屋/assets/voxel-room.js",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs --check"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.0"
+  }
+}

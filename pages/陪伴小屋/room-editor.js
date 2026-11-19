@@ -33,8 +33,74 @@ function roomOptionCards(items, selected, attribute, details = {}) {
   }).join('');
 }
 
+const ROOM_THEME_TO_HOUSE = {
+  classic: 'classic', forest: 'cabin', coastal: 'coastal',
+  french: 'french', loft: 'loft', washitsu: 'washitsu',
+};
+const HOUSE_TO_ROOM_THEME = Object.fromEntries(Object.entries(ROOM_THEME_TO_HOUSE).map(([theme, house]) => [house, theme]));
+function roomThemeKey(houseStyle) { return HOUSE_TO_ROOM_THEME[houseStyle] || 'classic'; }
+function syncRoomThemeButtons(theme) {
+  const root = $('#roomEditor');
+  if (!root?.querySelectorAll) return;
+  root.querySelectorAll('[data-room-theme]').forEach(button => {
+    const active = button.dataset.roomTheme === theme;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+}
+
+let roomEngineLoad = null;
+function loadRoomEditorEngine() {
+  if (window.PrivateCompanionHomeRoom3D) return Promise.resolve();
+  if (roomEngineLoad) return roomEngineLoad;
+  // Use the published URL, including the host's asset token and cache version.
+  const source = document.getElementById('companion-full-assets')?.content.querySelector('script[data-voxel-engine]')?.src;
+  if (!source) return Promise.reject(new Error('房间布置资源尚未发布'));
+  roomEngineLoad = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = source;
+    script.onload = () => window.PrivateCompanionHomeRoom3D ? resolve() : reject(new Error('体素引擎未就绪'));
+    script.onerror = () => { script.remove(); reject(new Error('房间布置资源加载失败')); };
+    document.head.appendChild(script);
+  }).finally(() => { roomEngineLoad = null; });
+  return roomEngineLoad;
+}
+
+async function openLiteRoomEditor() {
+  if (window.CompanionShell?.section && !await backHome()) return;
+  const ticket = navigationIntent, key = layoutKey();
+  const stillCurrent = () => ticket === navigationIntent && key === layoutKey() && !document.hidden;
+  try {
+    if (!window.PrivateCompanionHomeRoom3D && !roomEngineLoad) toast('正在加载房间布置工具…');
+    await loadRoomEditorEngine();
+    if (!stillCurrent() || arrangementDraft || roomEditorClosing) return;
+    const mount = $('[data-voxel-room]');
+    if (!mount || !$('#shellSide')) return;
+    // The compact stage expands before the engine measures the canvas.
+    document.body.classList.add('room-editing');
+    mountVoxelScene(mount);
+    enterRoomEditor();
+    armHomeAgendaClock();
+  } catch (error) {
+    if (!stillCurrent()) return;
+    if (arrangementDraft) finishRoomEditor(false);
+    else releaseLiteRoomScene();
+    toast('无法打开房间布置，请再次点击「布置」重试。');
+    console.warn('房间布置未能启动', error);
+  }
+}
+function releaseLiteRoomScene() {
+  voxelController?.dispose();
+  voxelController = null;
+  document.body.classList.remove('room-editing');
+}
+
 function openRoomEditor() {
   if (arrangementDraft || roomEditorClosing) return;
+  if (litePerformanceMode) return openLiteRoomEditor();
+  enterRoomEditor();
+}
+function enterRoomEditor() {
   if (!voxelController || $('.voxel-scene-failed')) {
     toast('请先重新加载体素小屋，再进入布置');
     return;
@@ -57,7 +123,16 @@ function openRoomEditor() {
     <p class="room-editor-hint" data-room-hint role="status" aria-live="polite"></p>
     <aside class="room-editor-controls" aria-label="布置工具">
       <section class="room-editor-group room-editor-ambience" aria-labelledby="roomAmbienceTitle">
-        <div class="room-editor-group-head"><h2 id="roomAmbienceTitle">房屋样式</h2><span>${Object.keys(catalog.houseStyles).length} 种可选</span></div>
+        <div class="room-editor-group-head"><h2 id="roomAmbienceTitle">场景主题</h2></div>
+        <div class="room-choice-grid room-theme-choices" role="group" aria-label="场景主题">
+          <button type="button" class="room-choice" data-room-theme="classic" aria-label="经典庭院" aria-pressed="false"><span class="room-choice-swatch" style="--room-swatch-default:linear-gradient(135deg,#d9d2b8 0 48%,#4a7c50 48% 100%)" aria-hidden="true"></span><span>庭院</span></button>
+          <button type="button" class="room-choice" data-room-theme="forest" aria-label="森林木屋" aria-pressed="false"><span class="room-choice-swatch" style="--room-swatch-default:linear-gradient(135deg,#8a6a48 0 48%,#1f3b2a 48% 100%)" aria-hidden="true"></span><span>森林</span></button>
+          <button type="button" class="room-choice" data-room-theme="coastal" aria-label="海岸白屋" aria-pressed="false"><span class="room-choice-swatch" style="--room-swatch-default:linear-gradient(135deg,#f0f0df 0 48%,#44899c 48% 100%)" aria-hidden="true"></span><span>海岸</span></button>
+          <button type="button" class="room-choice" data-room-theme="french" aria-label="山巅云屋" aria-pressed="false"><span class="room-choice-swatch" style="--room-swatch-default:linear-gradient(135deg,#f2e9da 0 48%,#7c93b5 48% 100%)" aria-hidden="true"></span><span>山巅</span></button>
+          <button type="button" class="room-choice" data-room-theme="loft" aria-label="城市天台" aria-pressed="false"><span class="room-choice-swatch" style="--room-swatch-default:linear-gradient(135deg,#38474b 0 48%,#b87961 48% 100%)" aria-hidden="true"></span><span>天台</span></button>
+          <button type="button" class="room-choice" data-room-theme="washitsu" aria-label="竹林和室" aria-pressed="false"><span class="room-choice-swatch" style="--room-swatch-default:linear-gradient(135deg,#e4dfc9 0 48%,#788369 48% 100%)" aria-hidden="true"></span><span>和室</span></button>
+        </div>
+        <div class="room-editor-group-head"><h2 id="roomStyleTitle">房屋样式</h2><span>${Object.keys(catalog.houseStyles).length} 种可选</span></div>
         <div class="room-choice-grid room-house-choices" role="group" aria-label="房屋样式">
           ${roomOptionCards(catalog.houseStyles, voxelController.getState().houseStyle, 'room-house')}
         </div>
@@ -104,6 +179,21 @@ function openRoomEditor() {
   canvas.tabIndex = 0;
   canvas.setAttribute('aria-label', '布置房间。点选或拖动家具，方向键微调，R 旋转，Ctrl 或 Command Z 撤销。');
   icons();
+    
+    // Theme switching. Keep this test-double friendly: the real editor exposes
+    // querySelectorAll, while the DOM harness only implements the selectors it
+    // asserts on.
+    const themeRoot = $('#roomEditor');
+    const themeButtons = themeRoot?.querySelectorAll
+      ? [...themeRoot.querySelectorAll('[data-room-theme]')] : [];
+    themeButtons.forEach(button => {
+      button.addEventListener('click', () => {
+        voxelController.setTheme(button.dataset.roomTheme);
+        syncRoomThemeButtons(button.dataset.roomTheme);
+      });
+    });
+    syncRoomThemeButtons(roomThemeKey(voxelController.getState?.().houseStyle));
+
   voxelController.setEditing(true);
   voxelController.resize();
   canvas.focus({preventScroll: true});
@@ -111,6 +201,7 @@ function openRoomEditor() {
 
 function updateRoomEditor(editor) {
   if (!arrangementDraft || !$('#roomEditor') || !editor.editing) return;
+  syncRoomThemeButtons(roomThemeKey(editor.houseStyle));
   roomEditorState = editor;
   const signature = JSON.stringify([editor.id, editor.houseStyle, editor.item.style, editor.item.model, editor.item.surface, editor.item.x, editor.item.y, editor.item.z, editor.item.rotation, editor.item.stored, editor.canUndo, editor.canRedo, editor.hint, editor.blocked]);
   if (signature === roomEditorSignature) return;
@@ -187,9 +278,11 @@ function finishRoomEditor(save) {
       else delete layout.items[entry.station].stored;
     }
     state.roomLayouts[draft.role] = layout;
-  } else {
+  } else if (!litePerformanceMode) {
     voxelController?.setLayout(draft.layout);
   }
+  // Lite discards the temporary scene instead of repainting it at the compact size.
+  if (litePerformanceMode) releaseLiteRoomScene();
   editor?.classList.add('is-leaving');
   if (editor) document.body.classList.add('room-editing-exit');
   document.body.classList.remove('room-editing');
@@ -219,9 +312,10 @@ function finishRoomEditor(save) {
       syncEnvironment();
     }
     renderShellSide();
-    voxelController?.resize();
+    if (litePerformanceMode) armHomeAgendaClock();
+    else voxelController?.resize();
   };
-  const duration = roomEditorExitDuration(editor);
+  const duration = litePerformanceMode ? 0 : roomEditorExitDuration(editor);
   if (duration > 0) window.setTimeout(restoreSide, duration);
   else restoreSide();
 }
