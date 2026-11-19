@@ -174,7 +174,7 @@ class AstrBotPlatformSender:
                 require(authorization)
             route_bridge = (getattr(self.bridge, "groups", self.bridge)
                             if scope.kind is ScopeKind.GROUP else self.bridge)
-            lease = route_bridge.connections.acquire(route_bridge.account(scope))
+            lease = route_bridge.lease(route_bridge.account(scope))
             await route_bridge.verify_role(scope, context.role_binding)
             platform = route_bridge.connections.assert_current(lease).platform
             route_bridge.client(scope)

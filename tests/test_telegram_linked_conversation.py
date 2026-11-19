@@ -6,6 +6,7 @@ import json
 import unittest
 
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA
+from companion_v2.conversation.linked_ownership import link_for_endpoint
 from tests import test_linked_owners as owners
 from tests.linked_reply_support import LinkedTelegramFixture, TELEGRAM_OWNER as OWNER
 
@@ -35,6 +36,16 @@ class TelegramLinkedConversationTests(LinkedTelegramFixture, unittest.IsolatedAs
         telegram = self.sent[1][1]
         self.assertEqual((str(telegram["chat_id"]), telegram["text"]), (str(OWNER), "reply\\-B"))
         self.assertEqual(self.telegram.client.onebot_accesses, [])
+
+    async def test_a_linked_telegram_endpoint_still_reaches_its_own_telegram_connection(self):
+        """Linked, the Telegram scope carries the link's bot id, not the Telegram account's own."""
+        self.assertEqual((await self.link())["status"], "ok")
+        session = self.controller.session
+        target = session.settings.target("second")
+        link = link_for_endpoint(session.authority.runtime, target.platform_id, target.account_id, target.participant_id)
+        scope = session.scope(target, link.anchor.conversation_id)
+        self.assertNotEqual(scope.bot_id, target.bot_id)
+        self.assertIs(session.bridge.client(scope), self.telegram.client)
 
     async def stored(self, origin, conversation_id):
         conversation = await self.manager.get_conversation(origin, conversation_id)

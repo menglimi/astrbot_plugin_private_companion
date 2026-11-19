@@ -621,9 +621,18 @@ class NativePrivateBridge:
             raise TaskError("host_account_changed", "original host account projection is unavailable")
         return account
 
+    def lease(self, account, *, connected=True):
+        """A connection lease for the configured projection of ``account``.
+
+        A linked conversation's endpoint carries the link's bot id; its
+        connection is still the configured account's own.
+        """
+        configured = self.accounts.get((account.platform_id, account.self_id), account)
+        return self.connections.acquire(configured, connected=connected)
+
     def platform(self, scope):
         account = self.account(scope)
-        platform = self.connections.acquire(account, connected=False).platform
+        platform = self.lease(account, connected=False).platform
         meta = platform.meta()
         if meta.name == "wechat_native":
             from .wechat_native import session_target
@@ -646,7 +655,7 @@ class NativePrivateBridge:
 
     def account_connected(self, account, client=None):
         try:
-            lease = self.connections.acquire(account)
+            lease = self.lease(account)
         except TaskError:
             return False
         return client is None or platform_client_matches(lease.platform, client)
@@ -654,7 +663,7 @@ class NativePrivateBridge:
     def client(self, scope):
         self.platform(scope)
         account = self.account(scope)
-        return self.connections.acquire(account).client
+        return self.lease(account).client
 
     @staticmethod
     def _umo(platform_id, sender_id):
@@ -936,7 +945,7 @@ class NativePrivateBridge:
 
     async def verify_role(self, scope, binding, instruction=None):
         self.client(scope)
-        lease = self.connections.acquire(self.account(scope))
+        lease = self.lease(self.account(scope))
         sender = route_id(scope.native_scope_id)
         if scope.session_id != self.private_session_id(self.accounts[(scope.platform, scope.account_id)], sender) or binding.scope != scope:
             raise TaskError("host_route_changed", "original private session is inconsistent")
@@ -955,7 +964,7 @@ class NativePrivateBridge:
     async def verified_persona(self, scope, binding):
         account = self.account(scope)
         self.client(scope)
-        lease = self.connections.acquire(account)
+        lease = self.lease(account)
         umo = self._verified_persona_umo(scope, binding, account)
         cid, selected, _, projection, prompt = await self._selected_role_snapshot(account, umo)
         projection = self._confirm_persona_projection(account, selected, projection, prompt)
