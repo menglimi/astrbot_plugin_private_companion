@@ -5414,6 +5414,10 @@ body.state-connected{min-width:320px}
   #replyWorkspace .wb-field-main{grid-template-columns:minmax(0,1fr)}
 }
 
+
+
+/* layout-fix-20261120 */
+
 /* host-options.css */
 .host-options-panel {
   display: grid;
