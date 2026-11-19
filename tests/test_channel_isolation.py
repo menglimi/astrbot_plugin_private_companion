@@ -11,7 +11,7 @@ from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.sources.telegram.tg_adapter import TelegramPlatformAdapter
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA
 from companion_v2.delivery.models import DeliveryEnvelope
-from companion_v2.execution.models import digest
+from companion_v2.execution.models import TaskError, digest
 from tests.multi_host_support import MultiFixture, multi_config
 from tests.native_adapter_support import FakePlatform
 from tests.telegram_reply_support import install_history, run_pipeline
@@ -80,6 +80,14 @@ class ChannelIsolationFixture(MultiFixture):
         if self.plugin._host_start_task is not None:
             await asyncio.wait_for(self.plugin._host_start_task, timeout=30)
         return self.controller.status()["accepting"]
+
+    async def settled(self):
+        """Let the host finish binding every account that is online now."""
+        await self.controller.session.account_recovery.refresh(wait=True)
+
+    def connections(self):
+        return {(row["platform_id"], row["account_id"]): (row["state"], row["reason_code"])
+                for row in self.controller.status()["account_connections"]}
 
     def started_channels(self, bind):
         return [call.args[0].scope.platform for call in bind.call_args_list]
@@ -161,15 +169,17 @@ class LateChannelTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestCase
     async def test_a_channel_that_loads_later_is_served_without_a_restart(self):
         self.native.platforms.pop("tg-main")
         self.assertTrue(await self.boot())
+        await self.settled()
         session = self.controller.session
         life = session.application.life_runtime
         with patch.object(life, "bind", wraps=life.bind) as bind:
-            self.assertFalse(await self.controller.serve_available_accounts())
-            self.assertEqual(self.started_channels(bind), [])
+            self.assertEqual(self.connections()[("tg-main", "tg-main")], ("waiting", "host_platform_unavailable"))
             self.native.platforms["tg-main"] = self.telegram
-            await self.until(lambda: self.started_channels(bind))
-            self.assertTrue(await self.controller.serve_available_accounts())
+            # AstrBot announces the loaded platform; the running host picks the account up.
+            await self.plugin.on_companion_platform_loaded()
+            await self.settled()
             self.assertEqual(self.started_channels(bind), ["tg-main"])
+        self.assertEqual(self.connections()[("tg-main", "tg-main")], ("online", ""))
         self.assertIs(self.controller.session, session)
         await install_history(self)
         self.assertIn("我在 Telegram 这里", (await self.telegram_reply())[0])
@@ -179,19 +189,21 @@ class LateChannelTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestCase
     async def test_a_client_that_connects_later_is_served_without_a_restart(self):
         self.qq_disconnect()
         self.assertTrue(await self.boot())
+        await self.settled()
         session = self.controller.session
         life = session.application.life_runtime
         with patch.object(life, "bind", wraps=life.bind) as bind:
-            self.assertFalse(await self.controller.serve_available_accounts())
+            self.assertEqual(self.connections()[("qq-main", "100")], ("waiting", "host_account_offline"))
             self.qq_connect()
+            # No event from AstrBot for a reconnecting client: the host's own recovery driver finds it.
             await self.until(lambda: self.started_channels(bind))
-            self.assertTrue(await self.controller.serve_available_accounts())
+            await self.settled()
             self.assertEqual(self.started_channels(bind), ["qq-main"])
         self.assertIs(self.controller.session, session)
         await install_history(self, QQ_WINDOW)
         self.assertEqual(await self.qq_reply(), ["我在 QQ 这里"])
 
-    async def test_a_late_window_whose_start_up_work_fails_is_tried_again_and_holds_up_no_other(self):
+    async def test_a_late_account_whose_start_up_work_fails_is_tried_again_and_holds_up_no_other(self):
         self.controller = self.plugin.staging = self.make_controller(multi_config(
             targets=[dict(target_id="qq-owner", platform_id="qq-main", account_id="100",
                           bot_id="bot-a", participant_id="200"),
@@ -217,20 +229,27 @@ class LateChannelTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestCase
             return await lookup(umo)
 
         self.native.conversation_manager.get_curr_conversation_id = conversation_id
+        await self.settled()
         life = self.controller.session.application.life_runtime
         with patch.object(life, "bind", wraps=life.bind) as bind:
             def started():
                 return [call.args[0].scope.native_scope_id for call in bind.call_args_list]
             self.qq_connect()
-            await self.until(lambda: started() == [second])
+            await self.settled()
+            # Upstream binds an account's windows together: the failure holds this account, not Telegram.
+            self.assertEqual(self.connections()[("qq-main", "100")], ("error", "host_account_recovery_failed"))
+            self.assertEqual(self.connections()[("tg-main", "tg-main")], ("online", ""))
+            self.assertEqual((await self.background_text("tg-owner", "role-tg")).status, "delivered")
             failing.clear()
-            await self.until(lambda: len(started()) > 1)
-            self.assertEqual(started(), [second, first])
+            await self.settled()
+            self.assertEqual(sorted(started()), sorted([first, second]))
+        self.assertEqual(self.connections()[("qq-main", "100")], ("online", ""))
 
     async def test_an_account_offline_at_a_dashboard_start_is_served_when_it_comes_online(self):
         self.qq_disconnect()
         # The Dashboard's Start, with no plugin start-up loop behind it.
         self.assertTrue((await self.controller.start()).is_success)
+        await self.settled()
         life = self.controller.session.application.life_runtime
         with patch.object(life, "bind", wraps=life.bind) as bind:
             self.qq_connect()
@@ -244,6 +263,7 @@ class LateChannelTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestCase
         self.qq_disconnect()
         saved = await self.controller.apply_bindings(deepcopy(self.controller.config))
         self.assertTrue(saved["started"], saved)
+        await self.settled()
         life = self.controller.session.application.life_runtime
         with patch.object(life, "bind", wraps=life.bind) as bind:
             self.qq_connect()
@@ -253,7 +273,8 @@ class LateChannelTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestCase
 
 class OperatorStopTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestCase):
     def picking_up(self):
-        return [task for task in asyncio.all_tasks() if task.get_name() == "companion:late-accounts"]
+        return [task for task in asyncio.all_tasks() if not task.done()
+                and task.get_name().startswith(("companion:account-connections", "companion:account-recovery"))]
 
     async def test_a_retry_scheduled_before_a_stop_does_not_start_the_host_again(self):
         self.assertTrue(await self.boot())
@@ -261,16 +282,19 @@ class OperatorStopTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestCas
         self.assertEqual((await self.controller.stop()).unwrap().state, "stopped")
         self.assertFalse(await self.start_up_retry_finished())
 
-    async def test_a_stop_while_the_host_waits_for_its_accounts_ends_the_waiting(self):
+    async def test_a_stop_while_every_account_waits_is_not_undone_when_they_come_back(self):
         self.qq_disconnect()
         self.native.platforms.pop("tg-main")
-        self.assertFalse(await self.boot())
+        # Upstream starts the host with every account offline instead of waiting for one.
+        self.assertTrue(await self.boot())
         await self.controller.stop()
         self.qq_connect()
-        self.assertFalse(await self.start_up_retry_finished())
-        # A platform that loads after the Stop starts the host, as it always did.
+        self.native.platforms["tg-main"] = self.telegram
         await self.plugin.on_companion_platform_loaded()
-        self.assertTrue(await self.start_up_retry_finished())
+        await self.controller.recover_accounts()
+        # Upstream: an operator Stop holds until the operator starts the host again.
+        self.assertFalse(await self.start_up_retry_finished())
+        self.assertEqual(self.controller.status()["state"], "stopped")
 
     async def test_a_host_stopped_while_an_account_waits_is_not_started_again(self):
         self.qq_disconnect()
@@ -280,7 +304,7 @@ class OperatorStopTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestCas
         with patch.object(life, "bind", wraps=life.bind) as bind:
             await self.controller.stop()
             self.qq_connect()
-            await asyncio.sleep(1)  # longer than the first pick-up interval
+            await self.controller.recover_accounts()
             self.assertEqual(self.picking_up(), [])
             self.assertEqual(self.started_channels(bind), [])
         self.assertFalse(await self.start_up_retry_finished())
@@ -289,6 +313,7 @@ class OperatorStopTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestCas
     async def test_terminating_ends_the_pick_up_of_a_waiting_account(self):
         self.qq_disconnect()
         self.assertTrue(await self.boot())
+        self.assertTrue(self.picking_up())
         await self.controller.terminate()
         self.assertEqual(self.picking_up(), [])
 
@@ -309,13 +334,14 @@ class DroppedChannelTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestC
         self.assertTrue(self.controller.status()["accepting"])
 
     async def test_a_dropped_telegram_account_leaves_qq_turns_and_background_text_running(self):
-        for drop in (lambda: setattr(self.telegram.application, "running", False),
-                     lambda: self.native.platforms.pop("tg-main")):
+        # A stopped Telegram application waits for its bot id; a removed platform waits to load again.
+        for drop, code in ((lambda: setattr(self.telegram.application, "running", False), "host_account_offline"),
+                           (lambda: self.native.platforms.pop("tg-main"), "host_platform_unavailable")):
             drop()
             self.qq_calls().clear()
             self.assertEqual((await self.background_text("qq-owner", "role-a")).status, "delivered")
             refused = await self.background_text("tg-owner", "role-tg")
-            self.assertEqual((refused.status, refused.failure_code), ("not_sent", "host_account_changed"))
+            self.assertEqual((refused.status, refused.failure_code), ("not_sent", code))
             self.assertEqual(len(self.qq_calls()), 1)
             self.telegram.client.send_message.assert_not_awaited()
         await install_history(self, QQ_WINDOW)
@@ -326,45 +352,37 @@ class DroppedChannelTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestC
 class ChannelHealthTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestCase):
     def account_health(self):
         status = self.controller.status()
-        return ((status["state"], status["accepting"], status["last_failure"]),
-                {(row["platform_id"], row["account_id"]): (row["available"], row["code"])
-                 for row in status["accounts"]})
+        return (status["state"], status["accepting"], status["last_failure"]), self.connections()
 
     async def test_status_shows_each_account_and_keeps_the_companion_online(self):
         self.qq_disconnect()
         self.assertTrue(await self.boot())
+        await self.settled()
         self.assertEqual(self.account_health(), (("running", True, None), {
-            ("qq-main", "100"): (False, "host_account_unavailable"),
-            ("tg-main", "tg-main"): (True, None)}))
+            ("qq-main", "100"): ("waiting", "host_account_offline"),
+            ("tg-main", "tg-main"): ("online", "")}))
         self.qq_connect()
         self.native.platforms.pop("tg-main")
+        await self.settled()
         self.assertEqual(self.account_health(), (("running", True, None), {
-            ("qq-main", "100"): (True, None),
-            ("tg-main", "tg-main"): (False, "host_platform_unavailable")}))
+            ("qq-main", "100"): ("online", ""),
+            ("tg-main", "tg-main"): ("waiting", "host_platform_unavailable")}))
 
 
-class WaitingAndRefusalTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestCase):
-    async def test_with_every_account_unavailable_the_host_keeps_waiting(self):
-        self.qq_disconnect()
-        self.native.platforms.pop("tg-main")
-        self.assertFalse(await self.boot())
-        self.assertEqual(self.controller.startup_readiness(), "host_account_unavailable")
-        self.assertIsNone(self.controller.session)
-        self.assertFalse(self.plugin._host_start_task.done())
-        self.assertEqual((await self.controller.start()).failure.code, "host_account_unavailable")
-        self.assertEqual(self.controller.status()["state"], "uninitialized")
-        self.qq_connect()
-        self.assertTrue(await self.start_up_retry_finished())
-
+class RefusalTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestCase):
     async def test_a_channel_of_the_wrong_kind_is_still_refused(self):
         wrong = FakePlatform("tg-main")
         wrong.metadata.name = "synthetic_unsupported"
         self.native.platforms["tg-main"] = wrong
-        self.assertFalse(await self.boot())
-        self.assertEqual(self.controller.startup_readiness(), "host_platform_changed")
-        self.assertIsNone(self.plugin._host_start_task)
-        self.assertEqual((await self.controller.start()).failure.code, "host_platform_changed")
-        self.assertFalse(self.controller.status()["accepting"])
+        # Upstream refuses the account, not the host: QQ still starts and is served.
+        self.assertTrue(await self.boot())
+        await self.settled()
+        self.assertEqual(self.connections()[("tg-main", "tg-main")], ("identity_changed", "host_platform_changed"))
+        # The refused account's window is never bound, so nothing can be addressed to it.
+        with self.assertRaises(TaskError) as refused:
+            await self.background_text("tg-owner", "role-tg")
+        self.assertEqual(refused.exception.code, "host_context_unavailable")
+        self.assertEqual((await self.background_text("qq-owner", "role-a")).status, "delivered")
 
 
 class UnchangedStartTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestCase):
@@ -375,28 +393,31 @@ class UnchangedStartTests(ChannelIsolationFixture, unittest.IsolatedAsyncioTestC
             self.assertIsNone(self.plugin._host_start_task)
             await self.plugin.on_companion_platform_loaded()
             self.assertIsNone(self.plugin._host_start_task)
-            self.assertTrue(await self.controller.serve_available_accounts())
+            await self.settled()
             self.assertEqual(sorted(call.args[1].scope.platform for call in bind.call_args_list),
                              ["qq-main", "tg-main"])
         self.assertEqual(self.controller.startup_readiness(), None)
-        self.assertEqual([row["available"] for row in self.controller.status()["accounts"]], [True, True])
+        self.assertEqual(set(self.connections().values()), {("online", "")})
         await install_history(self, QQ_WINDOW, TELEGRAM_WINDOW)
         self.assertEqual(await self.qq_reply(), ["我在 QQ 这里"])
         self.assertIn("我在 Telegram 这里", (await self.telegram_reply())[0])
 
-    async def test_a_single_account_configuration_waits_for_its_account_as_before(self):
+    async def test_a_single_account_configuration_serves_its_account_once_it_connects(self):
         self.controller = self.plugin.staging = self.make_controller(multi_config(
             targets=[dict(target_id="qq-owner", platform_id="qq-main", account_id="100",
                           bot_id="bot-a", participant_id="200")],
             personas=[dict(bot_id="bot-a", persona_id="original", role_id="role-a")], group_targets=[]))
         self.native.platforms.pop("tg-main")
         self.qq_disconnect()
-        self.assertFalse(await self.boot())
-        self.assertEqual(self.controller.startup_readiness(), "host_account_unavailable")
-        self.assertEqual((await self.controller.start()).failure.code, "host_account_unavailable")
-        self.assertIsNone(self.controller.session)
+        # Upstream starts the host with its only account offline instead of waiting for it.
+        self.assertTrue(await self.boot())
+        await self.settled()
+        self.assertEqual(self.connections(), {("qq-main", "100"): ("waiting", "host_account_offline")})
+        session = self.controller.session
         self.qq_connect()
-        self.assertTrue(await self.start_up_retry_finished())
+        await self.settled()
+        self.assertEqual(self.connections(), {("qq-main", "100"): ("online", "")})
+        self.assertIs(self.controller.session, session)
         await install_history(self, QQ_WINDOW)
         self.assertEqual(await self.qq_reply(), ["我在 QQ 这里"])
 
