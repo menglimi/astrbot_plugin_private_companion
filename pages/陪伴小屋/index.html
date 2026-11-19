@@ -176,6 +176,7 @@
          顶层函数还不存在，mountStage 里的两处回调因此必须惰性解析（见
          app.js 的注释）。tests/test_voxel_mount_callbacks.cjs 守住这个顺序。 -->
     <script defer src="app.js?v=home-ui-20261120"></script>
+    <script defer src="role-card.js?v=role-card-20261118"></script>
     <script defer src="room-editor.js?v=transient-time-preview-20261029-r2"></script>
     <script defer src="memory-page.js?v=memory-discard-20261112"></script>
     <script defer src="contact-page.js?v=config-save-fastpath-20261111"></script>
@@ -374,6 +375,12 @@
       <section class="stage-region" aria-label="小屋">
         <div class="home-environment home-only" data-home-environment aria-label="角色地点、天气与当地时间"></div>
         <div class="room-stage" id="stageScene">
+          <div class="stage-role-card-heading" aria-label="当前小屋角色">
+            <span class="stage-role-card-name" data-role-card-name>尚未选择角色</span>
+            <button class="stage-role-card-switch" type="button" data-role-card-switch aria-expanded="false" aria-controls="roleCardMenu" title="切换小屋角色">
+              <i data-lucide="repeat-2" aria-hidden="true"></i><span class="sr-only">切换小屋角色</span>
+            </button>
+          </div>
           <div id="stageRole" class="stage-role" aria-live="polite"><h2 class="stage-role-title"><i data-lucide="house" aria-hidden="true"></i><span>陪伴的小屋</span></h2></div>
           <div class="voxel-room" data-voxel-room role="group" aria-label="可旋转、可点选家具的体素小屋"></div>
           <!-- 镜头复位与家具布置常驻场景右上角：它们只作用于小屋本身，
@@ -388,6 +395,15 @@
           <div class="voxel-hint home-only"><i data-lucide="mouse"></i>拖动旋转 · 滚轮缩放 · 点击家具查看</div>
         </div>
         <div class="stage-furniture-strip home-only" id="stageFurniture" aria-label="小屋家具"></div>
+        <button class="stage-role-card-handle" type="button" data-role-card-handle hidden aria-label="展开小屋卡片" title="点击展开小屋卡片">
+          <i data-lucide="chevron-left" aria-hidden="true"></i><span class="sr-only">展开小屋卡片</span>
+        </button>
+        <div id="roleCardMenu" class="stage-role-card-menu" role="dialog" aria-label="切换小屋角色" hidden>
+          <label for="roleCardChoice">切换小屋角色</label>
+          <select id="roleCardChoice" data-role-card-choice aria-label="选择小屋角色"></select>
+          <p class="stage-role-card-status" data-role-card-status role="status" aria-live="polite"></p>
+          <button class="stage-role-card-reset" type="button" data-role-card-reset>恢复默认位置</button>
+        </div>
       </section>
       <aside class="shell-side" id="shellSide" tabindex="-1" aria-label="此刻的状态与今日安排"></aside>
       <section class="shell-panel" id="shellPanel" tabindex="-1" aria-label="内容面板"></section>
