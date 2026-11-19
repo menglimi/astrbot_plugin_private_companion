@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>体素小屋预览</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1a1a1a; font-family: sans-serif; }
+        #container { width: 100vw; height: 100vh; }
+        #ui { position: absolute; top: 20px; left: 20px; color: white; background: rgba(0,0,0,0.6); padding: 15px; border-radius: 8px; }
+        button { margin: 5px; padding: 10px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="ui">
+        <h2>小屋预览 - 风格切换</h2>
+        <button onclick="loadStyle('forest')">森林静谧</button>
+        <button onclick="loadStyle('urban')">城市避难</button>
+        <p id="status">加载中...</p>
+    </div>
+
+    <!-- 模拟必要的 THREE.js 环境，实际集成时由原系统加载 -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+        import { RoomCore } from './assets/engine/room-core.js';
+
+        // 基础场景设置
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.getElementById('container').appendChild(renderer.domElement);
+        camera.position.set(15, 10, 15);
+        camera.lookAt(0, 0, 0);
+
+        // 初始化 RoomCore
+        const context = { scene, camera };
+        const core = new RoomCore(context);
+        await core.init();
+
+        window.loadStyle = async (style) => {
+            const status = document.getElementById('status');
+            status.innerText = `正在重构小屋风格：${style}...`;
+            
+            try {
+                // 加载 JSON 配置
+                const layout = await fetch(`./assets/engine/config/${style}-layout.json`).then(r => r.json());
+                const atmosphere = await fetch(`./assets/engine/config/warm-atmosphere.json`).then(r => r.json());
+                
+                // 应用设计
+                core.applyDesign(layout, atmosphere);
+                status.innerText = `当前风格：${style}`;
+            } catch (e) {
+                console.error(e);
+                status.innerText = "切换失败，请查看控制台";
+            }
+        };
+
+        // 渲染循环
+        function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); }
+        animate();
+
+        // 初始加载
+        loadStyle('masterpiece');
+    </script>
+</body>
+</html>

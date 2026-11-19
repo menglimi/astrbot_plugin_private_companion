@@ -18,6 +18,7 @@
 window.CompanionAppearancePage = (() => {
   const catalog = () => window.CompanionTheme;
   const product = () => window.CompanionProduct;
+  const liteMode = window.document?.documentElement?.dataset?.performanceMode === "lite";
 
   /* 六个主题、四组维度。分组来自 theme.js 的 mode（明/暗），
      与色板本身的注释一致：浅色四套按一天的光线顺序，深色两套按陈设风格。 */
@@ -32,7 +33,8 @@ window.CompanionAppearancePage = (() => {
     ["typeScale", "字号", [["s", "小"], ["m", "标准"], ["l", "大"], ["xl", "特大"]],
      "整体缩放正文与说明文字。与密度相乘，所以「字号调小 + 宽松排版」也是对的。"],
     ["motion", "动效", [["full", "完整"], ["low", "减弱"], ["off", "关闭"]],
-     "减弱只缩短时长，关闭还会停掉入场与循环动画。"],
+     liteMode ? "性能模式已暂停页面动效。此处保存的偏好会在关闭性能模式后生效。"
+       : "减弱只缩短时长，关闭还会停掉入场与循环动画。"],
   ];
 
   /* 预览窗展示一段完整的工作区结构，让表面、排版与控件状态一起参与主题比较。 */

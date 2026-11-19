@@ -927,10 +927,9 @@ window.CompanionMaintenancePage = (() => {
 
   async function configRequest(method, suffix = "", body = null, query = null) {
     const product = window.CompanionProduct;
-    /* CompanionProduct.request uses the same plugin-relative endpoint contract
-       as the bridge.  configEndpoint() is the absolute catalog value, so it
-       must be shortened before it reaches product.request; otherwise the host
-       receives the plugin name twice and rejects it. */
+    /* CompanionProduct.request receives a plugin-relative endpoint, exactly
+       like the bridge.  configEndpoint() is the absolute catalog value; passing
+       it here made the host prepend the plugin name twice and reject the read. */
     const path = configPath();
     if (typeof product?.request === "function") {
       return method === "GET"
@@ -1830,7 +1829,9 @@ window.CompanionMaintenancePage = (() => {
       note = "检查数据限定为已选 V2 身份与角色。";
     }
     const factMarkup = facts.map(([label, value]) => fmt('<div><span>{{0}}</span><strong>{{1}}</strong></div>', escapeHtml(label), escapeHtml(value))).join("");
-    const actionMarkup = actions.map(item => item.target === "low-cache-calls"
+    const replyLink = currentCategory === "delivery"
+      ? '<button type="button" data-go="manage" data-manage="maintenance" data-manage-subtab="reply-diagnostics">查看本会话回复诊断</button>' : '';
+    const actionMarkup = replyLink + actions.map(item => item.target === "low-cache-calls"
       ? '<button type="button" data-set-call-filter="cache-low">' + escapeHtml(item.label) + '</button>'
       : fmt('<button type="button" data-focus-panel="{{0}}">{{1}}</button>', item.target, escapeHtml(item.label))).join("");
     const workspaceTitle = currentCategory === "delivery" ? "消息收口工作区" : category[1] + "工作区";
@@ -3966,6 +3967,11 @@ window.CompanionMaintenancePage = (() => {
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
+  function maintenanceRoute() {
+    return state.activeMaintenanceNav === "diagnostics" && state.category === "delivery"
+      ? "delivery" : state.activeMaintenanceNav;
+  }
+
   function setMaintenanceView(view) {
     if (!state) return;
     const views = ["overview", "diagnostics", "cache", "efficiency", "recent", "prompts", "system-prompts", "logs"];
@@ -3976,7 +3982,7 @@ window.CompanionMaintenancePage = (() => {
     }
     state.activeMaintenanceNav = next;
     if (next === "logs" && !state.logsLoaded && !state.logsLoading) void loadLogs();
-    if (changed) state.onViewChange?.(next);
+    if (changed) state.onViewChange?.(maintenanceRoute());
   }
 
   function click(event) {
@@ -4105,7 +4111,9 @@ window.CompanionMaintenancePage = (() => {
     if (day && state) { state.period = "date"; state.selectedDate = day.dataset.selectDay; state.selectedHour = ""; render(); return; }
     const category = target.closest("[data-diagnostic-category]");
     if (category && state) {
+      const previousRoute = maintenanceRoute();
       state.category = category.dataset.diagnosticCategory;
+      if (previousRoute !== maintenanceRoute()) state.onViewChange?.(maintenanceRoute());
       if (state.category === "image_generation") {
         state.imageAction = IMAGE_GENERATION_ACTION;
         state.imageTest = null;
@@ -4294,9 +4302,10 @@ window.CompanionMaintenancePage = (() => {
       memorySamples: [], memoryRunning: false, memorySampling: false, memoryComplete: false,
       memoryError: "", memoryStopReason: "", memoryTimer: null, memoryStartedAt: 0,
       tokenSource: "companion", tokenTrendMode: "daily", tokenBreakdown: "providers", tokenDetailView: "daily",
-      activeMaintenanceNav: ["overview", "diagnostics", "cache", "efficiency", "recent", "prompts", "system-prompts", "logs"].includes(options.activeView) ? options.activeView : "overview",
+      activeMaintenanceNav: options.activeView === "delivery" ? "diagnostics"
+        : ["overview", "diagnostics", "cache", "efficiency", "recent", "prompts", "system-prompts", "logs"].includes(options.activeView) ? options.activeView : "overview",
       onViewChange: typeof options.onViewChange === "function" ? options.onViewChange : null,
-      period: "today", selectedDate: localDay(), selectedHour: "", category: "all", severity: "all", callFilter: "all",
+      period: "today", selectedDate: localDay(), selectedHour: "", category: options.activeView === "delivery" ? "delivery" : "all", severity: "all", callFilter: "all",
       callQuery: "", traceFilter: null, showAllCalls: false, modelStatus: null, openReplySamples: new Set(),
       promptQuery: "", promptMode: "all", promptGroup: "all", promptSelectedKind: "",
       promptSelectedSection: "task_prompt", promptView: "edit", promptRuleKey: "",
@@ -4310,7 +4319,7 @@ window.CompanionMaintenancePage = (() => {
       logs: null, logsLoaded: false, logsLoading: false, logsError: "", logLevel: "", logQuery: ""};
     const cached = maintenanceCache.get(maintenanceScope);
     if (cached) Object.assign(state, cached);
-    state.onViewChange?.(state.activeMaintenanceNav);
+    state.onViewChange?.(maintenanceRoute());
     root.addEventListener("click", click);
     root.addEventListener("change", change);
     root.addEventListener("input", input);

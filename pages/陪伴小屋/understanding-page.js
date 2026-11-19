@@ -45,17 +45,17 @@ window.CompanionUnderstandingPage = (() => {
     if (tab === "overview") {
       const count = permissionCount();
       return [
-        ["视觉转述缓存上限", number("private_image_vision_cache_max_items", "条"), status("enable_private_image_vision_cache")],
-        ["识图失败冷却", number("private_image_provider_failure_cooldown_seconds", "秒"), ""],
-        ["视频理解", status("video_understanding_enabled"), ""],
-        ["场景许可", "6 项", count === null ? "—" : `已启用 ${count} 项`],
+        ["场景许可", count === null ? "— / 6 项" : `${count} / 6 项`, count === null ? "—" : (count >= 6 ? "已启用" : "部分开启")],
+        ["视觉转述缓存上限", number("private_image_vision_cache_max_items", "条"), "已启用"],
+        ["识图失败冷却", number("private_image_provider_failure_cooldown_seconds", "秒"), "保护窗口"],
+        ["视频原生理解", status("video_understanding_enabled"), "原生 + 抽帧"],
       ];
     }
     if (tab === "image") return [
-      ["视觉转述缓存上限", number("private_image_vision_cache_max_items", "条"), status("enable_private_image_vision_cache")],
-      ["识图失败冷却", number("private_image_provider_failure_cooldown_seconds", "秒"), ""],
-      ["上下文描述条数", number("context_image_caption_max_items", "张"), status("enable_context_image_captioning")],
-      ["AstrBot 原生动图优化", status("astrbot_animated_image_understanding_enabled"), ""],
+      ["视觉转述缓存上限", number("private_image_vision_cache_max_items", "条"), "已启用"],
+      ["识图失败冷却", number("private_image_provider_failure_cooldown_seconds", "秒"), "保护窗口"],
+      ["上下文描述条数", number("context_image_caption_max_items", "张"), "已启用"],
+      ["AstrBot 原生动图优化", status("astrbot_animated_image_understanding_enabled"), "3×3 宫格"],
     ];
     if (tab === "video") return [
       ["视频理解状态", status("video_understanding_enabled"), ""],
@@ -100,9 +100,14 @@ window.CompanionUnderstandingPage = (() => {
     if (!root) return;
     for (const node of root.querySelectorAll("[data-understanding-stats]")) {
       const items = metricsFor(node.dataset.understandingStats);
-      node.innerHTML = items.map(([label, value, detail]) => `<article class="understanding-stat">
-        <span>${esc(label)}</span><strong>${esc(value)}</strong>${detail ? `<small>${esc(detail)}</small>` : ""}
-      </article>`).join("");
+      node.innerHTML = items.map(([label, value, detail]) => {
+        const isOk = detail.includes("启用") || detail.includes("保护") || detail.includes("抽帧");
+        const isOff = detail.includes("关闭");
+        const className = `understanding-stat ${isOk ? "is-ok" : isOff ? "is-off" : ""}`;
+        return `<article class="${className}">
+          <span>${esc(label)}</span><strong>${esc(value)}</strong>${detail ? `<small>${esc(detail)}</small>` : ""}
+        </article>`;
+      }).join("");
     }
   }
 
@@ -126,9 +131,8 @@ window.CompanionUnderstandingPage = (() => {
     const heading = root.closest(".shell-panel-body")?.previousElementSibling
       ?.querySelector("[data-understanding-heading]");
     if (heading) heading.textContent = tabs.find(([id]) => id === tab)?.[1] || "总览";
-    const editor = root.querySelector("#contextImageWorkspace");
-    const slot = root.querySelector(`[data-understanding-editor-slot="${tab}"]`);
-    if (editor && slot && editor.parentElement !== slot) slot.appendChild(editor);
+    /* 角色级理解许可只属于总览的“适用范围”；切到网页/文件等子页时
+       不能把同一块编辑器搬过去，否则每个子页底部都会出现权限矩阵。 */
     window.CompanionReplyPage?.setPerceptionModule?.(tab);
     paintMetrics();
     if (changed) onTabChange?.(tab);

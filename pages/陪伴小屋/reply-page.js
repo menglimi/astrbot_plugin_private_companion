@@ -198,7 +198,7 @@ window.CompanionReplyPage = (() => {
       recall_forbidden_words: "命中后会在发送前拦截整条回复。",
       recall_forbidden_scope: "可只检查私聊、只检查群聊，或两者都检查。",
       recall_forbidden_word_case_sensitive: "关闭时不区分英文字母大小写。",
-      reply_diagnostic_limit: "显示当前窗口最近 10–300 轮回复诊断；每轮注明任务类型和有效输入条数。",
+      reply_diagnostic_limit: "在「治理与维护」中显示本会话最近 10–300 轮的回复诊断。",
       forward_message_adaptation_enabled: "关闭后不展开合并转发中的节点内容、媒体和阅读提示。",
       component_order: "用上下箭头调整顺序；留空时使用平台与回复组件的自然顺序。",
       reply_quote_enabled: "仅引用本轮已固定的触发消息；不会搜索或引用其他会话。",
@@ -540,121 +540,6 @@ window.CompanionReplyPage = (() => {
   const anchor = name => root?.querySelector(`[data-reply-part="${name}"]`);
   const previewEnabled = () => root?.dataset?.expressionModule !== "expression-voice";
 
-  /* 设置卡片的挂载点，以及它下方的离线预览。 */
-  const parts = () => ({
-    settings: root?.querySelector('[data-reply-part="settings"]'),
-    preview: root?.querySelector('[data-reply-part="preview"]'),
-    diagnostics: root?.querySelector('[data-reply-part="diagnostics"]'),
-  });
-
-  /* 摘要行是这张面板唯一一眼能看到的信息，必须直接回答「为什么没有发出去」，
-     失败码、回退和等待时长不再只藏在展开后的细节里。 */
-  function diagnosticTime(value) {
-    if (!value) return "时间未知";
-    /* 宿主与 V2 的时间都带 +00:00 偏移、微秒级小数；截到毫秒后交给本地时区渲染，
-       不再把 UTC 原样当成本地时间。 */
-    const date = new Date(String(value).replace(/(\.\d{3})\d+/, "$1"));
-    if (!Number.isFinite(date.getTime())) return "时间未知";
-    const pad = number => String(number).padStart(2, "0");
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
-      + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-  }
-
-  function waitingText(value) {
-    const started = Date.parse(String(value || "").replace(/(\.\d{3})\d+/, "$1"));
-    if (!Number.isFinite(started)) return "";
-    const minutes = Math.floor((Date.now() - started) / 60000);
-    if (minutes < 1) return "刚开始";
-    if (minutes < 60) return `已等待 ${minutes} 分钟`;
-    if (minutes < 1440) return `已等待 ${Math.floor(minutes / 60)} 小时`;
-    return `已等待 ${Math.floor(minutes / 1440)} 天`;
-  }
-
-  function renderDiagnostics() {
-    const host = parts().diagnostics;
-    if (!host) return;
-    const product = window.CompanionProduct;
-    if (product.selection && !product.selection()?.target_id) {
-      host.innerHTML = '<p class="reply-scope-note">请先选择当前角色的窗口，再查看该窗口的回复诊断。</p>';
-      return;
-    }
-    const recent = Array.isArray(state.status?.recent) ? state.status.recent : [];
-    const stateLabels = {complete: "已完成", blocked: "受阻", closed: "已关闭", ready: "待投递",
-      sealed: "已封存", collecting: "收集中", generating: "生成中", running: "生成中", delivering: "投递中",
-      failed: "未完成", completed: "生成完成", awaiting_request: "等待宿主请求", prepared: "已准备"};
-    const responseLabels = {no_reply: "未发送", image_only: "仅图片", text_or_mixed: "文字或混合内容", native_reply: "宿主回应"};
-    const deliveryLabels = {not_started: "未发送", started: "正在发送", returned: "发送已返回",
-      partial: "部分返回", failed: "发送失败", unknown: "结果未知"};
-    const failureLabels = {UnprocessableEntityError: "模型线路拒绝请求 422", ClientError: "模型调用被拒绝",
-      provider_request_failed: "模型请求失败", model_request_failed: "模型请求失败",
-      native_response_parse_failed: "宿主回复解析失败", response_parse_failed: "回复解析失败",
-      response_contract_rejected: "回复格式校验失败", stream_rejected: "流式校验失败",
-      provider_timeout: "模型请求超时", model_timeout: "模型请求超时"};
-    const failureShort = {UnprocessableEntityError: "422", ClientError: "4xx",
-      provider_timeout: "超时", model_timeout: "超时"};
-    const failureText = code => failureLabels[code] || `请求失败 ${code}`;
-    const failureTag = code => failureShort[code] || code;
-    const parseLabels = {not_received: "未收到完整响应", raw_observed: "已收到原始响应",
-      native_parsed: "宿主已解析", native_rejected: "宿主解析失败", stream_rejected: "流式校验失败",
-      contract_rejected: "回复格式校验失败", validated: "回复已通过校验", tools: "工具请求已通过校验",
-      captured: "已交给记忆解析", refusal: "模型拒绝"};
-    const shapeLabels = {empty: "空文本", text: "文本", json_object: "JSON 对象", json_array: "JSON 数组", json_scalar: "JSON 值"};
-    const textSummary = (label, value) => value && typeof value === "object"
-      ? `<span>${label} ${Number(value.chars) || 0} 字 · ${e(shapeLabels[value.shape] || "类型未知")}`
-        + `${value.has_internal_markers ? " · 含标签样式标记" : ""}</span>`
-      : `<span>${label}未取得文本</span>`;
-    const actionList = values => Array.isArray(values) && values.length
-      ? values.map(value => e(typeof value === "string" ? value : value?.action || "未知工具")).join("、") : "无";
-    const html = recent.length ? recent.map(item => {
-      const rounds = Array.isArray(item.rounds) ? item.rounds : [];
-      const materials = Array.isArray(item.injected_materials) ? item.injected_materials : [];
-      const tools = Array.isArray(item.tool_calls) ? item.tool_calls : [];
-      const filtered = Array.isArray(item.filtered_tools) ? item.filtered_tools : [];
-      const calls = Array.isArray(item.calls) ? item.calls : [];
-      const failures = calls.filter(call => call.failure_code);
-      const responses = calls.filter(call => call.response_diagnostics);
-      const sent = Number(item.send_returns) || 0;
-      const waiting = item.state === "generating" || item.state === "awaiting_request";
-      const failure = failures.length ? failures[0] : null;
-      const note = waiting ? waitingText(item.created_at)
-        : failure ? (sent > 0 ? `首次请求失败 ${failureTag(failure.failure_code)} · 已回退`
-          : failureText(failure.failure_code))
-        : item.response_type === "no_reply"
-          ? (item.execution_path === "astrbot_core" ? "本轮未发言" : "本轮未生成分段")
-          : "";
-      const when = e(diagnosticTime(item.created_at));
-      return `<details class="reply-record"><summary><span>${e(stateLabels[item.state] || "状态未知")}</span>`
-        + `<span>${e(responseLabels[item.response_type] || "回应类型未知")}</span>`
-        + (note ? `<span class="reply-record-note${failure ? " is-warn" : ""}">${e(note)}</span>` : "")
-        + `<time>${when}</time></summary>`
-        + `<p>任务 ${e(item.turn_type || "conversation.reply")} · 有效输入 ${Number(item.current_inputs) || 0} 条 · 轮次 ${rounds.length} · 群历史 ${Number(item.group_history_items) || 0} 条 · 注入材料 ${materials.length} 项</p>`
-        + `<p>提供工具：${actionList(item.offered_tools)}</p>`
-        + (filtered.length ? `<p>未提供：${filtered.map(tool => `${e(tool.action || "未知工具")} · ${e(tool.reason || "原因未知")}`).join("；")}</p>` : "")
-        + (rounds.length ? `<ul>${rounds.map(round => `<li>第 ${Number(round.round_no) + 1} 轮 · ${e(round.state || "状态未知")} · 请求 ${actionList(round.tool_actions)}</li>`).join("")}</ul>` : "")
-        + (tools.length ? `<ul>${tools.map(tool => `<li>${e(tool.action || "未知工具")} · ${e(tool.state || "状态未知")} · ${e(tool.effect || "效果未知")}</li>`).join("")}</ul>` : "")
-        + (materials.length ? `<p>材料：${materials.map(item => `${e(item.owner || "未知来源")} / ${e(item.purpose || "未分类")} · ${e(item.state || "状态未知")}`).join("；")}</p>` : "")
-        + (failures.length ? `<p>模型失败分类：${failures.map(call => e(call.failure_code)
-          + (call.provider ? `（${e(call.provider)}）` : "")).join("、")}</p>` : "")
-        + (responses.length ? `<ul>${responses.map(call => {
-          const diagnostic = call.response_diagnostics;
-          const hashes = ["raw", "parsed", "visible"].map((name, index) => diagnostic[name]?.sha256
-            ? `${["原始", "宿主解析", "待呈现"][index]} ${e(diagnostic[name].sha256)}` : "").filter(Boolean);
-          return `<li>第 ${Math.floor((Number(call.position) || 0) / 2) + 1} 轮 · ${e(parseLabels[diagnostic.parse_state] || "解析状态未知")}`
-            + ` · 完整响应${diagnostic.completion_present ? "已收到" : "未收到"} · 结束原因 ${e(diagnostic.finish_reason || "未知")}`
-            + `<p>${textSummary("原始", diagnostic.raw)} → ${textSummary("宿主解析", diagnostic.parsed)} → ${textSummary("待呈现", diagnostic.visible)}</p>`
-            + (hashes.length ? `<details><summary>内容指纹</summary><p>${hashes.join("<br>")}</p></details>` : "") + "</li>";
-        }).join("")}</ul>` : "")
-        + (item.execution_path === "astrbot_core"
-          ? `<p>宿主发送返回 ${sent} 次 · ${e(deliveryLabels[item.delivery_state] || "未观察发送")} · 不含提示词正文与消息原文</p></details>`
-          : `<p>分段 ${Array.isArray(item.parts) ? item.parts.length : 0} 条 · 不含提示词正文与消息原文</p></details>`);
-    }).join("") : '<p class="reply-empty">暂无近期回复记录。</p>';
-    host.innerHTML = `<section class="reply-diagnostics"><header><h3>回复诊断</h3>`
-      + `<span>最近 ${recent.length} 轮 · 本地时间</span></header>`
-      + (recent.length ? '<p class="reply-diag-note">「未发送」表示这一轮没有发出任何消息，'
-        + "不等于发送失败。展开任意一行可以看模型请求、工具调用与分段回执。</p>" : "")
-      + html + `</section>`;
-  }
-
   function summary(v) {
     return `${v.streaming ? (v.streaming_mode === "incremental" ? "边生成边分段发送" : "收齐后分段发送") : "完整响应"} · `
       + (v.enabled ? `${v.llm_controlled ? "模型 + 规则分段" : "规则分段"}，最多 ${v.max_segments} 条` : "单条回复")
@@ -705,16 +590,15 @@ window.CompanionReplyPage = (() => {
       if (instance?.state?.draft) instance.state.draft.rules_enabled = true;
       if (instance?.state?.base) instance.state.base.rules_enabled = true;
     }
-    const product = window.CompanionProduct;
-    state.status = status && product.selection && !product.selection()?.target_id
-      ? {...status, recent:[], participation_recent:[]} : status || null;
+    state.status = status ? {...status} : null;
+    if (state.status) {
+      // Older hosts can still return a combined snapshot. Only the maintenance view owns reply records.
+      delete state.status.recent;
+      const product = window.CompanionProduct;
+      if (product.selection && !product.selection()?.target_id) state.status.participation_recent = [];
+    }
     notifyStatus();
     if (!status) return;
-    /* The expression workspace (segmentation, voice, reactions, platform and
-       group expression) is a configuration + preview surface.  It has no
-       diagnostics slot; skip the fetch entirely so private-chat diagnostics
-       never leak into those pages or add another request. */
-    if (!root?.dataset?.expressionModule) renderDiagnostics();
     if (root?.dataset?.expressionModule) setExpressionModule(root.dataset.expressionModule);
     /* 预览用的草稿设置取自工作台当前草稿，保证「预览当前草稿」名副其实。 */
     if (!root?.querySelector('[data-reply-part-input="example"]')) renderPreview();
@@ -1309,21 +1193,15 @@ window.CompanionReplyPage = (() => {
     if (options.view === "perception") root.dataset.replyView = "perception";
     else if (options.view === "decision") root.dataset.replyView = "decision";
     else if (root.dataset) delete root.dataset.replyView;
-    /* Diagnostics belong to the decision/reply workbench and the default reply
-       workspace.  The expression/segmentation page is a settings+preview page;
-       keeping a live reply-diagnostic feed there squeezed the preview column and
-       mixed unrelated private-chat records into an appearance editor. */
-    const diagnostics = [undefined, "decision"].includes(options.view)
-      ? '<div data-reply-part="diagnostics"></div>' : "";
     const scopeNote = options.view === "decision"
       ? '<aside class="reply-scope-note" role="note"><strong>基础唤醒后才进行决策</strong><p>答疑默认关闭，弱相关词默认留空。角色默认供各群继承；选中具体群时编辑本群覆盖，已单独设置的群字段不随角色默认改变。明确 @、引用或直接呼唤优先，其他候选由 Laya 结合有效开关与近期群历史判断是否旁听。私聊收尾沉默只处理纯道别、致谢或简短应声，且角色上一轮已经收尾；带问题、请求、图片或新内容的消息不受影响。私聊纯文本防抖与合并总窗口在「参与节奏 → 私聊节奏 · 连续输入」中配置；图片、语音、视频、文件、引用和命令不参与合并。</p></aside>' : options.view === "perception"
       ? '<aside class="reply-scope-note" role="note"><strong>普通聊天的视频已由本插件原生理解</strong>' +
         '<p>普通聊天的图片、视频和文件由 AstrBot 核心管线送入本轮请求。视频默认开启：支持视频输入的 Gemini 类模型直接读取整段原视频；其他模型用宿主自带的 ffmpeg 抽帧后作为图片送入同一轮请求，不依赖外部视频插件。超时或抽帧失败时本轮不带视频继续，不会阻塞文字回复。本页的转述和文件读取设置用于 V2 独立任务及历史兼容。</p></aside>'
       : '<aside class="reply-scope-note" role="note" data-reply-part="scope">' +
         expressionScopeNote(options.expressionModule) + '</aside>';
-    root.innerHTML = scopeNote + '<div data-reply-part="settings"></div>'
-      + (options.view === "expression" || !options.view
-        ? '<div data-reply-part="preview"></div>' : "") + diagnostics;
+    const previewPart = options.view === "expression" || !options.view
+      ? '<div class="reply-side"><div data-reply-part="preview"></div></div>' : "";
+    root.innerHTML = scopeNote + '<div data-reply-part="settings"></div>' + previewPart;
     root.addEventListener("input", onInput);
     root.addEventListener("change", onInput);
     root.addEventListener("click", onClick);
@@ -1344,6 +1222,8 @@ window.CompanionReplyPage = (() => {
       listFields: spec.listFields,
       order: pageSpec.order,
       endpoint: PREFIX + route,
+      query: {view: "settings"},
+      savePath: "/settings/configure",
       resetKey: "reset_to_inherit",
       normalizeDraft: normalizeReplyDraft,
       /* TTS 扩展目录要等读取之后才知道，所以选项由函数现取。 */
@@ -1359,7 +1239,7 @@ window.CompanionReplyPage = (() => {
         voice_group_ja_provider_id: () => providerOptions("跟随语种绑定"),
         voice_group_en_provider_id: () => providerOptions("跟随语种绑定"),
       },
-      mount: () => parts().settings,
+      mount: () => anchor("settings"),
       /* 工作台拿到新快照后，预览跟着重画。 */
       onStatus: adopt,
     });

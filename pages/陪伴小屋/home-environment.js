@@ -115,7 +115,7 @@ window.CompanionHomeEnvironment = (() => {
       <div class="home-environment-clock"><time datetime="${timeISO}">${time.label}</time><small class="home-environment-date">${escapeHTML(time.dateLabel)}</small><small>${escapeHTML(zone)} · ${time.phase}</small></div>
       <button type="button" class="home-environment-refresh" data-home-weather-refresh aria-label="刷新天气" title="刷新天气"
         aria-busy="${loading}" ${!canRefresh || loading ? "disabled" : ""}><i data-lucide="refresh-cw"></i></button>`;
-    window.lucide?.createIcons({nodes:host.querySelectorAll("[data-lucide]"),attrs:{"aria-hidden":"true"}});
+    window.lucide?.createIcons({root:host,attrs:{"aria-hidden":"true"}});
   }
   async function fetchWeather(ticket, force = false) {
     loading = true;
@@ -166,5 +166,12 @@ window.CompanionHomeEnvironment = (() => {
     paint();
     if (clockTimer == null) scheduleClock();
   }
-  return {render, sceneForTime};
+  function suspend() {
+    // Keep the weather cache for this scope. An in-flight response may update it,
+    // but there is no hidden DOM to repaint or minute timer to rearm.
+    host = null;
+    clearTimeout(clockTimer);
+    clockTimer = null;
+  }
+  return {render, suspend, sceneForTime};
 })();

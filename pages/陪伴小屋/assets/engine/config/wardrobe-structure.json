@@ -1,0 +1,35 @@
+{
+  "id": "wardrobe-main",
+  "type": "group",
+  "position": { "x": -0.25, "y": 0, "z": -3.63 },
+  "children": [
+    { "type": "block", "params": { "id": "wardrobe-body", "x": 0, "y": 1.68, "z": -0.39, "w": 2.55, "h": 3.25, "d": 0.1, "tint": "#365f5a" } },
+    {
+      "type": "block-array",
+      "params": {
+        "base": { "y": 1.7, "z": 0 },
+        "items": [ { "x": -1.32 }, { "x": 1.32 } ],
+        "dims": { "w": 0.16, "h": 3.4, "d": 1.05 },
+        "tint": "#507e7a"
+      }
+    },
+    {
+      "type": "block-array",
+      "params": {
+        "base": { "x": 0, "z": 0 },
+        "items": [ { "y": 0.2 }, { "y": 3.4 } ],
+        "dims": { "w": 2.85, "h": 0.18, "d": 1.15 },
+        "tint": "#507e7a"
+      }
+    },
+    {
+      "type": "block-array",
+      "params": {
+        "base": { "y": 2.83, "z": 0 },
+        "items": [ { "x": 0 } ],
+        "dims": { "w": 2.53, "h": 0.06, "d": 0.06 },
+        "tint": "#d7b66c"
+      }
+    }
+  ]
+}

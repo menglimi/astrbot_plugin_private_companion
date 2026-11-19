@@ -1,0 +1,26 @@
+{
+  "id": "warm-narrative",
+  "description": "Warm, cozy atmosphere optimized for narrative-heavy interior spaces.",
+  "ambient": {
+    "intensity": 2.0,
+    "color": "#f8e6c9"
+  },
+  "sun": {
+    "intensity": 3.5,
+    "color": "#ffdbac",
+    "position": { "x": -3, "y": 8, "z": 5 }
+  },
+  "pointLights": [
+    {
+      "id": "desk-lamp",
+      "intensity": 15,
+      "color": "#ff9d00",
+      "position": { "x": -2, "y": 1.8, "z": -2 }
+    }
+  ],
+  "fog": {
+    "color": "#fdf5e6",
+    "near": 5,
+    "far": 50
+  }
+}
