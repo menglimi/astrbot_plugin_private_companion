@@ -784,6 +784,14 @@ test('reply expression, perception, and decision settings partition every field 
   perceptionHarness.page.unmount();
 });
 
+test('expression view edits segmentation without the reply diagnostics panel', async () => {
+  const harnessed = await loaded(harness(), 'expression');
+  assert.match(harnessed.root.innerHTML, /data-reply-part="settings"/);
+  assert.doesNotMatch(harnessed.root.innerHTML, /data-reply-part="diagnostics"/);
+  assert.match(harnessed.root.innerHTML, /data-reply-part="preview"/);
+  harnessed.page.unmount();
+});
+
 test('decision view edits the same reply route and omits expression-only tools', async () => {
   const harnessed = await loaded(harness(), 'decision');
   assert.equal(harnessed.requests[0].route, 'group/reply');

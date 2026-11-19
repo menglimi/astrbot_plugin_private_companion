@@ -710,7 +710,11 @@ window.CompanionReplyPage = (() => {
       ? {...status, recent:[], participation_recent:[]} : status || null;
     notifyStatus();
     if (!status) return;
-    renderDiagnostics();
+    /* The expression workspace (segmentation, voice, reactions, platform and
+       group expression) is a configuration + preview surface.  It has no
+       diagnostics slot; skip the fetch entirely so private-chat diagnostics
+       never leak into those pages or add another request. */
+    if (!root?.dataset?.expressionModule) renderDiagnostics();
     if (root?.dataset?.expressionModule) setExpressionModule(root.dataset.expressionModule);
     /* 预览用的草稿设置取自工作台当前草稿，保证「预览当前草稿」名副其实。 */
     if (!root?.querySelector('[data-reply-part-input="example"]')) renderPreview();
@@ -1305,7 +1309,11 @@ window.CompanionReplyPage = (() => {
     if (options.view === "perception") root.dataset.replyView = "perception";
     else if (options.view === "decision") root.dataset.replyView = "decision";
     else if (root.dataset) delete root.dataset.replyView;
-    const diagnostics = [undefined, "expression", "decision"].includes(options.view)
+    /* Diagnostics belong to the decision/reply workbench and the default reply
+       workspace.  The expression/segmentation page is a settings+preview page;
+       keeping a live reply-diagnostic feed there squeezed the preview column and
+       mixed unrelated private-chat records into an appearance editor. */
+    const diagnostics = [undefined, "decision"].includes(options.view)
       ? '<div data-reply-part="diagnostics"></div>' : "";
     const scopeNote = options.view === "decision"
       ? '<aside class="reply-scope-note" role="note"><strong>基础唤醒后才进行决策</strong><p>答疑默认关闭，弱相关词默认留空。角色默认供各群继承；选中具体群时编辑本群覆盖，已单独设置的群字段不随角色默认改变。明确 @、引用或直接呼唤优先，其他候选由 Laya 结合有效开关与近期群历史判断是否旁听。私聊收尾沉默只处理纯道别、致谢或简短应声，且角色上一轮已经收尾；带问题、请求、图片或新内容的消息不受影响。私聊纯文本防抖与合并总窗口在「参与节奏 → 私聊节奏 · 连续输入」中配置；图片、语音、视频、文件、引用和命令不参与合并。</p></aside>' : options.view === "perception"
