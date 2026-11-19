@@ -15,7 +15,7 @@ window.CompanionModelsPage = (() => {
     ["对话", [["conversation.reply", "对话回复", "AstrBot 核心回复与 V2 附加提示"],
       ["conversation.context_image_caption", "图片摘要", "为已授权的历史图片提取可见内容"],
       ["conversation.image_narration", "当前图片转述", "为本轮已授权图片生成简短文字描述"],
-      ["conversation.video_narration", "原生视频转述", "将原视频交给支持视频输入的模型直接理解"]]],
+      ["conversation.video_narration", "原生视频转述", "将原视频或压缩视频交给原生视频（如 Gemini）或 OpenAI 兼容视觉中转模型理解；支持主备降级与外置插件避让"]]],
     ["感知", [["screen.interpretation", "屏幕解读", "分析已授权截图与摄像头单帧，需要支持图片的模型"],
       ["conversation.image_review", "图片审核", "检查群聊成图的可见内容"],
       ["reality.text", "现实提醒文案", "现实提醒、唤醒回执和短回复的文字生成"]]],
@@ -137,7 +137,13 @@ window.CompanionModelsPage = (() => {
     return field?.value || field?.inherited_value || task.fields.provider?.inherited_value
       || task.fields.provider?.value || "";
   };
-  const available = (s, task) => s.status.providers.filter(p => task.capabilities.every(cap => p.capabilities.includes(cap)));
+  const providerSupportsTask = (task, provider) => Boolean(provider) && (
+    task.capabilities.every(cap => provider.capabilities.includes(cap))
+    || (task.kind === "conversation.video_narration"
+        && provider.supports_video_relay === true
+        && provider.capabilities.includes("text"))
+  );
+  const available = (s, task) => s.status.providers.filter(p => providerSupportsTask(task, p));
   const effective = (task, draft, name) => draft.inherited[name] ? task.fields[name].inherited_value : draft.values[name];
   const providerFor = (task, draft) => coreReply(task) ? "" : effective(task, draft, "provider");
   /* The routing ceiling of one draft: the strictest output capability among the
@@ -351,7 +357,7 @@ window.CompanionModelsPage = (() => {
       && (p.reset.includes("max_output_tokens") || !task.fields.max_output_tokens.explicit)
       && limitIsDefault(task);
     return (!fallbackExplicit || !fallback || fallback !== primary)
-      && providers.every(provider => provider && task.capabilities.every(cap => provider.capabilities.includes(cap)))
+      && providers.every(provider => providerSupportsTask(task, provider))
       && (limitDefault || limit <= limitFor(state, task, draft)); }
   /* ---------- functional markup (design alignment: MODEL_CONFIG_UI_UX_DESIGN_20260926) ---------- */
   /* Stable per-provider hue for the colored routing pills and map dots. */
@@ -415,7 +421,7 @@ window.CompanionModelsPage = (() => {
     ? `${provider.id} · ${provider.model}` : provider ? provider.id : "";
   const capabilityLabel = capability => ({
     text: "文本生成", image: "图片输入", audio: "音频输入", tools: "工具调用",
-    embedding: "向量嵌入", video: "视频理解", vision: "图像理解", "conversation.reply": "对话回复",
+    embedding: "向量嵌入", video: "视频理解", video_relay: "视觉转接视频", vision: "图像理解", "conversation.reply": "对话回复",
   }[capability] || capability);
   function providerOptions(s, task, draft, name) { const providers = available(s, task);
     const selected = draft.inherited[name] ? task.fields[name].inherited_value : draft.values[name];
@@ -503,13 +509,15 @@ window.CompanionModelsPage = (() => {
   function providerView(s) { const providers = s.status?.providers || []; if (!providers.length) return '<p class="model-empty">尚未读取到模型提供方。</p>';
     const tasks = visible(s).filter(task => !coreReply(task)), filtered = !!(s.query || s.custom || s.lane !== "all" || s.providerFilter);
     const panels = providers.filter(provider => !s.providerFilter || s.providerFilter === provider.id).map(provider => {
-      const capable = tasks.filter(task => task.capabilities.every(cap => provider.capabilities.includes(cap)));
+      const capable = tasks.filter(task => providerSupportsTask(task, provider));
       const routed = tasks.filter(task => providerFor(task, s.drafts.get(task.kind)) === provider.id);
       if (filtered && !routed.length && s.providerFilter !== provider.id) return "";
+      const caps = provider.supports_video_relay && !provider.capabilities.includes("video")
+        ? [...provider.capabilities, "video_relay"] : provider.capabilities;
       return `<article class="model-provider-panel"><header><span><strong>${esc(provider.id)}</strong><em>${routed.length} / ${capable.length} 项任务走这里</em></span>
           <span class="model-state">上限 ${provider.max_output_tokens}</span></header>
         ${provider.model ? `<p class="model-provider-model">${esc(provider.model)}</p>` : ""}
-        <p class="model-provider-caps">${provider.capabilities.map(cap => `<small>${esc(capabilityLabel(cap))}</small>`).join("") || "<small>无能力声明</small>"}</p>
+        <p class="model-provider-caps">${caps.map(cap => `<small>${esc(capabilityLabel(cap))}</small>`).join("") || "<small>无能力声明</small>"}</p>
          <ul class="model-provider-tasks">${routed.map(task => { const info = taskName(task.kind);
            return `<li><button type="button" data-model-open="${esc(task.kind)}" aria-label="编辑 ${esc(info.label)} 的模型配置">${esc(info.label)}</button></li>`; }).join("") || '<li class="model-empty">还没有任务走这个模型提供方。</li>'}</ul>
          ${capable.length > routed.length ? `<p class="model-provider-note">还有 ${capable.length - routed.length} 项能力相符的任务由其他模型提供方承担。</p>` : ""}</article>`; }).filter(Boolean);
@@ -630,7 +638,7 @@ window.CompanionModelsPage = (() => {
   function assign(s, providerId) { const kinds = selected(s); if (!providerId || !kinds.length) return;
     const skipped = []; let changed = 0;
     for (const kind of kinds) { const task = taskOf(s, kind), draft = s.drafts.get(kind); if (!task || !draft || draft.pending || draft.stale) continue;
-      if (!task.capabilities.every(cap => s.status.providers.find(p => p.id === providerId)?.capabilities.includes(cap))) { skipped.push(taskName(kind).label); continue; }
+      if (!providerSupportsTask(task, s.status.providers.find(p => p.id === providerId))) { skipped.push(taskName(kind).label); continue; }
       if (draft.values.provider === providerId && !draft.inherited.provider) continue;
       draft.inherited.provider = false; draft.values.provider = providerId; draft.touched = true; fitLimit(s, task, draft); changed++; }
     s.bad = skipped.length > 0;
@@ -2248,7 +2256,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   async function applySlot(s, slotId) { const gp = taskGroups(s).find(([g]) => g === slotId); if (!gp) return; const providerId = s.slotDraft[slotId]; if (!providerId) return;
     const kinds = [];
     for (const [kind] of gp[1]) { const task = taskOf(s, kind), draft = s.drafts.get(kind); if (!task || coreReply(task) || !draft || draft.pending || draft.stale) continue;
-      if (!task.capabilities.every(cap => s.status.providers.find(p => p.id === providerId)?.capabilities.includes(cap))) continue;
+      if (!providerSupportsTask(task, s.status.providers.find(p => p.id === providerId))) continue;
       draft.inherited.provider = false; draft.values.provider = providerId; draft.touched = true; fitLimit(s, task, draft); kinds.push(kind); }
     if (!kinds.length) { s.bad = true; s.notice = "这些任务没有可改动的草稿或能力不符。"; render(); return; }
     s.notice = `正在把「${slotId}」组中 ${kinds.length} 项任务指派给 ${providerId}…`; render();

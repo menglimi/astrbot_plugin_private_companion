@@ -56,7 +56,10 @@ const DEFAULTS = {
   private_image_vision_wait_seconds: 8, private_image_provider_failure_cooldown_seconds: 60,
   video_understanding_enabled: true, video_understanding_max_chars: 2400,
   video_understanding_private_enabled: true, video_understanding_group_enabled: true,
-  video_understanding_wait_seconds: 20, video_understanding_prompt: '',
+  video_understanding_wait_seconds: 20, video_understanding_target_mb: 10,
+  video_understanding_max_duration_seconds: 120, video_understanding_oversize_action: 'compress',
+  video_understanding_quoted_enabled: true, video_understanding_qa_enabled: true,
+  video_understanding_prompt: '',
   file_understanding_enabled: false, file_understanding_formats: 'text_and_documents',
   file_understanding_format_groups: '["文本","PDF","Word（DOCX）","Excel（XLSX）","PowerPoint（PPTX）"]',
   file_understanding_private_enabled: true, file_understanding_group_enabled: true,
@@ -104,6 +107,7 @@ const LIMITS = {
   private_image_vision_cache_max_items: [0, 2000], private_image_vision_max_chars: [120, 4000],
   private_image_vision_wait_seconds: [1, 30], private_image_provider_failure_cooldown_seconds: [0, 3600],
   video_understanding_max_chars: [200, 6000], video_understanding_wait_seconds: [1, 60],
+  video_understanding_target_mb: [1, 18], video_understanding_max_duration_seconds: [10, 1800],
   file_understanding_max_size_mb: [1, 16], file_understanding_max_chars: [1000, 48000],
   file_understanding_timeout_seconds: [1, 30],
   reply_diagnostic_limit: [10, 300],
@@ -772,8 +776,11 @@ test('reply expression, perception, and decision settings partition every field 
     'private_image_vision_cache_max_items', 'private_image_vision_custom_prompt',
     'private_image_vision_max_chars', 'private_image_vision_wait_seconds',
     'private_image_provider_failure_cooldown_seconds',
-    'video_understanding_enabled', 'video_understanding_max_chars',
-    'video_understanding_wait_seconds', 'video_understanding_prompt',
+    'video_understanding_enabled', 'video_understanding_target_mb',
+    'video_understanding_max_duration_seconds', 'video_understanding_oversize_action',
+    'video_understanding_quoted_enabled', 'video_understanding_qa_enabled',
+    'video_understanding_max_chars', 'video_understanding_wait_seconds',
+    'video_understanding_prompt',
     'file_understanding_enabled',
     'file_understanding_format_groups', 'file_understanding_max_size_mb',
     'file_understanding_max_chars', 'file_understanding_timeout_seconds', 'file_understanding_prompt',
@@ -931,14 +938,19 @@ test('the perception view edits image, native video and file understanding witho
       'private_image_vision_cache_max_items', 'private_image_vision_custom_prompt',
       'private_image_vision_max_chars', 'private_image_vision_wait_seconds',
       'private_image_provider_failure_cooldown_seconds',
-      'video_understanding_enabled', 'video_understanding_max_chars',
-      'video_understanding_wait_seconds', 'video_understanding_prompt',
+      'video_understanding_enabled', 'video_understanding_target_mb',
+      'video_understanding_max_duration_seconds', 'video_understanding_oversize_action',
+      'video_understanding_quoted_enabled', 'video_understanding_qa_enabled',
+      'video_understanding_max_chars', 'video_understanding_wait_seconds',
+      'video_understanding_prompt',
       'file_understanding_enabled',
       'file_understanding_format_groups', 'file_understanding_max_size_mb',
       'file_understanding_max_chars', 'file_understanding_timeout_seconds', 'file_understanding_prompt',
       'forward_message_adaptation_enabled']);
   assert.equal(harnessed.page.selectSection('image_narration'), true);
   assert.equal(harnessed.page.selectSection('video_narration'), true);
+  assert.match(harnessed.slots.settings.innerHTML, /压缩目标上限（MB）/);
+  assert.match(harnessed.slots.settings.innerHTML, /处理引用消息中的视频/);
   assert.equal(harnessed.page.selectSection('file_understanding'), true);
   assert.equal(live(harnessed).state.container.fields.file_understanding_format_groups.listPolicy.minItems, 1);
   assert.equal(live(harnessed).state.container.fields.file_understanding_format_groups.listPolicy.quickAddLabel, '支持格式');

@@ -818,6 +818,11 @@ class PrivateCompanionV2StagingPlugin(Star):
         # A plugin may answer without stopping propagation; respect that reply.
         if getattr(event, "_has_send_oper", False):
             return
+        if (callable(getattr(event, "get_extra", None))
+                and event.get_extra("_gemini_stt_should_reply") is True
+                and not event.get_extra("_gemini_stt_cache_only")):
+            logger.debug("[CompanionV2] 外部 gemini_stt 已接管本轮语音回复，跳过重复受理")
+            return
         if not self.staging.claims(event):
             # 不是本插件的目标：这条消息从来没有进入它的预期范围，回复与否都不是
             # 它的失败，既不写台账也不出日志——平台日志不该被别人的群消息刷屏。
@@ -1270,6 +1275,15 @@ class PrivateCompanionV2StagingPlugin(Star):
         logger.info("[CompanionV2] 交由 AstrBot 核心回复管线 event_ref=%s channel=%s",
                     event_ref, channel)
 
+    def _video_fusion(self):
+        fusion = getattr(self, "_video_fusion_service", None)
+        if fusion is None:
+            from .astrbot_host.video.fusion import VideoFusionService
+
+            fusion = VideoFusionService()
+            self._video_fusion_service = fusion
+        return fusion
+
     async def _route_core_video_to_image_provider(self, event):
         from .astrbot_host.core_reply_perception import event_has_video
         from .astrbot_host.core_reply_video_sources import key_from_context, peek
@@ -1281,12 +1295,13 @@ class PrivateCompanionV2StagingPlugin(Star):
         scope = getattr(context, "scope", None)
         if getattr(getattr(scope, "kind", None), "value", None) not in ("private", "group"):
             return
-        if not event_has_video(event) and not peek(key_from_context(context)):
-            return
         application = getattr(getattr(self.staging, "session", None), "application", None)
         settings = self._video_understanding_settings(application, context)
         if settings.get("video_understanding_enabled") is not True or not media_scope_enabled(
                 settings, "video_understanding", scope):
+            return
+        include_quoted = bool(settings.get("video_understanding_quoted_enabled", True))
+        if not event_has_video(event, include_quoted=include_quoted) and not peek(key_from_context(context)):
             return
         native = getattr(self.staging, "context", None)
         if native is None:
@@ -1501,29 +1516,21 @@ class PrivateCompanionV2StagingPlugin(Star):
                 )).mark_as_temp())
 
     async def _attach_core_reply_video_material(self, event, prepared, request, originals,
-                                                application, context, settings):
-        """Try native MP4 understanding first, then use sampled frames per failed video."""
+                                                application, context, settings, *,
+                                                question="", fetch_errors=()):
+        """Try visual video understanding (native Gemini / OpenAI relay + compression), then sample frames on failure."""
+        from pathlib import Path
         from astrbot.core.agent.message import TextPart
         from companion_v2.conversation.media.models import MAX_TURN_BYTES, MAX_TURN_FRAMES
-        from companion_v2.conversation.media.video.models import MAX_TURN_VIDEO_MS, MAX_VIDEOS
+        from companion_v2.conversation.media.video.models import MAX_TURN_VIDEO_MS, MAX_VIDEOS, MAX_VIDEO_BYTES
+        from .astrbot_host.core_reply_perception import neutralize_video_placeholder
         from .astrbot_host.video.container import inspect_container
         from .astrbot_host.video.core_understanding import (
             select_native_video_routes, summarize_original_video)
         from .astrbot_host.video.loader import decode_video
 
         parts = getattr(request, "extra_user_content_parts", None)
-        if not isinstance(parts, list) or not originals or len(originals) > MAX_VIDEOS:
-            return
-        try:
-            movies = await asyncio.gather(*(asyncio.to_thread(inspect_container, content)
-                                            for _position, content in originals))
-        except Exception as error:
-            logger.warning("[CompanionV2] 原视频校验失败 event_ref=%s code=%s",
-                           prepared.get("event_ref"), getattr(error, "code", type(error).__name__))
-            return
-        if (sum(movie.duration_ms for movie in movies) > MAX_TURN_VIDEO_MS
-                or sum(len(content) for _position, content in originals) > MAX_TURN_BYTES):
-            logger.warning("[CompanionV2] 视频输入超过本轮预算 event_ref=%s", prepared.get("event_ref"))
+        if not isinstance(parts, list) or (not originals and not fetch_errors) or len(originals) > MAX_VIDEOS:
             return
 
         routes = ()
@@ -1534,64 +1541,116 @@ class PrivateCompanionV2StagingPlugin(Star):
                     event, self.staging.now())
             except Exception as error:
                 logger.warning("[CompanionV2] 原生视频路由暂不可用 error_type=%s", type(error).__name__)
+
+        fusion = self._video_fusion()
         staged = []
         fallback_frames = []
+        fallback_source_bytes = 0
         native_count = 0
-        for number, (position, content) in enumerate(originals, 1):
-            deadline = time.monotonic() + settings.get("video_understanding_wait_seconds", 45)
-            native_succeeded = False
-            for provider, model in routes:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
+
+        for number, entry in enumerate(originals, 1):
+            if len(entry) == 2:
+                position, content = entry
+                suffix, placeholder_obj = ".mp4", None
+            else:
+                position, content, suffix, placeholder_obj = entry
+            ext = (Path(f"clip{suffix}").suffix or ".mp4").lower()
+            if ext == ".ts":
+                continue
+
+            outcome = await fusion.analyze_video(
+                content,
+                suffix=ext,
+                routes=routes,
+                settings=settings,
+                question=question,
+                summarize_fn=summarize_original_video,
+            )
+            if outcome.status == "summary":
+                staged.append(TextPart(text=(
+                    f"<companion_video_native_summary>视频 {number} 的原视频理解转述"
+                    "（模型直接读取整段视频，转述可能有误差；据此回应，不自行补造细节）：\n"
+                    f"{outcome.text}\n</companion_video_native_summary>"
+                )).mark_as_temp())
+                if placeholder_obj is not None:
+                    label = placeholder_obj.name or f"视频{number}"
+                    neutralize_video_placeholder(
+                        placeholder_obj.part,
+                        f"[视频内容已由陪伴理解服务完成转述（文件名 {label}），请直接参考下方转述，无需再次读取原文件。]",
+                    )
+                native_count += 1
+                continue
+
+            if outcome.status == "rejected":
+                staged.append(TextPart(text=(
+                    f"<companion_video_notice>视频 {number} 未处理：{outcome.error_reason}</companion_video_notice>"
+                )).mark_as_temp())
+                if placeholder_obj is not None:
+                    label = placeholder_obj.name or f"视频{number}"
+                    neutralize_video_placeholder(
+                        placeholder_obj.part,
+                        f"[视频 {label} 超出配置限制未发送：{outcome.error_reason}]",
+                    )
+                continue
+
+            decoded_ok = False
+            candidate = outcome.prepared_bytes or content
+            if 0 < len(candidate) <= MAX_VIDEO_BYTES:
                 try:
-                    text = await summarize_original_video(content, provider, model,
-                        {**settings, "video_understanding_wait_seconds": remaining})
-                    staged.append(TextPart(text=(
-                        f"<companion_video_native_summary>视频 {number} 的原视频理解转述"
-                        "（模型直接读取整段视频，转述可能有误差；据此回应，不自行补造细节）：\n"
-                        f"{text}\n</companion_video_native_summary>"
-                    )).mark_as_temp())
-                    native_count += 1
-                    native_succeeded = True
-                    break
+                    movie = await asyncio.to_thread(inspect_container, candidate)
+                    if getattr(movie, "duration_ms", 0) <= MAX_TURN_VIDEO_MS:
+                        video = await decode_video(candidate, position)
+                        fallback_frames.extend(video.frames)
+                        fallback_source_bytes += len(candidate)
+                        self._append_core_reply_video_frames(staged, (video,), start_number=number)
+                        decoded_ok = True
                 except Exception as error:
-                    logger.warning("[CompanionV2] 原生视频理解失败 event_ref=%s position=%s model=%s code=%s",
-                                   prepared.get("event_ref"), position, model,
+                    logger.warning("[CompanionV2] 视频抽帧失败 event_ref=%s position=%s code=%s",
+                                   prepared.get("event_ref"), position,
                                    getattr(error, "code", type(error).__name__))
-            if native_succeeded:
+            if decoded_ok:
+                if placeholder_obj is not None:
+                    label = placeholder_obj.name or f"视频{number}"
+                    neutralize_video_placeholder(
+                        placeholder_obj.part,
+                        f"[视频 {label} 已由陪伴提取关键帧（共 {len(video.frames)} 帧），请直接参考画面帧。]",
+                    )
                 continue
-            try:
-                video = await decode_video(content, position)
-            except Exception as error:
-                logger.warning("[CompanionV2] 视频抽帧失败 event_ref=%s position=%s code=%s",
-                               prepared.get("event_ref"), position,
-                               getattr(error, "code", type(error).__name__))
-                continue
-            fallback_frames.extend(video.frames)
-            self._append_core_reply_video_frames(staged, (video,), start_number=number)
-        if (sum(len(content) for _position, content in originals)
-                + sum(len(frame.content) for frame in fallback_frames) > MAX_TURN_BYTES
+
+            reason = outcome.error_reason or "视频无法读取或抽帧。"
+            staged.append(TextPart(text=(
+                f"<companion_video_notice>视频 {number} 理解降级：{reason}</companion_video_notice>"
+            )).mark_as_temp())
+            if placeholder_obj is not None:
+                label = placeholder_obj.name or f"视频{number}"
+                neutralize_video_placeholder(
+                    placeholder_obj.part,
+                    f"[视频 {label} 理解失败（{reason}），切勿猜测或编造视频内容。]",
+                )
+
+        for index, placeholder_obj, error_reason in fetch_errors:
+            label = (getattr(placeholder_obj, "name", "") if placeholder_obj is not None else "") or f"视频{index}"
+            staged.append(TextPart(text=(
+                f"<companion_video_notice>视频 {label} 获取失败：{error_reason}</companion_video_notice>"
+            )).mark_as_temp())
+            if placeholder_obj is not None:
+                neutralize_video_placeholder(
+                    placeholder_obj.part,
+                    f"[视频 {label} 暂无法读取（{error_reason}），请如实告知对方。]",
+                )
+
+        if fallback_frames and (
+                fallback_source_bytes + sum(len(frame.content) for frame in fallback_frames) > MAX_TURN_BYTES
                 or len(fallback_frames) > MAX_TURN_FRAMES):
             logger.warning("[CompanionV2] 视频抽帧超过本轮预算 event_ref=%s", prepared.get("event_ref"))
-            return
-        parts.extend(staged)
+            staged = [part for part in staged if getattr(part, "type", None) != "image_url"]
         if staged:
+            parts.extend(staged)
             logger.info("[CompanionV2] 视频已送入核心回复 event_ref=%s native=%s sampled_frames=%s",
                         prepared.get("event_ref"), native_count, len(fallback_frames))
 
     async def _attach_core_reply_videos(self, prepared, request, *, event=None):
-        """把上一条群消息里被文本化丢弃的视频补挂进这一轮请求。
-
-        消息是独立事件：用户先裸发一条视频、再单独发一条 @ 时，第二轮事件里没有
-        任何 Video 组件，核心既写不出占位符也扫不到视频。位置在
-        ``capture_text_only`` 把它折成「[视频不可用]」之前就存进了进程内缓存
-        （``astrbot_host/core_reply_video_sources.py``），这里按**既有**开关决定
-        要不要用它，不新增任何配置键。
-
-        一次性语义：位置在任何判断之前就被取出（``take`` 是弹出），所以无论这一轮
-        最终有没有挂上，下一轮都不会再拿同一条视频试第二次。
-        """
+        """把上一条群消息里被文本化丢弃的视频补挂进这一轮请求。"""
         from .astrbot_host.core_reply_video_sources import key_from_context, take
         state = prepared if isinstance(prepared, Mapping) else {}
         context = state.get("context")
@@ -1601,9 +1660,8 @@ class PrivateCompanionV2StagingPlugin(Star):
         locators = take(key_from_context(context))
         if not locators:
             return
-        from .astrbot_host.core_reply_perception import video_request_state
-        # audio_url 里的 MP4 会被 AstrBot 当音频预处理；已补挂的原生转述或抽帧才可跳过。
-        if video_request_state(request) in ("native_summary", "sampled_frames", "native_and_sampled"):
+        from .astrbot_host.core_reply_perception import extract_video_question, video_request_state
+        if video_request_state(request) in ("native_summary", "sampled_frames", "native_and_sampled", "external_summary"):
             return
         application = getattr(getattr(self.staging, "session", None), "application", None)
         settings = self._video_understanding_settings(application, context)
@@ -1613,35 +1671,44 @@ class PrivateCompanionV2StagingPlugin(Star):
         if not media_scope_enabled(settings, "video_understanding", scope):
             return
         from companion_v2.conversation.media.video.models import MAX_VIDEOS
+        from .astrbot_host.video.fusion import MAX_CORE_VIDEO_DOWNLOAD_BYTES
         from .astrbot_host.video.loader import fetch_native_video_bytes
+        from .astrbot_host.video.openai_compat_video import sanitize_video_error
         originals = []
-        for locator in locators[:MAX_VIDEOS]:
+        fetch_errors = []
+        for idx, locator in enumerate(locators[:MAX_VIDEOS], 1):
             try:
-                originals.append((locator.position, await fetch_native_video_bytes(locator)))
+                try:
+                    raw = await fetch_native_video_bytes(locator)
+                except Exception as first_err:
+                    if getattr(first_err, "code", "") == "host_video_limit":
+                        raw = await fetch_native_video_bytes(locator, maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES)
+                    else:
+                        raise
+                originals.append((locator.position, raw, ".mp4", None))
             except Exception as error:
-                # 位置过期、下载失败、解码超时、超出体积预算：这一轮安静地少一段
-                # 视频，文字回复照常进行。
                 logger.warning("[CompanionV2] 群聊视频补挂跳过 position=%s code=%s",
                                getattr(locator, "position", None),
                                getattr(error, "code", type(error).__name__))
-                return
+                fetch_errors.append((idx, None, sanitize_video_error(error)))
+        question = extract_video_question(event, request, state)
         await self._attach_core_reply_video_material(event, state, request, originals,
-                                                     application, context, settings)
+                                                     application, context, settings,
+                                                     question=question, fetch_errors=fetch_errors)
 
     async def _attach_core_reply_current_videos(self, event, request):
-        """Supply this event's host-resolved video to the core chat request."""
+        """Supply current or quoted host-resolved / remote ref videos to the core chat request."""
         state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
         prepared = state.get("prepared") if isinstance(state, dict) else None
         context = prepared.get("context") if isinstance(prepared, Mapping) else None
         scope = getattr(context, "scope", None)
         if getattr(getattr(scope, "kind", None), "value", None) not in ("private", "group"):
             return
-        from .astrbot_host.core_reply_perception import video_placeholder_paths, video_request_state
+        from .astrbot_host.core_reply_perception import (
+            extract_video_question, neutralize_video_placeholder,
+            video_placeholders, video_request_state)
 
-        if video_request_state(request) in ("native_summary", "sampled_frames", "native_and_sampled"):
-            return
-        paths = video_placeholder_paths(request)
-        if not paths:
+        if video_request_state(request) in ("native_summary", "sampled_frames", "native_and_sampled", "external_summary"):
             return
         application = getattr(getattr(self.staging, "session", None), "application", None)
         settings = self._video_understanding_settings(application, context)
@@ -1651,20 +1718,52 @@ class PrivateCompanionV2StagingPlugin(Star):
 
         if not media_scope_enabled(settings, "video_understanding", scope):
             return
+        include_quoted = bool(settings.get("video_understanding_quoted_enabled", True))
+        placeholders = video_placeholders(request, include_quoted=include_quoted)
+        if not placeholders:
+            return
+        from pathlib import Path
+        from urllib.parse import urlparse
         from companion_v2.conversation.media.video.models import MAX_VIDEOS
-        from .astrbot_host.video.loader import read_host_resolved_video_bytes
+        from .astrbot_host.video.fusion import MAX_CORE_VIDEO_DOWNLOAD_BYTES
+        from .astrbot_host.video.loader import (
+            fetch_placeholder_ref_video_bytes, read_host_resolved_video_bytes)
+        from .astrbot_host.video.openai_compat_video import sanitize_video_error
 
         originals = []
-        for position, path in enumerate(paths[:MAX_VIDEOS]):
+        fetch_errors = []
+        for position, item in enumerate(placeholders[:MAX_VIDEOS]):
+            parsed_name = item.name or (urlparse(item.value).path if "://" in item.value else item.value)
+            suffix = (Path(parsed_name).suffix or ".mp4").lower()
             try:
-                originals.append((position, await read_host_resolved_video_bytes(path)))
+                if item.location == "path":
+                    try:
+                        raw = await read_host_resolved_video_bytes(item.value)
+                    except Exception as first_err:
+                        if getattr(first_err, "code", "") == "host_video_limit":
+                            raw = await read_host_resolved_video_bytes(
+                                item.value, maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES)
+                        else:
+                            raise
+                else:
+                    raw = await fetch_placeholder_ref_video_bytes(
+                        item.value, maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES)
+                originals.append((position, raw, suffix, item))
             except Exception as error:
                 logger.warning("[CompanionV2] 当前视频读取失败 event_ref=%s position=%s code=%s",
                                prepared.get("event_ref"), position,
                                getattr(error, "code", type(error).__name__))
-                return
+                fetch_errors.append((position + 1, item, sanitize_video_error(error)))
+        for index, placeholder_obj in enumerate(placeholders[MAX_VIDEOS:], MAX_VIDEOS + 1):
+            label = placeholder_obj.name or f"视频{index}"
+            neutralize_video_placeholder(
+                placeholder_obj.part,
+                f"[视频 {label} 超出单轮理解数量上限（最多 {MAX_VIDEOS} 个），已跳过读取，请勿自行抓取外部链接。]",
+            )
+        question = extract_video_question(event, request, prepared)
         await self._attach_core_reply_video_material(event, prepared, request, originals,
-                                                     application, context, settings)
+                                                     application, context, settings,
+                                                     question=question, fetch_errors=fetch_errors)
 
     def _video_understanding_settings(self, application, context):
         """读这个窗口的媒体理解设置；读不到就返回 {}（等于本轮不挂）。
@@ -1962,6 +2061,13 @@ class PrivateCompanionV2StagingPlugin(Star):
                 await qzone_publisher.close()
             except Exception as error:
                 logger.warning("[CompanionV2] 生活说说停机清理失败 error_type=%s", type(error).__name__)
+        video_fusion = getattr(self, "_video_fusion_service", None)
+        self._video_fusion_service = None
+        if video_fusion is not None:
+            try:
+                video_fusion.close()
+            except Exception as error:
+                logger.warning("[CompanionV2] 视频通道停机清理失败 error_type=%s", type(error).__name__)
         startup_task = getattr(self, "_host_start_task", None)
         self._host_start_task = None
         if startup_task is not None and not startup_task.done():

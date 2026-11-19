@@ -582,6 +582,7 @@ class ModelManagement:
                     "providers": [{"id": provider.binding.provider, "capabilities": list(provider.capabilities),
                                    "max_output_tokens": provider.maximum_output_tokens,
                                    "supports_model_override": provider.supports_model_override,
+                                   "supports_video_relay": provider.supports_video_relay,
                                    "model": provider.model}
                                    for provider in self.app.router.providers.values()],
                     "host_state": self.app.state}
@@ -835,11 +836,13 @@ class ModelManagement:
                              ("fallback" not in reset and current.fields[profile.group + ".fallback"].explicit))
         if fallback_explicit and len(set(selected)) != len(selected):
             raise TaskError("model_fallback_duplicate", "fallback must differ from the primary provider")
+        from .models import provider_supports_task
+
         for provider_id in selected:
             provider = self.app.router.provider_for(provider_id)
             if provider is None:
                 raise TaskError("model_provider_unavailable", "the provider has no registered V2 adapter")
-            if not set(profile.capabilities).issubset(provider.capabilities):
+            if not provider_supports_task(profile.kind, profile.capabilities, provider):
                 raise TaskError("model_capability_mismatch", "the provider lacks task capabilities")
             if limit_explicit and values["max_output_tokens"] > provider.maximum_output_tokens:
                 # Only a provider ceiling can refuse a task limit, so the message names
@@ -855,7 +858,8 @@ class ModelManagement:
             for rule in rules:
                 self.app.router.provider_for(rule.provider_id)
             validate_targets(rules, self.app.router.providers, capabilities=profile.capabilities,
-                             max_output_tokens=values["max_output_tokens"] if limit_explicit else None)
+                             max_output_tokens=values["max_output_tokens"] if limit_explicit else None,
+                             task_kind=profile.kind)
         except TaskError:
             raise
         except ValueError as error:

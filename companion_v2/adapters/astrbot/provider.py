@@ -539,10 +539,16 @@ class AstrBotTextProvider:
                      "astrbot_openai_responses" if self.kind == "openai_responses" else
                      "astrbot_openai" if self.kind == "openai" else
                      "astrbot_gemini" if self.kind == "gemini" else "astrbot_native")
+        supports_video_relay = (
+            "image" in capabilities
+            and self.kind in ("openai", "openai_responses")
+            and not self.is_anthropic
+        )
         return LocalProvider(self.binding, capabilities, self.maximum_output_tokens,
                              self.reserve, self.generate, transport=transport, default_streaming=self.streaming,
                              maximum_input_estimate=self.maximum_input_estimate,
-                             supports_model_override=True, model=self.model)
+                             supports_model_override=True, model=self.model,
+                             supports_video_relay=supports_video_relay)
 
     def _provider_class_matches(self, provider):
         """宿主刷新注册表时会重新导入适配器模块，类对象随之更换。

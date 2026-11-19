@@ -163,6 +163,10 @@ class NativeVideoNarrationService:
             logger.warning("[CompanionV2] 视频原生转述不可用 reason=video_provider_unavailable")
             return tuple(VideoNarration(video.source, "没有可用的原生视频理解模型，尚未读取视频。", False)
                          for video in videos)
+        if not self._route_supports_native_video(parent_run, request):
+            logger.warning("[CompanionV2] 视频原生转述跳过 reason=relay_only_provider")
+            return tuple(VideoNarration(video.source, "没有可用的原生视频理解模型，尚未读取视频。", False)
+                         for video in videos)
         if request.event.scope.kind not in (ScopeKind.PRIVATE, ScopeKind.GROUP):
             return tuple(VideoNarration(video.source, "当前会话类型不支持视频理解，尚未读取视频。", False)
                          for video in videos)
@@ -170,6 +174,19 @@ class NativeVideoNarrationService:
         for video in videos:
             output.append(await self._summarize_one(parent_run, batch_id, request, video, settings))
         return tuple(output)
+
+    def _route_supports_native_video(self, parent_run, request):
+        router = getattr(getattr(self, "gateway", None), "router", None)
+        selector = getattr(router, "selected_route", None)
+        if not callable(selector):
+            return True
+        try:
+            _provider_id, _model, providers = selector(
+                parent_run.task.spec.context, KIND, request, at=self.tasks.now()
+            )
+            return any("video" in getattr(provider, "capabilities", ()) for provider in (providers or ()))
+        except Exception:
+            return True
 
     def can_use_reply_model(self, parent_run, request, settings):
         if (self.closed or not settings.get("video_understanding_enabled", True)

@@ -58,7 +58,7 @@ def _restore_components(segments, media, *, group=False):
             result.append(Forward(id=str(data["id"])))
         elif kind == "file":
             result.append(File(name=data.get("file_name") or data.get("name") or data.get("file") or "附件",
-                file=data.get("file_id") or data.get("id") or "", url=data.get("url") or ""))
+                file=data.get("file_id") or data.get("id") or data.get("file") or "", url=data.get("url") or ""))
         elif kind == "at" and group:
             result.append(At(qq=str(data["qq"])))
         else:

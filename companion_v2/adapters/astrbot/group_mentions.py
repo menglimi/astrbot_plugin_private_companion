@@ -107,14 +107,55 @@ def current_mention_text(target, event, account_id):
     return mention_text(target, account_id)
 
 
+VOICE_TRANSCRIPT_PREFIX = "[语音转写] "
+
+
+def trusted_stt_transcript(event) -> str:
+    """Read upstream ``gemini_stt`` extra transcript safely; only trust ``[语音转写]`` Plain if paired with native Record."""
+    if event is None:
+        return ""
+    getter = getattr(event, "get_extra", None)
+    if callable(getter):
+        for key in ("_gemini_stt_transcript", "_gemini_stt_raw_text"):
+            val = getter(key)
+            if isinstance(val, str):
+                cleaned = val.replace("\x00", "").strip()
+                if cleaned:
+                    return cleaned[:8192]
+    parts = getattr(getattr(event, "message_obj", None), "message", ())
+    if isinstance(parts, (list, tuple)):
+        has_record = any(component_kind(part) == "Record" for part in parts)
+        if has_record:
+            for part in parts:
+                if component_kind(part) == "Plain":
+                    raw = _get(part, "text", "")
+                    if isinstance(raw, str) and raw.startswith(VOICE_TRANSCRIPT_PREFIX):
+                        body = raw[len(VOICE_TRANSCRIPT_PREFIX):].replace("\x00", "").strip()
+                        if body:
+                            return body[:8192]
+    return ""
+
+
 def group_message_text(event, account_id):
-    """Text and mentions for the model, without attachment placeholders."""
+    """Text and mentions for the model, folding trusted upstream voice transcripts cleanly."""
+    stt_text = trusted_stt_transcript(event)
     text = []
+    stt_used = False
     for part in group_message_parts(event, account_id):
         kind = component_kind(part)
         data = part.get("data", {}) if isinstance(part, Mapping) else part
         if kind in ("Plain", "text"):
-            text.append(_get(data, "text", ""))
+            piece = _get(data, "text", "")
+            if stt_text and isinstance(piece, str) and piece.strip() == "[语音消息]" and not stt_used:
+                text.append(VOICE_TRANSCRIPT_PREFIX + stt_text)
+                stt_used = True
+            else:
+                if stt_text and isinstance(piece, str) and stt_text in piece:
+                    stt_used = True
+                text.append(piece)
         elif kind in ("At", "at"):
             text.append(current_mention_text(_get(data, "qq"), event, account_id))
+        elif kind in ("Record", "record") and stt_text and not stt_used:
+            text.append(VOICE_TRANSCRIPT_PREFIX + stt_text)
+            stt_used = True
     return "".join(text)
