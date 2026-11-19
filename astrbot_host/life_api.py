@@ -1,5 +1,6 @@
 """Authenticated Dashboard routes for private writing and role routines."""
 
+import asyncio
 import json
 
 from astrbot.api.web import request
@@ -21,11 +22,12 @@ class LifeWebAPI:
         return [(PREFIX, self.status, ["GET"], "Read private journals and role routines"),
                 (PREFIX + "/command", self.command, ["POST"], "Manage private journals and role routines")]
 
-    def manager(self):
+    def manager(self, username=None):
         controller = self.controller
         if controller._terminated:
             raise TaskError("staging_host_terminated", "the plugin has stopped")
-        username = request.username
+        if username is None:
+            username = request.username
         if type(username) is not str or not username.strip():
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
         session = controller.session or controller.last_session
@@ -40,10 +42,15 @@ class LifeWebAPI:
             query = request.query
             if set(query.keys()) - {"before", "after_activity"} or any(len(query.getlist(k)) != 1 for k in query.keys()):
                 raise ValueError("invalid query")
+            username = request.username
+            before = query.get("before") or None
+            after_activity = query.get("after_activity") or None
             async with self.controller._control_lock:
-                manager, operator = self.manager()
-                result = manager.status(operator, before=query.get("before") or None,
-                                        after_activity=query.get("after_activity") or None)
+                def load():
+                    manager, operator = self.manager(username)
+                    return manager.status(operator, before=before, after_activity=after_activity)
+
+                result = await asyncio.to_thread(load)
                 result["profile_id"] = getattr(self.controller.settings, "profile_id", None)
                 if getattr(self.controller, "target_id", None) is not None:
                     result["target_id"] = self.controller.target_id
@@ -58,6 +65,7 @@ class LifeWebAPI:
         try:
             if request.query:
                 raise ValueError("commands do not accept query fields")
+            username = request.username
             raw = await request.body()
             if len(raw) > 1200000:
                 raise ValueError("body too large")
@@ -83,8 +91,12 @@ class LifeWebAPI:
             if type(data) is not dict or data.get("action") not in fields or set(data) - common - fields[data["action"]]:
                 raise ValueError("unknown command fields")
             async with self.controller._control_lock:
-                manager, operator = self.manager()
-                manager.authorize(operator)
+                def prepare():
+                    manager, operator = self.manager(username)
+                    manager.authorize(operator)
+                    return manager, operator
+
+                manager, operator = await asyncio.to_thread(prepare)
             # Model work uses its own task lifecycle; leave stop/withdraw routes responsive.
             return outcome_response(await manager.command(operator, data))
         except TaskError as error:

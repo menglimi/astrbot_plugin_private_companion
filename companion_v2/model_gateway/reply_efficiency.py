@@ -41,7 +41,14 @@ def _batch_metadata(runtime, role_context, start_at, end_at):
     scope = role_context.scope
     role = role_context.role_binding.role
     context_json = "CASE WHEN json_valid(b.context_json) THEN b.context_json ELSE '{}' END"
-    return runtime.read_all(f"""SELECT b.batch_id, b.created_at, b.generation_task_id, b.state AS batch_state,
+    start_dt, end_dt = _parse_time(start_at), _parse_time(end_at)
+    if start_dt is not None and end_dt is not None:
+        bound_predicate = "AND b.created_at >= ? AND b.created_at <= ?"
+        bound_values = ((start_dt - timedelta(days=1)).isoformat(), (end_dt + timedelta(days=1)).isoformat())
+    else:
+        bound_predicate = "AND julianday(b.created_at) >= julianday(?) AND julianday(b.created_at) <= julianday(?)"
+        bound_values = (start_at, end_at)
+    rows = runtime.read_all(f"""SELECT b.batch_id, b.created_at, b.generation_task_id, b.state AS batch_state,
             b.part_count, b.contributions_json, f.state AS flow_state, f.reason AS flow_reason,
             f.due_at AS flow_due_at, r.plan_json
         FROM conversation_batches b
@@ -55,11 +62,14 @@ def _batch_metadata(runtime, role_context, start_at, end_at):
             AND json_extract({context_json}, '$.role_binding.role.installation_id') = ?
             AND json_extract({context_json}, '$.role_binding.role.kind') = ?
             AND json_extract({context_json}, '$.role_binding.role.subject_id') = ?
-            AND julianday(b.created_at) >= julianday(?)
-            AND julianday(b.created_at) <= julianday(?)
+            {bound_predicate}
         ORDER BY b.created_at DESC, b.rowid DESC""",
         (scope.installation_id, scope.platform, scope.bot_id, scope.account_id,
-         role.installation_id, role.kind.value, role.subject_id, start_at, end_at))
+         role.installation_id, role.kind.value, role.subject_id, *bound_values))
+    if start_dt is None or end_dt is None:
+        return rows
+    return tuple(row for row in rows if (created_dt := _parse_time(row["created_at"])) is not None
+                 and start_dt <= created_dt <= end_dt)
 
 
 def _grouped_for_batches(runtime, table, identifiers):
@@ -396,7 +406,7 @@ def _core_sample(record, laya_events=()):
             "send_returned": bool(delivery.get("returned")), "platform_confirmed": False}}
 
 
-def reply_efficiency_report(runtime, role_context, now):
+def reply_efficiency_report(runtime, role_context, now, *, core_observations=None):
     """Return a seven-calendar-day, body-free report for one bot and role's private sessions."""
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
@@ -410,8 +420,9 @@ def reply_efficiency_report(runtime, role_context, now):
     task_starts = _grouped_for_batches(runtime, "task_starts", task_ids)
     model_details = _grouped_for_batches(runtime, "model_details", task_ids)
     tools_by_batch = _grouped_for_batches(runtime, "tools", batch_ids)
-    core_records = observations_for_role(runtime, role_context,
+    core_records = (observations_for_role(runtime, role_context,
         start=window_start.isoformat(), end=now.isoformat(), private_only=True)
+        if core_observations is None else core_observations)
     laya_by_batch = _laya_for_batches(runtime, batch_ids + [record["turn_id"] for record in core_records])
 
     samples = [_project(dict(batch), inputs_by_batch.get(batch["batch_id"], {}),

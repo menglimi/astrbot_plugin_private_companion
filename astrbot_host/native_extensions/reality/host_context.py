@@ -104,10 +104,15 @@ class RealityHostContext:
         persona = await self.verified_persona(original, user_id, umo=umo)
         at = self.controller.now()
         native_input = SimpleNamespace(text=str(purpose), event_id="reality-context-" + uuid4().hex)
-        background = build_core_reply_prompt(application, context, native_input, at=at).instruction
-        history = application.proactive.history.conversation
-        snapshot = history.capture(context, at, action="conversation.reply", limit=8, max_chars=2400)
-        items = history.read(snapshot, context, at, action="conversation.reply")
+
+        def read_context():
+            background = build_core_reply_prompt(application, context, native_input, at=at).instruction
+            history = application.proactive.history.conversation
+            snapshot = history.capture(context, at, action="conversation.reply", limit=8, max_chars=2400)
+            items = history.read(snapshot, context, at, action="conversation.reply")
+            return background, items
+
+        background, items = await asyncio.to_thread(read_context)
         await self.verified_persona(original, user_id, umo=umo)
         recent_dialogue = "\n".join(f"{item['role']}：{item['text']}" for item in items)
         continuity = ("最近真实私聊，仅帮助理解称呼、语气和连续性；旧话不是新请求，"
@@ -178,7 +183,9 @@ class RealityHostContext:
             raise TaskError("reality_audio_not_authorized", "Reality local voice requires this user's audio consent")
         from companion_v2.conversation.reply_settings import VOICE_FIELDS
         from companion_v2.conversation.voice_reply import VoiceReplyPolicy
-        values = application.reply_settings.capture(context, self.controller.now())["settings"]
+        values = (await asyncio.to_thread(
+            application.reply_settings.capture, context, self.controller.now()
+        ))["settings"]
         policy = VoiceReplyPolicy(**{key: values["voice_" + key] for key in VOICE_FIELDS})
         configured = policy.provider_for_language() if policy is not None else ""
         timeout = timeout_seconds or (policy.timeout_seconds if policy is not None else 30)
