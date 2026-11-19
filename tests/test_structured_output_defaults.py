@@ -102,15 +102,15 @@ class StagingOutputDefaultTests(StagingFixture, unittest.IsolatedAsyncioTestCase
         profiles = session.application.router.profiles
         self.assertLessEqual(set(profiles), set(THINKING_MARGIN))
         expected = {
-            "role.expression.learn": 8192,
-            "role.self_review": 8192,
-            "memory.reflect": 8192,
-            "content.authoring.draft": 8192,
-            "role.expression.review": 4096,
-            "role.state.maintain": 4096,
-            "proactive.compose": 4096,
-            "calendar.plan": 4096,
-            "screen.interpretation": 4096,
+            "role.expression.learn": 30000,
+            "role.self_review": 30000,
+            "memory.reflect": 30000,
+            "content.authoring.draft": 30000,
+            "role.expression.review": 30000,
+            "role.state.maintain": 30000,
+            "proactive.compose": 30000,
+            "calendar.plan": 30000,
+            "screen.interpretation": 30000,
             "conversation.reply": 2048,
             "conversation.poke_reply": 128,
             "proactive.judge": 2048,
@@ -123,7 +123,7 @@ class StagingOutputDefaultTests(StagingFixture, unittest.IsolatedAsyncioTestCase
         session = self.staging_with_global_budget()
         group = "model.role.expression.learn"
         field = self.snapshot_field(session, group)
-        self.assertEqual(field.value, 8192)
+        self.assertEqual(field.value, 30000)
         self.assertIsNone(field.source)
         self.assertFalse(field.explicit)
         self.assertIsNone(self.runtime.read_one(
@@ -137,7 +137,7 @@ class StagingOutputDefaultTests(StagingFixture, unittest.IsolatedAsyncioTestCase
         field = self.snapshot_field(session, group)
         self.assertEqual(field.value, 4096)
         self.assertTrue(field.explicit)
-        self.assertEqual(session.application.router.profiles[group.removeprefix("model.")].max_output_tokens, 8192)
+        self.assertEqual(session.application.router.profiles[group.removeprefix("model.")].max_output_tokens, 30000)
 
 
 class StagingRegistrationTests(StagingFixture, unittest.IsolatedAsyncioTestCase):
