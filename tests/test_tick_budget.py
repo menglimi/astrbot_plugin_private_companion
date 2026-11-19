@@ -10,6 +10,7 @@ and the guarantee that a deferred unit is served on a later pass.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import unittest
 
 from companion_v2.host.tick_budget import TickScheduler, TickUnit
@@ -135,6 +136,29 @@ class TickSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DrivePassBudgetTests(HostFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_a_transient_sqlite_lock_is_deferred_instead_of_killing_the_host(self):
+        attempts = []
+
+        def locked():
+            attempts.append("locked")
+            raise sqlite3.OperationalError("database is locked")
+
+        scheduler = TickScheduler((TickUnit("reflection", locked), TickUnit("next", lambda: "ok")),
+                                  budget_seconds=10.0)
+        first = await scheduler.advance()
+        self.assertFalse(first.completed)
+        self.assertEqual(first.ran, ())
+        self.assertEqual(first.results["reflection"]["deferred"], "sqlite_operational_error")
+        self.assertEqual(scheduler.cursor, 0)
+        self.assertEqual(attempts, ["locked"])
+
+        # A later slice retries the same unit rather than skipping it.
+        first_unit = scheduler._units[0]
+        scheduler._units = (TickUnit("reflection", lambda: "recovered"), first_unit.__class__("next", lambda: "ok"))
+        second = await scheduler.advance()
+        self.assertTrue(second.completed)
+        self.assertEqual(second.ran, ("reflection", "next"))
+
     async def test_every_component_is_still_served_when_slices_are_tiny(self):
         """The bound may delay a unit, never drop it."""
 

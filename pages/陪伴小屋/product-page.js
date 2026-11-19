@@ -304,9 +304,6 @@ window.CompanionProduct = (() => {
     appearance[name] = value;
   }
   const currentTheme = () => appearance.theme;
-  // Project reduced motion into the page and embedded workspaces without saving over the preference.
-  const renderedAppearance = () => ({...appearance,
-    motion: document.documentElement.dataset.performanceMode === "lite" ? "off" : appearance.motion});
   /* 「跟随时段」默认关。开了之后界面主题跟着小屋当前光照走，
      但只在时段真的变了才切——每次渲染都切会把用户手选的主题冲掉。 */
   let followLight = false;
@@ -352,7 +349,7 @@ window.CompanionProduct = (() => {
       }
       followLight = saved.followLight === true;
       applyAppearance();
-      sendWorkspace({kind:"appearance",appearance:renderedAppearance()});
+      sendWorkspace({kind:"appearance",appearance:{...appearance}});
       if (typeof saved.largeText === "boolean") {
         window.CompanionDisplayPreferences?.setLargeText?.(saved.largeText);
       }
@@ -366,8 +363,7 @@ window.CompanionProduct = (() => {
   }
   function applyAppearance() {
     const root = document.documentElement;
-    const rendered = renderedAppearance();
-    for (const [name, spec] of Object.entries(dimensions)) root.dataset[spec.dataset] = rendered[name];
+    for (const [name, spec] of Object.entries(dimensions)) root.dataset[spec.dataset] = appearance[name];
     root.dataset.themeReady = "";
   }
   /* 主题叠化：自定义属性不能插值，所以不逐属性过渡，
@@ -376,7 +372,7 @@ window.CompanionProduct = (() => {
   function crossfadeTheme(next) {
     const root = document.documentElement;
     const previous = root.dataset.theme;
-    const reduced = renderedAppearance().motion !== "full"
+    const reduced = appearance.motion !== "full"
       || matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     /* 入场期间不叠化，直接换色。
        理由：叠化覆层是「整页快照」，而入场时小屋是 position:fixed
@@ -411,7 +407,7 @@ window.CompanionProduct = (() => {
     try { localStorage.setItem(spec.key, value); } catch (_) {}
     displayPreferencesChanged();
     if (name === "theme") sendWorkspace({kind:"theme",theme:value});
-    else sendWorkspace({kind:"appearance",name,value:renderedAppearance()[name]});
+    else sendWorkspace({kind:"appearance",name,value});
     return appearance[name];
   }
   function setFollowLight(on) {
@@ -804,7 +800,7 @@ window.CompanionProduct = (() => {
       releaseAppearanceContext?.();
       const restoreAppearance = () => {
         applyAppearance();
-        sendWorkspace({kind:"appearance",appearance:renderedAppearance()});
+        sendWorkspace({kind:"appearance",appearance:{...appearance}});
       };
       releaseAppearanceContext = bridge.onContext?.(restoreAppearance) || null;
       restoreAppearance();
@@ -1362,7 +1358,7 @@ window.CompanionProduct = (() => {
       setWorkspaceLoadState(owner,"ready");
       // Display labels never participate in identity checks or request routing.
       sendWorkspaceContext(owner,context);
-      send({kind:"appearance",appearance:renderedAppearance()});return;
+      send({kind:"appearance",appearance:{...appearance}});return;
     }
     if(message.kind==="resize"){if(Number.isFinite(message.height))owner.style.height=Math.max(620,Math.min(2400,message.height+12))+"px";return;}
     /* 工作区是 opaque origin 的 sandbox iframe，开不出能盖住插件视口的模态层；

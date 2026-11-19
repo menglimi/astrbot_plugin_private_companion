@@ -198,7 +198,6 @@ window.CompanionWorkbench = (() => {
       maximumChars: definition?.maximum_chars ?? null,
       decimals: definition?.decimal_places ?? (kind === "float" ? 2 : 0),
       editable: definition?.editable_layers || [],
-      hasContract: Array.isArray(definition?.editable_layers),
       hasBounds: definition?.minimum != null && definition?.maximum != null,
     };
   }
@@ -633,9 +632,6 @@ window.CompanionWorkbench = (() => {
   function fieldScopeMarkup(state, name, item, provenance, container) {
     const source = provenance?.[name]?.layer;
     const lines = [`保存到：${saveScopeLabel(item.writeLayer || container.writeLayer, container.scopeObject)}`];
-    if (item.hasContract && !fieldEditable(item, container)) {
-      lines.push("当前层不可写：该字段只在具体群聊窗口可编辑。");
-    }
     if (source) lines.push(`${provenance[name].explicit === false ? "继承自" : "当前值来自"}：${LAYER_ORIGINS[source] || source}`);
     if (provenance?.[name]?.explicit === false && state.draft[name] !== state.base?.[name]) {
       lines.push(`覆盖前的继承值：${displayValue(item, state.base?.[name])}`);
@@ -993,20 +989,13 @@ window.CompanionWorkbench = (() => {
       + ` step="${e(step)}" value="${shown}"${dis}>${unit ? `<span class="wb-unit">${unit.trim()}</span>` : ""}${bounds}</span>`;
   }
 
-  function fieldEditable(item, container) {
-    if (!item) return false;
-    if (!item.hasContract) return true;
-    return Array.isArray(item.editable)
-      && item.editable.includes(item.writeLayer || container?.writeLayer || "");
-  }
-
   function fieldMarkup(state, container, name) {
     const item = container.fields[name];
     if (!item) return "";
     const value = state.draft[name];
     const provenance = state.status?.provenance?.[name] || {};
     const inherited = provenance.explicit === false && provenance.layer !== null;
-    const layerEditable = fieldEditable(item, container);
+    const layerEditable = !item.editable.length || item.editable.includes(item.writeLayer || container.writeLayer);
     const locked = state.locked() || !layerEditable;
     const label = e(item.label || name);
     const reset = inherited && !locked
@@ -1122,7 +1111,7 @@ window.CompanionWorkbench = (() => {
          : "保存结果尚未确认。可能已经写入；核对会沿用同一个操作标识，不会重复保存。")
        : "";
     const writeLayers = s.status ? [...new Set(Object.values(container.fields)
-      .filter(item => fieldEditable(item, container))
+      .filter(item => !item.editable.length || item.editable.includes(item.writeLayer || container.writeLayer))
       .map(item => item.writeLayer || container.writeLayer))] : [];
     const scopeLabel = s.status ? (writeLayers.length ? writeLayers : [container.writeLayer])
       .map(layer => saveScopeLabel(layer, container.scopeObject)).join("、")
@@ -2601,7 +2590,7 @@ window.CompanionWorkbench = (() => {
       }
       if (state.busy || state.loading || state.denied) return;
        if (!retry) {
-        if (state.pending) { return save(true); }
+         if (state.pending) { state.notice = ""; state.bad = false; paint(); return; }
         if (state.stale) { await refresh(); return; }
         if (Object.keys(state.conflicts).length) {
           state.notice = "请先选择同时修改的设置要保留哪个值。"; state.bad = true; paint(); return;
@@ -2612,8 +2601,7 @@ window.CompanionWorkbench = (() => {
           return;
         }
         const bad = Object.entries(state.draft).find(([name, value]) =>
-          fieldEditable(state.container.fields[name], state.container)
-          && !valid(state.container.fields[name], value));
+          !valid(state.container.fields[name], value));
         if (bad) {
           const item = state.container.fields[bad[0]];
           const message = explainInvalid(item, bad[1]);
@@ -2636,24 +2624,15 @@ window.CompanionWorkbench = (() => {
           return;
         }
         const changes = {};
-        const lockedDirty = [];
         for (const [name, value] of Object.entries(state.draft)) {
-          if (value === state.base[name]) continue;
-          if (!fieldEditable(state.container.fields[name], state.container)) {
-            lockedDirty.push(name);
-            continue;
-          }
-          changes[wireName(name)] = value;
+          if (value !== state.base[name]) changes[wireName(name)] = value;
         }
         /* 恢复继承：这些字段要显式告诉后端「清掉本层的值」，
            而不是写一份和继承值相同的副本。 */
         const resets = Object.keys(state.draft).filter(name =>
           resets_.includes(name) && state.draft[name] === state.base[name]).map(wireName);
         if (!Object.keys(changes).length && !resets.length) {
-          state.notice = lockedDirty.length
-            ? "该字段只在具体群聊窗口可编辑，当前层的改动不会保存。"
-            : "设置没有变化。";
-          state.bad = false; paint(); return;
+          state.notice = "设置没有变化。"; state.bad = false; paint(); return;
         }
         /* 存进 pending 的是**网线名**：重试要逐字节复用原请求，
            而草稿名与网线名可能不同（见 outbound）。 */
@@ -2667,26 +2646,6 @@ window.CompanionWorkbench = (() => {
         savePending();
       }
       if (!state.pending) return;
-      if (state.pending && state.container) {
-        const blocked = Object.keys(state.pending.changes || {}).filter(name => {
-          const item = state.container.fields?.[name];
-          return item && !fieldEditable(item, state.container);
-        });
-        if (blocked.length) {
-          const operationKey = state.pending.operation_key;
-          state.pending = null;
-          state.pendingReason = "";
-          savePending();
-          clearAutoRecovery(operationKey);
-          for (const name of blocked) {
-            if (state.base) state.draft[name] = state.base[name];
-          }
-          state.busy = false; state.bad = false; state.ok = false;
-          state.notice = "该字段只在具体群聊窗口可编辑，已撤销这次未保存的值。";
-          paint();
-          return;
-        }
-      }
        state.busy = true; state.bad = false; state.ok = false;
        if (!retry) state.pendingReason = "";
        state.notice = retry ? "正在核对原保存结果…" : "正在保存…";
@@ -2803,9 +2762,6 @@ window.CompanionWorkbench = (() => {
       if (state.pending) return {state: "unknown", message: state.pendingReason || state.pending.pending_reason || ""};
       if (state.busy || state.loading || state.denied || !state.status) return {state: "unavailable"};
       if (!state.draft || !state.container?.fields[name]) return {state: "unavailable"};
-      if (!fieldEditable(state.container.fields[name], state.container)) {
-        return {state:"unavailable", message:"该字段只在具体群聊窗口可编辑。"};
-      }
       if (state.stale || Object.keys(state.conflicts).length) return {state: "conflict", message: state.notice || "配置已更新，请先核对当前版本。"};
       const otherChanges = Object.keys(state.draft).some(field => field !== name && state.draft[field] !== state.base?.[field]);
       if (otherChanges || resets_.length) return {state: "dirty"};

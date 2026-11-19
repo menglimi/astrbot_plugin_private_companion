@@ -1,5 +1,5 @@
-.reply-heading{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-3);flex-wrap:wrap}
-.reply-heading h2{font-size:var(--fs-head)}.reply-heading p,.reply-preview>p{color:var(--t-text-soft);line-height:1.8;margin:var(--sp-2) 0 var(--sp-4)}
+.reply-heading,.reply-diagnostics header{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-3);flex-wrap:wrap}
+.reply-heading h2{font-size:var(--fs-head)}.reply-heading p,.reply-preview>p,.reply-diagnostics>p{color:var(--t-text-soft);line-height:1.8;margin:var(--sp-2) 0 var(--sp-4)}
 .reply-notice,.reply-pending{padding:var(--sp-3) var(--sp-4);margin:var(--sp-4) 0;border-radius:var(--r-sm);background:var(--t-ok-quiet);color:var(--t-ok-ink);line-height:1.8;overflow-wrap:anywhere}
 .reply-error,.reply-pending{background:var(--t-warn-quiet);color:var(--t-warn-ink)}.reply-pending button{margin-top:var(--sp-2)}
 .reply-layout{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:var(--sp-6)}.reply-layout>*{min-width:0}
@@ -15,13 +15,13 @@
 /* 预览有序列表的项目符号要挂在文字左侧留出的这段缩进里：26px 是实测值，
    吸附到 --sp-5(22) 会让两位数的序号（10.）贴到文字上，所以保留原值。 */
 .reply-actions{display:flex;gap:var(--sp-2);flex-wrap:wrap;margin:var(--sp-5) 0 var(--sp-2)}.reply-preview>button{margin:var(--sp-3) 0}.reply-preview ol{padding-left:26px;margin:var(--sp-3) 0}.reply-preview li{padding:var(--sp-2) var(--sp-3);background:var(--t-surface-soft);border:1px solid var(--t-line);border-radius:var(--r-sm);margin:var(--sp-2) 0}.reply-preview pre{font:inherit;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;line-height:1.9}.reply-preview-meta,.reply-muted{color:var(--t-text-soft);line-height:1.8;font-size:var(--fs-body)}
-.reply-empty{padding:var(--sp-5) var(--sp-3);color:var(--t-text-soft);line-height:1.9;background:var(--t-surface-soft);border:1px dashed var(--t-line);border-radius:var(--r-sm)}.reply-empty h2{color:var(--t-text-strong);font-size:var(--fs-head);margin-bottom:var(--sp-3)}
+.reply-diagnostics{margin-top:var(--sp-6);padding-top:var(--sp-5);border-top:1px solid var(--t-line)}.reply-diagnostics header span{font-size:var(--fs-body);color:var(--t-text-soft)}.reply-empty{padding:var(--sp-5) var(--sp-3);color:var(--t-text-soft);line-height:1.9;background:var(--t-surface-soft);border:1px dashed var(--t-line);border-radius:var(--r-sm)}.reply-empty h2{color:var(--t-text-strong);font-size:var(--fs-head);margin-bottom:var(--sp-3)}
 .reply-scope-note{margin-bottom:var(--sp-4);padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft);font-size:var(--fs-body);line-height:1.7;color:var(--t-text-soft)}.reply-scope-note strong{display:block;color:var(--t-text-strong)}.reply-scope-note p{margin:var(--sp-2) 0 0}
-.reply-record{border-top:1px solid var(--t-line);padding:var(--sp-3) 0;overflow-wrap:anywhere}.reply-record summary{display:flex;align-items:baseline;gap:var(--sp-3);flex-wrap:wrap;cursor:pointer;line-height:1.9}.reply-record summary::before{content:"▸";flex:0 0 auto;color:var(--t-text-faint)}.reply-record[open]>summary::before,.reply-record details[open]>summary::before{content:"▾"}.reply-record summary span:first-child{font-weight:600}.reply-record time{color:var(--t-text-soft);font-size:var(--fs-body);margin-left:auto}.reply-record p,.reply-record ul{font-size:var(--fs-body);line-height:1.9;margin:var(--sp-3) 0}.reply-record small{color:var(--t-text-soft)}
+.reply-record{border-top:1px solid var(--t-line);padding:var(--sp-3) 0;overflow-wrap:anywhere}.reply-record summary{display:flex;align-items:baseline;gap:var(--sp-3);flex-wrap:wrap;cursor:pointer;line-height:1.9}.reply-record summary::before{content:"▸";flex:0 0 auto;color:var(--t-text-faint)}.reply-record[open] summary::before{content:"▾"}.reply-record summary span:first-child{font-weight:600}.reply-record time{color:var(--t-text-soft);font-size:var(--fs-body);margin-left:auto}.reply-record p,.reply-record ul{font-size:var(--fs-body);line-height:1.9;margin:var(--sp-3) 0}.reply-record small{color:var(--t-text-soft)}
 .reply-record-note{color:var(--t-text-soft);font-size:var(--fs-body)}.reply-record-note.is-warn{color:var(--t-warn-ink);font-weight:600}
 .reply-diag-note{margin:var(--sp-2) 0 0;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.7}
 .reply-record .reply-part-detail{display:block;line-height:1.7;overflow-wrap:anywhere}
-.reply-record ul{padding-left:1.25rem}.reply-record li{margin:var(--sp-1) 0;overflow-wrap:anywhere}
+.reply-diagnostics h3{margin:0;font-size:var(--fs-title)}.reply-diagnostics ul{padding-left:1.25rem}.reply-diagnostics li{margin:var(--sp-1) 0;overflow-wrap:anywhere}
 @media(max-width:1100px){.reply-layout{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:420px){.reply-fields{grid-template-columns:minmax(0,1fr)}.reply-record time{margin-left:0}.reply-actions .button{flex:1 1 100%}.reply-heading .button{width:100%}}
 

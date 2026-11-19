@@ -620,7 +620,6 @@
 .shell-panel-head .button { flex: none; white-space: nowrap; }
 @media (max-width: 760px) {
   .shell-panel-head { padding: var(--sp-3); gap: var(--sp-2); }
-  .shell-panel-head:has(.reply-diagnostics-link) { flex-wrap: wrap; }
   .shell-panel-head p { font-size: var(--fs-micro); }
 }
 .shell-panel-body { padding:var(--sp-4); }
@@ -984,47 +983,3 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
 .stage-region[data-role-card-dock-side="left"] .stage-role-card-handle svg { transform:rotate(180deg); }
 .stage-role-card-handle:focus-visible { outline:2px solid var(--t-focus);outline-offset:-3px; }
 body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-card-dragging="true"] .stage-role-card-handle { opacity:0;cursor:grabbing; }
-
-/* 轻量外观只作用于当前页面，不改用户保存的字体大小、主题或动效偏好。 */
-:root[data-performance-mode="lite"],
-:root[data-performance-mode="lite"] [data-theme] {
-  font-family: system-ui, "Microsoft YaHei", sans-serif;
-  --skin-heading-font: system-ui, "Microsoft YaHei", sans-serif;
-  --numeric-font: ui-monospace, Consolas, monospace;
-  --skin-canvas-pattern: none;
-}
-:root[data-performance-mode="lite"] *,
-:root[data-performance-mode="lite"] *::before,
-:root[data-performance-mode="lite"] *::after,
-:root[data-performance-mode="lite"] dialog::backdrop {
-  animation: none !important;
-  transition: none !important;
-  backdrop-filter: none !important;
-}
-.stage-lite-note,
-:root[data-performance-mode="lite"] .room-boot,
-:root[data-performance-mode="lite"] body:not(.room-editing) #stageScene :is(.voxel-room, .voxel-hint, [data-voxel-reset]) {
-  display: none;
-}
-/* 只收起首页空闲舞台。编辑器需要正常尺寸，其他页的浮动卡片仍用于切换角色。 */
-:root[data-performance-mode="lite"] body:not(.room-editing) #homeShell[data-away="false"] #stageScene {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-3);
-  min-height: 0;
-  height: auto !important; /* 覆盖宽屏下专门给 3D 全景预留的视口高度。 */
-}
-:root[data-performance-mode="lite"] body:not(.room-editing) #stageScene :is(.stage-role, .stage-overlay) {
-  position: static;
-  max-width: none;
-  justify-self: start;
-}
-:root[data-performance-mode="lite"] body:not(.room-editing) #homeShell[data-away="false"] .stage-lite-note {
-  display: block;
-  grid-row: 2;
-  grid-column: 1 / -1;
-  color: var(--t-text-soft);
-  font-size: var(--fs-tiny);
-}

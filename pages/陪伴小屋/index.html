@@ -2,8 +2,36 @@
 <html data-companion-booting lang="zh-CN">
 <head>
   <style>
-    /* 两种模式在外壳样式就绪后显示页面，避免首屏闪烁。 */
+    /* 首屏防闪：性能模式开关检查完成前不显示完整小屋 DOM。 */
     html[data-companion-booting] body { visibility: hidden !important; }
+    .companion-performance-page {
+      box-sizing: border-box; min-height: 100vh; margin: 0; padding: 28px 18px;
+      display: grid; place-items: center; color: #243047;
+      background: radial-gradient(circle at 50% 0%, #eef5ff 0%, #f6f8fc 46%, #edf1f8 100%);
+      font: 14px/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    .companion-performance-card {
+      width: min(620px, 100%); box-sizing: border-box; padding: 26px 24px;
+      border: 1px solid rgba(87, 111, 153, .16); border-radius: 22px;
+      background: rgba(255, 255, 255, .92); box-shadow: 0 18px 50px rgba(43, 62, 94, .12);
+    }
+    .companion-performance-badge {
+      display: inline-flex; align-items: center; gap: 7px; margin-bottom: 14px;
+      padding: 5px 11px; border-radius: 999px; color: #176b55;
+      background: #e8f7f1; font-weight: 650; letter-spacing: .02em;
+    }
+    .companion-performance-card h1 { margin: 0 0 10px; font-size: 24px; line-height: 1.3; }
+    .companion-performance-card p { margin: 0 0 12px; color: #52627b; }
+    .companion-performance-card ul { margin: 16px 0 20px; padding-left: 21px; color: #40516d; }
+    .companion-performance-card li { margin: 7px 0; }
+    .companion-performance-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .companion-performance-button {
+      appearance: none; border: 0; border-radius: 10px; padding: 10px 15px;
+      color: #fff; background: #2e6bd6; font: inherit; font-weight: 650; cursor: pointer;
+    }
+    .companion-performance-button.secondary { color: #2e5ca8; background: #e9f0fd; }
+    .companion-performance-note { margin-top: 14px; font-size: 12px; color: #7a879b; }
+    .companion-performance-actions a { color: inherit; text-decoration: none; }
   </style>
   <noscript><style>html[data-companion-booting] body { visibility: visible !important; }</style></noscript>
 
@@ -49,27 +77,89 @@
       }catch(_){document.documentElement.dataset.themeReady="";}
     })();
   </script>
-  <!-- 保留静态地址以便宿主重写。两种模式共用页面外壳和管理模块，
-       data-full-only 标记可从轻量首屏省略的视觉资源。 -->
+  <script>
+    /* 先随机挑一张启动动图。真正的 src 放在 body 里的 inert template 中，
+       让宿主页面服务能把它改写成带插件路径和 asset_token 的地址；不能在这里
+       直接给 img.src 写相对路径，因为内联脚本里的字符串不会经过宿主改写。 */
+    (function(){
+      var root=document.documentElement;
+      var reduceMotion=root.dataset.motion==="low"||root.dataset.motion==="off"
+        ||(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      if(reduceMotion)return;
+      var choices=[
+        "assets/room-loading-tea-coffee.webp?v=boot-webp-20261107",
+        "assets/room-loading-mug.webp?v=boot-webp-20261107"
+      ];
+      root.dataset.roomBootGif=choices[Math.floor(Math.random()*choices.length)];
+    })();
+  </script>
+  <!-- 性能模式：完整小屋样式与脚本先放进惰性 template。宿主会照常重写
+       其中相对地址；只有确认官方配置未开启性能模式后才由 performance-gate.js
+       激活，低配置设备不会下载 3D 体素包和整套工作区脚本。 -->
   <template id="companion-full-assets">
-    <link rel="stylesheet" href="bundle.css?v=2a237cb8b2c05187">
-    <link rel="preload" href="assets/voxel-room.js?v=theme-persist-20261119" as="script" data-full-only>
+<<<<<<< HEAD
+    <link rel="stylesheet" href="bundle.css?v=870d53806d7bb2c0">
+=======
+    <link rel="stylesheet" href="bundle.css?v=870d53806d7bb2c0">
+>>>>>>> origin/main
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    <link rel="preload" href="assets/voxel-room.js?v=home-ui-20261120" as="script">
     <script defer src="assets/lucide.min.js"></script>
-    <script defer src="assets/voxel-room.js?v=theme-persist-20261119" data-full-only data-voxel-engine onload="document.documentElement.dataset.roomAsset=''" onerror="document.documentElement.dataset.roomAsset=''"></script>
+    <script defer src="assets/voxel-room.js?v=home-ui-20261120" onload="document.documentElement.dataset.roomAsset=''" onerror="document.documentElement.dataset.roomAsset=''"></script>
     <script defer src="theme.js?v=theme-material-20261001"></script>
     <script defer src="shell.js?v=shell-layout-20261017"></script>
     <script defer src="page-guards.js?v=consolidated-20261024-r1"></script>
-    <script defer src="page-motion.js?v=page-interactions-20261011" data-full-only></script>
-    <script defer src="entrance.js?v=entrance-state-build-20261001" data-full-only></script>
+    <script defer src="page-motion.js?v=page-interactions-20261011"></script>
+    <script defer src="entrance.js?v=entrance-state-build-20261001"></script>
     <script defer src="config-snapshot.js?v=brand-no-version-20261018"></script>
-    <script defer src="home-sidebar.js?v=home-v2-sidebar-restored-r3-20261119"></script>
+    <script defer src="home-sidebar.js?v=agenda-progress-20261120"></script>
     <script defer src="persona-designer-memory.js?v=persona-recreation-20261101"></script>
-    <script defer src="product-page.js?v=lite-dashboard-20261119"></script>
+    <script defer src="product-page.js?v=group-navigation-20261103"></script>
     <script defer src="confirmation-dialog.js?v=consolidated-20261024-r1"></script>
     <script defer src="native-extension-management.js?v=mobile-mihome-controls-20261026"></script>
     <script defer src="native-extension-panel.js?v=mobile-pairing-confirm-20261030"></script>
     <script defer src="self-relationship.js?v=core-user-profile-20261007"></script>
-    <script defer src="home-environment.js?v=lite-dashboard-20261119"></script>
+    <script defer src="home-environment.js?v=weather-alert-label-20261118"></script>
     <script defer src="migration-config-review.js?v=consolidated-20261024-r1"></script>
     <script defer src="migration-config-table.js?v=migration-guided-20261025"></script>
     <script defer src="setup-guide.js?v=setup-init-deferral-20261110"></script>
@@ -89,8 +179,8 @@
     <!-- app.js 先于 room-editor.js：体素在首屏就挂载，此时 room-editor 的
          顶层函数还不存在，mountStage 里的两处回调因此必须惰性解析（见
          app.js 的注释）。tests/test_voxel_mount_callbacks.cjs 守住这个顺序。 -->
-    <script defer src="app.js?v=reply-diagnostics-20261120"></script>
-    <script defer src="room-editor.js?v=lite-dashboard-20261119"></script>
+    <script defer src="app.js?v=home-ui-20261120"></script>
+    <script defer src="room-editor.js?v=transient-time-preview-20261029-r2"></script>
     <script defer src="memory-page.js?v=memory-discard-20261112"></script>
     <script defer src="contact-page.js?v=config-save-fastpath-20261111"></script>
     <script defer src="learning-page.js?v=learning-record-ownership-20261012"></script>
@@ -105,10 +195,9 @@
     <script defer src="calendar-editor.js?v=schedule-workspace-20261003-r2"></script>
     <script defer src="state-editor.js?v=presence-role-scope-20261027"></script>
     <script defer src="state-page.js?v=grant-scope-20261111"></script>
-    <script defer src="reply-diagnostics.js?v=reply-diagnostics-20261120"></script>
-    <script defer src="reply-page.js?v=reply-diagnostics-20261120"></script>
+    <script defer src="reply-page.js?v=no-expression-diagnostics-20261120"></script>
     <script defer src="host-options-page.js?v=forward-intake-settings-20261004"></script>
-    <script defer src="workbench-page.js?v=reply-member-save-20261119"></script>
+    <script defer src="workbench-page.js?v=qzone-config-context-20261110"></script>
     <script defer src="memory-settings-section.js?v=memory-config-ownership-20261001"></script>
     <script defer src="config-editor.js?v=exploration-20261111-r2"></script>
     <script defer src="output-page.js?v=image-save-20261112"></script>
@@ -118,25 +207,27 @@
     <script defer src="expression-page.js?v=expression-completion-20261008"></script>
     <script defer src="models-page.js?v=image-save-20261112"></script>
     <script defer src="image-materials-page.js?v=reference-usage-persistence-20261007"></script>
-    <script defer src="maintenance-page.js?v=config-relative-20261120"></script>
-    <script defer src="appearance-page.js?v=lite-dashboard-20261119"></script>
+    <script defer src="maintenance-page.js?v=maintenance-config-relative-20261120"></script>
+    <script defer src="appearance-page.js?v=account-display-preferences-20261028"></script>
     <script defer src="backup-page.js?v=data-subpages-20261008-r2"></script>
     <script defer src="storage-page.js?v=runtime-cache-clear-20261109"></script>
-    <script defer src="understanding-page.js?v=web-no-permission-matrix-20261120-r2"></script>
+    <script defer src="understanding-page.js?v=understanding-figma-layout-20261007"></script>
     <script defer src="module-ready.js?v=module-ready-20261028"></script>
-    <script data-full-only>
+    <script>
         (function(){
           var root=document.documentElement;
-          if(root.dataset.motion==="low"||root.dataset.motion==="off"
-            ||window.matchMedia?.("(prefers-reduced-motion: reduce)").matches)return;
+          var source=root.dataset.roomBootGif;
           var image=document.getElementById("roomBootGif");
-          var choices=Array.from(document.querySelectorAll("template[data-room-boot-gif]"),function(template){
-            return {source:template.dataset.roomBootGif,image:template.content.firstElementChild};
-          });
-          if(!image||!choices.length)return;
-          var current=Math.floor(Math.random()*choices.length);
-          root.dataset.roomBootGif=choices[current].source;
-          var candidate=choices[current].image;
+          var templates=document.querySelectorAll("template[data-room-boot-gif]");
+          if(!source||!image||templates.length<2)return;
+          var images=[];
+          for(var i=0;i<templates.length;i++){
+            var candidate=templates[i].content&&templates[i].content.firstElementChild;
+            if(candidate)images.push({source:templates[i].getAttribute("data-room-boot-gif"),image:candidate});
+          }
+          var current=images.findIndex(function(item){return item.source===source;});
+          if(current<0)return;
+          var candidate=images[current].image;
           var preload=document.createElement("link");
           preload.rel="preload";
           preload.as="image";
@@ -150,8 +241,8 @@
           image=clone;
           function playNext(){
             if(root.hasAttribute("data-room-ready"))return;
-            var next=(current+1)%choices.length;
-            var candidate=choices[next].image;
+            var next=(current+1)%images.length;
+            var candidate=images[next].image;
             var probe=new Image();
             probe.onload=function(){
               if(root.hasAttribute("data-room-ready"))return;
@@ -161,7 +252,7 @@
               image.replaceWith(nextImage);
               image=nextImage;
               current=next;
-              root.dataset.roomBootGif=choices[current].source;
+              root.dataset.roomBootGif=images[current].source;
               window.setTimeout(playNext,1900);
             };
             probe.onerror=function(){window.setTimeout(playNext,1900);};
@@ -171,7 +262,7 @@
         })();
     </script>
   </template>
-  <script defer src="performance-gate.js?v=lite-dashboard-20261119"></script>
+  <script defer src="performance-gate.js?v=performance-mode-20261027"></script>
 
   <!-- 配置控制台外壳。
        console.css 定义 .console / .console-section / .console-section-head /
@@ -233,7 +324,7 @@
   <template data-workspace-bundle="host"><script src="workspace-bundles/host.js?v=group-navigation-20261103"></script></template>
   <template data-workspace-bundle="life"><script src="workspace-bundles/life.js?v=workspace-lazy-20261012"></script></template>
   <template data-workspace-bundle="relationships"><script src="workspace-bundles/relationships.js?v=workspace-lazy-20261012"></script></template>
-  <template data-workspace-bundle="identity"><script src="workspace-bundles/identity.js?v=network-hide-idle-20261119"></script></template>
+  <template data-workspace-bundle="identity"><script src="workspace-bundles/identity.js?v=tts-channel-bindings-20261027"></script></template>
   <template data-workspace-bundle="persona"><script src="workspace-bundles/persona.js?v=workspace-lazy-20261012"></script></template>
   <template data-workspace-bundle="designer"><script src="workspace-bundles/designer.js?v=persona-recreation-20261101"></script></template>
   <!-- 设置与迁移工作区：依赖 product-page.js 的桥接与错误翻译。 -->
@@ -288,7 +379,6 @@
         <div class="home-environment home-only" data-home-environment aria-label="角色地点、天气与当地时间"></div>
         <div class="room-stage" id="stageScene">
           <div id="stageRole" class="stage-role" aria-live="polite"><h2 class="stage-role-title"><i data-lucide="house" aria-hidden="true"></i><span>陪伴的小屋</span></h2></div>
-          <p class="stage-lite-note">性能模式下可直接从家具目录进入各项功能。点「布置」加载 3D 房间。</p>
           <div class="voxel-room" data-voxel-room role="group" aria-label="可旋转、可点选家具的体素小屋"></div>
           <!-- 镜头复位与家具布置常驻场景右上角：它们只作用于小屋本身，
                放进容器才不会在速览条移到下方后显得无处安放。 -->
