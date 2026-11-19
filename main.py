@@ -87,6 +87,7 @@ from companion_v2.conversation import debounce_log
 from .astrbot_host.private_debounce import PrivateDebounce, PrivateDeliveryDedup
 from .astrbot_host.group_debounce import GroupDebounce, group_plain_text, replace_group_plain_text
 from companion_v2.adapters.astrbot.group import group_event_route
+from companion_v2.adapters.astrbot.group_mentions import read_stt_extra
 from .astrbot_host.private_reply_followup import PrivateReplyFollowUps
 from .astrbot_host.event_routing import (
     COMPANION_INTAKE_PRIORITY, competing_command_handler, suppress_default_reply,
@@ -187,42 +188,42 @@ def _has_populated_event_result(event: Any) -> bool:
     return content_type in {"LLM_RESULT", "STREAMING_RESULT", "STREAMING_FINISH", "AGENT_RUNNER_ERROR"}
 
 
-def _is_gemini_stt_cache_only(event: Any) -> bool:
-    """Return True when upstream gemini_stt suppressed a group voice turn to cache-only."""
-    getter = getattr(event, "get_extra", None)
-    if not callable(getter):
+def _is_external_stt_cache_only(event: Any) -> bool:
+    """Return True when upstream ``astrbot_plugin_hear_voice``（兼容 ``_gemini_stt_*``）suppressed a group voice turn to cache-only."""
+    return read_stt_extra(event, "cache_only") is True and read_stt_extra(event, "should_reply") is False
+
+
+def _is_explicit_non_hijacking_external_stt(event: Any) -> bool:
+    """Return True when upstream ``astrbot_plugin_hear_voice``（兼容 ``_gemini_stt_*``）explicitly declared a non-hijacking turn."""
+    hijacked = read_stt_extra(event, "hijacked")
+    non_hijacking = read_stt_extra(event, "non_hijacking")
+    if hijacked is True or non_hijacking is False:
         return False
-    return getter("_gemini_stt_cache_only") is True and getter("_gemini_stt_should_reply") is False
+    if hijacked is False or non_hijacking is True:
+        return True
+    return read_stt_extra(event, "notify_only_sent") is True
 
 
-def _is_explicit_non_hijacking_gemini_stt(event: Any) -> bool:
-    """Return True when upstream ``gemini_stt`` explicitly declared a non-hijacking turn."""
-    getter = getattr(event, "get_extra", None)
-    if not callable(getter):
-        return False
-    if getter("_gemini_stt_hijacked") is True or getter("_gemini_stt_non_hijacking") is False:
-        return False
-    return getter("_gemini_stt_hijacked") is False or getter("_gemini_stt_non_hijacking") is True
-
-
-def _should_skip_hijacked_gemini_stt(event: Any) -> bool:
+def _should_skip_hijacked_external_stt(event: Any) -> bool:
     """Return True ONLY when an external STT plugin genuinely hijacked or replied to this turn.
 
-    Non-hijacking ``astrbot_plugin_gemini_stt`` sets ``_gemini_stt_should_reply=True`` and
-    ``_gemini_stt_cache_only=False`` alongside ``_gemini_stt_non_hijacking=True`` and
-    ``_gemini_stt_hijacked=False`` (both on success and under ``on_stt_fail="pass"`` /
-    ``"notify_pass"``; ``notify_pass`` may also set ``_gemini_stt_notify_only_sent=True`` and
-    fall back to ``event.send()`` which sets ``_has_send_oper=True``). Only legacy un-flagged
-    STT plugins treat ``_has_send_oper`` as a hijack takeover clue.
+    Non-hijacking ``astrbot_plugin_hear_voice``（兼容 ``_gemini_stt_*``）sets
+    ``_hear_voice_should_reply=True`` and ``_hear_voice_cache_only=False`` alongside
+    ``_hear_voice_non_hijacking=True`` and ``_hear_voice_hijacked=False`` (both on success and
+    under ``on_stt_fail="pass"`` / ``"notify_pass"``; ``notify_pass`` may also set
+    ``_hear_voice_notify_only_sent=True`` and fall back to ``event.send()`` which sets
+    ``_has_send_oper=True``). Only legacy un-flagged STT plugins treat ``_has_send_oper`` as a
+    hijack takeover clue.
     """
     getter = getattr(event, "get_extra", None)
     if not callable(getter):
         return bool(getattr(event, "_has_send_oper", False))
-    hijacked = getter("_gemini_stt_hijacked")
-    non_hijacking = getter("_gemini_stt_non_hijacking")
+    hijacked = read_stt_extra(event, "hijacked")
+    non_hijacking = read_stt_extra(event, "non_hijacking")
+    notify_only_sent = read_stt_extra(event, "notify_only_sent")
     if hijacked is True or non_hijacking is False:
         return True
-    if hijacked is False or non_hijacking is True:
+    if hijacked is False or non_hijacking is True or notify_only_sent is True:
         is_stopped = getattr(event, "is_stopped", None)
         if callable(is_stopped) and is_stopped():
             return True
@@ -885,15 +886,16 @@ class PrivateCompanionV2StagingPlugin(Star):
             return
         # Ordinary listeners (e.g. prefix-free sign-in) run before intake.
         # A plugin may answer without stopping propagation; respect that reply,
-        # unless upstream gemini_stt explicitly declared a non-hijacking turn (e.g. notify_pass).
-        if getattr(event, "_has_send_oper", False) and not _is_explicit_non_hijacking_gemini_stt(event):
+        # unless upstream astrbot_plugin_hear_voice（兼容 _gemini_stt_*）explicitly
+        # declared a non-hijacking turn (e.g. notify_pass).
+        if getattr(event, "_has_send_oper", False) and not _is_explicit_non_hijacking_external_stt(event):
             return
-        if _is_gemini_stt_cache_only(event):
+        if _is_external_stt_cache_only(event):
             suppress_default_reply(event)
-            logger.debug("[CompanionV2] 外部 gemini_stt 群语音概率门控设为仅缓存，跳过本轮回复")
+            logger.debug("[CompanionV2] 外部 hear_voice/gemini_stt 群语音概率门控设为仅缓存，跳过本轮回复")
             return
-        if _should_skip_hijacked_gemini_stt(event):
-            logger.debug("[CompanionV2] 外部 gemini_stt 已接管本轮语音回复，跳过重复受理")
+        if _should_skip_hijacked_external_stt(event):
+            logger.debug("[CompanionV2] 外部 hear_voice/gemini_stt 已接管本轮语音回复，跳过重复受理")
             return
         if not self.staging.claims(event):
             # 不是本插件的目标：这条消息从来没有进入它的预期范围，回复与否都不是

@@ -16,6 +16,11 @@ from urllib.request import url2pathname
 from companion_v2.conversation.media.understanding import ASTRBOT_ANIMATED_IMAGE_INSTRUCTION
 from companion_v2.conversation.voice_reply import VoiceReplyPolicy
 from companion_v2.conversation.private_reply_context import INSTRUCTION as PRIVATE_REPLY_INSTRUCTION
+from companion_v2.adapters.astrbot.group_mentions import (
+    VOICE_TRANSCRIPT_PREFIX,
+    trusted_stt_extra_transcript,
+    trusted_stt_extra_with_source,
+)
 
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA
 
@@ -654,7 +659,7 @@ async def inject_core_reply_perception_context(event, request, *, native_context
         if isinstance(decoded, Mapping):
             details["conversation"] = decoded
 
-    stt_transcribed = _apply_gemini_stt_to_request(event, request, parts, details)
+    stt_transcribed = _apply_external_stt_to_request(event, request, parts, details)
 
     if (prepared.get("astrbot_animated_image_understanding_enabled") is True
             and _request_has_image(request) and has_animated_gif_image(event)):
@@ -726,28 +731,14 @@ async def inject_core_reply_perception_context(event, request, *, native_context
         or details.get("astrbot_animated_image_understanding"))
 
 
-_GEMINI_STT_PREFIX = "[语音转写] "
+def _trusted_external_stt_text(event):
+    """Read upstream ``astrbot_plugin_hear_voice``（兼容 ``_gemini_stt_*`` / ``astrbot_stt_transcripts``）extra transcript strictly."""
+    return trusted_stt_extra_transcript(event)
 
 
-def _trusted_gemini_stt_text(event):
-    """Read upstream ``gemini_stt`` extra transcript strictly (preferring pure transcript over raw)."""
-    if event is None:
-        return ""
-    getter = getattr(event, "get_extra", None)
-    if not callable(getter):
-        return ""
-    for key in ("_gemini_stt_transcript", "_gemini_stt_raw_text"):
-        val = getter(key)
-        if isinstance(val, str):
-            cleaned = val.replace("\x00", "").strip()
-            if cleaned:
-                return cleaned[:8192]
-    return ""
-
-
-def _apply_gemini_stt_to_request(event, request, parts, details):
-    """Adopt upstream ``gemini_stt`` transcripts without re-transcribing or failing on dead Voice paths."""
-    transcript = _trusted_gemini_stt_text(event)
+def _apply_external_stt_to_request(event, request, parts, details):
+    """Adopt upstream ``astrbot_plugin_hear_voice``（兼容 ``_gemini_stt_*``）transcripts without re-transcribing or failing on dead Voice paths."""
+    transcript, source = trusted_stt_extra_with_source(event)
     if not transcript:
         return False
     replaced_unavailable = False
@@ -771,10 +762,10 @@ def _apply_gemini_stt_to_request(event, request, parts, details):
 
         parts.append(TextPart(text=f"[语音消息转写：{transcript}]").mark_as_temp())
     if isinstance(getattr(request, "prompt", None), str) and request.prompt.strip() in ("", "[语音消息]"):
-        request.prompt = f"{_GEMINI_STT_PREFIX}{transcript}"
+        request.prompt = f"{VOICE_TRANSCRIPT_PREFIX}{transcript}"
     details["audio_transcription"] = {
         "state": "transcribed",
-        "source": "gemini_stt",
+        "source": source or "hear_voice",
         "replaced_unavailable": replaced_unavailable,
     }
     return True

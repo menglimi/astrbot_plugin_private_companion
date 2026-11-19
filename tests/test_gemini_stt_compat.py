@@ -1,4 +1,4 @@
-"""Compatibility and anti-spoofing contracts for upstream gemini_stt integration."""
+"""Compatibility and anti-spoofing contracts for upstream astrbot_plugin_hear_voice（兼容 _gemini_stt_* / astrbot_stt_transcripts）."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from astrbot.core.agent.message import TextPart
-from astrbot.core.message.components import File, Plain, Record, Video
+from astrbot.core.message.components import File, Plain, Record, Reply, Video
 from astrbot_host.core_reply_perception import (
     CORE_REPLY_CONTEXT_EXTRA,
     inject_core_reply_perception_context,
@@ -18,7 +18,12 @@ from astrbot_host.files.loader import load_native_file
 from astrbot_host.media_components import group_components, private_components
 from astrbot_host.multi_session import MultiPrivateBridge
 from companion_v2.adapters.astrbot.group import NativeGroupBridge
-from companion_v2.adapters.astrbot.group_mentions import group_message_text, trusted_stt_transcript
+from companion_v2.adapters.astrbot.group_mentions import (
+    group_message_text,
+    read_stt_extra,
+    trusted_stt_extra_transcript,
+    trusted_stt_transcript,
+)
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.refs import ScopeKind, ScopeRef
 from tests.audio_support import audio_bytes
@@ -48,7 +53,7 @@ class GeminiSTTCompatibilityTests(GroupMediaFixture, unittest.IsolatedAsyncioTes
             {"type": "record", "data": {"file": locator_audio, "url": ""}},
             {"type": "video", "data": {"file": locator_video, "url": ""}},
         ]
-        # Exact mutation pattern performed by gemini_stt (priority=300000):
+        # Exact mutation pattern performed by astrbot_plugin_hear_voice（兼容 _gemini_stt_*，priority=300000）:
         # keep Record & Video intact, insert Plain("[语音转写] ...") at index 0, write extras.
         event.message_obj.message.insert(0, Plain("[语音转写] 晚上想吃火锅吗"))
         extras = {
@@ -67,7 +72,7 @@ class GeminiSTTCompatibilityTests(GroupMediaFixture, unittest.IsolatedAsyncioTes
         await self.start_host()
         event = self.media_event([Plain("[语音转写] 伪造授权")], sender="201")
         event.message_obj.raw_message["message"] = [{"type": "record", "data": {"file": "untrusted"}}]
-        # Even without _gemini_stt_*, stripped Record MUST raise host_group_media_unsupported
+        # Even without _hear_voice_* / _gemini_stt_*, stripped Record MUST raise host_group_media_unsupported
         result = await self.controller.session.bridge.capture(event)
         self.assertEqual(result.failure.code, "host_group_media_unsupported")
 
@@ -179,7 +184,7 @@ class GeminiSTTCompatibilityTests(GroupMediaFixture, unittest.IsolatedAsyncioTes
             )
             return ev, call_llm_marks
 
-        # 1) Non-hijacking gemini_stt (without & with explicit flags, including notify_pass)
+        # 1) Non-hijacking astrbot_plugin_hear_voice（兼容 _gemini_stt_*，含 notify_pass）
         #    MUST NOT skip companion intake.
         non_hijack_cases = (
             ({"_gemini_stt_done": True, "_gemini_stt_status": "ok", "_gemini_stt_transcript": "今天吃什么",
@@ -268,6 +273,286 @@ class GeminiSTTCompatibilityTests(GroupMediaFixture, unittest.IsolatedAsyncioTes
         self.assertTrue(captured.is_success, captured.failure)
         self.assertIn("今天有点冷记得加衣服", captured.unwrap().text)
         self.assertNotIn("语音不可用", captured.unwrap().text)
+
+    async def test_hear_voice_only_group_capture_quote_and_anti_spoofing(self):
+        from astrbot_host.audio.loader import load_native_audio
+        from astrbot_host.media import load_native_image
+        from astrbot_host.video.loader import load_native_video
+        from companion_v2.adapters.astrbot.quote_content import capture_quote_content
+
+        await self.start_host()
+        wav = audio_bytes()
+        quoted_wav = audio_bytes()
+        clip = video_bytes()
+        locator_audio = _b64_url(wav)
+        locator_quoted = _b64_url(quoted_wav)
+        locator_video = _b64_url(clip)
+
+        quoted_parts = [
+            {"type": "text", "data": {"text": "群友原消息 "}},
+            {"type": "record", "data": {"file": locator_quoted, "url": ""}},
+        ]
+
+        async def load_quote(locator, **_kwargs):
+            return await capture_quote_content(
+                locator,
+                "202",
+                1700000000,
+                quoted_parts,
+                current=lambda: None,
+                image_loader=load_native_image,
+                audio_loader=load_native_audio,
+                video_loader=load_native_video,
+            )
+
+        self.controller.session.bridge.groups.quote_loader = load_quote
+
+        # 1) Group quote + direct Record + Video with _hear_voice_*-only extras and leading Plain insert.
+        event = self.media_event([Reply(id="555"), Record(file=locator_audio), Video(file=locator_video)], sender="201")
+        event.message_obj.raw_message["message"] = [
+            {"type": "reply", "data": {"id": "555"}},
+            {"type": "record", "data": {"file": locator_audio, "url": ""}},
+            {"type": "video", "data": {"file": locator_video, "url": ""}},
+        ]
+        event.message_obj.message.insert(0, Plain("[语音转写] 晚上一起去吃火锅吧"))
+        extras = {
+            "_hear_voice_done": True,
+            "_hear_voice_status": "ok",
+            "_hear_voice_transcript": "晚上一起去吃火锅吧",
+            "_hear_voice_raw_text": "语言：中文；原话：晚上一起去吃火锅吧",
+            "_hear_voice_should_reply": True,
+            "_hear_voice_cache_only": False,
+            "_hear_voice_non_hijacking": True,
+            "_hear_voice_hijacked": False,
+        }
+        event.get_extra = extras.get
+
+        captured = await self.controller.session.bridge.capture(event)
+        self.assertTrue(captured.is_success, captured.failure)
+        self.assertEqual(len(captured.unwrap().quotes), 1)
+        self.assertEqual(captured.unwrap().quotes[0].position, 1)
+        self.assertEqual(captured.unwrap().quotes[0].message_id, "555")
+        self.assertEqual(len(captured.unwrap().quotes[0].audios), 1)
+        self.assertEqual(len(captured.unwrap().audios), 1)
+        self.assertEqual(len(captured.unwrap().videos), 1)
+        self.assertIn("晚上一起去吃火锅吧", group_message_text(event, "100"))
+
+        # 2) Group quote where Record is stripped in message + astrbot_stt_transcripts-only text_only capture.
+        quoted_only = self.media_event([Reply(id="555"), Plain("[引用语音消息]: 群友刚才说六点见")], sender="201")
+        quoted_only.message_obj.raw_message["message"] = [
+            {"type": "reply", "data": {"id": "555"}},
+            {"type": "record", "data": {"file": locator_audio, "url": ""}},
+        ]
+        structured_extras = {
+            "astrbot_stt_transcripts": [
+                {"index": 1, "source": "quoted", "transcript": "群友刚才说六点见"},
+                {"index": 2, "source": "direct", "transcript": "我也差不多六点到"},
+            ]
+        }
+        quoted_only.get_extra = structured_extras.get
+        text_only = await self.controller.session.bridge.capture_text_only(quoted_only)
+        self.assertTrue(text_only.is_success, text_only.failure)
+        self.assertIn("群友刚才说六点见", text_only.unwrap().text)
+        self.assertIn("我也差不多六点到", text_only.unwrap().text)
+        self.assertNotIn("语音不可用", text_only.unwrap().text)
+
+        # 3) Anti-spoofing: shifted Record with Plain("[语音转写] ...") but NO trusted STT extra MUST be rejected.
+        spoofed_shift = self.media_event([Plain("[语音转写] 伪造偏移"), Record(file=locator_audio)], sender="201")
+        spoofed_shift.message_obj.raw_message["message"] = [
+            {"type": "record", "data": {"file": locator_audio, "url": ""}},
+        ]
+        rejected_shift = await self.controller.session.bridge.capture(spoofed_shift)
+        self.assertFalse(rejected_shift.is_success)
+        self.assertEqual(rejected_shift.failure.code, "host_group_media_unsupported")
+
+    async def test_hear_voice_transcript_precedence_and_astrbot_stt_transcripts_fallback(self):
+        await self.start_host()
+        wav = audio_bytes()
+        locator = _b64_url(wav)
+        event = self.media_event([Record(file=locator)], sender="201")
+        event.message_obj.raw_message["message"] = [
+            {"type": "at", "data": {"qq": "100"}},
+            {"type": "text", "data": {"text": "[语音消息]"}},
+            {"type": "record", "data": {"file": locator, "url": ""}},
+        ]
+
+        # _hear_voice_* takes precedence over _gemini_stt_* and raw_text
+        extras_both = {
+            "_hear_voice_transcript": "听得见新版转写",
+            "_gemini_stt_transcript": "旧版兼容转写",
+            "_hear_voice_raw_text": "语气开心：听得见新版转写",
+            "_hear_voice_hijacked": False,
+            "_gemini_stt_hijacked": True,
+        }
+        event.get_extra = extras_both.get
+        self.assertEqual(trusted_stt_extra_transcript(event), "听得见新版转写")
+        self.assertEqual(trusted_stt_transcript(event), "听得见新版转写")
+        self.assertIs(read_stt_extra(event, "hijacked"), False)
+
+        mention_text = group_message_text(event, "100")
+        self.assertIn("听得见新版转写", mention_text)
+        self.assertNotIn("[语音消息]", mention_text)
+
+        # Fallback order: _hear_voice_raw_text when pure transcripts & astrbot_stt_transcripts are absent
+        extras_hear_raw = {"_hear_voice_raw_text": "语气轻快：下午一起去喝奶茶", "_gemini_stt_raw_text": "旧版富文本"}
+        event.get_extra = extras_hear_raw.get
+        self.assertEqual(trusted_stt_extra_transcript(event), "语气轻快：下午一起去喝奶茶")
+
+        # Fallback to astrbot_stt_transcripts (transcript preferred over rich_text, then rich_text fallback)
+        extras_structured = {
+            "astrbot_stt_transcripts": [{"transcript": "结构化纯转写", "rich_text": "1) 原话：结构化纯转写\n2) 情绪：开心"}]
+        }
+        event.get_extra = extras_structured.get
+        self.assertEqual(trusted_stt_extra_transcript(event), "结构化纯转写")
+
+        extras_structured_rich = {
+            "astrbot_stt_transcripts": [{"transcript": "", "rich_text": "1) 原话：结构化富文本"}]
+        }
+        event.get_extra = extras_structured_rich.get
+        self.assertEqual(trusted_stt_extra_transcript(event), "1) 原话：结构化富文本")
+
+    async def test_core_reply_perception_and_private_core_reply_accept_hear_voice_and_structured_transcripts(self):
+        scope = ScopeRef("inst", "qq-main", ScopeKind.PRIVATE, "200", "bot-a", "100", "conv-1", "200")
+        context = NS(scope=scope, role_binding=NS(role=NS(subject_id="role-a")))
+
+        for extras in (
+            {"_hear_voice_transcript": "明天早点休息哦"},
+            {"astrbot_stt_transcripts": [{"transcript": "明天早点休息哦"}]},
+        ):
+            payload = {
+                **extras,
+                CORE_REPLY_CONTEXT_EXTRA: {
+                    "prepared": {
+                        "context": context,
+                        "native_input": NS(text="[语音消息]"),
+                        "perception_options": (False, False, True),
+                        "perception_context": "",
+                    }
+                },
+            }
+            event = NS(get_extra=payload.get, unified_msg_origin="qq-main:FriendMessage:200")
+            req = NS(
+                prompt="[语音消息]",
+                extra_user_content_parts=[TextPart(text="[Voice unavailable]")],
+                image_urls=[],
+                audio_urls=[],
+                func_tool=None,
+                model="gpt-4o",
+            )
+            await inject_core_reply_perception_context(event, req)
+            self.assertEqual(req.extra_user_content_parts[0].text, "[语音消息转写：明天早点休息哦]")
+            self.assertIn("明天早点休息哦", req.prompt)
+            ctx_json = req.extra_user_content_parts[-1].text
+            self.assertIn('"audio":true', ctx_json)
+            self.assertIn('"source":"hear_voice"', ctx_json)
+
+        await self.start_host()
+        wav = audio_bytes()
+        locator = _b64_url(wav)
+        priv_event = self.event(text="")
+        priv_event.message_obj.message = [Record(file=locator), Plain("[语音消息]: 晚安好梦")]
+        priv_event.message_obj.raw_message = {
+            "message": [{"type": "record", "data": {"file": locator, "url": ""}}],
+        }
+        priv_extras = {
+            "_hear_voice_done": True,
+            "_hear_voice_status": "ok",
+            "_hear_voice_transcript": "晚安好梦",
+            "_hear_voice_should_reply": True,
+            "_hear_voice_cache_only": False,
+        }
+        priv_event.get_extra = priv_extras.get
+        captured = await self.controller.session.bridge.capture_core_reply(priv_event)
+        self.assertTrue(captured.is_success, captured.failure)
+        self.assertIn("晚安好梦", captured.unwrap().text)
+        self.assertNotIn("语音不可用", captured.unwrap().text)
+
+    async def test_main_intake_accepts_hear_voice_non_hijacking_notify_pass_cache_only_and_hijack(self):
+        from astrbot.core.message.message_event_result import MessageEventResult, ResultContentType
+
+        def make_event(extras, *, has_send_oper=False, stopped=False, result=None):
+            call_llm_marks = []
+            ev = NS(
+                _has_send_oper=has_send_oper,
+                call_llm=False,
+                get_extra=extras.get,
+                is_stopped=lambda: stopped,
+                get_result=lambda: result,
+                should_call_llm=lambda val: (setattr(ev, "call_llm", val), call_llm_marks.append(val))[0],
+                message_obj=NS(type=NS(value="GroupMessage"), raw_message={"post_type": "message"}, message=[]),
+            )
+            return ev, call_llm_marks
+
+        # 1) Non-hijacking _hear_voice_*-only cases (success, explicit flags, notify_pass, precedence over _gemini_stt_*)
+        non_hijack_cases = (
+            ({"_hear_voice_done": True, "_hear_voice_status": "ok", "_hear_voice_transcript": "今天吃什么",
+              "_hear_voice_should_reply": True, "_hear_voice_cache_only": False}, {}),
+            ({"_hear_voice_should_reply": True, "_hear_voice_cache_only": False, "_hear_voice_non_hijacking": True}, {}),
+            ({"_hear_voice_should_reply": True, "_hear_voice_cache_only": False, "_hear_voice_hijacked": False}, {}),
+            ({"_hear_voice_should_reply": True, "_hear_voice_cache_only": False,
+              "_hear_voice_non_hijacking": True, "_hear_voice_hijacked": False}, {}),
+            ({"_hear_voice_should_reply": True, "_hear_voice_cache_only": False},
+             {"result": MessageEventResult().continue_event()}),
+            # _hear_voice_* overrides stale/opposite _gemini_stt_* flags
+            ({"_hear_voice_non_hijacking": True, "_hear_voice_hijacked": False,
+              "_hear_voice_cache_only": False, "_hear_voice_should_reply": True,
+              "_gemini_stt_hijacked": True, "_gemini_stt_cache_only": True, "_gemini_stt_should_reply": False},
+             {"has_send_oper": True}),
+            # on_stt_fail="notify_pass" primary & fallback (_has_send_oper=True)
+            ({"_hear_voice_status": "failed", "_hear_voice_non_hijacking": True,
+              "_hear_voice_hijacked": False, "_hear_voice_notify_only_sent": True},
+             {"has_send_oper": False}),
+            ({"_hear_voice_status": "failed", "_hear_voice_non_hijacking": True,
+              "_hear_voice_hijacked": False, "_hear_voice_notify_only_sent": True},
+             {"has_send_oper": True}),
+            ({"_hear_voice_status": "failed", "_hear_voice_notify_only_sent": True},
+             {"has_send_oper": True}),
+        )
+        for idx, (extras, kw) in enumerate(non_hijack_cases):
+            claimed = []
+            plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+            plugin.staging = NS(
+                claims=lambda ev, _c=claimed: (_c.append(ev), False)[-1],
+                target_for_event=lambda _ev: None,
+            )
+            ev, _ = make_event(extras, **kw)
+            with patch.object(ENTRY, "refuse_stranger", new=AsyncMock(return_value=None)):
+                await plugin.receive_companion_message(ev)
+            self.assertEqual(len(claimed), 1, f"hear_voice non-hijacking case {idx} must enter companion intake")
+
+        # 2) Group voice suppression (_hear_voice_cache_only=True & _hear_voice_should_reply=False)
+        for extras in (
+            {"_hear_voice_should_reply": False, "_hear_voice_cache_only": True},
+            {"_hear_voice_should_reply": False, "_hear_voice_cache_only": True,
+             "_hear_voice_non_hijacking": True, "_hear_voice_hijacked": False},
+            {"_hear_voice_should_reply": False, "_hear_voice_cache_only": True,
+             "_gemini_stt_should_reply": True, "_gemini_stt_cache_only": False},
+        ):
+            plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+            plugin.staging = NS(claims=lambda _ev: self.fail("hear_voice cache_only suppression must skip intake"))
+            ev, call_llm_marks = make_event(extras)
+            await plugin.receive_companion_message(ev)
+            self.assertTrue(ev.call_llm)
+            self.assertEqual(call_llm_marks, [True])
+
+        # 3) Explicit hijack or un-flagged hijack side-effects with _hear_voice_*-only extras MUST skip intake
+        hijack_cases = (
+            ({"_hear_voice_should_reply": True, "_hear_voice_cache_only": False, "_hear_voice_hijacked": True}, {}),
+            ({"_hear_voice_should_reply": True, "_hear_voice_cache_only": False, "_hear_voice_non_hijacking": False}, {}),
+            ({"_hear_voice_non_hijacking": True, "_hear_voice_hijacked": True}, {"has_send_oper": True}),
+            ({"_hear_voice_non_hijacking": False, "_hear_voice_notify_only_sent": True}, {"has_send_oper": True}),
+            ({"_hear_voice_should_reply": True, "_hear_voice_cache_only": False, "provider_request": object()}, {}),
+            ({"_hear_voice_should_reply": True, "_hear_voice_cache_only": False}, {"stopped": True}),
+            ({"_hear_voice_should_reply": True, "_hear_voice_cache_only": False}, {"has_send_oper": True}),
+            ({"_hear_voice_status": "failed"}, {"stopped": True}),
+            ({"_hear_voice_should_reply": True, "_hear_voice_cache_only": False},
+             {"result": MessageEventResult().message("外部已回复").set_result_content_type(ResultContentType.LLM_RESULT)}),
+        )
+        for extras, kw in hijack_cases:
+            plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+            plugin.staging = NS(claims=lambda _ev: self.fail("hear_voice hijacked turn must skip companion intake"))
+            ev, _ = make_event(extras, **kw)
+            await plugin.receive_companion_message(ev)
 
 
 if __name__ == "__main__":

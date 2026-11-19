@@ -25,7 +25,7 @@ from .quotes import NativeQuoteLocator, image_locator
 from .forwards import NativeForwardLocator, resource_id
 from .group_mentions import (
     VOICE_TRANSCRIPT_PREFIX, group_message_parts, group_message_text,
-    current_mention_text, trusted_stt_transcript,
+    current_mention_text, trusted_stt_extra_transcript, trusted_stt_transcript,
 )
 from companion_v2.conversation.group_timing import SELF_MENTION
 from .files import file_locator, prepare_file_text, MAX_FILES
@@ -152,9 +152,10 @@ class NativeGroupBridge(NativePrivateBridge):
         # failed host lookup.  The raw envelope must still match a native
         # component before its placeholder is accepted; otherwise an
         # untrusted text rewrite could masquerade as the original media.
-        # Upstream gemini_stt exports trusted extras (`_gemini_stt_transcript`
-        # / `_gemini_stt_raw_text`); allow transcribed group records in text-only
-        # capture when that trusted extra is explicitly present.
+        # Upstream astrbot_plugin_hear_voice（兼容 `_gemini_stt_*` /
+        # `astrbot_stt_transcripts`）exports trusted transcript extras; allow
+        # transcribed group records in text-only capture when that trusted
+        # extra is explicitly present.
         native_for_raw = {"image": "Image", "reply": "Reply", "forward": "Forward",
                           "record": "Record", "video": "Video", "file": "File"}
         if any(kind not in {"text", "at", "face", "mface", *native_for_raw} for kind in raw_kinds):
@@ -480,9 +481,9 @@ class NativeGroupBridge(NativePrivateBridge):
                     1 for item in getattr(event.message_obj, "message", ())
                     if getattr(getattr(item, "type", None), "value", getattr(item, "type", None)) == "Plain"
                     and isinstance(getattr(item, "text", None), str)
-                    and item.text.startswith("[语音转写] ")
+                    and item.text.startswith(VOICE_TRANSCRIPT_PREFIX)
                 )
-                has_stt_extra = bool(trusted_stt_transcript(event))
+                has_stt_extra = bool(trusted_stt_extra_transcript(event))
                 for kind, locators in (("record", audio_locators), ("video", video_locators)):
                     originals = []
                     for position, part in enumerate(original_parts):
@@ -495,9 +496,10 @@ class NativeGroupBridge(NativePrivateBridge):
                         originals.append((position, value))
                     locator_pairs = tuple((item.position, item.locator) for item in locators)
                     if tuple(originals) != locator_pairs:
-                        # Upstream gemini_stt inserts Leading Plain("[语音转写] ...") into
-                        # event.message_obj.message without touching raw_message, shifting
-                        # subsequent Record/Video positions by the number of inserted prefixes.
+                        # Upstream astrbot_plugin_hear_voice（兼容 `_gemini_stt_*`）may insert
+                        # Leading Plain("[语音转写] ...") into event.message_obj.message without
+                        # touching raw_message, shifting subsequent Record/Video positions by
+                        # the number of inserted prefixes.
                         if not (
                             has_stt_extra
                             and stt_prefix_count > 0
