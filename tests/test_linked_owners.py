@@ -918,6 +918,8 @@ class LinkedOwnerTests(LinkedReplyFixture, unittest.IsolatedAsyncioTestCase):
         result = await self.controller.start()
         self.assertTrue(result.is_success, result.failure)
         self.app = self.controller.session.application
+        # Upstream binds accounts in the background after a start.
+        await self.controller.session.account_recovery.refresh(wait=True)
         contexts = [self.controller.authority.context(target, first.role_binding.role.subject_id)
                     for target in ("first", "second")]
         routines = self.life_routines(*contexts)
@@ -950,7 +952,8 @@ class LinkedOwnerTests(LinkedReplyFixture, unittest.IsolatedAsyncioTestCase):
         self.native.platforms["qq-main"].client._wsr_api_clients.clear()
         with self.assertRaises(Exception) as unavailable:
             await bridge.verify_role(first.scope, first.role_binding, routine.instruction)
-        self.assertEqual(unavailable.exception.code, "host_account_changed")
+        # Upstream's connection layer names a disconnected client offline, not changed.
+        self.assertEqual(unavailable.exception.code, "host_account_offline")
         life.bind(second, routine.instruction, guard=bridge.verify_role)
         ran = require(await routine.diary(local_date=self.clock.now().date().isoformat()))
         # The member that ran it is the one the work is attributed to.

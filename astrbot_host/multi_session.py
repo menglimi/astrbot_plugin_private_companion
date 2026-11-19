@@ -48,6 +48,7 @@ from companion_v2.conversation.media.video.narration import video_narration_prof
 from companion_v2.conversation.media.understanding import intake_settings as file_intake_settings
 from companion_v2.screen.interpretation import screen_interpretation_profile
 from companion_v2.reality.model_profile import reality_text_profile
+from .account_recovery import AccountExecutionGuard
 from .settings import HostControlError
 from .display_names import event_person_names
 from .group_standing import group_sender_standing
@@ -108,6 +109,30 @@ async def _current_native_role(bridge, account, umo):
     cid, selected, _, projection, instruction = await bridge._selected_role_snapshot(account, umo)
     projection = bridge._confirm_persona_projection(account, selected, projection, instruction)
     return bridge._conversation_key(umo, cid), projection.role, instruction
+
+
+class LinkedReminderGuard(AccountExecutionGuard):
+    """Upstream's execution guard, leaving a linked conversation's reminders to the linked delivery.
+
+    Such a reminder goes to the link's preferred member: the delivery service
+    resolves it, refuses it while unavailable, and its sender fences that
+    connection. The window the reminder was recorded on neither holds nor fences it.
+    """
+
+    def _linked(self, context):
+        from companion_v2.conversation.linked_ownership import conversation_link
+        try:
+            return conversation_link(self.runtime, context.scope) is not None
+        except TaskError:
+            return True  # the linked delivery refuses an unreadable record itself
+
+    def capture(self, spec, definition, *, submitting=False):
+        if spec.kind == "delivery.agenda.reminder" and self._linked(spec.context):
+            return None
+        return super().capture(spec, definition, submitting=submitting)
+
+    def reminder_available(self, context):
+        return self._linked(context) or self.available(context)
 
 
 class MultiPrivateBridge(NativePrivateBridge):
@@ -671,12 +696,11 @@ class MultiHostSession:
             presence_port=MultiPresence(self))
         self.application = self.host.application
         self.application.outbound.destination = self.linked_conversations.destination
-        from .account_recovery import AccountExecutionGuard
-        connection_guard = AccountExecutionGuard(self.bridge.connections, self.runtime)
+        connection_guard = LinkedReminderGuard(self.bridge.connections, self.runtime)
         self.application.tasks.bind_execution_guard(connection_guard)
         self.application.contact_schedule.bind_connection_gate(connection_guard.available)
-        self.application.agenda_background.bind_connection_gate(connection_guard.available)
-        self.application.outbound.bind_connection_gate(connection_guard.available)
+        self.application.agenda_background.bind_connection_gate(connection_guard.reminder_available)
+        self.application.outbound.bind_connection_gate(connection_guard.reminder_available)
         from companion_v2.relationships.account_link_context import persona_for
         self.application.private_account_link_persona = lambda member: persona_for(self.settings, member)
         self.application.private_account_link_resolve = self._linked_private_context

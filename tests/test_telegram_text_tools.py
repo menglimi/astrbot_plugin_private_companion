@@ -157,7 +157,7 @@ class TelegramTextToolTests(LinkedTelegramFixture, unittest.IsolatedAsyncioTestC
         self.assertEqual(self.calls, [])
         self.assertEqual(self.manager.writes, [])
 
-    async def test_replacing_the_source_client_while_model_waits_blocks_tool_effects_and_sends(self):
+    async def test_replacing_the_source_client_while_model_waits_blocks_tool_effects_and_the_reply(self):
         from companion_v2.agenda.models import AgendaTarget
         self.assertEqual((await self.link())["status"], "ok")
         self.steer(1)
@@ -174,13 +174,16 @@ class TelegramTextToolTests(LinkedTelegramFixture, unittest.IsolatedAsyncioTestC
         await asyncio.wait_for(task, 30)
         await self.controller.session.linked_conversations.gate.drain()
         results = [json.loads(message["content"]) for message in await self.history() if message["role"] == "tool"]
-        self.assertEqual(len(results), 1)
-        self.assertEqual((results[0]["state"], results[0]["effect"]), ("failed", "none"))
+        # Upstream fences the tool round on the connection lease: the tool never runs, so it records no result.
+        self.assertEqual(results, [])
         notes = self.app.agenda.list_memos(context.actor,
             target=AgendaTarget(context.scope, context.role_binding.role, context.actor.subject), observed_at=self.clock.now())
         self.assertTrue(notes.is_success, notes.failure)
         self.assertEqual(len(notes.unwrap()), 0)
-        self.assertEqual(self.sent, [])
+        # The model's reply is never sent. The stopped round reaches AstrBot as an error, and
+        # AstrBot sends its generic error text, as upstream does for QQ too.
+        self.assertEqual([(platform, kwargs["text"].split("\n")[0]) for platform, kwargs in self.sent],
+                         [("tg-main", "Error occurred during AI execution\\.")])
 
     @staticmethod
     def prior(args, index=-1):
@@ -295,7 +298,7 @@ class TelegramTextToolTests(LinkedTelegramFixture, unittest.IsolatedAsyncioTestC
         conversation = await self.manager.get_conversation(self.origins[1], "conversation-b")
         results = [json.loads(message["content"]) for message in json.loads(conversation.history)
                    if message["role"] == "tool"]
-        self.assertEqual(results, [{"code": "core_tool_unavailable", "effect": "none", "state": "failed"}])
+        self.assertEqual(results, [{"code": "core_tool_unavailable", "effect": "none", "retry_disposition": "stop", "state": "failed"}])
         from companion_v2.agenda.models import AgendaTarget
         notes = self.app.agenda.list_memos(context.actor,
             target=AgendaTarget(context.scope, context.role_binding.role, context.actor.subject), observed_at=self.clock.now())
@@ -352,7 +355,7 @@ class TelegramTextToolTests(LinkedTelegramFixture, unittest.IsolatedAsyncioTestC
         await asyncio.wait_for(task, 30)
         await self.controller.session.linked_conversations.gate.drain()
         results = [json.loads(message["content"]) for message in await self.history() if message["role"] == "tool"]
-        self.assertEqual(results, [{"code": "linked_revision_changed", "effect": "none", "state": "failed"}])
+        self.assertEqual(results, [{"code": "linked_revision_changed", "effect": "none", "retry_disposition": "stop", "state": "failed"}])
         timeline = self.app.role_timeline.query(state["prepared"]["context"], kinds=["growth"])
         self.assertEqual(timeline["items"], [])
 
