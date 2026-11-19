@@ -185,6 +185,22 @@ class NativeInputTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
             self.native, "qq-main:FriendMessage:200", None)
         self.assertEqual(result[1:], ("second", self.native.persona_manager.personas_v3[1], False))
 
+    async def test_persona_snapshot_uses_new_host_resolver_contract(self):
+        self.map_second_native_persona()
+        await self.envelope()
+        self.bridge.session_persona_override_lookup = AsyncMock(return_value=None)
+        self.bridge.persona_snapshot_lookup = AsyncMock(return_value="original")
+
+        async def resolver(*, umo, platform_name):
+            self.assertEqual((umo, platform_name), ("qq-main:FriendMessage:200", "aiocqhttp"))
+            return "second", self.native.persona_manager.personas_v3[1], False
+
+        with patch.object(self.native.persona_manager, "resolve_selected_persona", resolver):
+            snapshot = await self.bridge.persona_snapshot(self.native_context.scope)
+
+        self.assertEqual(snapshot["persona_id"], "second")
+        self.assertEqual(snapshot["text"], "第二个人格提示词。")
+
     async def test_multiple_v2_personas_reject_an_unmapped_astrbot_selection(self):
         account = self.bridge.accounts[("qq-main", "100")]
         self.bridge.personas[("bot-a", "second")] = HostPersona(
@@ -409,6 +425,22 @@ class NativeInputTests(NativeFixture, unittest.IsolatedAsyncioTestCase):
         self.bridge.session_persona_override_lookup = mutate
         result = await self.bridge.capture(event)
         self.assertEqual(result.failure.code, "host_account_changed")
+
+    async def test_replaced_connection_rejects_old_capture_and_accepts_next_event(self):
+        event = FakeEvent(self.native)
+        old_platform = self.native.platform
+
+        async def replace_connection(_umo):
+            self.native.platform = FakePlatform()
+            return "original"
+
+        self.bridge.session_persona_override_lookup = replace_connection
+        result = await self.bridge.capture(event)
+        self.assertEqual(result.failure.code, "host_connection_changed")
+        self.bridge.session_persona_override_lookup = AsyncMock(return_value="original")
+        result = await self.bridge.capture(FakeEvent(self.native))
+        self.assertTrue(result.is_success, result.failure)
+        self.assertIsNot(self.bridge.platform(result.unwrap().route.scope), old_platform)
 
     async def test_v2_role_mismatch_rolls_back_source_and_input_publication(self):
         snapshot = await self.capture()

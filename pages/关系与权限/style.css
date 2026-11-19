@@ -1012,3 +1012,69 @@ select:focus-visible, textarea:focus-visible { outline: 3px solid color-mix(in s
   .stranger-row { flex-direction: column; align-items: stretch; gap: 6px; }
   .stranger-action { align-self: flex-end; flex-wrap: wrap; justify-content: flex-end; }
 }
+
+/* 保存范围随交互展开，编辑对象由详情标题持续显示。 */
+.member-scope-hint { position: relative; margin-left: auto; }
+.member-scope-hint summary { cursor: pointer; list-style: none; padding: 6px; color: var(--muted); }
+.member-scope-tooltip { display: none; position: absolute; bottom: calc(100% + 6px); right: 0; width: max-content; max-width: min(320px, 70vw); padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface, #fff); color: var(--ink); box-shadow: 0 4px 16px #0002; z-index: 10; font-size: 12px; }
+.member-scope-hint:hover .member-scope-tooltip,
+.member-scope-hint:focus-within .member-scope-tooltip,
+.member-scope-hint[open] .member-scope-tooltip { display: block; }
+.member-leave-host { z-index: 110; }
+.member-leave-dialog { max-width: 420px; padding: 24px; }
+.member-leave-dialog .member-card-actions { margin-top: 20px; }
+.member-scope-switch { padding: 12px 0; }
+/* Explicit account associations; no routing/authority controls are implied. */
+/* Account links reuse the member editor palette, controls and spacing. */
+.member-account-links, .member-linked-history { display: grid; gap: 14px; min-width: 0; }
+.member-account-links > h3, .member-linked-history > h3 { margin: 0; font-size: 14px; }
+.member-account-links p, .member-linked-history > p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.member-account-links .member-link-section { display: grid; gap: 12px; min-width: 0; margin: 0; padding: 14px 16px 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.member-link-section > legend { padding: 0 6px; color: var(--ink); font-size: 13px; font-weight: 700; }
+.member-account-links .member-checkbox { display: flex; align-items: flex-start; gap: 9px; min-width: 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-soft); color: var(--ink); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; cursor: pointer; }
+.member-account-links .member-checkbox:has(input:checked) { border-color: color-mix(in srgb, var(--teal) 35%, var(--line)); background: var(--teal-soft); }
+.member-account-links .member-checkbox:has(input:disabled) { cursor: default; }
+.member-account-links .member-checkbox input { flex: none; width: 15px; height: 15px; margin: 2px 0 0; accent-color: var(--teal); }
+.member-account-links .member-switch-row { min-width: 0; gap: 12px; padding: 10px 11px; border: 0; border-radius: 6px; background: var(--surface-soft); }
+.member-account-links .member-switch-row > span, .member-account-links .member-switch-row > strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.member-account-links .member-switch-row input { flex: none; }
+.member-share-heading .member-field-caption { flex-wrap: wrap; justify-content: flex-start; }
+.member-share-heading strong { font-weight: 650; }
+.member-share-heading small { margin-left: auto; font-variant-numeric: tabular-nums; }
+.member-account-links .member-switch-row input:indeterminate { background: var(--teal); border-color: var(--teal); }
+.member-account-links .member-switch-row input:indeterminate::after { transform: translateX(7px); }
+.member-share-category { display: grid; gap: 7px; min-width: 0; }
+.member-share-category + .member-share-category { padding-top: 12px; border-top: 1px solid var(--line); }
+.member-account-links details { min-width: 0; padding: 0 11px; }
+.member-account-links summary { width: fit-content; padding: 5px 0; color: var(--muted); font-size: 12px; cursor: pointer; }
+.member-account-links summary:hover { color: var(--teal); }
+.member-share-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; padding: 7px 0 3px; }
+.member-link-select { display: grid; gap: 7px; min-width: 0; }
+.member-dialog .member-link-select { display: grid; background: transparent; padding: 0; }
+.member-account-links select { width: 100%; min-width: 0; max-width: 100%; font: inherit; }
+.member-account-links button, .member-linked-history > button { justify-self: start; max-width: 100%; white-space: normal; }
+.member-link-actions { flex-wrap: wrap; }
+.member-link-actions .member-link-unlink { margin-left: auto; color: var(--danger); }
+.member-link-actions .member-link-unlink:hover:not(:disabled) { border-color: var(--danger); background: var(--danger-soft); }
+.member-sharing-notice { margin: 0; padding: 10px 12px; border-left: 3px solid var(--teal); background: var(--teal-soft); color: var(--muted); font-size: 12px; }
+.member-linked-record { display: grid; gap: 7px; min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-soft); }
+.member-linked-record small { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.member-linked-record p { margin: 0; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.member-account-links :is(input, select, summary):focus-visible { outline: 3px solid color-mix(in srgb, var(--teal) 36%, transparent); outline-offset: 2px; }
+.member-account-links fieldset:disabled .member-checkbox { opacity: .6; cursor: default; }
+@media (max-width: 600px) {
+  .member-account-links .member-link-section { padding: 12px; }
+  .member-share-fields { grid-template-columns: minmax(0, 1fr); }
+  .member-link-actions > button { width: 100%; }
+  .member-link-actions .member-link-unlink { margin-left: 0; }
+}
+
+.member-link-weights { display: grid; gap: 8px; min-width: 0; }
+.member-account-links .member-link-weight { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-soft); }
+.member-link-weight .member-field-caption { flex: 1; min-width: 0; flex-wrap: wrap; overflow-wrap: anywhere; }
+.member-link-weight input { width: 90px; flex: none; }
+.member-link-weight small { white-space: nowrap; }
+@media (max-width: 600px) {
+  .member-link-weight .member-field-caption { align-items: flex-start; flex-direction: column; }
+  .member-link-weight input { width: 76px; }
+}

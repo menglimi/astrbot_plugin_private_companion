@@ -31,6 +31,17 @@ test("the top bar shows the configured location, live observation, role time, an
   assert.match(root.innerHTML,/aria-busy="false"/);
 });
 
+test("an unnamed official alert uses a readable label instead of raw unknown severity", async()=>{
+  const {root,view}=fixture();
+  view.render(root,{...base,scopeKey:"role-alert",requestWeather:async()=>({state:"live",location:"东莞市",condition:"阴",
+    temperature_c:18,observed_at:new Date().toISOString(),valid_until:new Date(Date.now()+3600000).toISOString(),
+    alerts:[{event_name:"其他预警",severity:"unknown",ends_at:new Date(Date.now()+3600000).toISOString()}]})});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(root.innerHTML,/天气预警/);
+  assert.match(root.innerHTML,/级别待核对/);
+  assert.doesNotMatch(root.innerHTML,/其他预警|unknown/);
+});
+
 test("disabling role weather never asks for or displays a preview observation",()=>{
   const {root,view}=fixture();
   let requests=0;

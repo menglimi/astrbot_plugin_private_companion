@@ -524,6 +524,8 @@ class CoreReplyToolSession:
         if (self.event.get_extra(CORE_REPLY_CONTEXT_EXTRA) is not self.state
                 or self.state.get("prepared") is not self.prepared):
             raise TaskError("core_tool_context_changed", "the original admitted tool context changed")
+        from .core_reply import assert_core_reply_connection
+        assert_core_reply_connection(self.event)
         self.application.require_running()
 
     async def authorize(self, wrapper):
@@ -653,10 +655,13 @@ class CoreReplyToolSession:
         except TaskError as error:
             if isinstance(result, dict) and result.get("effect") in ("committed", "unknown"):
                 return encode({key: value for key, value in {**result, "material_state": "unavailable", "code": error.code}.items()
-                               if key in {"state", "effect", "invocation_id", "operation_id", "receipt_ref", "material_state", "code"}})
-            return encode({"state": "failed", "effect": "none", "code": error.code})
+                               if key in {"state", "effect", "invocation_id", "operation_id", "receipt_ref", "material_state",
+                                          "code", "retry_disposition", "reason", "next_step"}})
+            return encode({"state": "failed", "effect": "none", "code": error.code,
+                           "retry_disposition": "input_invalid" if error.code == "invalid_tool_arguments" else "stop"})
         except (ValueError, ValidationError):
-            return encode({"state": "failed", "effect": "none", "code": "invalid_tool_arguments"})
+            return encode({"state": "failed", "effect": "none", "code": "invalid_tool_arguments",
+                           "retry_disposition": "input_invalid"})
 
     def _read(self, owner, action, arguments):
         app, context = self.application, self.context

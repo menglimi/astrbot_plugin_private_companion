@@ -156,8 +156,13 @@ class BackgroundHistory:
         request = DeliveryRequest.restore(row["request_json"])
         route = self.delivery.route(identifier) if windows else None
         if self.verify_platform_message is not None:
-            self.verify_platform_message(ScopeRef.restore(route["scope"]) if route else request.context.scope,
-                                         row["platform_ref"])
+            if route is not None:
+                sent_scope = ScopeRef.restore(route["scope"])
+            else:
+                router = getattr(self.delivery, "private_account_router", None)
+                actual = router.actual_context(identifier) if router is not None else None
+                sent_scope = (actual or request.context).scope
+            self.verify_platform_message(sent_scope, row["platform_ref"])
         owner = self.delivery.owners.get(request.owner)
         if (request.context.key != origin or request.delivery_id != identifier
                 or request.payload_hash != row["payload_hash"] or owner is None or owner.history_read is None):

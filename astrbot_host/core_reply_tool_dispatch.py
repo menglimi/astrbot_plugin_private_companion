@@ -47,12 +47,13 @@ def restore_core_tool_dispatch(event, run_context=None):
 
 def observe_core_tool_dispatch_begin(event, run_context):
     """Capture authentic call IDs at the SDK dispatch point, before execution."""
-    from .core_reply import CORE_REPLY_CONTEXT_EXTRA
+    from .core_reply import CORE_REPLY_CONTEXT_EXTRA, assert_core_reply_connection, watch_core_reply_connection
     if not isinstance(event.get_extra(CORE_REPLY_CONTEXT_EXTRA), dict):
         return None
     runner = active_core_runner(event, run_context)
     if runner is None:
         return None
+    watch_core_reply_connection(event)
     state = event.get_extra(CORE_TOOL_DISPATCH_EXTRA)
     if isinstance(state, dict) and state["runner"] is runner and not state["restored"]:
         return state
@@ -83,6 +84,7 @@ def observe_core_tool_dispatch_begin(event, run_context):
         restore_core_tool_dispatch(event, run_context)
 
     async def bound_tools(*args, **kwargs):
+        assert_core_reply_connection(event)
         # Text the round gate withheld belongs on the response again before the
         # tool runs: the SDK writes the assistant history from it right below.
         restore_core_turn_text(event)
@@ -100,6 +102,7 @@ def observe_core_tool_dispatch_begin(event, run_context):
         state["batch_active"] = True
         try:
             async for item in original_tools(*args, **kwargs):
+                assert_core_reply_connection(event)
                 if getattr(item, "kind", None) == "tool_call_result_blocks":
                     blocks = item.tool_call_result_blocks
                 try:
@@ -109,6 +112,7 @@ def observe_core_tool_dispatch_begin(event, run_context):
                 except Exception:
                     pass
                 yield item
+                assert_core_reply_connection(event)
             if discard_skipped_core_reply(event):
                 state["silent_pending"] = True
                 state["budget_max"] = getattr(runner, "_step_budget_max", None)
@@ -171,8 +175,11 @@ def observe_core_tool_dispatch_begin(event, run_context):
     async def observed_step(*args, **kwargs):
         failed = False
         try:
+            assert_core_reply_connection(event)
+            watch_core_reply_connection(event)
             if not state["silent_pending"]:
                 async for item in original_step(*args, **kwargs):
+                    assert_core_reply_connection(event)
                     yield item
             if state["silent_pending"]:
                 await complete_skipped_turn()

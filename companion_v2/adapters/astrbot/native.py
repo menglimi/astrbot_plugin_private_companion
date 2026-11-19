@@ -358,6 +358,16 @@ def configured_default_persona_id(context, umo):
     configuration = context.get_config(umo=umo)
     if not isinstance(configuration, dict):
         return "default"
+    agent = configuration.get("agent", {})
+    if isinstance(agent, dict) and agent:
+        agent_config = agent.get("config", {})
+        if isinstance(agent_config, dict):
+            if agent.get("runtime") == "astrbot":
+                persona = agent_config.get("persona", {})
+                selected = persona.get("persona_id", "default") if isinstance(persona, dict) else "default"
+            else:
+                selected = agent_config.get("persona_id", "default")
+            return selected or "default"
     runner = configuration.get("agent_runner", {})
     runner_config = runner.get("config", {}) if isinstance(runner, dict) else {}
     if isinstance(runner_config, dict) and runner:
@@ -371,6 +381,27 @@ def configured_default_persona_id(context, umo):
     if not isinstance(provider_settings, dict):
         provider_settings = {}
     return provider_settings.get("default_personality") or "default"
+
+
+async def resolve_host_persona_selection(resolver, *, umo, conversation_persona_id,
+                                         platform_name, provider_settings):
+    """Normalize AstrBot's session persona resolver across its two public contracts."""
+    try:
+        parameters = inspect.signature(resolver).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    options = {"umo": umo, "platform_name": platform_name}
+    if ("conversation_persona_id" in parameters or "provider_settings" in parameters
+            or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+            or not parameters):
+        options.update(conversation_persona_id=conversation_persona_id,
+                       provider_settings=provider_settings)
+    result = resolver(**options)
+    if inspect.isawaitable(result):
+        result = await result
+    if not isinstance(result, tuple) or len(result) not in (3, 4) or type(result[-1]) is not bool:
+        raise TaskError("host_persona_invalid", "AstrBot returned an invalid selected persona")
+    return result[0], result[1], result[-1]
 
 
 @dataclass(frozen=True)
@@ -513,7 +544,8 @@ class NativePrivateBridge:
                  audio_type=None, audio_loader=None, component_reader=None, video_type=None, video_loader=None,
                  forward_intake=None, file_type=None, file_loader=None, file_settings=None,
                  session_persona_override_lookup=None, persona_snapshot_lookup=None, persona_selection_lookup=None,
-                 persona_window_snapshot_lookup=None, persona_window_snapshot_update=None, private_session_lookup=None):
+                 persona_window_snapshot_lookup=None, persona_window_snapshot_update=None, private_session_lookup=None,
+                 connection_manager=None):
         check_version(version)
         self.context, self.event_type, self.identities = context, event_type, identities
         self.private_session_lookup = private_session_lookup
@@ -576,36 +608,10 @@ class NativePrivateBridge:
             raise ValueError("host projections must be explicit and unique")
         if any(p.role.installation_id != installation_id for p in personas):
             raise ValueError("persona projections cross installation")
-        self.platforms = {}
-        self.telegram_bot_ids = {}
-        for account in accounts:
-            platform = context.get_platform_inst(account.platform_id)
-            if platform is None:
-                # Not loaded yet: the other accounts start without this channel,
-                # and it is pinned by the first use after it appears.
-                continue
-            meta = platform.meta()
-            if not supported_platform_name(meta.name) or meta.id != account.platform_id:
-                raise TaskError("host_platform_changed", "the configured platform does not match its native account")
-            self._pinned(account.platform_id)
+        from .connections import NativeAccountConnections
+        self.connections = connection_manager or NativeAccountConnections(context, accounts, now=self.now)
+        self.platforms = self.connections.platforms
         self.ports = NativeInputPorts()
-
-    def _pinned(self, platform_id):
-        """The ``(platform, client)`` pinned for one channel, or ``(None, None)``.
-
-        A channel is pinned once, the first time it is found loaded with the
-        configured kind; later replacements are refused against that pin.
-        """
-        if platform_id not in self.platforms:
-            configured = any(account.platform_id == platform_id for account in self.accounts.values())
-            platform = self.context.get_platform_inst(platform_id) if configured else None
-            meta = platform.meta() if platform is not None else None
-            if meta is None or not supported_platform_name(meta.name) or meta.id != platform_id:
-                return None, None
-            self.platforms[platform_id] = (platform, platform.get_client())
-            if meta.name == "telegram" and native_client_connected(platform, platform_id):
-                self.telegram_bot_ids[platform_id] = platform.get_client().id
-        return self.platforms[platform_id]
 
     def account(self, scope):
         """The registered account a private scope belongs to, or an explicit refusal."""
@@ -617,23 +623,8 @@ class NativePrivateBridge:
 
     def platform(self, scope):
         account = self.account(scope)
-        platform, client = self._pinned(account.platform_id)
-        if platform is None:
-            raise TaskError("host_platform_unavailable", "the configured native platform has not loaded")
+        platform = self.connections.acquire(account, connected=False).platform
         meta = platform.meta()
-        if meta.name == "telegram":
-            current = platform.get_client()
-            if (self.context.get_platform_inst(account.platform_id) is not platform
-                    or not native_client_connected(platform, account.self_id, current)):
-                raise TaskError("host_account_changed", "Telegram application is not current and running")
-            bot_id = self.telegram_bot_ids.setdefault(account.platform_id, current.id)
-            if current.id != bot_id:
-                raise TaskError("host_account_changed", "Telegram authenticated bot account changed")
-            return platform
-        if (self.context.get_platform_inst(account.platform_id) is not platform
-                or platform.get_client() is not client or meta.id != account.platform_id
-                or not supported_platform_name(meta.name)):
-            raise TaskError("host_account_changed", "original platform/client was replaced")
         if meta.name == "wechat_native":
             from .wechat_native import session_target
             try:
@@ -650,20 +641,20 @@ class NativePrivateBridge:
 
     def platform_name(self, scope_or_account):
         platform_id = getattr(scope_or_account, "platform_id", None) or getattr(scope_or_account, "platform", None)
-        platform = self._pinned(platform_id)[0]
+        platform = self.platforms.get(platform_id, (None, None))[0]
         return str(platform.meta().name) if platform is not None else ""
 
     def account_connected(self, account, client=None):
-        platform = self._pinned(account.platform_id)[0]
-        return native_client_connected(platform, account.self_id, client)
+        try:
+            lease = self.connections.acquire(account)
+        except TaskError:
+            return False
+        return client is None or platform_client_matches(lease.platform, client)
 
     def client(self, scope):
-        platform = self.platform(scope)
+        self.platform(scope)
         account = self.account(scope)
-        client = platform.get_client()
-        if not self.account_connected(account, client):
-            raise TaskError("host_account_changed", "original native account is no longer connected")
-        return client
+        return self.connections.acquire(account).client
 
     @staticmethod
     def _umo(platform_id, sender_id):
@@ -906,9 +897,11 @@ class NativePrivateBridge:
                 settings = self.context.get_config(umo=umo).get("provider_settings", {})
                 resolver = getattr(manager, "resolve_selected_persona", None)
                 if callable(resolver):
-                    selected, persona, _, special = await bounded_native_lookup(resolver(
-                        umo=umo, conversation_persona_id=conversation_persona_id,
-                        platform_name=self.platform_name(account), provider_settings=settings), operation="persona")
+                    selected, persona, special = await bounded_native_lookup(
+                        resolve_host_persona_selection(
+                            resolver, umo=umo, conversation_persona_id=conversation_persona_id,
+                            platform_name=self.platform_name(account), provider_settings=settings),
+                        operation="persona")
                     if special:
                         selected, persona = None, None
                 else:
@@ -943,11 +936,12 @@ class NativePrivateBridge:
 
     async def verify_role(self, scope, binding, instruction=None):
         self.client(scope)
+        lease = self.connections.acquire(self.account(scope))
         sender = route_id(scope.native_scope_id)
         if scope.session_id != self.private_session_id(self.accounts[(scope.platform, scope.account_id)], sender) or binding.scope != scope:
             raise TaskError("host_route_changed", "original private session is inconsistent")
         cid, role, prompt = await self._role(self.accounts[(scope.platform, scope.account_id)], sender)
-        self.client(scope)
+        self.connections.assert_current(lease)
         if role != binding.role:
             raise TaskError("host_persona_changed", "host role differs from the original turn")
         return prompt
@@ -961,12 +955,13 @@ class NativePrivateBridge:
     async def verified_persona(self, scope, binding):
         account = self.account(scope)
         self.client(scope)
+        lease = self.connections.acquire(account)
         umo = self._verified_persona_umo(scope, binding, account)
         cid, selected, _, projection, prompt = await self._selected_role_snapshot(account, umo)
         projection = self._confirm_persona_projection(account, selected, projection, prompt)
         if projection.role != binding.role:
             raise TaskError("host_persona_changed", "selected host persona differs from the verified role")
-        self.client(scope)
+        self.connections.assert_current(lease)
         return {"persona_id": projection.persona_id, "prompt": prompt,
                 "bot_id": scope.bot_id, "account_id": scope.account_id}
 
@@ -1068,9 +1063,11 @@ class NativePrivateBridge:
             principal = AuthenticatedHostPrincipal(self.installation_id, self.host_id, platform_id, sender, account.bot_id, login)
             actor = require(self.identities.resolve_authenticated(principal, observed_at=at))
             # Freeze all event fields before any host await; later event middleware cannot restamp them.
+            lease = self.connections.acquire(account)
             event_client = event_native_client(self.context.get_platform_inst(platform_id), event)
             self.remember_private_session(event)
             cid, role, instruction = await self._role(account, sender)
+            self.connections.assert_current(lease)
             scope = ScopeRef(self.installation_id, platform_id, ScopeKind.PRIVATE, sender, account.bot_id, login, cid, session_id)
             if not platform_client_matches(self.platform(scope), event_client):
                 raise TaskError("host_client_mismatch", "event did not originate from the registered account client")
@@ -1146,6 +1143,7 @@ class NativePrivateBridge:
                 # Network/media preparation is outside SQLite; recheck the role,
                 # authenticated sender and client before admitting the captured input.
                 fresh_cid, fresh_role, fresh_instruction = await self._role(account, sender)
+                self.connections.assert_current(lease)
                 if fresh_role != role:
                     raise TaskError("host_persona_changed", "host role changed while preparing attachments")
                 fresh_actor = require(self.identities.resolve_authenticated(principal, observed_at=self.now()))

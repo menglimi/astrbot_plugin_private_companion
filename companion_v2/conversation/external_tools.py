@@ -37,6 +37,7 @@ from .media.models import CapturedImage, check_manifest
 from .media.generated import GROUP_IMAGE_ACTIONS, IMAGE_ACTIONS, REJECTED_ADOPTION
 from .media.screen import ACTION as SCREEN_ACTION, REJECTED_ADOPTION as SCREEN_REJECTED_ADOPTION
 from .messages import source_from_document
+from .tool_failures import blocks_repeat, failure_guidance, retry_disposition_for
 
 
 MAX_RESULT_BYTES = 65536
@@ -174,17 +175,21 @@ class ExternalToolResponse:
     images: tuple[CapturedImage, ...] = field(default=(), repr=False)
     dependencies: tuple[SourceRef, ...] = field(default=(), repr=False)
     error_code: str | None = None
+    retry_disposition: str | None = None
 
     def __post_init__(self):
         for name in ("invocation_id", "origin_key", "arguments_hash"):
             _opaque(getattr(self, name), field=name)
         if not isinstance(self.binding, ProviderBinding) or self.state not in ("succeeded", "failed", "unknown"):
             raise ValueError("external response requires its original binding and explicit outcome")
-        TaskResult("uncertain" if self.state == "unknown" else self.state, self.effect,
-                   receipt_ref=self.receipt_ref, operation_id=self.operation_id)
         if (self.error_code is not None and (type(self.error_code) is not str
                 or re.fullmatch(r"[a-z][a-z0-9_]{0,95}", self.error_code) is None)):
             raise ValueError("external error code must be a bounded stable identifier")
+        result = TaskResult("uncertain" if self.state == "unknown" else self.state, self.effect,
+                   receipt_ref=self.receipt_ref, operation_id=self.operation_id,
+                   retry_disposition=retry_disposition_for(self.error_code, self.state)
+                   if self.retry_disposition is None else self.retry_disposition)
+        object.__setattr__(self, "retry_disposition", result.retry_disposition)
         if self.state == "succeeded":
             if not isinstance(self.source, SourceRecord):
                 raise ValueError("successful extension result requires a governed original")
@@ -478,6 +483,41 @@ class ExternalToolExecutor:
                 return row
         return None
 
+    def repeated_failure(self, context, action, arguments_json, turn_id):
+        """Both execution paths retain the original failure and attempt budget."""
+        from .native_tool_results import PREFIX, operation_row
+
+        candidates = self.runtime.read_all("""SELECT i.*,
+            json_extract(t.record_json, '$.retry_disposition') AS retry_disposition
+            FROM extension_tool_invocations i JOIN conversation_batches b ON b.batch_id = i.batch_id
+            LEFT JOIN execution_tasks t ON t.task_id = i.task_id
+            WHERE b.origin_key = ? AND i.action = ?
+            AND (i.state IN ('queued', 'running', 'unknown') OR i.state = 'failed' AND i.parent_task_id = ?)
+            AND (i.parent_task_id = ? OR i.arguments_json = ? OR i.action = 'qzone.post.publish')
+            ORDER BY i.created_at, i.invocation_id""", (context.key, action, turn_id, turn_id, arguments_json))
+        effectful = self.providers[action].descriptor.side_effect is not SideEffect.NONE
+        for row in candidates:
+            if blocks_repeat(action=action, state=row["state"], effectful=effectful,
+                    disposition=row["retry_disposition"] or retry_disposition_for(row["error_code"], row["state"]),
+                    same_arguments=row["arguments_json"] == arguments_json, same_turn=row["parent_task_id"] == turn_id):
+                return {**self.snapshot(row, context, self.tasks.now())[0], "replayed": True}
+        native = self.runtime.read_all("""SELECT json_extract(value, '$.invocation_id') AS invocation_id
+            FROM runtime_metadata WHERE substr(key, 1, ?) = ?
+            AND json_extract(value, '$.origin_key') = ? AND json_extract(value, '$.action') = ?
+            AND json_extract(value, '$.task_id') IS NOT NULL
+            AND (json_extract(value, '$.state') IN ('queued', 'running', 'unknown')
+                 OR json_extract(value, '$.state') = 'failed' AND json_extract(value, '$.turn_id') = ?)
+            AND (json_extract(value, '$.turn_id') = ? OR json_extract(value, '$.arguments_json') = ?
+                 OR json_extract(value, '$.action') = 'qzone.post.publish') ORDER BY rowid""",
+            (len(PREFIX), PREFIX, context.key, action, turn_id, turn_id, arguments_json))
+        for candidate in native:
+            row = operation_row(self.runtime, candidate["invocation_id"])
+            if blocks_repeat(action=action, state=row["state"], effectful=effectful,
+                    disposition=row["retry_disposition"] or retry_disposition_for(row["error_code"], row["state"]),
+                    same_arguments=row["arguments_json"] == arguments_json, same_turn=row["parent_task_id"] == turn_id):
+                return {**self.snapshot(row, context, self.tasks.now())[0], "replayed": True}
+        return None
+
     async def execute(self, run, call):
         descriptor = self.providers[call.action].descriptor
         self._require_group_admin(call.action, run.task.spec.context)
@@ -491,12 +531,9 @@ class ExternalToolExecutor:
             if call.action in IMAGE_ACTIONS:
                 self.messages.generated_images.require_capacity(run.task.spec.request_ref, run.task.spec.context, self.tasks.now())
                 self.messages.image_quota.admit(run.task, self.tasks.now())
-            unresolved = connection.execute("""SELECT 1 FROM extension_tool_invocations
-                WHERE parent_task_id = ? AND action = ? AND arguments_json = ?
-                AND state IN ('queued', 'running', 'unknown') LIMIT 1""",
-                (run.task.task_id, call.action, call.arguments_json)).fetchone()
-            if unresolved:
-                raise TaskError("external_effect_unresolved", "an original unknown call cannot be retried under another ID")
+            prior = self.repeated_failure(run.task.spec.context, call.action, call.arguments_json, run.task.task_id)
+            if prior is not None:
+                return prior
             identifier = "extension-" + digest([run.task.task_id, call.call_id])
             child_id = "child-" + identifier
             connection.execute("""INSERT INTO extension_tool_invocations
@@ -618,6 +655,7 @@ class ExternalToolExecutor:
             invocation = ExternalToolInvocation(row["invocation_id"], row["parent_task_id"], row["tool_call_id"],
                 run.task.spec.context, descriptor, row["arguments_json"], run.task.spec.deadline_at, before_dispatch,
                 task_run=run)
+        retry_disposition = None
         try:
             provider, dispatch_descriptor = self._provider(descriptor)
             if dispatch_descriptor.binding != descriptor.binding:
@@ -626,12 +664,13 @@ class ExternalToolExecutor:
                 invocation = replace(invocation, descriptor=dispatch_descriptor)
             response = await provider.invoke(invocation)
             self._record_response(invocation, response)
+            retry_disposition = response.retry_disposition
         except asyncio.CancelledError:
             self._unknown(invocation.invocation_id)
             raise
         except Exception:
             self._unknown(invocation.invocation_id)
-        return self._result(self._row(invocation.invocation_id))
+        return self._result(self._row(invocation.invocation_id), retry_disposition=retry_disposition)
 
     def _record_response(self, invocation, response):
         if (not isinstance(response, ExternalToolResponse) or
@@ -729,11 +768,14 @@ class ExternalToolExecutor:
             WHERE i.batch_id = ?""", (batch_id,))
         return sum(len(encode(json.loads(row["payload_json"])).encode("utf-8")) for row in rows)
 
-    @staticmethod
-    def _result(row):
+    def _result(self, row, *, retry_disposition=None):
+        if retry_disposition is None:
+            task = self.runtime.read_one("SELECT record_json FROM execution_tasks WHERE task_id = ?", (row["task_id"],))
+            retry_disposition = json.loads(task["record_json"]).get("retry_disposition") if task else None
         return TaskResult("uncertain" if row["state"] in ("running", "unknown") else row["state"], row["effect"],
                           result_ref=row["invocation_id"] if row["state"] == "succeeded" else None,
-                          receipt_ref=row["receipt_ref"], operation_id=row["operation_id"])
+                          receipt_ref=row["receipt_ref"], operation_id=row["operation_id"],
+                          retry_disposition=retry_disposition or retry_disposition_for(row["error_code"], row["state"]))
 
     def snapshot(self, row, context, at):
         if isinstance(row, dict) and row.get("execution_path") == "astrbot_core":
@@ -748,13 +790,19 @@ class ExternalToolExecutor:
         if (task.spec.kind, task.spec.request_ref) != (descriptor.kind, row["invocation_id"]):
             raise TaskError("external_task_mismatch", "original child does not belong to this invocation")
         state = row["state"] if row["state"] in ("succeeded", "failed") else "unknown"
-        if state == "succeeded" and (task.state, task.effect, task.operation_id, task.result_ref) != (
-                "succeeded", row["effect"], row["operation_id"], row["invocation_id"]):
-            raise TaskError("external_task_unresolved", "original child has not accepted its final receipt")
-        if state == "failed" and row["receipt_ref"] is not None and task.state != "failed":
-            raise TaskError("external_task_unresolved", "original child has not accepted the owner's failure receipt")
+        task_row = self.runtime.read_one("SELECT record_json FROM execution_tasks WHERE task_id = ?", (row["task_id"],))
+        task_data = json.loads(task_row["record_json"]) if task_row is not None else {}
+        if state in ("succeeded", "failed") and row["receipt_ref"] is not None:
+            expected_result_ref = row["invocation_id"] if state == "succeeded" else None
+            accepted_state = task.state == state or (state == "failed" and task.state in ("dead_letter", "expired")
+                and task.reason in ("attempt_budget_exhausted", "retry_would_exceed_deadline"))
+            if not accepted_state or (task.effect, task.operation_id, task.result_ref, task_data.get("receipt_ref")) != (
+                    row["effect"], row["operation_id"], expected_result_ref, row["receipt_ref"]):
+                raise TaskError("external_task_unresolved", "original child has not accepted its final receipt")
         result = {"invocation_id": row["invocation_id"], "state": state, "effect": row["effect"],
-                  "operation_id": row["operation_id"], "receipt_ref": row["receipt_ref"], "code": row["error_code"]}
+                  "operation_id": row["operation_id"], "receipt_ref": row["receipt_ref"], "code": row["error_code"],
+                  "retry_disposition": task_data.get("retry_disposition") or retry_disposition_for(row["error_code"], state)}
+        result.update(failure_guidance(row["error_code"], state, action=row["action"]))
         material = None
         if state == "succeeded":
             adoption = self.messages.generated_images.adoption_status(row, context, at)

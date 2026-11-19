@@ -5,7 +5,9 @@ from datetime import timedelta
 import json
 import unittest
 
-from companion_v2.conversation.diagnostic_tools import DiagnosticRoleSession, diagnostic_query, proposal_document
+from companion_v2.conversation.diagnostic_tools import (
+    DiagnosticRoleSession, diagnostic_query, diagnostic_tool_specs, proposal_document,
+)
 from companion_v2.conversation.foreground import ClaimKind, DraftClaim, EvidencePromptCompiler, ForegroundContextAssembler, ModelDraft, PromptMaterial
 from companion_v2.conversation.models import InboundConversationEvent
 from companion_v2.diagnostics.models import DiagnosticError
@@ -157,6 +159,89 @@ class DiagnosticToolTests(DiagnosticFixture):
         self.assertNotIn(proposal.review_token, material)
         self.assertNotIn("review_token", material)
         self.assertEqual(self.counts()[:3], (0, 0, 0))
+
+    def test_inspect_schema_describes_branch_requirements_without_union_schemas(self):
+        spec = next(spec for spec in diagnostic_tool_specs(self.diagnostics) if spec.action == "diagnostics.inspect")
+        schema = json.loads(spec.parameters_json)
+        self.assertEqual(schema["required"], ["check"])
+        self.assertFalse(schema["additionalProperties"])
+        self.assertNotIn("oneOf", spec.parameters_json)
+        self.assertNotIn("anyOf", spec.parameters_json)
+        for field, words in {
+            "group_id": ("Required", "configuration"),
+            "extension_id": ("Required", "capability"),
+            "capability_id": ("Optional", "extension_id"),
+            "operation_id": ("Required", "operation"),
+            "task_id": ("Optional", "execution"),
+            "window_minutes": ("operation", "60"),
+        }.items():
+            with self.subTest(field=field):
+                description = schema["properties"][field]["description"]
+                for word in words:
+                    self.assertIn(word, description)
+
+    def test_inspect_distinguishes_missing_inapplicable_and_unknown_fields(self):
+        context = self.session().context
+        cases = (
+            ({"check": "configuration"}, "group_id is required"),
+            ({"check": "capability", "capability_id": "image.generate"}, "extension_id is required"),
+            ({"check": "operation"}, "operation_id is required"),
+            ({"check": "execution", "window_minutes": 60}, "window_minutes is not applicable to execution"),
+            ({"check": "storage", "extension_id": "image"}, "extension_id is not applicable to storage"),
+            ({"check": "storage", "private-secret-name": "private-secret-value"}, "unknown field"),
+            ({"check": "configuration", "group_id": []}, "registered group"),
+        )
+        for arguments, reason in cases:
+            with self.subTest(arguments=arguments):
+                with self.assertRaises(DiagnosticError) as failure:
+                    diagnostic_query(context, arguments, self.diagnostics, self.clock.now())
+                self.assertEqual(failure.exception.code, "invalid_tool_arguments")
+                self.assertIn(reason, str(failure.exception))
+                self.assertNotIn("private-secret", str(failure.exception))
+
+    def test_inspect_rejects_malformed_identifiers_at_the_tool_boundary(self):
+        context = self.session().context
+        cases = (
+            ("capability", "extension_id", 128, {}),
+            ("capability", "capability_id", 128, {"extension_id": "image"}),
+            ("execution", "task_id", 512, {}),
+            ("operation", "operation_id", 512, {}),
+        )
+        for check, field, maximum, other in cases:
+            for value in (None, [], {}, False, 1, "", " ", " padded", "padded ", "x" * (maximum + 1)):
+                with self.subTest(check=check, field=field, value=value):
+                    with self.assertRaises(DiagnosticError) as failure:
+                        diagnostic_query(context, {"check": check, field: value, **other},
+                                         self.diagnostics, self.clock.now())
+                    self.assertEqual(failure.exception.code, "invalid_tool_arguments")
+                    self.assertIn(field, str(failure.exception))
+            query = diagnostic_query(context, {"check": check, field: "x" * maximum, **other},
+                                     self.diagnostics, self.clock.now())
+            attribute = "execution_task_id" if field == "task_id" else field
+            self.assertEqual(getattr(query, attribute), "x" * maximum)
+
+    def test_inspect_valid_branches_keep_defaults_and_operation_window_bounds(self):
+        context = self.session().context
+        self.assertTrue(diagnostic_query(context, {"check": "storage"}, self.diagnostics, self.clock.now()).storage)
+        execution = diagnostic_query(context, {"check": "execution"}, self.diagnostics, self.clock.now())
+        self.assertTrue(execution.execution)
+        self.assertIsNone(execution.execution_task_id)
+        capability = diagnostic_query(context, {"check": "capability", "extension_id": "image"},
+                                      self.diagnostics, self.clock.now())
+        self.assertEqual(capability.extension_id, "image")
+        self.assertIsNone(capability.capability_id)
+        for minutes in (None, 1, 1440):
+            arguments = {"check": "operation", "operation_id": "exact-operation"}
+            if minutes is not None:
+                arguments["window_minutes"] = minutes
+            query = diagnostic_query(context, arguments, self.diagnostics, self.clock.now())
+            self.assertEqual(query.window.end - query.window.start, timedelta(minutes=minutes or 60))
+            self.assertEqual(query.operation_scope, context.scope)
+        for minutes in (None, True, 0, 1441, "60", 1.5):
+            with self.subTest(minutes=minutes), self.assertRaises(DiagnosticError) as failure:
+                diagnostic_query(context, {"check": "operation", "operation_id": "exact-operation",
+                    "window_minutes": minutes}, self.diagnostics, self.clock.now())
+            self.assertEqual(failure.exception.code, "invalid_tool_arguments")
 
 
 if __name__ == "__main__":

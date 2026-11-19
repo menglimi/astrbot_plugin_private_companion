@@ -98,7 +98,7 @@ class MemoryReflection:
         return max(180, 2 * timeout + 30)
 
     @outcome
-    def prepare(self, context, *, request_id, start, end, role_instruction, maximum_sources=16, maximum_chars=24000, schedule_ref=None,
+    def prepare(self, context, *, request_id, start, end, role_instruction, maximum_sources=32, maximum_chars=24000, schedule_ref=None,
                 retry_of=None):
         try:
             return self._prepare(context, request_id=request_id, start=start, end=end, role_instruction=role_instruction,

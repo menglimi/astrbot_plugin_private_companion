@@ -100,14 +100,18 @@ def _telegram_private_message_route(controller, event):
         return None
     bridge = controller.session.bridge
     account = bridge.accounts.get((meta.id, login))
-    platform, _ = bridge._pinned(meta.id)
-    client = event_native_client(platform, event)
+    try:
+        # The connection layer holds the bot id this account was first served with.
+        lease = bridge.connections.acquire(account) if account is not None else None
+    except TaskError:
+        lease = None
+    platform = lease.platform if lease is not None else None
+    client = event_native_client(platform, event) if platform is not None else None
     if (account is None or account.bot_id != target.bot_id or platform is None
             or controller.context.get_platform_inst(meta.id) is not platform
             or platform.meta().id != meta.id or platform.meta().name != "telegram"
-            or not platform_client_matches(platform, client)
-            or not native_client_connected(platform, login, client)
-            or bridge.telegram_bot_ids.get(meta.id) != client.id):
+            or client is not lease.client or not platform_client_matches(platform, client)
+            or not native_client_connected(platform, login, client)):
         raise TaskError("host_recall_account_changed", "message must come from the current connected platform")
     if (str(message.raw_message.message.message_id) != str(message.message_id)
             or getattr(message.type, "value", None) != "FriendMessage" or message.group_id

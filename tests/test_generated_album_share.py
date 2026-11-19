@@ -8,7 +8,8 @@ source 与 asset。重建逻辑一旦与真正的生成路径漂移，分享域�
 """
 
 import unittest
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from companion_v2.conversation.media.generated import GeneratedAlbumImage, GeneratedImages, _AlbumView
@@ -183,6 +184,46 @@ class CandidateTests(unittest.TestCase):
                                                     authorizer=SimpleNamespace()).unwrap()
         self.assertEqual(one.candidate_id, two.candidate_id)
         self.assertEqual(one.material.source.source_id, two.material.source.source_id)
+
+    def test_preparing_the_same_image_later_reuses_the_candidate_after_rechecking_access(self):
+        planner, recorded = self.planner()
+        item = album_item()
+        first = GeneratedImages.album_share_candidate(item, context(), planner=planner,
+            capability="qzone.post.publish", at=NOW, authorizer=SimpleNamespace()).unwrap()
+        later = NOW + timedelta(minutes=1)
+        again = GeneratedImages.album_share_candidate(item, context(), planner=planner,
+            capability="qzone.post.publish", at=later, authorizer=SimpleNamespace()).unwrap()
+
+        self.assertIs(again, first)
+        self.assertEqual(again.prepared_at, NOW)
+        for repository in (recorded["sources"], recorded["assets"]):
+            self.assertEqual([kwargs["observed_at"] for _, kwargs in repository.seen], [NOW, later])
+
+    def test_preparing_a_known_image_does_not_bypass_newly_revoked_access(self):
+        planner, recorded = self.planner()
+        item = album_item()
+        GeneratedImages.album_share_candidate(item, context(), planner=planner,
+            capability="qzone.post.publish", at=NOW, authorizer=SimpleNamespace()).unwrap()
+        recorded["assets"].readable = False
+
+        result = GeneratedImages.album_share_candidate(item, context(), planner=planner,
+            capability="qzone.post.publish", at=NOW + timedelta(minutes=1),
+            authorizer=SimpleNamespace())
+        self.assertFalse(result.is_success)
+        self.assertEqual(result.failure.code, "source_revoked")
+
+    def test_a_known_candidate_cannot_be_rebound_to_changed_material(self):
+        planner, _ = self.planner()
+        material = GeneratedImages.album_share_material(album_item(), context())
+        arguments = {"resolved": context().actor, "capability": "qzone.post.publish",
+                     "authorizer": SimpleNamespace(), "role_owner": material.role_owner}
+        first = planner.prepare(material, observed_at=NOW, **arguments).unwrap()
+        changed = replace(material, created_at=NOW + timedelta(seconds=1))
+
+        with self.assertRaisesRegex(ValueError, "different material"):
+            planner.prepare(changed, observed_at=NOW + timedelta(minutes=1), **arguments)
+        self.assertEqual(planner.follow_up_material(first.candidate_id,
+            observed_at=NOW + timedelta(minutes=2), **arguments).unwrap(), material)
 
 
     def test_a_material_revoked_after_the_candidate_was_prepared_is_refused_at_follow_up(self):

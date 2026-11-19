@@ -413,7 +413,8 @@ class AcquaintanceWebAPI:
         self.controller = controller
 
     def routes(self):
-        return [(PREFIX, self.directory, ["GET"], "Read the Companion V2 acquaintance directory"),
+        from .account_link_api import AccountLinkWebAPI
+        return AccountLinkWebAPI(self).routes() + [(PREFIX, self.directory, ["GET"], "Read the Companion V2 acquaintance directory"),
                 (AUTHORIZATION_PATH, self.authorization, ["GET"],
                  "Read one person's capability authorization"),
                 (AUTHORIZATION_PATH, self.authorize, ["POST"],
@@ -917,7 +918,7 @@ class AcquaintanceWebAPI:
             return outcome_response(Outcome.failed("person_nickname_command_invalid",
                                                    "the name command is not valid JSON"))
 
-    async def _command(self, *, expected):
+    async def _command(self, *, expected, optional=()):
         raw = await request.body()
         if len(raw) > 32768 or request.query:
             raise TaskError("acquaintance_request_invalid", "provide one bounded JSON body")
@@ -929,7 +930,7 @@ class AcquaintanceWebAPI:
                 result[key] = value
             return result
         command = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
-        if type(command) is not dict or set(command) != expected:
+        if type(command) is not dict or not expected <= set(command) or set(command) - expected - set(optional):
             raise TaskError("private_member_command_invalid", "the member command does not match its contract")
         return command
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import time
 from dataclasses import dataclass
@@ -19,13 +18,13 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import Aioc
 from astrbot.core.provider.sources.openai_source import ProviderOpenAIOfficial
 from astrbot.core.provider.sources.gemini_source import ProviderGoogleGenAI
 from astrbot.core.message.components import Image, Reply, Forward, Record, Video, File
-from astrbot.core.db.po import ConversationV2
+from astrbot.core.db import po as native_po
 from sqlmodel import select
 
 from companion_v2.adapters.astrbot.native import (
     NATIVE_LOOKUP_SLOW_SECONDS, HostPersona, NativePrivateBridge, account_number, bounded_native_lookup,
     configured_default_persona_id, native_client_connected, persona_instruction, report_slow_native_lookup,
-    supported_platform_name,
+    resolve_host_persona_selection, supported_platform_name,
 )
 from companion_v2.adapters.astrbot.provider import looks_like_text_provider, provider_fingerprint
 from companion_v2.adapters.astrbot.provider_catalog import TextProviderSettings, assemble_providers
@@ -91,8 +90,12 @@ async def load_persona_snapshot_selection(context, umo, conversation_id):
         async with database.get_db() as session:
             session_ready = time.perf_counter()
             query_started = session_ready
-            result = await session.execute(select(ConversationV2.persona_id).where(
-                ConversationV2.conversation_id == conversation_id))
+            # AstrBot 4.30 retains V2 only to migrate data; active rows use V3.
+            conversation = getattr(native_po, "ConversationV3", None)
+            if conversation is None:
+                conversation = native_po.ConversationV2
+            result = await session.execute(select(conversation.persona_id).where(
+                conversation.conversation_id == conversation_id))
             query_finished = time.perf_counter()
             row = result.one_or_none()
             result_finished = time.perf_counter()
@@ -132,13 +135,9 @@ async def resolve_native_persona_selection(context, umo, conversation_persona_id
     provider_settings = configuration.get("provider_settings", {}) if isinstance(configuration, dict) else {}
     if not isinstance(provider_settings, dict):
         provider_settings = {}
-    result = resolver(umo=umo, conversation_persona_id=conversation_persona_id, platform_name=platform_name,
-                      provider_settings=provider_settings)
-    if inspect.isawaitable(result):
-        result = await result
-    if not isinstance(result, tuple) or len(result) != 4:
-        raise TaskError("host_persona_invalid", "AstrBot returned an invalid selected persona")
-    selected, _persona, _forced, special = result
+    selected, _persona, special = await resolve_host_persona_selection(
+        resolver, umo=umo, conversation_persona_id=conversation_persona_id,
+        platform_name=platform_name, provider_settings=provider_settings)
     if special:
         return "[%None]"
     if selected in (None, ""):

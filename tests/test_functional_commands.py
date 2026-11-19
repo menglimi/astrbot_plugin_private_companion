@@ -81,6 +81,8 @@ class FunctionalCommandParsingTests(unittest.TestCase):
             ("陪伴 交换生图API", "manage_image"),
             ("陪伴 夹层密码", "retired_secret"),
             ("陪伴群 关闭LLM", "group_llm_block"),
+            ("陪伴群 开启生图", "group_image_enable"),
+            ("陪伴群 关闭生图", "group_image_disable"),
             ("陪伴群 插话反馈", "manage_group"),
         )
         for text, intent in cases:
@@ -104,6 +106,8 @@ class FunctionalCommandParsingTests(unittest.TestCase):
             ("陪伴群 恢复主链", "group_llm_release"),
             ("陪伴群 LLM状态", "group_llm_status"),
             ("陪伴群 主链状态", "group_llm_status"),
+            ("陪伴群 开启生图", "group_image_enable"),
+            ("陪伴群 关闭生图", "group_image_disable"),
         )
         for text, intent in cases:
             with self.subTest(text=text):

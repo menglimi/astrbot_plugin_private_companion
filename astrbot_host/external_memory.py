@@ -26,6 +26,24 @@ def memory_read_request(context, *, purpose, query="", limit=8, max_chars=2400):
             "context": memory_context_document(context)}
 
 
+def authorize_memory_request(application, context, registry, entry, request):
+    from companion_v2.relationships.account_links import PrivateAccountLinks
+    if not entry.linked_memory_read:
+        group = PrivateAccountLinks(application.runtime).group_for(context)
+        if group and group.get("memory", {}).get("enabled") is True:
+            raise TaskError("linked_memory_provider_upgrade_required", "memory provider must support revocable linked reads")
+        # Do not put opaque Python objects into an older provider's JSON API.
+        return request
+    from companion_v2.relationships.account_link_memory import read_scope
+    return registry.issue_memory_read(entry, request,
+        lambda: read_scope(application, context, request["purpose"]))
+
+
+def validate_memory_request(registry, request):
+    if "_memory_read_lease" in request:
+        registry.authorize_memory_read(request)
+
+
 async def prepare_external_memory(native_context, application, context, native_input):
     registry = memory_provider_registry(native_context)
     if registry is None or context.scope.kind is not ScopeKind.PRIVATE:
@@ -42,7 +60,9 @@ async def prepare_external_memory(native_context, application, context, native_i
         request = memory_read_request(context, purpose="recall",
             query=str(getattr(native_input, "text", "") or "")[-policy.query_chars:],
             limit=policy.context_items, max_chars=policy.context_chars)
+        request = authorize_memory_request(application, context, registry, entry, request)
         result = await registry.invoke(entry, "read", request)
+        validate_memory_request(registry, request)
         access.check(context)
         policy = access.policy_for(context)
         if not policy.automatic_context:
@@ -53,7 +73,8 @@ async def prepare_external_memory(native_context, application, context, native_i
         for value in result["items"][:policy.context_items]:
             if not isinstance(value, Mapping) or not isinstance(value.get("content"), str):
                 continue
-            item = {key: value[key] for key in ("id", "content", "occurred_at", "source")
+            item = {key: value[key] for key in ("id", "content", "occurred_at", "source",
+                    "source_session_id", "source_user_id", "source_bot_id", "source_original_bot_id")
                     if isinstance(value.get(key), str)}
             if not item["content"].strip():
                 continue
@@ -65,7 +86,7 @@ async def prepare_external_memory(native_context, application, context, native_i
         if not items:
             return None
         return {"provider_id": entry.provider_id, "items": items, "_context_key": context.key,
-                "_registry": registry, "_registration": entry}
+                "_registry": registry, "_registration": entry, "_request": request}
     except Exception as error:
         logger.warning("[CompanionV2] 外部记忆召回未注入 error_type=%s", type(error).__name__)
         return None
@@ -79,6 +100,10 @@ def external_memory_section(material, application, context):
         return ""
     registry, entry = material["_registry"], material["_registration"]
     if not registry.active(entry):
+        return ""
+    try:
+        validate_memory_request(registry, material.get("_request", {}))
+    except Exception:
         return ""
     application.memory.writer.access.check(context)
     if not application.memory.writer.access.policy_for(context).automatic_context:

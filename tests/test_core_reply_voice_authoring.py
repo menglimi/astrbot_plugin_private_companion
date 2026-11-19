@@ -14,9 +14,9 @@ from astrbot.core.agent.tool import ToolSet
 from astrbot.core.message.components import Plain, Record
 from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest, TokenUsage
-from astrbot.core.tools.message_tools import SendMessageToUserTool
 
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA, activate_core_reply_delivery_guard, prepare_core_reply_event
+from astrbot_host.core_reply_native_send import SendMessageToUserTool
 from astrbot_host.core_reply_media_prompt import finalize_core_reply_media_prompt
 from astrbot_host.core_reply_segmentation import prepare_core_reply_segmentation
 from astrbot_host.core_reply_voice import observe_core_voice_response, prepare_core_reply_voice_message

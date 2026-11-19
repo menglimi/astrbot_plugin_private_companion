@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+﻿const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
@@ -34,8 +34,13 @@ function harness(responses) {
   let nextTimerId = 1;
   let modelReads = 0;
   const bridge = {
-    apiGet: async route => {
-      requests.push(['GET', route]);
+    apiGet: async (rawRoute, query) => {
+      rawRoute = rawRoute || '';
+      let route = rawRoute.startsWith('/') ? rawRoute : '/' + rawRoute;
+      if (query && Object.keys(query).length) route += '?' + new URLSearchParams(query).toString();
+      const fullRoute = route;
+      route = route.split('?')[0];
+      requests.push(['GET', fullRoute]);
       if (route.endsWith('/memory')) {
         const value = responses.memory;
         return typeof value === 'function' ? value(requests) : value || {rss_bytes: 64 * 1024 * 1024,
@@ -48,7 +53,7 @@ function harness(responses) {
       };
       if (route.endsWith('/voice')) return responses.voice || {providers: []};
       if (route.endsWith('/image')) return responses.image || {actions: []};
-      if (route.startsWith('/config?sections=system.prompts')) {
+      if (fullRoute.startsWith('/config?sections=system.prompts')) {
         const value = responses.systemPrompts;
         return typeof value === 'function' ? value(requests) : value;
       }
@@ -58,9 +63,11 @@ function harness(responses) {
           : responses.model;
         return typeof value === 'function' ? value(modelReads++) : value || {tasks: [], providers: []};
       }
-      throw new Error('unexpected GET ' + route);
+      throw new Error('unexpected GET ' + fullRoute);
     },
-    apiPost: async (route, body) => {
+    apiPost: async (rawRoute, body) => {
+      rawRoute = rawRoute || '';
+      const route = rawRoute.startsWith('/') ? rawRoute : '/' + rawRoute;
       requests.push(['POST', route, body]);
       const value = responses.posts?.[route];
       const result = typeof value === 'function' ? value(body, requests) : value;
@@ -121,7 +128,7 @@ function harness(responses) {
   window.Blob = BlobMock;
   window.atob = value => Buffer.from(value, 'base64').toString('binary');
   vm.runInNewContext(source, {window, document, URL: url, Blob: BlobMock, Intl, Date, Number, Object, String, Math,
-    Array, Set, Promise});
+    Array, Set, Promise, URLSearchParams});
   return {
     page: window.CompanionMaintenancePage, requests, root, exports: csvExports, downloads, confirmations, audioPreviews, revokedAudioUrls,
     advanceTimers: elapsed => {
@@ -1912,7 +1919,9 @@ test('maintenance completes the V1 task prompt workspace on the V2 model contrac
   assert.match(root.innerHTML, /运行时提示组成/);
   assert.match(root.innerHTML, /业务任务指令/);
   assert.match(root.innerHTML, /本页可编辑/);
-  assert.match(root.innerHTML, /恢复角色级继承值/);
+  assert.match(root.innerHTML, /恢复上级继承值/);
+  assert.match(root.innerHTML, /shield-check"><\/i>角色默认/);
+  assert.doesNotMatch(root.innerHTML, /<small>当前窗口<\/small>/);
   assert.match(root.innerHTML, /回复规则：\{\{task_input\}\}/);
   assert.match(root.innerHTML, /内置版本/);
   assert.match(root.innerHTML, /v7/);
@@ -1971,7 +1980,7 @@ test('maintenance completes the V1 task prompt workspace on the V2 model contrac
   assert.equal(saved[1].kind, 'conversation.reply');
   assert.equal(Object.keys(saved[1].changes).length, 0);
   assert.deepEqual(Array.from(saved[1].reset), ['prompt']);
-  assert.match(root.innerHTML, /已恢复角色级继承值/);
+  assert.match(root.innerHTML, /已恢复上级继承值/);
 
   root.input('临时覆盖', '[data-prompt-draft]');
   root.input('   ', '[data-prompt-draft]');
@@ -2182,3 +2191,8 @@ test('the token total splits conversation, plugin and extension into one proport
   assert.doesNotMatch(bareTrack, /data-part="extension"/, '未接入的拓展不画成 0 宽度段');
   bare.page.unmount();
 });
+
+
+
+
+

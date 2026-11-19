@@ -37,7 +37,38 @@ PREFIX = "/astrbot_plugin_private_companion/setup"
 PROFILE_BODY_LIMIT = 262144
 logger = logging.getLogger(__name__)
 
+ROUTE_REJECTION_LABELS = {
+    "contact_delivery_budget": "该账号的主动联系额度已用尽",
+    "proactive_disabled": "该账号或联系目的未启用主动联系",
+    "proactive_paused": "该账号或联系目的处于暂停期",
+    "proactive_quiet_hours": "该账号处于免打扰时段",
+    "account_link_transport_unavailable": "该账号的平台连接不可用",
+    "account_link_route_changed": "关联关系、角色或路由策略已变化",
+    "account_link_context_unavailable": "无法解析该账号的有效会话身份",
+    "account_link_weight_zero": "该账号的随机权重为 0",
+    "delivery_not_sent": "平台明确未发送",
+}
+
+
+def _diagnostic_route_failure(observation):
+    rejections = observation.get("route_rejections") or []
+    if not rejections:
+        return None
+    details = []
+    for item in rejections:
+        member = item.get("member") or {}
+        code = item.get("code") or "account_link_context_unavailable"
+        target = " · ".join(str(member.get(key) or "") for key in
+                            ("platform", "account_id", "native_account_id"))
+        details.append(f"{target}：{ROUTE_REJECTION_LABELS.get(code, '路由检查拒绝')}（{code}）")
+    return "关联账号路由不可用；" + "；".join(dict.fromkeys(details))
+
+
 PROACTIVE_TEST_SUGGESTIONS = {
+    "account_link_all_unavailable": "按诊断步骤中的逐账号拒绝原因检查权限、暂停、免打扰、权重或连接；管理员主动测试已豁免联系额度，生产额度保持不变。",
+    "proactive_recipient_required": "请在消息测试顶部选择核心管理员并保存；只有一个可用管理员时自动使用。",
+    "proactive_recipient_changed": "测试收件人或管理员身份已变化，请重新读取顶部收件人并保存后再试。",
+    "proactive_recipient_invalid": "请重新读取当前具有核心管理员权限的具体私聊目标。",
     "dashboard_identity_required": "当前请求没有可用于真实投递的 Dashboard 登录身份。请从已登录的管理界面重新打开；插件 API Key 不能代替 Dashboard 登录会话。",
     "unbound_identity": "当前 Dashboard 身份还没有完成本体绑定。请从已登录的管理界面重新打开一次，让系统建立当前安装的身份绑定。",
     "binding_revoked": "当前 Dashboard 身份与本体的绑定已撤销。请由仍有核心权限的管理员重新确认该身份，不要反复运行真实投递测试。",
@@ -195,6 +226,9 @@ PROACTIVE_TEST_STAGE_BY_CODE = {
     "authorization_not_active": "authorization",
     "setup_binding_confirmation_required": "binding",
     "setup_core_window_not_configured": "binding",
+    "proactive_recipient_required": "binding",
+    "proactive_recipient_changed": "binding",
+    "proactive_recipient_invalid": "binding",
     "setup_core_window_ambiguous": "binding",
     "setup_private_window_required": "binding",
     "host_persona_binding_changed": "binding",
@@ -295,6 +329,8 @@ class SetupWebAPI:
     def __init__(self, controller):
         self.controller = controller
         self.progress = SetupStateStore(controller.data_root)
+        from .diagnostic_recipient import DiagnosticRecipientStore
+        self.diagnostic_recipient = DiagnosticRecipientStore(controller.data_root)
         self._test_lock = asyncio.Lock()
         self._test_task = None
 
@@ -316,6 +352,8 @@ class SetupWebAPI:
             (PREFIX + "/complete", self.complete, ["POST"], "Record a completed Companion V2 setup section"),
             (PREFIX + "/proactive-test", self.proactive_test, ["POST"], "Run a one-time proactive contact through the V2 contact and delivery pipeline"),
             (PREFIX + "/proactive-test/status", self.proactive_test_status, ["GET"], "Read the existing proactive test receipt without host discovery"),
+            (PREFIX + "/proactive-recipients", self.proactive_recipients, ["GET"], "Read current core administrator test recipients"),
+            (PREFIX + "/proactive-recipient", self.save_proactive_recipient, ["POST"], "Save the reviewed diagnostic recipient"),
             (PREFIX + "/proactive-diagnostic", self.proactive_diagnostic, ["POST"], "Run a confirmed purpose-specific proactive diagnostic to the core administrator"),
             (PREFIX + "/proactive-test/confirm", self.confirm_proactive_test, ["POST"], "Record administrator confirmation of the existing test message"),
         ]
@@ -932,7 +970,67 @@ class SetupWebAPI:
         session, context, instruction, _target = await self._setup_context_with_target()
         return session, context, instruction
 
+    async def _recipient_document(self):
+        resolver = getattr(self.controller, "proactive_diagnostic_targets", None)
+        if not callable(resolver):
+            raise TaskError("proactive_recipients_unavailable", "the shared host does not support recipient selection")
+        targets = await resolver()
+        stored = self.diagnostic_recipient.read()
+        selected = next((t for t in targets if self.diagnostic_recipient.identity(t) == stored), None)
+        # A unique live CORE recipient needs no manual configuration, even after
+        # removal/revocation of a previously saved recipient.
+        if len(targets) == 1:
+            selected = targets[0]
+        return targets, selected, {"candidates": [
+            {**self.diagnostic_recipient.identity(t),
+             "label": f"{t.participant_id} · {t.platform_id} / {t.account_id}"} for t in targets],
+            "selected_target_id": selected.target_id if selected else "",
+            "selection_required": len(targets) > 1 and selected is None,
+            "stale_selection": stored is not None and not any(
+                self.diagnostic_recipient.identity(t) == stored for t in targets)}
+
+    async def proactive_recipients(self):
+        try:
+            self._admin()
+            _targets, _selected, document = await self._recipient_document()
+            return self._response(Outcome.success(document))
+        except TaskError as error:
+            return self._error(error.code, str(error))
+        except (ValueError, TypeError, OSError, UnicodeError):
+            return self._error("proactive_recipient_unavailable", "the saved test recipient could not be read")
+
+    async def save_proactive_recipient(self):
+        try:
+            self._admin()
+            data = await self._body({"target_id"})
+            if type(data["target_id"]) is not str or not data["target_id"]:
+                raise ValueError("choose a current core administrator")
+            if self._test_lock.locked():
+                raise TaskError("proactive_test_busy", "wait for the running diagnostic before changing its recipient")
+            async with self._test_lock:
+                targets, _selected, _document = await self._recipient_document()
+                target = next((t for t in targets if t.target_id == data["target_id"]), None)
+                if target is None:
+                    raise TaskError("proactive_recipient_invalid", "choose a currently authorized core administrator private target")
+                self.diagnostic_recipient.write(self.diagnostic_recipient.identity(target))
+                _targets, _selected, document = await self._recipient_document()
+                return self._response(Outcome.success(document))
+        except TaskError as error:
+            return self._error(error.code, str(error))
+        except (ValueError, TypeError, OSError, UnicodeError):
+            return self._error("proactive_recipient_invalid", "the test recipient could not be saved")
+
+    async def _selected_diagnostic_target(self, requested=None):
+        _targets, selected, _document = await self._recipient_document()
+        if selected is None:
+            raise TaskError("proactive_recipient_required", "select and save a core administrator test recipient first")
+        if requested is not None and (type(requested) is not str or requested != selected.target_id):
+            raise TaskError("proactive_recipient_changed", "the saved test recipient changed; refresh before starting")
+        return selected
+
     async def _proactive_diagnostic_target(self):
+        if callable(getattr(self.controller, "proactive_diagnostic_targets", None)):
+            return await self._selected_diagnostic_target()
         binding = self._binding()
         if binding.get("bound") and not binding.get("pending"):
             return None
@@ -951,6 +1049,15 @@ class SetupWebAPI:
         session = self.controller.session or self.controller.last_session
         if session is None:
             raise TaskError("staging_not_initialized", "initialize the selected V2 role first")
+        if callable(getattr(self.controller, "proactive_diagnostic_targets", None)):
+            if await self._selected_diagnostic_target(fallback_target.target_id) != fallback_target:
+                raise TaskError("proactive_recipient_changed", "the recipient mapping changed before synchronization")
+            context, instruction = await session.synchronize(fallback_target)
+            if await self._selected_diagnostic_target(fallback_target.target_id) != fallback_target:
+                raise TaskError("proactive_recipient_changed", "the recipient identity changed during synchronization")
+            if context.scope.kind is not ScopeKind.PRIVATE:
+                raise TaskError("setup_private_window_required", "the diagnostic recipient must be private")
+            return session, context, instruction
         context, instruction = await session.synchronize(fallback_target)
         binding = self._binding()
         if (not binding.get("bound") or binding.get("pending")
@@ -1129,11 +1236,14 @@ class SetupWebAPI:
             try:
                 username = self._admin()
                 data = await self._body({"purpose", "confirm_delivery"},
-                    optional={"variant", "synthetic_event", "diagnostic_image"})
+                    optional={"variant", "synthetic_event", "diagnostic_image", "target_id", "allow_linked_accounts"})
                 purpose = data["purpose"]
                 variant = data.get("variant")
                 synthetic_event = data.get("synthetic_event", False)
                 diagnostic_image = data.get("diagnostic_image", False)
+                allow_linked_accounts = data.get("allow_linked_accounts", False)
+                if type(allow_linked_accounts) is not bool:
+                    raise TaskError("proactive_test_confirmation_required", "allow_linked_accounts must be an explicit boolean")
                 if type(purpose) is not str or purpose not in PURPOSES or data["confirm_delivery"] is not True:
                     raise TaskError("proactive_test_confirmation_required",
                                     "choose one proactive purpose and confirm delivery to the core administrator")
@@ -1148,6 +1258,8 @@ class SetupWebAPI:
                     raise TaskError("contact_diagnostic_variant_invalid",
                                     "choose a supported environment source for this proactive purpose")
                 fallback_target = await self._proactive_diagnostic_target()
+                if "target_id" in data and (fallback_target is None or data["target_id"] != fallback_target.target_id):
+                    raise TaskError("proactive_recipient_changed", "refresh the saved test recipient before starting")
                 started = datetime.now(timezone.utc).isoformat()
                 attempt_id = uuid4().hex
                 existing = self.controller.session or self.controller.last_session
@@ -1226,12 +1338,16 @@ class SetupWebAPI:
                     return self._response(Outcome.success(self._diagnostic_failure(
                         purpose, route_hint, failure_stage, error.code, str(error),
                         stages=stages, route=route_hint)))
+                if fallback_target is not None and callable(getattr(self.controller, "proactive_diagnostic_targets", None)):
+                    if await self._selected_diagnostic_target(fallback_target.target_id) != fallback_target:
+                        raise TaskError("proactive_recipient_changed", "the recipient changed while preparing diagnostic sources")
                 opportunity, intents = candidate["opportunity"], candidate["intents"]
                 route = candidate["route"]
                 label = PURPOSES[purpose]
                 result = await session.application.proactive.contact(context, opportunity, intents,
                     role_instruction=candidate["role_instruction"], selection_seed=attempt_id,
                     administrator_test=True, diagnostic_source_backed=not synthetic_event,
+                    **({"diagnostic_allow_linked_accounts": True} if allow_linked_accounts else {}),
                     diagnostic_origin=candidate["diagnostic_origin"],
                     diagnostic_image_intent=("适合轻松、友好、自然日常互动的表情图片；不适合严肃、悲伤、冲突或边界语境。"
                                              if diagnostic_image else None))
@@ -1276,7 +1392,7 @@ class SetupWebAPI:
                             stages=stages, task_id=task.task_id, route=route)))
                     observation = observed.unwrap()
                     current_task = require(session.application.tasks.read(context, task.task_id))
-                    if observation["skipped"] or observation["delivery"] in ("delivered", "failed", "unknown", "accepted"):
+                    if observation["skipped"] or observation["delivery"] in ("delivered", "failed", "cancelled", "partial", "unknown", "accepted"):
                         break
                     if current_task.state in ("failed", "cancelled", "expired", "uncertain"):
                         break
@@ -1298,25 +1414,36 @@ class SetupWebAPI:
                                        else "failed" if observation["judge_allowed"] is False
                                        else "not_required" if judge is None else "pending")
                 stage_by_name["delivery"]["state"] = ("skipped" if skipped else "passed" if delivery == "delivered"
-                                       else "failed" if delivery in ("failed", "unknown")
+                                       else "failed" if delivery in ("failed", "cancelled", "partial", "unknown")
                                        else "pending")
                 stage_by_name["receipt"]["state"] = ("skipped" if skipped else "passed" if delivery == "delivered"
                                       and observation.get("receipt_ref") else
-                                      "failed" if delivery in ("failed", "unknown") else "pending")
+                                      "failed" if delivery in ("failed", "cancelled", "partial", "unknown") else "pending")
                 state = ("failed" if diagnostic_image and not image_attached else
                          "skipped" if skipped else "passed" if delivery == "delivered"
                          else "unknown" if delivery in ("unknown", "accepted")
                          else "pending" if delivery in (None, "pending", "dispatched")
                          else "failed")
+                route_failure = _diagnostic_route_failure(observation) if state == "failed" else None
+                if route_failure:
+                    stage_by_name["delivery"]["detail"] = redact_text(route_failure)
                 code = ("proactive_diagnostic_image_unavailable" if diagnostic_image and not image_attached else
-                        None if state in ("passed", "skipped") else current_task.reason or (
+                        None if state in ("passed", "skipped") else
+                        "account_link_all_unavailable" if route_failure else
+                        (current_task.reason if current_task.state != "succeeded" else None) or (
                     "delivery_result_unknown" if state == "unknown" else "delivery_failed" if state == "failed"
                     else "proactive_test_timeout"))
                 return self._response(Outcome.success({"state": state, "purpose": purpose,
                     "purpose_label": label, "variant": route,
                     "route": route,
                     "event_mode": "synthetic_event" if synthetic_event else "source_backed",
-                    "recipient": "core_administrator", "attempt_id": attempt_id, "task_id": task.task_id,
+                    "recipient": "core_administrator",
+                    "recipient_target": self.diagnostic_recipient.identity(fallback_target)
+                        if hasattr(self, "diagnostic_recipient") and hasattr(fallback_target, "target_id") else None,
+                    "allow_linked_accounts": allow_linked_accounts,
+                    "delivery_targets": self._diagnostic_delivery_targets(session, context, task.task_id),
+                    "route_rejections": observation.get("route_rejections", []),
+                    "attempt_id": attempt_id, "task_id": task.task_id,
                     "task_state": current_task.state, "delivery_state": delivery,
                     "judge_state": judge, "judge_reason": (redact_text(observation["judge_reason"])
                         if observation["judge_reason"] else None),
@@ -1330,7 +1457,7 @@ class SetupWebAPI:
                     "usage_summary": self._diagnostic_usage_summary(session, context),
                     "receipt_ref": observation["receipt_ref"], "stage": None if state in ("passed", "skipped") else
                         "delivery" if delivery else "model_generation", "code": code,
-                    "error": None if code is None else redact_text(current_task.reason or code),
+                    "error": None if code is None else redact_text(route_failure or (current_task.reason if current_task.state != "succeeded" else None) or code),
                     "suggestion": (PROACTIVE_TEST_SUGGESTIONS.get(code)
                         or PROACTIVE_TEST_STAGE_SUGGESTIONS.get(stage_by_name.get("delivery", {}).get("stage", "delivery")))
                         if code else None,
@@ -1348,6 +1475,25 @@ class SetupWebAPI:
                 return self._response(Outcome.success(self._diagnostic_failure(
                     data.get("purpose") if "data" in locals() and isinstance(data, dict) else None,
                     None, "execution", "proactive_test_failed", f"{type(error).__name__}: {error}")))
+
+    @staticmethod
+    def _diagnostic_delivery_targets(session, context, task_id):
+        getter = getattr(session.application.proactive, "_delivery_rows", None)
+        router = getattr(getattr(session.application, "outbound", None), "private_account_router", None)
+        rows = getter(task_id) if callable(getter) else ()
+        recipients = []
+        seen = set()
+        for row in rows:
+            if row["state"] not in ("delivered", "accepted", "unknown", "dispatched"):
+                continue
+            actual = router.actual_context(row["delivery_id"]) if router is not None else None
+            scope = (actual or context).scope
+            key = (scope.platform, scope.account_id, scope.native_scope_id, row["state"])
+            if key not in seen:
+                seen.add(key)
+                recipients.append({"platform_id": key[0], "account_id": key[1],
+                                   "participant_id": key[2], "delivery_state": key[3]})
+        return recipients
 
     @staticmethod
     def _diagnostic_attempt_usage(session, context, code):

@@ -70,3 +70,19 @@ test("an embedded timeout carries an explicit ambiguous transport code", async (
   h.timers[0].callback();
   await assert.rejects(pending, error => error.code === "bridge_timeout" && error.confirmed === false);
 });
+
+test("workspace context updates notify the editor and draft actions return confirmed results", async () => {
+  const h=harness(), bridge=h.window.AstrBotPluginPage, seen=[];
+  h.documentEvents["companion-context-change"]=event=>seen.push(event.detail);
+  h.respond({channel:"companion-workspace",kind:"context",context:{selection:{bot_id:"bot-a",role_id:"role-b"}}});
+  assert.equal(seen[0].selection.role_id,"role-b");
+  bridge.registerDraftHandler({save:async()=>({error:"保存未确认"}),discard:()=>true});
+  bridge.reportDraft({dirty:true,title:"角色与用户",fields:["资料"]});
+  assert.equal(h.messages.at(-1).kind,"draft-state");
+  h.respond({channel:"companion-workspace",kind:"draft-action",requestId:"draft-1",action:"save"});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(h.messages.at(-1).result.error,"保存未确认");
+  h.respond({channel:"companion-workspace",kind:"draft-action",requestId:"draft-2",action:"discard"});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(h.messages.at(-1).result,true);
+});

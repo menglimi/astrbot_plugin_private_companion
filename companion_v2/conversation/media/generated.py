@@ -275,7 +275,13 @@ class GeneratedImages:
 
     def album_image(self, context, at, image_id):
         """Re-read one exact accepted image after checking its original context and receipt."""
-        if type(image_id) is not str or len(image_id) > 180 or not image_id.startswith("generated-image:"):
+        if type(image_id) is not str or len(image_id) > 180:
+            raise TaskError("generated_image_missing", "the selected album image is unavailable")
+        if image_id.startswith("imgart_"):
+            self.messages.authorize(context, at)
+            from .native_generated_album import artifact
+            return artifact(self, context, at, image_id)
+        if not image_id.startswith("generated-image:"):
             raise TaskError("generated_image_missing", "the selected album image is unavailable")
         try:
             _, invocation_id, raw_position = image_id.split(":", 2)

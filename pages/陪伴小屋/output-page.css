@@ -1,4 +1,4 @@
-/* Output design: overview 41/59; independent material, creation and backend pages. */
+﻿/* Output design: overview 41/59; independent material, creation and backend pages. */
 .output-page{display:grid;gap:var(--sp-4);min-width:0;color:var(--t-text)}
 .output-page [hidden]{display:none!important}
 .output-page h2,.output-page h3,.output-page h4,.output-page h5{margin:0;color:var(--t-text-strong);font-family:inherit;font-weight:600;letter-spacing:0;line-height:1.5}
@@ -60,7 +60,7 @@
 .output-page .wb-group-head{margin:0 0 var(--sp-2);font-size:var(--fs-tiny);color:var(--t-text-soft)}
 .output-page .wb-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:calc(var(--sp-3) * .75);min-width:0}
 .output-page .wb-field{display:block;min-width:0;margin:0;padding:calc(var(--sp-1) * 1.75) calc(var(--sp-3) * .75);border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface-raised)}
-.output-page .wb-field-main{display:grid;grid-template-columns:minmax(0,1fr) minmax(150px,42%);align-items:center;gap:3px var(--sp-4);min-width:0}
+.output-page .wb-field-main{display:grid;grid-template-columns:minmax(8em,1fr) minmax(150px,42%);align-items:center;gap:3px var(--sp-4);min-width:0}
 .output-page .wb-field-main>.wb-label{grid-column:1;grid-row:1;min-width:0;overflow-wrap:break-word}
 .output-page .wb-field-main>.wb-help{grid-column:1;grid-row:2}
 .output-page .wb-field-main>.wb-control{grid-column:2;grid-row:1 / span 2;justify-self:stretch;width:100%;max-width:none;min-width:0}
@@ -415,3 +415,4 @@
 .output-work-text section+section{border-top:1px solid var(--t-line);margin-top:1.2em;padding-top:1em}
 .output-work-text p{white-space:pre-wrap;margin:0}
 @media(max-width:620px){.output-works [data-output-works-list]{grid-template-columns:1fr}}
+

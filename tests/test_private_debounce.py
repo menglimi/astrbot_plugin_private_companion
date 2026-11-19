@@ -1,6 +1,7 @@
 """Adaptive private debounce policy and per-target state machine."""
 
 import asyncio
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -81,6 +82,42 @@ class PrivateDebouncePolicyTests(unittest.TestCase):
         ):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 Policy(**values)
+
+
+class PrivateDebounceNativeTextTests(unittest.TestCase):
+    @staticmethod
+    def event(platform, parts):
+        return SimpleNamespace(
+            message_obj=SimpleNamespace(type="FriendMessage", message=parts, message_str=""),
+            message_str="", get_platform_name=lambda: platform)
+
+    def test_qq_official_placeholder_keeps_debounce_and_native_header(self):
+        mention = SimpleNamespace(type="At", qq="qq_official")
+        event = self.event("qq_official", [mention, SimpleNamespace(type="Plain", text="在吗")])
+
+        self.assertEqual(PrivateDebounce.private_plain_text(event), "在吗")
+        self.assertTrue(PrivateDebounce.replace_private_plain_text(event, "在吗\n我有个问题"))
+        self.assertIs(event.message_obj.message[0], mention)
+        self.assertEqual(event.message_obj.message[1].text, "在吗\n我有个问题")
+        self.assertEqual(event.message_obj.message_str, event.message_str)
+
+    def test_other_mentions_and_media_do_not_enter_plain_text_debounce(self):
+        body = SimpleNamespace(type="Plain", text="在吗")
+        for platform, part in (("aiocqhttp", SimpleNamespace(type="At", qq="qq_official")),
+                               ("qq_official", SimpleNamespace(type="At", qq="another-user")),
+                               ("qq_official", SimpleNamespace(type="Image", file="image"))):
+            with self.subTest(platform=platform, part=part.type):
+                event = self.event(platform, [part, body])
+                self.assertIsNone(PrivateDebounce.private_plain_text(event))
+                self.assertFalse(PrivateDebounce.replace_private_plain_text(event, "merged"))
+
+    def test_plain_only_messages_still_merge(self):
+        event = self.event("aiocqhttp", [SimpleNamespace(type="Plain", text="先说"),
+                                          SimpleNamespace(type="Plain", text="再说")])
+        self.assertEqual(PrivateDebounce.private_plain_text(event), "先说再说")
+        self.assertTrue(PrivateDebounce.replace_private_plain_text(event, "合并后"))
+        self.assertEqual(len(event.message_obj.message), 1)
+        self.assertEqual(event.message_obj.message[0].text, "合并后")
 
 
 class PrivateDebounceStateTests(unittest.IsolatedAsyncioTestCase):

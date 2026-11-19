@@ -1,4 +1,4 @@
-.workspace-learning{min-width:0}
+﻿.workspace-learning{min-width:0}
 .expression-samples-workspace{min-width:0}
 .lh-samples{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0;padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised)}
 .lh-samples-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);min-height:48px}
@@ -302,7 +302,7 @@
 #expressionWorkspace .wb-group-head{margin:0 0 var(--sp-3);font-size:var(--fs-title);color:var(--t-text-strong)}
 #expressionWorkspace .wb-fields{display:flex;flex-direction:column;align-items:stretch;gap:var(--sp-2)}
 #expressionWorkspace .wb-field{display:block;min-width:0;margin:0;padding:var(--sp-2) var(--sp-3);border:0;border-radius:var(--r-sm);background:var(--t-surface-soft)}
-#expressionWorkspace .wb-field-main{display:grid;grid-template-columns:minmax(0,1fr) minmax(100px,.65fr);align-items:center;gap:var(--sp-2);min-width:0}
+#expressionWorkspace .wb-field-main{display:grid;grid-template-columns:minmax(10em,1fr) minmax(100px,.65fr);align-items:center;gap:var(--sp-2);min-width:0}
 #expressionWorkspace .wb-label{color:var(--t-text-strong);font-size:var(--fs-tiny);overflow-wrap:anywhere}
 #expressionWorkspace .wb-control{min-width:0;margin:0}
 #expressionWorkspace .wb-field-side{padding:0}
@@ -323,7 +323,7 @@
   .lh-signal-filter{justify-content:center;padding-inline:var(--sp-2)}
   .lh-signal-card-foot{align-items:stretch;flex-direction:column}
   .lh-signal-actions .lh-command{width:100%}
-  #expressionWorkspace .wb-field-main{grid-template-columns:minmax(0,1fr) minmax(85px,.8fr)}
+  #expressionWorkspace .wb-field-main{grid-template-columns:minmax(8em,1fr) minmax(85px,.8fr)}
 }
 @media(prefers-reduced-motion:reduce){.lh-signal-card,.lh-signal-filter{transition-duration:.001ms!important}}
 
@@ -363,3 +363,4 @@
 .lh-track-actions a{padding:7px 11px;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-accent-ink);font-size:var(--fs-tiny);text-decoration:none}
 .lh-track-actions a:first-child{border-color:var(--t-accent);background:var(--t-accent-quiet)}
 .lh-track-actions a:hover{border-color:var(--t-accent)}
+

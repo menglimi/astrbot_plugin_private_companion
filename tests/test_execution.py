@@ -74,6 +74,42 @@ class ExecutionFixture(ManagementFixture):
 
 
 class ExecutionTests(ExecutionFixture):
+    def test_retry_disposition_is_bounded_and_unknown_effects_cannot_retry(self):
+        for disposition in ("safe_retry", "stop", "human_confirmation_required", "input_invalid"):
+            result = TaskResult("failed", retry_disposition=disposition)
+            self.assertEqual(result.retry_disposition, disposition)
+        with self.assertRaises(ValueError):
+            TaskResult("failed", retry_disposition="retry_sometimes")
+        with self.assertRaises(ValueError):
+            TaskResult("uncertain", "unknown", retry_disposition="safe_retry")
+        with self.assertRaises(ValueError):
+            TaskResult("failed", retry_disposition="external_effect_unknown")
+        with self.assertRaises(ValueError):
+            TaskResult("succeeded", retry_disposition="stop")
+        self.assertEqual(TaskResult("uncertain", "unknown").retry_disposition, "external_effect_unknown")
+        self.assertEqual(TaskResult("failed").retry_disposition, "stop")
+        self.assertEqual(TaskResult("failed", retryable=True).retry_disposition, "safe_retry")
+        self.assertIsNone(TaskResult("succeeded").retry_disposition)
+
+    def test_stop_decisions_override_the_legacy_retry_flag_and_survive_storage(self):
+        for disposition in ("stop", "human_confirmation_required", "input_invalid"):
+            claim = self.running("task-" + disposition)
+            result = TaskResult("failed", retryable=True, retry_disposition=disposition)
+            finished = self.tasks.finish(claim, result).unwrap()
+            self.assertEqual(finished.state, "failed")
+            task = self.runtime.read_one("SELECT record_json FROM execution_tasks WHERE task_id = ?", (claim.task_id,))
+            attempt = self.runtime.read_one("SELECT record_json FROM execution_attempts WHERE attempt_id = ?", (claim.attempt_id,))
+            self.assertEqual(json.loads(task["record_json"])["retry_disposition"], disposition)
+            saved = json.loads(attempt["record_json"])["owner_result"]
+            self.assertEqual(saved["retry_disposition"], disposition)
+            self.assertFalse(saved["retryable"])
+
+    def test_safe_retry_disposition_schedules_the_same_task_without_legacy_flag(self):
+        claim = self.running()
+        retry = self.tasks.finish(claim, TaskResult("failed", retry_disposition="safe_retry")).unwrap()
+        self.assertEqual(retry.state, "retry_scheduled")
+        self.assertEqual(retry.reason, "known_safe_retry")
+
     def test_task_capacity_bounds_match_host_configuration_bounds(self):
         limits = SupervisorLimits(queued_per_lane=10_000, retained_tasks=100_000)
         self.assertEqual((limits.queued_per_lane, limits.retained_tasks), (10_000, 100_000))

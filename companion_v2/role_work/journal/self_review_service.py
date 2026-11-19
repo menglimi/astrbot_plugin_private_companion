@@ -45,6 +45,9 @@ SETTLED_STATE = "succeeded"
 OUTCOME_PREFIX = "role.self_review.outcome.v1:"
 AUTO_APPLY_KINDS = frozenset({"try_next_time", "keep"})
 AUTO_ACTOR = "system:self-review"
+# This switch is role-scoped through the persisted runtime profile.  Off means no
+# new review run and no accepted guidance is injected; history stays readable.
+ENABLED_KEY = "role.self_review.enabled.v1"
 MIN_EVIDENCE = 2
 # A deterministic output-contract failure will not fix itself by asking again a
 # few minutes later: the same model with the same prompt returns the same shape.
@@ -127,8 +130,32 @@ class SelfReviewService:
         if check is not None:
             await check(context.scope, context.role_binding, instruction)
 
+    def enabled(self):
+        """Role-level switch; default on and fails closed only on corrupt data."""
+        row = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?", (ENABLED_KEY,))
+        if row is None:
+            return True
+        try:
+            value = json.loads(row["value"])
+            return value is not False
+        except (TypeError, ValueError):
+            return False
+
+    @outcome
+    def set_enabled(self, *, enabled):
+        if type(enabled) is not bool:
+            raise TaskError("self_review_command_invalid", "enabled must be a boolean")
+        with self.runtime.transaction() as connection:
+            connection.execute("""INSERT INTO runtime_metadata(key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                (ENABLED_KEY, json.dumps(bool(enabled))))
+        self.app.notify()
+        return {"enabled": bool(enabled)}
+
     def prepare(self, context, instruction, at):
         self.app.require_running()
+        if not self.enabled():
+            raise TaskError("self_review_disabled", "self-review is disabled for this role")
         self._bound(context, instruction)
         window = self.evidence.collect(context, at)
         if len(window.evidence) < MIN_EVIDENCE:
@@ -319,6 +346,8 @@ class SelfReviewService:
 
     def due(self, context, at):
         """True when this role's window has moved on since its last review."""
+        if not self.enabled():
+            return False
         _, closed_at = self._cursor(context)
         return closed_at is None or at - closed_at >= timedelta(seconds=self.scan_seconds)
 
@@ -354,6 +383,7 @@ class SelfReviewService:
         return {
             "state": state,
             "code": code,
+            "enabled": self.enabled(),
             "last_run_at": stamp(closed_at) if closed_at is not None else None,
             "due": due,
             "worker": bool(worker is not None and not worker.done()),

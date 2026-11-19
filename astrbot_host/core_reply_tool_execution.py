@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import timedelta
 import json
 import logging
+import re
 
 from companion_v2.conversation.external_tools import ExternalToolInvocation, ExternalToolResponse, _SourceAccess
 from companion_v2.execution.models import (
@@ -17,6 +18,7 @@ from companion_v2.execution.service import TaskSupervisor, outcome
 from companion_v2.conversation.messages import source_from_document
 from companion_v2.conversation.native_tool_media import publish_native_images, read_native_images
 from companion_v2.conversation.media.generated import IMAGE_ACTIONS
+from companion_v2.conversation.tool_failures import failure_guidance, retry_disposition_for
 from companion_v2.sources.dependencies import link
 
 
@@ -68,7 +70,7 @@ class CoreReplyToolExecutor:
             connection.execute("INSERT INTO runtime_metadata (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (self._key(row["invocation_id"]), encode(row)))
 
-    def _existing(self, session, call_id, action, arguments):
+    def _existing(self, session, call_id, action, arguments, *, external=False):
         identifier = "native-tool-" + digest([session.turn_id, call_id])
         saved = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?", (self._key(identifier),))
         if saved is not None:
@@ -76,6 +78,8 @@ class CoreReplyToolExecutor:
             if (row["origin_key"], row["action"], row["arguments_json"]) != (session.context.key, action, encode(arguments)):
                 raise TaskError("tool_call_conflict", "a native call ID cannot change its original arguments")
             return identifier, row
+        if external:
+            return identifier, None
         unresolved = self.runtime.read_one("""SELECT value FROM runtime_metadata WHERE key LIKE ?
             AND json_extract(value, '$.origin_key') = ? AND json_extract(value, '$.action') = ?
             AND json_extract(value, '$.arguments_json') = ?
@@ -142,9 +146,12 @@ class CoreReplyToolExecutor:
             raise TaskError("core_external_unavailable", "this action requires an unavailable native adapter")
         with self.runtime.transaction():
             self.external.admit(provider.descriptor, session.context, self.tasks.now())
-            identifier, prior = self._existing(session, call_id, action, arguments)
+            identifier, prior = self._existing(session, call_id, action, arguments, external=True)
             if prior is not None:
                 return self._snapshot(prior, session.context)
+            prior = self.external.repeated_failure(session.context, action, encode(arguments), session.turn_id)
+            if prior is not None:
+                return prior
             now = self.tasks.now()
             if action in IMAGE_ACTIONS:
                 self.application.messages.image_quota.admit_native(session.context, now)
@@ -163,8 +170,10 @@ class CoreReplyToolExecutor:
             row = self._row(identifier)
             if run_result.state in ("created", "retry_scheduled"):
                 require(self.tasks.cancel(session.context, identifier, expected_revision=run_result.revision))
-                row.update(state="failed", effect="not_committed" if provider.descriptor.side_effect is not SideEffect.NONE else "none",
-                           result={"state": "failed", "effect": "none", "code": "core_tool_capacity_unavailable"})
+                effect = "not_committed" if provider.descriptor.side_effect is not SideEffect.NONE else "none"
+                row.update(state="failed", effect=effect,
+                           result={"state": "failed", "effect": effect, "invocation_id": identifier,
+                                   "code": "core_tool_capacity_unavailable", "retry_disposition": "stop"})
                 self._save(row)
             elif row["state"] in ("queued", "running"):
                 row.update(state="unknown", effect="unknown" if provider.descriptor.side_effect is not SideEffect.NONE else "none")
@@ -210,20 +219,23 @@ class CoreReplyToolExecutor:
             raise
         except Exception as error:
             native_code = getattr(error, "code", None)
-            code = (error.code if isinstance(error, TaskError)
-                    else native_code if isinstance(native_code, str) and native_code
+            code = (native_code if isinstance(native_code, str)
+                    and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", native_code)
                     else "core_tool_provider_unavailable")
             logger.warning("[CompanionV2] 原生工具调用未取得可确认结果 action=%s code=%s error_type=%s",
                            row["action"], code, type(error).__name__)
             row.update(state="unknown", effect="unknown" if effectful else "none")
             row["result"] = {"state": "unknown", "effect": row["effect"],
-                             "invocation_id": row["invocation_id"], "code": code}
+                             "invocation_id": row["invocation_id"], "code": code,
+                             "retry_disposition": "external_effect_unknown"}
             self._save(row)
         current = self._row(row["invocation_id"])
         result = current.get("result") or {}
         return TaskResult("uncertain" if current["state"] == "unknown" else current["state"], current["effect"],
             result_ref=current["invocation_id"] if current["state"] == "succeeded" else None,
-            operation_id=result.get("operation_id"), receipt_ref=result.get("receipt_ref"))
+            operation_id=result.get("operation_id"), receipt_ref=result.get("receipt_ref"),
+            retry_disposition=result.get("retry_disposition") or
+                retry_disposition_for(result.get("code"), current["state"]))
 
     def _accept(self, row, invocation, response):
         if (not isinstance(response, ExternalToolResponse) or
@@ -253,7 +265,8 @@ class CoreReplyToolExecutor:
                 invocation.descriptor.tool.action, response.images, at=self.tasks.now()) if response.images else []
             row.update(state=response.state, effect=response.effect,
                 result={"state": response.state, "effect": response.effect, "invocation_id": invocation.invocation_id,
-                        "operation_id": response.operation_id, "receipt_ref": response.receipt_ref},
+                        "operation_id": response.operation_id, "receipt_ref": response.receipt_ref,
+                        "code": response.error_code, "retry_disposition": response.retry_disposition},
                 source=json.loads(encode(source.reference)) if source is not None else None,
                 source_hash=digest(source) if source is not None else None, images=images)
             self._save(row)
@@ -261,11 +274,22 @@ class CoreReplyToolExecutor:
     def _snapshot(self, row, context):
         provider = self.providers[row["action"]]
         self.external.admit(provider.descriptor, context, self.tasks.now())
-        result = row.get("result") or {"state": "unknown", "effect": row["effect"], "invocation_id": row["invocation_id"]}
+        result = dict(row.get("result") or {"state": "unknown", "effect": row["effect"], "invocation_id": row["invocation_id"]})
+        if result.get("retry_disposition") is None:
+            result["retry_disposition"] = retry_disposition_for(result.get("code"), result["state"])
+        result.update(failure_guidance(result.get("code"), result["state"], action=row["action"]))
         if row["state"] == "succeeded":
             task = require(self.tasks.read(context, row["task_id"]))
-            if task.state != "succeeded" or task.result_ref != row["invocation_id"]:
+            task_row = self.runtime.read_one("SELECT record_json FROM execution_tasks WHERE task_id = ?",
+                                             (row["task_id"],))
+            task_data = json.loads(task_row["record_json"]) if task_row is not None else {}
+            if (task.state, task.effect, task.operation_id, task.result_ref, task_data.get("receipt_ref")) != (
+                    "succeeded", row["effect"], result.get("operation_id"), row["invocation_id"],
+                    result.get("receipt_ref")):
                 raise TaskError("core_tool_result_unresolved", "the original task has not accepted its result")
+            if (result.get("state"), result.get("effect"), result.get("invocation_id")) != (
+                    row["state"], row["effect"], row["invocation_id"]):
+                raise TaskError("core_tool_result_unresolved", "the native receipt no longer matches its operation")
             try:
                 reference = source_from_document(row["source"])
                 source = require(self.application.messages.sources.read(reference, resolved=context.actor,

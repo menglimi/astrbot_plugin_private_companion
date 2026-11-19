@@ -1,35 +1,7 @@
-/* 统一配置工作台 · 外观与动效层
-   全部走 tokens.css 的语义令牌，不写死颜色。
-
-   核心概念是「配置继承链」：每个字段的值来自 安装 → 角色 → 关系 → 窗口 中的
-   某一层。本文件把这个不可见的机制画成可见的层轨（.wb-rail），让「谁覆盖了谁」
-   一眼可读，而不是压成一行小字。
-
-   动效原则：只在回答人的动作时出现，不做入场堆叠。
-   1. .wb-rail 首次绘制时逐段落位（整片唯一一次非交互动效）
-   2. 悬停层轨节点：该层亮起，被它覆盖的层结霜退后
-   3. 幽灵值：继承来的值显示为半透明加删除线，旁边浮出实际生效值
-   4. 保存按钮形变为进度环，回执为幂等重放时勾画两遍
-   全部受 data-motion 维度与 prefers-reduced-motion 约束。 */
-
-/* === 工作台容器 === */
+/* 统一配置工作台：层轨显示继承链，字段与保存动作的范围详情按需展开。 */
 .wb{display:flex;flex-direction:column;gap:var(--sp-5);min-width:0}
-
-/* 工作台卡片**不画卡片**。
- *
- * 它总是挂在 console-section 里，外层已有分区标题与分隔线；自己再画一张
- * 带边框的卡、配一个 h3 + 一段 p，就是同一屏里第二层框、第二层标题、
- * 第二层同灰度说明。全页共有 13 个这样的分区，叠起来就是「一片框」。
- * 现在只保留它的语义结构（卡头 / 卡体），视觉重量交给外层分区。
- *
- * 作用范围药丸 .wb-scope 保留：它是有信息的（这次保存写到哪一层），
- * 而且只有它一件用这种形状，不与别的框重复。 */
-/* 卡片的 overflow 用 clip 而不是 hidden。
- * sticky 的参照物是「最近的滚动容器」；overflow:hidden 会把卡片自己变成
- * 一个不可滚动的滚动容器，于是卡片里的吸底动作条永远吸不住（它的参照盒就是
- * 卡片本身，而卡片并不滚）。clip 只裁剪、不建立滚动容器，视觉一样、
- * 吸底生效。同一条理由见 shell.css 的 .shell-panel。 */
-.wb-card{overflow:clip}
+/* 外层已有分区标题；工作台只保留结构，提示允许越过卡片边界。 */
+.wb-card{overflow:visible}
 .wb-card-head{
   display:flex;align-items:baseline;justify-content:space-between;
   gap:var(--sp-3);flex-wrap:wrap;margin:0 0 var(--sp-3);
@@ -83,16 +55,7 @@
 .wb-section-panel .wb-group>.wb-help{margin-bottom:var(--sp-3);max-width:64ch}
 @keyframes wb-section-enter{from{opacity:.55;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 
-/* 作用范围药丸：告诉人这次保存会写到哪一层 */
-.wb-scope{
-  display:inline-flex;align-items:center;gap:var(--sp-1);flex:none;
-  padding:3px var(--sp-2);border-radius:var(--r-pill);
-  border:1px solid var(--t-line-firm);background:var(--t-surface-raised);
-  color:var(--t-text-soft);font-size:var(--fs-micro);
-}
-.wb-scope::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--t-accent)}
-
-/* === 字段行：层轨 + 控件 === */
+/* === 字段行 === */
 /* 字段按可用宽度自动分列：标量字段两三个一行，长控件整幅通栏。
    此前是单列纵向堆叠——一组九个数字字段要滚九屏，而每个数字框还各自
    拉伸到整幅宽，右侧全是空白。列宽 300px 是「标签 + 数字框 + 范围」放得下
@@ -157,17 +120,23 @@
 }
 .wb-rail-legend b{font-weight:500;color:var(--t-text-soft)}
 
+/* 范围信息按需查看；按钮可聚焦，也可在触屏上展开。 */
+.wb-context{position:relative;display:inline-flex;align-items:center;vertical-align:middle;font-weight:400}
+.wb-context-toggle{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;
+  padding:0;border:0;background:transparent;color:var(--t-text-faint);font:inherit;cursor:pointer;border-radius:50%}
+.wb-context-toggle:focus-visible{outline:2px solid var(--t-accent);outline-offset:2px;color:var(--t-text)}
+.wb-context-tip{position:fixed;inset:auto;margin:0;z-index:80;box-sizing:border-box;
+  width:max-content;max-width:min(320px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow:auto;padding:10px 12px;
+  background:var(--t-surface);color:var(--t-text);border:1px solid var(--t-line-firm);border-radius:var(--r-sm,8px);
+  box-shadow:0 6px 22px #0002;font-size:var(--fs-tiny,12px);line-height:1.65;white-space:pre-line;overflow-wrap:anywhere;text-align:start}
+.wb-context-tip:not(:popover-open){display:none}
+.wb-save-context{display:inline-flex;align-items:center;gap:4px}
+
 /* --- 字段主体 --- */
 .wb-field-main{min-width:0;display:flex;flex-direction:column;gap:var(--sp-2)}
 .wb-label{
   display:flex;align-items:baseline;gap:var(--sp-2);flex-wrap:wrap;
   color:var(--t-text);font-size:var(--fs-body);font-weight:500;
-}
-/* 继承来的值：幽灵态 */
-.wb-label .wb-ghost{
-  color:var(--t-text-faint);font-weight:400;
-  text-decoration:line-through;text-decoration-color:var(--t-line-firm);
-  opacity:.62;
 }
 .wb-help{color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.7;margin:0}
 
@@ -332,13 +301,8 @@
 .wb-order-index{color:var(--t-text-faint);font-size:var(--fs-micro);text-align:center;font-variant-numeric:tabular-nums}
 .wb-order-tools{display:grid;grid-template-columns:minmax(130px,1fr) auto auto;gap:var(--sp-1);align-items:center}
 
-/* 字段右侧状态：分列之后单元格变窄，芯片与「恢复继承」允许换行，
-   否则它们会把控件挤成一条缝。 */
+/* 字段右侧的恢复继承操作允许换行。 */
 .wb-field-side{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-1);flex:none;padding-top:2px}
-.wb-chip{
-  padding:3px var(--sp-2);border-radius:var(--r-xs);font-size:var(--fs-micro);line-height:1.5;white-space:nowrap;
-  background:var(--t-surface-sunken);color:var(--t-text-faint);
-}
 .wb-reset{
   display:inline-flex;align-items:center;gap:var(--sp-1);
   padding:var(--sp-1) var(--sp-2);border-radius:var(--r-xs);font-size:var(--fs-micro);
@@ -525,12 +489,12 @@
 }
 :root[data-motion="off"] .wb-rail.is-drawing .wb-node,
 :root[data-motion="low"] .wb-rail.is-drawing .wb-node{animation:none!important}
+:root[data-motion="off"] .wb-node,
+:root[data-motion="low"] .wb-node{transition-duration:0s!important}
 :root[data-motion="off"] .wb-keyword,
 :root[data-motion="low"] .wb-keyword{animation:none!important}
 :root[data-motion="off"] .wb-replacement-chip,
 :root[data-motion="low"] .wb-replacement-chip{animation:none!important}
-:root[data-motion="off"] .wb-node,
-:root[data-motion="low"] .wb-node{transition-duration:0s!important}
 :root[data-motion="off"] .wb-keyword-add,
 :root[data-motion="low"] .wb-keyword-add,
 :root[data-motion="off"] .wb-word-special,
@@ -673,20 +637,18 @@
   .wb-tag-form input[type=text]{min-width:0}
 }
 
-/* 2026-11 视觉校准：配置项回到「标题在左、控件在右」的舒展行距，
-   参考 7.1.8 redesign 的 row 节奏，但保留当前工作台的分层轨道。 */
+/* 配置项标题在左、控件在右；范围提示附在标题旁。 */
 .wb-fields{grid-template-columns:minmax(0,1fr);gap:0;max-width:1040px}
 .wb-field{grid-template-columns:12px minmax(0,1fr) auto;align-items:center;
   gap:var(--sp-2) var(--sp-4);padding:14px var(--sp-2) 14px 0}
-/* journal 形态不渲染左侧轨道，若仍让 main 自动落位，它会挤进 12px 轨道，
-   标题被压成一字一行、控件跑到最右侧。显式把 main 放到内容列。 */
+/* 层轨占据首列，主体与恢复继承动作分别排列。 */
 .wb-field>.wb-field-main{grid-column:2}
 @media (min-width:721px){
   .wb-field>.wb-field-side{grid-column:3}
 }
 /* 自我页的 journal 是单列卡片，不能沿用工作台的第 2 列。 */
 .self-page .wb-journal .wb-field>.wb-field-main{grid-column:1}
-.wb-field-main{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,360px);
+.wb-field-main{display:grid;grid-template-columns:minmax(12em,1fr) minmax(180px,360px);
   align-items:center;column-gap:var(--sp-5);row-gap:var(--sp-1)}
 .wb-field-main>.wb-label{grid-column:1;grid-row:1;align-self:end}
 .wb-field-main>.wb-help{grid-column:1;grid-row:2;align-self:start}
@@ -698,6 +660,14 @@
 .wb-field:has(textarea) .wb-field-main,.wb-field:has(.wb-word-editor) .wb-field-main,
 .wb-field:has(.wb-keywords) .wb-field-main,.wb-field:has(.wb-source-picker) .wb-field-main,
 .wb-field:has(.wb-order-editor) .wb-field-main,.wb-field:has(.wb-date) .wb-field-main{grid-template-columns:minmax(0,1fr)}
+#replyWorkspace .wb-field-main{grid-template-columns:minmax(12em,1fr) minmax(180px,360px)}
+#replyWorkspace .wb-field-main>.wb-label{min-width:12em}
+#replyWorkspace .wb-field:has(textarea) .wb-field-main,
+#replyWorkspace .wb-field:has(.wb-word-editor) .wb-field-main,
+#replyWorkspace .wb-field:has(.wb-keywords) .wb-field-main,
+#replyWorkspace .wb-field:has(.wb-source-picker) .wb-field-main,
+#replyWorkspace .wb-field:has(.wb-order-editor) .wb-field-main,
+#replyWorkspace .wb-field:has(.wb-date) .wb-field-main{grid-template-columns:minmax(0,1fr)}
 .wb-field:has(textarea) .wb-field-main>.wb-control,.wb-field:has(.wb-word-editor) .wb-field-main>.wb-control,
 .wb-field:has(.wb-keywords) .wb-field-main>.wb-control,.wb-field:has(.wb-source-picker) .wb-field-main>.wb-control,
 .wb-field:has(.wb-order-editor) .wb-field-main>.wb-control,.wb-field:has(.wb-date) .wb-field-main>.wb-control{

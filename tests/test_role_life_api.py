@@ -9,6 +9,7 @@ from tests.native_adapter_support import completion
 from astrbot.api.web import PluginRequest, bind_request_context
 from starlette.requests import Request
 from astrbot_host.life_api import PREFIX
+from companion_v2.storage.runtime import StorageOpenError
 
 
 class LifeAPITests(unittest.IsolatedAsyncioTestCase):
@@ -65,10 +66,26 @@ class LifeAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["activities"][0]["state"], "completed", status["activities"])
         result = await self.request(data={"action":"diary", "operation_key":"diary", "view_token":status["view_token"]})
         self.assertEqual(result["data"]["state"], "written", result)
+        application = self.controller.session.application
+        store = application.configuration.store
         (await self.controller.stop()).unwrap()
-        status = (await self.request())["data"]
-        self.assertTrue(status["journals"][0]["body"])
-        self.assertTrue(status["journals"][0]["summary"])
+        model_calls = len(self.native.provider.client.state.calls)
+        for _ in range(3):
+            response = await self.request()
+            self.assertEqual(response["status"], "ok", response)
+            status = response["data"]
+            self.assertTrue(status["journals"][0]["body"])
+            self.assertTrue(status["journals"][0]["summary"])
+            self.assertEqual(status["host_state"], "stopped")
+            self.assertTrue(status["config"]["enabled"])
+            self.assertFalse(status["config"]["diary_enabled"])
+            self.assertEqual(status["running"], [])
+            self.assertEqual(application.state, "stopped")
+            self.assertEqual(application.life_runtime.active_handles, ())
+            self.assertIs(application.runtime.configuration_store, store)
+        self.assertEqual(len(self.native.provider.client.state.calls), model_calls)
         self.assertEqual(self.native.platform.client._api._wsr_api.calls, [])
         await self.controller.terminate()
+        with self.assertRaises(StorageOpenError):
+            store.read_one("SELECT COUNT(*) AS n FROM configuration_values", ())
         self.assertEqual(self.native.registered_web_apis, [])

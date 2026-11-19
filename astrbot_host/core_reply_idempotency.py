@@ -49,8 +49,10 @@ from .core_reply import CORE_REPLY_CONTEXT_EXTRA
 DELIVERY_NET_KEY = "_delivery_net"
 # Bodies already delivered by the native send tool in this turn.  The final
 # assistant response can repeat exactly what the tool just sent; that is one
-# effect, not two messages.
+# effect, not two messages. A successfully delivered Record may accompany the
+# tool's visible text, while the final candidate must still be media-free.
 NATIVE_TOOL_KEYS_KEY = "_native_tool_sent_keys"
+NATIVE_TOOL_CHECKED_ATTR = "_companion_v2_native_tool_checked"
 # The identity the net is bound to.  Kept apart from the net so a missing reset
 # can never make the current turn read another turn's net.
 DELIVERY_TURN_KEY = "_delivery_turn"
@@ -133,7 +135,7 @@ def remember_native_tool_message(event, message) -> None:
     core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
     if not isinstance(core, dict):
         return
-    key = _delivery_key(message)
+    key = _delivery_key(message, voice_attachment=True)
     if key is None:
         return
     keys = core.get(NATIVE_TOOL_KEYS_KEY)
@@ -167,6 +169,36 @@ def should_drop_native_tool_duplicate(event, part) -> bool:
                 "turn=%s event_ref=%s digest=%s",
                 _turn_label(core), _event_ref(core), _digest(key[0]))
     return True
+
+
+def should_drop_native_tool_response(event, message) -> bool:
+    """Compare the complete visible reply before segmentation or media preparation."""
+    core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+    if not isinstance(core, dict) or not core.get(NATIVE_TOOL_KEYS_KEY):
+        return False
+    reaction = core.get("_reaction_reply")
+    if (isinstance(reaction, dict) and reaction.get("enabled") and reaction.get("intent")
+            and not reaction.get("attempted")):
+        # The final reply may still add an image even when its text was sent.
+        return False
+    from .core_reply_presentation import present_core_reply_message
+
+    visible = present_core_reply_message(event, message)
+    if visible is None:
+        return False
+    from .core_reply_outbound import prepare_core_reply_outbound_message
+
+    visible = prepare_core_reply_outbound_message(event, core.get("prepared"), visible)
+    return should_drop_native_tool_duplicate(event, visible)
+
+
+def mark_native_tool_checked(message):
+    """Mark a segment whose complete parent reply was already compared."""
+    try:
+        object.__setattr__(message, NATIVE_TOOL_CHECKED_ATTR, True)
+    except (AttributeError, TypeError):
+        pass
+    return message
 
 
 def record_core_reply_delivery(event, part) -> None:
@@ -226,7 +258,7 @@ def _turn_label(core) -> str:
     return "%s#%s" % (turn.get("event_ref", "unknown"), turn.get("sequence", 0))
 
 
-def _delivery_key(part):
+def _delivery_key(part, *, voice_attachment=False):
     """What makes two deliveries the same: the text plus every decoration.
 
     The plain text alone is not enough.  ``@甲`` and ``@乙``, or the same words
@@ -235,7 +267,7 @@ def _delivery_key(part):
     send.  Only when both the text and the ordered decorations are equal is this
     the same delivery repeated.
     """
-    if not _plain_only(part):
+    if not _plain_only(part, voice_attachment=voice_attachment):
         return None
     decorations = []
     for component in getattr(part, "chain", ()) or ():
@@ -248,12 +280,13 @@ def _delivery_key(part):
     return (_plain_text(part), tuple(decorations))
 
 
-def _plain_only(part) -> bool:
+def _plain_only(part, *, voice_attachment=False) -> bool:
     components = list(getattr(part, "chain", None) or ())
     if not components:
         return False
     for component in components:
-        if getattr(getattr(component, "type", None), "name", None) not in TEXT_COMPONENTS:
+        name = getattr(getattr(component, "type", None), "name", None)
+        if name not in TEXT_COMPONENTS and not (voice_attachment and name == "Record"):
             return False
     return bool(_plain_text(part))
 

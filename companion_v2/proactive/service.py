@@ -609,10 +609,13 @@ class ProactiveContacts:
 
     async def contact(self, context, opportunity, intents, *, role_instruction, selection_seed,
                       automatic_origin=None, administrator_test=False, diagnostic_source_backed=False,
-                      diagnostic_origin=None, diagnostic_image_intent=None):
+                      diagnostic_origin=None, diagnostic_image_intent=None, diagnostic_allow_linked_accounts=False):
         """Trusted producer API; no model may fabricate its cause, identity or persona."""
         if type(administrator_test) is not bool:
             raise ValueError("administrator_test must be an explicit boolean")
+        if (type(diagnostic_allow_linked_accounts) is not bool
+                or (diagnostic_allow_linked_accounts and not administrator_test)):
+            raise ValueError("linked diagnostic routing requires an explicit administrator test")
         if type(diagnostic_source_backed) is not bool:
             raise ValueError("diagnostic_source_backed must be an explicit boolean")
         if (diagnostic_image_intent is not None and
@@ -649,7 +652,8 @@ class ProactiveContacts:
                               + ([diagnostic_origin] if diagnostic_origin is not None else [])
                               + (["diagnostic-image", diagnostic_image_intent]
                                  if diagnostic_image_intent is not None else [])
-                              + (["administrator_test"] if administrator_test else []))
+                              + (["administrator_test"] if administrator_test else [])
+                              + (["diagnostic_allow_linked_accounts"] if diagnostic_allow_linked_accounts else []))
         try:
             self.require_running()
             if not administrator_test and self.platform_circuit.cooldown_until(
@@ -740,7 +744,8 @@ class ProactiveContacts:
                         selection.feasible_count, selection.weight_used, history, interaction, selected_origin,
                         administrator_test=administrator_test,
                         diagnostic_source_backed=diagnostic_source_backed, diagnostic_origin=diagnostic_origin,
-                        diagnostic_image_intent=diagnostic_image_intent)
+                        diagnostic_image_intent=diagnostic_image_intent,
+                        diagnostic_allow_linked_accounts=diagnostic_allow_linked_accounts)
                     presentation = ReplySettings(self.configuration).capture(context, at)["settings"]
                     segmentation_settings = {key: presentation[key]
                                              for key in _SEGMENTATION_SETTINGS_KEYS if key in presentation}
@@ -859,7 +864,9 @@ class ProactiveContacts:
         if request.owner != GROUP or request.context.scope.account_id is None:
             return
         rejected = receipt.status == "not_sent" and receipt.failure_code == "qq_eventchecker_1200"
-        self.platform_circuit.record(request.context, at=self.tasks.now(),
+        router = getattr(self.delivery, "private_account_router", None)
+        actual = router.actual_context(request.delivery_id) if router is not None else None
+        self.platform_circuit.record(actual or request.context, at=self.tasks.now(),
             failure_code=receipt.failure_code if rejected else None,
             reset_failures=(receipt.status in ("delivered", "accepted")
                             or receipt.status == "not_sent" and not rejected))
@@ -939,7 +946,7 @@ class ProactiveContacts:
             provider.reserve(plan.envelope)
             return True, None
         except TaskError as error:
-            if error.code not in ("host_model_limit_input", "host_model_limit_output"):
+            if error.code not in ("host_model_limit", "host_model_limit_input", "host_model_limit_output"):
                 raise
             detail = {"limit_code": error.code, "provider_id": provider.binding.provider,
                       "requested_output_tokens": plan.envelope.max_output_tokens,
@@ -1311,6 +1318,7 @@ class ProactiveContacts:
                 "purpose": job.intent.purpose, "preference_token": job.preference_token,
                 "sources": job.intent.thought.evidence.sources, "source_hashes": job.source_hashes,
                 "administrator_test": job.administrator_test,
+                "diagnostic_allow_linked_accounts": job.diagnostic_allow_linked_accounts,
                 "diagnostic_image": job.diagnostic_image_intent is not None,
                 "opened_at": job.intent.thought.opportunity.opened_at,
                 "expires_at": job.deadline_at or job.intent.thought.opportunity.expires_at,
@@ -2014,6 +2022,10 @@ class ProactiveContacts:
                 delivery_state = "failed"
             else:
                 delivery_state = "cancelled"
+            router = getattr(self.delivery, "private_account_router", None)
+            report = getattr(router, "rejection_report", None)
+            route_rejections = [dict(item, delivery_id=row["delivery_id"])
+                for row in deliveries for item in (report(row["delivery_id"]) if report else [])]
             model_task_ids = [task_id]
             plan_task_id = data.get("plan_task_id")
             if isinstance(plan_task_id, str) and plan_task_id:
@@ -2081,6 +2093,7 @@ class ProactiveContacts:
                 "judge_reason": judge.get("failure") or judge.get("reason"),
                 "delivery_id": delivery["delivery_id"] if delivery else None,
                 "delivery": delivery_state,
+                "route_rejections": route_rejections,
                 "receipt_ref": delivery["receipt_ref"] if delivery else None,
                 "delivery_parts": [{"sequence": DeliveryRequest.restore(item["request_json"]).sequence,
                     "delivery_id": item["delivery_id"], "state": item["state"],

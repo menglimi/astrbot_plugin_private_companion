@@ -27,8 +27,7 @@ test("学习工作台按导航加载每个真实数据模块", () => {
   const rendererStart = app.indexOf('function renderLearningPage(){');
   const rendererEnd = app.indexOf('/* 2026-09-30 接回：', rendererStart);
   const renderer = app.slice(rendererStart, rendererEnd);
-  assert.match(renderer, /const scopeControls=scopeKey\?learningScopeControls/);
-  assert.match(renderer, /learningRoleControls\(scopeKey,'筛选记录',scopeControls\)/);
+  assert.doesNotMatch(renderer, /data-learning-scope-target|learningScopeControls|learningRoleControls/);
   const strategyStart = renderer.indexOf("learningTab==='strategy'");
   const reviewStart = renderer.indexOf("learningTab==='review'", strategyStart);
   assert.ok(strategyStart >= 0 && reviewStart > strategyStart);
@@ -180,4 +179,37 @@ test("审阅中心批量通过逐条走进度、表达和指导的原始命令�
   assert.equal(posts.find(item=>item.body.review_id)?.body.expected_revision,3);
   context.window.CompanionLearningReviewPage.unmount();
   assert.equal(listeners.size,0);
+});
+
+test('学习记录与表情库只跟随小屋的 Bot 和角色，成长记录要求显式窗口', () => {
+  const app = fs.readFileSync(path.join(PAGE, 'app.js'), 'utf8');
+  const role = id => ({role_id: id, reply_api: '/' + id + '/reply', growth_api: '/' + id + '/growth'});
+  const targets = [
+    {bot_id: 'bot-a', target_id: 'a-private', scope_kind: 'private', roles: [role('same-role')]},
+    {bot_id: 'bot-a', target_id: 'a-group', scope_kind: 'group', roles: [role('same-role')]},
+    {bot_id: 'bot-b', target_id: 'b-private', scope_kind: 'private', roles: [role('same-role')]},
+    {bot_id: 'bot-a', target_id: 'c-private', scope_kind: 'private', roles: [role('other-role')]},
+  ];
+  let selected = {bot_id: 'bot-a', role_id: 'same-role', target_id: null};
+  const product = {
+    targets: () => targets, role: () => role(selected.role_id),
+    roleTarget: () => targets.find(target => target.bot_id === selected.bot_id && target.roles.some(item => item.role_id === selected.role_id)),
+    selection: () => selected,
+    roleSelection: () => ({...selected, target_id: product.roleTarget().target_id}),
+    targetLabel: target => target.target_id, roleLabel: item => item.role_id,
+    choose: (target_id, role_id) => { selected = {...selected, target_id, role_id}; return true; },
+    clearWindow: () => { selected.target_id = null; return true; },
+  };
+  const context = vm.createContext({product, window: {CompanionProduct: product, addEventListener() {}}});
+  vm.runInContext(app.slice(app.indexOf('function learningRoleApi('), app.indexOf('function renderLearningPage(')), context);
+  assert.equal(context.learningScope('expression').target.target_id, 'a-private');
+  assert.equal(context.learningScope('growth'), null);
+  assert.deepEqual(Array.from(context.learningReviewSources({includeGroups: true}), source => source.target.target_id), ['a-private', 'a-group']);
+  assert.deepEqual(Array.from(context.learningExpressionSources(), source => source.target.target_id), ['a-private', 'a-group']);
+  product.choose('a-private', 'same-role');
+  assert.equal(context.learningScope('growth').target.target_id, 'a-private');
+  selected = {bot_id: 'bot-b', role_id: 'same-role', target_id: null};
+  assert.equal(context.learningScope('expression').target.target_id, 'b-private');
+  assert.deepEqual(Array.from(context.learningReviewSources({includeGroups: true}), source => source.target.target_id), ['b-private']);
+  assert.equal(context.learningChoices('growth').some(item => item.target.target_id === 'a-private'), false);
 });

@@ -1,6 +1,6 @@
-.semantic-section{border-top:1px solid var(--t-text-soft);padding:var(--sp-5) 0;margin-top:var(--sp-4)}
+﻿.semantic-section{border-top:1px solid var(--t-text-soft);padding:var(--sp-5) 0;margin-top:var(--sp-4)}
 .semantic-heading,.semantic-toolbar,.semantic-actions{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap}
-.semantic-heading h3{margin:0;font-size:var(--fs-title)}.semantic-heading span,.semantic-meta,.semantic-import span,.semantic-row small{color:var(--t-text-soft);font-size:var(--fs-body)}
+.semantic-heading h3{display:flex;align-items:center;gap:var(--sp-2);margin:0;font-size:var(--fs-title)}.semantic-heading span,.semantic-meta,.semantic-import span,.semantic-row small{color:var(--t-text-soft);font-size:var(--fs-body)}
 .semantic-feedback{min-height:20px;color:var(--t-ok-ink);font-size:var(--fs-body)}.semantic-state{font-size:var(--fs-body);background:var(--t-surface-soft);color:var(--t-ok-ink);padding:var(--sp-1) var(--sp-2);border-radius:var(--r-2xs)}.semantic-state.lexical_fallback{background:var(--t-warn-quiet);color:var(--t-warn-ink)}.semantic-state.disabled{background:var(--t-surface-soft);color:var(--t-text-soft)}
 .semantic-flags{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-1) var(--sp-4);margin:var(--sp-4) 0}
 .semantic-toggle{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);padding:var(--sp-2) 0;font-size:var(--fs-body)}.semantic-toggle input{width:17px;height:17px;accent-color:var(--t-ok-ink)}
@@ -1440,7 +1440,7 @@
 .semantic-learning-view .semantic-config-panel .semantic-toggle{min-height:44px;padding:var(--sp-2) var(--sp-3);border-radius:var(--r-xs);background:var(--t-surface-soft);color:var(--t-text-strong);font-size:var(--fs-tiny)}
 .semantic-learning-view .semantic-toggle input{width:18px;height:18px;flex:none;accent-color:var(--t-ok)}
 .semantic-learning-view .semantic-config-panel .semantic-providers{grid-template-columns:minmax(0,1fr);gap:var(--sp-2)}
-.semantic-learning-view .semantic-config-panel .semantic-providers label{display:grid;grid-template-columns:minmax(0,1fr) minmax(130px,1fr);align-items:center;gap:var(--sp-2);min-height:42px;padding:var(--sp-2) var(--sp-3);border-radius:var(--r-xs);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-tiny);font-weight:550}
+.semantic-learning-view .semantic-config-panel .semantic-providers label{display:grid;grid-template-columns:minmax(6em,1fr) minmax(130px,1fr);align-items:center;gap:var(--sp-2);min-height:42px;padding:var(--sp-2) var(--sp-3);border-radius:var(--r-xs);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-tiny);font-weight:550}
 .semantic-learning-view .semantic-config-panel .semantic-providers input,.semantic-learning-view .semantic-config-panel .semantic-providers select{min-height:34px;border-color:var(--t-line);background:var(--t-surface);color:var(--t-text-strong);font-size:var(--fs-tiny)}
 .semantic-learning-links{display:grid;gap:var(--sp-1);margin-top:var(--sp-2)}
 .semantic-learning-links button{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);min-height:46px;padding:var(--sp-2) var(--sp-1);border:0;border-top:1px solid var(--t-line);border-radius:0;background:transparent;color:var(--t-text-strong);font:inherit;text-align:left;cursor:pointer}
@@ -1638,3 +1638,4 @@
 .perception-balance-legacy:disabled input{opacity:.55;cursor:not-allowed}
 .perception-balance-presets{display:flex;align-items:end;flex-wrap:wrap;gap:var(--sp-2)}
 .perception-balance-presets select{min-height:36px;padding:var(--sp-1) var(--sp-2);border:1px solid var(--t-line-strong);border-radius:var(--r-xs);background:var(--t-surface);color:var(--t-text-strong);font:inherit}
+
