@@ -46,6 +46,8 @@ _AUTH_TOKEN_PATTERNS = (
 _HTTP_REASON_RE = re.compile(r"^Laya HTTP ([1-5][0-9]{2})(?:[：:\s·]+(.*))?$", re.DOTALL)
 _AUTH_FALLBACK_RE = re.compile(r"^判断服务(?:拒绝访问|鉴权失败)（HTTP ([1-5][0-9]{2})）。$")
 _OBSERVATION_BATCH_CHUNK = 400
+_LEGACY_SCOPE_PAGE_SIZE = 200
+_LEGACY_SCOPE_SCAN_BUDGET = 1000
 
 
 def _sanitize_auth_text(text: object, *, api_key: str = "") -> str:
@@ -250,6 +252,19 @@ _SELECT_EVENT_COLUMNS = """SELECT event_id, origin_key, batch_id, source, status
         reason, elapsed_ms, decision_json, enabled_fields_json, request_json, response_json,
         processing_json, observed_at
     FROM laya_decision_events"""
+_SELECT_EVENT_COLUMNS_WITH_ROWID = """SELECT rowid AS _rowid, event_id, origin_key, batch_id, source,
+        status, mode, reason_code, reason, elapsed_ms, decision_json, enabled_fields_json,
+        request_json, response_json, processing_json, observed_at
+    FROM laya_decision_events"""
+
+
+def _top_k_cutoff(indexed_keys: list[tuple[str, int]], legacy_keys: list[tuple[str, int]],
+                  limit: int) -> tuple[str, int] | None:
+    """Return the lowest (observed_at, rowid) currently inside the top-k merged set."""
+    if limit <= 0 or len(indexed_keys) + len(legacy_keys) < limit:
+        return None
+    merged = sorted([*indexed_keys, *legacy_keys], reverse=True)
+    return merged[limit - 1]
 
 
 def _scope_metadata(scope) -> dict | None:
@@ -514,12 +529,16 @@ class LayaDecisionService:
         except Exception:
             return False
 
-    def _resolve_scopes_from_observations(self, *, batch_ids, origin_keys):
+    def _resolve_scopes_from_observations(self, *, batch_ids, origin_keys,
+                                          observations_available: bool | None = None):
         by_batch: dict[str, dict] = {}
         by_origin: dict[str, dict] = {}
         clean_batches = sorted({b for b in batch_ids if isinstance(b, str) and b.strip()})
         clean_origins = sorted({o for o in origin_keys if isinstance(o, str) and o.strip()})
-        if (not clean_batches and not clean_origins) or not self._observations_available():
+        if not clean_batches and not clean_origins:
+            return by_batch, by_origin
+        available = self._observations_available() if observations_available is None else observations_available
+        if not available:
             return by_batch, by_origin
         for start in range(0, len(clean_batches), _OBSERVATION_BATCH_CHUNK):
             chunk = clean_batches[start:start + _OBSERVATION_BATCH_CHUNK]
@@ -564,6 +583,7 @@ class LayaDecisionService:
         events = []
         for row in rows:
             item = dict(row)
+            item.pop("_rowid", None)
             origin_key = item.pop("origin_key", None)
             for source, target in (("decision_json", "decision"), ("enabled_fields_json", "enabled_fields"),
                                    ("request_json", "request"), ("response_json", "response"),
@@ -584,6 +604,129 @@ class LayaDecisionService:
             events.append(item)
         return events
 
+    def _recent_by_scope(self, target_scope: str, limit: int) -> dict:
+        indexed_rows = list(self.runtime.read_all(
+            f"{_SELECT_EVENT_COLUMNS_WITH_ROWID} WHERE scope_key = ? "
+            "ORDER BY observed_at DESC, rowid DESC LIMIT ?",
+            (target_scope, limit),
+        ))
+        indexed_keys = [(row["observed_at"], int(row["_rowid"])) for row in indexed_rows]
+        cutoff = _top_k_cutoff(indexed_keys, [], limit)
+
+        # Pre-existing legacy rows written before schema v69 (or without scope)
+        # have scope_key IS NULL. Walk only those NULL rows in bounded keyset
+        # pages, stopping as soon as either ``limit`` matches are gathered,
+        # remaining legacy rows are strictly older than our top-k cutoff, or
+        # the hard row-scan budget is exhausted.
+        legacy_matched_ids: list[str] = []
+        legacy_matched_keys: list[tuple[str, int]] = []
+        by_batch: dict[str, dict] = {}
+        by_origin: dict[str, dict] = {}
+        checked_batches: set[str] = set()
+        checked_origins: set[str] = set()
+        observations_available: bool | None = None
+        cursor: tuple[str, int] | None = None
+        scanned = 0
+        budget = _LEGACY_SCOPE_SCAN_BUDGET
+        page_size = min(_LEGACY_SCOPE_PAGE_SIZE, max(limit * 4, 50))
+
+        while scanned < budget:
+            batch_limit = min(page_size, budget - scanned)
+            if cursor is None and cutoff is None:
+                page = self.runtime.read_all(
+                    "SELECT rowid AS _rowid, event_id, origin_key, batch_id, processing_json, observed_at "
+                    "FROM laya_decision_events WHERE scope_key IS NULL "
+                    "ORDER BY observed_at DESC, rowid DESC LIMIT ?",
+                    (batch_limit,),
+                )
+            elif cursor is None:
+                page = self.runtime.read_all(
+                    "SELECT rowid AS _rowid, event_id, origin_key, batch_id, processing_json, observed_at "
+                    "FROM laya_decision_events WHERE scope_key IS NULL AND (observed_at, rowid) > (?, ?) "
+                    "ORDER BY observed_at DESC, rowid DESC LIMIT ?",
+                    (cutoff[0], cutoff[1], batch_limit),
+                )
+            elif cutoff is None:
+                page = self.runtime.read_all(
+                    "SELECT rowid AS _rowid, event_id, origin_key, batch_id, processing_json, observed_at "
+                    "FROM laya_decision_events WHERE scope_key IS NULL AND (observed_at, rowid) < (?, ?) "
+                    "ORDER BY observed_at DESC, rowid DESC LIMIT ?",
+                    (cursor[0], cursor[1], batch_limit),
+                )
+            else:
+                page = self.runtime.read_all(
+                    "SELECT rowid AS _rowid, event_id, origin_key, batch_id, processing_json, observed_at "
+                    "FROM laya_decision_events WHERE scope_key IS NULL "
+                    "AND (observed_at, rowid) < (?, ?) AND (observed_at, rowid) > (?, ?) "
+                    "ORDER BY observed_at DESC, rowid DESC LIMIT ?",
+                    (cursor[0], cursor[1], cutoff[0], cutoff[1], batch_limit),
+                )
+            if not page:
+                break
+            scanned += len(page)
+            unresolved_batches = set()
+            unresolved_origins = set()
+            pre_scopes = []
+            for row in page:
+                proc_scope = self._processing_scope(row["processing_json"])
+                pre_scopes.append(proc_scope)
+                if proc_scope is None:
+                    batch_id = row["batch_id"]
+                    if batch_id and batch_id not in checked_batches:
+                        unresolved_batches.add(batch_id)
+                    origin_key = row["origin_key"]
+                    if origin_key and origin_key not in checked_origins:
+                        unresolved_origins.add(origin_key)
+            if unresolved_batches or unresolved_origins:
+                if observations_available is None:
+                    observations_available = self._observations_available()
+                if observations_available:
+                    batch_res, origin_res = self._resolve_scopes_from_observations(
+                        batch_ids=unresolved_batches,
+                        origin_keys=unresolved_origins,
+                        observations_available=True,
+                    )
+                    by_batch.update(batch_res)
+                    by_origin.update(origin_res)
+                checked_batches.update(unresolved_batches)
+                checked_origins.update(unresolved_origins)
+            reached_cutoff = False
+            for row, proc_scope in zip(page, pre_scopes):
+                row_key = (row["observed_at"], int(row["_rowid"]))
+                if cutoff is not None and row_key <= cutoff:
+                    reached_cutoff = True
+                    break
+                resolved = proc_scope or by_batch.get(row["batch_id"]) or by_origin.get(row["origin_key"])
+                if resolved and resolved.get("scope_key") == target_scope:
+                    legacy_matched_ids.append(row["event_id"])
+                    legacy_matched_keys.append(row_key)
+                    cutoff = _top_k_cutoff(indexed_keys, legacy_matched_keys, limit)
+                    if len(legacy_matched_ids) >= limit:
+                        break
+            if reached_cutoff or len(legacy_matched_ids) >= limit or len(page) < batch_limit:
+                break
+            cursor = (page[-1]["observed_at"], int(page[-1]["_rowid"]))
+            if cutoff is not None and cursor <= cutoff:
+                break
+
+        legacy_rows = []
+        for start in range(0, len(legacy_matched_ids), _OBSERVATION_BATCH_CHUNK):
+            chunk = legacy_matched_ids[start:start + _OBSERVATION_BATCH_CHUNK]
+            placeholders = ",".join("?" * len(chunk))
+            legacy_rows.extend(self.runtime.read_all(
+                f"{_SELECT_EVENT_COLUMNS_WITH_ROWID} WHERE event_id IN ({placeholders})",
+                tuple(chunk),
+            ))
+
+        if not indexed_rows and not legacy_rows:
+            return {"events": []}
+        combined = sorted(
+            [*indexed_rows, *legacy_rows],
+            key=lambda row: (row["observed_at"], int(row["_rowid"])),
+            reverse=True,
+        )[:limit]
+        return {"events": self._materialize_events(combined, by_batch, by_origin)}
+
     def recent(self, limit=50, *, all_origins: bool = False, scope_key: str | None = None) -> dict:
         if self.runtime is None:
             return {"events": []}
@@ -594,45 +737,7 @@ class LayaDecisionService:
             target_scope = str(scope_key).strip()
             if not target_scope:
                 return {"events": []}
-            candidates = self.runtime.read_all(
-                "SELECT event_id, origin_key, batch_id, processing_json "
-                "FROM laya_decision_events ORDER BY observed_at DESC, rowid DESC",
-                (),
-            )
-            unresolved_batches = set()
-            unresolved_origins = set()
-            pre_scopes = []
-            for row in candidates:
-                proc_scope = self._processing_scope(row["processing_json"])
-                pre_scopes.append(proc_scope)
-                if proc_scope is None:
-                    if row["batch_id"]:
-                        unresolved_batches.add(row["batch_id"])
-                    if row["origin_key"]:
-                        unresolved_origins.add(row["origin_key"])
-            by_batch, by_origin = self._resolve_scopes_from_observations(
-                batch_ids=unresolved_batches, origin_keys=unresolved_origins)
-            matched_ids = []
-            for row, proc_scope in zip(candidates, pre_scopes):
-                resolved = proc_scope or by_batch.get(row["batch_id"]) or by_origin.get(row["origin_key"])
-                if resolved and resolved.get("scope_key") == target_scope:
-                    matched_ids.append(row["event_id"])
-                    if len(matched_ids) >= limit:
-                        break
-            if not matched_ids:
-                return {"events": []}
-            rows = []
-            for start in range(0, len(matched_ids), _OBSERVATION_BATCH_CHUNK):
-                chunk = matched_ids[start:start + _OBSERVATION_BATCH_CHUNK]
-                placeholders = ",".join("?" * len(chunk))
-                rows.extend(self.runtime.read_all(
-                    f"{_SELECT_EVENT_COLUMNS} WHERE event_id IN ({placeholders}) "
-                    "ORDER BY observed_at DESC, rowid DESC",
-                    tuple(chunk),
-                ))
-            order = {event_id: idx for idx, event_id in enumerate(matched_ids)}
-            rows.sort(key=lambda row: order.get(row["event_id"], len(matched_ids)))
-            return {"events": self._materialize_events(rows, by_batch, by_origin)}
+            return self._recent_by_scope(target_scope, limit)
 
         if all_origins:
             rows = self.runtime.read_all(
@@ -675,6 +780,13 @@ class LayaDecisionService:
             processing.update({"status": status, "reason_code": reason_code})
             if self._scope_meta and "scope" not in processing:
                 processing["scope"] = dict(self._scope_meta)
+            scope_key = None
+            for candidate in (processing.get("scope"), self._scope_meta):
+                if isinstance(candidate, dict):
+                    raw_scope_key = str(candidate.get("scope_key") or "").strip()
+                    if raw_scope_key:
+                        scope_key = raw_scope_key[:256]
+                        break
             if safe_reason:
                 processing["reason"] = safe_reason
             request_json = _diagnostic_json(trace.get("request"), 131072)
@@ -684,12 +796,13 @@ class LayaDecisionService:
                 event_id = uuid4().hex
                 connection.execute("""INSERT INTO laya_decision_events
                     (event_id, origin_key, batch_id, source, status, mode, reason_code, reason, elapsed_ms,
-                     decision_json, enabled_fields_json, request_json, response_json, processing_json, observed_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     decision_json, enabled_fields_json, request_json, response_json, processing_json,
+                     observed_at, scope_key)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (event_id, self.origin_key, self.event_ref, self.source, status, _ledger_mode(values["mode"]),
                      str(reason_code)[:96] if reason_code else None, str(safe_reason)[:1000] if safe_reason else None,
                      elapsed_ms, decision_json, enabled_fields_json, request_json, response_json, processing_json,
-                     datetime.now(timezone.utc).isoformat()))
+                     datetime.now(timezone.utc).isoformat(), scope_key))
                 connection.execute("""DELETE FROM laya_decision_events WHERE event_id IN (
                     SELECT event_id FROM laya_decision_events WHERE origin_key = ?
                     ORDER BY observed_at DESC, rowid DESC LIMIT -1 OFFSET 2000)""", (self.origin_key,))

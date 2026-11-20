@@ -1653,3 +1653,152 @@ def test_model_api_laya_logs_scope_and_auth_bridge_payloads(tmp_path, monkeypatc
         assert secret_key not in json.dumps(decide_res, ensure_ascii=False)
     finally:
         runtime.close()
+
+
+def test_recent_scope_key_is_sql_bounded_across_2000_rows_and_legacy_null_fallback(tmp_path):
+    from unittest.mock import patch
+    from companion_v2.decision.service import _LEGACY_SCOPE_SCAN_BUDGET
+    from companion_v2.foundation.refs import ScopeKind, ScopeRef
+    from companion_v2.storage.core_reply_telemetry_schema import STATEMENTS as TELEMETRY_STATEMENTS
+    from companion_v2.storage.runtime import StorageRuntime
+
+    store = LayaSettingsStore(tmp_path / "settings", "target", "role")
+    store.update(store.raw()["revision"], {"enabled": True})
+    runtime = StorageRuntime.open(data_root=tmp_path / "runtime", installation_id="inst-laya-bounded")
+    group_a = ScopeRef("inst-laya-bounded", "onebot_qq", ScopeKind.GROUP, "103111519",
+                       "bot-1", "1001", "conv-a:v2-role:r1", "103111519")
+    group_b = ScopeRef("inst-laya-bounded", "onebot_qq", ScopeKind.GROUP, "717222383",
+                       "bot-1", "1001", "conv-b:v2-role:r1", "717222383")
+    group_missing = ScopeRef("inst-laya-bounded", "onebot_qq", ScopeKind.GROUP, "999000111",
+                             "bot-1", "1001", "conv-m:v2-role:r1", "999000111")
+
+    try:
+        # 1. Seed 2,000 indexed rows (1,000 Group A + 1,000 Group B) + 100 older legacy NULL rows.
+        proc_a = json.dumps({"status": "ok", "scope": {"scope_key": group_a.key, "kind": "group", "native_scope_id": "103111519"}})
+        proc_b = json.dumps({"status": "ok", "scope": {"scope_key": group_b.key, "kind": "group", "native_scope_id": "717222383"}})
+        decision_raw = json.dumps(decision_document())
+        with runtime.transaction() as connection:
+            for statement in TELEMETRY_STATEMENTS:
+                connection.execute(statement)
+            legacy_rows = [
+                (f"c{i:031x}", "legacy-origin-other", f"legacy-batch-{i}", "conversation", "ok", "remote",
+                 None, None, 10, decision_raw, "{}", None, None, '{"status":"ok"}',
+                 f"2026-11-18T{i // 3600:02d}:{(i // 60) % 60:02d}:{i % 60:02d}+00:00", None)
+                for i in range(100)
+            ]
+            indexed_rows = [
+                (f"a{i:031x}", f"origin-{i % 4}", f"indexed-batch-{i}", "conversation", "ok", "remote",
+                 None, None, 12, decision_raw, "{}", None, None,
+                 proc_a if i % 2 == 0 else proc_b,
+                 f"2026-11-19T{i // 3600:02d}:{(i // 60) % 60:02d}:{i % 60:02d}+00:00",
+                 group_a.key if i % 2 == 0 else group_b.key)
+                for i in range(2000)
+            ]
+            connection.executemany(
+                """INSERT INTO laya_decision_events
+                   (event_id, origin_key, batch_id, source, status, mode, reason_code, reason, elapsed_ms,
+                    decision_json, enabled_fields_json, request_json, response_json, processing_json,
+                    observed_at, scope_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [*legacy_rows, *indexed_rows],
+            )
+
+        # Verify SQLite uses the composite index with zero table scan and zero temp B-tree.
+        plan_indexed = " | ".join(row["detail"] for row in runtime.read_all(
+            "EXPLAIN QUERY PLAN SELECT rowid AS _rowid, event_id FROM laya_decision_events "
+            "WHERE scope_key = ? ORDER BY observed_at DESC, rowid DESC LIMIT ?",
+            (group_a.key, 1),
+        ))
+        assert "laya_decision_events_scope_recent_idx" in plan_indexed
+        assert "SCAN laya_decision_events" not in plan_indexed
+        assert "TEMP B-TREE" not in plan_indexed
+
+        # Requesting limit=1 for Group A must read only the 1 matching indexed row (never 2,000).
+        svc = LayaDecisionService(store, runtime=runtime, origin_key="mgmt-a", scope=group_a)
+        seen_rows = 0
+        executed_queries = []
+        original_read_all = runtime.read_all
+
+        def counting_read_all(statement, parameters):
+            nonlocal seen_rows
+            rows = original_read_all(statement, parameters)
+            executed_queries.append((statement, parameters, len(rows)))
+            seen_rows += len(rows)
+            return rows
+
+        with patch.object(runtime, "read_all", side_effect=counting_read_all):
+            result = svc.recent(limit=1, scope_key=group_a.key)
+
+        assert len(result["events"]) == 1
+        assert result["events"][0]["batch_id"] == "indexed-batch-1998"
+        assert result["events"][0]["scope_info"] == {"kind": "group", "native_scope_id": "103111519"}
+        assert seen_rows == 1, f"expected 1 row read, got {seen_rows}: {executed_queries}"
+        assert all("LIMIT ?" in sql for sql, _, _ in executed_queries)
+
+        # Verify _record() populates the scope_key column directly.
+        svc.set_trace(event_ref="recorded-with-scope-col", source="conversation")
+        svc._record(store.raw(), "ok", 15, decision=decision_document())
+        recorded = runtime.read_one(
+            "SELECT scope_key FROM laya_decision_events WHERE batch_id = ?",
+            ("recorded-with-scope-col",),
+        )
+        assert recorded is not None and recorded["scope_key"] == group_a.key
+
+        # 2. Legacy-only database with 2,000 NULL scope_key rows:
+        #    (a) A recent matching legacy row stops after the first bounded keyset page;
+        #    (b) A non-matching scope stops strictly at _LEGACY_SCOPE_SCAN_BUDGET (< 2,000).
+        runtime_legacy = StorageRuntime.open(data_root=tmp_path / "runtime-legacy", installation_id="inst-laya-bounded")
+        try:
+            with runtime_legacy.transaction() as connection:
+                for statement in TELEMETRY_STATEMENTS:
+                    connection.execute(statement)
+                connection.execute(
+                    """INSERT INTO astrbot_core_reply_observations
+                       (turn_id, revision, role_key, context_key, scope_kind, context_json, received_at, observed_at, record_json)
+                       VALUES ('legacy-match-turn', 1, 'role-key', 'legacy-origin-a', 'group', ?, '2026-11-19T00:00:00+00:00', '2026-11-19T00:00:00+00:00', '{}')""",
+                    (json.dumps({"audience": {"scope": group_a.document()}}),),
+                )
+                rows_2000 = [
+                    (f"d{i:031x}",
+                     "legacy-origin-a" if i == 1995 else f"legacy-origin-{i % 7}",
+                     "legacy-match-turn" if i == 1995 else f"legacy-turn-{i}",
+                     "conversation", "ok", "remote", None, None, 11, decision_raw, "{}",
+                     None, None, '{"status":"ok"}',
+                     f"2026-11-19T{i // 3600:02d}:{(i // 60) % 60:02d}:{i % 60:02d}+00:00",
+                     None)
+                    for i in range(2000)
+                ]
+                connection.executemany(
+                    """INSERT INTO laya_decision_events
+                       (event_id, origin_key, batch_id, source, status, mode, reason_code, reason, elapsed_ms,
+                        decision_json, enabled_fields_json, request_json, response_json, processing_json,
+                        observed_at, scope_key)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    rows_2000,
+                )
+
+            legacy_svc = LayaDecisionService(store, runtime=runtime_legacy, origin_key="mgmt-a", scope=group_a)
+            legacy_scanned = 0
+            orig_legacy_read_all = runtime_legacy.read_all
+
+            def count_legacy_read_all(statement, parameters):
+                nonlocal legacy_scanned
+                rows = orig_legacy_read_all(statement, parameters)
+                if "FROM laya_decision_events" in statement and "scope_key IS NULL" in statement:
+                    legacy_scanned += len(rows)
+                return rows
+
+            with patch.object(runtime_legacy, "read_all", side_effect=count_legacy_read_all):
+                hit = legacy_svc.recent(limit=1, scope_key=group_a.key)
+            assert [ev["batch_id"] for ev in hit["events"]] == ["legacy-match-turn"]
+            assert legacy_scanned <= 200, f"expected bounded first-page scan, scanned {legacy_scanned}"
+
+            legacy_scanned = 0
+            with patch.object(runtime_legacy, "read_all", side_effect=count_legacy_read_all):
+                miss = legacy_svc.recent(limit=1, scope_key=group_missing.key)
+            assert miss["events"] == []
+            assert legacy_scanned <= _LEGACY_SCOPE_SCAN_BUDGET < 2000
+        finally:
+            runtime_legacy.close()
+    finally:
+        runtime.close()
