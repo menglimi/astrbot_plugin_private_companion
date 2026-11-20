@@ -139,16 +139,16 @@
 
 
 
-    <link rel="preload" href="assets/voxel-room.js?v=home-ui-20261120" as="script">
+    <link rel="preload" href="assets/voxel-room.js?v=ui-final-20261121" as="script">
     <script defer src="assets/lucide.min.js"></script>
-    <script defer src="assets/voxel-room.js?v=home-ui-20261120" onload="document.documentElement.dataset.roomAsset=''" onerror="document.documentElement.dataset.roomAsset=''"></script>
+    <script defer src="assets/voxel-room.js?v=ui-final-20261121" onload="document.documentElement.dataset.roomAsset=''" onerror="document.documentElement.dataset.roomAsset=''"></script>
     <script defer src="theme.js?v=theme-material-20261001"></script>
     <script defer src="shell.js?v=shell-layout-20261017"></script>
     <script defer src="page-guards.js?v=consolidated-20261024-r1"></script>
     <script defer src="page-motion.js?v=page-interactions-20261011"></script>
     <script defer src="entrance.js?v=entrance-state-build-20261001"></script>
     <script defer src="config-snapshot.js?v=brand-no-version-20261018"></script>
-    <script defer src="home-sidebar.js?v=agenda-progress-20261120"></script>
+    <script defer src="home-sidebar.js?v=ui-final-20261121"></script>
     <script defer src="persona-designer-memory.js?v=persona-recreation-20261101"></script>
     <script defer src="product-page.js?v=group-navigation-20261103"></script>
     <script defer src="confirmation-dialog.js?v=consolidated-20261024-r1"></script>
@@ -175,7 +175,7 @@
     <!-- app.js 先于 room-editor.js：体素在首屏就挂载，此时 room-editor 的
          顶层函数还不存在，mountStage 里的两处回调因此必须惰性解析（见
          app.js 的注释）。tests/test_voxel_mount_callbacks.cjs 守住这个顺序。 -->
-    <script defer src="app.js?v=home-ui-20261120"></script>
+    <script defer src="app.js?v=ui-final-20261121"></script>
     <script defer src="room-editor.js?v=transient-time-preview-20261029-r2"></script>
     <script defer src="memory-page.js?v=memory-discard-20261112"></script>
     <script defer src="contact-page.js?v=config-save-fastpath-20261111"></script>
