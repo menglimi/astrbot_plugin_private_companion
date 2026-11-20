@@ -100,7 +100,11 @@ class ScreenAccess:
             can_manage = manage_core or self.policy.scope_access(operator, scope=self.context.scope,
                 action="capability.role.set", observed_at=at, core_only=True).is_success
             catalog = getattr(self.application, "external", None)
-            invokable = bool(catalog and any(tool.action == ACTION for tool in catalog.catalog_for(self.context)))
+            invokable = bool(catalog and (
+                catalog.is_invokable(ACTION, self.context, at)
+                if hasattr(catalog, "is_invokable")
+                else any(tool.action == ACTION for tool in catalog.catalog_for(self.context))
+            ))
             reason = ("capability_not_installed" if installed is None else
                 "screen_package_changed" if not same_package else
                 "capability_not_active" if not active else
