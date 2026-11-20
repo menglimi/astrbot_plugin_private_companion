@@ -69,6 +69,20 @@ class CoreReplyConnectionTests(unittest.IsolatedAsyncioTestCase):
         state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
         self.assertEqual((state["send_attempts"], state["send_returns"], state["send_unknown"]), (1, 1, 0))
 
+    async def test_an_error_part_sent_after_the_connection_changed_is_not_sent(self):
+        from astrbot.core.message.message_event_result import MessageChain
+        connection = Connection()
+        event = FakeEvent()
+        # AstrBot's own error text is not a model result: the reply guard stays inactive for it.
+        event.get_result = lambda: NS(result_content_type=NS(name="GENERAL_RESULT"), is_llm_result=lambda: False)
+        self.prepare(connection, event=event)
+        self.assertFalse(event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["delivery_guard_active"])
+        await event.send(MessageChain().message("Error occurred"))
+        # Replaced after decoration, between two segments of the error text.
+        connection.changed.set()
+        await event.send(MessageChain().message("during AI execution"))
+        self.assertEqual(len(event.sent), 1)
+
     async def test_stream_connection_change_stops_following_chunk(self):
         connection = Connection()
         event = FakeEvent()

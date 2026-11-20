@@ -41,6 +41,7 @@ from .astrbot_host.core_reply import (
     CORE_REPLY_CONTEXT_EXTRA,
     activate_core_reply_delivery_guard,
     adopt_core_reply_event,
+    assert_core_reply_connection,
     inject_core_reply_prompt,
     prepare_core_reply_event,
     repair_tool_call_history,
@@ -1905,18 +1906,15 @@ class PrivateCompanionV2StagingPlugin(Star):
         AstrBot's own error text for a stopped round is not a model reply, so the
         reply guard does not see it; empty any result of such a turn here.
         """
-        state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
-        prepared = state.get("prepared") if isinstance(state, dict) else None
-        session = getattr(self.staging, "session", None)
-        if not isinstance(prepared, dict) or prepared.get("connection_lease") is None or session is None:
-            return
         from companion_v2.execution.models import TaskError
         try:
-            session.bridge.connections.assert_current(prepared["connection_lease"])
+            assert_core_reply_connection(event)
         except TaskError:
             result = event.get_result()
             if result is not None and result.chain:
-                logger.warning("[CompanionV2] 连接已更换，本轮结果不发送 event_ref=%s", prepared.get("event_ref"))
+                state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+                logger.warning("[CompanionV2] 连接已更换，本轮结果不发送 event_ref=%s",
+                               (state.get("prepared") or {}).get("event_ref"))
                 result.chain.clear()
 
     @filter.on_decorating_result(priority=999999)

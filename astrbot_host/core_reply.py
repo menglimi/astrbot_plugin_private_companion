@@ -237,6 +237,11 @@ def prepare_core_reply_event(
             if getattr(message, "type", None) in {"tool_call", "tool_result", "agent_stats", "reasoning", "break"}:
                 return await state["_original_send"](message, *args, **kwargs)
             if not state.get("delivery_guard_active"):
+                # AstrBot's own text (an error, a command reply) leaves on the turn's connection only.
+                try:
+                    assert_core_reply_connection(event)
+                except TaskError:
+                    return None
                 from .core_reply_presentation import strip_internal_expression_message
                 message = strip_internal_expression_message(message)
                 if message is None:
