@@ -24,13 +24,15 @@ from datetime import timedelta
 import json
 import logging
 import random
+import re
 
+from companion_v2.capabilities.models import CapabilityDesiredState
 from companion_v2.execution.models import TaskError, stamp
 from companion_v2.foundation.refs import RoleOwnerRef, ScopeRef
 from companion_v2.qzone import life_publish
 from companion_v2.qzone.capability import (EXTENSION as QZONE_EXTENSION,
                                           PUBLISH_ACTION as QZONE_PUBLISH_ACTION)
-from companion_v2.qzone.service import local_day, owner_key
+from companion_v2.qzone.service import owner_key
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,15 @@ _QUIET_REASONS = frozenset({
     "host_not_running", "qzone_unavailable", "life_publish_disabled",
     "publish_disabled", "qzone_disabled", "interval", "probability_miss",
 })
+_UNKNOWN_DELIVERY_CODES = frozenset({
+    "qzone_delivery_unknown", "qzone_operation_unresolved",
+})
+_SHORT_RETRY_PUBLISH_CODES = frozenset({
+    "qzone_operation_failed", "qzone_credential_missing", "qzone_publish_failed",
+})
+_SECRET_TOKEN_RE = re.compile(
+    r"(?i)(?:p_skey|skey|pt4_token|qzonetoken|g_tk|cookie|authorization|bearer|token|password|secret)\s*[:=]\s*\S+"
+)
 _REASON_PRIORITY = {
     "published": 0,
     "publish_failed": 1,
@@ -54,7 +65,22 @@ _REASON_PRIORITY = {
     "life_publish_disabled": 6,
     "publish_disabled": 6,
     "qzone_disabled": 6,
+    "qzone_unavailable": 7,
+    "host_not_running": 7,
 }
+
+
+def _safe_error_reason(error, *, limit=120):
+    """Return a bounded, secret-redacted diagnostic reason for TaskError logs."""
+    if not isinstance(error, TaskError):
+        return ""
+    text = " ".join(str(error or "").split())
+    if not text:
+        return ""
+    text = _SECRET_TOKEN_RE.sub("[redacted]", text)
+    if len(text) > limit:
+        return text[:limit - 1] + "…"
+    return text
 
 
 class QzoneLifePublisher:
@@ -117,14 +143,24 @@ class QzoneLifePublisher:
         if not candidates:
             return {"reason": "qzone_unavailable"}
         results = []
-        for context, authorized in candidates:
+        for context, _authorized in candidates:
             results.append(await self._tick_context(
-                session, application, service, context, at, authorized=authorized))
+                session, application, service, context, at))
         if len(results) == 1:
             return results[0]
         return min(results, key=lambda item: _REASON_PRIORITY.get(item.get("reason"), 99))
 
     async def _tick_context(self, session, application, service, context, at, *, authorized=None):
+        if self._closed or getattr(application, "state", "") != "running":
+            return {"reason": "host_not_running"}
+        # Re-verify active target/role binding and publish authorization right
+        # before drafting so revocations or persona switches that occur while a
+        # previous role awaits model drafting never send stale materials to LLM.
+        owner = owner_key(context)
+        live_for_owner = [item for item in self._target_contexts(session, at) if owner_key(item) == owner]
+        if not live_for_owner:
+            return {"reason": "qzone_unavailable"}
+        context, authorized = self._select_contexts_by_owner(service, live_for_owner)[0]
         try:
             settings = application.qzone_settings.read(context, at)
         except Exception:  # noqa: BLE001 - an unreadable Zone config is a no-op, not a crash
@@ -137,31 +173,53 @@ class QzoneLifePublisher:
             return {"reason": "qzone_unauthorized"}
         if not life_publish.should_attempt(settings, self.draw()):
             return {"reason": "probability_miss"}
-        # Record the attempt before the model call: a crash or a failed publish
-        # must not turn every check tick into another model spend.
-        attempt = replace(state, last_action_at={
-            **state.last_action_at, life_publish.ATTEMPT_KEY: stamp(at)})
-        service.store.write(owner_key(context), attempt, at=at)
+        # Record the attempt before the model call and clear any expired short
+        # retry marker so a crash or deterministic block respects the normal
+        # interval instead of looping on a stale retry timestamp.
+        attempt_actions = {**state.last_action_at, life_publish.ATTEMPT_KEY: stamp(at)}
+        attempt_actions.pop(life_publish.RETRY_KEY, None)
+        attempt = replace(state, last_action_at=attempt_actions)
+        service.store.write(owner, attempt, at=at)
         try:
-            text = await self._draft(session, context, settings, at)
+            text = await self._draft(
+                session, context, settings, at,
+                recent_publish_texts=state.recent_publish_texts,
+            )
         except Exception as error:  # noqa: BLE001 - no draft means no public post
             logger.warning("[CompanionV2] 生活说说草稿生成失败 error_type=%s", type(error).__name__)
-            self._schedule_retry(service, context, state, at, settings)
+            self._schedule_retry(service, context, attempt, at, settings)
             return {"reason": "draft_failed"}
         if not text:
-            self._schedule_retry(service, context, state, at, settings)
+            self._schedule_retry(service, context, attempt, at, settings)
             return {"reason": "draft_unavailable"}
+        # Re-verify the exact drafted context is still active and authorized
+        # right before publishing so mid-draft revocations or persona switches
+        # never publish with stale consent or retired role context.
+        if self._closed or getattr(application, "state", "") != "running":
+            return {"reason": "host_not_running"}
+        if not self._is_context_active(context, self._target_contexts(session, at)):
+            return {"reason": "qzone_unavailable"}
+        if self._is_publish_authorized(service, context) is False:
+            return {"reason": "qzone_unauthorized"}
         try:
             result = await service.publish(
                 context, text=text, topic=life_publish.TOPIC.value,
                 scene=life_publish.SCENE.value, confidence=0.82, topic_confirmed=True,
-                operation_key=life_publish.operation_key(owner_key(context), decision.day, at))
+                operation_key=life_publish.operation_key(owner, decision.day, at))
         except Exception as error:  # noqa: BLE001 - publish reports its own codes; log and space the retry
             code = getattr(error, "code", "qzone_publish_failed")
-            logger.warning("[CompanionV2] 生活说说发布未完成 code=%s error_type=%s",
-                           code, type(error).__name__)
-            self._schedule_retry(service, context, state, at, settings, unknown=code in {
-                "qzone_delivery_unknown", "qzone_operation_unresolved"})
+            reason_text = _safe_error_reason(error)
+            if reason_text:
+                logger.warning("[CompanionV2] 生活说说发布未完成 code=%s error_type=%s reason=%s",
+                               code, type(error).__name__, reason_text)
+            else:
+                logger.warning("[CompanionV2] 生活说说发布未完成 code=%s error_type=%s",
+                               code, type(error).__name__)
+            self._schedule_retry(
+                service, context, attempt, at, settings,
+                unknown=code in _UNKNOWN_DELIVERY_CODES,
+                defer_interval=code not in _SHORT_RETRY_PUBLISH_CODES,
+            )
             return {"reason": "publish_failed", "code": code}
         logger.info("[CompanionV2] 生活说说已发布 status=%s", result.get("status"))
         return {"reason": "published", "status": result.get("status"),
@@ -267,6 +325,13 @@ class QzoneLifePublisher:
         return tuple(selected.values())
 
     @staticmethod
+    def _is_context_active(context, live_contexts):
+        same_window = getattr(context, "same_window", None)
+        if callable(same_window):
+            return any(same_window(candidate) for candidate in live_contexts)
+        return any(candidate == context for candidate in live_contexts)
+
+    @staticmethod
     def _is_publish_authorized(service, context):
         capabilities = getattr(service, "capabilities", None)
         if capabilities is None:
@@ -275,6 +340,12 @@ class QzoneLifePublisher:
         authorize = getattr(capabilities, "authorize", None)
         if not callable(require_role) or not callable(authorize):
             return None
+        installation = getattr(capabilities, "installation", None)
+        if callable(installation):
+            installed = installation(extension_id=QZONE_EXTENSION)
+            selected = installed.unwrap() if getattr(installed, "is_success", False) else None
+            if selected is None or getattr(selected, "desired_state", None) is not CapabilityDesiredState.ACTIVE:
+                return False
         role_ok = require_role(
             extension_id=QZONE_EXTENSION,
             role=context.role_binding.role,
@@ -291,26 +362,27 @@ class QzoneLifePublisher:
         return bool(getattr(auth_ok, "is_success", False))
 
     @staticmethod
-    def _schedule_retry(service, context, state, at, settings, *, unknown=False):
+    def _schedule_retry(service, context, state, at, settings, *, unknown=False, defer_interval=False):
+        current = service.state(context) if callable(getattr(service, "state", None)) else state
+        actions = {**current.last_action_at, life_publish.ATTEMPT_KEY: stamp(at)}
+        if unknown or defer_interval:
+            # Unknown deliveries and deterministic policy/auth blocks must not
+            # spin every 30 minutes; clearing RETRY_KEY defers to the normal
+            # life_publish_min_interval_hours window via ATTEMPT_KEY.
+            actions.pop(life_publish.RETRY_KEY, None)
+            service.store.write(owner_key(context), replace(current, last_action_at=actions), at=at)
+            return
         try:
             minutes = int(settings.get("life_publish_retry_minutes") or 30)
         except (TypeError, ValueError):
             minutes = 30
-        if unknown:
-            try:
-                minutes = max(60, int(settings.get("life_publish_min_interval_hours") or 6) * 60)
-            except (TypeError, ValueError):
-                minutes = 360
         minutes = min(24 * 60, max(5, minutes))
-        retry = replace(state, last_action_at={
-            **state.last_action_at,
-            life_publish.RETRY_KEY: stamp(at + timedelta(minutes=minutes)),
-        })
-        service.store.write(owner_key(context), retry, at=at)
+        actions[life_publish.RETRY_KEY] = stamp(at + timedelta(minutes=minutes))
+        service.store.write(owner_key(context), replace(current, last_action_at=actions), at=at)
 
     # ---- drafting ------------------------------------------------------
 
-    async def _draft(self, session, context, settings, at):
+    async def _draft(self, session, context, settings, at, *, recent_publish_texts=()):
         from companion_v2.role_work.journal.models import JournalKind
 
         controller = self.controller
@@ -321,7 +393,10 @@ class QzoneLifePublisher:
         profile = self._profile(session, context)
         diary = self._latest_diary(session, context, at, JournalKind)
         request = life_publish.build_request(
-            profile, diary, now=at, style=settings.get("life_publish_style_prompt", ""))
+            profile, diary, now=at,
+            style=settings.get("life_publish_style_prompt", ""),
+            recent_publish_texts=recent_publish_texts,
+        )
         response = await asyncio.wait_for(
             provider.text_chat(prompt=request["prompt"], system_prompt=request["system"],
                                contexts=[], max_tokens=400),
@@ -353,11 +428,18 @@ class QzoneLifePublisher:
         try:
             owner = RoleOwnerRef(context.scope.installation_id, context.scope.bot_id,
                                  context.role_binding.role.subject_id)
-            application = session.application
-            for head in application.role_journal.recent_days(owner, through_date=local_day(at), limit=8):
+            journal = session.application.role_journal
+            heads = journal.context_days(owner, context.scope, observed_at=at, limit=16)
+            for head in heads:
                 if head.key.kind is not journal_kind.DIARY:
                     continue
-                entry = application.role_journal.get(head.key, observed_at=at)
+                try:
+                    entry = journal.get_for_audience(
+                        head.key, scope=context.scope,
+                        recipient=context.actor.subject, observed_at=at,
+                    )
+                except TaskError:
+                    continue
                 body = entry.draft.body.strip()
                 if body:
                     return body

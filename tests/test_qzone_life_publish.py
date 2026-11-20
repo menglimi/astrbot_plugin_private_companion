@@ -22,14 +22,15 @@ from astrbot_host.persona_workshop_api import _session_provider_id, current_role
 from astrbot_host.qzone_life_publish import QzoneLifePublisher
 from companion_v2.adapters.astrbot.staging import NativeAdapterTypes
 from companion_v2.capabilities import CapabilityAuthorizationState
+from companion_v2.execution.models import TaskError
 from companion_v2.foundation.refs import (OperationRef, RoleOwnerRef, ScopeKind, ScopeRef,
                                           SubjectKind, SubjectRef, VersionRef)
 from companion_v2.qzone import life_publish
 from companion_v2.qzone.capability import CAPABILITIES, EXTENSION, package_descriptor
 from companion_v2.qzone.configuration import (GROUP as QZONE_GROUP, OWNER as QZONE_OWNER,
                                             target_for as qzone_target_for)
-from companion_v2.qzone.policy import QzoneRuntimeState
-from companion_v2.qzone.service import local_day
+from companion_v2.qzone.policy import QzoneRuntimeState, note_publish, publish_reason
+from companion_v2.qzone.service import local_day, owner_key
 from companion_v2.qzone.topics import QzoneScene, QzoneTopic
 from companion_v2.role_profile.configuration import (GROUP as ROLE_PROFILE_GROUP,
                                                  OWNER as ROLE_PROFILE_OWNER,
@@ -137,8 +138,64 @@ class KeyAndDraftTests(unittest.TestCase):
         self.assertIn("性格：安静", request["prompt"])
         self.assertIn("今天去看了海。", request["prompt"])
         self.assertIn("口语一点", request["prompt"])
+        self.assertNotIn("最近已经发过的说说", request["prompt"])
         self.assertEqual((life_publish.TOPIC, life_publish.SCENE),
                          (QzoneTopic.LIFE_DOCUMENTARY, QzoneScene.ROLE_ACTIVITY))
+
+    def test_request_includes_bounded_recent_publish_texts(self):
+        recent = tuple(f"第{idx}条旧说说：" + "日常片段" * 40 for idx in range(7))
+        request = life_publish.build_request(
+            {"name": "星缘"}, "今天整理了书桌。", now=NOW, recent_publish_texts=recent)
+        prompt = request["prompt"]
+        self.assertIn("最近已经发过的说说", prompt)
+        # Only the latest MAX_RECENT_POSTS entries are included, each bounded in length.
+        self.assertNotIn("第0条旧说说", prompt)
+        self.assertNotIn("第1条旧说说", prompt)
+        for idx in range(2, 7):
+            self.assertIn(f"第{idx}条旧说说", prompt)
+        bullet_lines = [line for line in prompt.splitlines() if line.startswith("- ")]
+        self.assertEqual(len(bullet_lines), life_publish.MAX_RECENT_POSTS)
+        for line in bullet_lines:
+            self.assertLessEqual(len(line) - 2, life_publish.MAX_RECENT_POST_CHARS)
+
+
+class SimilarityPolicyTests(unittest.TestCase):
+    def _policy_settings(self):
+        return {
+            "enabled": True,
+            "publish_enabled": True,
+            "daily_limits_enabled": False,
+            "action_min_interval_minutes": 30,
+        }
+
+    def test_normal_life_posts_sharing_common_phrases_are_not_blocked(self):
+        prev = "午后下楼买了杯热柠檬茶，回来的时候风有点凉，顺手把阳台上的衣服收进来了，晚上打算早点睡。"
+        curr = "晚上整理书桌的时候翻出几张旧胶片，窗外吹进来的风有点凉，听了一会儿歌整个人松快了不少。"
+        st = note_publish(state(), text=prev, at=NOW - timedelta(hours=2), day=DAY)
+        self.assertEqual(publish_reason(st, self._policy_settings(), text=curr, at=NOW, day=DAY), "")
+
+        # Even multiple scattered common 3-grams with low Jaccard must pass.
+        prev2 = "今天下午去菜市场买了几根玉米和新鲜番茄，回家之后慢悠悠炖了一锅汤，味道比想象中还要好，窗外天色也慢慢暗下来了。"
+        curr2 = "今天下午在阳台给绿萝换了新花盆，回家之后顺手擦了书架上的灰尘，顺便翻开一本旧画册，心情比想象中还要放松许多。"
+        st2 = note_publish(state(), text=prev2, at=NOW - timedelta(hours=2), day=DAY)
+        self.assertEqual(publish_reason(st2, self._policy_settings(), text=curr2, at=NOW, day=DAY), "")
+
+    def test_genuine_near_duplicate_and_short_post_variants_are_still_blocked(self):
+        prev = "午后下楼买了杯热柠檬茶，回来的时候风有点凉，顺手把阳台上的衣服都收进来了，准备早点休息。"
+        near_dup = "午后下楼买了杯热柠檬茶，回来的时候风挺凉的，顺手把阳台上的衣服收进来了，打算早点休息。"
+        st = note_publish(state(), text=prev, at=NOW - timedelta(hours=2), day=DAY)
+        self.assertIn("太像", publish_reason(st, self._policy_settings(), text=near_dup, at=NOW, day=DAY))
+
+        short_st = note_publish(state(), text="今天很好", at=NOW - timedelta(hours=2), day=DAY)
+        self.assertIn("重复", publish_reason(short_st, self._policy_settings(), text="今天很好", at=NOW, day=DAY))
+        self.assertIn("太像", publish_reason(short_st, self._policy_settings(), text="今天很好！", at=NOW, day=DAY))
+        # A short old post must not block a much longer brand-new life post.
+        long_new = "今天很好，顺便去楼下买了热柠檬茶，又把书架上的旧书和胶片理了一遍，晚风挺轻的。"
+        self.assertEqual(publish_reason(short_st, self._policy_settings(), text=long_new, at=NOW, day=DAY), "")
+
+        short_punct = note_publish(state(), text="今天下班路上买了花。", at=NOW - timedelta(hours=2), day=DAY)
+        self.assertIn("太像", publish_reason(short_punct, self._policy_settings(),
+                                             text="今天下班路上买了花！", at=NOW, day=DAY))
 
 
 def _patch_role_config(application, operator, target, group_id, owner_id, changes, *, at, key):
@@ -492,6 +549,245 @@ class MultiHostPublisherTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["reason"], "published", result)
         self.assertTrue(any(req.description == "post.publish" for req in transport.sent))
+
+    async def test_multi_host_scopes_diary_to_selected_window_and_never_leaks_other_window(self):
+        config = multi_config()
+        config["multi_host"]["targets"] = [
+            config["multi_host"]["targets"][0],
+            {"target_id": "second-same-bot", "platform_id": "qq-main", "account_id": "100",
+             "bot_id": "bot-a", "participant_id": "201"},
+        ]
+        config["multi_host"]["personas"] = [
+            {"bot_id": "bot-a", "persona_id": "original", "role_id": "role-a"},
+        ]
+        self.controller = self.make_controller(config)
+        transport = FakeTransport()
+        with patch("astrbot_host.multi_controller.build_qzone_transport", return_value=transport):
+            app = await self.start_host()
+        session = self.controller.session
+        window_a, _ = await session.synchronize(session.settings.target("first"))
+        window_b, _ = await session.synchronize(session.settings.target("second-same-bot"))
+        at = self.clock.now()
+        yesterday = at - timedelta(days=1)
+
+        # Both windows share the exact same role owner; window A is consented, window B is not.
+        owner_a = RoleOwnerRef(window_a.scope.installation_id, window_a.scope.bot_id,
+                               window_a.role_binding.role.subject_id)
+        owner_b = RoleOwnerRef(window_b.scope.installation_id, window_b.scope.bot_id,
+                               window_b.role_binding.role.subject_id)
+        self.assertEqual(owner_a, owner_b)
+        self.assertNotEqual(window_a.scope, window_b.scope)
+        _configure_qzone_role(self.controller, window_a, at, consent=True, op_prefix="iso-a")
+        _configure_qzone_role(self.controller, window_b, at, consent=False, op_prefix="iso-b")
+        # Window A wrote an older diary yesterday; window B wrote a NEWER diary today.
+        key_a = JournalKey(owner_a, JournalKind.DIARY, local_day(yesterday))
+        app.role_journal.save(
+            JournalDraft(JournalContext(key_a, window_a.scope, "Asia/Shanghai"),
+                         body="窗口甲专属日记：午后修好了书桌上的旧台灯。"),
+            expected_revision=0, operation_id="iso-diary-a", observed_at=yesterday,
+        )
+        key_b = JournalKey(owner_a, JournalKind.DIARY, local_day(at))
+        app.role_journal.save(
+            JournalDraft(JournalContext(key_b, window_b.scope, "Asia/Shanghai"),
+                         body="窗口乙私密日记：昨晚和好友去看了午夜场电影。"),
+            expected_revision=0, operation_id="iso-diary-b", observed_at=at,
+        )
+
+        publisher = QzoneLifePublisher(self.controller, draw=lambda: 0.0)
+        draft_reply = NS(completion_text="午后把旧台灯修好了，重新亮起来的感觉还挺安心。")
+        with patch.object(self.native.provider, "text_chat", AsyncMock(return_value=draft_reply)) as chat:
+            result = await publisher.tick(now=at)
+
+        self.assertEqual(result["reason"], "published", result)
+        self.assertEqual(chat.await_count, 1)
+        prompt = chat.await_args.kwargs["prompt"]
+        self.assertIn("窗口甲专属日记：午后修好了书桌上的旧台灯。", prompt)
+        self.assertNotIn("窗口乙私密日记", prompt)
+
+        # Even if window A has no diary of its own at all, it must never read window B's diary.
+        app.role_journal.delete(
+            JournalContext(key_a, window_a.scope, "Asia/Shanghai"),
+            expected_revision=1, operation_id="iso-diary-a-del", observed_at=at,
+        )
+        self.clock.advance(timedelta(hours=8))
+        later = self.clock.now()
+        with patch.object(self.native.provider, "text_chat", AsyncMock(
+                return_value=NS(completion_text="晚上泡了杯热茶发了会儿呆，屋里很安静。"))) as chat2:
+            result2 = await publisher.tick(now=later)
+        self.assertEqual(result2["reason"], "published", result2)
+        prompt2 = chat2.await_args.kwargs["prompt"]
+        self.assertNotIn("窗口乙私密日记", prompt2)
+        # Recent published post snippet is also injected to guide diversity.
+        self.assertIn("最近已经发过的说说", prompt2)
+        self.assertIn("旧台灯修好了", prompt2)
+
+    async def test_revoking_role_b_consent_during_role_a_draft_prevents_role_b_draft_and_llm_send(self):
+        config = multi_config()
+        config["multi_host"]["targets"] = [
+            config["multi_host"]["targets"][0],
+            {"target_id": "second-bot-target", "platform_id": "qq-second", "account_id": "101",
+             "bot_id": "bot-b", "participant_id": "300"},
+        ]
+        config["multi_host"]["personas"] = [
+            {"bot_id": "bot-a", "persona_id": "original", "role_id": "role-a"},
+            {"bot_id": "bot-b", "persona_id": "second", "role_id": "role-b"},
+        ]
+        self.controller = self.make_controller(config)
+        self.window_personas["qq-second:FriendMessage:300"] = "second"
+        transport = FakeTransport()
+        with patch("astrbot_host.multi_controller.build_qzone_transport", return_value=transport):
+            app = await self.start_host()
+        session = self.controller.session
+        ctx_a, _ = await session.synchronize(session.settings.target("first"))
+        ctx_b, _ = await session.synchronize(session.settings.target("second-bot-target"))
+        at = self.clock.now()
+
+        _configure_qzone_role(self.controller, ctx_a, at, consent=True, op_prefix="race-a")
+        _configure_qzone_role(self.controller, ctx_b, at, consent=True, op_prefix="race-b")
+        _save_role_profile_and_diary(
+            self.controller, ctx_a, at,
+            name="角色甲", personality="沉静",
+            diary_body="角色甲日记：早上煮了咖啡。", op_prefix="race-a-profile",
+        )
+        _save_role_profile_and_diary(
+            self.controller, ctx_b, at,
+            name="角色乙私密名", personality="敏感",
+            diary_body="角色乙绝密日记：绝不可发给模型。", op_prefix="race-b-profile",
+        )
+
+        prompts_seen = []
+
+        async def draft_and_revoke_b(*, prompt, system_prompt, contexts, max_tokens):
+            prompts_seen.append(prompt)
+            # While role A awaits _draft(), operator revokes role B's QZone consent.
+            _configure_qzone_role(self.controller, ctx_b, at, consent=False, op_prefix="race-b-revoke")
+            return NS(completion_text="早上慢悠悠煮了一壶手冲咖啡，屋里全是烘豆的香气。")
+
+        publisher = QzoneLifePublisher(self.controller, draw=lambda: 0.0)
+        with patch.object(self.native.provider, "text_chat", AsyncMock(side_effect=draft_and_revoke_b)) as chat:
+            result = await publisher.tick(now=at)
+
+        self.assertEqual(result["reason"], "published", result)
+        self.assertEqual(chat.await_count, 1)
+        self.assertEqual(len(prompts_seen), 1)
+        self.assertIn("角色甲日记", prompts_seen[0])
+        self.assertNotIn("角色乙绝密日记", prompts_seen[0])
+        self.assertNotIn("角色乙私密名", prompts_seen[0])
+        # Role B's state must remain untouched (no attempt lock written, no publish).
+        self.assertEqual(app.qzone.state(ctx_b).last_action_at, {})
+        self.assertEqual(app.qzone.state(ctx_b).publish_count, 0)
+        publish_reqs = [req for req in transport.sent if req.description == "post.publish"]
+        self.assertEqual(len(publish_reqs), 1)
+
+    async def test_mid_draft_consent_revocation_aborts_before_publish(self):
+        transport = FakeTransport()
+        with patch("astrbot_host.multi_controller.build_qzone_transport", return_value=transport):
+            app = await self.start_host()
+        session = self.controller.session
+        ctx_a, _ = await session.synchronize(session.settings.target("first"))
+        at = self.clock.now()
+        _configure_qzone_role(self.controller, ctx_a, at, consent=True, op_prefix="mid-revoke-init")
+
+        async def revoke_during_draft(*, prompt, system_prompt, contexts, max_tokens):
+            _configure_qzone_role(self.controller, ctx_a, at, consent=False, op_prefix="mid-revoke-now")
+            return NS(completion_text="窗外下起了毛毛雨，刚好泡杯茶看看书。")
+
+        publisher = QzoneLifePublisher(self.controller, draw=lambda: 0.0)
+        with patch.object(self.native.provider, "text_chat", AsyncMock(side_effect=revoke_during_draft)):
+            revoked = await publisher.tick(now=at)
+        self.assertEqual(revoked, {"reason": "qzone_unauthorized"})
+        self.assertEqual(transport.sent, [])
+        self.assertEqual(app.qzone.state(ctx_a).publish_count, 0)
+
+    async def test_mid_draft_persona_switch_aborts_before_publish(self):
+        config = multi_config()
+        config["multi_host"]["personas"] = [
+            {"bot_id": "bot-a", "persona_id": "original", "role_id": "role-a"},
+            {"bot_id": "bot-a", "persona_id": "second", "role_id": "role-b"},
+        ]
+        config["multi_host"]["targets"] = [config["multi_host"]["targets"][0]]
+        self.controller = self.make_controller(config)
+        transport = FakeTransport()
+        with patch("astrbot_host.multi_controller.build_qzone_transport", return_value=transport):
+            app = await self.start_host()
+        session = self.controller.session
+        target = session.settings.target("first")
+        ctx_a, _ = await session.synchronize(target)
+        at = self.clock.now()
+        _configure_qzone_role(self.controller, ctx_a, at, consent=True, op_prefix="mid-switch-init")
+
+        async def switch_during_draft(*, prompt, system_prompt, contexts, max_tokens):
+            switched_scope = ScopeRef(
+                ctx_a.scope.installation_id, target.platform_id, ScopeKind.PRIVATE,
+                target.participant_id, bot_id=target.bot_id, account_id=target.account_id,
+                conversation_id="conv-role-b", session_id=target.participant_id,
+            )
+            active_role = SubjectRef(ctx_a.scope.installation_id, SubjectKind.BOT, "role-b")
+            session.authority.select(target, switched_scope, active_role)
+            return NS(completion_text="傍晚散步回来顺路买了盒草莓。")
+
+        publisher = QzoneLifePublisher(self.controller, draw=lambda: 0.0)
+        with patch.object(self.native.provider, "text_chat", AsyncMock(side_effect=switch_during_draft)):
+            retired = await publisher.tick(now=at)
+        self.assertEqual(retired, {"reason": "qzone_unavailable"})
+        self.assertEqual(transport.sent, [])
+        self.assertEqual(app.qzone.state(ctx_a).publish_count, 0)
+
+    async def test_action_blocked_logs_redacted_reason_and_defers_to_normal_interval_without_30min_loop(self):
+        transport = FakeTransport()
+        with patch("astrbot_host.multi_controller.build_qzone_transport", return_value=transport):
+            app = await self.start_host()
+        session = self.controller.session
+        context, _ = await session.synchronize(session.settings.target("first"))
+        at = self.clock.now()
+        _configure_qzone_role(self.controller, context, at, op_prefix="block-loop")
+
+        # Seed a recent post so drafting the exact/near-duplicate text triggers real qzone_action_blocked.
+        duplicate_text = "午后下楼买了杯热柠檬茶，回来的时候风有点凉，顺手把阳台上的衣服收进来了。"
+        seeded = note_publish(app.qzone.state(context), text=duplicate_text,
+                              at=at - timedelta(hours=8), day=local_day(at - timedelta(hours=8)))
+        app.qzone.store.write(owner_key(context), seeded, at=at - timedelta(hours=8))
+
+        publisher = QzoneLifePublisher(self.controller, draw=lambda: 0.0)
+        with patch.object(self.native.provider, "text_chat",
+                          AsyncMock(return_value=NS(completion_text=duplicate_text))) as chat:
+            with self.assertLogs("astrbot_host.qzone_life_publish", level="WARNING") as captured:
+                blocked = await publisher.tick(now=at)
+            self.assertEqual(blocked, {"reason": "publish_failed", "code": "qzone_action_blocked"})
+            self.assertEqual(chat.await_count, 1)
+            log_text = "\n".join(captured.output)
+            self.assertIn("code=qzone_action_blocked", log_text)
+            self.assertIn("reason=这条说说和刚发过的重复", log_text)
+
+            # 30 minutes later must stay in interval (NOT loop every 30 min via RETRY_KEY).
+            after_30m = await publisher.tick(now=at + timedelta(minutes=30))
+            self.assertEqual(after_30m, {"reason": "interval"})
+            self.assertEqual(chat.await_count, 1)
+
+        # Verify secret-like tokens in TaskError reasons are redacted in warning logs.
+        secret_err = TaskError("qzone_action_blocked", "策略拒绝 p_skey=super_secret_cookie_12345 详情")
+        later_6h = at + timedelta(hours=6)
+        with patch.object(self.native.provider, "text_chat",
+                          AsyncMock(return_value=NS(completion_text="全新一条毫不相关的傍晚散步记录。"))), \
+             patch.object(app.qzone, "publish", AsyncMock(side_effect=secret_err)):
+            with self.assertLogs("astrbot_host.qzone_life_publish", level="WARNING") as captured2:
+                blocked2 = await publisher.tick(now=later_6h)
+        self.assertEqual(blocked2, {"reason": "publish_failed", "code": "qzone_action_blocked"})
+        log_text2 = "\n".join(captured2.output)
+        self.assertIn("reason=策略拒绝 [redacted] 详情", log_text2)
+        self.assertNotIn("super_secret_cookie_12345", log_text2)
+        self.assertNotIn(life_publish.RETRY_KEY, app.qzone.state(context).last_action_at)
+
+        # Transient qzone_operation_failed still uses short retry_wait (30m) and retries cleanly.
+        later_12h = at + timedelta(hours=12)
+        with patch.object(self.native.provider, "text_chat",
+                          AsyncMock(return_value=NS(completion_text="雨后去巷口书店翻了半小时画册，买到一张明信片。"))), \
+             patch.object(app.qzone, "publish",
+                          AsyncMock(side_effect=TaskError("qzone_operation_failed", "上游临时抖动"))):
+            transient = await publisher.tick(now=later_12h)
+        self.assertEqual(transient, {"reason": "publish_failed", "code": "qzone_operation_failed"})
+        self.assertIn(life_publish.RETRY_KEY, app.qzone.state(context).last_action_at)
+        self.assertEqual(await publisher.tick(now=later_12h + timedelta(minutes=10)), {"reason": "retry_wait"})
 
 
 if __name__ == "__main__":
