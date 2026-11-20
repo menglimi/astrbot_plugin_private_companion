@@ -736,10 +736,10 @@ window.CompanionConfigEditors = (() => {
       },
       choices: {schedule_influence_strength: {0: "不影响", 1: "轻微参考", 2: "留出练习时间",
                                               3: "优先安排相关活动"}},
-      order: ["enabled", "schedule_influence_strength", "custom_skills"],
+      order: ["enabled", "custom_skills", "schedule_influence_strength"],
       sections: [
         {id: "shared", title: "角色技能领域",
-         fields: ["enabled", "schedule_influence_strength", "custom_skills"]},
+         fields: ["enabled", "custom_skills", "schedule_influence_strength"]},
       ],
     },
     role_profile: {
