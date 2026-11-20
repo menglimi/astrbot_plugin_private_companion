@@ -524,8 +524,7 @@ class NativeGroupBridge(NativePrivateBridge):
                                 (f.position, f.resource_hash) != (l.position, digest(l.resource))
                                 for f, l in zip(forwards, frozen_forwards)) or not fits_forwards(forwards)):
                         raise TaskError("host_forward_invalid", "group forward loader changed the captured manifest")
-                if not fits_forwards((*forwards, *(f for quote in quotes for f in getattr(quote, "forwards", ())))):
-                    raise TaskError("host_forward_limit", "direct and quoted group forwards share one input budget")
+                self._check_shared_forwards(forwards, quotes, intake, "direct and quoted group forwards share one input budget")
                 all_images = tuple(i.descriptor for i in images) + tuple(
                     i.descriptor for quote in quotes for i in event_images(quote)) + tuple(
                     i.descriptor for forward in forwards for node in forward.nodes for i in node.images)
