@@ -66,7 +66,7 @@ from .astrbot_host.native_extensions.host_events import (
 )
 from .astrbot_host.core_reply_segmentation import (
     activate_core_reply_segmentation, prepare_core_reply_segmentation,
-    prepare_core_reply_streaming_boundary,
+    prepare_core_reply_streaming_boundary, prepare_core_result_decoration,
 )
 from .astrbot_host.core_reply_tracking import (
     activate_core_reply_tracking, adopt_core_reply_tracking, finish_core_reply_tracking,
@@ -1839,6 +1839,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         activate_core_reply_delivery_guard(event)
         activate_core_reply_tracking(event)
         activate_core_reply_segmentation(event)
+        prepare_core_result_decoration(event)
 
     @filter.on_decorating_result(priority=999999)
     async def suppress_companion_native_tool_repeat(self, event: AstrMessageEvent):
