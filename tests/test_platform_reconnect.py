@@ -155,6 +155,160 @@ class PlatformReconnectTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(retried.is_success, retried.failure)
         self.assertTrue(self.controller.native_bridges_current())
 
+    async def test_offline_startup_latches_first_connected_bridges_and_detects_later_reload(self):
+        platforms = self.native.platforms.copy()
+        self.native.platforms.clear()
+        await self.start_host()
+        initial_session = self.controller.session
+        self.assertTrue(self.controller.native_bridges_current())
+
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        plugin.staging = self.controller
+        plugin._host_start_task = None
+
+        self.native.platforms.update(platforms)
+        await plugin.on_companion_platform_loaded()
+        self.assertIsNone(plugin._host_start_task)
+        self.assertIs(self.controller.session, initial_session)
+        self.assertTrue(self.controller.native_bridges_current())
+
+        replacement = FakePlatform("qq-main")
+        self.native.platforms["qq-main"] = replacement
+        self.assertFalse(self.controller.native_bridges_current())
+        await plugin.on_companion_platform_loaded()
+        self.assertIsNotNone(plugin._host_start_task)
+        await asyncio.wait_for(plugin._host_start_task, timeout=10)
+        self.assertIsNot(self.controller.session, initial_session)
+        self.assertIs(self.controller.session.bridge.platforms["qq-main"][0], replacement)
+        self.assertTrue(self.controller.native_bridges_current())
+
+    async def test_existing_profile_loaded_while_waiting_detects_reload_after_start(self):
+        (await self.controller.initialize_profile()).unwrap()
+        await self.controller.terminate()
+        platforms = self.native.platforms.copy()
+        self.native.platforms.clear()
+
+        restored = self.make_controller(self.controller.config)
+        loaded = await restored.load_existing()
+        self.assertTrue(loaded.is_success, loaded.failure)
+        self.assertTrue(loaded.unwrap()["loaded"])
+
+        self.native.platforms.update(platforms)
+        started = await restored.start()
+        self.assertTrue(started.is_success, started.failure)
+        self.assertTrue(restored.native_bridges_current())
+        previous = restored.session
+
+        replacement = FakePlatform("qq-main")
+        self.native.platforms["qq-main"] = replacement
+        self.assertFalse(restored.native_bridges_current())
+        restarted = await restored.start()
+        self.assertTrue(restarted.is_success, restarted.failure)
+        self.assertIsNot(restored.session, previous)
+        self.assertIs(restored.session.bridge.platforms["qq-main"][0], replacement)
+        self.assertTrue(restored.native_bridges_current())
+
+    async def test_partial_offline_account_joins_without_restart_then_detects_reload(self):
+        second = self.native.platforms.pop("qq-second")
+        await self.start_host()
+        initial_session = self.controller.session
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        plugin.staging = self.controller
+        plugin._host_start_task = None
+
+        self.native.platforms["qq-second"] = second
+        await plugin.on_companion_platform_loaded()
+        self.assertIsNone(plugin._host_start_task)
+        self.assertIs(self.controller.session, initial_session)
+        self.assertTrue(self.controller.native_bridges_current())
+
+        replacement = FakePlatform("qq-second")
+        self.native.platforms["qq-second"] = replacement
+        self.assertFalse(self.controller.native_bridges_current())
+        await plugin.on_companion_platform_loaded()
+        self.assertIsNotNone(plugin._host_start_task)
+        await asyncio.wait_for(plugin._host_start_task, timeout=10)
+        self.assertIsNot(self.controller.session, initial_session)
+        self.assertIs(self.controller.session.bridge.groups.platforms["qq-second"][0], replacement)
+        self.assertTrue(self.controller.native_bridges_current())
+
+    async def test_registered_waiting_platform_client_swap_before_first_login_does_not_restart_until_later_reload(self):
+        self.native.platforms["qq-second"].client._wsr_api_clients.pop("101")
+        await self.start_host()
+        initial_session = self.controller.session
+        self.assertTrue(self.controller.native_bridges_current())
+        self.assertEqual(set(initial_session.native_bridge_pairs[0]), {"qq-main"})
+        self.assertEqual(set(initial_session.native_bridge_pairs[1]), {"qq-main"})
+        self.assertTrue(self.controller.claims(self.group_event("group-a")))
+        self.assertFalse(self.controller.claims(self.group_event("group-c")))
+
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        plugin.staging = self.controller
+        plugin._host_start_task = None
+
+        still_waiting = FakePlatform("qq-second")
+        still_waiting.client._wsr_api_clients.pop("101")
+        self.native.platforms["qq-second"] = still_waiting
+        await plugin.on_companion_platform_loaded()
+        self.assertIsNone(plugin._host_start_task)
+        self.assertIs(self.controller.session, initial_session)
+        self.assertTrue(self.controller.native_bridges_current())
+        self.assertNotIn("qq-second", initial_session.native_bridge_pairs[0])
+
+        first_online_client = FakePlatform("qq-second").client
+        still_waiting.client = first_online_client
+        await plugin.on_companion_platform_loaded()
+        self.assertIsNone(plugin._host_start_task)
+        self.assertIs(self.controller.session, initial_session)
+        self.assertTrue(self.controller.native_bridges_current())
+        self.assertEqual(initial_session.native_bridge_pairs[0]["qq-second"], (still_waiting, first_online_client))
+        self.assertEqual(initial_session.native_bridge_pairs[1]["qq-second"], (still_waiting, first_online_client))
+        self.assertTrue(self.controller.claims(self.group_event("group-a")))
+        self.assertTrue(self.controller.claims(self.group_event("group-c")))
+
+        second_online = FakePlatform("qq-second")
+        self.native.platforms["qq-second"] = second_online
+        self.assertFalse(self.controller.native_bridges_current())
+        await plugin.on_companion_platform_loaded()
+        self.assertIsNotNone(plugin._host_start_task)
+        await asyncio.wait_for(plugin._host_start_task, timeout=10)
+        self.assertIsNot(self.controller.session, initial_session)
+        self.assertEqual(initial_session.application.state, "stopped")
+        self.assertIs(self.controller.session.bridge.platforms["qq-second"][0], second_online)
+        self.assertIs(self.controller.session.bridge.groups.platforms["qq-second"][0], second_online)
+        self.assertTrue(self.controller.native_bridges_current())
+
+    async def test_registered_waiting_platform_direct_start_and_post_online_waiting_cycle(self):
+        self.native.platforms["qq-second"].client._wsr_api_clients.pop("101")
+        await self.start_host()
+        initial_session = self.controller.session
+        self.assertNotIn("qq-second", initial_session.native_bridge_pairs[0])
+
+        first_online = FakePlatform("qq-second")
+        self.native.platforms["qq-second"] = first_online
+        replayed = await self.controller.start()
+        self.assertTrue(replayed.is_success, replayed.failure)
+        self.assertTrue(replayed.unwrap().get("replayed"))
+        self.assertIs(self.controller.session, initial_session)
+        self.assertEqual(initial_session.native_bridge_pairs[0]["qq-second"], (first_online, first_online.client))
+        self.assertTrue((await self.controller.session.bridge.capture_core_reply(self.event())).is_success)
+
+        # Going waiting again after being online must keep the latched baseline
+        # so a later reconnect with a new client still triggers a bridge rebuild.
+        first_online.client._wsr_api_clients.pop("101")
+        await self.controller.recover_accounts()
+        self.assertTrue(self.controller.native_bridges_current())
+        self.assertIs(self.controller.session, initial_session)
+
+        second_online = FakePlatform("qq-second")
+        self.native.platforms["qq-second"] = second_online
+        self.assertFalse(self.controller.native_bridges_current())
+        restarted = await self.controller.start()
+        self.assertTrue(restarted.is_success, restarted.failure)
+        self.assertIsNot(self.controller.session, initial_session)
+        self.assertIs(self.controller.session.bridge.platforms["qq-second"][0], second_online)
+        self.assertTrue(self.controller.native_bridges_current())
+
 
 if __name__ == "__main__":
     unittest.main()
