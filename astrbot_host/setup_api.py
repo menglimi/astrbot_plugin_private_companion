@@ -13,7 +13,7 @@ from astrbot.api.web import request
 
 from companion_v2.execution.models import TERMINAL, TaskError, require
 from companion_v2.foundation.outcome import Outcome
-from companion_v2.foundation.refs import ScopeKind
+from companion_v2.foundation.refs import ScopeKind, ScopeRef
 from companion_v2.proactive.configuration import PURPOSES
 from companion_v2.proactive.diagnostic_models import DiagnosticSourceError
 from companion_v2.proactive.management import ContactManagement
@@ -1486,8 +1486,10 @@ class SetupWebAPI:
         for row in rows:
             if row["state"] not in ("delivered", "accepted", "unknown", "dispatched"):
                 continue
-            actual = router.actual_context(row["delivery_id"]) if router is not None else None
-            scope = (actual or context).scope
+            # A linked conversation's own route, else the account-link router's target, else the recipient.
+            route = session.application.outbound.route(row["delivery_id"])
+            actual = router.actual_context(row["delivery_id"]) if router is not None and route is None else None
+            scope = ScopeRef.restore(route["scope"]) if route is not None else (actual or context).scope
             key = (scope.platform, scope.account_id, scope.native_scope_id, row["state"])
             if key not in seen:
                 seen.add(key)

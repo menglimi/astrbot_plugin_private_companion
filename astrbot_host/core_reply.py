@@ -234,14 +234,17 @@ def prepare_core_reply_event(
                 raise
 
         async def guarded_send(message: Any, *args: Any, **kwargs: Any) -> Any:
-            if getattr(message, "type", None) in {"tool_call", "tool_result", "agent_stats", "reasoning", "break"}:
-                return await state["_original_send"](message, *args, **kwargs)
-            if not state.get("delivery_guard_active"):
-                # AstrBot's own text (an error, a command reply) leaves on the turn's connection only.
+            # Tool status and AstrBot's own text (an error, a command reply) leave on the
+            # turn's connection only; the model's reply is checked by its authorization.
+            internal = getattr(message, "type", None) in {"tool_call", "tool_result", "agent_stats", "reasoning", "break"}
+            if internal or not state.get("delivery_guard_active"):
                 try:
                     assert_core_reply_connection(event)
                 except TaskError:
                     return None
+            if internal:
+                return await state["_original_send"](message, *args, **kwargs)
+            if not state.get("delivery_guard_active"):
                 from .core_reply_presentation import strip_internal_expression_message
                 message = strip_internal_expression_message(message)
                 if message is None:

@@ -83,6 +83,18 @@ class CoreReplyConnectionTests(unittest.IsolatedAsyncioTestCase):
         await event.send(MessageChain().message("during AI execution"))
         self.assertEqual(len(event.sent), 1)
 
+    async def test_a_tool_status_sent_after_the_connection_changed_is_not_sent(self):
+        from astrbot.core.message.message_event_result import MessageChain
+        connection = Connection()
+        event = FakeEvent()
+        self.prepare(connection, event=event)
+        status = MessageChain().message("calling a tool")
+        status.type = "tool_call"
+        await event.send(status)
+        connection.changed.set()
+        await event.send(status)
+        self.assertEqual(len(event.sent), 1)
+
     async def test_stream_connection_change_stops_following_chunk(self):
         connection = Connection()
         event = FakeEvent()
