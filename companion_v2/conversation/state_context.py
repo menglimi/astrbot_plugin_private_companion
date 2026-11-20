@@ -11,7 +11,7 @@ from companion_v2.foundation.refs import SourceRef, VersionRef
 from companion_v2.identity_policy.private_domain import source_ref
 from companion_v2.role_work.state import humanized, mood
 from companion_v2.role_work.state.cycle_prompts import reply_instruction
-from companion_v2.sources.dependencies import link
+from companion_v2.sources.dependencies import link, validation_batch
 from companion_v2.sources.models import SourceRecord
 from companion_v2.sources.repositories import SourceRepository
 
@@ -22,7 +22,7 @@ class ConversationStateContext:
         self.sources = SourceRepository(service.runtime)
 
     def capture(self, context, at):
-        with self.service.runtime.transaction():
+        with self.service.runtime.transaction(), validation_batch(self.service.runtime, at):
             return self._capture(context, at)
 
     def _capture(self, context, at):
@@ -92,6 +92,10 @@ class ConversationStateContext:
     def contributions(self, snapshot, context, at, *, historical=False, fallback_source=None):
         if snapshot is None:
             return ()
+        with validation_batch(self.service.runtime, at):
+            return self._contributions(snapshot, context, at, historical=historical, fallback_source=fallback_source)
+
+    def _contributions(self, snapshot, context, at, *, historical=False, fallback_source=None):
         old_fields = {"revision", "hash", "activity_hash"}
         fields = old_fields | {"captured_at", "activities", "activity_unavailable", "activity_partial"}
         if type(snapshot) is not dict:

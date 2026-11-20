@@ -407,6 +407,7 @@ class StorageRuntime:
         self._slow_operation_clock = time.monotonic
         self._write_depth = 0
         self._write_owner_thread_id: int | None = None
+        self._transaction_rollback_epoch = 0
         self._configuration_only = False
         self._configuration_store: StorageRuntime | None = None
 
@@ -657,6 +658,7 @@ class StorageRuntime:
                         connection.execute(f"RELEASE SAVEPOINT {savepoint}")
                     else:
                         connection.execute("ROLLBACK")
+                    self._transaction_rollback_epoch += 1
                     rollback_ms = round((time.perf_counter() - rollback_started) * 1000)
                 raise
             finally:
