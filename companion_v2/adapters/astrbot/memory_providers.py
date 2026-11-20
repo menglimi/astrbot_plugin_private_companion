@@ -210,7 +210,7 @@ class ExternalMemoryProviderRegistry:
             delattr(self.context, REGISTRY_ATTRIBUTE)
 
 
-def shared_memory_provider_registry(context, *, host_active=lambda: True, owner=None):
+def shared_memory_provider_registry(context, *, host_active=lambda: True, owner=None, claim=True):
     """Return the one live registry for this host context, creating it if needed.
 
     The public facade is constructed more than once on the same AstrBot context
@@ -223,6 +223,13 @@ def shared_memory_provider_registry(context, *, host_active=lambda: True, owner=
     ``owner`` is the controller that owns the registry. A registry from another
     owner is a previous host lifetime: after a reload the new controller must
     not reuse it, or the old instance's shutdown would close the new one.
+
+    ``claim`` controls whether an active non-owning controller may displace an
+    already-installed live registry owned by another active controller. Active
+    host startup passes ``claim=True``; lazy or secondary facades pass
+    ``claim=False`` so an older controller that is still draining during a hot
+    reload receives an uninstalled registry instead of replacing the newer
+    host's active providers.
     """
     try:
         active = bool(host_active())
@@ -231,10 +238,13 @@ def shared_memory_provider_registry(context, *, host_active=lambda: True, owner=
     if not active:
         return ExternalMemoryProviderRegistry(context, host_active=host_active, owner=owner, install=False)
     existing = memory_provider_registry(context)
-    if (isinstance(existing, ExternalMemoryProviderRegistry)
-            and not existing.closed and existing.host_active()
-            and (owner is None or existing.owner is owner)):
-        return existing
+    existing_live = (isinstance(existing, ExternalMemoryProviderRegistry)
+                     and not existing.closed and existing.host_active())
+    if existing_live:
+        if owner is None or existing.owner is owner:
+            return existing
+        if not claim:
+            return ExternalMemoryProviderRegistry(context, host_active=host_active, owner=owner, install=False)
     return ExternalMemoryProviderRegistry(context, host_active=host_active, owner=owner)
 
 
