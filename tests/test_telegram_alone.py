@@ -563,6 +563,21 @@ class PinnedDiagnosticTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestCa
                                                             self.contact_task.task_id)
         self.assertEqual([row["platform_id"] for row in reported], ["qq-main"])
 
+    async def test_a_diagnostic_that_allows_forwarding_is_reported_on_the_telegram_it_reached(self):
+        from astrbot_host.setup_api import SetupWebAPI
+        self.assertEqual((await self.link(preferred_target_id="second"))["status"], "ok")
+        qq = await self.turn(0, "hello", "1")
+        telegram = await self.turn(1, "hello", 2)
+        self.consent_to_contact(qq["context"], telegram["context"])
+        self.enable_contact(qq["context"])
+        self.nothing_goes_to_qq_from_here()
+        self.assertEqual(await self.proactive_text(qq, "a forwarded diagnostic", administrator_test=True,
+                                                   diagnostic_allow_linked_accounts=True), "delivered")
+        self.assertEqual(([text for _, text in self.qq_texts()], len(self.telegram_texts())), ([], 1))
+        reported = SetupWebAPI._diagnostic_delivery_targets(self.controller.session, qq["context"],
+                                                            self.contact_task.task_id)
+        self.assertEqual([row["platform_id"] for row in reported], ["tg-main"])
+
 
 class ContactLedgerFixture(TelegramAloneFixture):
     both_have_spoken = ProactiveAfterRetirementTests.both_have_spoken
