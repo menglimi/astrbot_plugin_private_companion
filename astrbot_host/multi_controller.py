@@ -921,8 +921,10 @@ class AstrBotMultiController:
         from .laya_client import LayaDecisionClient
 
         def laya_for_context(context):
+            scope = getattr(getattr(context, "audience", None), "scope", None) or getattr(context, "scope", None)
             return LayaDecisionService(LayaSettingsStore(self.data_root),
-                runtime=self.session.application.runtime, origin_key=context.key, client_factory=LayaDecisionClient)
+                runtime=self.session.application.runtime, origin_key=context.key,
+                scope=scope, client_factory=LayaDecisionClient)
 
         self.session.application.attach_laya_decision(laya_for_context)
 

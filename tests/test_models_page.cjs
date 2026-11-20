@@ -2210,3 +2210,104 @@ test('仅有群入口的角色不请求不存在的模型连接服务', async ()
   assert.match(node.innerHTML, /只有群聊模型入口/);
   h.page.unmount();
 });
+
+test('main panel Laya logs default to all sources, switch to current, and show scope/action summary', async () => {
+  const {page, node, requests} = await openLayaPage();
+  const initialLogRead = requests.find(item => item.method === 'GET' && item.route === 'model/laya/logs');
+  assert.equal(initialLogRead.params?.scope, 'all');
+  assert.match(node.innerHTML, /data-laya-logs-scope="all"[^>]*aria-pressed="true"/);
+  assert.match(node.innerHTML, /data-laya-logs-scope="current"[^>]*aria-pressed="false"/);
+
+  node.click('[data-laya-logs-scope]', {layaLogsScope: 'current'});
+  const currentRead = requests.filter(item => item.method === 'GET' && item.route === 'model/laya/logs').at(-1);
+  assert.equal(currentRead.params?.scope, 'current');
+  currentRead.resolve({
+    scope: 'current',
+    events: [{
+      status: 'ok', source: 'conversation', mode: 'remote', elapsed_ms: 145,
+      decision: {action: 'silent'}, processing: {action_confidence: 0.824},
+      scope_info: {kind: 'group', native_scope_id: '103111519'},
+      observed_at: new Date().toISOString(),
+    }],
+  });
+  await flush();
+  assert.match(node.innerHTML, /当前会话 · 最近 50 条/);
+  assert.match(node.innerHTML, /群聊 103…519/);
+  assert.match(node.innerHTML, /action=silent \(82\.4%\)/);
+
+  node.click('[data-laya-logs-scope]', {layaLogsScope: 'all'});
+  const allRead = requests.filter(item => item.method === 'GET' && item.route === 'model/laya/logs').at(-1);
+  assert.equal(allRead.params?.scope, 'all');
+  allRead.resolve({
+    scope: 'all',
+    events: [{
+      status: 'ok', source: 'role_intervention', mode: 'remote', elapsed_ms: 90,
+      decision: {intervention_need: 'none'},
+      scope_info: {kind: 'private', native_scope_id: '153000127'},
+      observed_at: new Date().toISOString(),
+    }],
+  });
+  await flush();
+  assert.match(node.innerHTML, /全部来源 · 最近 50 条/);
+  assert.match(node.innerHTML, /私聊 153…127/);
+  page.unmount();
+});
+
+test('group Laya page shows scoped group logs without scope switcher when available', async () => {
+  const h = harness(), node = h.root();
+  h.page.mount(node, {endpoint: '/astrbot_plugin_private_companion/host/targets/group/roles/role/model'});
+  h.requests[0].resolve({...status(), scope_kind: 'group'});
+  await flush();
+  node.click('[data-model-tab]', {modelTab: 'laya'});
+  h.requests.find(item => item.route.endsWith('/laya')).resolve(layaRemoteStatus());
+  const logRead = h.requests.find(item => item.route.endsWith('/laya/logs'));
+  assert.equal(logRead.params, undefined, 'group laya/logs must not pass query params');
+  logRead.resolve({
+    available: true,
+    scope_kind: 'group',
+    events: [{
+      status: 'ok', source: 'conversation', mode: 'remote', elapsed_ms: 112,
+      decision: {action: 'reply'}, processing: {action_confidence: 0.91},
+      scope_info: {kind: 'group', native_scope_id: '103111519'},
+      observed_at: new Date().toISOString(),
+    }],
+  });
+  await flush();
+
+  assert.match(node.innerHTML, /本群运行记录 · 最近 50 条/);
+  assert.match(node.innerHTML, /群聊 103…519/);
+  assert.match(node.innerHTML, /action=reply \(91\.0%\)/);
+  assert.doesNotMatch(node.innerHTML, /data-laya-logs-scope/);
+  h.page.unmount();
+});
+
+test('Laya test and preview surface 401/403 auth summary from ok-enveloped bridge failure payloads', async () => {
+  const {page, node, requests} = await openLayaPage();
+  node.click('[data-laya-test]');
+  requests.find(item => item.method === 'POST' && item.route === 'model/laya/test').resolve({
+    status: 'failed',
+    code: 'laya_auth_failed',
+    reason: 'Laya HTTP 403 · MODEL_ACCESS_DENIED: 当前模型仅对灰度用户开放',
+  });
+  await flush();
+  settleLayaRefresh(requests, []);
+  await flush();
+  assert.match(node.innerHTML, /Laya HTTP 403/);
+  assert.match(node.innerHTML, /服务端拒绝访问（403 Forbidden）/);
+  assert.match(node.innerHTML, /服务端原文：MODEL_ACCESS_DENIED: 当前模型仅对灰度用户开放/);
+
+  node.input('[data-laya-preview]', {value: 'hello'});
+  node.click('[data-laya-decide]');
+  requests.find(item => item.method === 'POST' && item.route === 'model/laya/decide').resolve({
+    status: 'failed',
+    code: 'laya_auth_failed',
+    reason: 'Laya HTTP 401 · invalid_api_key: Incorrect API key provided',
+  });
+  await flush();
+  settleLayaRefresh(requests, []);
+  await flush();
+  assert.match(node.innerHTML, /Laya HTTP 401/);
+  assert.match(node.innerHTML, /鉴权失败（401 Unauthorized）/);
+  assert.match(node.innerHTML, /服务端原文：invalid_api_key: Incorrect API key provided/);
+  page.unmount();
+});
