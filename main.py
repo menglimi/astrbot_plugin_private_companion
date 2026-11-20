@@ -1893,10 +1893,31 @@ class PrivateCompanionV2StagingPlugin(Star):
                 logger.info("[CompanionV2] 外发边界清理内部标签 chars=%d", stripped)
         except Exception:
             pass
+        self._drop_result_of_a_stale_connection(event)
         self._adopt_core_reply_delivery(event)
         activate_core_reply_delivery_guard(event)
         activate_core_reply_tracking(event)
         activate_core_reply_segmentation(event)
+
+    def _drop_result_of_a_stale_connection(self, event: AstrMessageEvent) -> None:
+        """Nothing is sent on a turn whose connection lease is no longer current.
+
+        AstrBot's own error text for a stopped round is not a model reply, so the
+        reply guard does not see it; empty any result of such a turn here.
+        """
+        state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+        prepared = state.get("prepared") if isinstance(state, dict) else None
+        session = getattr(self.staging, "session", None)
+        if not isinstance(prepared, dict) or prepared.get("connection_lease") is None or session is None:
+            return
+        from companion_v2.execution.models import TaskError
+        try:
+            session.bridge.connections.assert_current(prepared["connection_lease"])
+        except TaskError:
+            result = event.get_result()
+            if result is not None and result.chain:
+                logger.warning("[CompanionV2] 连接已更换，本轮结果不发送 event_ref=%s", prepared.get("event_ref"))
+                result.chain.clear()
 
     @filter.on_decorating_result(priority=999999)
     async def suppress_companion_native_tool_repeat(self, event: AstrMessageEvent):

@@ -157,7 +157,7 @@ class TelegramTextToolTests(LinkedTelegramFixture, unittest.IsolatedAsyncioTestC
         self.assertEqual(self.calls, [])
         self.assertEqual(self.manager.writes, [])
 
-    async def test_replacing_the_source_client_while_model_waits_blocks_tool_effects_and_the_reply(self):
+    async def test_replacing_the_source_client_while_model_waits_blocks_tool_effects_and_sends(self):
         from companion_v2.agenda.models import AgendaTarget
         self.assertEqual((await self.link())["status"], "ok")
         self.steer(1)
@@ -180,10 +180,8 @@ class TelegramTextToolTests(LinkedTelegramFixture, unittest.IsolatedAsyncioTestC
             target=AgendaTarget(context.scope, context.role_binding.role, context.actor.subject), observed_at=self.clock.now())
         self.assertTrue(notes.is_success, notes.failure)
         self.assertEqual(len(notes.unwrap()), 0)
-        # The model's reply is never sent. The stopped round reaches AstrBot as an error, and
-        # AstrBot sends its generic error text, as upstream does for QQ too.
-        self.assertEqual([(platform, kwargs["text"].split("\n")[0]) for platform, kwargs in self.sent],
-                         [("tg-main", "Error occurred during AI execution\\.")])
+        # Nothing is sent on a turn whose connection lease is no longer current.
+        self.assertEqual(self.sent, [])
 
     @staticmethod
     def prior(args, index=-1):
