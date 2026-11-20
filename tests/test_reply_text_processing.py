@@ -168,6 +168,14 @@ class ReplyTextProcessingTests(unittest.TestCase):
                      "endpoint ready"):
             self.assertEqual(strip_internal_expression_protocol(text), text)
 
+    def test_word_ending_in_end_never_closes_a_bare_draft(self):
+        # 以「开头的正文里，friend/Legend/send/weekend 中的 end 不是草稿结束标记。
+        for text in ("「晚安」我先睡啦\n明天和friend\n一起去玩",
+                     "「嗯」我在呢~ 刚刚看完一集\n下周末要不要一起去Legend展？",
+                     "「早」\nsend",
+                     "Sure!\n「Weekend」 plans: this weekend\nok?"):
+            self.assertEqual(strip_internal_expression_protocol(text), text)
+
     def test_control_block_cleanup_handles_escaping_fullwidth_orphans_and_unknown_names(self):
         self.assertEqual(strip_internal_expression_protocol(
             "正文。&lt;pc_reaction_expression&gt;{}&lt;/pc_reaction_expression&gt;"), "正文。")

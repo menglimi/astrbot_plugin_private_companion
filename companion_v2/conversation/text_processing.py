@@ -65,10 +65,11 @@ _TOOL_CALL_PROTOCOL_BLANKS = re.compile(r"\n{3,}")
 # Some providers expose free-form reasoning as plain text with no XML wrapper.
 # DeepSeek V4-style drafts have the shape "th...end<visible text>" after the
 # first visible paragraph.  Anchor on the draft start (`th` + CJK) and on
-# `end` followed by CJK/newline so ordinary English prose is untouched.
+# `end` at the start of a line followed by CJK/newline, so ordinary English
+# prose is untouched and words like friend/send/Legend never close a draft.
 _BARE_DRAFT_BLOCK = re.compile(
     r"(?ms)^[ \t]*(?:th(?=[\u4e00-\u9fff])|(?=用户(?:说|问)|「))"
-    r"[\s\S]*?end(?![A-Za-z])(?=[ \t]*(?:[\u4e00-\u9fff]|\n|$))"
+    r"[\s\S]*?^[ \t]*end(?![A-Za-z])(?=[ \t]*(?:[\u4e00-\u9fff]|\n|$))"
 )
 _PAIRS = {"(": ")", "[": "]", "{": "}", "（": "）", "【": "】", "《": "》",
           "〈": "〉", "「": "」", "『": "』", "“": "”", "‘": "’", '"': '"'}
