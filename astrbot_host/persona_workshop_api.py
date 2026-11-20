@@ -64,6 +64,9 @@ def _session_provider_id(session):
         return configured.strip()
     profile = getattr(session, "profile", None)
     configured = getattr(profile, "provider_id", None)
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    configured = getattr(getattr(session, "settings", None), "provider_id", None)
     return configured.strip() if isinstance(configured, str) and configured.strip() else ""
 
 
@@ -78,8 +81,15 @@ def management_scope(installation_id):
     return ScopeRef(installation_id, "companion", ScopeKind.SYSTEM, "page.management")
 
 
-def current_role_profile(runtime, session):
-    target = role_profile_target_for(session.profile.target)
+def current_role_profile(runtime, session, *, context=None):
+    """Read saved role profile fields from an explicit context or single-host session."""
+    resolved = context
+    if resolved is None:
+        if hasattr(session, "scope") and hasattr(session, "role_binding"):
+            resolved = session
+        else:
+            resolved = session.profile.target
+    target = role_profile_target_for(resolved)
     snapshot = RoleProfileConfigurationOwner(runtime).read(target, role_profile_configuration_fields())
     return {name: snapshot.fields[f"{ROLE_PROFILE_GROUP}.{name}"].value
             for name in ROLE_PROFILE_FIELD_LIMITS}

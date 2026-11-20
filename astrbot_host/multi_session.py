@@ -573,6 +573,18 @@ class MultiHostSession:
         self.authority.settings = settings
         self.bridge.sync_settings(settings)
 
+    def sync_native_bridge_pairs(self):
+        """Latch each platform's baseline pair once an account on it is confirmed online."""
+        private_snapshot, group_snapshot = self.native_bridge_pairs
+        for bridge, snapshot in ((self.bridge, private_snapshot), (self.bridge.groups, group_snapshot)):
+            connections = getattr(bridge, "connections", None)
+            online = connections.online_platforms() if callable(getattr(connections, "online_platforms", None)) else {}
+            for platform_id, pair in online.items():
+                # Defer recording until the first confirmed online state so swapping
+                # an unauthenticated/waiting client before first login does not look
+                # like a live adapter reload.
+                snapshot.setdefault(platform_id, pair)
+
     def __init__(self, runtime, native_context, *, settings, personas, authority, native_types,
                  provider_fingerprint, runtime_instance_id, now, native_tool_port=None, news_port=None,
                  solar_term_port=None, qzone_transport=None, balance_port=None, weather_ports=None,
@@ -611,9 +623,12 @@ class MultiHostSession:
         self.linked_conversations = LinkedConversations(self)
         self.bridge.linked_conversations = self.linked_conversations
         self.bridge.command_fences = {}
-        # Connection refresh updates bridge.platforms in place. Keep the pairs
-        # assembled for this session so adapter reloads remain detectable.
-        self.native_bridge_pairs = (dict(self.bridge.platforms), dict(self.bridge.groups.platforms))
+        # Connection refresh updates bridge.platforms in place even when an account
+        # is still waiting/offline. Record each platform's baseline only once an
+        # account on it is confirmed online so adapter reloads remain detectable
+        # without treating a pre-login client swap as a live session reload.
+        self.native_bridge_pairs = ({}, {})
+        self.sync_native_bridge_pairs()
         from .account_recovery import AccountRecovery
         self.account_recovery = AccountRecovery(self)
         self.model = AstrBotTextProvider(native_context, bridge=self.bridge,

@@ -7,7 +7,7 @@ from companion_v2.execution.models import TaskError, digest, encode, require, st
 from companion_v2.foundation.refs import RoleOwnerRef, SourceRef, VersionRef
 from companion_v2.identity_policy.private_domain import source_ref
 from companion_v2.sources.models import SourceRecord
-from companion_v2.sources.dependencies import link
+from companion_v2.sources.dependencies import link, validation_batch
 from .configuration import FEATURE_SWITCHES, GROUP, target_for
 from . import cycle
 from . import cycle_feelings
@@ -161,6 +161,10 @@ class RoleStateService:
             if not values["cycle_discomfort_enabled"] or type(assertion) is dict and assertion["applicability"] != "applicable":
                 data["conditions"] = [c for c in data["conditions"] if c["kind"] != "cycle"]
             def transform(current):
+                with validation_batch(self.runtime, now):
+                    return _write_transform(current)
+
+            def _write_transform(current):
                 if expected_settings_token is not None and self.cycle_settings_token(values) != expected_settings_token:
                     raise TaskError("role_cycle_settings_conflict", "cycle settings changed; review the current configuration")
                 clock, clock_sources, cycle_shared = self.cycles.save(context, current, assertion, values, now,
@@ -246,18 +250,19 @@ class RoleStateService:
             self.access.check_injection(context, at=at)
         else:
             self.access.check(context, "role.state.read", operator=operator, at=at)
-        values, _ = self.settings(context)
-        record = self.records.get(context, "current")
-        if record:
-            self.evidence.validate(context, record["sources"], at=at, control=True)
-        if not values["enabled"] and operator is None:
-            return {"state": "disabled", "revision": record["revision"] if record else 0}
-        if record is None:
-            result = {"state": "unknown", "revision": 0, "values": {key: [] if key == "conditions" else None for key in FIELDS}}
-        else:
-            result = self._project(record, values, at, context=context, cycle_at=cycle_at)
-        sleep = self.body_clock.read(context)
-        return {**result, **({"sleep_execution": sleep} if sleep else {})}
+        with validation_batch(self.runtime, at):
+            values, _ = self.settings(context)
+            record = self.records.get(context, "current")
+            if record:
+                self.evidence.validate(context, record["sources"], at=at, control=True)
+            if not values["enabled"] and operator is None:
+                return {"state": "disabled", "revision": record["revision"] if record else 0}
+            if record is None:
+                result = {"state": "unknown", "revision": 0, "values": {key: [] if key == "conditions" else None for key in FIELDS}}
+            else:
+                result = self._project(record, values, at, context=context, cycle_at=cycle_at, control_validated=True)
+            sleep = self.body_clock.read(context)
+            return {**result, **({"sleep_execution": sleep} if sleep else {})}
 
     def read_revision(self, context, revision, *, captured_at, observed_at, storage=None, sleep_reference=None,
                       include_sleep=False, injection=False):
@@ -266,20 +271,22 @@ class RoleStateService:
             self.access.check_injection(context, at=observed_at)
         else:
             self.access.check(context, "role.state.read", at=observed_at)
-        values, _ = self.settings(context)
-        if not values["enabled"]:
-            raise TaskError("role_state_disabled", "role state reading is disabled")
-        record = self.records.version(context, "current", revision, storage=storage) if revision else None
-        if record:
-            self.evidence.validate(context, record["sources"], at=observed_at, control=True)
-        if record and record["updated_at"] > stamp(captured_at) or captured_at > observed_at:
-            raise TaskError("state_snapshot_invalid", "state was not available at the captured time")
-        result = self._project(record, values, captured_at, context=context, authority_at=observed_at) if record else {
-            "state": "unknown", "revision": 0, "values": {key: [] if key == "conditions" else None for key in FIELDS}}
-        sleep = self.body_clock.read(context, reference=sleep_reference, historical=True) if include_sleep else None
-        if sleep and (sleep["started_at"] > stamp(captured_at) or sleep["ended_at"] and sleep["ended_at"] > stamp(captured_at)):
-            raise TaskError("state_snapshot_invalid", "sleep receipt was not available at capture")
-        return {**result, **({"sleep_execution": sleep} if sleep else {})}
+        with validation_batch(self.runtime, observed_at):
+            values, _ = self.settings(context)
+            if not values["enabled"]:
+                raise TaskError("role_state_disabled", "role state reading is disabled")
+            record = self.records.version(context, "current", revision, storage=storage) if revision else None
+            if record:
+                self.evidence.validate(context, record["sources"], at=observed_at, control=True)
+            if record and record["updated_at"] > stamp(captured_at) or captured_at > observed_at:
+                raise TaskError("state_snapshot_invalid", "state was not available at the captured time")
+            result = self._project(record, values, captured_at, context=context, authority_at=observed_at,
+                                   control_validated=True) if record else {
+                "state": "unknown", "revision": 0, "values": {key: [] if key == "conditions" else None for key in FIELDS}}
+            sleep = self.body_clock.read(context, reference=sleep_reference, historical=True) if include_sleep else None
+            if sleep and (sleep["started_at"] > stamp(captured_at) or sleep["ended_at"] and sleep["ended_at"] > stamp(captured_at)):
+                raise TaskError("state_snapshot_invalid", "sleep receipt was not available at capture")
+            return {**result, **({"sleep_execution": sleep} if sleep else {})}
 
     def maintenance_cycle(self, context, settings, at):
         """Preview configuration adoption before generating feelings for the next state."""
@@ -300,13 +307,14 @@ class RoleStateService:
             link(self.runtime, reference, dependencies, at)
         return json.loads(encode(reference))
 
-    def _project(self, record, values, at, *, context, cycle_at=None, authority_at=None):
+    def _project(self, record, values, at, *, context, cycle_at=None, authority_at=None, control_validated=False):
         result = {**record, "values": dict(record["values"])}
         result.pop("body_shared", None)
         result.pop("cycle_shared", None)
         original = source_ref(record["sources"][0])
         local = original.scope == context.scope
-        visible = self.evidence.visible(context, record["sources"], at=authority_at or at)
+        visible = self.evidence.visible(context, record["sources"], at=authority_at or at,
+                                        control_validated=control_validated)
         role_shared = self.records.storage(context) == "role"
         if not local or not visible:
             allowed = PERSONA_STATE_FIELDS if role_shared else set()
@@ -323,8 +331,9 @@ class RoleStateService:
                 band=values["mood_neutral_band"], cross_window=not local and role_shared)
         clock = result.pop("cycle_clock", None)
         result.pop("cycle_sources", None)
-        if (clock and not local and self.records.storage(context) != "role"
-                and not self.evidence.visible(context, record.get("cycle_sources", record["sources"]), at=authority_at or at)):
+        if (clock and not local and not role_shared
+                and not self.evidence.visible(context, record.get("cycle_sources", record["sources"]),
+                                              at=authority_at or at, control_validated=control_validated)):
             clock = None
             result["values"]["cycle"] = None
             result.pop("cycle_feeling", None)

@@ -111,7 +111,11 @@ class AccountRecovery:
     async def refresh(self, *, wait=False):
         if self.closed:
             return
-        for row in self.connections.refresh():
+        rows = self.connections.refresh()
+        sync = getattr(self.session, "sync_native_bridge_pairs", None)
+        if callable(sync):
+            sync()
+        for row in rows:
             key = row["platform_id"], row["account_id"]
             worker = self.workers.get(key)
             if row["state"] != "online" or self.completed.get(key) == row["generation"]:

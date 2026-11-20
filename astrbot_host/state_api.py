@@ -60,19 +60,25 @@ class StateWebAPI:
     async def _run(self, data=None, **query):
         from .web_api import outcome_response
         controller = self.controller
+        username = request.username
         async with controller._control_lock:
             try:
                 if controller._terminated:
                     raise TaskError("staging_host_terminated", "the plugin has stopped")
-                username = request.username
                 if type(username) is not str or not username.strip():
                     raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
                 session = controller.session or controller.last_session
-                if session is None or controller.runtime is None:
+                runtime = controller.runtime
+                if session is None or runtime is None:
                     raise TaskError("staging_not_initialized", "load an initialized V2 profile first")
-                operator = dashboard_operator(controller.runtime, username, at=controller.now())
-                manager = StateManagement(session.application, session.profile.target)
-                return outcome_response(manager.command(operator, data) if data is not None else manager.status(operator, **query))
+                observed_at = controller.now()
+
+                def execute():
+                    operator = dashboard_operator(runtime, username, at=observed_at)
+                    manager = StateManagement(session.application, session.profile.target)
+                    return manager.command(operator, data) if data is not None else manager.status(operator, **query)
+
+                return outcome_response(await asyncio.to_thread(execute))
             except TaskError as error:
                 return outcome_response(Outcome.failed(error.code, str(error)))
             except (ValueError, TypeError, KeyError, OverflowError):
@@ -91,11 +97,12 @@ class StateWebAPI:
             return outcome_response(Outcome.failed("state_query_invalid", "invalid state query"))
         return await self._run(after_id=query.get("after_id", ""), limit=limit)
 
-    def _weather_context(self):
+    def _weather_context(self, username=None):
         controller = self.controller
         if controller._terminated:
             raise TaskError("staging_host_terminated", "the plugin has stopped")
-        username = request.username
+        if username is None:
+            username = request.username
         if type(username) is not str or not username.strip():
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
         session = controller.session or controller.last_session
@@ -117,13 +124,14 @@ class StateWebAPI:
         controller = self.controller
         try:
             query = request.query
+            username = request.username
             if (set(query.keys()) - {"refresh"}
                     or any(len(query.getlist(key)) != 1 for key in query.keys())
                     or query.get("refresh", "0") not in ("0", "1")):
                 raise ValueError("weather route has invalid query fields")
             force = query.get("refresh", "0") == "1"
             async with controller._control_lock:
-                app, context, settings = self._weather_context()
+                app, context, settings = await asyncio.to_thread(self._weather_context, username)
                 location = configured_weather_location(settings["planning_weather_location"])
                 timezone = settings["planning_timezone"]
                 if settings["planning_weather_enabled"] is not True:
@@ -141,7 +149,7 @@ class StateWebAPI:
             alerts = await self._alerts(app, location, app.now())
 
             async with controller._control_lock:
-                current_app, current_context, current_settings = self._weather_context()
+                current_app, current_context, current_settings = await asyncio.to_thread(self._weather_context, username)
                 if current_app is not app or current_context != context:
                     raise TaskError("staging_context_changed", "the active role changed during the weather read")
                 current_location = configured_weather_location(current_settings["planning_weather_location"])

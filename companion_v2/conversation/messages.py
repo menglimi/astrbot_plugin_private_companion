@@ -20,6 +20,7 @@ from companion_v2.delivery.history import INSTRUCTION as HISTORY_INSTRUCTION
 from companion_v2.foundation.refs import ScopeKind, ScopeRef, SourceRef, VersionRef
 from companion_v2.identity_policy.models import AuthenticatedHostPrincipal
 from companion_v2.identity_policy.personas import ConversationRoute, RuntimeScope
+from companion_v2.sources.dependencies import validation_batch
 from companion_v2.sources.models import SourceRecord
 from companion_v2.sources.repositories import SourceRepository
 
@@ -375,6 +376,10 @@ class ConversationMessages:
             return batch_id
 
     def _request(self, row, context, at, *, include_tools=True, historical=False):
+        with validation_batch(self.runtime, at):
+            return self._build_request(row, context, at, include_tools=include_tools, historical=historical)
+
+    def _build_request(self, row, context, at, *, include_tools=True, historical=False):
         if not historical:
             from .reset import require_current_batch
             require_current_batch(self.runtime, row["batch_id"], context.scope)
@@ -910,13 +915,14 @@ class ConversationMessages:
 
     @outcome
     def validate_generation(self, spec: TaskSpec, at: datetime):
-        row = self.batch(spec.request_ref)
-        if row["origin_key"] != spec.context.key or row["generation_task_id"] != spec.task_id or spec.kind != REPLY_KIND:
-            raise TaskError("message_task_mismatch", "generation must use the original batch task")
-        if row["state"] not in ("sealed", "ready"):
-            raise TaskError("message_batch_closed", "input batch was cancelled or withdrawn")
-        self._request(row, spec.context, at, include_tools=False)
-        return True
+        with self.runtime.read_snapshot(), validation_batch(self.runtime, at):
+            row = self.batch(spec.request_ref)
+            if row["origin_key"] != spec.context.key or row["generation_task_id"] != spec.task_id or spec.kind != REPLY_KIND:
+                raise TaskError("message_task_mismatch", "generation must use the original batch task")
+            if row["state"] not in ("sealed", "ready"):
+                raise TaskError("message_batch_closed", "input batch was cancelled or withdrawn")
+            self._request(row, spec.context, at, include_tools=False)
+            return True
 
     def _record_open_items_exposure(self, row, context, request):
         if self.open_items_context is None or context.scope.kind is not ScopeKind.PRIVATE:

@@ -161,6 +161,32 @@ class RoleLifeRuntime:
             raise TaskError("life_context_changed", "activity belongs to another authority")
         return a
 
+    def _projected_sleep_at(self, settings, now):
+        return next_bedtime(
+            now,
+            self.owner,
+            settings["sleep_timezone"],
+            time.fromisoformat(settings["sleep_time"]),
+            settings["sleep_variation_minutes"],
+        )
+
+    def sleep_projection(self, *, now=None):
+        """Read sleep eligibility and next bedtime without writes or state mutation."""
+        if self.instruction is None or self._closed or self._retired:
+            return None
+        now = now or self.app.now()
+        snapshot = require(self.app.configuration.read(self.context.actor, target=target_for(self.context),
+            group_id=GROUP, observed_at=now))
+        settings = values(snapshot)
+        if not settings["enabled"] or not settings["sleep_enabled"]:
+            return None
+        self.authorize()
+        if snapshot.resolution_token == self._revision and self._next_sleep is not None:
+            next_at = self._next_sleep
+        else:
+            next_at = self._projected_sleep_at(settings, now)
+        return settings, next_at
+
     def refresh(self):
         if self.instruction is None or self._closed or self._retired:
             return
@@ -186,8 +212,7 @@ class RoleLifeRuntime:
             require(self.app.journal_schedule.register_daily(self.schedule_id, self.context, event,
                 role_instruction=self.instruction, timezone=settings["timezone"], local_time=settings["diary_time"]))
         if settings["sleep_enabled"]:
-            self._next_sleep = next_bedtime(self.app.now(), self.owner, settings["sleep_timezone"],
-                time.fromisoformat(settings["sleep_time"]), settings["sleep_variation_minutes"])
+            self._next_sleep = self._projected_sleep_at(settings, self.app.now())
             self._next_wake = self._next_sleep + timedelta(minutes=settings["sleep_minutes"])
         require(self.app.configuration.report_application(self.context.actor, snapshot=snapshot,
             generation=generation, succeeded=True, observed_at=self.app.now()))

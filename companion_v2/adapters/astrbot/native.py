@@ -984,6 +984,13 @@ class NativePrivateBridge:
             check_manifest(tuple(i.descriptor for i in images))
         return tuple(images)
 
+    @staticmethod
+    def _check_shared_forwards(forwards, quotes, intake, reason):
+        """Enforce the operator forward intake policy across direct and quoted cards."""
+        combined = (*forwards, *(f for quote in quotes for f in getattr(quote, "forwards", ())))
+        if not fits_forwards(combined, intake=intake):
+            raise TaskError("host_forward_limit", reason)
+
     async def capture(self, event):
         intake = self.forward_intake
         try:
@@ -1113,9 +1120,7 @@ class NativePrivateBridge:
                         or any(type(f) is not CapturedForward or (f.position, f.resource_hash) != (l.position, digest(l.resource))
                                for f, l in zip(forwards, frozen_forwards)) or not fits_forwards(forwards)):
                     raise TaskError("host_forward_invalid", "forward loader changed its original locator or coverage")
-                all_forwards = (*forwards, *(f for q in quotes for f in getattr(q, "forwards", ())))
-                if not fits_forwards(all_forwards):
-                    raise TaskError("host_forward_limit", "direct and quoted forwards exceed the shared input budget")
+                self._check_shared_forwards(forwards, quotes, intake, "direct and quoted forwards exceed the shared input budget")
                 all_images = (*images, *(i for q in quotes for i in event_images(q)), *(i for f in forwards for n in f.nodes for i in n.images))
                 all_audios = (*audios, *(i for q in quotes for i in event_audios(q)),
                               *(i for f in forwards for n in f.nodes for i in getattr(n, "audios", ())))

@@ -139,3 +139,38 @@ class AccountConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assert_code("host_account_offline", lambda: connections.acquire(self.accounts[0]))
         self.platforms["official"].client = object()
         self.assertIs(connections.acquire(self.accounts[0]).client, self.platforms["official"].client)
+
+    async def test_online_platforms_excludes_waiting_accounts_until_first_online(self):
+        self.platforms["onebot"].client._wsr_api_clients.pop("100")
+        connections = NativeAccountConnections(self.context, self.accounts)
+        self.assertEqual(connections.statuses()[1]["state"], "waiting")
+        self.assertEqual(
+            connections.online_platforms(),
+            {"official": (self.platforms["official"], self.platforms["official"].client)},
+        )
+
+        still_waiting = FakePlatform("onebot")
+        still_waiting.client._wsr_api_clients.pop("100")
+        self.platforms["onebot"] = still_waiting
+        connections.refresh()
+        self.assertNotIn("onebot", connections.online_platforms())
+
+        first_online = FakePlatform("onebot")
+        self.platforms["onebot"] = first_online
+        connections.refresh()
+        self.assertEqual(connections.online_platforms()["onebot"], (first_online, first_online.client))
+
+    async def test_shared_platform_counts_online_when_any_account_on_it_is_online(self):
+        shared_accounts = (
+            HostAccount("onebot", "100", "bot-a"),
+            HostAccount("onebot", "101", "bot-b"),
+        )
+        self.platforms["onebot"].client._wsr_api_clients.pop("101")
+        connections = NativeAccountConnections(self.context, shared_accounts)
+        self.assertEqual(
+            connections.online_platforms(),
+            {"onebot": (self.platforms["onebot"], self.platforms["onebot"].client)},
+        )
+        self.platforms["onebot"].client._wsr_api_clients.pop("100")
+        connections.refresh()
+        self.assertEqual(connections.online_platforms(), {})

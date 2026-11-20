@@ -1,5 +1,6 @@
 """Optional V2 context for the exact private window that opened a room."""
 
+import asyncio
 from dataclasses import dataclass
 import json
 import logging
@@ -91,7 +92,9 @@ async def room_background(runtime, room, query):
     if not runtime.enable_memory_context:
         application = _ApplicationView(application)
     native_input = SimpleNamespace(text=query, event_id="together-background-" + uuid4().hex)
-    prompt = build_core_reply_prompt(application, resolved.context, native_input, at=runtime.controller.now())
+    prompt = await asyncio.to_thread(
+        build_core_reply_prompt, application, resolved.context, native_input, at=runtime.controller.now()
+    )
     return prompt.instruction
 
 
@@ -104,8 +107,10 @@ async def room_work_context(runtime, room):
         return {}
     at = runtime.controller.now()
     try:
-        materials = require(repository.latest_analysis(scope=resolved.context.scope,
-            resolved=resolved.context.actor, observed_at=at))
+        materials = require(await asyncio.to_thread(
+            repository.latest_analysis, scope=resolved.context.scope,
+            resolved=resolved.context.actor, observed_at=at
+        ))
         if not materials:
             return {"available": True, "context_available": False}
         item = materials[0]

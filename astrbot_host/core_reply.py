@@ -265,6 +265,9 @@ def prepare_core_reply_event(
                 return None
             if state["send_unknown"]:
                 raise TaskError("core_reply_delivery_unknown", "the platform send outcome is unknown; do not replay this reply")
+            if state.get("_prepared_decoration"):
+                from .core_reply_segmentation import unwrap_core_forward_node
+                message = unwrap_core_forward_node(event, message)
             from .core_reply_idempotency import NATIVE_TOOL_CHECKED_ATTR, should_drop_native_tool_response
             native_tool_checked = getattr(message, NATIVE_TOOL_CHECKED_ATTR, False)
             from .core_reply_reaction_delivery import capture_core_reaction_intent
@@ -465,6 +468,7 @@ def prepare_core_reply_event(
 
     state.pop("_text_presentation", None)
     state.pop("_text_presentation_removed", None)
+    state.pop("_prepared_decoration", None)
     old_task, old_callback = state.pop("_presence_owner_task", None), state.pop("_presence_task_done", None)
     if old_task is not None and old_callback is not None:
         old_task.remove_done_callback(old_callback)
@@ -613,6 +617,7 @@ def restore_core_reply_event(event: Any) -> None:
     if not isinstance(state, dict):
         return
     state["delivery_guard_active"] = False
+    state.pop("_prepared_decoration", None)
     event.send = state["_original_send"]
     original_streaming = state.get("_original_send_streaming")
     if callable(original_streaming):

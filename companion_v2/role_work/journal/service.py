@@ -12,6 +12,7 @@ from companion_v2.conversation.linked_ownership import same_conversation, shared
 from companion_v2.execution.models import TaskError, digest, encode, require, stamp
 from companion_v2.foundation.refs import OperationRef, RoleOwnerRef, VersionRef, normalize_utc
 from companion_v2.role_work.ledger import PersistentRoleLifeLedger
+from companion_v2.sources.dependencies import validation_batch
 from companion_v2.sources.repositories import SourceRepository
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
@@ -126,13 +127,15 @@ class RoleJournalService:
         return tuple(codec.head_from_row(row) for row in rows)
 
     def get(self, key, *, observed_at=None):
-        with self.runtime.read_snapshot():
-            return self._validated(key, self._time(observed_at))
+        at = self._time(observed_at)
+        with self.runtime.read_snapshot(), validation_batch(self.runtime, at):
+            return self._validated(key, at)
 
     def get_for_audience(self, key, *, scope, recipient, observed_at=None):
         """Check the entire ancestry's scope and source audience; grants no action permission."""
-        with self.runtime.read_snapshot():
-            return self._validated(key, self._time(observed_at), scope=scope, recipient=recipient)
+        at = self._time(observed_at)
+        with self.runtime.read_snapshot(), validation_batch(self.runtime, at):
+            return self._validated(key, at, scope=scope, recipient=recipient)
 
     def context_days(self, owner, scope, *, observed_at, limit=32):
         """Recent same-scope metadata; every selected body still requires an authorized read."""
@@ -193,7 +196,7 @@ class RoleJournalService:
         revision(expected_revision, allow_zero=True)
         key, at = context.key, self._time(observed_at)
         owner_key, entry_key = self._owner(key.owner), digest(key)
-        with self.runtime.transaction() as connection:
+        with self.runtime.transaction() as connection, validation_batch(self.runtime, at):
             replay = self._reserve(context, operation_id, [context, codec.draft_parameters(draft), action, expected_revision], at)
             if replay is not None:
                 return replay
@@ -241,7 +244,7 @@ class RoleJournalService:
     def save_derivatives(self, material, *, expected_revision=0, operation_id, observed_at=None):
         revision(expected_revision, allow_zero=True)
         at, key = self._time(observed_at), material.parent.key
-        with self.runtime.transaction() as connection:
+        with self.runtime.transaction() as connection, validation_batch(self.runtime, at):
             row = self._row(key)
             if row is None:
                 raise TaskError("journal_unavailable", "derived material needs a committed journal")
@@ -266,9 +269,10 @@ class RoleJournalService:
                 (digest(key), material.parent.revision, saved.revision, encode(saved)))
             return self._finish(connection, JournalReceipt(operation_id, "derive", codec.head_from_row(row), saved.revision), at)
 
-    def derivatives(self, key, *, observed_at=None):
-        with self.runtime.read_snapshot():
-            entry = self._validated(key, self._time(observed_at))
+    def derivatives(self, key, *, observed_at=None, _validated_entry=None):
+        at = self._time(observed_at)
+        with self.runtime.read_snapshot(), validation_batch(self.runtime, at):
+            entry = _validated_entry or self._validated(key, at)
             row = self.runtime.read_one("SELECT * FROM role_journal_derivatives WHERE entry_key = ?", (digest(key),))
             if row is None:
                 return None

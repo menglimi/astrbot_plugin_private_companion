@@ -7,6 +7,7 @@ from companion_v2.execution.models import TaskError
 
 _PREFIX = "source-owner-guard:"
 _VERSION = "companion.source-owner-guard.v1"
+_MISSING = object()
 
 
 class OwnerGuard:
@@ -41,18 +42,27 @@ def mark_publication(runtime, owner):
         with runtime.transaction() as connection:
             connection.execute("INSERT OR IGNORE INTO runtime_metadata(key, value) VALUES (?, ?)",
                                (_PREFIX + owner, _VERSION))
+        from .dependencies import invalidate_batch
+        invalidate_batch(runtime, owner=owner)
 
 
-def validate(runtime, record, at):
-    owner = record.reference.owner
-    guard = getattr(runtime, "_source_owner_guards", {}).get(owner)
-    required = runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?", (_PREFIX + owner,))
-    if guard is None:
-        if required is not None:
-            raise TaskError("source_owner_unavailable", "the original source owner is not currently attached")
-        return
-    if guard.closed or required is not None and required["value"] != _VERSION:
-        raise TaskError("source_owner_unavailable", "the original source governance lease is unavailable")
+def owner_required(runtime, owner, *, cache=None, connection=None):
+    """Look up persisted owner-lease requirement with optional snapshot cache."""
+    if cache is not None:
+        cached = cache.get(owner, _MISSING)
+        if cached is not _MISSING:
+            return cached
+    if connection is not None:
+        row = connection.execute("SELECT value FROM runtime_metadata WHERE key = ?", (_PREFIX + owner,)).fetchone()
+    else:
+        row = runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?", (_PREFIX + owner,))
+    value = row["value"] if row is not None else None
+    if cache is not None:
+        cache[owner] = value
+    return value
+
+
+def _check_guard(guard, record, at):
     try:
         result = guard.check(record, at)
         if result is not None:
@@ -63,3 +73,21 @@ def validate(runtime, record, at):
         raise
     except Exception as error:
         raise TaskError("source_owner_unavailable", "the owner cannot attest this original source") from error
+
+
+def validate_owner(runtime, owner, at, record_loader, *, required_cache=None, connection=None):
+    """Validate owner governance without materializing unguarded source payloads."""
+    guard = getattr(runtime, "_source_owner_guards", {}).get(owner)
+    required = owner_required(runtime, owner, cache=required_cache, connection=connection)
+    if guard is None:
+        if required is not None:
+            raise TaskError("source_owner_unavailable", "the original source owner is not currently attached")
+        return False
+    if guard.closed or required is not None and required != _VERSION:
+        raise TaskError("source_owner_unavailable", "the original source governance lease is unavailable")
+    _check_guard(guard, record_loader(), at)
+    return True
+
+
+def validate(runtime, record, at):
+    validate_owner(runtime, record.reference.owner, at, lambda: record)

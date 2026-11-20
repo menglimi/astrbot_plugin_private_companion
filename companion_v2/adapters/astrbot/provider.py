@@ -24,7 +24,7 @@ from .native import check_version, native_id
 from .memory_output import capture, explicit_refusal, response_format, responses_text_format
 from .streaming import StreamTranscript
 from .response_diagnostics import observe_completion
-from .provider_transport import definitely_not_sent, rejected_before_generation
+from .provider_transport import definitely_not_sent, extract_error_status_code, rejected_before_generation
 
 
 # Reasoning models count hidden thinking tokens against the same completion budget.
@@ -764,6 +764,19 @@ class AstrBotTextProvider:
         return configured
 
     @staticmethod
+    def _error_metadata(error):
+        """Extract bounded, body-free error type, TaskError code, and HTTP status."""
+        task_error_code = error.code if isinstance(error, TaskError) else None
+        if (not isinstance(task_error_code, str)
+                or re.fullmatch(r"[a-z0-9_.-]{1,80}", task_error_code) is None):
+            task_error_code = None
+        status_code = extract_error_status_code(error)
+        error_type = type(error).__name__
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", error_type) is None:
+            error_type = None
+        return error_type, task_error_code, status_code
+
+    @staticmethod
     def _response_format_unsupported(error):
         """Whether the provider rejected only the optional structured-output field."""
         message = str(error).casefold()
@@ -772,8 +785,7 @@ class AstrBotTextProvider:
                     or "unexpected argument" in message)
         if "response_format" not in message:
             return False
-        status = getattr(error, "status_code", None)
-        return type(status) is int and status in (400, 404, 422)
+        return extract_error_status_code(error) in (400, 404, 422)
 
     async def generate(self, envelope):
         receipt = "astrbot-model-" + uuid4().hex
@@ -961,16 +973,7 @@ class AstrBotTextProvider:
                 except Exception:
                     logger.debug("cache signature collection failed", exc_info=True)
         except Exception as error:
-            task_error_code = error.code if isinstance(error, TaskError) else None
-            if (not isinstance(task_error_code, str)
-                    or re.fullmatch(r"[a-z0-9_.-]{1,80}", task_error_code) is None):
-                task_error_code = None
-            status_code = getattr(error, "status_code", None)
-            if type(status_code) is not int or not 100 <= status_code <= 599:
-                status_code = None
-            error_type = type(error).__name__
-            if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", error_type) is None:
-                error_type = None
+            error_type, task_error_code, status_code = self._error_metadata(error)
             diagnostics = replace(diagnostics, failure=ModelFailure.PREPARATION,
                 error_type=error_type, error_code=task_error_code, status_code=status_code)
             logger.warning("[CompanionV2] 模型请求准备失败 provider=%s failure=%s error_type=%s "
@@ -1103,23 +1106,14 @@ class AstrBotTextProvider:
                 diagnostics = replace(diagnostics, parse_state="native_rejected")
             diagnostics = replace(diagnostics, failure=final_failure,
                 parse_state="contract_rejected" if final_failure is ModelFailure.WIRE_DECODE else diagnostics.parse_state)
-            task_error_code = error.code if isinstance(error, TaskError) else "unavailable"
-            if (not isinstance(task_error_code, str)
-                    or re.fullmatch(r"[a-z0-9_.-]{1,80}", task_error_code) is None):
-                task_error_code = "unavailable"
-            status_code = getattr(error, "status_code", None)
-            if type(status_code) is not int or not 100 <= status_code <= 599:
-                status_code = "unavailable"
-            error_type = type(error).__name__
-            if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", error_type) is None:
-                error_type = None
+            error_type, task_error_code, status_code = self._error_metadata(error)
             diagnostics = replace(diagnostics, error_type=error_type,
-                error_code=task_error_code if task_error_code != "unavailable" else None,
-                status_code=status_code if type(status_code) is int else None)
+                error_code=task_error_code, status_code=status_code)
+            status_label = status_code if status_code is not None else "unavailable"
             if (raw is None and transcript is None
                     and (definitely_not_sent(error) or rejected_before_generation(error))):
-                logger.warning("[CompanionV2] 模型请求确认未生成，标记为未开始 provider=%s error_type=%s",
-                               self.provider_id, error_type)
+                logger.warning("[CompanionV2] 模型请求确认未生成，标记为未开始 provider=%s error_type=%s status_code=%s",
+                               self.provider_id, error_type, status_label)
                 return ProviderResponse("not_started", usage=Amount(0, 0), receipt_ref=receipt,
                                         failure=final_failure, diagnostics=diagnostics)
             logger.warning(
@@ -1127,7 +1121,8 @@ class AstrBotTextProvider:
                 "error_type=%s task_error_code=%s status_code=%s completion_present=%s "
                 "finish_reason=%s parse_state=%s raw_chars=%s parsed_chars=%s",
                 self.provider_id, final_failure.document()["phase"], final_failure.value,
-                type(error).__name__, task_error_code, status_code, diagnostics.completion_present,
+                type(error).__name__, task_error_code or "unavailable", status_label,
+                diagnostics.completion_present,
                 diagnostics.finish_reason, diagnostics.parse_state,
                 diagnostics.raw.chars if diagnostics.raw is not None else "unavailable",
                 diagnostics.parsed.chars if diagnostics.parsed is not None else "unavailable")

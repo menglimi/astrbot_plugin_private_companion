@@ -195,16 +195,26 @@ class ForwardDescriptor:
         return cls(**{**data, "nodes": tuple(ForwardNodeDescriptor.restore(n) for n in data["nodes"])})
 
 
-def fits_forwards(forwards):
+def fits_forwards(forwards, *, intake: ForwardIntakePolicy | None = None):
+    """Check forward card, node, text, and media budgets against structural or intake limits."""
+    if intake is not None and not isinstance(intake, ForwardIntakePolicy):
+        raise TypeError("intake must be a ForwardIntakePolicy")
+    max_forwards = MAX_FORWARDS if intake is None else intake.max_forwards
+    max_nodes = MAX_NODES if intake is None else intake.max_nodes
     nodes = [n for f in forwards for n in f.nodes]
+    if len(forwards) > max_forwards or len(nodes) > max_nodes:
+        return False
+    if intake is not None and any(len(n.path) > intake.max_path_length for n in nodes):
+        return False
     size = sum((len(n.text) if isinstance(n, CapturedForwardNode) else n.text_size) + len(n.sender_name) for n in nodes)
+    if size > MAX_TEXT:
+        return False
     images = tuple(getattr(i, "descriptor", i) for n in nodes for i in n.images)
     audios = tuple(getattr(i, "descriptor", i) for n in nodes for i in getattr(n, "audios", ()))
     videos = tuple(getattr(i, "descriptor", i) for n in nodes for i in getattr(n, "videos", ()))
     from companion_v2.conversation.media.audio.models import fits_audio_budget
     from companion_v2.conversation.media.video.models import fits_video_budget
-    return (len(forwards) <= MAX_FORWARDS and len(nodes) <= MAX_NODES and size <= MAX_TEXT
-            and fits_budget(images) and fits_audio_budget(audios, images)
+    return (fits_budget(images) and fits_audio_budget(audios, images)
             and fits_video_budget(videos, images, audios))
 
 

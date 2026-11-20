@@ -426,44 +426,53 @@ class NativePerceptionWebAPI:
                 if controller._terminated:
                     raise TaskError("staging_host_terminated", "plugin is stopped")
                 session = controller.session or controller.last_session
-                if session is None or controller.runtime is None:
+                runtime = controller.runtime
+                if session is None or runtime is None:
                     raise TaskError("staging_not_initialized", "load a V2 profile first")
-                operator = dashboard_operator(controller.runtime, username, at=controller.now())
                 app, context = session.application, session.profile.target
                 observed_at = controller.now()
-                if role_only:
-                    StateManagement(app, context).life.authorize(operator)
-                    configuration = require(app.configuration.read(operator, target=state_target_for(context),
-                        group_id=STATE_GROUP, observed_at=observed_at))
-                    settings = {name: configuration.values[STATE_GROUP + "." + name]
-                                for name in ENVIRONMENT_STATUS_FIELDS}
-                    model_settings = require(PerceptionManagement(app, context).status(operator))["settings"]
-                    environment_settings = settings
-                else:
-                    status = self._status(app, context, operator)
-                    model_settings = status["model"]["settings"]
-                    environment_settings = status["environment"]["settings"]
-                calendar = {"status": "disabled"}
-                if model_settings["calendar_enabled"]:
-                    calendar = {"status": "available", **project_local_date(
-                        observed_at, model_settings["calendar_timezone"],
-                        configured_annual_calendars(environment_settings["planning_annual_calendars"]),
-                        holiday_enabled=model_settings["holiday_enabled"],
-                        holiday_country=model_settings["holiday_country"],
-                        lunar_enabled=model_settings["lunar_enabled"],
-                        automatic_solar_terms_enabled=model_settings["automatic_solar_terms_enabled"],
-                        almanac_enabled=model_settings["almanac_enabled"],
-                        solar_term_port=getattr(getattr(app, "messages", None), "solar_term_port", None))}
+
+                def load_initial():
+                    operator = dashboard_operator(runtime, username, at=observed_at)
+                    if role_only:
+                        StateManagement(app, context).life.authorize(operator)
+                        configuration = require(app.configuration.read(operator, target=state_target_for(context),
+                            group_id=STATE_GROUP, observed_at=observed_at))
+                        settings = {name: configuration.values[STATE_GROUP + "." + name]
+                                    for name in ENVIRONMENT_STATUS_FIELDS}
+                        model_settings = require(PerceptionManagement(app, context).status(operator))["settings"]
+                        environment_settings = settings
+                    else:
+                        status = self._status(app, context, operator)
+                        model_settings = status["model"]["settings"]
+                        environment_settings = status["environment"]["settings"]
+                    calendar = {"status": "disabled"}
+                    if model_settings["calendar_enabled"]:
+                        calendar = {"status": "available", **project_local_date(
+                            observed_at, model_settings["calendar_timezone"],
+                            configured_annual_calendars(environment_settings["planning_annual_calendars"]),
+                            holiday_enabled=model_settings["holiday_enabled"],
+                            holiday_country=model_settings["holiday_country"],
+                            lunar_enabled=model_settings["lunar_enabled"],
+                            automatic_solar_terms_enabled=model_settings["automatic_solar_terms_enabled"],
+                            almanac_enabled=model_settings["almanac_enabled"],
+                            solar_term_port=getattr(getattr(app, "messages", None), "solar_term_port", None))}
+                    return operator, environment_settings, calendar
+
+                operator, environment_settings, calendar = await asyncio.to_thread(load_initial)
                 result = {"observed_at": observed_at.isoformat(),
                           "calendar": calendar,
                           "weather": await self._weather_snapshot(app, environment_settings)}
                 if not role_only:
-                    result.update({
-                        "screen": self._screen_snapshot(app, context, observed_at),
-                        "reality": self._reality_snapshot(app, context, operator, observed_at),
-                        "camera": self._reality_camera_snapshot(app, context, operator, observed_at),
-                        "other_injections": self._other_injections(app, context),
-                    })
+                    def load_details():
+                        return {
+                            "screen": self._screen_snapshot(app, context, observed_at),
+                            "reality": self._reality_snapshot(app, context, operator, observed_at),
+                            "camera": self._reality_camera_snapshot(app, context, operator, observed_at),
+                            "other_injections": self._other_injections(app, context),
+                        }
+
+                    result.update(await asyncio.to_thread(load_details))
                 return outcome_response(Outcome.success(result))
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
@@ -482,49 +491,54 @@ class NativePerceptionWebAPI:
                 if controller._terminated:
                     raise TaskError("staging_host_terminated", "plugin is stopped")
                 session = controller.session or controller.last_session
-                if session is None or controller.runtime is None:
+                runtime = controller.runtime
+                if session is None or runtime is None:
                     raise TaskError("staging_not_initialized", "load a V2 profile first")
                 observed_at = controller.now()
-                operator = dashboard_operator(controller.runtime, username, at=observed_at)
-                app, context = session.application, session.profile.target
-                contact = require(ProactiveContactManagement(app, context).status(operator))
-                schedule = app.contact_schedule
-                events = getattr(schedule, "news_events", None)
-                if events is not None:
+
+                def load_materials():
+                    operator = dashboard_operator(runtime, username, at=observed_at)
+                    app, context = session.application, session.profile.target
+                    contact = require(ProactiveContactManagement(app, context).status(operator))
+                    schedule = app.contact_schedule
+                    events = getattr(schedule, "news_events", None)
+                    if events is not None:
+                        try:
+                            events.maintain_role(contact["settings"])
+                        except Exception:
+                            logger.exception("[CompanionV2] 角色共享资讯巡视未能启动")
+                    shared = read_role_material_pool(schedule, observed_at=observed_at,
+                        settings=contact["settings"])
+                    trace_state, trace_unavailable = "ready", 0
                     try:
-                        events.maintain_role(contact["settings"])
+                        contexts, trace_unavailable = self._trace_contexts(controller, session)
+                        traces = read_proactive_contact_traces(schedule, contexts, observed_at=observed_at,
+                            created_at_start=created_at_start, created_at_end=created_at_end)
+                        if trace_unavailable:
+                            trace_state = "partial"
                     except Exception:
-                        logger.exception("[CompanionV2] 角色共享资讯巡视未能启动")
-                shared = read_role_material_pool(schedule, observed_at=observed_at,
-                    settings=contact["settings"])
-                trace_state, trace_unavailable = "ready", 0
-                try:
-                    contexts, trace_unavailable = self._trace_contexts(controller, session)
-                    traces = read_proactive_contact_traces(schedule, contexts, observed_at=observed_at,
-                        created_at_start=created_at_start, created_at_end=created_at_end)
-                    if trace_unavailable:
-                        trace_state = "partial"
-                except Exception:
-                    logger.exception("[CompanionV2] 主动消息检视记录读取失败")
-                    traces = {"items": [], "count": 0, "total_count": 0, "contexts_read": 0}
-                    trace_state = "failed"
-                items = [*shared.get("items", ()), *traces["items"]]
-                def captured_at(item):
-                    try:
-                        value = datetime.fromisoformat(item.get("captured_at", ""))
-                        return value.timestamp() if value.tzinfo is not None else 0
-                    except (TypeError, ValueError, OverflowError, OSError):
-                        return 0
-                items.sort(key=lambda item: (captured_at(item), item.get("id", "")), reverse=True)
-                projected_items = items if created_at_start is not None else items[:128]
-                return outcome_response(Outcome.success({**shared,
-                    "items": projected_items, "count": len(projected_items),
-                    "shared_count": shared.get("count", 0),
-                    "history_count": traces["total_count"],
-                    "trace_count": traces["count"],
-                    "trace_context_count": traces["contexts_read"],
-                    "trace_context_unavailable": trace_unavailable,
-                    "trace_state": trace_state}))
+                        logger.exception("[CompanionV2] 主动消息检视记录读取失败")
+                        traces = {"items": [], "count": 0, "total_count": 0, "contexts_read": 0}
+                        trace_state = "failed"
+                    items = [*shared.get("items", ()), *traces["items"]]
+                    def captured_at(item):
+                        try:
+                            value = datetime.fromisoformat(item.get("captured_at", ""))
+                            return value.timestamp() if value.tzinfo is not None else 0
+                        except (TypeError, ValueError, OverflowError, OSError):
+                            return 0
+                    items.sort(key=lambda item: (captured_at(item), item.get("id", "")), reverse=True)
+                    projected_items = items if created_at_start is not None else items[:128]
+                    return {**shared,
+                        "items": projected_items, "count": len(projected_items),
+                        "shared_count": shared.get("count", 0),
+                        "history_count": traces["total_count"],
+                        "trace_count": traces["count"],
+                        "trace_context_count": traces["contexts_read"],
+                        "trace_context_unavailable": trace_unavailable,
+                        "trace_state": trace_state}
+
+                return outcome_response(Outcome.success(await asyncio.to_thread(load_materials)))
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, OverflowError):
@@ -547,17 +561,24 @@ class NativePerceptionWebAPI:
                 if controller._terminated:
                     raise TaskError("staging_host_terminated", "plugin is stopped")
                 session = controller.session or controller.last_session
-                if session is None or controller.runtime is None:
+                runtime = controller.runtime
+                if session is None or runtime is None:
                     raise TaskError("staging_not_initialized", "load a V2 profile first")
-                operator = dashboard_operator(controller.runtime, username, at=controller.now())
+                observed_at = controller.now()
                 app, context = session.application, session.profile.target
-                # _status performs the same target and dashboard authorization checks used by GET.
-                self._status(app, context, operator)
-                contact = require(ContactManagement(app, context).status(operator))
-                preferences = SimpleNamespace(values=contact["settings"])
+
+                def prepare_probe():
+                    operator = dashboard_operator(runtime, username, at=observed_at)
+                    # _status performs the same target and dashboard authorization checks used by GET.
+                    self._status(app, context, operator)
+                    contact = require(ContactManagement(app, context).status(operator))
+                    return operator, SimpleNamespace(values=contact["settings"])
+
+                operator, preferences = await asyncio.to_thread(prepare_probe)
                 diagnostic = await app.contact_schedule.news_events.probe(context, preferences)
+                status = await asyncio.to_thread(self._status, app, context, operator)
                 return outcome_response(Outcome.success({"diagnostic": diagnostic,
-                                                          "status": self._status(app, context, operator)}))
+                                                          "status": status}))
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, OverflowError):
@@ -576,13 +597,16 @@ class NativePerceptionWebAPI:
                 if controller._terminated:
                     raise TaskError("staging_host_terminated", "plugin is stopped")
                 session = controller.session or controller.last_session
-                if session is None or controller.runtime is None:
+                runtime = controller.runtime
+                if session is None or runtime is None:
                     raise TaskError("staging_not_initialized", "load a V2 profile first")
-                operator = dashboard_operator(controller.runtime, username, at=controller.now())
+                observed_at = controller.now()
                 app, context = session.application, session.profile.target
-                if data is None:
-                    value = self._status(app, context, operator)
-                else:
+
+                def execute():
+                    operator = dashboard_operator(runtime, username, at=observed_at)
+                    if data is None:
+                        return self._status(app, context, operator)
                     section = data["section"]
                     if section == "model":
                         result = require(PerceptionManagement(app, context).configure(operator, data["command"]))
@@ -590,8 +614,9 @@ class NativePerceptionWebAPI:
                         if set(data["command"]["changes"]) - CONTACT_FIELDS:
                             raise TaskError("perception_request_invalid", "unknown news field")
                         result = require(ContactManagement(app, context).configure(operator, data["command"]))
-                    value = {"result": result, "status": self._status(app, context, operator)}
-                return outcome_response(Outcome.success(value))
+                    return {"result": result, "status": self._status(app, context, operator)}
+
+                return outcome_response(Outcome.success(await asyncio.to_thread(execute)))
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, UnicodeError, OverflowError):

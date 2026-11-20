@@ -11,6 +11,7 @@ from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
 from companion_v2.delivery.presence_diagnostics import describe_presentation
 from companion_v2.role_work.life.management import RoleLifeManagement
+from companion_v2.sources.dependencies import validation_batch
 from .ownership import role_schedule_key
 from .configuration import (DEFAULTS, GROUP, OWNER, PERMISSIONS, role_target_for,
     settings_decide_grants, sync_window_grants, target_for)
@@ -55,58 +56,62 @@ class StateManagement:
             pass
         with self.app.runtime.read_snapshot():
             now = self.app.now()
-            access = self.life.authorize(operator)
-            role_snapshot = require(self.app.configuration.read(operator, target=role_target_for(self.context),
-                                    group_id=GROUP, observed_at=now))
-            window_snapshot = require(self.app.configuration.read(operator, target=target_for(self.context),
-                                      group_id=GROUP, observed_at=now))
-            settings = {name: window_snapshot.values[GROUP + "." + name] for name in DEFAULTS}
-            effective = {}
-            for option, actions in PERMISSIONS.items():
-                try:
-                    if option == "enabled":
-                        self.app.role_state.access.check_injection(self.context)
-                    else:
-                        for action in actions:
-                            self.app.role_state.access.check(self.context, action)
-                    effective[option] = {"allowed": bool(settings[option]), "reason": None}
-                except TaskError as error:
-                    effective[option] = {"allowed": False, "reason": error.code}
+            with validation_batch(self.app.runtime, now):
+                return self._status_in_snapshot(operator, now, after_id=after_id, limit=limit)
+
+    def _status_in_snapshot(self, operator, now, *, after_id, limit):
+        access = self.life.authorize(operator)
+        role_snapshot = require(self.app.configuration.read(operator, target=role_target_for(self.context),
+                                group_id=GROUP, observed_at=now))
+        window_snapshot = require(self.app.configuration.read(operator, target=target_for(self.context),
+                                  group_id=GROUP, observed_at=now))
+        settings = {name: window_snapshot.values[GROUP + "." + name] for name in DEFAULTS}
+        effective = {}
+        for option, actions in PERMISSIONS.items():
             try:
-                state = self.app.role_state.read(self.context, operator=operator)
+                if option == "enabled":
+                    self.app.role_state.access.check_injection(self.context)
+                else:
+                    for action in actions:
+                        self.app.role_state.access.check(self.context, action)
+                effective[option] = {"allowed": bool(settings[option]), "reason": None}
             except TaskError as error:
-                original = self.app.role_state.records.get(self.context, "current")
-                state = {"state": "unavailable", "revision": original["revision"] if original else 0, "code": error.code}
-            state["view_token"] = self.token(operator, access, "current", state["revision"])
-            calendar = self.app.calendar.inventory(self.context, after_id=after_id, limit=limit,
-                                                   operator=operator)
-            for item in calendar["items"]:
-                item["view_token"] = self.token(operator, access, item["id"], item["revision"])
-            schedule = self.app.runtime.read_one("SELECT next_at, enabled, result_json FROM role_state_schedules WHERE context_key = ?",
-                                                 (role_schedule_key(self.context),))
-            sleep = self.life.sleep_status(operator, access=access)
-            settings["mood_cross_window"] = True
-            local_day = now.astimezone(ZoneInfo(settings["planning_timezone"]))
-            day_start = local_day.replace(hour=0, minute=0, second=0, microsecond=0)
-            day_end = day_start + timedelta(days=1)
-            return {"settings": settings,
-                "body_scope": {"installation_id": self.context.scope.installation_id,
-                    "bot_id": self.context.scope.bot_id, "role_id": self.context.role_binding.role.subject_id,
-                    "settings": [name for name in DEFAULTS if name in ("hunger_enabled", "health_enabled") or name.startswith("cycle_")]},
-                "edit_token": window_snapshot.edit_token, "role_edit_token": role_snapshot.edit_token,
-                "cycle_settings_token": self.app.role_state.cycle_settings_token(settings),
-                "effective": effective, "state": state, "calendar": calendar,
-                "planning": self.app.calendar_planning.status(self.context),
-                "create_token": self.token(operator, access, "calendar:new", 0),
-                "occurrences": self.app.calendar.occurrences(self.context,
-                    start=day_start.astimezone(timezone.utc), end=day_end.astimezone(timezone.utc),
-                    operator=operator, diagnostics=True),
-                **sleep,
-                "maintenance": {"next_at": schedule["next_at"], "enabled": bool(schedule["enabled"]),
-                    "result": json.loads(schedule["result_json"]) if schedule["result_json"] else None} if schedule else None,
-                "presentation": self.app.presence.results_for(self.context) if self.app.presence else {"state": "preview"},
-                "presentation_diagnostics": describe_presentation(self.app, self.context, settings=settings, effective=effective),
-                "host_state": self.app.state}
+                effective[option] = {"allowed": False, "reason": error.code}
+        try:
+            state = self.app.role_state.read(self.context, operator=operator, at=now)
+        except TaskError as error:
+            original = self.app.role_state.records.get(self.context, "current")
+            state = {"state": "unavailable", "revision": original["revision"] if original else 0, "code": error.code}
+        state["view_token"] = self.token(operator, access, "current", state["revision"])
+        calendar = self.app.calendar.inventory(self.context, after_id=after_id, limit=limit,
+                                               operator=operator)
+        for item in calendar["items"]:
+            item["view_token"] = self.token(operator, access, item["id"], item["revision"])
+        schedule = self.app.runtime.read_one("SELECT next_at, enabled, result_json FROM role_state_schedules WHERE context_key = ?",
+                                             (role_schedule_key(self.context),))
+        sleep = self.life.sleep_status(operator, access=access)
+        settings["mood_cross_window"] = True
+        local_day = now.astimezone(ZoneInfo(settings["planning_timezone"]))
+        day_start = local_day.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        return {"settings": settings,
+            "body_scope": {"installation_id": self.context.scope.installation_id,
+                "bot_id": self.context.scope.bot_id, "role_id": self.context.role_binding.role.subject_id,
+                "settings": [name for name in DEFAULTS if name in ("hunger_enabled", "health_enabled") or name.startswith("cycle_")]},
+            "edit_token": window_snapshot.edit_token, "role_edit_token": role_snapshot.edit_token,
+            "cycle_settings_token": self.app.role_state.cycle_settings_token(settings),
+            "effective": effective, "state": state, "calendar": calendar,
+            "planning": self.app.calendar_planning.status(self.context),
+            "create_token": self.token(operator, access, "calendar:new", 0),
+            "occurrences": self.app.calendar.occurrences(self.context,
+                start=day_start.astimezone(timezone.utc), end=day_end.astimezone(timezone.utc),
+                operator=operator, diagnostics=True),
+            **sleep,
+            "maintenance": {"next_at": schedule["next_at"], "enabled": bool(schedule["enabled"]),
+                "result": json.loads(schedule["result_json"]) if schedule["result_json"] else None} if schedule else None,
+            "presentation": self.app.presence.results_for(self.context) if self.app.presence else {"state": "preview"},
+            "presentation_diagnostics": describe_presentation(self.app, self.context, settings=settings, effective=effective),
+            "host_state": self.app.state}
 
     def _configure(self, operator, data):
         changes = data["changes"]

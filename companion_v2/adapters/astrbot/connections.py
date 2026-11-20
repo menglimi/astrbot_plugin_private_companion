@@ -180,6 +180,15 @@ class NativeAccountConnections:
                      "generation": record.generation, "last_recovered_at": record.last_recovered_at}
                     for record in self._accounts.values()]
 
+    def online_platforms(self):
+        """Return currently online ``(platform, client)`` pairs keyed by platform ID."""
+        with self._lock:
+            return {
+                record.account.platform_id: (record.platform, record.client)
+                for record in self._accounts.values()
+                if record.state == "online" and record.platform is not None and record.client is not None
+            }
+
     def acquire(self, account, *, connected=True):
         with self._lock:
             self.refresh(account)

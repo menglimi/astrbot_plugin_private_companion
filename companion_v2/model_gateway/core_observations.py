@@ -1,5 +1,6 @@
 """Project real AstrBot observations without reserving V2 model calls or budget."""
 
+from datetime import datetime, timedelta, timezone
 import json
 import re
 
@@ -92,7 +93,19 @@ def record_observation(runtime, context, record):
              encode(context), record["received_at"], record["observed_at"], encode(record)))
 
 
-def observations_for_role(runtime, context, *, start=None, end=None, private_only=False):
+def _parse_utc_timestamp(value):
+    if type(value) is not str or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _query_observations(runtime, context, *, start=None, end=None, private_only=False):
     if not available(runtime):
         return []
     link = link_for_scope(runtime, context.scope)
@@ -104,33 +117,66 @@ def observations_for_role(runtime, context, *, start=None, end=None, private_onl
         # A role key covers a whole account; the shared view is this conversation's own turns.
         where.append("json_extract(context_json, '$.audience.scope') IN (" + ",".join("json(?)" for _ in link.scopes) + ")")
         values.extend(encode(scope) for scope in link.scopes)
+    start_dt = _parse_utc_timestamp(start) if start is not None else None
+    end_dt = _parse_utc_timestamp(end) if end is not None else None
     if start is not None:
-        where.append("julianday(received_at) >= julianday(?)")
-        values.append(start)
+        if start_dt is not None:
+            where.append("received_at >= ?")
+            values.append((start_dt - timedelta(days=1)).isoformat())
+        else:
+            where.append("julianday(received_at) >= julianday(?)")
+            values.append(start)
     if end is not None:
-        where.append("julianday(received_at) <= julianday(?)")
-        values.append(end)
+        if end_dt is not None:
+            where.append("received_at <= ?")
+            values.append((end_dt + timedelta(days=1)).isoformat())
+        else:
+            where.append("julianday(received_at) <= julianday(?)")
+            values.append(end)
     if private_only:
         where.append("scope_kind = 'private'")
     result = []
-    for row in runtime.read_all("SELECT * FROM astrbot_core_reply_observations WHERE " + " AND ".join(where)
-                               + " ORDER BY received_at DESC, turn_id DESC", tuple(values)):
+    for row in runtime.read_all(
+        "SELECT scope_kind, context_key, context_json, received_at, record_json "
+        "FROM astrbot_core_reply_observations WHERE " + " AND ".join(where)
+        + " ORDER BY received_at DESC, turn_id DESC",
+        tuple(values),
+    ):
+        row_dt = _parse_utc_timestamp(row["received_at"]) if (start_dt is not None or end_dt is not None) else None
+        if start_dt is not None and (row_dt is None or row_dt < start_dt):
+            continue
+        if end_dt is not None and (row_dt is None or row_dt > end_dt):
+            continue
         try:
             record = json.loads(row["record_json"])
             if type(record) is dict and record.get("version") == 1:
-                result.append({**record, "context_key": row["context_key"], "context_json": row["context_json"],
-                               **({"source_channel": json.loads(row["context_json"])["audience"]["scope"]["platform"]}
-                                  if link else {})})
+                obs = {**record, "context_key": row["context_key"], "context_json": row["context_json"],
+                       **({"source_channel": json.loads(row["context_json"])["audience"]["scope"]["platform"]}
+                          if link else {})}
+                result.append((obs, row["scope_kind"], row_dt))
         except (TypeError, ValueError):
             continue
     return result
 
 
-def request_rows(observations):
+def observations_for_role(runtime, context, *, start=None, end=None, private_only=False):
+    return [obs for obs, _scope_kind, _row_dt in _query_observations(
+        runtime, context, start=start, end=end, private_only=private_only)]
+
+
+def observations_with_scope_for_role(runtime, context, *, start=None, end=None, private_only=False):
+    return _query_observations(runtime, context, start=start, end=end, private_only=private_only)
+
+
+def request_rows(observations, *, include_signature_json=True):
     """Translate observations into usage projections, never into the old ledger."""
     result = []
+    provider_json_cache = {}
     for observation in observations:
         requests = observation.get("requests", [])
+        if not requests:
+            continue
+        audience_scope = json.loads(observation["context_json"])["audience"]["scope"]
         for request in requests:
             usage = request.get("usage") or {}
             at = request.get("finished_at") or request.get("started_at") or observation["received_at"]
@@ -140,6 +186,12 @@ def request_rows(observations):
             real_call = request.get("measurement_basis", "provider_response") == "provider_response"
             latency = request.get("latency_ms")
             state = request.get("state", "unknown")
+            provider = request.get("provider", "")
+            provider_json = provider_json_cache.get(provider)
+            if provider_json is None:
+                provider_json = encode({"provider": provider})
+                provider_json_cache[provider] = provider_json
+            signature = request.get("signature")
             values = dict.fromkeys(USAGE_FIELDS, 0)
             values.update(calls=int(real_call), tokens=tokens or 0, unconfirmed_calls=int(real_call and tokens is None),
                           unknown_calls=int(real_call and state == "unknown"), failures=int(real_call and state == "failed"),
@@ -152,11 +204,11 @@ def request_rows(observations):
                           cache_other_input_tokens=max(0, inputs - cached - (creation or 0)) if reported else 0,
                           cache_low_calls=int(reported and inputs >= 1000 and cached * 5 < inputs),
                           latency_total_ms=latency or 0, latency_samples=int(latency is not None))
-            result.append({**values, "day": at[:10], "hour": at[11:13], "kind": CORE_CHAIN_KIND,
-                "provider": request.get("provider", ""), "provider_json": encode({"provider": request.get("provider", "")}),
+            row = {**values, "day": at[:10], "hour": at[11:13], "kind": CORE_CHAIN_KIND,
+                "provider": provider, "provider_json": provider_json,
                 "call_id": observation["turn_id"] + ":" + str(request["position"]), "position": request["position"],
-                "origin_key": observation["context_key"], "audience_scope_json": json.loads(observation["context_json"])["audience"]["scope"],
-                "signature_json": encode(request.get("signature")) if request.get("signature") else None,
+                "origin_key": observation["context_key"], "audience_scope_json": audience_scope,
+                "signature_json": encode(signature) if (include_signature_json and signature) else None,
                 "state": state, "actual_tokens": tokens, "actual_cost": None,
                 "input_tokens": inputs, "output_tokens": output, "cached_input_tokens": cached,
                 "cache_creation_tokens": creation, "latency_ms": latency,
@@ -166,7 +218,10 @@ def request_rows(observations):
                 "token_availability": usage.get("availability", "unavailable"), "cost_availability": "unavailable",
                 "cache_availability": usage.get("cache_availability", "unavailable"),
                 "signature_scope": request.get("signature_scope", "unavailable"),
-                "aggregate": values})
+                "aggregate": values}
+            if not include_signature_json and signature:
+                row["signature"] = signature
+            result.append(row)
     return result
 
 

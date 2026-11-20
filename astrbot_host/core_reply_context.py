@@ -26,6 +26,7 @@ from companion_v2.delivery.history import CONTEXT_INSTRUCTION as SENT_MESSAGE_IN
 from companion_v2.foundation.refs import ScopeKind
 from companion_v2.knowledge.members import MEMBER_CLUE_INSTRUCTION
 from companion_v2.role_work.state.service import INSTRUCTION as STATE_INSTRUCTION
+from companion_v2.sources.dependencies import validation_batch
 from companion_v2.system_prompts.catalog import (
     BACKGROUND_INSTRUCTION, KNOWLEDGE_INSTRUCTION, MEMORY_INSTRUCTION,
 )
@@ -150,14 +151,15 @@ def _linked_inspiration_material(material, sent_rounds):
     return replace(material, payload=encode({**payload, "items": visible}))
 
 
-def _capture_materials(owner, context, at):
+def _capture_materials(owner, context, at, *, runtime=None):
     if owner is None:
         return ()
     snapshot = owner.capture(context, at)
     if isinstance(snapshot, dict) and snapshot.get("state") == "unavailable":
         raise TaskError(snapshot.get("reason") or "core_reply_context_unavailable",
                         "optional background is unavailable")
-    return owner.contributions(snapshot, context, at)
+    with validation_batch(runtime, at):
+        return owner.contributions(snapshot, context, at)
 
 
 def _knowledge_materials(messages, context, native_input, at, *, members=False):
@@ -286,6 +288,7 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
     sent_rounds, sent_round_refs = {}, {}
     measured, started = [], time.monotonic()
     messages = application.messages
+    runtime = getattr(application, "runtime", None)
     perception_snapshot = {}
     try:
         prompt_overrides = SystemPromptContext(application.runtime).overrides(context)
@@ -334,11 +337,12 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
                  if owner is not None else "", stable=stable)
 
     def captured(name, title, instruction, owner):
-        optional(name, lambda: _material_section(title, instruction, _capture_materials(owner, context, at)))
+        optional(name, lambda: _material_section(title, instruction,
+                                                 _capture_materials(owner, context, at, runtime=runtime)))
 
     def role_state():
         owner = getattr(messages, "role_state_context", None)
-        materials = _ready(_capture_materials(owner, context, at))
+        materials = _ready(_capture_materials(owner, context, at, runtime=runtime))
         return (_material_section("角色当前状态", STATE_INSTRUCTION + owner.instruction(materials),
                                   materials) if materials else "")
 
@@ -485,7 +489,6 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
         personal_dates = project_personal_dates(
             at, settings["calendar_timezone"], role_birthday=role_birthday,
             user_birthday=user_birthday)
-        runtime = getattr(application, "runtime", None)
         if context.scope.kind is ScopeKind.PRIVATE and runtime is not None:
             try:
                 from companion_v2.relationships import anniversaries
@@ -513,7 +516,8 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             received_at = _input_received_at(native_input, at)
             snapshot = owner.capture(context, min(received_at, at), action="conversation.reply",
                                      limit=8, max_chars=3200)
-            items = owner.read(snapshot, context, at, action="conversation.reply", round_metadata=True)
+            with validation_batch(runtime, at):
+                items = owner.read(snapshot, context, at, action="conversation.reply", round_metadata=True)
             materials = []
             for item in items:
                 visible = {key: value for key, value in item.items() if not key.startswith("_")}
@@ -595,8 +599,9 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             owner = messages.group_memory.context
             key = "core-reply-" + digest([context.key, native_input.event_id])
             snapshot = owner.capture(context, key)
-            return _material_section("群公共记忆", GROUP_INSTRUCTION,
-                                     owner.contributions(snapshot, context, key))
+            with validation_batch(runtime, key):
+                return _material_section("群公共记忆", GROUP_INSTRUCTION,
+                                         owner.contributions(snapshot, context, key))
 
         optional("group_memory", group_memory)
         optional("role_state", role_state)
@@ -613,9 +618,10 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
         # ``rules_per_turn`` rules and records exactly those identifiers as the
         # injection. Selecting a rule that sits behind unrelated ones by intent
         # belongs to the V2 reply generator, which has the decision in hand.
-        return _material_section("表达习惯参考", EXPRESSION_STYLE_INSTRUCTION,
-            owner.contributions(snapshot, context, at, policy=policy,
-                                on_injection=expression_signal_ids.extend))
+        with validation_batch(runtime, at):
+            return _material_section("表达习惯参考", EXPRESSION_STYLE_INSTRUCTION,
+                owner.contributions(snapshot, context, at, policy=policy,
+                                    on_injection=expression_signal_ids.extend))
 
     optional("expression_style", expression_style)
     # 关键词材料：用户这轮问到余额这类需要现查的信息时，由调用方在异步阶段取好再传进来。

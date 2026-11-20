@@ -186,6 +186,19 @@ window.CompanionHomeSidebar = (() => {
       <span class="home-state-row-copy"><span class="home-state-row-label">${label}</span><strong>${e(item.label)}</strong></span>
     </span>`;
   }
+  /* 状态时间移到标题旁后，用相对时间读起来比“18:42”更直接；
+     15 秒一次的首页时钟会顺手刷新它，不必整块重绘。 */
+  function stateAge(input) {
+    const updated = stamp(input?.state?.state?.updated_at);
+    if (updated == null) return "";
+    const now = input.now ?? Date.now();
+    const minutes = Math.max(0, Math.floor((now - updated) / 60000));
+    if (minutes < 1) return "刚刚";
+    if (minutes < 60) return `${minutes} 分钟前`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours} 小时前`;
+    return `${Math.floor(hours / 24)} 天前`;
+  }
   function renderState(input) {
     const {state, life, loading=false, unavailable=()=>"尚未读取"} = input;
     const now = input.now ?? Date.now(), zone = zoneOf(input);
@@ -210,9 +223,6 @@ window.CompanionHomeSidebar = (() => {
       ["location","位置",text(values.location),settings.location_enabled===false]];
     const visible = candidates.filter(([kind,,raw,disabled]) => settings["home_show_"+kind] !== false && settings.enabled !== false && !disabled
       && (!settings["home_only_special_"+kind] || !unreadable && specialState(kind,raw,{timeline,sleeping})));
-    const updated = stamp(state?.state?.updated_at);
-    const caption = [settings.enabled === false || state?.state?.state === "disabled" ? "自动维护未启用" : "",
-      updated != null ? `更新于 ${moment(updated, now, zone)}` : ""].filter(Boolean).join(" · ");
     const sleepEntry = visible.find(([kind]) => kind === "sleep");
     const rows = visible.filter(([kind]) => kind !== "sleep").map(row => {
       const value = typeof row[2] === "string" ? row[2] : "";
@@ -234,8 +244,7 @@ window.CompanionHomeSidebar = (() => {
       <span class="home-state-hero-copy"><small>当前</small><strong>${e(heroTitle)}</strong></span></span>` : "";
     return `<button type="button" class="home-state-board is-b2" data-go="life" data-life-target="state" aria-label="查看并更新角色状态。${e(accessible || fallback)}" title="查看并更新角色状态">
       ${hero}<span class="home-state-grid">${states}</span>${!hero && !states ? `<span class="home-state-empty">${e(fallback)}</span>` : ""}<span class="home-state-open" aria-hidden="true"><i data-lucide="arrow-up-right"></i></span></button>
-      ${unreadable && !loading ? `<p class="home-side-warning" role="status">${e(runtimeMissing ? "角色数据尚未就绪，请核对账号与人格的角色映射；首次设置记录仍会保留。" : state ? "暂时无法读取角色状态，请在详情中核对。" : unavailable("state"))}</p>${runtimeMissing ? `<button class="text-button home-side-action" data-go="manage" data-manage="host">前往账号与会话</button>` : ""}` : ""}
-      ${caption ? `<p class="home-side-caption">${e(caption)}</p>` : ""}`;
+      ${unreadable && !loading ? `<p class="home-side-warning" role="status">${e(runtimeMissing ? "角色数据尚未就绪，请核对账号与人格的角色映射；首次设置记录仍会保留。" : state ? "暂时无法读取角色状态，请在详情中核对。" : unavailable("state"))}</p>${runtimeMissing ? `<button class="text-button home-side-action" data-go="manage" data-manage="host">前往账号与会话</button>` : ""}` : ""}`;
   }
   function agenda(input) {
     const {state, life} = input, now = input.now ?? Date.now(), zone = zoneOf(input), items = [], seen = new Set();
@@ -400,5 +409,5 @@ window.CompanionHomeSidebar = (() => {
       ${runtimeMissing ? `<button class="text-button home-side-action" data-go="manage" data-manage="host">前往账号与会话</button>` : ""}
       <p class="home-side-caption">${planningNote ? `${e(planningNote)} · ` : ""}时间按 ${e(zone)} 显示</p>`;
   }
-  return {renderState, renderSchedule};
+  return {renderState, renderSchedule, stateAge};
 })();

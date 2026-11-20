@@ -96,14 +96,74 @@ def capture_core_voice_message(event, message):
     return cleaned
 
 
+def _find_authored_span(authored_visible, needle, cursor):
+    start = authored_visible.find(needle, cursor)
+    if start >= 0:
+        return start, start + len(needle)
+    if not needle or cursor >= len(authored_visible):
+        return -1, -1
+    from companion_v2.conversation.segment_control import LLM_SEGMENT_MARKER, control_token_ranges
+    if not control_token_ranges(authored_visible):
+        return -1, -1
+    stripped_parts, orig_indices = [], []
+    offset = cursor
+    for line in authored_visible[cursor:].splitlines(keepends=True):
+        if line.count(LLM_SEGMENT_MARKER) == 1:
+            left, right = line.split(LLM_SEGMENT_MARKER)
+            if not (left.strip() and right.strip()):
+                if left.strip():
+                    for idx, ch in enumerate(left.rstrip()):
+                        stripped_parts.append(ch)
+                        orig_indices.append(offset + idx)
+                if left.strip() and not right.strip():
+                    right_start = len(left) + len(LLM_SEGMENT_MARKER)
+                    for idx, ch in enumerate(right):
+                        stripped_parts.append(ch)
+                        orig_indices.append(offset + right_start + idx)
+                elif right.strip():
+                    trimmed = right.lstrip()
+                    right_start = len(left) + len(LLM_SEGMENT_MARKER) + (len(right) - len(trimmed))
+                    for idx, ch in enumerate(trimmed):
+                        stripped_parts.append(ch)
+                        orig_indices.append(offset + right_start + idx)
+                offset += len(line)
+                continue
+        tokens = control_token_ranges(line)
+        if not tokens:
+            for idx, ch in enumerate(line):
+                stripped_parts.append(ch)
+                orig_indices.append(offset + idx)
+        else:
+            pos = 0
+            for tok_start, tok_end in tokens:
+                for idx in range(pos, tok_start):
+                    stripped_parts.append(line[idx])
+                    orig_indices.append(offset + idx)
+                if (tok_start and tok_end < len(line)
+                        and not line[tok_start - 1].isspace() and not line[tok_end].isspace()):
+                    stripped_parts.append(" ")
+                    orig_indices.append(offset + tok_start)
+                pos = tok_end
+            for idx in range(pos, len(line)):
+                stripped_parts.append(line[idx])
+                orig_indices.append(offset + idx)
+        offset += len(line)
+    stripped = "".join(stripped_parts)
+    match_start = stripped.find(needle)
+    if match_start < 0:
+        return -1, -1
+    match_end = match_start + len(needle) - 1
+    return orig_indices[match_start], orig_indices[match_end] + 1
+
+
 def _captured_speech(core, visible):
     authored = core.get("_voice_authored") if isinstance(core, dict) else None
     if not authored:
         return ""
-    start = authored["visible"].find(visible.strip(), authored["cursor"])
+    needle = visible.strip()
+    start, end = _find_authored_span(authored["visible"], needle, authored["cursor"])
     if start < 0:
         return ""
-    end = start + len(visible.strip())
     authored["cursor"] = end
     selected = []
     for index, (position, speech) in enumerate(authored["spans"]):

@@ -208,7 +208,7 @@ class SelfReviewManagement:
                     "automatic": row["decided_by"] == "system:self-review",
                     "unavailable_reason": unavailable, "actions": actions,
                     "view_token": self._token(operator, context, row, policy_revision)})
-            reviewer = getattr(self.app, "role_self_review", None)
+            reviewer = getattr(self.app, "self_review", None)
             policy = {
                 "window_hours": getattr(reviewer, "window_hours", 24),
                 "scan_seconds": getattr(reviewer, "scan_seconds", 86400),
@@ -224,7 +224,7 @@ class SelfReviewManagement:
     def settings(self, *, operator, context):
         at = self.management.ledger.now()
         self.management._authorize(operator, context, at)
-        reviewer = getattr(self.app, "role_self_review", None)
+        reviewer = getattr(self.app, "self_review", None)
         return {"enabled": reviewer.enabled() if reviewer is not None and hasattr(reviewer, "enabled") else True}
 
     @outcome
@@ -233,7 +233,7 @@ class SelfReviewManagement:
             raise TaskError("self_review_command_invalid", "enabled must be a boolean")
         at = self.management.ledger.now()
         self.management._authorize(operator, context, at)
-        reviewer = getattr(self.app, "role_self_review", None)
+        reviewer = getattr(self.app, "self_review", None)
         if reviewer is None or not hasattr(reviewer, "set_enabled"):
             raise TaskError("self_review_command_invalid", "self-review service is unavailable")
         result = reviewer.set_enabled(enabled=enabled)
@@ -325,5 +325,3 @@ class SelfReviewManagement:
         if changed.rowcount != 1:
             raise TaskError("self_review_decided", "self-review item changed during decision")
         return {"item_id": row["item_id"], "state": "accepted", "expires_at": retained, "replayed": False}
-
-

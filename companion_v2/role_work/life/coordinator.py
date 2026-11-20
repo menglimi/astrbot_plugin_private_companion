@@ -102,33 +102,52 @@ class RoleLifeCoordinator:
             for routine in tuple(self.routines.values()):
                 routine.advance()
 
-    def owns_sleep_schedule(self, routine):
-        return self.sleep_executor(routine) is routine
+    def _in_read_snapshot(self):
+        configuration = getattr(self.app, "configuration", None)
+        for store in (getattr(self.app, "runtime", None), getattr(configuration, "store", None)):
+            diagnostic = getattr(getattr(store, "_read_snapshot_diagnostics", None), "current", None)
+            if diagnostic is not None and not diagnostic.get("writer_owned"):
+                return True
+        return False
 
-    def sleep_executor(self, routine):
+    def _select_sleep_executor(self, routine, *, refresh, now=None):
         eligible = []
         for candidate in tuple(self.routines.values()):
             if candidate.owner != routine.owner or candidate._closed or candidate._retired or candidate.instruction is None:
                 continue
             try:
-                candidate.refresh()
-                if candidate.settings and candidate.settings["enabled"] and candidate.settings["sleep_enabled"]:
-                    candidate.authorize()
-                    eligible.append(candidate)
+                if refresh:
+                    candidate.refresh()
+                    if candidate.settings and candidate.settings["enabled"] and candidate.settings["sleep_enabled"]:
+                        candidate.authorize()
+                        eligible.append((candidate, candidate._next_sleep))
+                else:
+                    projection = candidate.sleep_projection(now=now)
+                    if projection is not None:
+                        _, next_sleep = projection
+                        eligible.append((candidate, next_sleep))
             except (TaskError, ValueError, KeyError):
                 continue
-        return min(eligible, key=lambda item: item.context.key) if eligible else None
+        return min(eligible, key=lambda item: item[0].context.key) if eligible else (None, None)
+
+    def owns_sleep_schedule(self, routine):
+        return self.sleep_executor(routine) is routine
+
+    def sleep_executor(self, routine):
+        executor, _ = self._select_sleep_executor(routine, refresh=not self._in_read_snapshot())
+        return executor
 
     def sleep_schedule_status(self, routine, config):
         settings = values(config)
-        executor = self.sleep_executor(routine) if settings["sleep_enabled"] else None
         now = self.app.now()
-        next_at = None
-        if settings["sleep_enabled"]:
-            next_at = executor._next_sleep if executor is not None else None
-            if next_at is None:
-                next_at = next_bedtime(now, routine.owner, settings["sleep_timezone"],
-                    time.fromisoformat(settings["sleep_time"]), settings["sleep_variation_minutes"])
+        executor, next_at = (
+            self._select_sleep_executor(routine, refresh=False, now=now)
+            if settings["sleep_enabled"]
+            else (None, None)
+        )
+        if settings["sleep_enabled"] and next_at is None:
+            next_at = next_bedtime(now, routine.owner, settings["sleep_timezone"],
+                time.fromisoformat(settings["sleep_time"]), settings["sleep_variation_minutes"])
         profile = self.app.role_state.body_clock.profile(routine.context, now=now)
         planned_minutes = recommended_sleep_minutes(settings["sleep_minutes"],
             profile["sleep_debt_minutes"], profile["workload_score"])

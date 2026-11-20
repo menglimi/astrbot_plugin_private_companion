@@ -1,7 +1,7 @@
 """Dashboard model task settings for one authorized private role context."""
 
 from dataclasses import asdict, replace
-from datetime import date
+from datetime import date, timedelta, timezone
 from collections import deque
 import json
 
@@ -12,8 +12,10 @@ from companion_v2.foundation.refs import OperationRef, ScopeKind, VersionRef
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.role_work.life.management import RoleLifeManagement
 from .budget import effective_soft
-from .cache_diagnostics import checked_signature, event_severity, signature_changes, signature_snapshot
-from .core_observations import availability_summary, observations_for_role, request_rows
+from .cache_diagnostics import (checked_signature, checked_signature_record, event_severity,
+                                signature_changes, signature_snapshot)
+from .core_observations import (_parse_utc_timestamp, availability_summary,
+                                observations_with_scope_for_role, request_rows)
 from .models import MAX_MODEL_OUTPUT_TOKENS
 from .reply_efficiency import reply_efficiency_report
 from .refusal import canonical_refusal_terms
@@ -134,6 +136,9 @@ def _cache_diagnostic_summary(runtime, role_accounts, all_days, origin_key, *, c
         "context_tail_trim": "context_tail_trims",
         "context_availability_change": "context_availability_changes",
     }
+    scope_fields = ("installation_id", "platform", "kind", "native_scope_id", "bot_id",
+                    "account_id", "conversation_id", "session_id")
+    scope_fingerprints = {}
     ordered_days = sorted(all_days)
     for offset in range(0, len(ordered_days) + 30, 30):
         batch_days = ordered_days[offset:offset + 30]
@@ -142,7 +147,9 @@ def _cache_diagnostic_summary(runtime, role_accounts, all_days, origin_key, *, c
         else:
             rows = _legacy_cache_rows(runtime, role_accounts, batch_days, origin_key)
         for row in rows:
-            signature = checked_signature(row["signature_json"])
+            raw_signature = row.get("signature") if isinstance(row, dict) else None
+            signature = (checked_signature_record(raw_signature) if raw_signature is not None
+                         else checked_signature(row["signature_json"]))
             if signature is None:
                 continue
             at = row["finished_at"] or row["started_at"] or row["created_at"]
@@ -201,25 +208,29 @@ def _cache_diagnostic_summary(runtime, role_accounts, all_days, origin_key, *, c
                     item["profile_system_est_tokens_total"] += signature.system_est_tokens
                     item["profile_tool_est_tokens_total"] += signature.tool_est_tokens
                     item["profile_request_est_tokens_total"] += signature.request_est_tokens
-            try:
-                provider_record = json.loads(row["provider_json"])
-            except (TypeError, ValueError):
-                provider_record = None
-            provider_id = provider_record.get("provider", "") if isinstance(provider_record, dict) else ""
-            if type(provider_id) is not str:
-                provider_id = ""
+            if isinstance(row, dict) and "provider" in row:
+                provider_id = row["provider"] if type(row["provider"]) is str else ""
+            else:
+                try:
+                    provider_record = json.loads(row["provider_json"])
+                except (TypeError, ValueError):
+                    provider_record = None
+                provider_id = provider_record.get("provider", "") if isinstance(provider_record, dict) else ""
+                if type(provider_id) is not str:
+                    provider_id = ""
             try:
                 raw_scope = row["audience_scope_json"]
                 scope = json.loads(raw_scope) if type(raw_scope) is str else raw_scope
             except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
                 scope = None
-            scope_fields = ("installation_id", "platform", "kind", "native_scope_id", "bot_id",
-                            "account_id", "conversation_id", "session_id")
-            scope = ({name: scope[name] for name in scope_fields}
-                     if type(scope) is dict and all(type(scope.get(name)) is str and scope[name]
-                                                    for name in scope_fields)
-                     else None)
-            scope_fingerprint = digest(scope) if scope is not None else None
+            if type(scope) is dict and all(type(scope.get(name)) is str and scope[name] for name in scope_fields):
+                scope_tuple = tuple(scope[name] for name in scope_fields)
+                scope_fingerprint = scope_fingerprints.get(scope_tuple)
+                if scope_fingerprint is None:
+                    scope_fingerprint = digest({name: scope[name] for name in scope_fields})
+                    scope_fingerprints[scope_tuple] = scope_fingerprint
+            else:
+                scope_fingerprint = None
             try:
                 call_id = row["call_id"]
             except (KeyError, IndexError, TypeError):
@@ -590,8 +601,9 @@ class ModelManagement:
                 FROM model_calls c JOIN model_requests r ON r.task_id = c.task_id
                 ORDER BY day""", ())
             all_days = {today}
-            core_observations = observations_for_role(self.app.runtime, self.context, end=now.isoformat())
-            core_rows = request_rows(core_observations)
+            obs_with_scope = observations_with_scope_for_role(self.app.runtime, self.context, end=now.isoformat())
+            core_observations = [obs for obs, _scope_kind, _row_dt in obs_with_scope]
+            core_rows = request_rows(core_observations, include_signature_json=False)
             all_days.update(row["day"] for row in core_rows)
             for item in candidate_days:
                 value = item["day"]
@@ -743,9 +755,17 @@ class ModelManagement:
                            "soft_limit_tokens": soft.tokens if soft else 0})
             providers = [{"id": item.binding.provider, "model": item.model}
                          for item in self.app.router.providers.values()]
+            eff_now = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now
+            eff_start = (eff_now - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+            core_7d = [
+                obs for obs, scope_kind, row_dt in obs_with_scope
+                if scope_kind == "private"
+                and (parsed_dt := (row_dt if row_dt is not None else _parse_utc_timestamp(obs.get("received_at")))) is not None
+                and eff_start <= parsed_dt <= eff_now
+            ]
             return {"generated_at": now.isoformat(), **usage_reports["all"],
                     "usage_sources": {key: usage_reports[key] for key in ("conversation", "plugin", "astrbot_core", "legacy_conversation")},
-                    "reply_efficiency": reply_efficiency_report(self.app.runtime, self.context, now),
+                    "reply_efficiency": reply_efficiency_report(self.app.runtime, self.context, now, core_observations=core_7d),
                     "budget": budget, "providers": providers, "window_days": 30,
                     "ledger_scope": "current_role", "runtime": runtime_diagnostics}
 
