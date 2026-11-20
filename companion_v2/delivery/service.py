@@ -230,6 +230,8 @@ class OutboundDelivery:
         the work was recorded on, and no other member is ever tried instead.
         """
         owner = self.owners[request.owner]
+        if self._pinned(request):
+            return None
         try:
             link = conversation_link(self.runtime, request.context.scope) if owner.preferred_route else None
             if link is None:
@@ -245,12 +247,17 @@ class OutboundDelivery:
     def _linked(self, request):
         """Whether the fork's linked-conversation routing owns this delivery."""
         owner = self.owners.get(request.owner)
-        if owner is None or not owner.preferred_route:
+        if owner is None or not owner.preferred_route or self._pinned(request):
             return False
         try:
             return conversation_link(self.runtime, request.context.scope) is not None
         except TaskError:
             return True  # an unreadable link record is refused by its own route below
+
+    def _pinned(self, request):
+        """An administrator diagnostic pinned to its recipient is never moved to the preferred member."""
+        from companion_v2.relationships.account_link_delivery import pinned_diagnostic
+        return pinned_diagnostic(self.runtime, request.owner, request.source_ref)
 
     def _fence(self, run, request, route):
         """Before the platform call: the same member is still preferred, and is still what was resolved."""

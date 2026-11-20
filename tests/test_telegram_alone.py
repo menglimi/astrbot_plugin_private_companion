@@ -14,6 +14,7 @@ import unittest
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA
 from companion_v2.execution.models import require
 from companion_v2.memory.models import AtomRef, Proposal
+from tests import test_linked_owners as owners
 from tests import test_telegram_text_tools as text_tools
 from tests.linked_reply_support import RecordedConversations, TELEGRAM_OWNER
 from tests.multi_host_support import MultiFixture, multi_config
@@ -163,7 +164,7 @@ class TelegramAloneFixture(PreferredChannelFixture):
             operation=OperationRef(identifier, GROUP, target.authorization_scope, VersionRef(identifier, 1), identifier),
             observed_at=now))
 
-    async def proactive_text(self, prepared, text):
+    async def proactive_text(self, prepared, text, **options):
         """The host composes one proactive text for this window; what became of its delivery."""
         from companion_v2.proactive.contact_models import ContactIntent
         from companion_v2.proactive.models import EvidenceSnapshot, Opportunity, Thought, ThoughtKind
@@ -177,7 +178,8 @@ class TelegramAloneFixture(PreferredChannelFixture):
         intent = ContactIntent("chat", Thought("thought-" + text, opportunity, ThoughtKind.CONVERSATION,
             "a thought not yet sent", EvidenceSnapshot(context.scope, now, ()), 1.0))
         task = require(await self.app.proactive.contact(context, opportunity, (intent,),
-            role_instruction=prepared["instruction"], selection_seed="seed-" + text)).task
+            role_instruction=prepared["instruction"], selection_seed="seed-" + text, **options)).task
+        self.contact_task = task
         async with asyncio.timeout(30):
             while True:
                 self.app.notify()
@@ -542,6 +544,24 @@ class ProactiveAfterRetirementTests(TelegramAloneFixture, unittest.IsolatedAsync
         self.assertNotEqual(self.schedule_decision(telegram), self.superseded)
         self.assertEqual(await self.proactive_text(telegram, "thinking of you"), "delivered")
         self.assertEqual(self.telegram_texts(), [(OWNER, "thinking of you")])
+
+
+class PinnedDiagnosticTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestCase):
+    """An administrator's diagnostic contact goes to the window it was run for."""
+
+    async def test_a_diagnostic_pinned_to_qq_is_delivered_and_reported_on_qq_while_telegram_is_preferred(self):
+        from astrbot_host.setup_api import SetupWebAPI
+        self.assertEqual((await self.link(preferred_target_id="second"))["status"], "ok")
+        qq = await self.turn(0, "hello", "1")
+        telegram = await self.turn(1, "hello", 2)
+        self.consent_to_contact(qq["context"], telegram["context"])
+        self.enable_contact(qq["context"])
+        self.nothing_goes_to_qq_from_here()
+        self.assertEqual(await self.proactive_text(qq, "a diagnostic", administrator_test=True), "delivered")
+        self.assertEqual(([text for _, text in self.qq_texts()], self.telegram_texts()), (["a diagnostic"], []))
+        reported = SetupWebAPI._diagnostic_delivery_targets(self.controller.session, qq["context"],
+                                                            self.contact_task.task_id)
+        self.assertEqual([row["platform_id"] for row in reported], ["qq-main"])
 
 
 class ContactLedgerFixture(TelegramAloneFixture):
@@ -1065,6 +1085,29 @@ class OneCompanionWithoutQQTests(TelegramAloneFixture, unittest.IsolatedAsyncioT
         prepared = await self.turn(1, "alone", 3)
         self.assertEqual((await self.spoken_on(TELEGRAM))[-2:], ["alone", "reply-B"])
         self.assertEqual(prepared["context"].actor.subject, qq.actor.subject)
+
+
+class DetachedQQAccountLinkTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestCase):
+    """The QQ endpoint the conversation started on stays closed to account links after it was unlinked."""
+
+    extra_targets = ({"target_id": "outside", "platform_id": "qq-main", "account_id": "100",
+                      "bot_id": "bot-a", "participant_id": "999"},)
+    associate = owners.LinkedOwnerTests.associate
+
+    async def test_the_detached_qq_anchor_cannot_be_associated_with_another_account(self):
+        from companion_v2.relationships.account_links import PrivateAccountLinks
+        self.assertEqual((await self.link())["status"], "ok")
+        qq = (await self.turn(0, "from QQ", "1"))["context"]
+        event = self.event_for(0, "another human", "2", sender="999")
+        await asyncio.wait_for(await self.dispatch(event), 30)
+        outside = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["prepared"]["context"]
+        await self.turn(1, "from Telegram", 3)
+        unlinked = await self.link(revision=1, members=["second"])
+        self.assertEqual((unlinked["status"], [row["origin"] for row in unlinked["data"]["detached"]]), ("ok", [QQ]))
+        refused = await self.associate(outside, qq)
+        self.assertEqual((refused["status"], refused["data"].get("code")),
+                         ("error", "account_link_linked_conversation_conflict"))
+        self.assertEqual(PrivateAccountLinks(self.controller.runtime).read()["groups"], [])
 
 
 class RoutinesWithoutQQTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestCase):
