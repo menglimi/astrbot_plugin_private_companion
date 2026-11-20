@@ -82,6 +82,18 @@ class SharedMemoryRegistryTests(unittest.TestCase):
         self.assertTrue(fresh.host_active())
         self.assertIs(memory_provider_registry(context), fresh)
 
+    def test_a_stopped_host_does_not_replace_the_live_registry(self):
+        context = Context()
+        live = shared_memory_provider_registry(context, owner=object())
+        token = live.register("current", plugin=owner(), read=lambda request: None)
+
+        stopped = shared_memory_provider_registry(context, host_active=lambda: False, owner=object())
+
+        self.assertIsNot(stopped, live)
+        self.assertIs(memory_provider_registry(context), live)
+        self.assertEqual([item["provider_id"] for item in live.snapshot()], ["current"])
+        self.assertTrue(live.unregister(token))
+
 
 if __name__ == "__main__":
     unittest.main()
