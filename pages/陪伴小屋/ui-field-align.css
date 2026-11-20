@@ -1,0 +1,3 @@
+/* Equal-height field rows: a toggle row and a numeric row in the same grid
+   row must share one bottom edge; otherwise one short cell looks detached. */
+.wb-fields{align-items:stretch}
