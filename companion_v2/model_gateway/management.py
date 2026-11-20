@@ -331,6 +331,29 @@ class ModelManagement:
             raise TaskError("model_task_unavailable", "select a registered model task")
         return self.app.router.profiles[kind]
 
+    def _route_after_save(self, profile, saved, inherited_saved, changes, reset):
+        """The provider and fallback dispatch would use for the saved config."""
+        group = profile.group
+        fields = dict(saved.fields)
+        for name, value in changes.items():
+            key = group + "." + name
+            if key in fields:
+                fields[key] = replace(fields[key], value=value,
+                                      source=saved.target, explicit=True)
+        for name in reset:
+            key = group + "." + name
+            parent = inherited_saved.fields[key]
+            fields[key] = replace(fields[key], value=parent.value,
+                                  source=parent.source, explicit=False)
+        snapshot = replace(saved, fields=fields)
+        try:
+            default = self.app.router.provider_default(self.context, profile, snapshot)
+            routed = self.app.router.apply_provider_default(profile, snapshot, default)
+        except TaskError:
+            routed = snapshot
+        return (routed.fields[group + ".provider"].value,
+                routed.fields[group + ".fallback"].value)
+
     def _snapshots(self, operator, profile, layer=ConfigLayer.ROLE):
         now = self.app.now()
         parent = ConfigLayer.INSTALLATION if layer is ConfigLayer.ROLE else ConfigLayer.ROLE
@@ -338,9 +361,28 @@ class ModelManagement:
                                                       group_id=profile.group, observed_at=now))
         inherited = require(self.app.configuration.read(operator, target=_target(self.context, parent),
                                                         group_id=profile.group, observed_at=now))
-        provider_default = self.app.router.provider_default(self.context, profile, current)
-        return (self.app.router.apply_provider_default(profile, current, provider_default),
-                self.app.router.apply_provider_default(profile, inherited, provider_default), provider_default)
+        # Kept untouched so the editor can tell which stored values recovery
+        # stopped using; the routed copies below are for display and dispatch.
+        saved = current
+        inherited_saved = inherited
+        # Both views degrade to the saved values when the host cannot answer:
+        # the page still opens and shows what is stored, while dispatch keeps
+        # raising the same failure instead of silently running another model.
+        try:
+            provider_default = self.app.router.provider_default(self.context, profile, current)
+            current = self.app.router.apply_provider_default(profile, current, provider_default)
+        except TaskError:
+            provider_default = None
+        try:
+            # The parent view answers a different question: what runs when this
+            # layer's override is removed. Its own route decides that, not the
+            # current layer's, which may be suppressed here but absent there.
+            inherited_default = self.app.router.provider_default(self.context, profile, inherited)
+            inherited = self.app.router.apply_provider_default(
+                profile, inherited, inherited_default)
+        except TaskError:
+            inherited_default = None
+        return current, inherited, provider_default, inherited_default, saved, inherited_saved
 
     def _section_snapshots(self, operator, section, layer=ConfigLayer.ROLE):
         definitions = self.app.configuration.registry.group(section.config_group)
@@ -407,7 +449,8 @@ class ModelManagement:
                    default=MAX_MODEL_OUTPUT_TOKENS)
 
     def _project(self, operator, profile, layer=ConfigLayer.ROLE):
-        current, inherited, provider_default = self._snapshots(operator, profile, layer)
+        current, inherited, provider_default, inherited_default, saved, inherited_saved = (
+            self._snapshots(operator, profile, layer))
         fields = {name: _field(current.fields[profile.group + "." + name],
                                inherited.fields[profile.group + "." + name]) for name in FIELDS}
         # A registry default may exceed a provider's declared capability; routing
@@ -419,14 +462,60 @@ class ModelManagement:
             limit["value"] = min(limit["value"], ceiling)
         if limit["inherited_source"] == "default":
             limit["inherited_value"] = min(limit["inherited_value"], ceiling)
-        if provider_default is not None:
-            for name in ("provider", "fallback"):
-                if name == "fallback" and profile.default_fallback:
-                    continue
-                if fields[name]["source"] == "default":
-                    fields[name]["source"] = "host_conversation"
-                if fields[name]["inherited_source"] == "default":
-                    fields[name]["inherited_source"] = "host_conversation"
+        # Each view names the host route only when its own layer would use it.
+        # The parent view may resolve the host model while the current layer's
+        # explicit route suppresses it, so the two are labelled separately.
+        for name in ("provider", "fallback"):
+            if name == "fallback" and profile.default_fallback:
+                continue
+            # A cleared field keeps "default": recovery may empty a fallback that
+            # collided with the primary, and an empty fallback is not a route.
+            if provider_default is not None and fields[name]["value"] and fields[name]["source"] == "default":
+                fields[name]["source"] = "host_conversation"
+            if (inherited_default is not None and fields[name]["inherited_value"]
+                    and fields[name]["inherited_source"] == "default"):
+                fields[name]["inherited_source"] = "host_conversation"
+        # Recovery can stop using a value *this layer* stores (a fallback that
+        # collided with the recovered primary). Only an explicit row qualifies:
+        # a value inherited from the installation layer is recovered in place and
+        # still follows the parent, so marking it would make the editor treat the
+        # recovered host route as a local choice and write it back on save.
+        # The parent view applies recovery for the parent's own route. When this
+        # layer resets its fallback, the save inherits the parent's stored row
+        # instead, so the editor needs that value to match what will run.
+        parent_fallback = inherited_saved.fields[profile.group + ".fallback"]
+        # Only a real row is a stored value; without one the field carries the
+        # registry default, while dispatch resolves the host route instead.
+        stored_provider = (self.app.router.providers.get(parent_fallback.value)
+                           if parent_fallback.source is not None and parent_fallback.value
+                           else None)
+        fields["fallback"]["parent_stored"] = (
+            parent_fallback.value if parent_fallback.source is not None else "")
+        fields["fallback"]["parent_stored_usable"] = bool(
+            stored_provider is not None
+            and set(profile.capabilities).issubset(stored_provider.capabilities))
+        for name in ("fallback",):
+            raw = saved.fields[profile.group + "." + name]
+            routed = current.fields[profile.group + "." + name]
+            # Only an emptied field is "switched off": recovery may instead
+            # substitute a different, usable fallback (the profile's declared
+            # default), which is still in force and must not read as disabled.
+            if raw.explicit and routed.source is None and not routed.value and raw.value:
+                fields[name]["cleared"] = True
+            # A substituted value hides the stored row just as well: name it so
+            # the operator can see what is saved and remove it.
+            if raw.explicit and routed.source is None and routed.value and raw.value != routed.value:
+                fields[name]["replaced"] = True
+                fields[name]["stored_value"] = raw.value
+            # An emptied field has no route, whoever saved the row. The editor
+            # needs that even when the row is inherited: otherwise its fallback
+            # chain falls through to the primary and reports a fallback that
+            # dispatch will never try.
+            if routed.source is None and not routed.value and raw.value:
+                fields[name]["emptied"] = True
+                fields[name]["stored_value"] = raw.value
+                fields[name]["recovered_value"] = (
+                    profile.default_fallback or provider_default or profile.default_provider)
         application = require(self.app.configuration.application_status(operator,
             target=_target(self.context, layer), group_id=profile.group, observed_at=self.app.now()))
         sections = self._prompt_sections(operator, profile, layer)
@@ -760,7 +849,9 @@ class ModelManagement:
                     "integrity": integrity[:8], "foreign_key_issues": len(foreign_keys),
                     "foreign_key_sample": [list(row) for row in foreign_keys[:5]]}
 
-    def _changes(self, profile, data, current, inherited):
+    def _changes(self, profile, data, current, inherited, saved=None, inherited_saved=None):
+        saved = saved if saved is not None else current
+        inherited_saved = inherited_saved if inherited_saved is not None else inherited
         changes, reset = data["changes"], data["reset"]
         if (type(changes) is not dict or type(reset) is not list or not changes and not reset
                 or any(type(name) is not str or name not in FIELDS for name in changes)
@@ -783,6 +874,8 @@ class ModelManagement:
                 profile.group + "." + name for name in reset)
         values = {name: current.fields[profile.group + "." + name].value for name in FIELDS}
         for name in reset:
+            # Validation uses _route_after_save; this value only feeds the type
+            # check below, so it stays the parent's projection.
             values[name] = inherited.fields[profile.group + "." + name].value
         values.update(changes)
         try:
@@ -799,7 +892,6 @@ class ModelManagement:
                 or type(values["timeout_seconds"]) is not int or not 1 <= values["timeout_seconds"] <= 600
                 or values["replacement_scope"] not in ("all", "plugin", "conversation")):
             raise TaskError("model_configuration_invalid", "check task prompt and output token limit")
-        selected = [values["provider"]] + ([values["fallback"]] if values["fallback"] else [])
         # Routing treats a value saved on *any* configuration layer as the user's
         # contract (``source is not None``); ``explicit`` only marks the layer being
         # edited. Use the same basis here, including the value a reset inherits, so
@@ -811,10 +903,31 @@ class ModelManagement:
             limit_explicit = inherited.fields[profile.group + ".max_output_tokens"].source is not None
         else:
             limit_explicit = limit_field.source is not None
+        # Compare the route this save actually produces. Recovery, the profile's
+        # declared fallback, host routes and stale layers all feed into it, so
+        # simulate it instead of approximating those rules here.
+        routed_provider, routed_fallback = self._route_after_save(
+            profile, saved, inherited_saved, changes, reset)
         fallback_explicit = ("fallback" in changes or
-                             ("fallback" not in reset and current.fields[profile.group + ".fallback"].explicit))
-        if fallback_explicit and len(set(selected)) != len(selected):
+                             ("fallback" not in reset
+                              and saved.fields[profile.group + ".fallback"].explicit))
+        # A provider reset writes no row of its own, so its inherited value is a
+        # route, not this save's content. That is only safe while the reset also
+        # removes any collision dispatch would see: at the window layer the
+        # inherited primary is exactly what dispatch reads, so it stays checked.
+        checking_provider = ("provider" not in reset or "fallback" in changes
+                             or current.target.layer is ConfigLayer.WINDOW
+                             # A reset only drops this layer's row. When the row
+                             # it inherits is a real value, dispatch will use it,
+                             # so a collision with the saved fallback is real.
+                             or current.fields[profile.group + ".provider"].source is not None)
+        if (checking_provider and fallback_explicit and routed_fallback
+                and routed_fallback == routed_provider):
             raise TaskError("model_fallback_duplicate", "fallback must differ from the primary provider")
+        # Check the route this save leaves behind, including a recovered row that
+        # becomes live again: its capabilities and ceiling were never checked by
+        # the projection, which had replaced or emptied it.
+        selected = [routed_provider] + ([routed_fallback] if routed_fallback else [])
         for provider_id in selected:
             provider = self.app.router.provider_for(provider_id)
             if provider is None:
@@ -861,8 +974,10 @@ class ModelManagement:
             profile = self._profile(kind)
             if "section" in data:
                 return self._configure_section(operator, profile, data, selected_layer)
-            current, inherited, _ = self._snapshots(operator, profile, selected_layer)
-            changes, reset = self._changes(profile, data, current, inherited)
+            current, inherited, _, _, saved, inherited_saved = self._snapshots(
+                operator, profile, selected_layer)
+            changes, reset = self._changes(profile, data, current, inherited, saved,
+                                           inherited_saved)
             target = _target(self.context, selected_layer)
             op_id = "model-settings:" + digest([operator.subject, target.key, kind, key])
             receipt = require(self.app.configuration.patch(operator,

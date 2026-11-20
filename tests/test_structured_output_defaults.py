@@ -274,7 +274,7 @@ class OutputCeilingProjectionTests(unittest.TestCase):
         manager.context = SimpleNamespace(
             scope=SimpleNamespace(installation_id=INSTALLATION, bot_id=SCOPE.bot_id),
             role_binding=SimpleNamespace(role=ROLE))
-        manager._snapshots = lambda operator, profile, layer=None: (snapshot, snapshot, None)
+        manager._snapshots = lambda operator, profile, layer=None: (snapshot, snapshot, None, None, snapshot, snapshot)
         manager._prompt_sections = lambda *a, **k: []
         return manager, ModelTaskProfile(kind="role.expression.learn", lane=Lane.BACKGROUND,
                                          default_provider="primary", default_prompt="任务提示",
