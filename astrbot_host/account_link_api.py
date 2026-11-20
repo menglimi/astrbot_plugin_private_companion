@@ -3,7 +3,7 @@ from companion_v2.execution.models import TaskError, require, digest
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind
 from companion_v2.configuration.models import ConfigurationError
-from companion_v2.conversation.linked_ownership import link_for_endpoint
+from companion_v2.conversation.linked_ownership import endpoint_removed, link_for_endpoint
 from companion_v2.relationships.account_link_settings import catalog, seed_values
 from companion_v2.identity_policy.management import PERSON_ROUTE_KEYS
 from companion_v2.relationships.account_links import PrivateAccountLinks, member_for, member_key
@@ -130,8 +130,10 @@ class AccountLinkWebAPI:
                         if type(member) is not dict or set(member) != {"subject_id", "route"}:
                             raise TaskError("account_link_command_invalid", "select complete private account routes")
                         selected = self.api._context(member["subject_id"], member["route"])
-                        if link_for_endpoint(self.controller.runtime, selected.scope.platform,
-                                             selected.scope.account_id, selected.scope.native_scope_id) is not None:
+                        # A member, or an endpoint removed from a link and closed until admitted on its own.
+                        endpoint = (self.controller.runtime, selected.scope.platform,
+                                    selected.scope.account_id, selected.scope.native_scope_id)
+                        if link_for_endpoint(*endpoint) is not None or endpoint_removed(*endpoint):
                             raise TaskError("account_link_linked_conversation_conflict",
                                             "an endpoint of a linked conversation cannot be associated with other accounts")
                         if self._persona(settings, selected) != persona:

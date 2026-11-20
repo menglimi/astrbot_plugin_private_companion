@@ -247,7 +247,8 @@ class LinkedOwnerTests(LinkedReplyFixture, unittest.IsolatedAsyncioTestCase):
         first = (await self.turn(0, "Hello", "exclusive-owner"))["context"]
         second = (await self.turn(1, "Hello", "exclusive-other"))["context"]
         self.assertEqual((await self.link())["status"], "ok")
-        refused = await self.associate(first, second)
+        # The joined endpoint is checked first: it, not the anchor, trips the refusal.
+        refused = await self.associate(second, first)
         self.assertEqual((refused["status"], refused["data"].get("code")),
                          ("error", "account_link_linked_conversation_conflict"))
 

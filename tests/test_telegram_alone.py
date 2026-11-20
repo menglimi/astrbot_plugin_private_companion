@@ -14,6 +14,7 @@ import unittest
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA
 from companion_v2.execution.models import require
 from companion_v2.memory.models import AtomRef, Proposal
+from tests import test_linked_owners as owners
 from tests import test_telegram_text_tools as text_tools
 from tests.linked_reply_support import RecordedConversations, TELEGRAM_OWNER
 from tests.multi_host_support import MultiFixture, multi_config
@@ -1065,6 +1066,29 @@ class OneCompanionWithoutQQTests(TelegramAloneFixture, unittest.IsolatedAsyncioT
         prepared = await self.turn(1, "alone", 3)
         self.assertEqual((await self.spoken_on(TELEGRAM))[-2:], ["alone", "reply-B"])
         self.assertEqual(prepared["context"].actor.subject, qq.actor.subject)
+
+
+class DetachedQQAccountLinkTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestCase):
+    """The QQ endpoint the conversation started on stays closed to account links after it was unlinked."""
+
+    extra_targets = ({"target_id": "outside", "platform_id": "qq-main", "account_id": "100",
+                      "bot_id": "bot-a", "participant_id": "999"},)
+    associate = owners.LinkedOwnerTests.associate
+
+    async def test_the_detached_qq_anchor_cannot_be_associated_with_another_account(self):
+        from companion_v2.relationships.account_links import PrivateAccountLinks
+        self.assertEqual((await self.link())["status"], "ok")
+        qq = (await self.turn(0, "from QQ", "1"))["context"]
+        event = self.event_for(0, "another human", "2", sender="999")
+        await asyncio.wait_for(await self.dispatch(event), 30)
+        outside = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["prepared"]["context"]
+        await self.turn(1, "from Telegram", 3)
+        unlinked = await self.link(revision=1, members=["second"])
+        self.assertEqual((unlinked["status"], [row["origin"] for row in unlinked["data"]["detached"]]), ("ok", [QQ]))
+        refused = await self.associate(outside, qq)
+        self.assertEqual((refused["status"], refused["data"].get("code")),
+                         ("error", "account_link_linked_conversation_conflict"))
+        self.assertEqual(PrivateAccountLinks(self.controller.runtime).read()["groups"], [])
 
 
 class RoutinesWithoutQQTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestCase):
