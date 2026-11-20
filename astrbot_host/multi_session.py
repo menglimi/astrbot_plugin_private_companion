@@ -112,11 +112,12 @@ async def _current_native_role(bridge, account, umo):
 
 
 class LinkedReminderGuard(AccountExecutionGuard):
-    """Upstream's execution guard, leaving a linked conversation's reminders to the linked delivery.
+    """Upstream's execution guard, leaving a linked conversation's deliveries to the linked delivery.
 
-    Such a reminder goes to the link's preferred member: the delivery service
-    resolves it, refuses it while unavailable, and its sender fences that
-    connection. The window the reminder was recorded on neither holds nor fences it.
+    A reminder or proactive contact goes to the link's preferred member: the
+    delivery service resolves it, refuses it while unavailable, and its sender
+    fences that connection. The window it was recorded on neither holds nor fences
+    its delivery (planning and composing stay on that window's account).
     """
 
     def _linked(self, context):
@@ -127,7 +128,7 @@ class LinkedReminderGuard(AccountExecutionGuard):
             return True  # the linked delivery refuses an unreadable record itself
 
     def capture(self, spec, definition, *, submitting=False):
-        if spec.kind == "delivery.agenda.reminder" and self._linked(spec.context):
+        if spec.kind in ("delivery.agenda.reminder", "delivery.proactive.contact") and self._linked(spec.context):
             return None
         return super().capture(spec, definition, submitting=submitting)
 
@@ -182,7 +183,8 @@ class MultiPrivateBridge(NativePrivateBridge):
 
     def account(self, scope):
         from companion_v2.conversation.linked_ownership import link_for_scope
-        if link_for_scope(self.authority.runtime, scope) is not None:
+        if (scope.installation_id == self.installation_id and scope.kind is ScopeKind.PRIVATE
+                and link_for_scope(self.authority.runtime, scope) is not None):
             target = self.target_for_scope(scope)
             account = self.accounts.get((target.platform_id, target.account_id))
             if account is not None:
@@ -1742,7 +1744,7 @@ class MultiHostSession:
 
     def _linked_private_context(self, member):
         target = self.settings.private_target(member["platform"], member["account_id"], member["native_account_id"])
-        if target is None or self.authority.bot_id(target) != member["bot_id"]:
+        if target is None or target.bot_id != member["bot_id"]:
             raise TaskError("account_link_transport_unavailable", "associated account is no longer configured")
         context = self.authority.context(target.target_id, member["role_id"])
         from companion_v2.relationships.account_links import member_for

@@ -283,7 +283,10 @@ class ObjectAccessPolicy:
                 return Outcome.failed("unknown_access_action", "action has no explicit authorization contract")
             tier = access_tier(self.runtime, actor)
             from companion_v2.relationships.account_link_identity import effective
-            shared_identity = effective(self.runtime, actor.subject, scope, observed_at)
+            # A shared identity is the one of the endpoint whose grants decide, never
+            # of the linked member whose scope the record names.
+            permission_scope = endpoint_scope(self.runtime, actor.principal, scope)
+            shared_identity = effective(self.runtime, actor.subject, permission_scope, observed_at)
             shared_permission = None
             if shared_identity is not None:
                 shared_permission = shared_identity["permissions"].get(action)
@@ -297,7 +300,6 @@ class ObjectAccessPolicy:
                     tier = AuthorizationTier(shared_identity["tier"])
             if definition.core_only and tier is not AuthorizationTier.CORE:
                 return Outcome.failed("core_access_required", "action requires installation core membership")
-            permission_scope = endpoint_scope(self.runtime, actor.principal, scope)
             if permission_scope is None:
                 return Outcome.failed("scope_not_granted", "a linked endpoint acts only inside its own conversation")
             # The owner of a private window has these features without a grant. In a

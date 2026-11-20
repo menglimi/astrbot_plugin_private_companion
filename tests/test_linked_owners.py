@@ -195,6 +195,82 @@ class LinkedOwnerTests(LinkedReplyFixture, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(directory.authorize(first.actor, scope=second.scope, capability="memory.read",
                                             observed_at=at).is_success)
 
+    async def test_an_account_link_identity_of_the_joined_endpoint_lends_the_anchor_nothing_on_its_records(self):
+        from dataclasses import replace
+        from types import SimpleNamespace as NS
+        from companion_v2.identity_policy.management import PAGE_MANAGED_CAPABILITIES
+        from companion_v2.identity_policy.object_access import ObjectAccessPolicy
+        from companion_v2.relationships.account_links import PrivateAccountLinks
+        self.assertEqual((await self.link())["status"], "ok")
+        first = (await self.turn(0, "The linked conversation", "shared-identity-owner"))["context"]
+        second = (await self.turn(1, "The joined endpoint", "shared-identity-joined"))["context"]
+        # A CORE account-link identity saved for the joined endpoint and a third account only.
+        third = NS(scope=replace(second.scope, platform="qq-third", bot_id="102"), actor=second.actor,
+                   role_binding=second.role_binding, audience=NS(recipients=(second.actor.subject,)))
+        runtime = self.app.runtime
+        previous = getattr(runtime, "private_account_link_persona", None)
+        runtime.private_account_link_persona = lambda member: "original"
+        self.addCleanup(setattr, runtime, "private_account_link_persona", previous)
+        PrivateAccountLinks(runtime).configure(second, [second, third], persona_id="original", expected_revision=0,
+            share_context=False, operation_key="identity-for-joined", operator_id="owner", at=self.clock.now(),
+            identity={"enabled": True, "tier": "core",
+                      "permissions": {capability: True for capability in PAGE_MANAGED_CAPABILITIES}})
+        policy, at = ObjectAccessPolicy(runtime), self.clock.now()
+        on_joined_record = policy.feature_access(first.actor, scope=second.scope, action="access.policy.set",
+                                                 observed_at=at)
+        self.assertEqual(on_joined_record.failure and on_joined_record.failure.code, "core_access_required")
+        self.revoke(first, "memory.read")
+        own_grant = policy.feature_access(first.actor, scope=second.scope, action="memory.read", observed_at=at)
+        self.assertEqual(own_grant.failure and own_grant.failure.code, "authorization_revoked")
+
+    async def associate(self, first, second):
+        """Save an upstream account-link group of both endpoints through its Dashboard API."""
+        from unittest.mock import patch
+        from types import SimpleNamespace as NS
+        from astrbot_host.acquaintance_api import AcquaintanceWebAPI
+        from astrbot_host.account_link_api import AccountLinkWebAPI
+        from companion_v2.relationships.account_links import PrivateAccountLinks
+        from tests.test_person_authorization import _Query, _body
+
+        def person(context):
+            return {"subject_id": context.actor.subject.subject_id,
+                    "route": {"platform": context.scope.platform, "bot_id": context.scope.bot_id,
+                              "account_id": context.scope.account_id, "role_id": context.role_binding.role.subject_id}}
+        body = {**person(first), "members": [person(first), person(second)], "share_context": False,
+                "expected_revision": PrivateAccountLinks(self.controller.runtime).read()["revision"],
+                "operation_key": "associate"}
+        with patch("astrbot_host.acquaintance_api.request", NS(username="link-admin", query=_Query(""),
+                   body=_body(json.dumps(body).encode()))):
+            return await AccountLinkWebAPI(AcquaintanceWebAPI(self.controller)).save()
+
+    async def test_an_endpoint_of_a_linked_conversation_cannot_join_an_account_link(self):
+        first = (await self.turn(0, "Hello", "exclusive-owner"))["context"]
+        second = (await self.turn(1, "Hello", "exclusive-other"))["context"]
+        self.assertEqual((await self.link())["status"], "ok")
+        refused = await self.associate(first, second)
+        self.assertEqual((refused["status"], refused["data"].get("code")),
+                         ("error", "account_link_linked_conversation_conflict"))
+
+    async def test_an_endpoint_of_an_account_link_cannot_join_a_linked_conversation(self):
+        first = (await self.turn(0, "Hello", "exclusive-owner"))["context"]
+        second = (await self.turn(1, "Hello", "exclusive-other"))["context"]
+        associated = await self.associate(first, second)
+        self.assertEqual(associated["status"], "ok", associated)
+        refused = await self.link()
+        self.assertEqual((refused["status"], refused["data"].get("code")),
+                         ("error", "conversation_link_account_link_conflict"))
+        self.assertIsNone(self.controller.session.linked_conversations.get("owner-dialogue"))
+
+    async def test_a_linked_scope_of_another_installation_has_no_account_on_this_bridge(self):
+        from dataclasses import replace
+        self.assertEqual((await self.link())["status"], "ok")
+        second = (await self.turn(1, "The joined endpoint", "installation-joined"))["context"]
+        bridge = self.controller.session.bridge
+        self.assertEqual(bridge.account(second.scope).platform_id, second.scope.platform)
+        with self.assertRaises(Exception) as refused:
+            bridge.account(replace(second.scope, installation_id="another-installation"))
+        self.assertEqual(getattr(refused.exception, "code", None), "host_account_changed")
+
     async def test_a_refusal_made_before_linking_still_binds_the_endpoint(self):
         second = (await self.turn(1, "An independent endpoint", "refusal-before"))["context"]
         self.revoke(second, "memory.read")

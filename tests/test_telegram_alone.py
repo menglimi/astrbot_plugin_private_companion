@@ -842,6 +842,43 @@ class ScheduleCarrierTests(ContactLedgerFixture, unittest.IsolatedAsyncioTestCas
         self.assertEqual((self.telegram_texts(), self.qq_texts()), ([(OWNER, "thinking of you")], []))
 
 
+class LinkedContactFenceTests(ContactLedgerFixture, unittest.IsolatedAsyncioTestCase):
+    """A linked contact is sent by the member that receives it, whatever window composed it."""
+
+    async def test_a_contact_composed_on_qq_reaches_telegram_when_qq_drops_before_it_is_sent(self):
+        from companion_v2.proactive.contact_models import ContactIntent
+        from companion_v2.proactive.models import EvidenceSnapshot, Opportunity, Thought, ThoughtKind
+        from tests.native_adapter_support import completion
+        qq, _ = await self.both_have_spoken(last=0)
+
+        async def compose(payload, tools):
+            return completion(json.dumps({"decision": "send", "text": "thinking of you"}))
+        self.native.provider.client.state.behavior = compose
+        guard = self.app.tasks.execution_guard
+        finished = guard.finished
+
+        def composed_then_qq_drops(spec, definition, state):
+            finished(spec, definition, state)
+            # QQ's window composed the contact and queued its delivery; QQ drops before it is sent.
+            if spec.kind == "proactive.compose" and state == "succeeded":
+                self.qq_disconnect()
+        guard.finished = composed_then_qq_drops
+        context, now = qq["context"], self.clock.now()
+        opportunity = Opportunity("opportunity-drop", context.scope, now, now + timedelta(minutes=5))
+        intent = ContactIntent("chat", Thought("thought-drop", opportunity, ThoughtKind.CONVERSATION,
+            "a thought not yet sent", EvidenceSnapshot(context.scope, now, ()), 1.0))
+        task = require(await self.app.proactive.contact(context, opportunity, (intent,),
+            role_instruction=qq["instruction"], selection_seed="seed-drop")).task
+        async with asyncio.timeout(30):
+            while (row := self.app.proactive._delivery_row(task.task_id)) is None or row["state"] in (
+                    "pending", "dispatched"):
+                self.app.notify()
+                self.assertEqual(self.app.state, "running", self.app.failure_code)
+                await asyncio.sleep(0.05)
+        self.assertEqual(row["state"], "delivered", dict(row))
+        self.assertEqual((self.telegram_texts(), self.sent_to_qq()), ([(OWNER, "thinking of you")], []))
+
+
 class UnlinkAndRelinkQQTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestCase):
     def access(self, context, action):
         result = self.app.tasks.check_context_access(context, action=action, observed_at=self.clock.now())
