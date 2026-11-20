@@ -11,6 +11,7 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
+const WORKBENCH_SOURCE = fs.readFileSync(path.resolve(__dirname, "../pages/陪伴小屋/workbench-page.js"), "utf8");
 const MODELS_SOURCE = fs.readFileSync(path.resolve(__dirname, "../pages/陪伴小屋/models-page.js"), "utf8");
 const OUTPUT_SOURCE = fs.readFileSync(path.resolve(__dirname, "../pages/陪伴小屋/output-page.js"), "utf8");
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -108,6 +109,7 @@ function modelsHarness() {
     },
     crypto: {randomUUID: () => "key-" + requests.length},
   };
+  vm.runInNewContext(WORKBENCH_SOURCE, {window, setTimeout: guardTimeout, clearTimeout});
   vm.runInNewContext(MODELS_SOURCE, {window, crypto: window.crypto, AbortController, setTimeout: guardTimeout, clearTimeout});
   return {page: window.CompanionModelsPage, requests};
 }

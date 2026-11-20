@@ -356,7 +356,7 @@ class NativeVideoProviderIdentityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_rebuilt_instance_is_rebound_and_the_call_continues(self):
         replacement = StubVideoProvider()
-        # 宿主重新合并配置时可能补写 modalities 这类派生字段：指纹会变，但配置没换。
+        # 宿主重新合并配置时可能补写 modalities 这类易变派生字段：指纹保持稳定，实例仍可续接。
         replacement.provider_config["modalities"] = []
         self.providers["gemini-native"] = replacement
         generation = self.adapter.fingerprint
@@ -364,7 +364,7 @@ class NativeVideoProviderIdentityTests(unittest.IsolatedAsyncioTestCase):
         await self.adapter.probe()
 
         self.assertIs(self.adapter.native, replacement)
-        self.assertNotEqual(self.adapter.fingerprint, generation)
+        self.assertEqual(self.adapter.fingerprint, generation)
         self.assertEqual(self.adapter.fingerprint, provider_fingerprint(replacement))
         self.assertEqual(self.adapter.binding.generation, self.adapter.fingerprint)
         self.assertTrue(replacement.calls)

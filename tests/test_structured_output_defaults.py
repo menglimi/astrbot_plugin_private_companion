@@ -313,9 +313,14 @@ class InheritedDefaultSaveTests(unittest.TestCase):
         self.snapshot = SimpleNamespace(fields={
             item.field_id: EffectiveValue(item.default, None, False) for item in self.definitions})
         self.manager = object.__new__(ModelManagement)
-        self.manager.app = SimpleNamespace(router=SimpleNamespace(providers={
+        providers = {
             provider: SimpleNamespace(maximum_output_tokens=4096, capabilities=("text",))
-            for provider in ("primary", "fallback")}))
+            for provider in ("primary", "fallback")
+        }
+        self.manager.app = SimpleNamespace(router=SimpleNamespace(
+            providers=providers,
+            provider_for=providers.get,
+        ))
 
     def saved_limit(self, source):
         """A snapshot whose output limit was saved at ``source`` on an outer layer."""

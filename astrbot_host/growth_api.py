@@ -1,4 +1,4 @@
-﻿"""Authenticated commands for the pinned profile's role growth records."""
+"""Authenticated commands for the pinned profile's role growth records."""
 
 import asyncio
 import json
@@ -254,4 +254,3 @@ class GrowthWebAPI:
         except (ValueError, TypeError, UnicodeError, RecursionError, OverflowError):
             return outcome_response(Outcome.failed("self_review_command_invalid", "invalid self-review settings"))
         return await self._run(data, method="self_review_settings_command")
-
