@@ -69,6 +69,10 @@ async def load_native_video(locator):
     return await decode_video(await fetch_native_video_bytes(locator), locator.position)
 
 
+def _b64decode_strict(encoded: str) -> bytes:
+    return base64.b64decode(encoded, validate=True)
+
+
 async def fetch_native_video_bytes(locator, *, maximum_bytes=MAX_VIDEO_BYTES):
     """Fetch a frozen host component once; native models need no frame decoder."""
     if type(locator) is not NativeVideoLocator:
@@ -80,7 +84,7 @@ async def fetch_native_video_bytes(locator, *, maximum_bytes=MAX_VIDEO_BYTES):
             encoded = value[9:]
             if len(encoded) > (limit + 2) // 3 * 4:
                 raise TaskError("host_video_limit", "video exceeds its intake byte budget")
-            content = base64.b64decode(encoded, validate=True)
+            content = await asyncio.to_thread(_b64decode_strict, encoded)
         else:
             content = await fetch_attachment(value, maximum_bytes=limit)
         if not 0 < len(content) <= limit:

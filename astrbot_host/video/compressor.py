@@ -114,7 +114,7 @@ def _run_subprocess(
         kwargs["start_new_session"] = True
     process = subprocess.Popen(args, **kwargs)
     try:
-        stdout, stderr = process.communicate(timeout=max(0.5, float(timeout)))
+        stdout, stderr = process.communicate(timeout=max(0.05, float(timeout)))
         return process.returncode or 0, stdout or b"", stderr or b""
     except subprocess.TimeoutExpired:
         _kill_process_tree(process)
@@ -378,11 +378,15 @@ def _run_ffmpeg_encode(
     if truncate_to is not None and truncate_to > 0:
         base_cmd.extend(["-t", f"{truncate_to:.3f}"])
     # Try libx264 first, fall back to mpeg4 if ffmpeg build lacks libx264.
+    encode_deadline = time.monotonic() + float(timeout)
     last_stderr = b""
     for codec, extra in (
         ("libx264", ["-preset", "veryfast"]),
         ("mpeg4", ["-q:v", "7"]),
     ):
+        codec_remaining = encode_deadline - time.monotonic()
+        if codec_remaining <= 0:
+            raise TaskError("host_video_compress_timeout", "视频处理超时，请稍后重试或缩短视频。")
         cmd = [
             *base_cmd,
             "-vf",
@@ -410,7 +414,7 @@ def _run_ffmpeg_encode(
             str(int(target_bytes)),
             str(dst),
         ]
-        code, _stdout, stderr = _run_subprocess(cmd, timeout=timeout)
+        code, _stdout, stderr = _run_subprocess(cmd, timeout=codec_remaining)
         if code == 0 and dst.is_file() and dst.stat().st_size > 0:
             return 0, stderr
         last_stderr = stderr
@@ -429,6 +433,9 @@ def compress_video(
     """Validate, optionally trim/compress a video within bounded size and duration."""
     if not isinstance(content, (bytes, bytearray)) or not content:
         raise TaskError("host_video_invalid", "视频内容为空或格式无效。")
+    budget = float(timeout)
+    if budget <= 0:
+        raise TaskError("host_video_compress_timeout", "视频处理超时，请稍后重试或缩短视频。")
     raw = bytes(content)
     ext = (Path(f"clip{suffix}").suffix or ".mp4").lower()
     if ext in _EXCLUDED_SUFFIXES:
@@ -447,12 +454,13 @@ def compress_video(
             original_duration_s=None,
             original_bytes=len(raw),
         )
+    started = time.monotonic()
     ffmpeg, ffprobe = resolve_ffmpeg_tools()
 
     with tempfile.TemporaryDirectory(prefix="companion-video-prep-") as directory:
         src = Path(directory) / f"input{ext}"
         src.write_bytes(raw)
-        media_info = probe_media_info(src, ffprobe=ffprobe, ffmpeg=ffmpeg, timeout=min(10.0, timeout))
+        media_info = probe_media_info(src, ffprobe=ffprobe, ffmpeg=ffmpeg, timeout=min(10.0, budget))
         original_duration = media_info.duration_s
         actual_is_mp4 = _resolve_actual_is_mp4(ext, magic_kind, media_info)
         plan = classify(
@@ -492,10 +500,13 @@ def compress_video(
             )
 
         effective_duration = plan.truncate_to or original_duration or 30.0
-        started = time.monotonic()
         last_err = ""
+        timed_out = False
         for pass_index in (0, 1):
-            remaining = max(5.0, float(timeout) - (time.monotonic() - started))
+            remaining = budget - (time.monotonic() - started)
+            if remaining <= 0:
+                timed_out = True
+                break
             video_kbps, audio_kbps, width = _bitrate_plan(safe_target, effective_duration, pass_index)
             dst = Path(directory) / f"output-{pass_index}.mp4"
             code, stderr = _run_ffmpeg_encode(
@@ -514,7 +525,12 @@ def compress_video(
                 continue
             out_bytes = dst.read_bytes()
             if 0 < len(out_bytes) <= safe_target:
-                out_duration = probe_duration(dst, ffprobe=ffprobe, ffmpeg=ffmpeg, timeout=5.0)
+                probe_rem = budget - (time.monotonic() - started)
+                out_duration = (
+                    probe_duration(dst, ffprobe=ffprobe, ffmpeg=ffmpeg, timeout=min(5.0, probe_rem))
+                    if probe_rem > 0
+                    else None
+                )
                 return CompressionResult(
                     content=out_bytes,
                     mime_type="video/mp4",
@@ -524,6 +540,8 @@ def compress_video(
                     original_duration_s=original_duration,
                     original_bytes=len(raw),
                 )
+        if timed_out:
+            raise TaskError("host_video_compress_timeout", "视频处理超时，请稍后重试或缩短视频。")
         detail = f"（{last_err}）" if last_err else ""
         raise TaskError(
             "host_video_compress_failed",

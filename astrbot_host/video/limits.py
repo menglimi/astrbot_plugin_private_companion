@@ -90,6 +90,16 @@ class SlotLimiter:
         self._pool.shutdown(wait=wait)
 
 
+def _consume_exception(done_task: asyncio.Future) -> None:
+    """Mark abandoned task exceptions as retrieved so asyncio never logs warnings."""
+    if done_task.cancelled():
+        return
+    try:
+        done_task.exception()
+    except BaseException:
+        pass
+
+
 class SingleFlight:
     """Coalesce concurrent async calls for identical keys per event loop."""
 
@@ -97,23 +107,38 @@ class SingleFlight:
         self._lock = threading.Lock()
         self._inflight: dict[tuple[int, str], tuple[asyncio.Task, int]] = {}
 
-    async def do(self, key: str, coro_fn):
-        """Run ``coro_fn()`` once for concurrent waiters sharing ``key`` on the same loop."""
+    async def do(self, key: str, coro_fn, *, timeout: float | None = None):
+        """Run ``coro_fn()`` once for concurrent waiters sharing ``key`` on the same loop.
+
+        When ``timeout`` is supplied, each waiter enforces its own remaining deadline
+        outside ``asyncio.shield(task)`` via ``asyncio.wait_for``. A short-deadline
+        waiter times out cleanly without cancelling the shared task for longer-deadline
+        waiters; the underlying task is cancelled only once the active waiter refcount
+        reaches zero.
+        """
+        timeout_value: float | None = None
+        if timeout is not None:
+            timeout_value = float(timeout)
+            if timeout_value <= 0:
+                raise asyncio.TimeoutError()
+
         loop = asyncio.get_running_loop()
         flight_key = (id(loop), str(key))
-        created = False
         with self._lock:
             entry = self._inflight.get(flight_key)
-            if entry is None:
+            if entry is None or entry[0].done():
                 task = asyncio.ensure_future(coro_fn())
+                task.add_done_callback(_consume_exception)
                 self._inflight[flight_key] = (task, 1)
-                created = True
             else:
                 task, waiters = entry
                 self._inflight[flight_key] = (task, waiters + 1)
 
         try:
-            return await asyncio.shield(task)
+            shielded = asyncio.shield(task)
+            if timeout_value is None:
+                return await shielded
+            return await asyncio.wait_for(shielded, timeout=timeout_value)
         finally:
             cancel_task = None
             with self._lock:
@@ -126,7 +151,5 @@ class SingleFlight:
                             cancel_task = task
                     else:
                         self._inflight[flight_key] = (task, remaining)
-                elif created and not task.done():
-                    cancel_task = task
             if cancel_task is not None:
                 cancel_task.cancel()

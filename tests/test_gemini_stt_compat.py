@@ -18,10 +18,14 @@ from astrbot_host.files.loader import load_native_file
 from astrbot_host.media_components import group_components, private_components
 from astrbot_host.multi_session import MultiPrivateBridge
 from companion_v2.adapters.astrbot.group import NativeGroupBridge
-from companion_v2.adapters.astrbot.group_mentions import (
-    group_message_text,
+from companion_v2.adapters.astrbot.group_mentions import group_message_text
+from companion_v2.adapters.astrbot.voice_stt import (
+    ASTRBOT_STT_TRANSCRIPTS_EXTRA,
+    STT_EXTRA_KEYS,
+    VOICE_TRANSCRIPT_PREFIX,
     read_stt_extra,
     trusted_stt_extra_transcript,
+    trusted_stt_extra_with_source,
     trusted_stt_transcript,
 )
 from companion_v2.execution.models import TaskError
@@ -553,6 +557,33 @@ class GeminiSTTCompatibilityTests(GroupMediaFixture, unittest.IsolatedAsyncioTes
             plugin.staging = NS(claims=lambda _ev: self.fail("hear_voice hijacked turn must skip companion intake"))
             ev, _ = make_event(extras, **kw)
             await plugin.receive_companion_message(ev)
+
+    def test_voice_stt_layering_and_group_mentions_reexports(self):
+        import ast
+        from pathlib import Path
+        from companion_v2.adapters.astrbot import group_mentions, voice_stt
+
+        for name in (
+            "ASTRBOT_STT_TRANSCRIPTS_EXTRA",
+            "STT_EXTRA_KEYS",
+            "VOICE_TRANSCRIPT_PREFIX",
+            "read_stt_extra",
+            "trusted_stt_extra_with_source",
+            "trusted_stt_extra_transcript",
+            "trusted_stt_transcript",
+        ):
+            self.assertIs(getattr(group_mentions, name), getattr(voice_stt, name))
+
+        root = Path(__file__).resolve().parents[1]
+        for rel in ("astrbot_host/multi_session.py", "astrbot_host/core_reply_perception.py", "main.py"):
+            tree = ast.parse((root / rel).read_text(encoding="utf-8-sig"), filename=rel)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    self.assertNotIn(
+                        "group_mentions",
+                        node.module,
+                        f"{rel} must depend on voice_stt, not group_mentions",
+                    )
 
 
 if __name__ == "__main__":

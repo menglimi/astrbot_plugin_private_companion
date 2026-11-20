@@ -87,7 +87,7 @@ from companion_v2.conversation import debounce_log
 from .astrbot_host.private_debounce import PrivateDebounce, PrivateDeliveryDedup
 from .astrbot_host.group_debounce import GroupDebounce, group_plain_text, replace_group_plain_text
 from companion_v2.adapters.astrbot.group import group_event_route
-from companion_v2.adapters.astrbot.group_mentions import read_stt_extra
+from companion_v2.adapters.astrbot.voice_stt import read_stt_extra
 from .astrbot_host.private_reply_followup import PrivateReplyFollowUps
 from .astrbot_host.event_routing import (
     COMPANION_INTAKE_PRIORITY, competing_command_handler, suppress_default_reply,
@@ -1589,6 +1589,16 @@ class PrivateCompanionV2StagingPlugin(Star):
                     url=url, id=f"companion-video-frame:{video.descriptor.position}:{descriptor.index}"
                 )).mark_as_temp())
 
+    @staticmethod
+    async def _call_video_loader_with_budget(loader, target, *, maximum_bytes: int):
+        """Pass ``maximum_bytes`` on the first call; fall back only for 1-arg test stubs."""
+        try:
+            return await loader(target, maximum_bytes=maximum_bytes)
+        except TypeError as error:
+            if "maximum_bytes" not in str(error) and "unexpected keyword" not in str(error):
+                raise
+            return await loader(target)
+
     async def _attach_core_reply_video_material(self, event, prepared, request, originals,
                                                 application, context, settings, *,
                                                 question="", fetch_errors=()):
@@ -1618,7 +1628,7 @@ class PrivateCompanionV2StagingPlugin(Star):
 
         fusion = self._video_fusion()
         staged = []
-        fallback_frames = []
+        pending_frame_videos = []
         fallback_source_bytes = 0
         native_count = 0
 
@@ -1667,28 +1677,23 @@ class PrivateCompanionV2StagingPlugin(Star):
                     )
                 continue
 
-            decoded_ok = False
+            decoded_video = None
             candidate = outcome.prepared_bytes or content
             if 0 < len(candidate) <= MAX_VIDEO_BYTES:
                 try:
                     movie = await asyncio.to_thread(inspect_container, candidate)
                     if getattr(movie, "duration_ms", 0) <= MAX_TURN_VIDEO_MS:
-                        video = await decode_video(candidate, position)
-                        fallback_frames.extend(video.frames)
+                        decoded_video = await decode_video(candidate, position)
                         fallback_source_bytes += len(candidate)
-                        self._append_core_reply_video_frames(staged, (video,), start_number=number)
-                        decoded_ok = True
                 except Exception as error:
                     logger.warning("[CompanionV2] 视频抽帧失败 event_ref=%s position=%s code=%s",
                                    prepared.get("event_ref"), position,
                                    getattr(error, "code", type(error).__name__))
-            if decoded_ok:
-                if placeholder_obj is not None:
-                    label = placeholder_obj.name or f"视频{number}"
-                    neutralize_video_placeholder(
-                        placeholder_obj.part,
-                        f"[视频 {label} 已由陪伴提取关键帧（共 {len(video.frames)} 帧），请直接参考画面帧。]",
-                    )
+            if decoded_video is not None:
+                # Defer appending frame parts and neutralizing placeholders until
+                # after turn frame/byte budget enforcement so evicted frames never
+                # leave misleading "已提取关键帧" placeholders or orphan captions.
+                pending_frame_videos.append((number, decoded_video, placeholder_obj))
                 continue
 
             reason = outcome.error_reason or "视频无法读取或抽帧。"
@@ -1713,15 +1718,41 @@ class PrivateCompanionV2StagingPlugin(Star):
                     f"[视频 {label} 暂无法读取（{error_reason}），请如实告知对方。]",
                 )
 
-        if fallback_frames and (
-                fallback_source_bytes + sum(len(frame.content) for frame in fallback_frames) > MAX_TURN_BYTES
-                or len(fallback_frames) > MAX_TURN_FRAMES):
+        total_frame_count = sum(len(video.frames) for _num, video, _ph in pending_frame_videos)
+        total_frame_bytes = fallback_source_bytes + sum(
+            len(frame.content)
+            for _num, video, _ph in pending_frame_videos
+            for frame in video.frames
+        )
+        attached_frame_count = 0
+        if pending_frame_videos and (
+                total_frame_bytes > MAX_TURN_BYTES or total_frame_count > MAX_TURN_FRAMES):
             logger.warning("[CompanionV2] 视频抽帧超过本轮预算 event_ref=%s", prepared.get("event_ref"))
-            staged = [part for part in staged if getattr(part, "type", None) != "image_url"]
+            for number, _video, placeholder_obj in pending_frame_videos:
+                staged.append(TextPart(text=(
+                    f"<companion_video_notice>视频 {number} 理解降级：视频抽帧超出本轮上下文预算，未附带画面帧。</companion_video_notice>"
+                )).mark_as_temp())
+                if placeholder_obj is not None:
+                    label = placeholder_obj.name or f"视频{number}"
+                    neutralize_video_placeholder(
+                        placeholder_obj.part,
+                        f"[视频 {label} 抽帧超出本轮预算未能提供画面，切勿猜测或编造视频内容。]",
+                    )
+        else:
+            for number, video, placeholder_obj in pending_frame_videos:
+                self._append_core_reply_video_frames(staged, (video,), start_number=number)
+                if placeholder_obj is not None:
+                    label = placeholder_obj.name or f"视频{number}"
+                    neutralize_video_placeholder(
+                        placeholder_obj.part,
+                        f"[视频 {label} 已由陪伴提取关键帧（共 {len(video.frames)} 帧），请直接参考画面帧。]",
+                    )
+            attached_frame_count = total_frame_count
+
         if staged:
             parts.extend(staged)
             logger.info("[CompanionV2] 视频已送入核心回复 event_ref=%s native=%s sampled_frames=%s",
-                        prepared.get("event_ref"), native_count, len(fallback_frames))
+                        prepared.get("event_ref"), native_count, attached_frame_count)
 
     async def _attach_core_reply_videos(self, prepared, request, *, event=None):
         """把上一条群消息里被文本化丢弃的视频补挂进这一轮请求。"""
@@ -1752,13 +1783,11 @@ class PrivateCompanionV2StagingPlugin(Star):
         fetch_errors = []
         for idx, locator in enumerate(locators[:MAX_VIDEOS], 1):
             try:
-                try:
-                    raw = await fetch_native_video_bytes(locator)
-                except Exception as first_err:
-                    if getattr(first_err, "code", "") == "host_video_limit":
-                        raw = await fetch_native_video_bytes(locator, maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES)
-                    else:
-                        raise
+                raw = await self._call_video_loader_with_budget(
+                    fetch_native_video_bytes,
+                    locator,
+                    maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES,
+                )
                 originals.append((locator.position, raw, ".mp4", None))
             except Exception as error:
                 logger.warning("[CompanionV2] 群聊视频补挂跳过 position=%s code=%s",
@@ -1811,14 +1840,11 @@ class PrivateCompanionV2StagingPlugin(Star):
             suffix = (Path(parsed_name).suffix or ".mp4").lower()
             try:
                 if item.location == "path":
-                    try:
-                        raw = await read_host_resolved_video_bytes(item.value)
-                    except Exception as first_err:
-                        if getattr(first_err, "code", "") == "host_video_limit":
-                            raw = await read_host_resolved_video_bytes(
-                                item.value, maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES)
-                        else:
-                            raise
+                    raw = await self._call_video_loader_with_budget(
+                        read_host_resolved_video_bytes,
+                        item.value,
+                        maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES,
+                    )
                 else:
                     raw = await fetch_placeholder_ref_video_bytes(
                         item.value, maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES)

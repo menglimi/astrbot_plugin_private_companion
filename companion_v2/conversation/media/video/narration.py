@@ -184,7 +184,9 @@ class NativeVideoNarrationService:
             _provider_id, _model, providers = selector(
                 parent_run.task.spec.context, KIND, request, at=self.tasks.now()
             )
-            return any("video" in getattr(provider, "capabilities", ()) for provider in (providers or ()))
+            if not providers:
+                return True
+            return any("video" in getattr(provider, "capabilities", ()) for provider in providers)
         except Exception:
             return True
 

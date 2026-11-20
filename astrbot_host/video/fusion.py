@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
+import time
 
 from companion_v2.execution.models import TaskError
 
@@ -22,11 +24,15 @@ from .compressor import (
     CompressionResult,
     compress_video,
 )
-from .limits import QueueTimeout, SingleFlight, SlotLimiter
+from .limits import QueueTimeout, SingleFlight, SlotLimiter, format_seconds
 from .openai_compat_video import sanitize_video_error
 
 
 MAX_CORE_VIDEO_DOWNLOAD_BYTES = 80 * 1024 * 1024
+
+
+def _sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -89,7 +95,7 @@ class VideoFusionService:
 
         action = str(settings.get("video_understanding_oversize_action") or "compress")
         ext = (Path(f"clip{suffix}").suffix or ".mp4").lower()
-        source_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+        source_sha256 = await asyncio.to_thread(_sha256_hex, raw_bytes)
         cache_key = build_compress_cache_key(
             source_sha256=source_sha256,
             target_bytes=target_bytes,
@@ -99,7 +105,7 @@ class VideoFusionService:
 
         # Reject action for oversize bytes avoids unnecessary cache/slot usage.
         if action != "reject":
-            cached = self.compress_cache.get(cache_key)
+            cached = await asyncio.to_thread(self.compress_cache.get, cache_key)
             if cached is not None:
                 return CompressionResult(
                     content=cached.content,
@@ -124,7 +130,8 @@ class VideoFusionService:
 
         result = await self.compress_flights.do(cache_key, run_prepare)
         if action != "reject" and result.compressed:
-            self.compress_cache.put(
+            await asyncio.to_thread(
+                self.compress_cache.put,
                 cache_key,
                 CachedCompressedVideo(
                     content=result.content,
@@ -150,8 +157,6 @@ class VideoFusionService:
         deadline_seconds: float | None = None,
     ) -> VideoAnalysisOutcome:
         """Prepare video bytes and run prioritized video understanding routes with transparent failure text."""
-        import time
-
         try:
             prepared = await self.prepare_video(raw_bytes, suffix=suffix, settings=settings)
         except QueueTimeout as error:
@@ -187,7 +192,7 @@ class VideoFusionService:
             if deadline_seconds is not None
             else float(settings.get("video_understanding_wait_seconds", 45))
         )
-        deadline = time.monotonic() + max(1.0, budget)
+        deadline = time.monotonic() + max(0.0, budget)
         errors: list[str] = []
         for provider, model in routes:
             remaining = deadline - time.monotonic()
@@ -195,15 +200,18 @@ class VideoFusionService:
                 errors.append("等待总预算已耗尽")
                 break
             try:
-                text = await summarize_fn(
-                    prepared.content,
-                    provider,
-                    model,
-                    {**settings, "video_understanding_wait_seconds": remaining},
-                    mime_type=prepared.mime_type,
-                    question=question,
-                    vision_cache=self.vision_cache,
-                    vision_flights=self.vision_flights,
+                text = await asyncio.wait_for(
+                    summarize_fn(
+                        prepared.content,
+                        provider,
+                        model,
+                        {**settings, "video_understanding_wait_seconds": remaining},
+                        mime_type=prepared.mime_type,
+                        question=question,
+                        vision_cache=self.vision_cache,
+                        vision_flights=self.vision_flights,
+                    ),
+                    timeout=remaining,
                 )
                 return VideoAnalysisOutcome(
                     status="summary",
@@ -213,6 +221,9 @@ class VideoFusionService:
                     compressed=prepared.compressed,
                     truncated=prepared.truncated,
                 )
+            except asyncio.TimeoutError:
+                provider_label = str(getattr(provider, "provider_config", {}).get("id") or model or "route")
+                errors.append(f"{provider_label}: 视频理解超时（{format_seconds(remaining)}）")
             except TaskError as error:
                 provider_label = str(getattr(provider, "provider_config", {}).get("id") or model or "route")
                 errors.append(f"{provider_label}: {sanitize_video_error(error)}")

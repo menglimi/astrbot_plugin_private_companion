@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Mapping
 import hashlib
 import logging
+import time
 from types import SimpleNamespace
 
 from google.genai import types
@@ -15,12 +16,14 @@ try:
 except ImportError:  # pragma: no cover
     ProviderGoogleGenAI = None
 
+from companion_v2.conversation.media.understanding import LIMITS as UNDERSTANDING_LIMITS
 from companion_v2.conversation.media.video.narration import KIND, PROMPT
 from companion_v2.execution.models import TaskError
 
 from .cache import VisionCache, VisionFlights, build_vision_cache_key
 from .container import inspect_container
 from .gemini_provider import _prepare_generation_config
+from .limits import format_seconds
 from .openai_compat_video import (
     extract_model_name,
     extract_relay_route_info,
@@ -133,6 +136,10 @@ def _build_video_prompt(settings, *, question: str = "") -> str:
     return prompt
 
 
+def _sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 async def summarize_original_video(
     content,
     provider,
@@ -145,18 +152,22 @@ async def summarize_original_video(
     vision_flights: VisionFlights | None = None,
 ):
     """Send original/compressed bytes via native Gemini or OpenAI-compat relay; return bounded narration."""
+    max_chars = int(settings.get("video_understanding_max_chars", 2400))
+    wait_seconds = float(settings.get("video_understanding_wait_seconds", 45))
+    if wait_seconds <= 0:
+        raise TaskError("video_narration_timeout", "视频理解等待预算已耗尽。")
+    deadline = time.monotonic() + wait_seconds
+    max_tokens = int(settings.get("video_understanding_max_tokens", 1024))
     if mime_type == "video/mp4":
         await asyncio.to_thread(inspect_container, content)
     prompt = _build_video_prompt(settings, question=question)
-    max_chars = int(settings.get("video_understanding_max_chars", 2400))
-    wait_seconds = float(settings.get("video_understanding_wait_seconds", 45))
-    max_tokens = int(settings.get("video_understanding_max_tokens", 1024))
     route_info = extract_relay_route_info(provider, model)
     effective_model = route_info.model or str(model or "")
     cache_key = None
     if vision_cache is not None or vision_flights is not None:
+        content_sha256 = await asyncio.to_thread(_sha256_hex, content)
         cache_key = build_vision_cache_key(
-            content_sha256=hashlib.sha256(content).hexdigest(),
+            content_sha256=content_sha256,
             mime_type=mime_type,
             prompt=prompt,
             protocol=route_info.protocol,
@@ -171,6 +182,18 @@ async def summarize_original_video(
         if cached is not None:
             return cached[:max_chars]
 
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TaskError("video_narration_timeout", f"视频理解等待超时（{format_seconds(wait_seconds)}）。")
+
+    config_ceiling = float(UNDERSTANDING_LIMITS["video_understanding_wait_seconds"][1])
+    use_flight = vision_flights is not None and cache_key is not None
+    # Shared flights use a flight-level ceiling so an early short-deadline waiter
+    # cannot prematurely abort an in-flight call for a subsequent long-deadline waiter;
+    # SingleFlight.do enforces each waiter's own deadline and cancels the shared task
+    # once all active waiters depart.
+    call_timeout = max(wait_seconds, config_ceiling) if use_flight else remaining
+
     async def execute_call():
         if not is_gemini_provider(provider) and is_openai_compat_video_provider(provider):
             text = await relay_video_with_openai_compat(
@@ -179,7 +202,7 @@ async def summarize_original_video(
                 content,
                 mime_type=mime_type,
                 prompt=prompt,
-                wait_seconds=wait_seconds,
+                wait_seconds=call_timeout,
                 max_tokens=max_tokens,
             )
             return text[:max_chars]
@@ -227,9 +250,24 @@ async def summarize_original_video(
                 raise TaskError("video_narration_empty", "native video model returned no text")
             return text[:max_chars]
 
-        return await asyncio.wait_for(generate(), wait_seconds)
+        try:
+            return await asyncio.wait_for(generate(), timeout=call_timeout)
+        except asyncio.TimeoutError as error:
+            raise TaskError(
+                "video_narration_timeout",
+                f"原生视频理解超时（{format_seconds(call_timeout)}）。",
+            ) from error
 
-    text = await (vision_flights.do(cache_key, execute_call) if (vision_flights and cache_key) else execute_call())
+    if use_flight:
+        try:
+            text = await vision_flights.do(cache_key, execute_call, timeout=remaining)
+        except asyncio.TimeoutError as error:
+            raise TaskError(
+                "video_narration_timeout",
+                f"视频理解等待超时（{format_seconds(wait_seconds)}）。",
+            ) from error
+    else:
+        text = await execute_call()
     if vision_cache is not None and cache_key is not None and text:
         vision_cache.set(cache_key, text)
     return text[:max_chars]

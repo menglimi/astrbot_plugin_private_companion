@@ -670,3 +670,500 @@ class CoreFusionPerceptionPipelineTests(unittest.IsolatedAsyncioTestCase):
             parse_understanding_settings({**DEFAULTS, "video_understanding_target_mb": 99})
         with self.assertRaises(ConfigurationError):
             parse_understanding_settings({**DEFAULTS, "video_understanding_oversize_action": "invalid"})
+
+
+class SingleFlightTimeoutAndAuditRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_singleflight_long_then_short_waiter_times_out_without_cancelling_shared_task(self):
+        sf = SingleFlight()
+        calls = 0
+        cancelled = False
+
+        async def slow_work():
+            nonlocal calls, cancelled
+            calls += 1
+            try:
+                await asyncio.sleep(0.14)
+                return "shared-ok"
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+
+        long_task = asyncio.create_task(sf.do("k-l-s", slow_work, timeout=1.0))
+        await asyncio.sleep(0.01)
+        short_task = asyncio.create_task(sf.do("k-l-s", slow_work, timeout=0.04))
+
+        t0 = asyncio.get_running_loop().time()
+        with self.assertRaises(asyncio.TimeoutError):
+            await short_task
+        short_elapsed = asyncio.get_running_loop().time() - t0
+        self.assertLess(short_elapsed, 0.12)
+        self.assertEqual(await long_task, "shared-ok")
+        self.assertFalse(cancelled)
+        self.assertEqual(calls, 1)
+
+    async def test_singleflight_short_then_long_waiter_keeps_shared_task_alive_for_long_waiter(self):
+        sf = SingleFlight()
+        calls = 0
+        cancelled = False
+
+        async def slow_work():
+            nonlocal calls, cancelled
+            calls += 1
+            try:
+                await asyncio.sleep(0.14)
+                return "shared-short-first"
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+
+        short_task = asyncio.create_task(sf.do("k-s-l", slow_work, timeout=0.04))
+        await asyncio.sleep(0.01)
+        long_task = asyncio.create_task(sf.do("k-s-l", slow_work, timeout=1.0))
+
+        with self.assertRaises(asyncio.TimeoutError):
+            await short_task
+        self.assertEqual(await long_task, "shared-short-first")
+        self.assertFalse(cancelled)
+        self.assertEqual(calls, 1)
+
+    async def test_singleflight_cancels_only_when_refcount_hits_zero_and_no_unretrieved_exception(self):
+        import gc
+
+        loop = asyncio.get_running_loop()
+        loop_errors = []
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, ctx: loop_errors.append(ctx))
+        self.addCleanup(loop.set_exception_handler, previous_handler)
+
+        sf = SingleFlight()
+        started = asyncio.Event()
+        cancel_seen = asyncio.Event()
+
+        async def failing_on_cancel():
+            started.set()
+            try:
+                await asyncio.sleep(5.0)
+            except asyncio.CancelledError:
+                cancel_seen.set()
+                raise RuntimeError("cleanup exploded after abandon")
+
+        w1 = asyncio.create_task(sf.do("k-abandon", failing_on_cancel, timeout=0.03))
+        await started.wait()
+        w2 = asyncio.create_task(sf.do("k-abandon", failing_on_cancel, timeout=0.08))
+
+        with self.assertRaises(asyncio.TimeoutError):
+            await w1
+        # Refcount is still 1 (w2 waiting), so shared task must NOT be cancelled yet.
+        self.assertFalse(cancel_seen.is_set())
+
+        with self.assertRaises(asyncio.TimeoutError):
+            await w2
+        await asyncio.wait_for(cancel_seen.wait(), timeout=0.5)
+        await asyncio.sleep(0.02)
+        gc.collect()
+        unretrieved = [
+            err for err in loop_errors if "never retrieved" in str(err.get("message", "")).lower()
+        ]
+        self.assertEqual(unretrieved, [], f"unexpected unretrieved task warnings: {unretrieved}")
+
+    async def test_summarize_original_video_both_arrival_orders_and_flight_ceiling(self):
+        observed_wait_seconds = []
+        provider = NS(
+            provider_config={"id": "openai-v", "type": "openai_chat_completion", "api_base": "https://api.example/v1"},
+            get_model=lambda: "gpt-4o",
+        )
+        clip = video_bytes()
+
+        async def fake_relay(_provider, _model, _content, **kwargs):
+            observed_wait_seconds.append(kwargs["wait_seconds"])
+            await asyncio.sleep(0.14)
+            return "画面中有一只橘猫。"
+
+        # 1) Short arrives first (0.04s), long arrives second (1.0s):
+        #    shared flight uses flight-level ceiling (>=60s) so long succeeds while short times out.
+        flights = VisionFlights()
+        cache = VisionCache()
+        with (
+            patch("astrbot_host.video.core_understanding.inspect_container"),
+            patch("astrbot_host.video.core_understanding.relay_video_with_openai_compat", side_effect=fake_relay),
+        ):
+            short_fut = asyncio.create_task(
+                summarize_original_video(
+                    clip, provider, "gpt-4o", {"video_understanding_wait_seconds": 0.04},
+                    vision_cache=cache, vision_flights=flights,
+                )
+            )
+            await asyncio.sleep(0.01)
+            long_fut = asyncio.create_task(
+                summarize_original_video(
+                    clip, provider, "gpt-4o", {"video_understanding_wait_seconds": 1.0},
+                    vision_cache=cache, vision_flights=flights,
+                )
+            )
+            with self.assertRaises(TaskError) as short_err:
+                await short_fut
+            self.assertEqual(short_err.exception.code, "video_narration_timeout")
+            self.assertEqual(await long_fut, "画面中有一只橘猫。")
+        self.assertEqual(len(observed_wait_seconds), 1)
+        self.assertGreaterEqual(observed_wait_seconds[0], 60.0)
+
+        # 2) Long arrives first (1.0s), short arrives second (0.04s):
+        observed_wait_seconds.clear()
+        flights2 = VisionFlights()
+        cache2 = VisionCache()
+        with (
+            patch("astrbot_host.video.core_understanding.inspect_container"),
+            patch("astrbot_host.video.core_understanding.relay_video_with_openai_compat", side_effect=fake_relay),
+        ):
+            long_fut = asyncio.create_task(
+                summarize_original_video(
+                    clip, provider, "gpt-4o", {"video_understanding_wait_seconds": 1.0},
+                    vision_cache=cache2, vision_flights=flights2,
+                )
+            )
+            await asyncio.sleep(0.01)
+            short_fut = asyncio.create_task(
+                summarize_original_video(
+                    clip, provider, "gpt-4o", {"video_understanding_wait_seconds": 0.04},
+                    vision_cache=cache2, vision_flights=flights2,
+                )
+            )
+            with self.assertRaises(TaskError) as short_err:
+                await short_fut
+            self.assertEqual(short_err.exception.code, "video_narration_timeout")
+            self.assertEqual(await long_fut, "画面中有一只橘猫。")
+        self.assertEqual(len(observed_wait_seconds), 1)
+
+    async def test_post_openai_json_enforces_total_wall_clock_on_slow_drip_response(self):
+        import httpx
+        from astrbot_host.video.openai_compat_video import RelayRouteInfo, _post_openai_json
+
+        # Warm httpx SSL context once outside the timed window so first-call CA load
+        # does not skew the sub-second slow-drip wall-clock assertion on Windows.
+        async with httpx.AsyncClient():
+            pass
+
+        stop_dripping = asyncio.Event()
+        chunks_sent = 0
+
+        async def slow_drip_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+            nonlocal chunks_sent
+            try:
+                await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=1.0)
+                writer.write(
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: application/json\r\n"
+                    b"Transfer-Encoding: chunked\r\n\r\n"
+                )
+                await writer.drain()
+                # Drip 1 byte every 40ms (< timeout_s=0.30s) so per-read socket timeout never triggers.
+                for _ in range(100):
+                    if stop_dripping.is_set():
+                        break
+                    writer.write(b"1\r\n \r\n")
+                    await writer.drain()
+                    chunks_sent += 1
+                    await asyncio.sleep(0.04)
+            except (ConnectionError, asyncio.CancelledError, asyncio.TimeoutError, OSError):
+                pass
+            finally:
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+
+        server = await asyncio.start_server(slow_drip_handler, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        info = RelayRouteInfo(
+            protocol="openai_chat",
+            endpoint_url=f"http://127.0.0.1:{port}",
+            model="gpt-4o",
+            api_key="",
+            timeout_s=5.0,
+            proxy=None,
+            custom_headers={},
+            custom_extra_body={},
+        )
+        t0 = asyncio.get_running_loop().time()
+        try:
+            with self.assertRaises(asyncio.TimeoutError):
+                await _post_openai_json(info, "/chat/completions", {"model": "gpt-4o"}, timeout_s=0.30)
+            elapsed = asyncio.get_running_loop().time() - t0
+        finally:
+            stop_dripping.set()
+            server.close()
+            await server.wait_closed()
+        self.assertGreaterEqual(chunks_sent, 2, "server must actually drip multiple chunks before wall-clock cutoff")
+        self.assertLess(elapsed, 0.9, f"slow-drip response must abort near wall-clock budget, took {elapsed:.2f}s")
+
+    async def test_fusion_and_relay_do_not_inflate_subsecond_budgets(self):
+        clip = b"\x00\x00\x00\x1cftypisom\x00\x00\x02\x00isomiso2" + b"\x00" * 64
+
+        async def ignoring_summarize(*_args, **_kwargs):
+            await asyncio.sleep(5.0)
+            return "too-late"
+
+        with TemporaryDirectory(prefix="v2-subsec-") as tmp:
+            fusion = VideoFusionService(compress_cache=CompressCache(tmp, max_bytes=2 * 1024 * 1024))
+            self.addCleanup(fusion.close)
+            t0 = asyncio.get_running_loop().time()
+            outcome = await fusion.analyze_video(
+                clip,
+                suffix=".mp4",
+                routes=((NS(provider_config={"id": "slow-route"}), "gpt-4o"),),
+                settings={"video_understanding_target_mb": 10},
+                summarize_fn=ignoring_summarize,
+                deadline_seconds=0.12,
+            )
+            elapsed = asyncio.get_running_loop().time() - t0
+        self.assertEqual(outcome.status, "failed")
+        self.assertLess(elapsed, 0.7)
+
+        class SlowCompletions:
+            async def create(self, **_kwargs):
+                await asyncio.sleep(5.0)
+                return {"choices": [{"message": {"content": "late"}}]}
+
+        provider = NS(
+            provider_config={"id": "openai-slow", "type": "openai_chat_completion"},
+            get_model=lambda: "gpt-4o",
+            client=NS(base_url="https://api.example/v1", chat=NS(completions=SlowCompletions())),
+        )
+        t1 = asyncio.get_running_loop().time()
+        with self.assertRaises(TaskError) as timeout_err:
+            await relay_video_with_openai_compat(provider, "gpt-4o", clip, prompt="描述", wait_seconds=0.12)
+        self.assertEqual(timeout_err.exception.code, "video_narration_timeout")
+        self.assertLess(asyncio.get_running_loop().time() - t1, 0.7)
+
+    async def test_video_fusion_offloads_cache_and_hashing_and_base64_via_to_thread(self):
+        clip = b"\x1a\x45\xdf\xa3" + b"\x00" * 128
+        valid_out_mp4 = b"\x00\x00\x00\x1cftypisom\x00\x00\x02\x00isomiso2" + b"\x00" * 32
+        offloaded = []
+        real_to_thread = asyncio.to_thread
+
+        async def spy_to_thread(func, /, *args, **kwargs):
+            offloaded.append(getattr(func, "__name__", repr(func)))
+            return await real_to_thread(func, *args, **kwargs)
+
+        def fake_subproc(args, *, timeout):
+            exe = Path(args[0]).name.lower()
+            if "ffprobe" in exe:
+                return 0, b'{"format":{"format_name":"matroska,webm","duration":"1.0"},"streams":[]}', b""
+            Path(args[-1]).write_bytes(valid_out_mp4)
+            return 0, b"", b""
+
+        with TemporaryDirectory(prefix="v2-offload-") as tmp:
+            fusion = VideoFusionService(compress_cache=CompressCache(tmp, max_bytes=2 * 1024 * 1024))
+            self.addCleanup(fusion.close)
+            with (
+                patch("astrbot_host.video.compressor.resolve_ffmpeg_tools", return_value=("ffmpeg", "ffprobe")),
+                patch("astrbot_host.video.compressor._run_subprocess", side_effect=fake_subproc),
+                patch("astrbot_host.video.fusion.asyncio.to_thread", side_effect=spy_to_thread),
+            ):
+                await fusion.prepare_video(clip, suffix=".mp4", settings={"video_understanding_target_mb": 10})
+        self.assertIn("_sha256_hex", offloaded)
+        self.assertIn("get", offloaded)
+        self.assertIn("put", offloaded)
+
+        relay_offloaded = []
+
+        async def spy_relay_thread(func, /, *args, **kwargs):
+            relay_offloaded.append(getattr(func, "__name__", repr(func)))
+            return await real_to_thread(func, *args, **kwargs)
+
+        class QuickCompletions:
+            async def create(self, **_kwargs):
+                return {"choices": [{"message": {"content": "ok"}}]}
+
+        provider = NS(
+            provider_config={"id": "openai-v", "type": "openai_chat_completion"},
+            get_model=lambda: "gpt-4o",
+            client=NS(base_url="https://api.example/v1", chat=NS(completions=QuickCompletions())),
+        )
+        with (
+            patch("astrbot_host.video.core_understanding.inspect_container"),
+            patch("astrbot_host.video.core_understanding.asyncio.to_thread", side_effect=spy_relay_thread),
+            patch("astrbot_host.video.openai_compat_video.asyncio.to_thread", side_effect=spy_relay_thread),
+        ):
+            text = await summarize_original_video(
+                valid_out_mp4, provider, "gpt-4o", {}, vision_cache=VisionCache(), vision_flights=VisionFlights()
+            )
+        self.assertEqual(text, "ok")
+        self.assertIn("_sha256_hex", relay_offloaded)
+        self.assertIn("_encode_video_data_uri", relay_offloaded)
+
+    async def test_single_fetch_and_single_read_use_80mb_budget_directly_with_one_arg_fallback(self):
+        from astrbot_host.video.fusion import MAX_CORE_VIDEO_DOWNLOAD_BYTES
+        from companion_v2.adapters.astrbot.native import NativeVideoLocator
+
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        context = _video_context(ScopeKind.PRIVATE)
+        values = {**DEFAULTS, "video_understanding_enabled": True, "video_understanding_private_enabled": True}
+        plugin.staging = NS(
+            now=lambda: None,
+            context=None,
+            session=NS(application=NS(reply_settings=NS(capture=lambda _c, _a: {"settings": values}))),
+        )
+        pkg = f"{ENTRY.__package__}." if ENTRY.__package__ else ""
+        clip = b"\x00\x00\x00\x1cftypisom\x00\x00\x02\x00isomiso2" + b"\x00" * 64
+        seen_limits = []
+
+        async def strict_read(path, *, maximum_bytes=20 * 1024 * 1024):
+            seen_limits.append(maximum_bytes)
+            if maximum_bytes < 25 * 1024 * 1024:
+                raise TaskError("host_video_limit", "too big for 20mb")
+            return clip
+
+        req = NS(extra_user_content_parts=[TextPart(text="[Video Attachment: name big.mp4, path C:\\host\\temp\\big.mp4]")])
+        ev = NS(get_extra=lambda _k: {"prepared": {"context": context, "event_ref": "single-read"}})
+        fake_provider = NS(provider_config={"id": "almoons", "type": "openai_chat_completion"})
+        with (
+            patch(f"{pkg}astrbot_host.video.loader.read_host_resolved_video_bytes", side_effect=strict_read),
+            patch(f"{pkg}astrbot_host.video.core_understanding.select_native_video_routes", return_value=((fake_provider, "gpt-4o"),)),
+            patch(f"{pkg}astrbot_host.video.core_understanding.summarize_original_video", AsyncMock(return_value="大视频摘要")),
+        ):
+            await plugin._attach_core_reply_current_videos(ev, req)
+        self.assertEqual(seen_limits, [MAX_CORE_VIDEO_DOWNLOAD_BYTES])
+
+        # Also verify 1-arg monkeypatched test stub falls back cleanly on TypeError.
+        one_arg_calls = []
+
+        async def one_arg_stub(value):
+            one_arg_calls.append(value)
+            return clip
+
+        req2 = NS(extra_user_content_parts=[TextPart(text="[Video Attachment: name stub.mp4, path C:\\host\\temp\\stub.mp4]")])
+        with (
+            patch(f"{pkg}astrbot_host.video.loader.read_host_resolved_video_bytes", side_effect=one_arg_stub),
+            patch(f"{pkg}astrbot_host.video.core_understanding.select_native_video_routes", return_value=((fake_provider, "gpt-4o"),)),
+            patch(f"{pkg}astrbot_host.video.core_understanding.summarize_original_video", AsyncMock(return_value="桩函数摘要")),
+        ):
+            await plugin._attach_core_reply_current_videos(ev, req2)
+        self.assertEqual(one_arg_calls, ["C:\\host\\temp\\stub.mp4"])
+
+        # And verify _attach_core_reply_videos passes maximum_bytes on first call too.
+        fetch_limits = []
+
+        async def strict_fetch(locator, *, maximum_bytes=20 * 1024 * 1024):
+            fetch_limits.append((locator.locator, maximum_bytes))
+            return clip
+
+        group_ctx = NS(
+            scope=ScopeRef("inst", "qq-main", ScopeKind.GROUP, "300", "bot-a", "100", "conv-g", "300"),
+            actor=NS(subject=NS(subject_id="human-1")),
+            role_binding=NS(role=NS(subject_id="role-a")),
+        )
+        plugin_sources = __import__(f"{pkg}astrbot_host.core_reply_video_sources", fromlist=["*"])
+        plugin_sources.reset()
+        self.addCleanup(plugin_sources.reset)
+        gkey = plugin_sources.key_from_context(group_ctx)
+        plugin_sources.remember(gkey, (NativeVideoLocator(0, "https://cdn.example/big.mp4"),))
+        g_values = {**DEFAULTS, "video_understanding_enabled": True, "video_understanding_group_enabled": True}
+        plugin.staging = NS(
+            now=lambda: None,
+            context=None,
+            session=NS(application=NS(reply_settings=NS(capture=lambda _c, _a: {"settings": g_values}))),
+        )
+        g_req = NS(extra_user_content_parts=[])
+        with (
+            patch(f"{pkg}astrbot_host.video.loader.fetch_native_video_bytes", side_effect=strict_fetch),
+            patch(f"{pkg}astrbot_host.video.core_understanding.select_native_video_routes", return_value=((fake_provider, "gpt-4o"),)),
+            patch(f"{pkg}astrbot_host.video.core_understanding.summarize_original_video", AsyncMock(return_value="群大视频")),
+        ):
+            await plugin._attach_core_reply_videos({"context": group_ctx}, g_req, event=NS(get_extra=lambda _k: None))
+        self.assertEqual(fetch_limits, [("https://cdn.example/big.mp4", MAX_CORE_VIDEO_DOWNLOAD_BYTES)])
+
+    async def test_frame_budget_eviction_never_leaves_extracted_frames_placeholder_or_orphan_captions(self):
+        from companion_v2.conversation.media.models import MAX_TURN_FRAMES
+
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        context = _video_context(ScopeKind.PRIVATE)
+        values = {**DEFAULTS, "video_understanding_enabled": True, "video_understanding_private_enabled": True}
+        plugin.staging = NS(
+            now=lambda: None,
+            context=None,
+            session=NS(application=NS(reply_settings=NS(capture=lambda _c, _a: {"settings": values}))),
+        )
+        pkg = f"{ENTRY.__package__}." if ENTRY.__package__ else ""
+        clip = b"\x00\x00\x00\x1cftypisom\x00\x00\x02\x00isomiso2" + b"\x00" * 64
+        too_many_frames = tuple(NS(content=b"png-bytes") for _ in range(MAX_TURN_FRAMES + 1))
+        fake_video = NS(
+            descriptor=NS(
+                position=0,
+                mime_type="video/mp4",
+                duration_ms=1000,
+                retained_bytes=128,
+                frame_count=len(too_many_frames),
+                frames=tuple(NS(index=i) for i in range(len(too_many_frames))),
+            ),
+            content=clip,
+            frames=too_many_frames,
+        )
+        req = NS(
+            extra_user_content_parts=[
+                TextPart(text="[Video Attachment: name huge.mp4, path C:\\host\\temp\\huge.mp4]"),
+            ]
+        )
+        ev = NS(get_extra=lambda _k: {"prepared": {"context": context, "event_ref": "evict-1"}})
+        with (
+            patch(f"{pkg}astrbot_host.video.loader.read_host_resolved_video_bytes", AsyncMock(return_value=clip)),
+            patch(f"{pkg}astrbot_host.video.core_understanding.select_native_video_routes", return_value=()),
+            patch(f"{pkg}astrbot_host.video.container.inspect_container", return_value=NS(duration_ms=1000)),
+            patch(f"{pkg}astrbot_host.video.loader.decode_video", AsyncMock(return_value=fake_video)),
+        ):
+            await plugin._attach_core_reply_current_videos(ev, req)
+
+        self.assertEqual([p for p in req.extra_user_content_parts if getattr(p, "type", None) == "image_url"], [])
+        joined = "\n".join(getattr(p, "text", "") for p in req.extra_user_content_parts)
+        self.assertNotIn("已由陪伴提取关键帧", joined)
+        self.assertNotIn("已提取关键帧", joined)
+        self.assertNotIn("抽样画面帧", joined)
+        self.assertNotIn("已按时间顺序抽取", joined)
+        self.assertNotIn("C:\\host\\temp\\huge.mp4", joined)
+        self.assertIn("抽帧超出本轮预算", joined)
+        self.assertIn("<companion_video_notice>", joined)
+        self.assertEqual(video_request_state(req), "absent")
+
+    def test_sanitize_video_error_extracts_apierror_code_and_compressor_does_not_overshoot_timeout(self):
+        class FakeAPIError(Exception):
+            def __init__(self, code, message):
+                super().__init__(message)
+                self.code = code
+
+        api_err = FakeAPIError(429, "Quota exceeded")
+        sanitized = sanitize_video_error(api_err)
+        self.assertIn("HTTP 429", sanitized)
+
+        wrapped = RuntimeError("outer failure")
+        wrapped.__cause__ = FakeAPIError(503, "Service unavailable")
+        self.assertIn("HTTP 503", sanitize_video_error(wrapped))
+
+        # Compressor pass loop MUST break when budget is exhausted instead of launching extra 5s+ passes.
+        fake_mkv = b"\x1a\x45\xdf\xa3" + b"\x00" * 128
+        encode_calls = []
+        clock = [0.0]
+
+        def fake_monotonic():
+            return clock[0]
+
+        def fake_subproc(args, *, timeout):
+            exe = Path(args[0]).name.lower()
+            if "ffprobe" in exe:
+                return 0, b'{"format":{"format_name":"matroska,webm","duration":"2.0"},"streams":[]}', b""
+            encode_calls.append((args, timeout))
+            # Simulate first ffmpeg pass consuming the entire 1.0s budget and returning failure.
+            clock[0] += 1.2
+            return 1, b"", b"encode failed"
+
+        with (
+            patch("astrbot_host.video.compressor.resolve_ffmpeg_tools", return_value=("ffmpeg", "ffprobe")),
+            patch("astrbot_host.video.compressor._run_subprocess", side_effect=fake_subproc),
+            patch("astrbot_host.video.compressor.time.monotonic", side_effect=fake_monotonic),
+            self.assertRaises(TaskError) as caught,
+        ):
+            compress_video(fake_mkv, suffix=".mp4", target_bytes=1024 * 1024, timeout=1.0)
+        self.assertEqual(caught.exception.code, "host_video_compress_timeout")
+        # Must NOT have launched a second pass or fallback codec after budget exhaustion!
+        self.assertEqual(len(encode_calls), 1)
+        self.assertLessEqual(encode_calls[0][1], 1.0)

@@ -6,9 +6,12 @@ import asyncio
 import base64
 from dataclasses import dataclass
 import re
+import time
 from typing import Any
 
+from companion_v2.adapters.astrbot.provider_transport import extract_error_status_code
 from companion_v2.execution.models import TaskError
+from .limits import format_seconds
 
 try:
     from astrbot.core.provider.sources.gemini_source import ProviderGoogleGenAI
@@ -207,8 +210,8 @@ def extract_relay_route_info(provider: Any, model: str = "") -> RelayRouteInfo:
 def sanitize_video_error(error: BaseException, *, secrets: tuple[str, ...] = ()) -> str:
     """Return a concise error summary with keys, bearer tokens and URLs redacted."""
     text = f"{type(error).__name__}: {error}".strip()
-    status = getattr(error, "status_code", None)
-    if type(status) is int and 100 <= status <= 599 and str(status) not in text:
+    status = extract_error_status_code(error)
+    if status is not None and str(status) not in text:
         text = f"HTTP {status} {text}"
     for secret in secrets:
         if isinstance(secret, str) and len(secret) >= 4:
@@ -299,6 +302,10 @@ def _output_token_field(model: str, protocol: str) -> str:
     return "max_tokens"
 
 
+def _encode_video_data_uri(content: bytes, mime_type: str) -> str:
+    return f"data:{mime_type};base64,{base64.b64encode(content).decode('ascii')}"
+
+
 async def relay_video_with_openai_compat(
     provider: Any,
     model: str,
@@ -313,9 +320,14 @@ async def relay_video_with_openai_compat(
     info = extract_relay_route_info(provider, model)
     if not info.model:
         raise TaskError("video_narration_unavailable", "OpenAI 兼容视觉模型未配置模型名。")
-    encoded = base64.b64encode(content).decode("ascii")
-    data_uri = f"data:{mime_type};base64,{encoded}"
-    timeout_s = max(1.0, float(wait_seconds))
+    budget = float(wait_seconds)
+    if budget <= 0:
+        raise TaskError("video_narration_timeout", "视觉中转视频理解等待预算已耗尽。")
+    deadline = time.monotonic() + budget
+    data_uri = await asyncio.to_thread(_encode_video_data_uri, content, mime_type)
+    timeout_s = deadline - time.monotonic()
+    if timeout_s <= 0:
+        raise TaskError("video_narration_timeout", f"视觉中转视频理解超时（{format_seconds(budget)}）。")
     secrets = (info.api_key,) if info.api_key else ()
     client = getattr(provider, "client", None)
 
@@ -344,7 +356,7 @@ async def relay_video_with_openai_compat(
                 }
                 if info.custom_extra_body:
                     kwargs["extra_body"] = dict(info.custom_extra_body)
-                raw = await asyncio.wait_for(target_client.responses.create(**kwargs), timeout_s)
+                raw = await asyncio.wait_for(target_client.responses.create(**kwargs), timeout=timeout_s)
             else:
                 raw = await _post_openai_json(
                     info,
@@ -384,7 +396,7 @@ async def relay_video_with_openai_compat(
                 }
                 if info.custom_extra_body:
                     kwargs["extra_body"] = dict(info.custom_extra_body)
-                raw = await asyncio.wait_for(target_client.chat.completions.create(**kwargs), timeout_s)
+                raw = await asyncio.wait_for(target_client.chat.completions.create(**kwargs), timeout=timeout_s)
             else:
                 raw = await _post_openai_json(
                     info,
@@ -402,7 +414,7 @@ async def relay_video_with_openai_compat(
     except asyncio.TimeoutError as error:
         raise TaskError(
             "video_narration_timeout",
-            f"视觉中转视频理解超时（{timeout_s:.0f} 秒）。",
+            f"视觉中转视频理解超时（{format_seconds(budget)}）。",
         ) from error
     except Exception as error:
         raise TaskError(
@@ -429,23 +441,31 @@ async def _post_openai_json(
     except ImportError as error:  # pragma: no cover
         raise TaskError("video_narration_unavailable", "缺少 httpx 客户端，无法调用视觉中转接口。") from error
 
+    timeout_val = float(timeout_s)
+    if timeout_val <= 0:
+        raise asyncio.TimeoutError()
+
     url = f"{info.endpoint_url}{path}"
     headers = {"Content-Type": "application/json", **info.custom_headers}
     if info.api_key:
         headers["Authorization"] = f"Bearer {info.api_key}"
-    client_kwargs: dict[str, Any] = {"timeout": timeout_s, "headers": headers}
+    client_kwargs: dict[str, Any] = {"timeout": timeout_val, "headers": headers}
     if info.proxy:
         client_kwargs["proxy"] = info.proxy
-    async with httpx.AsyncClient(**client_kwargs) as http_client:
-        response = await http_client.post(url, json=body)
-        if response.status_code >= 400:
-            snippet = response.text.strip()[:200] if isinstance(response.text, str) else ""
-            safe_detail = sanitize_video_error(
-                RuntimeError(f"HTTP {response.status_code}: {snippet}"),
-                secrets=(info.api_key,) if info.api_key else (),
-            )
-            raise TaskError("video_narration_failed", f"视觉中转接口返回错误（{safe_detail}）。")
-        data = response.json()
-        if not isinstance(data, dict):
-            raise TaskError("video_narration_empty", "视觉中转接口返回了非 JSON 对象响应。")
-        return data
+
+    async def _send_and_read() -> dict[str, Any]:
+        async with httpx.AsyncClient(**client_kwargs) as http_client:
+            response = await http_client.post(url, json=body)
+            if response.status_code >= 400:
+                snippet = response.text.strip()[:200] if isinstance(response.text, str) else ""
+                safe_detail = sanitize_video_error(
+                    RuntimeError(f"HTTP {response.status_code}: {snippet}"),
+                    secrets=(info.api_key,) if info.api_key else (),
+                )
+                raise TaskError("video_narration_failed", f"视觉中转接口返回错误（{safe_detail}）。")
+            data = response.json()
+            if not isinstance(data, dict):
+                raise TaskError("video_narration_empty", "视觉中转接口返回了非 JSON 对象响应。")
+            return data
+
+    return await asyncio.wait_for(_send_and_read(), timeout=timeout_val)

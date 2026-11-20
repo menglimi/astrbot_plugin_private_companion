@@ -192,7 +192,7 @@ class MultiPrivateBridge(NativePrivateBridge):
                 raise TaskError("host_client_mismatch", "private host account changed during persona lookup")
             self.client(scope)
             recipients = AudienceRef(scope, (actor.subject,))
-            from companion_v2.adapters.astrbot.group_mentions import VOICE_TRANSCRIPT_PREFIX, trusted_stt_transcript
+            from companion_v2.adapters.astrbot.voice_stt import VOICE_TRANSCRIPT_PREFIX, trusted_stt_transcript
 
             stt_text = trusted_stt_transcript(event)
             stt_used = False

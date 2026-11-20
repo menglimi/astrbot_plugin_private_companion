@@ -23,10 +23,8 @@ from .native import (NativeAudioLocator, NativeConversationInput, NativePrivateB
                      route_id, supported_platform_name)
 from .quotes import NativeQuoteLocator, image_locator
 from .forwards import NativeForwardLocator, resource_id
-from .group_mentions import (
-    VOICE_TRANSCRIPT_PREFIX, group_message_parts, group_message_text,
-    current_mention_text, trusted_stt_extra_transcript, trusted_stt_transcript,
-)
+from .group_mentions import group_message_parts, group_message_text, current_mention_text
+from .voice_stt import VOICE_TRANSCRIPT_PREFIX, trusted_stt_extra_transcript, trusted_stt_transcript
 from companion_v2.conversation.group_timing import SELF_MENTION
 from .files import file_locator, prepare_file_text, MAX_FILES
 

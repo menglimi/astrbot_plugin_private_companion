@@ -16,7 +16,7 @@ from urllib.request import url2pathname
 from companion_v2.conversation.media.understanding import ASTRBOT_ANIMATED_IMAGE_INSTRUCTION
 from companion_v2.conversation.voice_reply import VoiceReplyPolicy
 from companion_v2.conversation.private_reply_context import INSTRUCTION as PRIVATE_REPLY_INSTRUCTION
-from companion_v2.adapters.astrbot.group_mentions import (
+from companion_v2.adapters.astrbot.voice_stt import (
     VOICE_TRANSCRIPT_PREFIX,
     trusted_stt_extra_transcript,
     trusted_stt_extra_with_source,
