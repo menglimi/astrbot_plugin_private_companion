@@ -261,6 +261,25 @@ class LinkedOwnerTests(LinkedReplyFixture, unittest.IsolatedAsyncioTestCase):
                          ("error", "conversation_link_account_link_conflict"))
         self.assertIsNone(self.controller.session.linked_conversations.get("owner-dialogue"))
 
+    async def test_an_account_link_saved_while_a_link_edit_waits_leaves_exactly_one_of_them_saved(self):
+        first = (await self.turn(0, "Hello", "race-owner"))["context"]
+        second = (await self.turn(1, "Hello", "race-other"))["context"]
+        manager = self.controller.session.linked_conversations
+        original, saved = manager.settings, []
+
+        async def settings(*args):
+            # The association lands while the link edit waits on its own checks.
+            if not saved:
+                saved.append(await self.associate(first, second))
+            return await original(*args)
+        manager.settings = settings
+        self.addCleanup(setattr, manager, "settings", original)
+        linked = await self.link()
+        self.assertEqual(saved[0]["status"], "ok", saved[0])
+        self.assertEqual((linked["status"], linked["data"].get("code")),
+                         ("error", "conversation_link_account_link_conflict"))
+        self.assertIsNone(manager.get("owner-dialogue"))
+
     async def test_a_linked_scope_of_another_installation_has_no_account_on_this_bridge(self):
         from dataclasses import replace
         self.assertEqual((await self.link())["status"], "ok")
