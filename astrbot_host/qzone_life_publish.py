@@ -175,6 +175,12 @@ class QzoneLifePublisher:
         profile_target = getattr(getattr(session, "profile", None), "target", None)
         if profile_target is not None:
             return (profile_target,)
+        # Fork: no autonomous life posts from multi-host sessions (7.2.6 behaviour).
+        # The Qzone transport credential is not bound to the publishing account, and
+        # the diary material is not scoped to the conversation, so a post could go out
+        # under the wrong QQ account or carry another conversation's diary. Re-enable
+        # once upstream binds both; the multi-host resolution below stays for merges.
+        return ()
         authority = getattr(session, "authority", None)
         settings = getattr(session, "settings", None)
         if authority is None or settings is None:

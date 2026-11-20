@@ -272,7 +272,37 @@ class SingleHostPublisherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second, {"reason": "interval"})
 
 
+_FORK_MULTI_HOST_OFF = "fork: no autonomous life posts from multi-host sessions (see qzone_life_publish._target_contexts)"
+
+
 class MultiHostPublisherTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_fork_multi_host_session_never_drafts_or_publishes_a_life_post(self):
+        transport = FakeTransport()
+        with patch("astrbot_host.multi_controller.build_qzone_transport", return_value=transport):
+            app = await self.start_host()
+        session = self.controller.session
+        context, _ = await session.synchronize(session.settings.target("first"))
+        at = self.clock.now()
+
+        # Every gate is open: the single-host path would publish here.
+        _configure_qzone_role(self.controller, context, at, op_prefix="fork-multi-off")
+        _save_role_profile_and_diary(
+            self.controller, context, at,
+            name="星缘", personality="细腻克制",
+            diary_body="午后去楼下买了热柠檬茶。", op_prefix="fork-multi-off",
+        )
+
+        publisher = QzoneLifePublisher(self.controller, draw=lambda: 0.0)
+        draft_reply = NS(completion_text="午后下楼买了杯热柠檬茶。")
+        with patch.object(self.native.provider, "text_chat", AsyncMock(return_value=draft_reply)) as chat:
+            result = await publisher.tick(now=at)
+
+        self.assertEqual(result, {"reason": "qzone_unavailable"})
+        self.assertEqual(chat.await_count, 0)
+        self.assertEqual(transport.sent, [])
+        self.assertEqual(app.qzone.state(context).last_action_at, {})
+
+    @unittest.skip(_FORK_MULTI_HOST_OFF)
     async def test_multi_host_resolves_context_profile_and_publishes(self):
         transport = FakeTransport()
         with patch("astrbot_host.multi_controller.build_qzone_transport", return_value=transport):
@@ -315,6 +345,7 @@ class MultiHostPublisherTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(req.description == "post.publish" for req in transport.sent))
         self.assertEqual(app.qzone.state(context).publish_count, 1)
 
+    @unittest.skip(_FORK_MULTI_HOST_OFF)
     async def test_multi_host_prefers_consented_window_when_first_window_lacks_consent(self):
         transport = FakeTransport()
         with patch("astrbot_host.multi_controller.build_qzone_transport", return_value=transport):
@@ -341,6 +372,7 @@ class MultiHostPublisherTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat.await_count, 1)
         self.assertTrue(any(req.description == "post.publish" for req in transport.sent))
 
+    @unittest.skip(_FORK_MULTI_HOST_OFF)
     async def test_multi_host_handles_wildcard_target_and_skips_disabled_other_role(self):
         config = multi_config()
         config["multi_host"]["targets"] = [
@@ -395,6 +427,7 @@ class MultiHostPublisherTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIn("晚上散步经过河堤听见街头弹吉他。", prompt)
         self.assertTrue(any(req.description == "post.publish" for req in transport.sent))
 
+    @unittest.skip(_FORK_MULTI_HOST_OFF)
     async def test_multi_host_respects_persona_switch_and_never_publishes_retired_role(self):
         config = multi_config()
         config["multi_host"]["personas"] = [
@@ -436,6 +469,7 @@ class MultiHostPublisherTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat.await_count, 0)
         self.assertEqual(transport.sent, [])
 
+    @unittest.skip(_FORK_MULTI_HOST_OFF)
     async def test_multi_host_unauthorized_zone_does_not_spend_model_or_lock_attempt(self):
         transport = FakeTransport()
         with patch("astrbot_host.multi_controller.build_qzone_transport", return_value=transport):
@@ -464,6 +498,7 @@ class MultiHostPublisherTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(chat.await_count, 1)
             self.assertTrue(any(req.description == "post.publish" for req in transport.sent))
 
+    @unittest.skip(_FORK_MULTI_HOST_OFF)
     async def test_multi_host_falls_back_to_persona_mapping_when_active_key_absent_and_skips_groups(self):
         config = multi_config()
         config["multi_host"]["group_targets"] = [
