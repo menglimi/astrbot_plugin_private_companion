@@ -14,10 +14,10 @@ from companion_v2.capabilities.models import CapabilityAuthorizationState, Capab
 from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.execution.models import TaskError, digest, encode, require
 from companion_v2.foundation.refs import OperationRef, ScopeKind, VersionRef
-from companion_v2.identity_policy.models import AuthorizationTier
+from companion_v2.identity_policy.models import AuthorizationTier, GrantState
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
 from companion_v2.identity_policy.repository import PersistentIdentityDirectory
-from companion_v2.qzone.capability import CAPABILITIES, EXTENSION
+from companion_v2.qzone.capability import CAPABILITIES, EXTENSION, PUBLISH_ACTION
 from companion_v2.qzone.capability import package_descriptor
 from companion_v2.qzone.topics import SCENES, TOPIC_SPECS, allowed_scenes
 from companion_v2.storage.codec import scope_values
@@ -139,12 +139,14 @@ class QzoneAccess:
                          for capability, row in consents.items()}
             granted = self.identities.authorize(self.context.actor, scope=self.context.scope,
                                                 capability=INVOKE_CAPABILITY, observed_at=at).is_success
+            publish_granted = self.identities.authorize(self.context.actor, scope=self.context.scope,
+                                                        capability=PUBLISH_ACTION, observed_at=at).is_success
             reason = ("qzone_not_installed" if installed is None else
                       "qzone_package_changed" if not same else
                       "qzone_not_active" if not active else
                       "qzone_role_disabled" if not role_enabled else
                       "qzone_consent_missing" if not any(consented.values()) else
-                      "qzone_grant_missing" if not granted else "")
+                      "qzone_grant_missing" if not (granted and publish_granted) else "")
             runtime = self.service.status(self.context, at) if self.service is not None else {}
             runtime = dict(runtime or {})
             # ``QzoneService.status`` states the credential conclusion in the same
@@ -156,7 +158,8 @@ class QzoneAccess:
                 credential = self._credential()
             return {"extension_id": EXTENSION, "package_version": self.package.package_version,
                     "installed": installed is not None, "active": active, "role_enabled": role_enabled,
-                    "consented": consented, "invoke_granted": granted, "reason": reason,
+                    "consented": consented, "invoke_granted": granted, "publish_granted": publish_granted,
+                    "reason": reason,
                     "credential": dict(credential or {}), "runtime": runtime,
                     "capabilities": list(CAPABILITIES),
                     "catalogue": catalogue((runtime or {}).get("settings")),
@@ -203,12 +206,15 @@ class QzoneAccess:
                     require(self.repository.set_role_enabled(extension_id=EXTENSION,
                         role=context.role_binding.role, bot_id=context.scope.bot_id, enabled=True,
                         expected_revision=selection.revision if selection else 0, observed_at=at))
-                if not self.identities.authorize(context.actor, scope=context.scope,
-                        capability=INVOKE_CAPABILITY, observed_at=at).is_success:
-                    binding = next(item for item in self.identities.snapshot().bindings
-                                   if item.binding_id == context.actor.binding_id)
-                    self.identities.issue_grant(grant_id="qzone-invoke:" + key,
-                        subject=context.actor.subject, scope=context.scope, capability=INVOKE_CAPABILITY,
+                binding = next(item for item in self.identities.snapshot().bindings
+                               if item.binding_id == context.actor.binding_id)
+                for capability in (INVOKE_CAPABILITY, *CAPABILITIES):
+                    if self.identities.authorize(context.actor, scope=context.scope,
+                            capability=capability, observed_at=at).is_success:
+                        continue
+                    prefix = "qzone-invoke:" if capability == INVOKE_CAPABILITY else "qzone-access:"
+                    self.identities.issue_grant(grant_id=prefix + key + ":" + capability,
+                        subject=context.actor.subject, scope=context.scope, capability=capability,
                         tier=AuthorizationTier.STANDARD, valid_from=at, expires_at=binding.expires_at,
                         expected_revision=self.identities.revision)
             # Revocation only clears this participant's consent; the role switch and
@@ -220,6 +226,14 @@ class QzoneAccess:
                         subject=context.actor.subject, scope=context.scope,
                         state=CapabilityAuthorizationState.ACTIVE if enabled else CapabilityAuthorizationState.REVOKED,
                         expected_revision=row["revision"] if row else 0, observed_at=at))
+            if not enabled:
+                owned_capabilities = {*CAPABILITIES, INVOKE_CAPABILITY}
+                for grant in self.identities.snapshot().grants:
+                    if (grant.grant_id.startswith(("qzone-invoke:", "qzone-access:"))
+                            and grant.subject == context.actor.subject and grant.scope == context.scope
+                            and grant.capability in owned_capabilities and grant.state is GrantState.ACTIVE):
+                        self.identities.revoke_grant(grant.grant_id, revoked_at=at,
+                            expected_revision=self.identities.revision)
             require(operations.transition(operation.operation_id, expected_state=OperationState.ACCEPTED,
                                           next_state=OperationState.COMPLETED, observed_at=at))
             return {"replayed": False, "status": self.status(operator, at)}

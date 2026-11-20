@@ -324,7 +324,8 @@ class PreferredOutcomeTests(PreferredChannelFixture, unittest.IsolatedAsyncioTes
         _, context, occurrence = await self.linked_reminder(0, "take a break")
         self.telegram.application.running = False
         report = await self.settled(context, occurrence)
-        self.assertEqual((report["delivery"], report["reason"]), ("cancelled", "host_account_changed"))
+        # Upstream's connection layer names a disconnected client offline, not changed.
+        self.assertEqual((report["delivery"], report["reason"]), ("cancelled", "host_account_offline"))
         self.telegram.application.running = True
         await self.idle()
         self.assertEqual((self.telegram_texts(), self.qq_texts()), ([], []))
@@ -336,7 +337,8 @@ class PreferredOutcomeTests(PreferredChannelFixture, unittest.IsolatedAsyncioTes
         connected = dict(clients)
         clients.clear()
         report = await self.settled(context, occurrence)
-        self.assertEqual((report["delivery"], report["reason"]), ("cancelled", "host_account_changed"))
+        # Upstream's connection layer names a disconnected client offline, not changed.
+        self.assertEqual((report["delivery"], report["reason"]), ("cancelled", "host_account_offline"))
         clients.update(connected)
         await self.idle()
         self.assertEqual((self.telegram_texts(), self.qq_texts()), ([], []))

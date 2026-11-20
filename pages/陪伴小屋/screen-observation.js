@@ -89,7 +89,7 @@ window.CompanionScreenObservation = (() => {
   function mount(host) {
     unmount(); node = host; if (!node) return;
     scope = product.scopeKey();
-    try { path = product.relative(product.role()?.screen_access_api || ""); } catch (_) { path = ""; }
+    try { path = product.relative((product.windowRole ? product.windowRole() : product.role())?.screen_access_api || ""); } catch (_) { path = ""; }
     if (!path || product.target()?.scope_kind !== "private") { notice = "请选择已绑定的私聊窗口查看最后一次主动识屏。"; render(); return; }
     node.addEventListener("click", click); render(); void load();
   }

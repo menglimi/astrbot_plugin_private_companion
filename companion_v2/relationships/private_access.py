@@ -36,7 +36,7 @@ DEFAULT_FOR_CAPABILITY = {DIALOGUE_CAPABILITY: "dialogue", PROACTIVE_CAPABILITY:
 #: 撤回/过期/从未签发：这三种结果都表示"这个人现在没有这项权限"，
 #: 而不是"宿主配置坏了"。授权层给出别的结论（例如另一张 grant 顶替）时仍然要报错。
 REVOCABLE_ABSENCE_CODES = frozenset({"authorization_revoked", "authorization_expired",
-                                     "authorization_denied", "scope_not_granted"})
+                                     "authorization_denied", "scope_not_granted", "account_link_permission_disabled"})
 
 #: The product default for a first private message: answer, but never reach out first.
 DIALOGUE_DEFAULT = True

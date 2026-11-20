@@ -14,6 +14,7 @@ import unittest
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA
 from companion_v2.execution.models import require
 from companion_v2.memory.models import AtomRef, Proposal
+from tests import test_linked_owners as owners
 from tests import test_telegram_text_tools as text_tools
 from tests.linked_reply_support import RecordedConversations, TELEGRAM_OWNER
 from tests.multi_host_support import MultiFixture, multi_config
@@ -104,6 +105,7 @@ class TelegramAloneFixture(PreferredChannelFixture):
         saved = await self.controller.apply_bindings(candidate)
         self.assertTrue(saved["started"], saved)
         self.app = self.controller.session.application
+        await self.recovered()
         return saved
 
     async def new_process(self):
@@ -116,6 +118,7 @@ class TelegramAloneFixture(PreferredChannelFixture):
         started = await self.controller.start()
         self.assertTrue(started.is_success, started.failure)
         self.app = self.controller.session.application
+        await self.recovered()
 
     async def history_seen_from(self, origin):
         cid = await self.manager.get_curr_conversation_id(origin)
@@ -125,10 +128,16 @@ class TelegramAloneFixture(PreferredChannelFixture):
         """What the human and the companion said, without the tool traffic in between."""
         return [text for text in await self.history_seen_from(origin) if text and not text.startswith("{")]
 
-    def health(self):
+    async def recovered(self):
+        """Upstream binds accounts in the background after a start; wait for it like its recovery tests."""
+        await self.controller.session.account_recovery.refresh(wait=True)
+
+    async def health(self):
+        await self.recovered()
         status = self.controller.status()
         return ((status["state"], status["accepting"], status["last_failure"]),
-                {row["platform_id"]: (row["available"], row["code"]) for row in status["accounts"]})
+                {row["platform_id"]: (row["state"] == "online", row["reason_code"] or None)
+                 for row in status["account_connections"]})
 
     def link_record(self):
         return self.controller.session.linked_conversations.get("owner-dialogue")
@@ -155,7 +164,7 @@ class TelegramAloneFixture(PreferredChannelFixture):
             operation=OperationRef(identifier, GROUP, target.authorization_scope, VersionRef(identifier, 1), identifier),
             observed_at=now))
 
-    async def proactive_text(self, prepared, text):
+    async def proactive_text(self, prepared, text, **options):
         """The host composes one proactive text for this window; what became of its delivery."""
         from companion_v2.proactive.contact_models import ContactIntent
         from companion_v2.proactive.models import EvidenceSnapshot, Opportunity, Thought, ThoughtKind
@@ -169,7 +178,8 @@ class TelegramAloneFixture(PreferredChannelFixture):
         intent = ContactIntent("chat", Thought("thought-" + text, opportunity, ThoughtKind.CONVERSATION,
             "a thought not yet sent", EvidenceSnapshot(context.scope, now, ()), 1.0))
         task = require(await self.app.proactive.contact(context, opportunity, (intent,),
-            role_instruction=prepared["instruction"], selection_seed="seed-" + text)).task
+            role_instruction=prepared["instruction"], selection_seed="seed-" + text, **options)).task
+        self.contact_task = task
         async with asyncio.timeout(30):
             while True:
                 self.app.notify()
@@ -243,7 +253,7 @@ class RetiredQQScenario(TelegramAloneFixture):
         from companion_v2.conversation.reply_settings import ReplyConfigurationOwner, target_for
         from companion_v2.model_gateway.core_observations import observations_for_role
         from companion_v2.role_work.state.ownership import role_schedule_key
-        self.assertEqual(self.health()[0], ("running", True, None))
+        self.assertEqual((await self.health())[0], ("running", True, None))
         prepared = await self.turn(1, "still here", 10)
         context = prepared["context"]
         # The same conversation and history, on the same stored owners.
@@ -323,8 +333,8 @@ class DisconnectedQQTests(RetiredQQScenario, unittest.IsolatedAsyncioTestCase):
     async def test_telegram_keeps_the_conversation_while_the_qq_client_is_disconnected(self):
         await self.before_retirement()
         self.qq_disconnect()
-        self.assertEqual(self.health(), (("running", True, None),
-            {"qq-main": (False, "host_account_unavailable"), "tg-main": (True, None)}))
+        self.assertEqual((await self.health()), (("running", True, None),
+            {"qq-main": (False, "host_account_offline"), "tg-main": (True, None)}))
         self.nothing_goes_to_qq_from_here()
         fresh = await self.telegram_commands_and_controls(await self.telegram_keeps_the_conversation())
         self.assertEqual(self.sent_to_qq(), [])
@@ -338,8 +348,8 @@ class DisconnectedQQTests(RetiredQQScenario, unittest.IsolatedAsyncioTestCase):
         await self.before_retirement()
         self.native.platforms.pop("qq-main")
         await self.new_process()
-        self.assertEqual(self.health()[1]["qq-main"], (False, "host_platform_unavailable"))
-        self.assertEqual(self.health()[1]["tg-main"], (True, None))
+        self.assertEqual((await self.health())[1]["qq-main"], (False, "host_platform_unavailable"))
+        self.assertEqual((await self.health())[1]["tg-main"], (True, None))
         await self.telegram_commands_and_controls(await self.telegram_keeps_the_conversation())
 
 
@@ -357,10 +367,10 @@ class NoQQConfiguredTests(RetiredQQScenario, unittest.IsolatedAsyncioTestCase):
     async def test_telegram_keeps_the_conversation_with_qq_removed_from_configuration(self):
         await self.before_retirement()
         await self.remove_qq_from_configuration()
-        self.assertEqual(self.health(), (("running", True, None), {"tg-main": (True, None)}))
+        self.assertEqual((await self.health()), (("running", True, None), {"tg-main": (True, None)}))
         fresh = await self.telegram_commands_and_controls(await self.telegram_keeps_the_conversation())
         await self.new_process()
-        self.assertEqual(self.health(), (("running", True, None), {"tg-main": (True, None)}))
+        self.assertEqual((await self.health()), (("running", True, None), {"tg-main": (True, None)}))
         prepared = await self.turn(1, "after a restart", 30)
         self.assertEqual(await self.manager.get_curr_conversation_id(TELEGRAM), fresh)
         self.assertEqual((await self.spoken_on(TELEGRAM))[-2:], ["after a restart", "reply-B"])
@@ -437,7 +447,8 @@ class PreferredQQUnavailableTests(TelegramAloneFixture, unittest.IsolatedAsyncio
         self.nothing_goes_to_qq_from_here()
         self.assertEqual((await self.link_view())["background_destination"], "unavailable")
         report = await self.settled(context, first)
-        self.assertEqual((report["delivery"], report["reason"]), ("cancelled", "host_account_changed"))
+        # Upstream's connection layer names a disconnected client offline, not changed.
+        self.assertEqual((report["delivery"], report["reason"]), ("cancelled", "host_account_offline"))
         self.assertEqual(self.telegram_texts(), [])
         await self.select_telegram_and_wait_for(context, later)
         self.qq_connect()
@@ -533,6 +544,39 @@ class ProactiveAfterRetirementTests(TelegramAloneFixture, unittest.IsolatedAsync
         self.assertNotEqual(self.schedule_decision(telegram), self.superseded)
         self.assertEqual(await self.proactive_text(telegram, "thinking of you"), "delivered")
         self.assertEqual(self.telegram_texts(), [(OWNER, "thinking of you")])
+
+
+class PinnedDiagnosticTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestCase):
+    """An administrator's diagnostic contact goes to the window it was run for."""
+
+    async def test_a_diagnostic_pinned_to_qq_is_delivered_and_reported_on_qq_while_telegram_is_preferred(self):
+        from astrbot_host.setup_api import SetupWebAPI
+        self.assertEqual((await self.link(preferred_target_id="second"))["status"], "ok")
+        qq = await self.turn(0, "hello", "1")
+        telegram = await self.turn(1, "hello", 2)
+        self.consent_to_contact(qq["context"], telegram["context"])
+        self.enable_contact(qq["context"])
+        self.nothing_goes_to_qq_from_here()
+        self.assertEqual(await self.proactive_text(qq, "a diagnostic", administrator_test=True), "delivered")
+        self.assertEqual(([text for _, text in self.qq_texts()], self.telegram_texts()), (["a diagnostic"], []))
+        reported = SetupWebAPI._diagnostic_delivery_targets(self.controller.session, qq["context"],
+                                                            self.contact_task.task_id)
+        self.assertEqual([row["platform_id"] for row in reported], ["qq-main"])
+
+    async def test_a_diagnostic_that_allows_forwarding_is_reported_on_the_telegram_it_reached(self):
+        from astrbot_host.setup_api import SetupWebAPI
+        self.assertEqual((await self.link(preferred_target_id="second"))["status"], "ok")
+        qq = await self.turn(0, "hello", "1")
+        telegram = await self.turn(1, "hello", 2)
+        self.consent_to_contact(qq["context"], telegram["context"])
+        self.enable_contact(qq["context"])
+        self.nothing_goes_to_qq_from_here()
+        self.assertEqual(await self.proactive_text(qq, "a forwarded diagnostic", administrator_test=True,
+                                                   diagnostic_allow_linked_accounts=True), "delivered")
+        self.assertEqual(([text for _, text in self.qq_texts()], len(self.telegram_texts())), ([], 1))
+        reported = SetupWebAPI._diagnostic_delivery_targets(self.controller.session, qq["context"],
+                                                            self.contact_task.task_id)
+        self.assertEqual([row["platform_id"] for row in reported], ["tg-main"])
 
 
 class ContactLedgerFixture(TelegramAloneFixture):
@@ -791,7 +835,8 @@ class ScheduleCarrierTests(ContactLedgerFixture, unittest.IsolatedAsyncioTestCas
                 self.assertEqual(self.app.state, "running", self.app.failure_code)
                 await asyncio.sleep(0.05)
         await self.contact_recorded(telegram)
-        self.assertEqual(await self.evaluated(qq, telegram), [self.superseded, "recent_attempt_cooldown"])
+        # Upstream's connection gate skips the disconnected QQ window before the linked-conversation check.
+        self.assertEqual(await self.evaluated(qq, telegram), ["host_account_offline", "recent_attempt_cooldown"])
         self.assertEqual((self.telegram_texts(), self.sent_to_qq()), ([(OWNER, "thinking of you")], []))
         self.assertEqual((self.link_record()["preferred_target_id"], (await self.link_view())["background_destination"]),
                          ("second", "selected"))
@@ -830,6 +875,43 @@ class ScheduleCarrierTests(ContactLedgerFixture, unittest.IsolatedAsyncioTestCas
         self.assertEqual(await self.evaluated(back, telegram), ["recent_attempt_cooldown", self.superseded])
         await self.idle()
         self.assertEqual((self.telegram_texts(), self.qq_texts()), ([(OWNER, "thinking of you")], []))
+
+
+class LinkedContactFenceTests(ContactLedgerFixture, unittest.IsolatedAsyncioTestCase):
+    """A linked contact is sent by the member that receives it, whatever window composed it."""
+
+    async def test_a_contact_composed_on_qq_reaches_telegram_when_qq_drops_before_it_is_sent(self):
+        from companion_v2.proactive.contact_models import ContactIntent
+        from companion_v2.proactive.models import EvidenceSnapshot, Opportunity, Thought, ThoughtKind
+        from tests.native_adapter_support import completion
+        qq, _ = await self.both_have_spoken(last=0)
+
+        async def compose(payload, tools):
+            return completion(json.dumps({"decision": "send", "text": "thinking of you"}))
+        self.native.provider.client.state.behavior = compose
+        guard = self.app.tasks.execution_guard
+        finished = guard.finished
+
+        def composed_then_qq_drops(spec, definition, state):
+            finished(spec, definition, state)
+            # QQ's window composed the contact and queued its delivery; QQ drops before it is sent.
+            if spec.kind == "proactive.compose" and state == "succeeded":
+                self.qq_disconnect()
+        guard.finished = composed_then_qq_drops
+        context, now = qq["context"], self.clock.now()
+        opportunity = Opportunity("opportunity-drop", context.scope, now, now + timedelta(minutes=5))
+        intent = ContactIntent("chat", Thought("thought-drop", opportunity, ThoughtKind.CONVERSATION,
+            "a thought not yet sent", EvidenceSnapshot(context.scope, now, ()), 1.0))
+        task = require(await self.app.proactive.contact(context, opportunity, (intent,),
+            role_instruction=qq["instruction"], selection_seed="seed-drop")).task
+        async with asyncio.timeout(30):
+            while (row := self.app.proactive._delivery_row(task.task_id)) is None or row["state"] in (
+                    "pending", "dispatched"):
+                self.app.notify()
+                self.assertEqual(self.app.state, "running", self.app.failure_code)
+                await asyncio.sleep(0.05)
+        self.assertEqual(row["state"], "delivered", dict(row))
+        self.assertEqual((self.telegram_texts(), self.sent_to_qq()), ([(OWNER, "thinking of you")], []))
 
 
 class UnlinkAndRelinkQQTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestCase):
@@ -991,7 +1073,7 @@ class OneCompanionWithoutQQTests(TelegramAloneFixture, unittest.IsolatedAsyncioT
         await self.remove_qq_from_configuration()
         await self.new_process()
 
-        self.assertEqual(self.health(), (("running", True, None), {"tg-main": (True, None)}))
+        self.assertEqual((await self.health()), (("running", True, None), {"tg-main": (True, None)}))
         self.assertEqual([target.target_id for target in self.controller.settings.targets], ["second"])
         telegram = self.controller.authority.context("second", "role-a")
         # One identity and one set of owners: those the conversation had on QQ.
@@ -1018,6 +1100,29 @@ class OneCompanionWithoutQQTests(TelegramAloneFixture, unittest.IsolatedAsyncioT
         prepared = await self.turn(1, "alone", 3)
         self.assertEqual((await self.spoken_on(TELEGRAM))[-2:], ["alone", "reply-B"])
         self.assertEqual(prepared["context"].actor.subject, qq.actor.subject)
+
+
+class DetachedQQAccountLinkTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestCase):
+    """The QQ endpoint the conversation started on stays closed to account links after it was unlinked."""
+
+    extra_targets = ({"target_id": "outside", "platform_id": "qq-main", "account_id": "100",
+                      "bot_id": "bot-a", "participant_id": "999"},)
+    associate = owners.LinkedOwnerTests.associate
+
+    async def test_the_detached_qq_anchor_cannot_be_associated_with_another_account(self):
+        from companion_v2.relationships.account_links import PrivateAccountLinks
+        self.assertEqual((await self.link())["status"], "ok")
+        qq = (await self.turn(0, "from QQ", "1"))["context"]
+        event = self.event_for(0, "another human", "2", sender="999")
+        await asyncio.wait_for(await self.dispatch(event), 30)
+        outside = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)["prepared"]["context"]
+        await self.turn(1, "from Telegram", 3)
+        unlinked = await self.link(revision=1, members=["second"])
+        self.assertEqual((unlinked["status"], [row["origin"] for row in unlinked["data"]["detached"]]), ("ok", [QQ]))
+        refused = await self.associate(outside, qq)
+        self.assertEqual((refused["status"], refused["data"].get("code")),
+                         ("error", "account_link_linked_conversation_conflict"))
+        self.assertEqual(PrivateAccountLinks(self.controller.runtime).read()["groups"], [])
 
 
 class RoutinesWithoutQQTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestCase):
@@ -1085,7 +1190,7 @@ class LinkedMappingSaveTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestC
         # Nothing was stopped or saved: the same session goes on with the same mapping and link.
         self.assertEqual((written, self.controller.config), ([], before))
         self.assertIs(self.controller.session, session)
-        self.assertEqual(self.health()[0], ("running", True, None))
+        self.assertEqual((await self.health())[0], ("running", True, None))
         self.assertEqual([row["origin"] for row in self.link_record()["members"]], [TELEGRAM])
         await self.turn(1, "still the conversation", 3)
 
@@ -1111,7 +1216,7 @@ class LinkedMappingSaveTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestC
         self.controller.save_plugin_config = save
         saved = await self.controller.apply_bindings(deepcopy(corrected))
         self.assertEqual((saved["started"], saved.get("startup_error"), written), (True, None, [corrected]), saved)
-        self.assertEqual(self.health()[0], ("running", True, None))
+        self.assertEqual((await self.health())[0], ("running", True, None))
         self.app = self.controller.session.application
         await self.turn(1, "still the conversation", 2)
         self.assertEqual((await self.spoken_on(TELEGRAM))[-4:],
@@ -1126,7 +1231,7 @@ class LinkedMappingSaveTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestC
         self.controller.save_plugin_config = lambda document: None
         saved = await self.controller.apply_bindings(deepcopy(self.controller.config))
         self.assertEqual((saved["started"], saved.get("startup_error")), (True, None), saved)
-        self.assertEqual(self.health()[0], ("running", True, None))
+        self.assertEqual((await self.health())[0], ("running", True, None))
         self.app = self.controller.session.application
         # The remaining endpoint goes on; the removed one is as closed as before the save.
         await self.turn(remaining, "after the save", "3")

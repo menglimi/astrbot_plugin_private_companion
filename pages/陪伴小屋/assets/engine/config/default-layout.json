@@ -1,0 +1,12 @@
+{
+  "layout": {
+    "floor": { "width": 10, "height": 0.5, "depth": 10, "x": 0, "y": -0.25, "z": 0, "color": "#c89669" },
+    "walls": [
+      { "width": 10, "height": 4, "depth": 0.5, "x": 0, "y": 2, "z": -5, "color": "#f5ecd9" },
+      { "width": 0.5, "height": 4, "depth": 10, "x": -5, "y": 2, "z": 0, "color": "#e4dfc9" }
+    ]
+  },
+  "furniture": [
+    { "id": "test-desk", "position": { "x": 0, "y": 0.5, "z": 0 }, "color": "#ff0000" }
+  ]
+}

@@ -30,6 +30,7 @@ from .topics import QzoneScene, QzoneTopic
 
 KIND = "qzone.life_publish.v1"
 ATTEMPT_KEY = "life_publish_attempt"
+RETRY_KEY = "life_publish_retry_at"
 TOPIC = QzoneTopic.LIFE_DOCUMENTARY
 SCENE = QzoneScene.ROLE_ACTIVITY
 MAX_TEXT_CHARS = 300
@@ -73,12 +74,22 @@ def decide(settings, state, *, now, day=None):
         cap = max(1, int(settings.get("life_publish_max_daily") or 1))
     except (TypeError, ValueError):
         cap = 1
-    if state.publish_day == day and state.publish_count >= cap:
+    if (settings.get("daily_limits_enabled", True) and state.publish_day == day
+            and state.publish_count >= cap):
         return Decision(False, "daily_limit", day)
+    # A failed draft/publish gets a short, explicit retry window instead of
+    # occupying the full publishing interval.  Unknown publish results use a
+    # long retry window (set by the host), so they are still never replayed.
+    retry_at = _moment(state.last_action_at.get(RETRY_KEY))
+    last_publish = _moment(state.last_action_at.get("publish"))
+    if retry_at is not None and (last_publish is None or last_publish < retry_at):
+        if at < retry_at:
+            return Decision(False, "retry_wait", day)
+        return Decision(True, "due", day)
     try:
-        hours = max(1, int(settings.get("life_publish_min_interval_hours") or 24))
+        hours = max(1, int(settings.get("life_publish_min_interval_hours") or 6))
     except (TypeError, ValueError):
-        hours = 24
+        hours = 6
     last = _last_attempt(state)
     if last is not None and at - last < timedelta(hours=hours):
         return Decision(False, "interval", day)

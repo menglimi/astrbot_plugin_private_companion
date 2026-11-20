@@ -238,7 +238,7 @@ class StartupRetryTests(unittest.IsolatedAsyncioTestCase):
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
         plugin._host_start_task = None
         plugin._session_settings_warm_task = None
-        plugin._qzone_life_publisher = object()
+        plugin._qzone_life_publisher = NS()
         plugin.staging = NS(
             settings=NS(enabled=True),
             _terminated=False,
@@ -264,7 +264,7 @@ class StartupRetryTests(unittest.IsolatedAsyncioTestCase):
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
         plugin._host_start_task = None
         plugin._session_settings_warm_task = None
-        plugin._qzone_life_publisher = object()
+        plugin._qzone_life_publisher = NS()
         plugin._startup_failure_key = None
         plugin._startup_failure_at = 0.0
         staging = NS(
@@ -295,7 +295,8 @@ class StartupRetryTests(unittest.IsolatedAsyncioTestCase):
         plugin._qzone_life_publisher = object()
         plugin._startup_failure_key = None
         plugin._startup_failure_at = 0.0
-        # No pick-up port at all: the start-up loop only starts the host.
+        # The start-up loop only starts the host; a waiting account is the
+        # running host's own account recovery.
         staging = NS(
             settings=NS(enabled=True),
             _terminated=False,
@@ -303,9 +304,11 @@ class StartupRetryTests(unittest.IsolatedAsyncioTestCase):
             session=None,
             startup_readiness=Mock(return_value=None),
             load_existing=AsyncMock(return_value=Outcome.success({"loaded": True})),
+            recover_accounts=AsyncMock(),
+            native_bridges_current=Mock(return_value=True),
         )
 
-        async def start():
+        async def start(*, automatic=False):
             staging._accepting, staging.session = True, NS(application=NS(state="running"))
             return Outcome.success({"state": "running"})
         staging.start = AsyncMock(side_effect=start)
@@ -317,6 +320,7 @@ class StartupRetryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(plugin._host_start_task)
         staging.start.assert_awaited_once()
+        staging.recover_accounts.assert_awaited_once()
 
 
 if __name__ == "__main__":

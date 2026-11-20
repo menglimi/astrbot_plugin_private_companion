@@ -22,7 +22,8 @@ class CalendarPaginationTests(StateFixture, unittest.IsolatedAsyncioTestCase):
                 rows = [{"id": f"event-{index:03d}", "state": "cancelled"}
                         for index in range(count)]
 
-                def inventory(_context, *, after_id="", limit=30, operator=None, kinds=None):
+                def inventory(_context, *, after_id="", limit=30, operator=None, kinds=None, active_since=None):
+                    self.assertEqual(active_since, NOW - timedelta(days=1))
                     raw = [row for row in rows if row["id"] > after_id][:limit]
                     skipped = int(hidden_last and raw and raw[-1]["id"] == "event-200")
                     visible = [row for row in raw if not (hidden_last and row["id"] == "event-200")]
@@ -45,7 +46,8 @@ class CalendarPaginationTests(StateFixture, unittest.IsolatedAsyncioTestCase):
                  "schedule": schedule, "duration_minutes": 30, "exceptions": {}}
                 for index in range(65)]
 
-        def inventory(_context, *, after_id="", limit=50, operator=None, kinds=None):
+        def inventory(_context, *, after_id="", limit=50, operator=None, kinds=None, active_since=None):
+            self.assertEqual(active_since, NOW - timedelta(days=1))
             page = [row for row in rows if row["id"] > after_id][:limit]
             return {"items": page, "skipped": 0,
                     "next_cursor": page[-1]["id"] if len(page) == limit else None}

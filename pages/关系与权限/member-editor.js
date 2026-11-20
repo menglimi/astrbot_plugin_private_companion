@@ -197,8 +197,10 @@
     }
     return person;
   };
-  const routeLabel = route => [Array.isArray(route.persona_ids) ? route.persona_ids.map(value => value || "默认人格").join("、") : "当前人格",
-    route.role_id ? `内部归属 ${route.role_id}` : ""].filter(Boolean).join(" · ");
+  const selection = () => current?.services.bridge?.getContext?.()?.selection;
+  const matchesSelection = route => !selection() || Boolean(route && route.bot_id === selection().bot_id
+    && route.role_id === selection().role_id);
+  const routeLabel = route => [personaLabel(route), accountLabel(route)].join(" · ");
   const personaLabel = person => Array.isArray(person?.persona_ids) && person.persona_ids.length
     ? person.persona_ids.map(value => value || "默认人格").join("、") : person?.role_name || "当前角色";
   const peerLabel = person => (person.platform_name === "wechat_native" ? "微信" :
@@ -219,6 +221,12 @@
   }
   function errorText(error, fallback = "操作未完成，请核对当前状态后重试。") {
     const code = error?.code;
+    if (code === "account_link_legacy_route_conflict") return "请先解除旧的“主窗口接管”，再使用原路回复的账号关联。";
+    if (code === "account_link_persona_ambiguous") return "当前账号未唯一绑定到一个明确人格，暂不能安全关联。";
+    if (code === "account_link_seed_required") return "请选择初始来源账号。";
+    if (code === "account_link_identity_confirmation_required") return "请单独确认身份与权限共享的影响范围。";
+    if (code === "account_link_identity_invalid" || code === "account_link_fields_invalid") return "共享选项已变化，请重新读取后选择。";
+    if (code === "account_link_revision_conflict") return "关联已被其他操作修改，请重新读取后再保存。";
     const label = failureLabels[code];
     if (label) return label;
     // Keep the machine code visible even when this page has no translation:
@@ -252,6 +260,7 @@
   }
   function adoptSettings(state, result, preserve, replaceSnapshot = false) {
     if (replaceSnapshot) state.sections = {};
+    if (Object.prototype.hasOwnProperty.call(result, "account_links")) state.sharedSettings = result.account_links;
     state.sectionErrors = result.section_errors && typeof result.section_errors === "object"
       ? {...result.section_errors} : {};
     state.tts = result.tts && typeof result.tts === "object" ? result.tts : state.tts || null;
@@ -275,6 +284,8 @@
   async function load(person, {preserve = true} = {}) {
     const state = stateFor(person), services = current.services;
     if (state.loading) return;
+    const retainedTier = preserve && state.authorization && state.tier !== state.authorization.identity_tier
+      ? state.tier : null;
     state.loading = true; state.loaded = true;
     state.settingsError = state.authError = "";
     state.sectionErrors = {};
@@ -287,8 +298,8 @@
     try {
       if (auth.status === "rejected") throw auth.reason;
       state.authorization = unwrap(auth.value);
-      state.tier = state.authorization.identity_tier || "standard";
-      services.onChanged?.(person, {identity_tier: state.tier});
+      state.tier = retainedTier || state.authorization.identity_tier || "standard";
+      services.onChanged?.(person, {identity_tier: state.authorization.identity_tier || "standard"});
     } catch (error) {
       state.authError = errorText(error, "权限读取失败，请重新读取以核对状态。");
       state.authorization = null;
@@ -360,6 +371,7 @@
   }
   const onOff = value => value ? "已启用" : "未启用";
   const administratorState = (state, person) => {
+    if (state.authorization?.shared_identity) return {label: "关联私聊身份 · 不改变系统管理员", state: "scoped", enabled: Boolean(state.authorization.administrator?.enabled)};
     const saved = state.authorization?.identity_tier || person.identity_tier || "standard";
     const selected = state.tier || saved;
     const pending = selected !== saved;
@@ -393,6 +405,7 @@
     if (value === state.sections[section]?.settings?.[field]) state.dirty.delete(token);
     else state.dirty.add(token);
     state.pendingSave = null;
+    reportDraft();
     current?.panel.querySelectorAll(".member-savebar").forEach(bar => {
       const replacement = savebar(state);
       bar.replaceChildren(...replacement.children);
@@ -475,7 +488,7 @@
   // 熟人卡只管理自动积累的互动记忆，不承载人工关系设定。
   function openCard(state, person) {
     closeDialog({restoreFocus: false});
-    if (!current) return;
+    if (!current || !matchesSelection(activeRoute()) || !current.route) return;
     current.card = true;
     const trigger = current.panel.querySelector('[data-card-trigger="true"]');
     if (trigger) trigger.setAttribute("aria-expanded", "true");
@@ -607,7 +620,7 @@
     const input = element("input"); input.type = "text"; input.maxLength = 64; input.value = state.nickname;
     input.setAttribute("aria-label", "目录显示名称"); input.placeholder = "留空使用平台名称";
     input.disabled = state.busy || !person.revision;
-    input.addEventListener("input", () => { state.nickname = input.value; });
+    input.addEventListener("input", () => { state.nickname = input.value; reportDraft(); });
     const button = element("button", "保存备注", "secondary"); button.type = "button";
     button.disabled = state.busy || !person.revision;
     button.addEventListener("click", () => saveNickname(person, state));
@@ -702,7 +715,7 @@
       card.append(step, glyph, copy, check);
       card.addEventListener("click", () => {
         if (card.disabled) return;
-        state.tier = card.dataset.tier;
+        state.tier = card.dataset.tier; reportDraft();
         for (const other of cardMap.values()) other.setAttribute("aria-checked", String(other.dataset.tier === state.tier));
         syncTierState();
       });
@@ -725,7 +738,7 @@
     const administratorAction = element("button", "设为核心用户", "secondary"); administratorAction.type = "button";
     administratorAction.addEventListener("click", () => {
       if (state.busy || state.loading || !state.authorization) return;
-      state.tier = "core";
+      state.tier = "core"; reportDraft();
       for (const other of cardMap.values()) other.setAttribute("aria-checked", String(other.dataset.tier === state.tier));
       syncTierState();
     });
@@ -741,12 +754,14 @@
       const currentAdmin = administratorState(state, person);
       administratorStatus.textContent = currentAdmin.label;
       administratorStatus.dataset.state = currentAdmin.state;
-      administratorDescription.textContent = currentAdmin.enabled
+      administratorDescription.textContent = state.authorization?.shared_identity
+        ? "当前编辑整组私聊身份，不改变系统／Dashboard 的原管理员资格。原账号明确禁令仍有效。"
+        : currentAdmin.enabled
         ? "核心管理员可管理本体配置、记忆、能力授权及管理类操作。"
         : "当前没有管理员权限；只有核心用户可以执行本体管理操作。";
       administratorAction.textContent = state.tier === "core"
         ? (savedTier === "core" ? "已是核心管理员" : "待保存为核心管理员") : "设为核心用户";
-      administratorAction.disabled = Boolean(state.busy || state.loading || !state.authorization || state.tier === "core");
+      administratorAction.disabled = Boolean(state.authorization?.shared_identity || state.busy || state.loading || !state.authorization || state.tier === "core");
       administratorRow.dataset.state = currentAdmin.state;
     };
     syncTierState();
@@ -1032,7 +1047,13 @@
         || !dirtySectionNames(state).some(section => state.sections[section] && !state.sectionErrors[section]);
     save.addEventListener("click", () => state.pendingSave
       ? verifyAndRetrySave(activePerson(), state) : saveSettings(activePerson(), state));
-    bar.append(cancel, save);
+    const person = activePerson();
+    const hint = element("details", undefined, "member-scope-hint");
+    const summary = element("summary", "ⓘ"); summary.setAttribute("aria-label", "查看保存范围");
+    const scopeText = `保存到：${personaLabel(person)} 与 ${nameOf(person)} 的关系 · ${accountLabel(person)}`;
+    hint.append(summary, element("span", scopeText, "member-scope-tooltip"));
+    save.title = scopeText;
+    bar.append(hint, cancel, save);
     return bar;
   }
   function replyFieldBlock(state, name) {
@@ -1126,6 +1147,363 @@
     }
     return pane;
   }
+  function accountLinksPane(state, person) {
+    const bridge = current.services.bridge;
+    const box = element("section", undefined, "member-account-links");
+    box.append(element("h3", "关联用户"), element("p",
+      "仅关联同一人格下的私聊账号。微信输入回微信，QQ 输入回 QQ；关联不会改变回复去向。"));
+    const links = state.accountLinks ||= {loaded: false, loading: false, busy: false, data: null, selected: new Set()};
+    const apiPath = ROOT + "/account-links";
+    const candidateKey = item => JSON.stringify([item.subject_id, routeKey(item.route)]);
+    const isCurrent = item => item.subject_id === person.subject_id && routeKey(item.route) === routeKey(person);
+    const matchesMember = (item, member) => item.subject_id === member.subject_id
+      && item.route.platform === member.platform && item.route.bot_id === member.bot_id
+      && item.route.account_id === member.account_id && item.route.role_id === member.role_id;
+    async function read() {
+      if (links.loading || links.busy) return;
+      links.loading = true; links.error = ""; links.notice = ""; redraw(state);
+      try {
+        const data = unwrap(await bridge.apiGet(apiPath, parameters(person)));
+        links.data = data; links.pending = null;
+        links.selected = new Set((data.candidates || []).filter(item => isCurrent(item)
+          || data.group?.members.some(member => matchesMember(item, member))).map(candidateKey));
+        links.shareContext = data.group?.share_context === true;
+        links.shareMemory = data.group?.memory?.enabled === true;
+        links.memoryHistory = data.group?.memory?.history || "since_enabled";
+        links.sharing = Object.fromEntries(["profile", "reply", "contact"].map(name =>
+          [name, new Set(data.group?.sharing?.[name] || [])]));
+        links.shareIdentity = data.group?.identity?.enabled === true;
+        links.seedKey = (data.candidates || []).find(item => data.group?.seed && matchesMember(item, data.group.seed))
+          ? candidateKey(data.candidates.find(item => matchesMember(item, data.group.seed))) : "";
+        links.proactiveMode = data.group?.proactive?.mode || "off";
+        links.weights = Object.fromEntries((data.candidates || []).map(candidate => {
+          const entry = data.group?.proactive?.weights?.find(entry => matchesMember(candidate, entry.member));
+          return [candidateKey(candidate), entry?.weight ?? 1];
+        }));
+        links.preferredKey = (data.candidates || []).find(item => data.group?.proactive?.preferred && matchesMember(item, data.group.proactive.preferred))
+          ? candidateKey(data.candidates.find(item => matchesMember(item, data.group.proactive.preferred))) : "";
+      } catch (error) { links.error = errorText(error, "关联账号读取失败。"); }
+      finally { links.loaded = true; links.loading = false; redraw(state); }
+    }
+    if (!links.loaded && !links.loading) queueMicrotask(read);
+    if (links.loading) box.append(element("p", "正在读取可关联账号…"));
+    if (links.error) box.append(element("p", links.error, "member-feedback error"));
+    if (links.notice) {
+      const notice = element("p", links.notice, "member-block-note");
+      notice.setAttribute("role", "status"); box.append(notice);
+    }
+    const refresh = element("button", links.pending ? "重新核对服务端状态（丢弃本地草稿）" : "重新读取关联账号", "secondary");
+    refresh.type = "button"; refresh.disabled = links.loading || links.busy;
+    refresh.addEventListener("click", () => void read()); box.append(refresh);
+    if (!links.data || links.loading) return box;
+    const data = links.data;
+    if (data.group) box.append(element("p", `已关联 ${data.group.members.length} 个账号。聊天上下文仅共享开启后的新对话；长期记忆按单独授权的范围读取。`));
+    const choices = element("fieldset", undefined, "member-link-section"); choices.disabled = links.busy || Boolean(links.pending);
+    choices.append(element("legend", "选择关联账号（最多 16 个）"));
+    for (const candidate of data.candidates || []) {
+      const label = element("label", undefined, "member-checkbox");
+      const input = element("input"); input.type = "checkbox";
+      input.checked = links.selected.has(candidateKey(candidate)); input.disabled = isCurrent(candidate);
+      input.addEventListener("change", () => {
+        if (input.checked) links.selected.add(candidateKey(candidate));
+        else links.selected.delete(candidateKey(candidate));
+        redraw(state);
+      });
+      label.append(input, element("span", candidate.label + (isCurrent(candidate) ? " · 当前账号" : "")));
+      choices.append(label);
+    }
+    const contextLabel = element("label", undefined, "member-switch-row");
+    const share = element("input"); share.type = "checkbox"; share.checked = links.shareContext;
+    share.addEventListener("change", () => {links.shareContext = share.checked;});
+    contextLabel.append(element("span", "共享聊天上下文（仅开启后的新对话）"), share);
+    choices.append(contextLabel); box.append(choices);
+    if (data.supported?.memory) {
+      const section = element("fieldset", undefined, "member-link-section");
+      section.disabled = links.busy || Boolean(links.pending);
+      section.append(element("legend", "共享长期记忆"));
+      const row = element("label", undefined, "member-switch-row");
+      const toggle = element("input"); toggle.type = "checkbox"; toggle.checked = links.shareMemory;
+      toggle.addEventListener("change", () => {links.shareMemory = toggle.checked; redraw(state);});
+      row.append(element("span", "允许关联账号读取长期记忆（默认关闭）"), toggle); section.append(row);
+      const history = element("select"); history.setAttribute("aria-label", "长期记忆共享范围"); history.disabled = !links.shareMemory;
+      for (const [value, label] of [["since_enabled", "仅共享开启后的记忆"], ["all", "包含已有历史记忆（需单独确认）"]]) {
+        const option = element("option", label); option.value = value; option.selected = links.memoryHistory === value;
+        history.append(option);
+      }
+      history.value = links.memoryHistory;
+      history.addEventListener("change", () => {links.memoryHistory = history.value;});
+      const historyLabel = element("label", undefined, "member-field member-link-select");
+      historyLabel.append(element("span", "共享范围", "member-field-caption"), history); section.append(historyLabel);
+      section.append(element("p", "只共享读取权限，不合并或复制原记忆。关闭或解除关联后停止跨账号读取；缺少明确机器人、人格和来源窗口的旧记忆不跨账号开放。", "member-block-note"));
+      box.append(section);
+    }
+    if (data.supported?.settings) {
+      const sharing = element("fieldset", undefined, "member-link-section"); sharing.disabled = links.busy || Boolean(links.pending);
+      sharing.append(element("legend", "共享设置（默认关闭，可逐字段选择）"));
+      const labels = {profile: "人工关系资料", reply: "回复微调", contact: "联系偏好"};
+      for (const [category, title] of Object.entries(labels)) {
+        const fields = data.fields?.[category] || [];
+        const selected = links.sharing[category];
+        const section = element("section", undefined, "member-share-category");
+        const row = element("label", undefined, "member-switch-row member-share-heading");
+        const toggle = element("input"); toggle.type = "checkbox";
+        toggle.checked = selected.size > 0; toggle.indeterminate = selected.size > 0 && selected.size < fields.length;
+        toggle.addEventListener("change", () => {
+          links.sharing[category] = new Set(toggle.checked ? fields : []); redraw(state);
+        });
+        const caption = element("span", undefined, "member-field-caption");
+        caption.append(element("strong", title), element("small", `${selected.size}/${fields.length} 项`));
+        row.append(caption, toggle);
+        section.append(row);
+        const advanced = element("details");
+        advanced.open = Boolean(links.advanced?.[category]);
+        advanced.addEventListener("toggle", () => {(links.advanced ||= {})[category] = advanced.open;});
+        advanced.append(element("summary", "高级：逐字段共享"));
+        const grid = element("div", undefined, "member-share-fields");
+        for (const field of fields) {
+          const name = field.split(".").slice(2).join(".");
+          const fieldLabel = category === "profile" && typeof fieldLabels !== "undefined" ? fieldLabels[name]
+            : category === "reply" && typeof replyLabels !== "undefined" ? replyLabels[name] : state.sections?.contact?.fields?.[name]?.label;
+          const label = element("label", undefined, "member-checkbox");
+          const input = element("input"); input.type = "checkbox"; input.checked = selected.has(field);
+          input.addEventListener("change", () => {
+            if (input.checked) selected.add(field); else selected.delete(field); redraw(state);
+          });
+          label.append(input, element("span", fieldLabel || name)); grid.append(label);
+        }
+        advanced.append(grid); section.append(advanced); sharing.append(section);
+      }
+      const seedLabel = element("label", undefined, "member-field member-link-select");
+      seedLabel.append(element("span", "首次开启／新增共享字段时的初始来源", "member-field-caption"));
+      const seed = element("select"); seed.setAttribute("aria-label", "共享初始来源账号");
+      const blank = element("option", "请选择初始来源账号"); blank.value = ""; seed.append(blank);
+      for (const candidate of data.candidates || []) if (links.selected.has(candidateKey(candidate))) {
+        const option = element("option", candidate.label); option.value = candidateKey(candidate); seed.append(option);
+      }
+      seed.value = links.seedKey || ""; seed.addEventListener("change", () => {links.seedKey = seed.value;});
+      seedLabel.append(seed); sharing.append(seedLabel,
+        element("p", "共享期间在原资料、回复、联系页面编辑的是同一份有效值；账号原值不变。关闭后恢复各自原值。联系偏好不能绕过本地禁用、暂停或免打扰。", "member-block-note"));
+      box.append(sharing);
+    }
+    if (data.supported?.identity) {
+      const identityBox = element("fieldset", undefined, "member-link-section"); identityBox.disabled = links.busy || Boolean(links.pending);
+      const label = element("label", undefined, "member-switch-row");
+      const toggle = element("input"); toggle.type = "checkbox"; toggle.checked = links.shareIdentity;
+      toggle.addEventListener("change", () => {links.shareIdentity = toggle.checked;});
+      label.append(element("strong", "独立共享身份与权限"), toggle);
+      identityBox.append(element("legend", "身份与权限"));
+      identityBox.append(label, element("p", "需单独确认。之后可在身份与权限页编辑共享值；仅对关联人格的私聊生效，不授予系统／Dashboard 管理员资格，不覆盖原账号明确禁令。", "member-block-note"));
+      box.append(identityBox);
+    }
+    if (data.supported?.proactive) {
+      const routing = element("fieldset", undefined, "member-link-section"); routing.disabled = links.busy || Boolean(links.pending);
+      routing.append(element("legend", "主动联系渠道"));
+      const mode = element("select"); mode.setAttribute("aria-label", "主动联系渠道策略");
+      for (const [value, label] of [["off", "不共享渠道（各自联系）"], ["specified", "优先指定账号，不可用时回退"], ["random", "每次随机选择可用账号"]]) {
+        const option = element("option", label); option.value = value; mode.append(option);
+      }
+      mode.value = links.proactiveMode; mode.addEventListener("change", () => {links.proactiveMode = mode.value; redraw(state);});
+      const modeLabel = element("label", undefined, "member-field member-link-select");
+      modeLabel.append(element("span", "渠道策略", "member-field-caption"), mode);
+      routing.append(modeLabel);
+      if (links.proactiveMode === "specified") {
+        const preferred = element("select"); preferred.setAttribute("aria-label", "主动联系优先账号");
+        const blank = element("option", "请选择优先账号"); blank.value = ""; preferred.append(blank);
+        for (const candidate of data.candidates || []) if (links.selected.has(candidateKey(candidate))) {
+          const option = element("option", candidate.label); option.value = candidateKey(candidate); preferred.append(option);
+        }
+        preferred.value = links.preferredKey; preferred.addEventListener("change", () => {links.preferredKey = preferred.value;});
+        const preferredLabel = element("label", undefined, "member-field member-link-select");
+        preferredLabel.append(element("span", "优先账号", "member-field-caption"), preferred);
+        routing.append(preferredLabel);
+      }
+      if (links.proactiveMode === "random") {
+        const weightFields = element("div", undefined, "member-link-weights");
+        const selected = (data.candidates || []).filter(item => links.selected.has(candidateKey(item)));
+        const total = selected.reduce((sum, item) => {
+          const weight = links.weights[candidateKey(item)];
+          return sum + (Number.isInteger(weight) && weight >= 0 && weight <= 1000 ? weight : 0);
+        }, 0);
+        for (const candidate of selected) {
+          const key = candidateKey(candidate), weight = links.weights[key];
+          const row = element("label", undefined, "member-field member-link-weight");
+          const caption = element("span", undefined, "member-field-caption");
+          caption.append(element("span", candidate.label), element("small",
+            Number.isInteger(weight) && weight >= 0 && weight <= 1000 && total > 0
+              ? `参考占比 ${(weight / total * 100).toFixed(1)}%` : "请填写有效权重"));
+          const input = element("input"); input.type = "number";
+          input.min = "0"; input.max = "1000"; input.step = "1"; input.value = Number.isFinite(weight) ? String(weight) : "";
+          input.setAttribute("aria-label", `${candidate.label}的随机权重`);
+          input.addEventListener("change", () => {
+            links.weights[key] = input.value.trim() === "" ? NaN : Number(input.value); redraw(state);
+          });
+          row.append(caption, input); weightFields.append(row);
+        }
+        routing.append(weightFields, element("p",
+          "权重为 0–1000 的整数，默认 1，至少一个账号大于 0；0 表示不参与随机选择或回退。比如 3 和 1 约为 75% 和 25%。参考占比假设全部账号可用，实际按可用账号重新计算；不会绕过禁用、免打扰或权限限制。", "member-block-note"));
+      }
+      routing.append(element("p", "只影响主动联系。确认未发送才可回退；超时、已受理或结果不明不会跨平台重发。分段消息一旦发送即固定同一账号。发送前全部不可用时沿用原任务的限次重试与截止时间；已进入发送且均确认未发出的，保留原投递失败状态。", "member-block-note"));
+      box.append(routing);
+    }
+    async function confirmChange(title, message, confirmText) {
+      const options = {title, message, confirmText, cancelText: "取消"};
+      if (typeof bridge.confirm === "function") {
+        try {
+          const confirmed = await bridge.confirm(options);
+          if (confirmed === true || confirmed === false) return confirmed;
+        } catch { /* No host confirmation: keep consent explicit in the workspace. */ }
+      }
+      return new Promise(resolve => {links.confirmation = {options, resolve}; redraw(state);});
+    }
+    async function write(unlink = false) {
+      if (links.busy || links.loading) return;
+      // Lock before awaiting consent, not only before the API call.
+      links.busy = true; links.error = ""; links.notice = ""; redraw(state);
+      try {
+        if (!links.pending) {
+          const members = (data.candidates || []).filter(item => links.selected.has(candidateKey(item)))
+            .map(item => ({subject_id: item.subject_id, route: item.route}));
+          if (!unlink && (members.length < 2 || members.length > 16)) {
+            links.error = "请选择当前账号和至少一个其他账号，总数不超过 16 个。"; redraw(state); return;
+          }
+          if (unlink && !await confirmChange("解除整组账号关联",
+            "之后不再读取其他账号的新对话和共享长期记忆，原记录和原设置不会删除。", "确认解除")) {
+            links.notice = "已取消解除关联，原设置未改变。"; return;
+          }
+          const extras = {};
+          if (!unlink && data.supported?.memory) {
+            const old = data.group?.memory;
+            const unchangedMembers = data.group?.members?.length === members.length
+              && (data.candidates || []).filter(item => links.selected.has(candidateKey(item)))
+                .every(item => data.group.members.some(member => matchesMember(item, member)));
+            extras.memory = {enabled: links.shareMemory, history: links.memoryHistory};
+            if (links.shareMemory && (!old?.enabled || old.history !== links.memoryHistory || !unchangedMembers)) {
+              const history = links.memoryHistory === "all";
+              if (!await confirmChange(history ? "共享已有历史长期记忆" : "共享开启后的长期记忆",
+                history ? "允许这些关联账号读取彼此已有的历史长期记忆？不会合并或改写原记录。"
+                  : "允许这些关联账号读取本次开启之后的新长期记忆？关闭或解除关联即可停止跨账号读取。", "确认共享")) {
+                links.notice = "已取消长期记忆共享确认，本次设置尚未保存。"; return;
+              }
+              extras.memory.confirmation = history ? "include-existing-linked-memory" : "share-linked-long-term-memory";
+            }
+          }
+          if (!unlink && data.supported?.settings) {
+            extras.sharing = Object.fromEntries(Object.entries(links.sharing).map(([key, values]) => [key, [...values].sort()]));
+            const newlyShared = Object.entries(extras.sharing).some(([key, values]) => values.some(value => !data.group?.sharing?.[key]?.includes(value)));
+            const chosenSeed = (data.candidates || []).find(item => candidateKey(item) === links.seedKey && links.selected.has(candidateKey(item)));
+            if ((newlyShared || links.shareIdentity && !data.group?.identity?.enabled) && !chosenSeed) {
+              links.error = "请选择一个已关联账号作为新共享值的初始来源。"; redraw(state); return;
+            }
+            const seed = chosenSeed || (data.candidates || []).find(isCurrent);
+            extras.seed = {subject_id: seed.subject_id, route: seed.route};
+          }
+          if (!unlink && data.supported?.identity) {
+            const changedMembers = members.length !== (data.group?.members.length || 0)
+              || !(data.candidates || []).filter(item => links.selected.has(candidateKey(item)))
+                .every(item => data.group?.members.some(member => matchesMember(item, member)));
+            const requiresConfirmation = links.shareIdentity && (!data.group?.identity?.enabled || changedMembers);
+            if (requiresConfirmation && !await confirmChange("共享身份与权限",
+              "共享身份与权限将影响所有选中账号的私聊权限与身份级别，仅限同一人格；原账号明确禁令仍优先，不会授予系统管理员权限。", "确认共享")) {
+              links.notice = "已取消身份与权限共享确认，本次设置尚未保存。"; return;
+            }
+            extras.identity = {enabled: links.shareIdentity, ...(requiresConfirmation ? {confirmation: "share-private-identity-and-permissions"} : {})};
+          }
+          if (!unlink && data.supported?.proactive) {
+            const preferred = (data.candidates || []).find(item => candidateKey(item) === links.preferredKey && links.selected.has(candidateKey(item)));
+            if (links.proactiveMode === "specified" && !preferred) {
+              links.error = "请选择一个已关联账号作为主动联系优先账号。"; redraw(state); return;
+            }
+            extras.proactive = {mode: links.proactiveMode, preferred: links.proactiveMode === "specified"
+              ? {subject_id: preferred.subject_id, ...preferred.route, native_account_id: preferred.native_account_id} : null};
+            if (links.proactiveMode === "random") {
+              const selected = (data.candidates || []).filter(item => links.selected.has(candidateKey(item)));
+              const weights = selected.map(item => ({member: {subject_id: item.subject_id, ...item.route,
+                native_account_id: item.native_account_id}, weight: links.weights[candidateKey(item)]}));
+              if (weights.some(entry => !Number.isInteger(entry.weight) || entry.weight < 0 || entry.weight > 1000)
+                  || !weights.some(entry => entry.weight > 0)) {
+                links.error = "随机权重须为 0–1000 的整数，且至少一个关联账号的权重大于 0。"; redraw(state); return;
+              }
+              extras.proactive.weights = weights;
+            }
+          }
+          links.pending = {path: apiPath + (unlink ? "/unlink" : ""), command: {...parameters(person),
+            route: routeOf(person), operation_key: operation(), expected_revision: data.revision,
+            ...(!unlink ? {members, share_context: links.shareContext, ...extras} : {})}};
+          // parameters() is for query strings. Mutation bodies carry one route object.
+          for (const key of ["platform", "bot_id", "account_id", "role_id"]) delete links.pending.command[key];
+        }
+        unwrap(await bridge.apiPost(links.pending.path, links.pending.command));
+        links.pending = null; links.busy = false;
+        await read();
+        if (typeof states !== "undefined") for (const other of states.values()) {
+          other.loaded = false; other.linkedHistory = null;
+        }
+        state.linkedHistory = null;
+        if (typeof load === "function") await load(person);
+      } catch (error) {
+        links.error = errorText(error, "关联保存结果尚未确认，请重试原操作或重新核对服务端状态。");
+        if (error.confirmedRejection) links.pending = null;
+      } finally {links.busy = false; redraw(state);}
+    }
+    const save = element("button", links.pending ? "重试原操作（不重复创建）" : "保存账号关联与共享开关", "member-primary");
+    save.type = "button"; save.disabled = links.busy; save.addEventListener("click", () => void write());
+    const actions = element("div", undefined, "member-savebar member-link-actions");
+    actions.append(save); box.append(actions);
+    if (data.group && !links.pending) {
+      const unlink = element("button", "解除整组关联", "secondary member-link-unlink"); unlink.type = "button"; unlink.disabled = links.busy;
+      unlink.addEventListener("click", () => void write(true)); actions.append(unlink);
+    }
+    if (links.confirmation) {
+      const confirmation = links.confirmation;
+      const prompt = element("fieldset", undefined, "member-link-section");
+      prompt.setAttribute("role", "group"); prompt.setAttribute("aria-label", confirmation.options.title);
+      prompt.append(element("legend", confirmation.options.title), element("p", confirmation.options.message, "member-block-note"));
+      const buttons = element("div", undefined, "member-savebar member-link-actions");
+      const finish = accepted => {
+        if (links.confirmation !== confirmation) return;
+        links.confirmation = null; confirmation.resolve(accepted); redraw(state);
+      };
+      const cancel = element("button", confirmation.options.cancelText, "secondary"); cancel.type = "button";
+      cancel.addEventListener("click", () => finish(false));
+      const accept = element("button", confirmation.options.confirmText, "member-primary"); accept.type = "button";
+      accept.addEventListener("click", () => finish(true));
+      buttons.append(cancel, accept); prompt.append(buttons); box.append(prompt);
+    }
+    box.append(element("p", "关闭上下文共享或解除关联后，后续请求不再注入其他账号的新对话；已发送给模型的内容无法撤回。"));
+    return box;
+  }
+
+  function accountHistoryPane(state, person) {
+    const bridge = current.services.bridge;
+    const history = state.linkedHistory ||= {records: [], cursor: null, loaded: false, busy: false};
+    const box = element("section", undefined, "member-linked-history");
+    box.append(element("h3", "关联账号往来汇总"), element("p", "只读汇总；显示原账号、时间与发言者，不移动记录，不向模型导入旧历史。"));
+    const load = async (append = false) => {
+      if (history.busy) return;
+      history.busy = true; history.error = ""; redraw(state);
+      try {
+        const result = unwrap(await bridge.apiGet(ROOT + "/account-links/history", {...parameters(person), ...(append && history.cursor ? {cursor: history.cursor} : {})}));
+        history.records = append ? [...history.records, ...result.records] : result.records;
+        history.cursor = result.next_cursor; history.loaded = true;
+      } catch (error) {history.error = errorText(error, "关联往来读取失败。");}
+      finally {history.busy = false; redraw(state);}
+    };
+    const read = element("button", history.loaded ? "刷新关联往来" : "查看关联账号汇总", "secondary");
+    read.type = "button"; read.disabled = history.busy; read.addEventListener("click", () => void load()); box.append(read);
+    if (history.error) box.append(element("p", history.error, "member-feedback error"));
+    if (history.loaded && !history.records.length) box.append(element("p", "暂无可读取的关联私聊记录；未关联、已撤销或无权读取的记录不会展示。"));
+    for (const item of history.records) {
+      const row = element("article", undefined, "member-linked-record");
+      if (item.delivery_scope) row.append(element("small", `实际发送：${item.delivery_scope.platform} · ${item.delivery_scope.native_scope_id}（下方保留原记录归属）`));
+      row.append(element("small", `${item.scope.platform} · ${item.scope.native_scope_id} · ${item.speaker === "user" ? "用户" : "角色"} · ${item.at}`), element("p", item.text)); box.append(row);
+    }
+    if (history.cursor) {
+      const more = element("button", "读取更早记录", "secondary"); more.type = "button"; more.disabled = history.busy;
+      more.addEventListener("click", () => void load(true)); box.append(more);
+    }
+    return box;
+  }
+
   function render() {
     const {panel, services} = current;
     const person = activePerson();
@@ -1162,8 +1540,8 @@
     const routes = routeEntries(current.person);
     if (routes.length > 1) {
       const selector = element("select", undefined, "member-route-select");
-      selector.setAttribute("aria-label", "选择内部人格归属");
-      const placeholder = element("option", "选择内部归属后读取资料与权限");
+      selector.setAttribute("aria-label", "选择角色与账号");
+      const placeholder = element("option", "选择角色与账号");
       placeholder.value = "";
       placeholder.selected = !current.route;
       selector.append(placeholder);
@@ -1175,12 +1553,13 @@
       });
       selector.value = activeRoute() ? JSON.stringify(activeRoute()) : "";
       selector.disabled = state.busy || state.loading || !!state.pendingSave;
-      selector.addEventListener("change", event => {
+      selector.addEventListener("change", async event => {
         const value = event?.target?.value ?? selector.value;
         const next = routes.find(route => JSON.stringify(route) === value) || null;
+        if (hasChanges() && !await beforeLeave()) { render(); return; }
         current.route = next;
         render();
-        if (next) void load(activePerson(), {preserve: false});
+        if (next && matchesSelection(next)) void load(activePerson());
       });
       copy.append(selector);
     }
@@ -1191,6 +1570,7 @@
     const actions = element("div", undefined, "member-card-actions");
     const cardButton = element("button", undefined, "member-card-button"); cardButton.type = "button";
     cardButton.dataset.cardTrigger = "true";
+    cardButton.disabled = !current.route || !matchesSelection(current.route);
     cardButton.setAttribute("aria-haspopup", "dialog");
     cardButton.setAttribute("aria-expanded", String(Boolean(current.card)));
     const cardGlyph = element("i"); cardGlyph.setAttribute("data-lucide", "id-card");
@@ -1206,7 +1586,7 @@
     const refresh = element("button", undefined, "member-icon-button"); refresh.type = "button";
     refresh.setAttribute("aria-label", "重新读取成员配置"); refresh.title = "重新读取成员配置";
     const icon = element("i"); icon.setAttribute("data-lucide", "refresh-cw"); refresh.append(icon);
-    refresh.disabled = !current.route || state.loading || state.busy;
+    refresh.disabled = !current.route || !matchesSelection(current.route) || state.loading || state.busy;
     refresh.addEventListener("click", () => { if (current.route) void load(person); });
     if (!isCore) actions.append(cardButton);
     actions.append(refresh);
@@ -1236,9 +1616,9 @@
       message.setAttribute("role", "status"); panel.append(message);
     }
     const tabs = element("nav", undefined, "member-tabs"); tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", "成员配置分区");
-    const paneNames = ["access", "relationship", "reply", "contact", "history"];
+    const paneNames = ["access", "relationship", "reply", "contact", "links", "history"];
     for (const [name, title] of [["access", "身份与权限"], ["relationship", "人工关系资料"],
-      ["reply", "回复微调"], ["contact", "联系偏好"], ["history", "往来记录"]]) {
+      ["reply", "回复微调"], ["contact", "联系偏好"], ["links", "关联用户"], ["history", "往来记录"]]) {
       const button = element("button", title); button.type = "button"; button.id = "member-tab-" + name;
       button.setAttribute("role", "tab"); button.setAttribute("aria-controls", "member-pane");
       button.setAttribute("aria-selected", String(state.pane === name)); button.tabIndex = state.pane === name ? 0 : -1;
@@ -1256,13 +1636,26 @@
     panel.append(hero, tabs);
     const body = element("section", undefined, "member-pane"); body.id = "member-pane";
     body.setAttribute("role", "tabpanel"); body.setAttribute("aria-labelledby", "member-tab-" + state.pane);
-    const canConfigure = Boolean(current.route && current.route.private_target === true
+    const canConfigure = Boolean(current.route && matchesSelection(current.route) && current.route.private_target === true
       && current.route.settings_available === true);
-    if (state.pane === "history") body.append(historyPane(current.person, services));
+    const category = {relationship: "profile", reply: "reply", contact: "contact"}[state.pane];
+    if (category && state.sharedSettings?.sharing?.[category]?.length) body.append(element("p",
+      `当前有 ${state.sharedSettings.sharing[category].length} 项使用关联账号共享值。保存将对整组生效；未共享字段仍只属于本账号。`, "member-sharing-notice"));
+    if (state.pane === "history") {body.append(historyPane(current.person, services));
+      if (current.route && canConfigure) body.append(accountHistoryPane(state, person));}
     else if (!current.route) body.append(element("p", routes.length > 1
-      ? "此成员对应多个内部归属。选择一个后，页面会读取该归属的资料与权限。"
+      ? "此用户有多个角色与账号关系，请先选择要查看的对象。"
       : "此成员尚未建立当前账号与人格下可管理的 V2 私聊窗口，资料和权限暂时只读。", "member-unavailable"));
+    else if (!matchesSelection(current.route)) {
+      const switcher = element("div", undefined, "member-scope-switch");
+      const button = element("button", "切换到该角色并编辑", "member-primary"); button.type = "button";
+      button.addEventListener("click", () => window.parent?.postMessage?.({channel: "companion-workspace",
+        kind: "navigate", target: {tab: "member-edit", ...parameters(person)}}, "*"));
+      switcher.append(element("p", `正在查看 ${personaLabel(person)} 与 ${nameOf(person)} 的关系。`), button);
+      body.append(switcher);
+    }
     else if (!canConfigure) body.append(element("p", "此成员尚未建立当前账号与人格下可管理的 V2 私聊窗口，资料和权限暂时只读。", "member-unavailable"));
+    else if (state.pane === "links") body.append(accountLinksPane(state, person));
     else if (state.pane === "access") body.append(accessPane(state, person));
     else if (state.pane === "relationship") {
       if (state.settingsError) body.append(retry(state, person, state.settingsError));
@@ -1288,6 +1681,7 @@
     }
     // 熟人卡弹窗在重绘后重建，保证里面的草稿与保存条跟着最新状态。
     if (current.card) openCard(state, person);
+    reportDraft();
     window.lucide?.createIcons();
   }
   async function saveSettings(person, state) {
@@ -1440,6 +1834,7 @@
         expected_revision: person.revision, operation_key: state.pendingNickname.key}));
       state.pendingNickname = null;
       services.onChanged?.(person, result);
+      state.nickname = result.admin_nickname ?? nickname;
       notify(state, "面板备注已保存。");
     } catch (error) {notify(state, errorText(error), true);}
     state.busy = false; redraw(state);
@@ -1447,21 +1842,95 @@
   function mount(panel, person, services) {
     const previousPane = current ? stateFor(activePerson()).pane : null;
     const routes = routeEntries(person);
-    current = {panel, person, services, route: routes.length === 1 ? routes[0] : null, card: false};
+    const previousRoute = current && keyOf(current.person) === keyOf(person) ? current.route : null;
+    current = {panel, person, services, route: null, card: false};
+    const matches = routes.filter(matchesSelection);
+    current.route = routes.find(route => previousRoute && routeKey(route) === routeKey(previousRoute)
+      && matchesSelection(route)) || (matches.length === 1 ? matches[0] : routes.length === 1 ? routes[0] : null);
     const routed = activePerson();
     const state = stateFor(routed);
-    if (["access", "relationship", "reply", "contact", "history"].includes(previousPane)) state.pane = previousPane;
+    if (["access", "relationship", "reply", "contact", "links", "history"].includes(previousPane)) state.pane = previousPane;
     render();
-    if (current.route && !state.loaded) void load(routed);
+    if (current.route && matchesSelection(current.route) && !state.loaded) void load(routed);
   }
   function selectPane(name) {
-    if (!current || !["access", "relationship", "reply", "contact", "history"].includes(name)) return;
+    if (!current || !["access", "relationship", "reply", "contact", "links", "history"].includes(name)) return;
     const state = stateFor(activePerson());
     state.pane = name; current.card = false;
     render();
   }
   function refresh() {
-    for (const state of states.values()) {state.loaded = false; state.pendingSave = null;}
+    for (const state of states.values()) {state.loaded = false; state.pendingSave = null; state.accountLinks = null;}
   }
-  window.CompanionPrivateMembers = {mount, refresh, keyOf, selectPane};
+  function hasChanges() {
+    if (!current) return false;
+    const state = stateFor(activePerson());
+    return Boolean(state.busy || state.pendingSave || state.dirty.size
+      || state.nickname !== (current.person.admin_nickname || "")
+      || state.authorization && state.tier !== state.authorization.identity_tier);
+  }
+  function reportDraft() {
+    current?.services.bridge?.reportDraft?.({dirty:hasChanges(),
+      title:current ? `${personaLabel(activePerson())} · ${nameOf(activePerson())}` : "成员资料",
+      fields:["成员资料与设置"]});
+  }
+  async function saveDraft() {
+    if (!current) return true;
+    const person = activePerson(), state = stateFor(person);
+    if (state.busy || state.pendingSave) return {error:"保存结果尚未确认，请先在成员详情完成核对。"};
+    if (state.dirty.size) await saveSettings(person, state);
+    if (!state.dirty.size && state.nickname !== (current.person.admin_nickname || "")) await saveNickname(person, state);
+    if (!state.dirty.size && state.authorization && state.tier !== state.authorization.identity_tier) await saveIdentity(person, state);
+    reportDraft();
+    return !hasChanges() || {error:"部分修改未保存，请回到成员详情核对。"};
+  }
+  function discardDraft() {
+    if (!current) return true;
+    const state = stateFor(activePerson());
+    if (state.busy || state.pendingSave) return {error:"保存结果尚未确认，请先在成员详情完成核对。"};
+    adoptSettings(state, {sections: state.sections, section_errors: state.sectionErrors}, false);
+    state.nickname = current.person.admin_nickname || "";
+    state.tier = state.authorization?.identity_tier || current.person.identity_tier || "standard";
+    redraw(state); return true;
+  }
+  let leavePromise = null;
+  function beforeLeave() {
+    if (!hasChanges()) return Promise.resolve(true);
+    if (leavePromise) return leavePromise;
+    const person = activePerson(), state = stateFor(person);
+    if (state.busy || state.pendingSave) {
+      notify(state, "保存结果尚未确认，请先完成核对再切换。", true); redraw(state);
+      return Promise.resolve(false);
+    }
+    leavePromise = new Promise(resolve => {
+      const host = element("div", undefined, "member-dialog-host member-leave-host");
+      host.setAttribute("role", "dialog"); host.setAttribute("aria-modal", "true");
+      host.setAttribute("aria-label", "处理未保存修改");
+      const panel = element("article", undefined, "member-dialog member-leave-dialog");
+      panel.append(element("h3", "有未保存的修改"), element("p", `${personaLabel(person)} · ${nameOf(person)}`));
+      const actions = element("footer", undefined, "member-card-actions");
+      const finish = value => { host.remove(); leavePromise = null; resolve(value); };
+      const cancel = element("button", "取消", "secondary"); cancel.type = "button";
+      cancel.addEventListener("click", () => finish(false));
+      const discard = element("button", "放弃修改", "secondary"); discard.type = "button";
+      discard.addEventListener("click", () => {
+        finish(discardDraft() === true);
+      });
+      const save = element("button", "保存并继续", "member-primary"); save.type = "button";
+      save.addEventListener("click", async () => {
+        save.disabled = discard.disabled = cancel.disabled = true;
+        finish(await saveDraft() === true);
+      });
+      host.addEventListener("keydown", event => {
+        if (event.key === "Escape" && !cancel.disabled) { event.preventDefault(); finish(false); }
+        if (event.key === "Tab") {
+          if (event.shiftKey && document.activeElement === cancel) { event.preventDefault(); save.focus(); }
+          else if (!event.shiftKey && document.activeElement === save) { event.preventDefault(); cancel.focus(); }
+        }
+      });
+      actions.append(cancel, discard, save); panel.append(actions); host.append(panel); document.body.append(host); cancel.focus();
+    });
+    return leavePromise;
+  }
+  window.CompanionPrivateMembers = {mount, refresh, keyOf, selectPane, hasChanges, beforeLeave, saveDraft, discardDraft, reportDraft};
 })();

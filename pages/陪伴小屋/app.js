@@ -1,5 +1,7 @@
 'use strict';
 const product = window.CompanionProduct;
+// The startup gate fixes this mode before the app loads. Standalone previews use full mode.
+const litePerformanceMode = document.documentElement?.dataset?.performanceMode === 'lite';
 /* 房间陈设的存储键。接上宿主后按「安装 + 会话对象 + 角色」隔离——同一份
    布局不能串到另一个对象身上；目录还没读到（scopeKey 的两个字段为空）时
    退回本地暂存键，免得每次都算出一个不同的空键把陈设丢掉。 */
@@ -8,7 +10,7 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const escapeHTML = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const I = name => `<i data-lucide="${name}" aria-hidden="true"></i>`;
-const icons = () => window.lucide?.createIcons({attrs:{'aria-hidden':'true'}});
+const icons = (root=document) => window.lucide?.createIcons({root,attrs:{'aria-hidden':'true'}});
 const configSnapshot = window.companionConfigSnapshot || {
   version: 'preview-only',
   capturedAt: '',
@@ -65,7 +67,6 @@ let maintenancePane='';
 let dataPane='storage';
 let tokenTaskSettingsJump=0;
 let lifeWorkspaceTab='archive', replyPane='', learningTab='overview', navigationInitialized=false;
-const learningScopes={};
 let learningRecordFocus=null;
 let expressionModule='expression-text';
 let observationFilter='records', furnitureFilter='all', furnitureQuery='';
@@ -148,9 +149,9 @@ async function compressRoleAvatar(file){
 document.addEventListener('change',event=>{
   const picker=event.target.closest?.('[data-self-role]');
   if(!picker||typeof product.chooseRole!=='function')return;
-  const roleId=picker.value,current=product.role();
-  if(!roleId||roleId===(current?current.role_id:''))return;
-  const pending=product.chooseRole(roleId);
+  const key=picker.value;
+  if(!key)return;
+  const pending=product.chooseRoleKey(key);
   if(pending&&typeof pending.catch==='function'){
     pending.catch(()=>{toast('角色切换失败，请重新读取后重试');});
   }
@@ -178,7 +179,7 @@ function updateAppearance(){
   document.body.classList.toggle('large-text',state.largeText);
   /* 动效维度取「用户设置」与「系统偏好」中更严格的一方：关闭 / 减弱不override回完整。 */
   const dims=product.appearance();
-  document.body.classList.toggle('reduce-motion',state.reduceMotion||dims.motion!=='full');
+  document.body.classList.toggle('reduce-motion',litePerformanceMode||state.reduceMotion||dims.motion!=='full');
 }
 window.CompanionDisplayPreferences={
   largeText:()=>Boolean(state.largeText),
@@ -191,7 +192,7 @@ function navHref(next,tab='',subtab=''){
     ||next==='manage'&&tab==='expression'&&subtab
     ||next==='manage'&&tab==='learning'&&subtab
     ||next==='manage'&&tab==='maintenance'&&subtab&&subtab!=='overview'
-    ||next==='manage'&&tab==='data'&&['storage','backup','migration'].includes(subtab)
+    ||next==='manage'&&tab==='data'&&['storage','backup','migration','port'].includes(subtab)
     ||next==='life'&&tab==='diary'&&subtab&&subtab!=='archive';
   return nested?path+'/'+subtab:path;
 }
@@ -255,8 +256,8 @@ function navigationDestination(next,tab='',subtab=''){
     tab=manageTabs.some(item=>item[0]===tab)?tab:'host';
     subtab=tab==='learning'?(['overview','strategy','review','chain','expression','behavior','semantic','reflection'].includes(subtab)?subtab:'overview')
       :tab==='expression'?(['text','segment','style','cleanup','voice','components','checks','timing','platform','reaction','group'].includes(subtab)?subtab:'')
-      :tab==='maintenance'?(['diagnostics','cache','efficiency','recent','prompts','patrol'].includes(subtab)?subtab:'')
-        :tab==='data'?(['storage','backup','migration'].includes(subtab)?subtab:'storage')
+      :tab==='maintenance'?(['diagnostics','delivery','reply-diagnostics','cache','efficiency','recent','prompts','patrol'].includes(subtab)?subtab:'')
+        :tab==='data'?(['storage','backup','migration','port'].includes(subtab)?subtab:'storage')
         :tab==='memory'?(['records','settings'].includes(subtab)?subtab:'')
         :tab==='perception'?(['environment','models','news','screen','balance','recall','injection'].includes(subtab)?subtab:'')
         :tab==='governance'&&['profile','relationship','questionnaire','knowledge'].includes(subtab)?subtab:'profile';
@@ -306,6 +307,7 @@ function pageLeaveDecision(){
   if(weather===false)return false;
   return confirmDrafts();
 }
+product.setSelectionGuard?.(pageLeaveDecision);
 function restoreNavigationPath(){
   const href=currentNavigationHref();
   if(location.hash!==href){try{history.replaceState(null,'',href);}catch{}}
@@ -419,10 +421,7 @@ function syncFromHash(){
   const [next,tab,subtab]=hash.split('/');
   return navigate(next,tab,subtab,{replace:true,scroll:false});
 }
-/* 角色名徽标。它原先是个下拉，用来在示例角色 chengxi/wangshu 之间切换——
-   那是本地预览的遗留物。连上宿主后角色由会话对象决定，页面里再放一个
-   「切换角色」按钮只会让人以为可以改。所以现在它是纯展示徽标，
-   只在有真实角色（或预览示例角色）时显示名字，不提供切换。 */
+/* 页标题展示当前小屋角色；切换入口位于小屋与浮动卡片。 */
 function pageHeading(title,subtitle,extra='',showRole=false){return `<div class="page-heading"><div class="page-heading-copy"><div class="title-line"><h1>${escapeHTML(title)}</h1>${showRole?`<span class="role-badge">${roleName()}</span>`:''}</div>${subtitle?`<p class="subtitle">${escapeHTML(subtitle)}</p>`:''}</div>${extra}</div>`;}
 function publishCatalogSnapshot(){
   try{
@@ -488,6 +487,7 @@ async function probeHost(){
   });
 }
 function onProductChanged(reason){
+  if(reason?.kind==='browser-preferences'){updateHostChrome();if(reason.message)toast(reason.message);return;}
   if(reason?.kind==='display-preferences-error'){toast(reason.message||'外观偏好没有保存成功，请检查连接后重试。');return;}
   integrationSnapshot=product.manifest;
   if(arrangementDraft||reason?.kind==='host-mappings'&&($('.product-workspace-frame')||$('#legacyMigrationWorkspace'))){
@@ -512,7 +512,13 @@ function syncEnvironment(value=state,{fromTheme=false}={}){
   voxelController?.setAtmosphere({condition:value.weather});
   $$('button[data-weather]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.weather===value.weather)));
   const select=$('[data-scene-time]');if(select)select.value=state.sceneMode==='auto'?'auto':value.scene;
-  if(stageMounted)stageSignature=stageSignatureNow();
+  if(stageMounted){
+    /* 只同步场景/天气签名；作用域键变了要留给 refreshStageForScope 重挂，
+       不能在这里把新键提前记成“已挂载”。 */
+    let mountedKey='';
+    try{mountedKey=JSON.parse(stageSignature).key||''}catch{}
+    if(mountedKey===layoutKey())stageSignature=stageSignatureNow();
+  }
   const summary=$('[data-weather-summary]');if(summary){summary.innerHTML=environmentSummary(value);icons();}
   /* 通知外观层：小屋光照变了。开了「跟随光照」才会切主题，
      且光照明暗真的变了才动（同一时段内反复渲染不该触发切换）。
@@ -602,6 +608,7 @@ let shellViewInitialized=false;
    刻意不含「选中的家具」——那只是相机移动，不该重挂场景。 */
 function stageSignatureNow(){
   return JSON.stringify({
+    key:layoutKey(),
     layout:state.roomLayouts[layoutKey()]||null,
     scene:state.scene,
     weather:state.weather,
@@ -611,43 +618,54 @@ function stageSignatureNow(){
   });
 }
 
+function refreshStageForScope(){
+  if(!stageMounted||arrangementDraft)return;
+  const signature=stageSignatureNow();
+  if(signature===stageSignature)return;
+  entranceHandle?.skip();
+  entranceHandle=null;
+  voxelController?.dispose();
+  voxelController=null;
+  stageMounted=false;
+  mountStage();
+}
+
+function mountVoxelScene(mount){
+  if(!window.PrivateCompanionHomeRoom3D)throw new Error('体素场景资源未加载');
+  voxelController=window.PrivateCompanionHomeRoom3D.mount(mount,{
+    layout:state.roomLayouts[layoutKey()],
+    light:state.scene==='evening'?'dusk':state.scene,
+    reducedMotion:litePerformanceMode||state.reduceMotion,
+    onSelect:openVoxelStation,
+    onResidentSelect:()=>showDetail('profile'),
+    onTourChange:updateVoxelTour,
+    // room-editor.js loads after app.js. Resolve its callbacks only when invoked.
+    onEditorChange:editor=>{
+      if(typeof updateRoomEditor==='function')updateRoomEditor(editor);
+    },
+    onError:message=>{
+      if(arrangementDraft&&typeof finishRoomEditor==='function')finishRoomEditor(false);
+      if(!litePerformanceMode)showVoxelFallback(mount);
+      toast(message);
+    },
+  });
+  syncFurnitureScene();
+  voxelController.setAtmosphere({condition:state.weather});
+  voxelController.setActive(true);
+  updateFurnitureDirectory();
+}
 function mountStage(){
   const mount=$('[data-voxel-room]');
-  if(!mount){
-    /* 连挂载点都没有：整页不会有任何小屋，也没有人会走到 startEntrance
-       去开闸门。不放行就是对着启动幕干等七秒。 */
+  if(litePerformanceMode||!mount){
+    // Lite uses the furniture links directly. Only the editor requests a WebGL scene.
     document.documentElement.dataset.roomReady="";
     return;
   }
   try{
-    if(!window.PrivateCompanionHomeRoom3D)throw new Error('体素场景资源未加载');
-    voxelController=window.PrivateCompanionHomeRoom3D.mount(mount,{
-      layout:state.roomLayouts[layoutKey()],
-      light:state.scene==='evening'?'dusk':state.scene,
-      reducedMotion:state.reduceMotion,
-      onSelect:openVoxelStation,
-      onResidentSelect:()=>showDetail('profile'),
-      onTourChange:updateVoxelTour,
-      /* app.js now runs before the larger page modules. room-editor.js is
-         loaded later, so referencing its top-level declarations while mounting
-         would throw during every first paint and replace the loading scene with
-         the failure view. Both callbacks are only used after the user interacts,
-         so resolve them lazily when the module is actually present. */
-      onEditorChange:editor=>{
-        if(typeof updateRoomEditor==='function')updateRoomEditor(editor);
-      },
-      onError:message=>{
-        if(typeof arrangementDraft!=='undefined'&&arrangementDraft
-           &&typeof finishRoomEditor==='function')finishRoomEditor(false);
-        showVoxelFallback(mount);toast(message);
-      },
-    });
-    syncFurnitureScene();
-    voxelController.setAtmosphere({condition:state.weather});
-    voxelController.setActive(true);
-    updateFurnitureDirectory();
+    mountVoxelScene(mount);
     stageMounted=true;
     stageSignature=stageSignatureNow();
+    queueMicrotask(()=>{if(stageMounted&&!arrangementDraft)refreshStageForScope();});
     /* 配置分区深链接不播开场；首次打开完整小屋时从底部搭建。
        shell 内的状态、目录等视图切换不重新安排入口动画。 */
     /* renderShell() 在本轮 render 的末尾才填标题、家具条和状态面板。
@@ -696,18 +714,22 @@ function renderStageBar(){
  * shell.css 的 `.shell-side .overview-card`（带边框、圆角、内边距）。
  * 分区标题与导航由 sideBand() 给；状态图标、摘要卡片和活动时间线
  * 由 home-sidebar.js 投影当前对象的真实记录。 */
+function liteHomeSuspended(){
+  return litePerformanceMode&&(document.hidden||Boolean(window.CompanionShell?.section));
+}
 function renderShellSide(){
   const host=$('#shellSide');
-  if(!host)return;
+  if(!host||liteHomeSuspended())return;
   host.setAttribute('aria-label',arrangementDraft?'布置房间工作台':'此刻的状态与今日安排');
   if(arrangementDraft)return;
   host.innerHTML=homeStateBand()+homeScheduleBand();
-  icons();
+  icons(host);
 }
 let homeAgendaClockTimer=null;
 async function refreshHomeAgendaClock(refresh=false){
-  if(document.hidden||!$('[data-home-agenda-clock]'))return;
+  if(document.hidden||liteHomeSuspended()||!$('[data-home-agenda-clock]'))return;
   if(refresh)await product.refreshSummary?.();
+  if(document.hidden||liteHomeSuspended())return;
   const host=$('[data-home-agenda-clock]');
   if(!host)return;
   const next=scheduleCard();
@@ -723,11 +745,11 @@ async function refreshHomeAgendaClock(refresh=false){
 function armHomeAgendaClock(){
   clearTimeout(homeAgendaClockTimer);
   homeAgendaClockTimer=null;
-  if(document.hidden)return;
+  if(document.hidden||liteHomeSuspended()||(litePerformanceMode&&arrangementDraft))return;
   homeAgendaClockTimer=setTimeout(async()=>{
-    await refreshHomeAgendaClock(true);
-    armHomeAgendaClock();
-  },15000);
+    try{await refreshHomeAgendaClock(true);}
+    finally{armHomeAgendaClock();}
+  },litePerformanceMode?60000:15000);
 }
 
 /* 下方面板的头部。两处渲染共用，保证视觉一致。
@@ -801,7 +823,9 @@ function renderSectionPanel(id){
     all:renderAllFunctionsPage,
     data:renderData}[id];
   if(!renderer)return renderHomePanel();
-  return panelHead(heading,subtitle,'settings-2',button('回到小屋','data-shell-home'))
+  const diagnosticsLink = id === 'expression' || id === 'decision'
+    ? '<a class="text-button reply-diagnostics-link" href="#manage/maintenance/reply-diagnostics">查看本会话回复诊断</a>' : '';
+  return panelHead(heading,subtitle,'settings-2',button('回到小屋','data-shell-home'),diagnosticsLink)
     +`<div class="shell-panel-body">${renderer()}</div>`;
 }
 
@@ -812,7 +836,7 @@ function renderSectionPanel(id){
    否则家具目录与生活观察会整块消失（选择器还在、函数还在，就是不显示）。 */
 function renderViewPanel(name){
   if(name==='directory'){
-    return panelHead('家具与能力','每件家具都是一个入口；有固定机位的可以直接在小屋里选中。','armchair',
+    return panelHead('家具与能力',litePerformanceMode?'打开家具即可查看对应的工作区或能力。':'每件家具都是一个入口；有固定机位的可以直接在小屋里选中。','armchair',
       button('回到小屋','data-shell-home'))
       +`<div class="shell-panel-body">${renderDirectory()}</div>`;
   }
@@ -845,6 +869,52 @@ function renderViewPanel(name){
 
 /* 面板整体换内容。加一个轻量的入场动画，让「换页」有落点；
    小屋不参与这个动画——它常在，动了会显得整页在跳。 */
+function panelScope(){
+  const section=window.CompanionShell?.section;
+  if(section==='host')return {kind:'accounts',label:'全部账号'};
+  if(section==='maintenance'&&maintenancePane==='reply-diagnostics')return {kind:'window',requiresWindow:true,concreteOnly:true};
+  if(section==='data'&&dataPane==='port')return {kind:'window'};
+  if(section==='data'&&['storage','backup'].includes(dataPane)||section==='mobile'
+    ||section==='learning'&&learningTab==='semantic')return {kind:'global',label:'全局'};
+  if((section==='memory'||route==='memories')&&memoryWorkspaceRoute==='records')
+    return {kind:'window',requiresWindow:true};
+  if(['decision','models','identity-feelings','perception','contact','understanding'].includes(section)
+    ||section==='expression'&&['expression-text','expression-voice','expression-platform'].includes(expressionModule)
+    ||window.CompanionShell?.view==='state')return {kind:'window'};
+  if(section==='learning'&&learningTab==='chain')return {kind:'window',privateOnly:true,requiresWindow:true};
+  return null;
+}
+function roleContextMarkup(){
+  const scope=panelScope();
+  if(!scope)return '';
+  if(scope.kind!=='window')return `<div class="role-context role-context-badge" aria-label="页面范围"><span>${scope.label}</span></div>`;
+  const role=product.role(),owner=product.roleTarget();
+  if(!role||!owner)return '';
+  const selected=product.selection();
+  const windows=product.targets().filter(target=>target.bot_id===owner.bot_id
+    &&target.roles.some(item=>item.role_id===role.role_id)
+    &&(!scope.privateOnly||target.scope_kind==='private')
+    &&(!scope.concreteOnly||(target.participant_id!=='*'&&target.group_id!=='*')));
+  const selectedHere=windows.some(target=>target.target_id===selected.target_id);
+  return `<section class="role-context" aria-label="会话范围">
+    <label>会话<select data-role-window aria-label="当前角色的会话窗口"><option value=""${!selectedHere?' selected':''}>${scope.requiresWindow?'请选择会话窗口':'默认设置'}</option>${windows.map(target=>`<option value="${escapeHTML(target.target_id)}"${selected.target_id===target.target_id?' selected':''}>${escapeHTML(product.targetLabel(target))}</option>`).join('')}</select></label>
+    ${scope.privateOnly&&selected.target_id&&!selectedHere?'<span>成长链路仅支持私聊，请选择私聊会话。</span>':''}
+    ${product.selectionNotice?.()?`<p role="status">${escapeHTML(product.selectionNotice())}</p>`:''}
+  </section>`;
+}
+function insertRoleContext(host,markup){
+  const heading=host.querySelector('.shell-panel-head');
+  if(heading)heading.insertAdjacentHTML('afterend',markup);
+  else host.insertAdjacentHTML('afterbegin',markup);
+}
+function updateRoleContext(){
+  const host=$('#shellPanel');
+  const node=host?.querySelector('.role-context');
+  const markup=roleContextMarkup();
+  if(node)node.outerHTML=markup;
+  else if(markup&&host&&!host.hidden)insertRoleContext(host,markup);
+}
+window.addEventListener('companion:scope-changed',()=>{updateRoleContext();refreshStageForScope();});
 function paintPanel(){
   const host=$('#shellPanel');
   if(!host)return;
@@ -862,6 +932,7 @@ function paintPanel(){
       :section?renderSectionPanel(section)
       :view?renderViewPanel(view)
       :renderHomePanel();
+    if(host.innerHTML.trim())insertRoleContext(host,roleContextMarkup());
     host.hidden=!host.innerHTML.trim();
     if(fromRail&&!host.hidden){
       const heading=host.querySelector('.shell-panel-head h2');
@@ -948,8 +1019,12 @@ function mountPanelWorkspaces(){
     :window.CompanionMemorySettingsSection?.unmount());
   const maintenanceHost=$('#maintenanceWorkspace');
   guarded('治理与维护',()=>maintenanceHost
-    ?window.CompanionMaintenancePage?.mount(maintenanceHost,{activeView:route==='manage'&&manageTab==='maintenance'?maintenancePane:'',onViewChange:onMaintenanceViewChange})
+    ?window.CompanionMaintenancePage?.mount(maintenanceHost,{activeView:maintenancePane,onViewChange:onMaintenanceViewChange})
     :window.CompanionMaintenancePage?.unmount());
+  const diagnosticsHost=$('#replyDiagnosticsWorkspace');
+  guarded('本会话回复诊断',()=>diagnosticsHost
+    ?window.CompanionReplyDiagnostics?.mount(diagnosticsHost)
+    :window.CompanionReplyDiagnostics?.unmount());
   const roleStateHost=$('#roleStateWorkspace');
   const roleWeatherHost=$('#perceptionRoleWeatherWorkspace');
   const stateHost=roleWeatherHost||roleStateHost;
@@ -1168,7 +1243,8 @@ function renderShell(){
   /* 面板绘制后 iframe 才存在；分区和家具切换也从这里挂载。 */
   product.mountWorkspace();
   window.CompanionShell?.paint();
-  syncStageSpace();
+  if(!litePerformanceMode)syncStageSpace();
+  if(litePerformanceMode)armHomeAgendaClock();
   const shellView=window.CompanionShell?.view||null;
   const mount=$('[data-voxel-room]');
   if(shellView==='state'&&(!shellViewInitialized||shellRenderedView!=='state'))scheduleStatusBuild(mount);
@@ -1181,7 +1257,7 @@ function renderShell(){
      首页时它是场景，不该出现在 Tab 序列里。 */
   const scene=$('#stageScene');
   if(scene){
-    if(away){scene.tabIndex=0;scene.setAttribute('role','button');scene.setAttribute('aria-label','回到小屋');}
+    if(away){scene.tabIndex=0;scene.setAttribute('role','group');scene.setAttribute('aria-label','角色小屋卡片，按 Enter 返回小屋');}
     else{scene.removeAttribute('tabindex');scene.removeAttribute('role');scene.removeAttribute('aria-label');}
   }
   /* 布局刚变（缩略 ↔ 放大），canvas 尺寸要重新量。等下一帧是因为
@@ -1198,6 +1274,10 @@ function renderShell(){
 function renderHomeEnvironment(){
   const host=$('[data-home-environment]');
   if(!host||!window.CompanionHomeEnvironment)return;
+  if(liteHomeSuspended()){
+    window.CompanionHomeEnvironment.suspend();
+    return;
+  }
   const current=product.role();
   window.CompanionHomeEnvironment.render(host,{
     state:product.data.state,life:product.data.life,scopeKey:product.scopeKey(),
@@ -1228,6 +1308,7 @@ function renderHomeEnvironment(){
 function dirtyDrafts(){
   const pending=[];
   try{pending.push(...(window.CompanionWorkbench?.dirtyEditors?.()||[]));}catch(error){console.warn('[陪伴小屋] 工作台脏检查失败',error);}
+  try{pending.push(...(product.workspaceDirtyDrafts?.()||[]));}catch(error){console.warn('[陪伴小屋] 嵌入工作区脏检查失败',error);}
   try{pending.push(...(window.CompanionPageGuards?.dirty?.()||[]));}catch(error){console.warn('[陪伴小屋] 页面脏检查失败',error);}
   return pending;
 }
@@ -1284,6 +1365,7 @@ function registerPageGuards(){
     save:()=>window[name]?.saveBeforeLeave?.()??{error:'请回到原配置中确认保存。'},
     discard:()=>window[name]?.discardChanges?.()??true,
   });
+  page('core-user','核心用户关系','CompanionSelfRelationship');
   page('role-profile-draft','角色档案草稿','CompanionRoleProfileDraft');
   page('perception','感知配置','CompanionNativePerceptionPage');
   page('models','模型与连接','CompanionModelsPage');
@@ -1371,8 +1453,7 @@ function render(){
    * 帧循环的开关不在这里，统一由 renderShell() 负责（它也是 backHome()
    * 唯一会走的路径）——两处各写一遍迟早会漏掉其中一条。
    */
-  const signature=stageSignatureNow();
-  if(stageMounted&&signature!==stageSignature){
+  if(stageMounted&&stageSignatureNow()!==stageSignature){
     entranceHandle?.skip();
     entranceHandle=null;
     voxelController?.dispose();voxelController=null;
@@ -1412,7 +1493,7 @@ let entrancePlayed=false, entranceHandle=null, entranceRunId=0;
 let entranceRegion=null;
 let statusBuildScheduled=false;
 function scheduleStatusBuild(mount){
-  if(!mount||entrancePlayed||statusBuildScheduled)return;
+  if(litePerformanceMode||!mount||entrancePlayed||statusBuildScheduled)return;
   statusBuildScheduled=true;
   queueMicrotask(()=>{
     statusBuildScheduled=false;
@@ -1623,10 +1704,11 @@ function directoryCards(){
 function furnitureRow(item){
   const [label,type]=furnitureStatus(item);
   const unavailable=furnitureUnavailable(item);
-  const stored=item.station&&(voxelController?voxelController.getState().storedFurniture.includes(item.station):state.roomLayouts[layoutKey()]?.items?.[item.station]?.stored);
   const owner=item.cap?(product.capability(item.cap)?.label||capabilityConfig(item.cap).label||'拓展能力'):'基础生活';
   const bundled=Boolean(item.cap&&integrationExtension(item.cap));
-  const action=item.station&&!unavailable&&!bundled
+  const locate=!litePerformanceMode&&item.station&&!unavailable&&!bundled;
+  const stored=locate&&(voxelController?voxelController.getState().storedFurniture.includes(item.station):state.roomLayouts[layoutKey()]?.items?.[item.station]?.stored);
+  const action=locate
     ? `<button data-locate-furniture="${item.id}" aria-label="${stored?'布置已收纳的':'在小屋中查看'}${item.name}">${I(stored?'archive':'focus')}<span>${stored?'布置':'定位'}</span></button>`
     : `<button data-furniture="${item.id}" aria-label="打开${item.name}"><span>打开</span></button>`;
   return `<div class="home-item ${unavailable?'unavailable':''}">
@@ -2976,11 +3058,15 @@ function qzoneSwitchMarkup(settings){
 function qzoneLimitsMarkup(settings){
   const parts=[['每次读取动态',settings.feed_recent_posts,'条'],
     ['同类动作最短间隔',settings.action_min_interval_minutes,'分钟'],
-    ['每轮最多动作',settings.max_actions_per_tick,'个'],
-    ['每日最多说说',settings.publish_max_daily,'条']].filter(([,value])=>Number.isFinite(value));
+    ['每轮最多动作',settings.max_actions_per_tick,'个']].filter(([,value])=>Number.isFinite(value));
+  if(settings.daily_limits_enabled===false){
+    parts.push(['每日说说次数','无限','']);
+  }else if(Number.isFinite(settings.publish_max_daily)){
+    parts.push(['每日最多说说',settings.publish_max_daily,'条']);
+  }
   if(!parts.length)return '';
   return `<p class="action-qzone-limits">${I('clock-3')}<span>`
-    +`${parts.map(([label,value,unit])=>`${label} ${escapeHTML(String(value))} ${unit}`).join(' · ')}</span></p>`;
+    +`${parts.map(([label,value,unit])=>`${label} ${escapeHTML(String(value))}${unit?' '+unit:''}`).join(' · ')}</span></p>`;
 }
 /* 主题策略：说清「谁在决定主题」，以及目录里有几个主题是开着的。
  * 措辞不能暗示「已经在自动发布」——自动发布要同时满足两项设置，光看
@@ -3801,6 +3887,7 @@ function activateExpressionModule(id,{focus=false}={}){
     }
   }
   syncExpressionReplyWorkspace(id);
+  updateRoleContext();
   if(focus)target.focus();
   window.CompanionPageMotion?.reveal(panel,{enabled:entering});
   return true;
@@ -3923,7 +4010,7 @@ function renderGovernanceOriginal(){
      角色时出现；选中后走产品层同一个 chooseRole，工作区会随之重新绑定。 */
   const selfRoleChoices=typeof product.roleChoices==='function'?product.roleChoices():[];
   const selfRoleSwitch=selfRoleChoices.length>1
-    ?`<label class="self-role-switch"><span>切换角色</span><select data-self-role aria-label="切换当前角色">${selfRoleChoices.map((item,index)=>`<option value="${escapeHTML(item.role.role_id)}"${item.role.role_id===(role?role.role_id:'')?' selected':''}>${escapeHTML(product.roleLabel(item.role,index))}</option>`).join('')}</select></label>`
+    ?`<label class="self-role-switch"><span>切换角色</span><select data-self-role aria-label="切换当前角色">${selfRoleChoices.map((item,index)=>`<option value="${escapeHTML(product.roleChoiceKey(item))}"${item.role.role_id===(role?role.role_id:'')&&item.target.bot_id===product.roleTarget()?.bot_id?' selected':''}>${escapeHTML(product.roleLabel(item.role,index)+' · '+product.accountLabel(item.target))}</option>`).join('')}</select></label>`
     :'';
   return `<div class="self-page${selfPane==='questionnaire'?' is-questionnaire-focus':''}">
     <section class="journal-cover" aria-label="当前角色">
@@ -4024,6 +4111,10 @@ function renderMobileConnection(){
   </div>`;
 }
 function renderMaintenancePageOriginal(){
+  if(maintenancePane==='reply-diagnostics')return `<div class="maintenance-page">
+    <nav class="maint-subnav" aria-label="回复诊断导航"><button type="button" data-go="manage" data-manage="maintenance" data-manage-subtab="delivery">返回排障 · 消息收口</button></nav>
+    <section class="content-panel" aria-labelledby="reply-diagnostics-heading"><h3 id="reply-diagnostics-heading">当前会话的回复诊断</h3>
+      <div id="replyDiagnosticsWorkspace">${consoleLoading('正在打开回复诊断…')}</div></section></div>`;
   if(maintenancePane==='patrol')return `<div class="maintenance-page"><nav class="maint-subnav" aria-label="治理与维护二级导航"><button type="button" data-go="manage" data-manage="maintenance">返回运行诊断</button><button type="button" aria-current="page">每日巡视</button></nav><section id="roleStateWorkspace" data-state-section="patrol" aria-label="每日巡视维护设置"></section></div>`;
   return `<div class="maintenance-page"><div class="maintenance-settings-entry"><button class="button small" type="button" data-maint-open-patrol>${I('clipboard-check')}每日巡视设置</button></div><section id="maintenanceWorkspace" aria-label="运行诊断与排障"></section></div>`;
 }
@@ -4793,6 +4884,14 @@ function renderContactPage(){return `<section id="contactWorkspace" class="conta
    （左侧视图轨道 + 右侧档案库，自带页头，套进配置控制台的分区卡片
    会把它压成卡里的一张图），这里只渲染挂载容器，
    mount/unmount 由 mountPanelWorkspaces() 统一负责。 */
+function chooseMemoryRoute(value){
+  if(!['records','settings'].includes(value)||value===memoryWorkspaceRoute)return;
+  return afterPageLeave(++navigationIntent,()=>{
+    memoryWorkspaceRoute=value;
+    if(route==='memories')render();else renderShell();
+    document.querySelector(`[data-memory-route="${value}"]`)?.focus({preventScroll:true});
+  });
+}
 function renderMemoryPage(){
   const records=memoryWorkspaceRoute==='records';
   return `<div class="memory-route">
@@ -4816,60 +4915,20 @@ function roleConfigApi(role){
   if(typeof direct==='string'&&direct.startsWith('/astrbot_plugin_private_companion/'))return direct;
   return '';
 }
+function matchesCottageRole(target,role){
+  const owner=product.roleTarget?.(),selected=product.role?.();
+  return Boolean(owner&&selected&&target.bot_id===owner.bot_id&&role.role_id===selected.role_id);
+}
 function learningChoices(key){
-  return (window.CompanionProduct?.targets?.()||[]).flatMap(target=>(target.roles||[])
-    .filter(role=>learningRoleApi(target,role,key))
+  return (product.targets?.()||[]).flatMap(target=>(target.roles||[])
+    .filter(role=>matchesCottageRole(target,role)&&learningRoleApi(target,role,key))
     .map(role=>({target,role:{...role,bot_id:target.bot_id}})));
 }
 function learningScope(key){
   const choices=learningChoices(key);
-  if(!choices.length)return null;
-  let selected=learningScopes[key];
-  if(!selected||!choices.some(item=>item.target.target_id===selected.target_id&&item.role.role_id===selected.role_id)){
-    const first=choices[0];
-    selected=learningScopes[key]={target_id:first.target.target_id,role_id:first.role.role_id};
-  }
-  const found=choices.find(item=>item.target.target_id===selected.target_id&&item.role.role_id===selected.role_id);
-  return found?{...found,key:JSON.stringify([key,found.target.target_id,found.role.role_id])}:null;
-}
-function learningScopeControls(key,label){
-  const choices=learningChoices(key),selected=learningScope(key);
-  if(!choices.length)return `<div class="learning-hub-empty" role="status">暂无可读取的${escapeHTML(label)}范围。</div>`;
-  const product=window.CompanionProduct;
-  const targets=[...new Map(choices.map(item=>[item.target.target_id,item.target])).values()];
-  const targetLabel=target=>product?.targetLabel?.(target)||product?.subjectLabel?.(target)||target.target_id;
-  const roleLabel=(role,index)=>product?.roleLabel?.(role,index)||role.role_name||role.role_id;
-  if(key==='expression'){
-    const roles=[...new Map(choices.map(item=>[item.role.role_id,item.role])).values()];
-    return `<div class="learning-scope-controls"><label><span>角色</span><select data-learning-scope-role="expression" aria-label="表达学习角色">${roles.map((role,index)=>`<option value="${escapeHTML(role.role_id)}" ${role.role_id===selected?.role.role_id?'selected':''}>${escapeHTML(roleLabel(role,index))}</option>`).join('')}</select></label></div>`;
-  }
-  return `<div class="learning-scope-controls" aria-label="${escapeHTML(label)}范围">
-    <label><span>对象</span><select data-learning-scope-target="${escapeHTML(key)}" aria-label="筛选对象">
-      ${targets.map(target=>`<option value="${escapeHTML(target.target_id)}" ${target.target_id===selected?.target.target_id?'selected':''}>${escapeHTML(targetLabel(target))}</option>`).join('')}
-    </select></label>
-    <label><span>角色</span><select data-learning-scope-role="${escapeHTML(key)}" aria-label="筛选角色">
-      ${(selected?.target.roles||[]).filter(role=>learningRoleApi(selected.target,role,key))
-        .map((role,index)=>`<option value="${escapeHTML(role.role_id)}" ${role.role_id===selected?.role.role_id?'selected':''}>${escapeHTML(roleLabel(role,index))}</option>`).join('')}
-    </select></label>
-  </div>`;
-}
-function learningRoleControls(key,label,controls){
-  if(!learningScope(key))return '';
-  const content=controls||learningScopeControls(key,label);
-  return `<section class="learning-record-scope" aria-label="${escapeHTML(label)}"><h2>${escapeHTML(label)}</h2>${content}</section>`;
-}
-function changeLearningScope(key,field,value){
-  const choices=learningChoices(key);
-  if(field==='target'){
-    const first=choices.find(item=>item.target.target_id===value);
-    if(!first)return false;
-    learningScopes[key]={target_id:first.target.target_id,role_id:first.role.role_id};
-    return true;
-  }
-  const found=choices.find(item=>(key==='expression'||item.target.target_id===learningScopes[key]?.target_id)&&item.role.role_id===value);
-  if(!found)return false;
-  learningScopes[key]={target_id:found.target.target_id,role_id:found.role.role_id};
-  return true;
+  const selection=key==='expression'?product.roleSelection?.():product.selection();
+  const found=choices.find(item=>item.target.target_id===selection?.target_id&&item.role.role_id===selection?.role_id);
+  return found?{...found,key:JSON.stringify([key,found.target.bot_id,found.target.target_id,found.role.role_id])}:null;
 }
 function learningRecordLabel(product,target,role,index){
   const raw=product.targetLabel?.(target)||product.subjectLabel?.(target)||target.target_id;
@@ -4883,7 +4942,7 @@ function learningReviewSources({includeGroups=false,scopeKey=null}={}){
   const sources=(product?.targets?.()||[]).flatMap(target=>{
     const group=target.scope_kind==='group';
     if(group&&!includeGroups)return [];
-    return (target.roles||[]).filter(role=>typeof role.reply_api==='string'&&role.reply_api
+    return (target.roles||[]).filter(role=>matchesCottageRole(target,role)&&typeof role.reply_api==='string'&&role.reply_api
       &&(group||typeof role.growth_api==='string'&&role.growth_api))
       .map((role,index)=>({api:role.growth_api||'',growthApi:role.growth_api||'',replyApi:role.reply_api,
         key:JSON.stringify([target.target_id,role.role_id]),target,role,
@@ -4897,7 +4956,7 @@ function learningReviewSources({includeGroups=false,scopeKey=null}={}){
 function learningExpressionSources(){
   const product=window.CompanionProduct;
   const sources=(product?.targets?.()||[]).flatMap(target=>(target.roles||[])
-    .filter(role=>typeof role.reply_api==='string'&&role.reply_api)
+    .filter(role=>matchesCottageRole(target,role)&&typeof role.reply_api==='string'&&role.reply_api)
     .map((role,index)=>({key:JSON.stringify([target.target_id,role.role_id]),
       scopeKey:JSON.stringify([target.target_id,role.role_id]),replyApi:role.reply_api,target,role,
       label:learningRecordLabel(product,target,role,index)})));
@@ -4905,9 +4964,12 @@ function learningExpressionSources(){
   return selected?sources.filter(item=>item.role.role_id===selected.role.role_id
     &&item.target.bot_id===selected.target.bot_id):[];
 }
-window.addEventListener('companion:learning-open',event=>{
-  learningRecordFocus={target_id:event.detail?.target_id,role_id:event.detail?.role_id,
-    growth_id:event.detail?.growth_id};
+window.addEventListener('companion:learning-open',async event=>{
+  const detail=event.detail||{};
+  const source=learningChoices('growth').find(item=>item.target.target_id===detail.target_id
+    &&item.role.role_id===detail.role_id);
+  if(!source||await product.choose(source.target.target_id,source.role.role_id,true)===false)return;
+  learningRecordFocus={target_id:detail.target_id,role_id:detail.role_id,growth_id:detail.growth_id};
   navigate('manage','learning','chain');
 });
 /* 策略按当前角色保存；记录页按来源汇总，不把某个私聊当作策略归属。 */
@@ -4917,9 +4979,6 @@ function renderLearningPage(){
   const nav=`<nav class="learning-hub-nav" aria-label="学习与反思">${sections.map(([key,label],index)=>
     `<a class="learning-hub-tab${learningTab===key?' is-active':''}" href="${navHref('manage','learning',key)}" ${learningTab===key?'aria-current="page"':''}><span>${String(index+1).padStart(2,'0')} ${label}</span></a>`).join('')}</nav>`;
   let content='';
-  const scopeKey=learningTab==='chain'?'growth':learningTab==='expression'?'expression':'';
-  const scopeControls=scopeKey?learningScopeControls(scopeKey,'筛选记录'):'';
-  const recordControls=scopeKey?learningRoleControls(scopeKey,'筛选记录',scopeControls):'';
   if(learningTab==='overview'){
     content=`<section id="learningOverviewWorkspace" class="learning-overview-workspace" aria-label="学习总览">${consoleLoading('正在读取学习状态…')}</section>`;
   }else if(learningTab==='strategy'){
@@ -4931,7 +4990,7 @@ function renderLearningPage(){
     content=`<section id="learningReviewWorkspace" class="learning-review-workspace" aria-label="学习审阅中心">${consoleLoading('正在汇总待审阅内容…')}</section>`;
   }else if(learningTab==='expression'){
     content=learningExpressionSources().length?`
-        ${recordControls}<section id="expressionSignalsWorkspace" class="expression-signals-workspace" aria-label="表达规则库">${consoleLoading('正在读取表达规则…')}</section>
+        <section id="expressionSignalsWorkspace" class="expression-signals-workspace" aria-label="表达规则库">${consoleLoading('正在读取表达规则…')}</section>
         <section id="expressionSamplesWorkspace" class="expression-samples-workspace" aria-label="表达学习观察素材">${consoleLoading('正在读取观察素材…')}</section>`
       :`<div class="learning-hub-empty" role="status">暂无表达学习记录</div>`;
   }else if(learningTab==='behavior'){
@@ -4945,8 +5004,8 @@ function renderLearningPage(){
       :`<div class="learning-hub-empty" role="status">暂无可读取复盘的角色。</div>`;
   }else{
     content=learningReviewSources({scopeKey:'growth'}).length
-      ?`${recordControls}<section class="learning-chain-top" aria-label="成长记录工作台"><section id="learningWorkspace" class="learning-workspace" aria-label="成长记录与进展"></section></section>`
-      :`<div class="learning-hub-empty" role="status">暂无成长记录</div>`;
+      ?`<section class="learning-chain-top" aria-label="成长记录工作台"><section id="learningWorkspace" class="learning-workspace" aria-label="成长记录与进展"></section></section>`
+      :`<div class="learning-hub-empty" role="status">请选择当前角色的私聊窗口以查看成长记录。</div>`;
   }
   return `<div class="learning-hub">${nav}<header class="learning-hub-head"><h1>学习与反思 <span>· ${escapeHTML(titles[learningTab]||'总览')}</span></h1></header><section class="learning-hub-panel" aria-label="${escapeHTML(titles[learningTab]||'总览')}">${content}</section></div>`;
 }
@@ -5128,7 +5187,7 @@ async function loadContentWorks(){
   if(!host)return;
   host.innerHTML='<p class="muted-text">正在读取作品列表…</p>';
   try{
-    const selection=product.selection?.()||{};
+    const selection=product.roleSelection?.()||{};
     if(!selection.target_id||!selection.role_id)throw Object.assign(new Error('works_request_invalid'),{code:'works_request_invalid'});
     const data=await product.request('GET','works',{target_id:selection.target_id,role_id:selection.role_id});
     if(!data||typeof data!=='object')throw Object.assign(new Error('works_unavailable'),{code:'works_unavailable'});
@@ -5154,7 +5213,11 @@ function capabilitySurface(key){
 function definitions(rows){return `<dl class="definition-list">${rows.map(([label,value])=>`<div class="definition-row"><dt>${label}</dt><dd>${value}</dd></div>`).join('')}</dl>`;}
 function closeDetail(){const d=$('#detailDialog');if(d.open)d.close();}
 function showDetail(id){
-  if(id==='arrange'){openRoomEditor();return;}
+  if(id==='arrange'){
+    if(typeof openRoomEditor==='function')openRoomEditor();
+    else toast('布置工具正在加载，请稍后再试。');
+    return;
+  }
   /* 详情弹窗的**两种去向**，没有第三种：
        1. 这件事有真实工作区（life / identity / memory / 内置能力设置）
           → 关掉弹窗、跳到那一页，把标签也带上。
@@ -5663,7 +5726,7 @@ document.addEventListener('click',event=>{
     return;
   }
   if(el.dataset.taskSettingsKind){event.preventDefault();openTokenTaskSettings(el.dataset.taskSettingsKind);return;}
-  if(handleRoomEditorClick(el))return;
+  if(arrangementDraft&&handleRoomEditorClick(el))return;
   if(el.dataset.expressionModule){activateExpressionModule(el.dataset.expressionModule);return;}
   if(el.matches('a[href^="#"]')&&!el.target&&!el.hasAttribute('download')){
     const hash=el.getAttribute('href').slice(1),[next,tab,subtab]=hash.split('/');
@@ -5717,11 +5780,7 @@ document.addEventListener('click',event=>{
     return;
   }
   if(el.dataset.memoryRoute){
-    if(['records','settings'].includes(el.dataset.memoryRoute)&&el.dataset.memoryRoute!==memoryWorkspaceRoute){
-      memoryWorkspaceRoute=el.dataset.memoryRoute;
-      if(route==='memories')render();else renderShell();
-      document.querySelector(`[data-memory-route="${memoryWorkspaceRoute}"]`)?.focus({preventScroll:true});
-    }
+    chooseMemoryRoute(el.dataset.memoryRoute);
     return;
   }
   if(el.dataset.outputMode){activateOutputPreview(el.dataset.outputMode);return;}
@@ -5858,7 +5917,7 @@ document.addEventListener('click',event=>{
 });
 document.addEventListener('change',event=>{
   const el=event.target;
-  if(handleRoomEditorChange(el))return;
+  if(arrangementDraft&&handleRoomEditorChange(el))return;
   if(el.dataset.allFeatureToggle!==undefined){
     const group=el.dataset.allFeatureGroup;
     allFeaturesState.draft[group][el.dataset.allFeatureField]=el.checked;
@@ -5867,12 +5926,9 @@ document.addEventListener('change',event=>{
     updateAllFeatureSaveState();
     return;
   }
-  if(el.dataset.learningScopeTarget){
-    if(changeLearningScope(el.dataset.learningScopeTarget,'target',el.value))paintPanel();
-    return;
-  }
-  if(el.dataset.learningScopeRole){
-    if(changeLearningScope(el.dataset.learningScopeRole,'role',el.value))paintPanel();
+  if(el.matches?.('[data-role-window]')){
+    const changing=el.value?product.choose(el.value,product.selection().role_id):product.clearWindow();
+    void changing.then(ok=>{if(!ok)updateRoleContext();});
     return;
   }
   /* 发说说的主题与场景：都是「选择」而不是「输入」，所以走 change。
@@ -5957,7 +6013,7 @@ $('#globalSearch').addEventListener('input',event=>{if(event.isComposing)return;
 $('#globalSearch').addEventListener('compositionend',scheduleSearchRender);
 $('#globalSearch').addEventListener('keydown',handleGlobalSearchKeydown);
 document.addEventListener('keydown',event=>{
-  if(handleRoomEditorKey(event))return;
+  if(arrangementDraft&&handleRoomEditorKey(event))return;
   const selfTab=event.target.closest?.('[role="tab"][data-self-pane]');
   if(selfTab&&['ArrowRight','ArrowLeft','Home','End'].includes(event.key)){
     const tabs=$$('.deck-tabs [data-self-pane]');
@@ -6018,9 +6074,7 @@ document.addEventListener('keydown',event=>{
       event.preventDefault();
       const next=event.key==='Home'?0:event.key==='End'?tabs.length-1
         :(index+(event.key==='ArrowRight'?1:tabs.length-1))%tabs.length;
-      memoryWorkspaceRoute=tabs[next].dataset.memoryRoute;
-      if(route==='memories')render();else renderShell();
-      document.querySelector(`[data-memory-route="${memoryWorkspaceRoute}"]`)?.focus({preventScroll:true});
+      chooseMemoryRoute(tabs[next].dataset.memoryRoute);
     }
     return;
   }
@@ -6043,6 +6097,11 @@ window.addEventListener('companion:state-route',()=>{if(route==='life'&&lifeTab=
 document.addEventListener('visibilitychange',()=>{
   const away=Boolean(window.CompanionShell?.section);
   voxelController?.setActive?.(!document.hidden&&!away);
+  if(litePerformanceMode){
+    renderHomeEnvironment();
+    // A home panel opened or changed while hidden has no current sidebar to refresh yet.
+    if(!document.hidden)renderShellSide();
+  }
   if(document.hidden){clearTimeout(homeAgendaClockTimer);homeAgendaClockTimer=null;}
   else{refreshHomeAgendaClock(true);armHomeAgendaClock();}
 });

@@ -29,14 +29,20 @@ from astrbot_host.core_reply_tools import (CoreReplyToolSession, close_core_repl
 from astrbot_host.core_reply_telemetry import observe_core_agent_begin, prepare_core_reply_telemetry
 from astrbot_host.core_reply_tool_dispatch import observe_core_tool_dispatch_begin, restore_core_tool_dispatch
 from companion_v2.agenda.service import AgendaService
+from companion_v2.adapters.astrbot.tools import QzoneToolPort, map_tools
+from companion_v2.capabilities.models import CapabilityAuthorizationState
 from companion_v2.execution.models import TaskError, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind
-from companion_v2.model_gateway.models import MAX_TOOL_CATALOG
+from companion_v2.model_gateway.models import MAX_TOOL_CATALOG, ToolCall as ExternalToolCall
+from companion_v2.qzone.capability import CAPABILITIES, EXTENSION, PUBLISH_ACTION, package_descriptor
+from companion_v2.qzone.service import QzoneService
 from tests.test_astrbot_core_reply import FakeEvent
-from tests.test_external_tools import ExternalFixture
+from tests.test_external_tools import ExternalFixture, tool_call as external_tool_call
 from tests.test_management_access import SCOPE
 from tests.test_semantic_integration import picture
+from tests.test_qzone_extension import FakeSettings, FakeTransport
+from tests.test_role_tool_loop import answered, requested
 
 
 # 私聊目录才有 agenda 工具，也只有它们的历史 schema 会让 Gemini 请求构造期失败。
@@ -45,7 +51,7 @@ PRIVATE_AGENDA_ACTIONS = ("memo.create", "memo.read", "memo.list", "memo.edit", 
                           "reminder.reschedule", "operation.lookup")
 
 
-class CoreReplyToolsTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
+class CoreReplyToolFixture(ExternalFixture):
     def setUp(self):
         super().setUp()
         self.app = NS(runtime=self.runtime, tasks=self.tasks, messages=self.messages, tools=self.tools,
@@ -55,7 +61,7 @@ class CoreReplyToolsTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
             self.grant(self.important, SCOPE, action)
         self.authorized = 0
         self.authorize_result = Outcome.success(True)
-        self.event, self.request = self.prepare()
+        self.native_event, self.request = self.prepare()
 
     def prepare(self, event_id="native-event"):
         event = FakeEvent()
@@ -73,7 +79,7 @@ class CoreReplyToolsTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
     def wrapper(self, action, arguments, call_id="native-call", event=None):
         call = ToolCall(id=call_id, function=ToolCall.FunctionBody(name=native_tool_name(action),
                                                                arguments=json.dumps(arguments)))
-        return NS(context=NS(event=event or self.event), messages=[Message(role="assistant", tool_calls=[call])])
+        return NS(context=NS(event=event or self.native_event), messages=[Message(role="assistant", tool_calls=[call])])
 
     async def call_native(self, action, arguments, call_id="native-call", request=None, event=None):
         tool = (request or self.request).func_tool.get_tool(native_tool_name(action))
@@ -81,6 +87,8 @@ class CoreReplyToolsTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
         output = [value async for value in call_local_llm_tool(wrapper, tool.call, "call", **arguments)]
         return json.loads(output[-1])
 
+
+class CoreReplyToolsTests(CoreReplyToolFixture, unittest.IsolatedAsyncioTestCase):
     def test_group_tool_manifest_is_static_and_ordered(self):
         offered = tuple(NS(spec=NS(action=action)) for action in (
             "news.lookup", "group.memory.query", "slang.search",
@@ -102,7 +110,7 @@ class CoreReplyToolsTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
         later = FunctionTool("zz_native", "Later tool", {"type": "object"}, handler)
         earlier = FunctionTool("aa_native", "Earlier tool", {"type": "object"}, handler)
         self.request.func_tool = ToolSet(tools=[later, earlier])
-        inject_core_reply_tools(self.event, self.request, application=self.app)
+        inject_core_reply_tools(self.native_event, self.request, application=self.app)
         names = [tool.name for tool in self.request.func_tool.tools]
         self.assertEqual(names, sorted(names))
         self.assertIn("aa_native", names)
@@ -114,8 +122,8 @@ class CoreReplyToolsTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
         native = FunctionTool("native_existing", "Native tool", {"type": "object"}, existing_handler)
         original = ToolSet(tools=[native])
         self.request.func_tool = original
-        first = inject_core_reply_tools(self.event, self.request, application=self.app)
-        second = inject_core_reply_tools(self.event, self.request, application=self.app)
+        first = inject_core_reply_tools(self.native_event, self.request, application=self.app)
+        second = inject_core_reply_tools(self.native_event, self.request, application=self.app)
         self.assertEqual(first, second)
         self.assertEqual(original.tools, [native])
         self.assertIs(self.request.func_tool.get_tool("native_existing"), native)
@@ -150,7 +158,7 @@ class CoreReplyToolsTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(changed["payload"]["revision"], 2)
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) n FROM conversation_batches", ())["n"], 0)
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) n FROM model_rounds", ())["n"], 0)
-        self.assertEqual(self.event.sent, [])
+        self.assertEqual(self.native_event.sent, [])
 
     async def test_external_operation_uses_real_task_and_original_receipt(self):
         generation = self.tasks.generation
@@ -173,7 +181,7 @@ class CoreReplyToolsTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
             self.tools.external.snapshot(row, replace(self.context, actor=self.core), self.clock.now())
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) n FROM conversation_batches", ())["n"], 0)
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) n FROM model_rounds", ())["n"], 0)
-        self.assertEqual(self.event.sent, [])
+        self.assertEqual(self.native_event.sent, [])
 
     async def test_native_external_tool_remaps_a_changed_provider_binding(self):
         changed = replace(self.bindings["device.play"], version="2", generation="host-reloaded")
@@ -197,11 +205,44 @@ class CoreReplyToolsTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
         receipt, _ = self.tools.external.snapshot(original, self.context, self.clock.now())
         self.assertEqual(receipt["state"], "unknown")
         again = await self.call_native("device.play", {"query": "music"}, "another-call")
-        self.assertEqual(again["code"], "external_effect_unresolved")
+        self.assertEqual(again, {**result, "replayed": True})
         event, request = self.prepare("another-event")
         again = await self.call_native("device.play", {"query": "music"}, "third-call", request=request, event=event)
-        self.assertEqual(again["code"], "external_effect_unresolved")
+        self.assertEqual(again, {**result, "replayed": True})
         self.assertEqual(len(self.extension_calls), 1)
+
+    async def test_unknown_native_write_cannot_be_retried_through_the_reply_generator(self):
+        async def unknown(invocation):
+            return self.response(invocation, state="unknown", error_code="provider_result_unknown")
+        self.extension_behavior = unknown
+        original = await self.call_native("device.play", {"query": "music"})
+        _, run, completion = await self.stage(external_tool_call("other-path", effectful=True, query="music"))
+        replay = await self.tools.execute_async(run, completion.call_id, completion.tool_calls[0])
+        self.assertEqual(json.loads(replay.result_json), {**original, "replayed": True})
+        self.assertEqual(len(self.extension_calls), 1)
+
+    async def test_unknown_generated_write_cannot_be_retried_through_native_tools(self):
+        async def unknown(invocation):
+            return self.response(invocation, state="unknown", error_code="provider_result_unknown")
+        self.extension_behavior = unknown
+        _, run, completion = await self.stage(external_tool_call(effectful=True, query="music"))
+        original = json.loads((await self.tools.execute_async(run, completion.call_id, completion.tool_calls[0])).result_json)
+        replay = await self.call_native("device.play", {"query": "music"}, "other-path")
+        self.assertEqual(replay, {**original, "replayed": True})
+        self.assertEqual(len(self.extension_calls), 1)
+
+    async def test_native_provider_exception_keeps_unknown_without_logging_secrets(self):
+        async def broken(_invocation):
+            error = RuntimeError("p_skey=PRIVATE_SECRET; qzonetoken=PRIVATE_TOKEN")
+            error.code = "p_skey=PRIVATE_SECRET"
+            raise error
+        self.extension_behavior = broken
+        with self.assertLogs("astrbot_host.core_reply_tool_execution", level="WARNING") as captured:
+            result = await self.call_native("device.play", {"query": "music"})
+        self.assertEqual((result["state"], result["effect"], result["code"], result["retry_disposition"]),
+                         ("unknown", "unknown", "core_tool_provider_unavailable", "external_effect_unknown"))
+        self.assertNotIn("PRIVATE_SECRET", json.dumps(result) + str(captured.output))
+        self.assertNotIn("PRIVATE_TOKEN", json.dumps(result) + str(captured.output))
 
     async def test_revocation_and_event_mismatch_prevent_dispatch(self):
         self.authorize_result = Outcome.failed("revoked", "this event is no longer authorized")
@@ -220,7 +261,7 @@ class CoreReplyToolsTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_model_arguments_cannot_supply_an_operation_without_native_tool_request(self):
         tool = self.request.func_tool.get_tool(native_tool_name("device.play"))
-        denied = json.loads(await tool.call(NS(context=NS(event=self.event), messages=[]), query="music"))
+        denied = json.loads(await tool.call(NS(context=NS(event=self.native_event), messages=[]), query="music"))
         self.assertEqual(denied["code"], "core_tool_call_missing")
         self.assertEqual(self.extension_calls, [])
 
@@ -271,7 +312,7 @@ class CoreReplyToolsTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(again.content, received.content)
         self.assertEqual(len(self.extension_calls), 1)
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) n FROM conversation_batches", ())["n"], 0)
-        self.assertEqual(self.event.sent, [])
+        self.assertEqual(self.native_event.sent, [])
 
     async def test_executor_close_stops_only_native_worker_and_preserves_shared_generation(self):
         entered, stopped = asyncio.Event(), asyncio.Event()
@@ -399,6 +440,116 @@ class WideCoreReplyToolCatalogTests(ExternalFixture, unittest.IsolatedAsyncioTes
         self.assertEqual(self.extension_calls[0].context, self.context)
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) n FROM conversation_batches", ())["n"], 0)
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) n FROM model_calls", ())["n"], 0)
+
+
+class QzoneCoreReplyToolsTests(CoreReplyToolFixture, unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.transport = FakeTransport()
+        self.qzone_port = QzoneToolPort(self.transport)
+        super().setUp()
+        self.settings = FakeSettings()
+        self.app.qzone = QzoneService(self.runtime, self.settings, self.transport, now=self.clock.now,
+                                      verify_delays=(0.0,), publish_verify_delays=(0.0,))
+        self.qzone_port.attach(self.app)
+        at = self.clock.now()
+        package = package_descriptor()
+        self.capabilities.register_descriptor(package, registered_at=at).unwrap()
+        self.capabilities.acquire(extension_id=EXTENSION, package_id=package.package_id,
+            package_version=package.package_version, expected_revision=0, observed_at=at).unwrap()
+        self.capabilities.set_role_enabled(extension_id=EXTENSION, role=self.context.role_binding.role,
+            bot_id=self.context.scope.bot_id, enabled=True, expected_revision=0, observed_at=at).unwrap()
+        for capability in CAPABILITIES:
+            self.capabilities.set_authorization(extension_id=EXTENSION, capability_id=capability,
+                subject=self.context.actor.subject, scope=self.context.scope,
+                state=CapabilityAuthorizationState.ACTIVE, expected_revision=0, observed_at=at).unwrap()
+        self.native_event, self.request = self.prepare("qzone-native-event")
+
+    def make_extension(self, runtime):
+        return map_tools(runtime, self.qzone_port)
+
+    @staticmethod
+    def publish_arguments(text="今天把窗台擦干净了"):
+        return {"text": text, "topic": "life_documentary", "scene": "role_activity", "confidence": 0.9}
+
+    async def test_confirmation_stops_before_credentials_or_transport_and_cannot_be_self_supplied(self):
+        arguments = self.publish_arguments()
+        with patch.object(self.app.qzone, "publish", wraps=self.app.qzone.publish) as publish:
+            original = await self.call_native(PUBLISH_ACTION, arguments)
+            self.assertEqual((original["state"], original["effect"], original["code"], original["retry_disposition"]),
+                             ("failed", "not_committed", "qzone_topic_confirmation_required", "human_confirmation_required"))
+            self.assertTrue(original["receipt_ref"])
+            self.assertIn("陪伴小屋 → QQ 空间", original["next_step"])
+            replay = await self.call_native(PUBLISH_ACTION, self.publish_arguments("换一段正文"), "changed-call")
+            self.assertEqual(replay, {**original, "replayed": True})
+            publish.assert_awaited_once()
+            for flag in ("confirmed", "topic_confirmed"):
+                result = await self.call_native(PUBLISH_ACTION, {**arguments, flag: True}, flag)
+                self.assertEqual((result["state"], result["code"]), ("failed", "invalid_tool_arguments"))
+            event, request = self.prepare("later-confirmation-turn")
+            later = await self.call_native(PUBLISH_ACTION, self.publish_arguments("下一轮换正文"), "later-call",
+                                           request=request, event=event)
+            self.assertEqual(later["code"], original["code"])
+            self.assertNotEqual(later["invocation_id"], original["invocation_id"])
+            self.assertEqual(publish.await_count, 2)
+        self.assertEqual((self.transport.acquired, self.transport.sent), (0, []))
+        self.assertEqual(self.runtime.read_one("SELECT COUNT(*) n FROM operations WHERE owner = ?", ("qzone.actions",))["n"], 0)
+        task = require(self.app._core_reply_tool_executor.tasks.read(self.context, original["invocation_id"]))
+        self.assertEqual((task.state, task.effect), ("failed", "not_committed"))
+
+    async def test_auto_publish_keeps_the_committed_receipt_and_exact_replay(self):
+        self.settings.values.update(topic_auto_enabled=True, topic_require_confirmation=False)
+        arguments = self.publish_arguments()
+        original = await self.call_native(PUBLISH_ACTION, arguments)
+        self.assertEqual((original["state"], original["effect"]), ("succeeded", "committed"))
+        self.assertEqual(original["receipt_ref"], original["operation_id"])
+        self.assertTrue(json.loads(original["payload"])["verified"])
+        replay = await self.call_native(PUBLISH_ACTION, arguments)
+        self.assertEqual(replay, original)
+        self.assertEqual(sum(request.effectful for request in self.transport.sent), 1)
+        self.assertEqual(self.transport.acquired, 1)
+        task = require(self.app._core_reply_tool_executor.tasks.read(self.context, original["invocation_id"]))
+        self.assertEqual((task.state, task.effect, task.operation_id), ("succeeded", "committed", original["operation_id"]))
+
+    async def test_unknown_publish_blocks_changed_body_across_turns_and_execution_paths(self):
+        self.settings.values.update(topic_auto_enabled=True, topic_require_confirmation=False)
+        self.transport.delivery_unknown = True
+        original = await self.call_native(PUBLISH_ACTION, self.publish_arguments())
+        self.assertEqual((original["state"], original["effect"], original["code"], original["retry_disposition"]),
+                         ("unknown", "unknown", "qzone_delivery_unknown", "external_effect_unknown"))
+        event, request = self.prepare("later-unknown-turn")
+        replay = await self.call_native(PUBLISH_ACTION, self.publish_arguments("不同正文"), "different-call",
+                                        request=request, event=event)
+        self.assertEqual(replay, {**original, "replayed": True})
+        call = ExternalToolCall("other-path", PUBLISH_ACTION, json.dumps(self.publish_arguments("另一条正文")))
+        _, run, completion = await self.stage(call)
+        exchange = await self.tools.execute_async(run, completion.call_id, completion.tool_calls[0])
+        self.assertEqual(json.loads(exchange.result_json), {**original, "replayed": True})
+        self.assertEqual((self.transport.acquired, len(self.transport.sent)), (1, 1))
+        row = self.runtime.read_one("SELECT state FROM operations WHERE owner = ?", ("qzone.actions",))
+        self.assertEqual(row["state"], "unknown")
+        self.assertNotIn("SECRET", json.dumps(original))
+        self.assertNotIn("TOKEN", json.dumps(original))
+
+    async def test_reply_generator_receives_confirmation_receipt_and_stops_repeated_dispatch(self):
+        async def respond(envelope):
+            index = len(envelope.tool_history)
+            if index < 2:
+                call = ExternalToolCall("call-" + str(index), PUBLISH_ACTION,
+                                        json.dumps(self.publish_arguments("正文" + str(index))))
+                return requested(call)
+            return answered("请到陪伴小屋的 QQ 空间发布区确认正文、主题和场景。")
+        self.responses["primary"] = respond
+        with patch.object(self.app.qzone, "publish", wraps=self.app.qzone.publish) as publish:
+            await self.generate()
+            publish.assert_awaited_once()
+        history = self.called[-1][1].tool_history
+        original, replay = (json.loads(item.result_json) for item in history)
+        self.assertEqual(replay, {**original, "replayed": True})
+        self.assertEqual(original["code"], "qzone_topic_confirmation_required")
+        self.assertEqual(original["retry_disposition"], "human_confirmation_required")
+        self.assertTrue(original["receipt_ref"])
+        self.assertEqual(len(self.rows()), 1)
+        self.assertEqual((self.transport.acquired, self.transport.sent), (0, []))
 
 
 class PrivateCatalogProviderSchemaTests(ExternalFixture, unittest.IsolatedAsyncioTestCase):

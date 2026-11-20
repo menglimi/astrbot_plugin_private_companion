@@ -104,11 +104,13 @@ test("字段容器按可用宽度分列，而不是每字段一整行", () => {
     ".wb-fields 又变成纵向堆叠了：这正是本次修复要消掉的那个形状");
 });
 
-test("字段仍保留层轨 + 主体 + 状态三栏", () => {
-  const field = rule(".wb-field");
-  assert.match(field, /display:\s*grid/);
-  assert.match(field, /grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\)\s+auto/,
-    ".wb-field 的三栏（层轨 / 主体 / 状态）被改动：层轨会被挤掉或换行");
+test("字段保留层轨、主体与操作三列，范围说明按需显示", () => {
+  assert.match(rule(".wb-field"), /display:\s*grid/);
+  assert.match(rule(".wb-field"), /grid-template-columns:\s*12px\s+minmax\(0,\s*1fr\)\s+auto/);
+  assert.match(rule(".wb-field>.wb-field-main"), /grid-column:2/);
+  assert.match(rule(".wb-context-tip:not(:popover-open)"), /display:none/);
+  assert.match(rule(".wb-rail"), /display:flex;flex-direction:column/);
+  assert.match(rule(".wb-node.is-source"), /background:var\(--t-accent\)/);
 });
 
 test("长控件整幅通栏，不被挤进窄列", () => {

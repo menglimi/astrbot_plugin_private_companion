@@ -69,6 +69,11 @@ window.CompanionHomeSidebar = (() => {
     return segments;
   }
   function timelineRows(items, now, zone, complete) {
+    // Keep the visible timeline chronological even when an API returns the
+    // day's occurrences newest-first.  The current/pending event stays pinned
+    // by its own timestamp instead of relying on caller order.
+    items = items.slice().sort((a, b) => (a.start ?? Infinity) - (b.start ?? Infinity)
+      || a.order - b.order || a.key.localeCompare(b.key));
     let cursor = minuteOfDay(now, zone), cursorKnown = true;
     const rows = [];
     for (const item of items) {
@@ -172,6 +177,15 @@ window.CompanionHomeSidebar = (() => {
       <span class="home-state-label">${label}</span><strong>${e(item.label)}</strong>
       <span class="home-state-tooltip" role="tooltip"><b>${label} · ${e(item.label)}</b><span>${e(detail)}</span></span></span>`;
   }
+  function renderStateRow(kind, label, raw, options, wide = false) {
+    const item = vital(kind, raw, options);
+    const detail = item.visual === "disabled" ? "该项维护未启用"
+      : kind === "energy" && typeof raw === "number" ? `${raw} / 100` : raw || item.label;
+    return `<span class="home-state-row${wide ? " is-wide" : ""}" data-state-kind="${kind}" data-visual="${item.visual}" data-tone="${item.tone}"${kind === "energy" && typeof raw === "number" ? ` style="--home-state-level:${raw}%"` : ""} title="${e(label + " · " + detail)}">
+      <span class="home-state-row-icon" aria-hidden="true"><i data-lucide="${item.icon}"></i></span>
+      <span class="home-state-row-copy"><span class="home-state-row-label">${label}</span><strong>${e(item.label)}</strong></span>
+    </span>`;
+  }
   function renderState(input) {
     const {state, life, loading=false, unavailable=()=>"尚未读取"} = input;
     const now = input.now ?? Date.now(), zone = zoneOf(input);
@@ -179,31 +193,47 @@ window.CompanionHomeSidebar = (() => {
     const values = state?.state?.values || {}, settings = state?.settings || {};
     const sleeping = sleepOf(input)?.state === "sleeping" || activities(life).some(item=>item.kind === "sleep" && item.state === "active");
     const sleepPlan = state?.sleep_schedule || life?.sleep_schedule;
-    const rhythmLabels = {awake:"清醒", sleepy:"逐渐困倦", winding_down:"准备休息", recovering:"醒来恢复"};
+    const rhythmLabels = {awake:"清醒",sleepy:"逐渐困倦",winding_down:"准备休息",recovering:"醒来恢复"};
     const rhythm = sleepPlan?.rhythm;
     const energy = typeof values.energy === "number" && Number.isFinite(values.energy) && values.energy >= 0 && values.energy <= 100 ? values.energy : null;
     const unreadable = !state || state.state?.state === "unavailable";
-    const cycleNames={menstrual:"经期",follicular:"卵泡期",pre_ovulation:"排卵前",ovulation:"排卵期",luteal:"黄体期",pms:"经前期",recovery:"恢复期"};
-    const timeline=state?.state?.cycle_timeline;
-    const cycle=timeline?.applicability==="not_applicable"?"不适用":timeline?.applicability==="applicable"
-      ?`${cycleNames[timeline.phase]||"周期中"}${Number.isInteger(timeline.phase_day)?` · 第 ${timeline.phase_day} 天`:""}`:text(values.cycle);
-    const mood=text(typeof values.mood==="string"?values.mood:values.mood?.description);
-    const candidates=[["energy","能量",energy,settings.energy_enabled===false],["health","健康",text(values.health),settings.health_enabled===false],
+    const cycleNames = {menstrual:"经期",follicular:"卵泡期",pre_ovulation:"排卵前",ovulation:"排卵期",luteal:"黄体期",pms:"经前期",recovery:"恢复期"};
+    const timeline = state?.state?.cycle_timeline;
+    const cycle = timeline?.applicability === "not_applicable" ? "不适用" : timeline?.applicability === "applicable"
+      ? `${cycleNames[timeline.phase] || "周期中"}${Number.isInteger(timeline.phase_day) ? ` · 第 ${timeline.phase_day} 天` : ""}` : text(values.cycle);
+    const mood = text(typeof values.mood === "string" ? values.mood : values.mood?.description);
+    const candidates = [["energy","精力",energy,settings.energy_enabled===false],["health","健康",text(values.health),settings.health_enabled===false],
       ["hunger","饥饿",text(values.hunger),settings.hunger_enabled===false],
       ["mood","心情",mood,settings.mood_enabled===false],
-      ["sleep","睡眠",sleeping?"睡眠中 · 活动确认":text(values.sleep)||rhythmLabels[rhythm?.phase],settings.sleep_enabled===false],
+      ["sleep","睡眠",sleeping ? "睡眠中 · 活动确认" : text(values.sleep) || rhythmLabels[rhythm?.phase],settings.sleep_enabled===false],
       ["cycle","生理期",cycle,settings.cycle_enabled===false],["busy","忙碌",text(values.busy),settings.busy_enabled===false],
       ["location","位置",text(values.location),settings.location_enabled===false]];
-    const visible=candidates.filter(([kind,,raw,disabled])=>settings["home_show_"+kind]!==false&&settings.enabled!==false&&!disabled
-      &&(!settings["home_only_special_"+kind]||!unreadable&&specialState(kind,raw,{timeline,sleeping})));
+    const visible = candidates.filter(([kind,,raw,disabled]) => settings["home_show_"+kind] !== false && settings.enabled !== false && !disabled
+      && (!settings["home_only_special_"+kind] || !unreadable && specialState(kind,raw,{timeline,sleeping})));
     const updated = stamp(state?.state?.updated_at);
     const caption = [settings.enabled === false || state?.state?.state === "disabled" ? "自动维护未启用" : "",
       updated != null ? `更新于 ${moment(updated, now, zone)}` : ""].filter(Boolean).join(" · ");
-    const states=visible.map(([kind,label,raw,disabled])=>renderVital(kind,label,raw,{sleeping,disabled,loading,unreadable})).join("");
-    const fallback=loading?"正在读取角色状态…":settings.enabled===false?"状态维护未启用":visible.length?"":"暂无已启用的首页状态";
-    const accessible=visible.map(([kind,label,raw,disabled])=>`${label} ${disabled?"未启用":kind==="energy"&&typeof raw==="number"?`${raw} / 100`:raw||"尚未记录"}`).join("；");
-    return `<button type="button" class="home-state-board" data-go="life" data-life-target="state" aria-label="查看并更新角色状态。${e(accessible||fallback)}" title="查看并更新角色状态">
-      ${states||`<span class="home-state-empty">${e(fallback)}</span>`}<span class="home-state-open" aria-hidden="true"><i data-lucide="arrow-up-right"></i></span></button>
+    const sleepEntry = visible.find(([kind]) => kind === "sleep");
+    const rows = visible.filter(([kind]) => kind !== "sleep").map(row => {
+      const value = typeof row[2] === "string" ? row[2] : "";
+      return {row, wide: ["mood","busy","location"].includes(row[0]) || value.length > 5};
+    });
+    const shortRows = rows.filter(item => !item.wide);
+    if (shortRows.length % 2) shortRows[shortRows.length - 1].wide = true;
+    const laidOut = [...rows.filter(item => !item.wide), ...rows.filter(item => item.wide)];
+    const states = laidOut.map(({row,wide}) => renderStateRow(row[0],row[1],row[2],{sleeping,disabled:row[3],loading,unreadable},wide)).join("");
+    const sleepRaw = sleepEntry?.[2] || "";
+    const sleepStart = stamp(sleepOf(input)?.started_at);
+    const sleepMinutes = sleeping && sleepStart != null ? Math.max(0, (now - sleepStart) / 60000) : null;
+    const sleepDuration = sleepMinutes == null ? "" : durationLabel(sleepMinutes).replace(/(\d)(小时|分)/g, "$1 $2");
+    const heroTitle = sleeping ? `睡眠中${sleepDuration ? ` · 已睡 ${sleepDuration}` : ""}` : sleepRaw && !/^清醒$/.test(sleepRaw) ? sleepRaw : "清醒";
+    const fallback = loading ? "正在读取角色状态…" : settings.enabled === false ? "状态维护未启用" : visible.length ? "" : "暂无已启用的首页状态";
+    const accessible = visible.map(([kind,label,raw,disabled]) => `${label} ${disabled ? "未启用" : kind === "energy" && typeof raw === "number" ? `${raw} / 100` : raw || "尚未记录"}`).join("；");
+    const hero = sleepEntry ? `<span class="home-state-hero" data-tone="${sleeping ? "rest" : "quiet"}" title="${e("睡眠 · " + heroTitle)}">
+      <span class="home-state-hero-icon" aria-hidden="true"><i data-lucide="${sleeping ? "moon-star" : "sun"}"></i></span>
+      <span class="home-state-hero-copy"><small>当前</small><strong>${e(heroTitle)}</strong></span></span>` : "";
+    return `<button type="button" class="home-state-board is-b2" data-go="life" data-life-target="state" aria-label="查看并更新角色状态。${e(accessible || fallback)}" title="查看并更新角色状态">
+      ${hero}<span class="home-state-grid">${states}</span>${!hero && !states ? `<span class="home-state-empty">${e(fallback)}</span>` : ""}<span class="home-state-open" aria-hidden="true"><i data-lucide="arrow-up-right"></i></span></button>
       ${unreadable && !loading ? `<p class="home-side-warning" role="status">${e(runtimeMissing ? "角色数据尚未就绪，请核对账号与人格的角色映射；首次设置记录仍会保留。" : state ? "暂时无法读取角色状态，请在详情中核对。" : unavailable("state"))}</p>${runtimeMissing ? `<button class="text-button home-side-action" data-go="manage" data-manage="host">前往账号与会话</button>` : ""}` : ""}
       ${caption ? `<p class="home-side-caption">${e(caption)}</p>` : ""}`;
   }
@@ -218,7 +248,8 @@ window.CompanionHomeSidebar = (() => {
         : item.state === "proposed" ? "待确认" : start <= now ? "当前计划时段" : "计划安排";
       const tone = end <= now ? "elapsed" : item.state === "proposed" ? "proposed" : start <= now ? "current" : "planned";
       add({key:`calendar:${item.id}:${item.sequence}`, title:text(item.title) || "未命名安排", start, end,
-        detail:text(item.detail), label:`${kind} · ${phase}`, tone, order:1});
+        detail:text(item.detail), label:`${kind} · ${phase}`, tone, order:1,
+        temporary: item.kind === "user_report" || item.kind === "commitment"});
     }
     for (const item of activities(life)) {
       const started = stamp(item.started_at), updated = stamp(item.updated_at), due = stamp(item.due_at);
@@ -298,43 +329,73 @@ window.CompanionHomeSidebar = (() => {
         messages.push("部分日历安排未完整读取");
       }
     }
-    const emptyTitle = loading ? "正在读取日程…" : calendarRead && lifeRead
-      ? state?.occurrences?.partial ? "日程未完整读取" : planningIncomplete ? planning.running ? "今日规划正在生成" : "今日规划尚未生成" : "今日暂无安排"
-      : "日程暂不可读取";
-    const row = (item, current=false) => `<li class="home-agenda-item" data-tone="${item.tone}"${current ? ` data-current="true" aria-current="time"` : ""}><span class="home-agenda-dot" aria-hidden="true"></span><div class="home-agenda-body">
-      <time${item.start == null ? "" : ` datetime="${new Date(item.start).toISOString()}"`}>${e(windowText(item, now, zone))}</time><strong>${e(item.title)}</strong><small>${e(item.label)}</small>
-      ${item.detail ? `<small class="home-agenda-detail">${e(item.detail)}</small>` : ""}</div></li>`;
-    const active = items.filter(item=>item.order === 0);
-    const current = items.filter(item=>item.tone === "current");
-    const elapsed = items.filter(item=>item.tone === "elapsed" || item.end != null && item.end <= now && item.order !== 0)
-      .sort((a,b)=>(b.end ?? b.start ?? -Infinity)-(a.end ?? a.start ?? -Infinity));
-    const upcoming = items.filter(item=>!active.includes(item) && !current.includes(item) && !elapsed.includes(item));
-    const live = [...active, ...current, ...upcoming]
-      .sort((a,b)=>(a.start ?? Infinity)-(b.start ?? Infinity) || a.order-b.order || a.key.localeCompare(b.key));
-    const coverageComplete = calendarRead && lifeRead && !state?.occurrences?.partial
-      && !state?.occurrences?.skipped && !state?.occurrences?.scan_truncated
-      && !state?.occurrences?.occurrences_truncated && !planningIncomplete;
-    const rows = timelineRows(live, now, zone, coverageComplete);
-    const currentGap = rows.find(item => item.type === "gap" && item.current);
-    const clockLabel = loading ? "正在读取当前活动…" : lifeRead
-      ? active.length ? "有活动正在进行" : "当前没有进行中的活动"
-      : "当前活动尚未读取";
-    const currentLine = `<p class="home-agenda-current${currentGap || live.length ? " is-visually-hidden" : ""}">${elapsed.length && !live.length ? "今日安排已结束" : clockLabel}</p>`;
-    const visibleRows = rows.filter(item => item.type !== "gap" || item.current || item.end - item.start >= 45);
-    const timeline = visibleRows.length ? visibleRows.map(item => item.type === "event"
-      ? row(item.item, item.item.tone === "current" || item.item.order === 0)
-      : `<li class="home-agenda-gap"${item.current ? ` data-current="true" aria-current="time"` : ""}><span class="home-agenda-gap-mark" aria-hidden="true"></span><div class="home-agenda-gap-body"><time>${minuteLabel(item.start)} – ${minuteLabel(item.end)} · ${e(durationLabel(item.end-item.start))}</time><strong>${item.current ? (items.length ? "当前未安排" : "今日暂无安排") : "未安排时段"}</strong><small>${item.next ? `这段时间没有已记录安排 · 下一项 ${e(clock(item.next.start, zone))}` : "当天暂无后续安排"}</small></div></li>`).join("")
-      : `<li class="home-agenda-item"><span class="home-agenda-dot" aria-hidden="true"></span><div class="home-agenda-body"><strong>${emptyTitle}</strong></div></li>`;
-    const programHead = `<div class="home-agenda-program-head"><h3>今日上演</h3><span>${live.length} 项${elapsed.length ? ` · 已落幕 ${elapsed.length}` : ""}</span></div>`;
-    const programMeta = `<div class="home-agenda-program-meta"><span>今日 ${items.length} 项</span><span>${elapsed.length ? `已落幕 ${elapsed.length} 幕` : "今日节目单"}</span></div>`;
-    const pastHead = elapsed.length ? `<div class="home-agenda-program-head home-agenda-program-past"><h3>已经落幕</h3><span>${elapsed.length} 幕</span></div>` : "";
-    return `${programMeta}
-      ${currentLine}
-      ${calendarRead && lifeRead ? renderOverview(items, now, zone, coverageComplete) : ""}
-      ${programHead}
-      <div class="home-agenda-scroll" tabindex="0" aria-label="当天日程时间线"><ol class="home-agenda" style="counter-reset:agenda-act ${elapsed.length}" aria-label="今日安排">${timeline}</ol></div>
-      ${pastHead}
-      ${elapsed.length ? `<details class="home-agenda-more" data-home-agenda-past ${schedulePastExpanded ? "open" : ""}><summary>${schedulePastExpanded ? "收起" : "查看"}已过时段 ${elapsed.length} 项</summary><ol class="home-agenda">${elapsed.map(row).join("")}</ol></details>` : ""}
+    const complete = calendarRead && lifeRead;
+    const currentItem = items.find(item => item.order === 0 || item.tone === "current");
+    const endedCount = items.filter(item => item.end != null && item.end <= now).length;
+    const upcomingItems = items.filter(item => item.start != null && item.start > now)
+      .sort((a,b) => a.start - b.start || a.order - b.order);
+    const nextItem = upcomingItems[0];
+    const beforeStart = !currentItem && endedCount === 0 && upcomingItems.length > 0;
+    const status = loading
+      ? {tone:"loading",kicker:"正在读取",title:"正在读取今日安排…"}
+      : !complete
+        ? {tone:"unknown",kicker:"暂时无法确认",title:state?.occurrences?.partial ? "日程未完整读取" : "日程暂不可读取"}
+        : currentItem
+          ? {tone:"current",kicker:currentItem.key?.includes("sleep") ? "" : "进行中",title:currentItem.title}
+          : !items.length
+            ? {tone:"empty",kicker:"",title:"今天没有安排"}
+            : endedCount === items.length
+              ? {tone:"ended",kicker:"",title:"今天的安排都结束啦"}
+              : beforeStart
+                ? {tone:"before",kicker:"开始前",title:"今天还没开始"}
+                : {tone:"gap",kicker:"",title:"当前空闲"};
+    const nowMinute = minuteOfDay(now, zone) ?? 0;
+    const nowPercent = Math.max(0, Math.min(100, nowMinute / dayMinutes * 100));
+    const toneOf = item => item.order === 0 || item.tone === "current" ? "current"
+      : item.tone === "elapsed" || item.tone === "completed" ? "done"
+        : item.tone === "proposed" ? "proposed" : "planned";
+    const progressNodeCount = items.filter(item => item.start != null).length;
+    const progressNodes = items.flatMap(item => {
+      const at = item.start != null ? dayMinute(item.start, now, zone) : null;
+      if (at == null) return [];
+      const percent = Math.max(0, Math.min(100, at / dayMinutes * 100));
+      const tone = toneOf(item), temporary = item.temporary === true;
+      const label = `${clock(item.start, zone)} ${item.title}`;
+      return [`<span class="home-agenda-progress-node" data-tone="${tone}"${temporary ? ' data-temporary="true"' : ""}${item === nextItem ? ' data-next="true"' : ""} style="left:${percent.toFixed(2)}%" title="${e(label)}" aria-hidden="true"></span>`];
+    }).join("");
+    const progress = `<div class="home-agenda-progress" role="img" aria-label="今天的进度，当前 ${clock(now, zone)}${progressNodeCount ? `；${progressNodeCount} 个日程节点` : ""}">
+      <span class="home-agenda-progress-fill" style="width:${nowPercent.toFixed(2)}%"></span>
+      ${progressNodes}
+      <span class="home-agenda-progress-now" style="left:${nowPercent.toFixed(2)}%"></span>
+    </div>`;
+    const scheduleRow = (item, index) => {
+      const start = item.start != null ? clock(item.start, zone) : "—";
+      const end = item.end != null ? clock(item.end, zone) : "";
+      const temporary = item.temporary === true;
+      const tone = toneOf(item);
+      return `<li class="home-agenda-row" data-tone="${tone}"${temporary ? ' data-temporary="true"' : ""} style="--agenda-index:${index}">
+        <div class="home-agenda-row-time"><time${item.start == null ? "" : ` datetime="${new Date(item.start).toISOString()}"`}>${e(start)}</time>${end ? `<small>${e(end)}</small>` : ""}</div>
+        <span class="home-agenda-row-marker" aria-hidden="true"></span>
+        <div class="home-agenda-row-copy">
+          ${tone === "current" && item === currentItem ? "" : `<div class="home-agenda-row-heading"><strong>${e(item.title)}</strong>${temporary ? `<span class="home-agenda-temp">临时</span>` : ""}</div>`}
+          ${temporary ? `<small class="home-agenda-row-note">临时插入 · 不在原计划内</small>` : ""}
+          ${item.detail ? `<p class="home-agenda-row-detail">${e(item.detail)}</p>` : ""}
+        </div>
+      </li>`;
+    };
+    const sorted = [...items].sort((a, b) => (b.start ?? 0) - (a.start ?? 0)
+      || b.order - a.order || a.key.localeCompare(b.key));
+    const signature = `${status.tone}|${items.map(item=>`${item.key}:${item.tone}:${item.start ?? ""}`).join("|")}`;
+    const list = items.length ? `<details class="home-agenda-list" open>
+      <summary class="home-agenda-list-head"><span>已结束 <b>${endedCount}</b></span><span class="home-agenda-list-toggle"><span class="is-open">收起</span><span class="is-closed">展开</span></span></summary>
+      <ol class="home-agenda-rows" aria-label="今日安排">${sorted.map((item,index)=>scheduleRow(item,index)).join("")}</ol>
+    </details>` : "";
+    return `<span class="home-agenda-signature" hidden>${e(signature)}</span>${progress}
+      <div class="home-agenda-status" data-tone="${status.tone}" role="status">
+        <span class="home-agenda-status-kicker">${e(status.kicker)}</span>
+        <strong>${e(status.title)}</strong>
+      </div>
+      ${list}
       ${messages.length ? `<p class="home-side-warning" role="status">${e(messages.join("；"))}</p>` : ""}
       ${runtimeMissing ? `<button class="text-button home-side-action" data-go="manage" data-manage="host">前往账号与会话</button>` : ""}
       <p class="home-side-caption">${planningNote ? `${e(planningNote)} · ` : ""}时间按 ${e(zone)} 显示</p>`;

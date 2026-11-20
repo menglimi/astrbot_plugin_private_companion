@@ -64,6 +64,25 @@ class HostModelDefaultRoutingTests(ModelFixture, unittest.IsolatedAsyncioTestCas
         self.assertEqual(self.gateway.observe(self.context, "task-1").unwrap()["plan"]
                          ["fields"]["model.fixture.read.fallback"]["source"], "host_conversation")
 
+    async def test_new_host_default_is_loaded_as_inherited_fallback(self):
+        self.patch_model(provider="primary")
+        self.selected = "added-after-start"
+        lookups = []
+
+        def lookup(provider_id):
+            lookups.append(provider_id)
+            return self.provider(provider_id) if provider_id == self.selected else None
+
+        self.router.provider_lookup = lookup
+        self.responses["primary"] = ProviderResponse("not_started", usage=Amount(0, 0),
+                                                     receipt_ref="not-started")
+        completion = await self.gateway.generate(self.model_run(), self.request())
+
+        self.assertEqual(completion.draft.text, "private draft")
+        self.assertEqual([name for name, _ in self.called], ["primary", "added-after-start"])
+        self.assertEqual(lookups, ["added-after-start"])
+        self.assertIn("added-after-start", self.router.providers)
+
     def test_saved_configuration_changes_still_reject_an_obsolete_plan(self):
         run = self.model_run()
         plan = self.router.resolve(run, self.request())

@@ -336,6 +336,7 @@ window.CompanionContactPage = (() => {
       ...data, settings:hasGlobalSettings ? {...data.settings} : null, editToken:"", configToken:"",
       configurationLoaded:!!hasGlobalSettings, busy:false, loading:false, contractLoading:false,
       ready:false, effective:null, effectiveSettings:null, purposes:{},
+      recipients:null, recipientDraft:"", recipientsLoading:false, recipientSaving:false, recipientError:"",
       confirmTest:"", testBusy:"", testUncertain:data.testUncertain || !!data.testBusy,
       testGuard:data.testGuard || (data.testBusy ? {purpose:data.testBusy, state:"pending"} : null),
       contractError:"", contractErrorCode:"", materialsLoading:false, touched:[...data.touched],
@@ -494,7 +495,8 @@ window.CompanionContactPage = (() => {
     catch { return "UTC"; }
   }
   function blank() {
-    return {view:"dial", purposeQuery:"", purposeBucket:"all", purposeFilter:"all",
+    return {recipients:null, recipientDraft:"", recipientsLoading:false, recipientSaving:false, recipientError:"", testAllowLinkedAccounts:false,
+      view:"dial", purposeQuery:"", purposeBucket:"all", purposeFilter:"all",
       testQuery:"", testBucket:"all", testCoverage:"all", materialQuery:"", materialCategory:"all",
       materialKind:"window", materialWindow:"all", materialDay:localDayKey(), materialTimezone:localTimezone(),
       nativePath:"", configPath:"",
@@ -601,6 +603,72 @@ window.CompanionContactPage = (() => {
         if (settingsAvailable() && data.pendingWrite) schedulePendingRecovery(ticket);
       }
     }
+  }
+  function applyRecipients(payload) {
+    if (!payload || !Array.isArray(payload.candidates)
+        || typeof payload.selected_target_id !== "string"
+        || payload.candidates.some(row => !row || typeof row.target_id !== "string" || !row.target_id || typeof row.label !== "string")
+        || (payload.selected_target_id && !payload.candidates.some(row => row.target_id === payload.selected_target_id)))
+      throw problem("invalid_response");
+    data.recipients = payload;
+    data.recipientDraft = payload.selected_target_id;
+    data.recipientError = "";
+  }
+  async function loadRecipients() {
+    if (data.recipientsLoading || data.recipientSaving) return;
+    const ticket = version;
+    data.recipientsLoading = true; data.recipientError = ""; render();
+    try {
+      const payload = await api("GET", "setup/proactive-recipients");
+      if (live(ticket)) applyRecipients(payload);
+    } catch (error) {
+      if (live(ticket)) { data.recipients = null; data.recipientError = "收件人读取失败，请重新读取后再测试。"; }
+    } finally {
+      if (live(ticket)) { data.recipientsLoading = false; render(); }
+    }
+  }
+  async function saveRecipient() {
+    if (!data.recipientDraft || data.recipientSaving || data.testBusy || data.testUncertain) return;
+    const ticket = version;
+    data.recipientSaving = true; render();
+    try {
+      const payload = await api("POST", "setup/proactive-recipient", {target_id:data.recipientDraft});
+      if (live(ticket)) { applyRecipients(payload); notice("测试收件人已保存，仅影响手动消息测试。"); }
+    } catch (error) {
+      if (live(ticket)) { data.recipientError = "收件人保存失败，请重新读取并确认核心管理员权限。"; notice(data.recipientError, true); }
+    } finally {
+      if (live(ticket)) { data.recipientSaving = false; render(); }
+    }
+  }
+  function recipientReady() {
+    return !!data.recipients?.selected_target_id && !data.recipientsLoading && !data.recipientSaving
+      && !data.recipientError && data.recipientDraft === data.recipients.selected_target_id;
+  }
+  function recipientLabel() {
+    return data.recipients?.candidates.find(row => row.target_id === data.recipients.selected_target_id)?.label || "核心管理员";
+  }
+  function recipientMarkup() {
+    const rows = data.recipients?.candidates || [];
+    const disabled = data.testBusy || data.testUncertain || data.recipientSaving || data.recipientsLoading;
+    return `<section class="ct-test-recipient" aria-label="测试收件人">
+      ${data.recipientsLoading ? '<span role="status">正在读取核心管理员…</span>'
+        : rows.length > 1 ? `<label><span>测试收件人 · 核心管理员</span>
+          <select data-test-recipient aria-label="选择测试收件人"${disabled ? " disabled" : ""}>
+            <option value="">请选择核心管理员</option>
+            ${rows.map(row => `<option value="${e(row.target_id)}"${data.recipientDraft === row.target_id ? " selected" : ""}>${e(row.label)}</option>`).join("")}
+          </select></label>
+          <button type="button" class="ct-btn is-primary" data-test-recipient-save${disabled || !data.recipientDraft || data.recipientDraft === data.recipients.selected_target_id ? " disabled" : ""}>${data.recipientSaving ? "保存中…" : "保存收件人"}</button>`
+        : rows.length === 1 ? `<span>测试收件人：<strong>${e(rows[0].label)}</strong>（唯一核心管理员，自动使用）</span>`
+        : '<span>暂无可用核心管理员私聊目标，请先在关系与权限中确认身份和具体私聊账号。</span>'}
+      <label class="ct-switch ct-test-forward-switch">
+        <input type="checkbox" data-test-allow-links${data.testAllowLinkedAccounts ? " checked" : ""}${disabled ? " disabled" : ""}>
+        <span class="ct-switch-track"><i></i></span>
+        <span class="ct-switch-text"><strong>允许转发到关联账号</strong><small>开启后按所选管理员的关联账号策略投递，包含指定账号、随机权重与安全回退；关闭时只发给所选管理员。</small></span>
+      </label>
+      ${data.recipientError ? `<span class="ct-test-recipient-error" role="alert">${e(data.recipientError)}</span>` : ""}
+      <button type="button" class="ct-btn" data-test-recipient-refresh${disabled ? " disabled" : ""}>重新读取收件人</button>
+      ${rows.length > 1 && (!data.recipients.selected_target_id || data.recipientDraft !== data.recipients.selected_target_id) ? '<small>选择后请先保存，再运行测试；不会修改首次绑定或正式主动联系的账号策略。</small>' : ""}
+    </section>`;
   }
   async function loadMaterials({patrolPoll = false} = {}) {
     if (!data.nativePath || data.materialsLoading) return;
@@ -1298,7 +1366,7 @@ window.CompanionContactPage = (() => {
       ${item.id === "screen" ? '<div data-screen-observation></div>' : ""}
       <footer class="ct-test-actions">
         <button type="button" class="ct-btn is-primary ct-test-run" data-test-run="${e(item.id)}"
-          ${data.testBusy || data.testUncertain || item.coverage !== "ready" ? " disabled" : ""}>
+          ${data.testBusy || data.testUncertain || !recipientReady() || item.coverage !== "ready" ? " disabled" : ""}>
           ${data.testBusy === item.id ? '<span class="ct-spinner" aria-hidden="true"></span><span>测试中…</span>'
             : data.testUncertain ? `${ICON.alert}<span>先核对投递结果</span>`
             : `${ICON.test}<span>运行测试</span>`}
@@ -1307,6 +1375,7 @@ window.CompanionContactPage = (() => {
       </footer>
     </article>`).join("");
     return `<div class="ct-tests">
+      ${recipientMarkup()}
       <div class="ct-test-overview">
         <p>主动联系目的与拓展发送链路分别验收，来源、素材和投递回执各自可核对。</p>
         <div class="ct-test-coverage-summary" aria-label="生产器覆盖情况">
@@ -1314,10 +1383,10 @@ window.CompanionContactPage = (() => {
           <span><i class="is-partial"></i>只有资格检查 <strong>${counts.partial}</strong></span>
           <span><i class="is-missing"></i>尚无独立生产器 <strong>${counts.missing}</strong></span>
         </div>
-        <p class="ct-test-boundary">资讯、天气、屏幕和手机地点读取真实来源；屏幕会实际截图并调用视觉模型，手机地点读取终端授权快照。带图测试使用授权图库素材。测试调用角色模型并真实投递到核心管理员私聊。</p>
+        <p class="ct-test-boundary">资讯、天气、屏幕和手机地点读取真实来源；屏幕会实际截图并调用视觉模型，手机地点读取终端授权快照。带图测试使用授权图库素材。测试调用角色模型；实际投递由上方收件人及关联转发开关决定。</p>
       </div>
       ${data.testUncertain ? `<div class="ct-test-lock" role="alert">
-        <span>${data.testGuard?.state === "pending" ? "上次测试没有收到最终回执。" : "上次测试结果未确认。"}请先核对核心管理员私聊；确认前不能再次启动测试，以免重复投递。</span>
+        <span>${data.testGuard?.state === "pending" ? "上次测试没有收到最终回执。" : "上次测试结果未确认。"}请先核对核心管理员私聊及本次允许转发的关联账号；确认前不能再次启动测试，以免重复投递。</span>
         <button type="button" class="ct-btn" data-test-action="unlock">核实后解除测试锁</button>
       </div>` : ""}
       ${data.testBusy ? `<p class="ct-test-running" role="status"><span class="ct-spinner" aria-hidden="true"></span>正在运行 ${e(PURPOSE_META[data.testBusy]?.label || "主动消息")} 测试；可能需要等待模型与平台回执。</p>` : ""}
@@ -1374,7 +1443,7 @@ window.CompanionContactPage = (() => {
     respect_user_boundary:"为尊重对方边界而保持沉默", other:"模型选择暂不发送",
   };
   const TEST_DELIVERY_STATES = {
-    delivered:"平台已确认投递", failed:"平台明确返回失败", unknown:"平台投递结果未知",
+    delivered:"平台已确认投递", failed:"投递失败，详见诊断原因", cancelled:"发送前已终止", partial:"仅部分消息已确认投递", unknown:"平台投递结果未知",
     accepted:"平台已接收请求，但尚无最终投递回执", pending:"等待平台投递回执",
     dispatched:"已提交平台，等待投递回执",
   };
@@ -1460,7 +1529,9 @@ window.CompanionContactPage = (() => {
       ${result.failure_title ? `<p class="ct-test-cause"><b>失败原因</b>${e(result.failure_title)}</p>` : ""}
       ${result.explanation ? `<p class="ct-test-explanation">${e(result.explanation)}</p>` : ""}
       ${result.route?.label || result.variant?.label ? `<p>来源：${e(result.route?.label || result.variant.label)}</p>` : ""}
-      ${result.purpose_label ? `<p>测试用途：${e(result.purpose_label)} · 收件人：核心管理员</p>` : ""}
+      ${result.purpose_label ? `<p>测试用途：${e(result.purpose_label)} · ${result.allow_linked_accounts ? "关联策略起点" : "收件人"}：${e(result.recipient_label || "核心管理员")}</p>` : ""}
+      ${result.allow_linked_accounts ? '<p>允许转发到关联账号：已开启（按现有关联策略执行）</p>' : ""}
+      ${Array.isArray(result.delivery_targets) && result.delivery_targets.length ? `<p>实际投递目标：${result.delivery_targets.map(row => `${e(row.participant_id)} · ${e(row.platform_id)} / ${e(row.account_id)}（${e(TEST_DELIVERY_STATES[row.delivery_state] || row.delivery_state)}）`).join("；")}</p>` : ""}
       ${result.event_mode === "synthetic_event" ? `<p>输入：一次性合成事件（未写入普通聊天记录）</p>` : ""}
       ${result.event_mode === "source_backed" ? `<p>输入：本次取得的真实来源</p>` : ""}
       ${delivery ? `<p>投递状态：${e(delivery)}</p>` : ""}
@@ -1497,8 +1568,8 @@ window.CompanionContactPage = (() => {
       <div class="ct-test-dialog-body">
         <p class="ct-test-dialog-kicker">${synthetic ? "合成事件" : "真实来源"} · 真实投递</p>
         <h2 id="ct-test-confirm-title">运行「${e(item.label)}」测试？</h2>
-        <p>${synthetic ? `将为「${e(item.label)}」构造一次性合成事件；合成事件不会写入聊天记录。` : `将${realAction}。来源获取失败会显示失败阶段。`}之后调用角色配置的消息模型，按配置执行人格复核，并真实投递到核心管理员 QQ 私聊。QQ 正文按正式效果呈现，测试标识只保留在本页。</p>
-        <p class="ct-test-dialog-warning">测试不占日常联系额度。带图测试可能记录素材实际已投递；若结果未知，请先核对管理员私聊，不要重新运行。</p>
+        <p>${synthetic ? `将为「${e(item.label)}」构造一次性合成事件；合成事件不会写入聊天记录。` : `将${realAction}。来源获取失败会显示失败阶段。`}之后调用角色配置的消息模型，按配置执行人格复核，并真实投递${data.testAllowLinkedAccounts ? `，以 ${e(recipientLabel())} 为起点按关联账号策略选择目标，可能转发到关联账号` : `到所选核心管理员私聊：${e(recipientLabel())}`}。消息正文按正式效果呈现，测试标识只保留在本页。</p>
+        <p class="ct-test-dialog-warning">测试不占日常联系额度。带图测试可能记录素材实际已投递；若结果未知，请核对所选管理员及本次允许转发的关联账号，不要重新运行。</p>
         <div class="ct-test-dialog-actions">
           <button type="button" class="ct-btn" data-test-action="cancel">取消</button>
           <button type="button" class="ct-btn is-primary" data-test-action="confirm">确认并运行</button>
@@ -2064,6 +2135,7 @@ window.CompanionContactPage = (() => {
     data.viewShift = to > from ? 1 : to < from ? -1 : null;
     data.view = next;
     data.notice = "";
+    if (next === "tests") void loadRecipients();
   }
   function render() {
     if (!root) return;
@@ -2126,6 +2198,8 @@ window.CompanionContactPage = (() => {
       data.materialKind = materialKind;
       render(); return;
     }
+    if (event.target.closest("[data-test-recipient-save]")) { void saveRecipient(); return; }
+    if (event.target.closest("[data-test-recipient-refresh]")) { void loadRecipients(); return; }
     const testAction = event.target.closest("[data-test-action]")?.dataset.testAction;
     if (testAction === "cancel") { data.confirmTest = ""; render(); return; }
     if (testAction === "confirm") { void runProactiveTest(data.confirmTest); return; }
@@ -2142,7 +2216,7 @@ window.CompanionContactPage = (() => {
     }
     const testRun = event.target.closest("[data-test-run]")?.dataset.testRun;
     if (testRun) {
-      if (data.testBusy || data.testUncertain) return;
+      if (data.testBusy || data.testUncertain || !recipientReady()) return;
       data.confirmTest = testRun;
       render(); return;
     }
@@ -2152,6 +2226,7 @@ window.CompanionContactPage = (() => {
     if (action === "refresh") {
       data.notice = ""; data.error = false; loadContract();
       if (data.view === "materials") void loadMaterials();
+      if (data.view === "tests") void loadRecipients();
       return;
     }
     if (action === "refresh-materials") { void loadMaterials(); return; }
@@ -2184,6 +2259,18 @@ window.CompanionContactPage = (() => {
     }
   }
   function changed(event) {
+    const allowLinks = event.target.closest("[data-test-allow-links]");
+    if (allowLinks) {
+      if (!data.testBusy && !data.testUncertain) { data.testAllowLinkedAccounts = allowLinks.checked === true; data.confirmTest = ""; render(); }
+      return;
+    }
+    const recipient = event.target.closest("[data-test-recipient]");
+    if (recipient) {
+      if (!data.testBusy && !data.testUncertain && !data.recipientSaving && !data.recipientsLoading) {
+        data.recipientDraft = recipient.value; data.confirmTest = ""; render();
+      }
+      return;
+    }
     const testMode = event.target.closest("[data-test-mode]");
     if (testMode) { data.testModes = {...data.testModes, [testMode.dataset.testMode]:testMode.value}; render(); return; }
     const testVariant = event.target.closest("[data-test-variant]");
@@ -2291,9 +2378,12 @@ window.CompanionContactPage = (() => {
   }
   async function runProactiveTest(id) {
     const item = TEST_INSTRUCTIONS.find(candidate => candidate.id === id);
-    if (!item || data.testBusy || data.testUncertain) return;
+    if (!item || data.testBusy || data.testUncertain || !recipientReady()) return;
     const ticket = version;
-    const guard = {purpose:id, state:"pending", started_at:Date.now()};
+    const targetId = data.recipients.selected_target_id;
+    const targetLabel = recipientLabel();
+    const allowLinkedAccounts = data.testAllowLinkedAccounts === true;
+    const guard = {purpose:id, state:"pending", started_at:Date.now(), target_id:targetId, recipient_label:targetLabel, allow_linked_accounts:allowLinkedAccounts};
     if (!storeProactiveTestGuard(guard)) {
       data.confirmTest = "";
       data.testResults[id] = {state:"failed", failure_title:"测试没有启动",
@@ -2306,12 +2396,12 @@ window.CompanionContactPage = (() => {
     data.testGuard = guard;
     data.testResults[id] = null;
     const synthetic = testUsesSynthetic(id);
-    notice(synthetic ? "正在生成合成事件并等待模型与 QQ 投递回执…" : "正在获取真实来源、运行分析与消息模型，并等待 QQ 投递回执…");
+    notice(synthetic ? "正在生成合成事件并等待模型与目标账号投递回执…" : "正在获取真实来源、运行分析与消息模型，并等待目标账号投递回执…");
     render();
     try {
       const purpose = id === "mobile_location" ? "environment" : id === "reaction_image" ? "chat" : id;
       const result = await api("POST", "setup/proactive-diagnostic",
-        {purpose, confirm_delivery: true, synthetic_event: synthetic,
+        {purpose, confirm_delivery: true, synthetic_event: synthetic, target_id:targetId, allow_linked_accounts:allowLinkedAccounts,
           ...(id === "environment" ? {variant:data.testVariants?.environment || "weather"} : {}),
           ...(id === "mobile_location" ? {variant:"mobile_location"} : {}),
           ...(id === "reaction_image" ? {diagnostic_image:true} : {})}, id === "screen" && !synthetic ? 300000 : 180000);
@@ -2319,13 +2409,13 @@ window.CompanionContactPage = (() => {
       if (!["passed", "skipped", "failed", "unknown", "pending"].includes(result.state)) {
         throw problem("invalid_response");
       }
-      data.testResults[id] = result;
+      data.testResults[id] = {...result, recipient_label:targetLabel, allow_linked_accounts:allowLinkedAccounts};
       const uncertain = ["unknown", "pending"].includes(result.state);
       data.testUncertain = uncertain;
       data.testGuard = uncertain ? {...guard, state:result.state} : null;
       storeProactiveTestGuard(data.testGuard);
       notice(uncertain ? "测试结果未确认。请先核对核心管理员私聊；不要重试。"
-        : result.state === "passed" ? "测试通过，消息已投递到核心管理员私聊。"
+        : result.state === "passed" ? (allowLinkedAccounts ? "测试通过，消息已按关联账号策略投递，请核对下方实际目标。" : "测试通过，消息已投递到所选核心管理员私聊。")
         : result.state === "skipped" ? "测试完成，模型按当前素材判断本次不发送。"
         : "测试未通过，查看卡片中的阶段和建议。", result.state === "failed");
     } catch (error) {
@@ -2335,6 +2425,7 @@ window.CompanionContactPage = (() => {
       data.testGuard = uncertain ? {...guard, state:"unknown"} : null;
       storeProactiveTestGuard(data.testGuard);
       data.testResults[id] = {
+        recipient_label:targetLabel, allow_linked_accounts:allowLinkedAccounts,
         state: uncertain ? "unknown" : "failed",
         error: uncertain ? "请求未收到可核验的最终结果。" : reason(error.code),
         suggestion: uncertain ? "请核对核心管理员私聊；确认是否收到前，不要再次启动测试。" : "修正提示的问题后可重新运行测试。",
@@ -2440,7 +2531,7 @@ window.CompanionContactPage = (() => {
     if (testGuard) {
       data.testGuard = testGuard;
       data.testUncertain = true;
-      data.testResults[testGuard.purpose] = {state:"unknown",
+      data.testResults[testGuard.purpose] = {state:"unknown", recipient_label:testGuard.recipient_label, allow_linked_accounts:testGuard.allow_linked_accounts,
         error:"页面没有收到上一轮测试的最终回执。",
         suggestion:"请核对核心管理员私聊；确认上一轮结束后再解除测试锁。"};
     }
@@ -2465,6 +2556,7 @@ window.CompanionContactPage = (() => {
       addresses();
       data.pendingWrite = restorePendingWrite();
       await loadContract();
+      if (live(ticket) && data.view === "tests") void loadRecipients();
       if (live(ticket)) render();
     } catch (error) {
       if (!live(ticket)) return;

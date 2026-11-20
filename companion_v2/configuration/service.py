@@ -48,7 +48,9 @@ class ConfigurationService:
         self.policy = ObjectAccessPolicy(runtime)
         self.operations = OperationRepository(self.store)
         self._active_generations: dict[str, int] = {}
-        self._owners: dict[str, ConfigurationOwner] = {self.OWNER: SparseConfigurationOwner(self.store)}
+        default_owner = SparseConfigurationOwner(self.runtime)
+        default_owner.store = self.store
+        self._owners: dict[str, ConfigurationOwner] = {self.OWNER: default_owner}
         for owner in owners:
             if owner.owner_id in self._owners:
                 raise ValueError("configuration owners must be unique")
@@ -96,6 +98,13 @@ class ConfigurationService:
             binding_revision = binding.revision if binding else 0
         return access, binding_revision
 
+    def _change_keys(self, target: ConfigTarget, group_id: str) -> tuple[str, ...]:
+        """Change-log keys of a window: where its rows are stored (one set for a
+        linked conversation) plus the members whose settings are shared with it."""
+        from companion_v2.relationships.account_link_settings import change_keys
+        stored = (layer.key for layer in storage_target(self.runtime, target).chain())
+        return tuple(dict.fromkeys((*stored, *change_keys(self.runtime, target, group_id))))
+
     def _snapshot(
         self, actor: ResolvedIdentity, target: ConfigTarget, group_id: str, now: datetime,
         capability: str = "configuration.read",
@@ -106,12 +115,12 @@ class ConfigurationService:
             raise ConfigurationError("configuration_scope_not_supported", "group is not available at this configuration layer")
         owner = self._owners[definitions[0].owner_id]
         owned = owner.read(target, definitions)
-        layers = storage_target(self.runtime, target).chain()
-        placeholders = ",".join("?" for _ in layers)
+        keys = self._change_keys(target, group_id)
+        placeholders = ",".join("?" for _ in keys)
         sequence = self.store.read_one(
             f"""SELECT COALESCE(MAX(sequence), 0) AS n FROM configuration_changes
                 WHERE target_key IN ({placeholders}) AND group_id = ? AND changed = 1""",
-            (*(layer.key for layer in layers), group_id),
+            (*keys, group_id),
         )["n"]
         effective = owned.fields
         resolution = fingerprint({
@@ -250,13 +259,13 @@ class ConfigurationService:
                 raise ConfigurationError("invalid_configuration_cursor", "expected a nonnegative cursor and limit 1..100")
             with self.store.read_snapshot():
                 self._snapshot(actor, target, group_id, observed_at)
-                layers = storage_target(self.runtime, target).chain()
-                placeholders = ",".join("?" for _ in layers)
+                keys = self._change_keys(target, group_id)
+                placeholders = ",".join("?" for _ in keys)
                 rows = self.store.read_all(
                     f"""SELECT sequence FROM configuration_changes
                         WHERE target_key IN ({placeholders}) AND group_id = ? AND changed = 1 AND sequence > ?
                         ORDER BY sequence LIMIT ?""",
-                    (*(layer.key for layer in layers), group_id, after, limit + 1),
+                    (*keys, group_id, after, limit + 1),
                 )
                 sequences = tuple(row["sequence"] for row in rows[:limit])
                 return Outcome.success(ConfigurationChanges(

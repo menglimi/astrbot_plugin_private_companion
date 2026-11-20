@@ -94,12 +94,17 @@ window.CompanionHomeEnvironment = (() => {
         && input.onSceneChange(scene) !== false) input.currentScene = scene;
     }
     const alert = Array.isArray(weather?.alerts) ? weather.alerts[0] : null;
-    const summary = weatherText(settings, location) + (alert ? ` · ${alert.event_name || alert.title}` : "");
+    const eventName = String(alert?.event_name || "").trim();
+    const headline = String(alert?.title || "").trim();
+    const alertLabel = alert ? (eventName && eventName !== "其他预警" ? eventName
+      : headline && headline !== "其他预警" ? headline : "天气预警") : "";
+    const summary = weatherText(settings, location) + (alert ? ` · ${alertLabel}` : "");
     const condition = weather?.condition || "";
     const icon = alert ? "triangle-alert" : iconFor(condition);
     const canRefresh = settings.planning_weather_enabled === true && Boolean(location);
     const locationLabel = weather?.location || location || "角色地点未设置";
-    const severity = ({minor:"蓝色 · 一般",moderate:"黄色 · 较重",severe:"橙色 · 严重",extreme:"红色 · 特别严重"})[alert?.severity] || alert?.severity || "级别待核对";
+    const severityMap = {minor:"蓝色 · 一般",moderate:"黄色 · 较重",severe:"橙色 · 严重",extreme:"红色 · 特别严重",unknown:"级别待核对"};
+    const severity = severityMap[alert?.severity] || (alert?.severity && alert.severity !== "unknown" ? alert.severity : "级别待核对");
     const detail = alert
       ? `官方预警 · ${severity}${alert.ends_at ? ` · 至 ${new Date(alert.ends_at).toLocaleString("zh-CN")}` : ""}`
       : weatherDetail(settings, location);

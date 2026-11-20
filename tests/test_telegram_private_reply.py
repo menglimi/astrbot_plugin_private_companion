@@ -95,7 +95,8 @@ class TelegramPrivateReplyTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
     async def intake(self, **kwargs):
         event = telegram_event(self.platform, **kwargs)
         event.created_at = self.clock.now().timestamp()
-        await self.plugin.receive_companion_message(event)
+        # Its own task, as AstrBot dispatches each event: upstream cancels a turn's task when its connection changes.
+        await asyncio.create_task(self.plugin.receive_companion_message(event))
         await self.flush()
         return event
 

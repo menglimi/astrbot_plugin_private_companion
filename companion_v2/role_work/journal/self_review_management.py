@@ -156,7 +156,8 @@ class SelfReviewManagement:
             # render and made the effective count lie.
             state_clause, state_values = "(state = 'accepted')", ()
         else:
-            state_clause, state_values = "(state = 'rejected' OR (state = 'accepted' AND expires_at <= ?))", (stamp(at),)
+            state_clause, state_values = ("(state = 'rejected' OR state = 'withdrawn'"
+                " OR (state = 'accepted' AND expires_at <= ?))", (stamp(at),))
         with self.runtime.read_snapshot():
             owner, policy_revision = self.management._authorize(operator, context, at)
             owner_key, scope_key = digest(owner), digest(context.scope)
@@ -192,7 +193,7 @@ class SelfReviewManagement:
                 if row["state"] != "pending":
                     keepable = (row["state"] == "accepted" and unavailable is None
                                 and retainable(expires_at, at))
-                    actions = ["retain"] if keepable else []
+                    actions = (["withdraw"] if row["state"] == "accepted" else []) + (["retain"] if keepable else [])
                 elif (unavailable is not None or expires_at is None or expires_at <= stamp(at)
                       or row["kind"] != "ask_user"):
                     actions = ["reject"]
@@ -202,7 +203,7 @@ class SelfReviewManagement:
                     "kind": row["kind"], "observation": row["observation"] if unavailable is None else None,
                     "next_action": row["next_action"] if unavailable is None else None,
                     "confidence": row["confidence"], "expires_at": expires_at,
-                    "created_at": row["created_at"], "state": row["state"],
+                    "created_at": row["created_at"], "state": ("withdrawn" if str(row["decided_by"] or "").startswith("withdrawn:") else row["state"]),
                     "summary": run_summary, "evidence": evidence if unavailable is None else [],
                     "automatic": row["decided_by"] == "system:self-review",
                     "unavailable_reason": unavailable, "actions": actions,
@@ -215,13 +216,35 @@ class SelfReviewManagement:
                 "minimum_evidence": getattr(reviewer, "minimum_evidence", 1),
             }
             return {"items": items, "expired_in_page": expired, "policy": policy,
+                "enabled": reviewer.enabled() if reviewer is not None and hasattr(reviewer, "enabled") else True,
                 "next_cursor": cursor_text(rows[limit - 1]) if len(rows) > limit else None,
                 "context_key": context.key, "role_id": owner.persona_id}
 
     @outcome
+    def settings(self, *, operator, context):
+        at = self.management.ledger.now()
+        self.management._authorize(operator, context, at)
+        reviewer = getattr(self.app, "role_self_review", None)
+        return {"enabled": reviewer.enabled() if reviewer is not None and hasattr(reviewer, "enabled") else True}
+
+    @outcome
+    def settings_command(self, *, operator, context, enabled):
+        if type(enabled) is not bool:
+            raise TaskError("self_review_command_invalid", "enabled must be a boolean")
+        at = self.management.ledger.now()
+        self.management._authorize(operator, context, at)
+        reviewer = getattr(self.app, "role_self_review", None)
+        if reviewer is None or not hasattr(reviewer, "set_enabled"):
+            raise TaskError("self_review_command_invalid", "self-review service is unavailable")
+        result = reviewer.set_enabled(enabled=enabled)
+        if not result.is_success:
+            raise TaskError(result.failure.code, result.failure.reason)
+        return result.unwrap()
+
+    @outcome
     def command(self, *, operator, context, item_id, action, view_token, operation_key):
-        if action not in ("accept", "reject", "retain"):
-            raise TaskError("self_review_command_invalid", "select accept, reject or retain")
+        if action not in ("accept", "reject", "retain", "withdraw"):
+            raise TaskError("self_review_command_invalid", "select accept, reject, retain or withdraw")
         self.management._validate_operation_key(operation_key)
         at = self.management.ledger.now()
         with self.runtime.transaction() as connection:
@@ -233,6 +256,18 @@ class SelfReviewManagement:
             if action == "retain":
                 return self._retain(connection, operator, context, row, at, decision_key,
                                     owner=owner)
+            if action == "withdraw":
+                if row["state"] != "accepted":
+                    raise TaskError("self_review_command_invalid", "only accepted guidance can be withdrawn")
+                changed = connection.execute("""UPDATE role_self_review_items
+                    SET state = 'rejected', decided_at = ?, decided_by = ?, decision_key = ?
+                    WHERE item_id = ? AND owner_key = ? AND scope_key = ? AND state = 'accepted'""",
+                    (stamp(at), "withdrawn:" + operator.subject.subject_id, decision_key,
+                     item_id, digest(owner), digest(context.scope)))
+                if changed.rowcount != 1:
+                    raise TaskError("self_review_decided", "self-review item changed during withdrawal")
+                self.app.notify()
+                return {"item_id": item_id, "state": "withdrawn", "replayed": False}
             if row["state"] != "pending":
                 if row["state"] == ("accepted" if action == "accept" else "rejected") and row["decision_key"] == decision_key:
                     return {"item_id": item_id, "state": row["state"], "replayed": True}
@@ -290,3 +325,5 @@ class SelfReviewManagement:
         if changed.rowcount != 1:
             raise TaskError("self_review_decided", "self-review item changed during decision")
         return {"item_id": row["item_id"], "state": "accepted", "expires_at": retained, "replayed": False}
+
+

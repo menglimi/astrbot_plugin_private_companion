@@ -217,6 +217,27 @@ class CoreReplyVideoAttachTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(extras["selected_provider"], "vision")
         self.assertEqual(len(PLUGIN_SOURCES.peek(key)), 1)
 
+    async def test_video_route_works_without_legacy_astrbot_agent_module(self):
+        context, _key = self.prepare()
+        text_provider = NS(provider_config={"modalities": ["text"]})
+        image_provider = NS(provider_config={"modalities": ["text", "image"]})
+        providers = {"chat": text_provider, "vision": image_provider}
+        self.plugin.staging.context = NS(
+            get_provider_by_id=providers.get,
+            get_all_providers=lambda: list(providers.values()),
+            get_config=lambda **_kwargs: {
+                "provider_settings": {"default_image_caption_provider_id": "vision"},
+                "agent_runner": {"config": {"model": {}}}},
+            get_using_provider_async=AsyncMock(return_value=text_provider))
+        extras = {"selected_provider": "chat", CORE_REPLY_CONTEXT_EXTRA: {
+            "prepared": {"context": context, "event_ref": "group-video-route"}}}
+        event = NS(message_obj=NS(message=[FakeVideo(url="https://example.invalid/new.mp4")]),
+                   unified_msg_origin="qq:group:300", get_extra=extras.get,
+                   set_extra=extras.__setitem__)
+        with patch.dict("sys.modules", {"astrbot.core.astr_main_agent": None}):
+            await self.plugin._route_core_video_to_image_provider(event)
+        self.assertEqual(extras["selected_provider"], "vision")
+
     async def test_video_route_respects_window_switch(self):
         context, _key = self.prepare(video_understanding_group_enabled=False)
         extras = {CORE_REPLY_CONTEXT_EXTRA: {"prepared": {"context": context}}}

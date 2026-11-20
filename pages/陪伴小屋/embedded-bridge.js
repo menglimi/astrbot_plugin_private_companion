@@ -1,7 +1,7 @@
 /* Opaque-origin compatible bridge for bundled workspaces. */
 "use strict";
 (() => {
-  const pending=new Map(),pendingConfirms=new Map();let count=0,context=null,readyResolve;
+  const pending=new Map(),pendingConfirms=new Map();let count=0,context=null,readyResolve,draftHandler=null;
   const DEFAULT_REQUEST_TIMEOUT_MS=18000,MAX_REQUEST_TIMEOUT_MS=300000;
   const ready=new Promise(resolve=>{readyResolve=resolve;});
   const send=payload=>parent.postMessage({channel:"companion-workspace",...payload},"*");
@@ -29,7 +29,16 @@
   window.addEventListener("message",event=>{
     if(event.source!==parent||event.data?.channel!=="companion-workspace")return;
     const message=event.data;
-    if(message.kind==="context"){context=message.context;readyResolve(context);return;}
+    if(message.kind==="context"){
+      context=message.context;readyResolve(context);
+      document.dispatchEvent(new CustomEvent("companion-context-change",{detail:context}));return;
+    }
+    if(message.kind==="draft-action"){
+      Promise.resolve().then(()=>draftHandler?.[message.action]?.()).then(result=>
+        send({kind:"draft-action-result",requestId:message.requestId,result:result===true?true:{error:result?.error||"改动仍未处理，请回到成员详情核对。"}}),
+        ()=>send({kind:"draft-action-result",requestId:message.requestId,result:{error:"操作未完成，草稿仍保留。"}}));
+      return;
+    }
     if(message.kind==="host-mappings-refreshed"){
       document.dispatchEvent(new CustomEvent("companion-mappings-change",{detail:message}));return;
     }
@@ -78,6 +87,8 @@
   });}
   window.AstrBotPluginPage={ready:()=>ready,getContext:()=>context,
     confirm:request=>hostConfirm(request),
+    registerDraftHandler:handler=>{draftHandler=handler;},
+    reportDraft:metadata=>send({kind:"draft-state",draft:metadata}),
     apiGet:(path,body,options)=>request("GET",path,body,options),
     apiPost:(path,body,options)=>request("POST",path,body,options)};
   document.addEventListener("DOMContentLoaded",async()=>{

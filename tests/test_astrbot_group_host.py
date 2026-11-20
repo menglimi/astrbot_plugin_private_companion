@@ -398,7 +398,7 @@ class GroupHostTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.native.before_resolve = replace_client
         before = database_contents(app.runtime)
         result = await self.controller.receive_claimed(event)
-        self.assertEqual(result.failure.code, "host_account_changed")
+        self.assertEqual(result.failure.code, "host_account_offline")
         self.assertEqual(database_contents(app.runtime), before)
         self.native.platform.client = original_client
         async def mutate_event(_):
@@ -408,6 +408,57 @@ class GroupHostTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         snapshot = (await self.controller.session.bridge.capture(event)).unwrap()
         self.assertEqual(snapshot.principal.native_account_id, "777")
         self.assertEqual(snapshot.text, "大家好")
+
+    async def test_text_only_preflight_rejects_replaced_transport_without_writing_observation(self):
+        app = await self.start_host()
+        event = self.group_event(sender="777")
+        group_bridge = self.controller.session.bridge.groups
+        self.assertIs(group_bridge.connections, self.controller.session.bridge.connections)
+        group_bridge.persona_window_snapshot_lookup = lambda *_: None
+
+        async def replace_transport(_umo):
+            event.bot._wsr_api_clients["100"] = object()
+            return "original"
+
+        group_bridge.session_persona_override_lookup = replace_transport
+        before = database_contents(app.runtime)
+        result = await self.controller.session.prepare_group(event, self.controller.settings.group_targets[0])
+        self.assertEqual(result.failure.code, "host_connection_changed")
+        self.assertEqual(database_contents(app.runtime), before)
+
+        async def persona(_umo):
+            return "original"
+
+        group_bridge.session_persona_override_lookup = persona
+        snapshot = await group_bridge.capture_text_only(self.group_event(sender="777"))
+        self.assertTrue(snapshot.is_success, snapshot.failure)
+
+    async def test_first_group_conversation_rejects_transport_change_during_creation(self):
+        app = await self.start_host()
+        session = self.controller.session
+        await session.account_recovery.refresh(wait=True)
+        event = self.group_event(sender="777")
+        original_client = event.bot
+        self.native.conversations[event.unified_msg_origin] = None
+        created = []
+
+        async def create_conversation(umo, platform_id):
+            created.append((umo, platform_id))
+            await asyncio.sleep(0)
+            original_client._wsr_api_clients["100"] = object()
+            self.native.conversations[umo] = "new-group-conversation"
+            return "new-group-conversation"
+
+        before = database_contents(app.runtime)
+        with patch.object(self.native.conversation_manager, "new_conversation",
+                          create_conversation, create=True):
+            result = await session.prepare_group(event, self.controller.settings.group_targets[0],
+                                                 reply_candidate=True)
+
+        self.assertEqual(created, [(event.unified_msg_origin, "qq-main")])
+        self.assertIs(self.native.platform.client, original_client)
+        self.assertEqual(result.failure.code, "host_connection_changed")
+        self.assertEqual(database_contents(app.runtime), before)
 
     async def test_unconfigured_group_disconnected_account_and_private_id_collision(self):
         app = await self.start_host()

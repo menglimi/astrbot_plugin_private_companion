@@ -248,13 +248,14 @@ class UnifiedCompanionExtensionAPI:
 
     def register_memory_provider(self, provider_id, *, plugin, read=None, write=None, summary=None,
                                  display_name="", priority=0, handles_model_memory=False,
-                                 is_active=None, timeout_seconds=5.0):
+                                 is_active=None, timeout_seconds=5.0, linked_memory_read=False):
         """Register callbacks owned by a live Star; return an opaque removal token."""
         if getattr(self.controller, "_terminated", False):
             raise ValueError("memory provider host is stopped")
         return self._memory_provider_registry().register(provider_id, plugin=plugin, read=read,
             write=write, summary=summary, display_name=display_name, priority=priority,
-            handles_model_memory=handles_model_memory, is_active=is_active, timeout_seconds=timeout_seconds)
+            handles_model_memory=handles_model_memory, is_active=is_active, timeout_seconds=timeout_seconds,
+            linked_memory_read=linked_memory_read)
 
     def unregister_memory_provider(self, registration_id):
         return self._memory_provider_registry().unregister(registration_id)

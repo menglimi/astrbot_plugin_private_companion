@@ -253,6 +253,35 @@ class OfficialAdapterTests(OfficialFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(session), f"{ACCOUNT}:FriendMessage:{OFFICIAL_OPENID}")
         self.assertEqual(chain.get_plain_text(), "官方回复")
 
+    async def test_platform_rebuild_during_voice_does_not_send_the_old_reply(self):
+        from companion_v2.delivery.models import DeliveryEnvelope
+        self.native.platform.appid = "fixture-app"
+        captured = await self.capture()
+        self.personas.register_route(captured.route, observed_at=NOW)
+        role = self.personas.resolve(captured.route.scope, observed_at=NOW).unwrap().binding
+        actor = self.identity.resolve_authenticated(captured.principal, observed_at=NOW).unwrap()
+        context = TaskContext(actor, role, captured.recipients)
+        delivery = DeliveryEnvelope("part-rebuild", "op-rebuild", context, 1, "旧回复", digest("旧回复"),
+                                    self.sender.binding, lambda: True)
+        original = self.native.platform
+
+        async def voice(*_args, **_kwargs):
+            self.native.platform = OfficialPlatform()
+            self.native.platform.appid = "fixture-app"
+            return {"type": "record", "data": {"file": "base64://YQ=="}}
+
+        sender = AstrBotPlatformSender(self.bridge, binding=self.sender.binding, version="4.29.4",
+            reverse_api_type=object, authorize=lambda: None, now=self.clock.now, voice=voice)
+        receipt = await sender.send(delivery)
+        self.assertEqual((receipt.status, receipt.failure_code), ("not_sent", "host_connection_changed"))
+        self.assertEqual(original.sent, [])
+        self.assertEqual(self.native.platform.sent, [])
+
+        sender.voice = None
+        receipt = await sender.send(replace(delivery, part_id="part-new", operation_id="op-new"))
+        self.assertEqual(receipt.status, "delivered")
+        self.assertEqual(len(self.native.platform.sent), 1)
+
     def test_production_native_types_use_the_generic_event_base(self):
         from astrbot.api.event import AstrMessageEvent
         from astrbot_host.native import installed_native_types

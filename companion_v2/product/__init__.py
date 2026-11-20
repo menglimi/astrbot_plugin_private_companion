@@ -4,7 +4,7 @@ from typing import Any
 
 PRODUCT_ID = "private_companion.v2"
 PRODUCT_DISPLAY_NAME = "我会永远陪着你"
-PRODUCT_VERSION = "7.1.20"
+PRODUCT_VERSION = "7.2.6"
 PROTOCOL_VERSION = "companion.public-extension.v1"
 
 
