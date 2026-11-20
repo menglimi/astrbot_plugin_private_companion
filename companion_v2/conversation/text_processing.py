@@ -62,6 +62,14 @@ _TOOL_CALL_PROTOCOL_START = re.compile(
     r"(?:<|＜|&lt;)\s*(?:/\s*)?(?:[|｜]\s*){1,4}DSML", re.IGNORECASE,
 )
 _TOOL_CALL_PROTOCOL_BLANKS = re.compile(r"\n{3,}")
+# Some providers expose free-form reasoning as plain text with no XML wrapper.
+# DeepSeek V4-style drafts have the shape "th...end<visible text>" after the
+# first visible paragraph.  Anchor on the draft start (`th` + CJK) and on
+# `end` followed by CJK/newline so ordinary English prose is untouched.
+_BARE_DRAFT_BLOCK = re.compile(
+    r"(?ms)^[ \t]*(?:th(?=[\u4e00-\u9fff])|(?=用户(?:说|问)|「))"
+    r"[\s\S]*?end(?![A-Za-z])(?=[ \t]*(?:[\u4e00-\u9fff]|\n|$))"
+)
 _PAIRS = {"(": ")", "[": "]", "{": "}", "（": "）", "【": "】", "《": "》",
           "〈": "〉", "「": "」", "『": "』", "“": "”", "‘": "’", '"': '"'}
 
@@ -559,6 +567,8 @@ def unwrap_text_emit_calls(text):
 
 def strip_internal_expression_protocol(text):
     """Remove internal control blocks and unparsed tool-call syntax."""
+    if type(text) is str and "end" in text:
+        text = _BARE_DRAFT_BLOCK.sub("", text)
     return strip_tool_call_protocol(strip_paired_control_blocks(unwrap_text_emit_calls(text)))
 
 

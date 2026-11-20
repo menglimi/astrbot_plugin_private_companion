@@ -149,6 +149,25 @@ class ReplyTextProcessingTests(unittest.TestCase):
                 '"emotion":"开心","intensity":2}</pc_reaction_expression>'),
             "好的")
 
+    def test_bare_reasoning_draft_is_removed_without_eating_visible_reply(self):
+        draft = ("第一行正文\n"
+                 "th用户说「今天好累」。\n"
+                 "承认。\n"
+                 "「候选一」\n"
+                 "「候选二」\n"
+                 "1-2句。\n"
+                 "end实际正文\n"
+                 "第二行正文")
+        self.assertEqual(strip_internal_expression_protocol(draft),
+                         "第一行正文\n实际正文\n第二行正文")
+        # 无 th 前缀、但以“用户说/用户问”开头的草稿也要清理。
+        self.assertEqual(strip_internal_expression_protocol(
+            "回答。\n用户问「在吗」。\nend真正的回答"), "回答。\n真正的回答")
+        # 普通英文、代码与 ended/endpoint 不得误删。
+        for text in ("The end of the story", "end of story", "print('end')", "ended here",
+                     "endpoint ready"):
+            self.assertEqual(strip_internal_expression_protocol(text), text)
+
     def test_control_block_cleanup_handles_escaping_fullwidth_orphans_and_unknown_names(self):
         self.assertEqual(strip_internal_expression_protocol(
             "正文。&lt;pc_reaction_expression&gt;{}&lt;/pc_reaction_expression&gt;"), "正文。")

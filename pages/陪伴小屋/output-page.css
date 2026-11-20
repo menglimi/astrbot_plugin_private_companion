@@ -1,4 +1,4 @@
-﻿/* Output design: overview 41/59; independent material, creation and backend pages. */
+/* Output design: overview 41/59; independent material, creation and backend pages. */
 .output-page{display:grid;gap:var(--sp-4);min-width:0;color:var(--t-text)}
 .output-page [hidden]{display:none!important}
 .output-page h2,.output-page h3,.output-page h4,.output-page h5{margin:0;color:var(--t-text-strong);font-family:inherit;font-weight:600;letter-spacing:0;line-height:1.5}
@@ -59,52 +59,94 @@
 .output-page .wb-group+.wb-group{margin-top:var(--sp-3)}
 .output-page .wb-group-head{margin:0 0 var(--sp-2);font-size:var(--fs-tiny);color:var(--t-text-soft)}
 .output-page .wb-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:calc(var(--sp-3) * .75);min-width:0}
-.output-page .wb-field{display:block;min-width:0;margin:0;padding:calc(var(--sp-1) * 1.75) calc(var(--sp-3) * .75);border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface-raised)}
-.output-page .wb-field-main{display:grid;grid-template-columns:minmax(8em,1fr) minmax(150px,42%);align-items:center;gap:3px var(--sp-4);min-width:0}
+.output-page .wb-field{display:block;min-width:0;margin:0;padding:calc(var(--sp-1) * 1.75) calc(var(--sp-3) * .75);border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface-raised);container-type:inline-size}
+/* 字段内部默认左右排：标签在左、控件在右。字段本身不够宽时由容器查询改成上下排——
+   量的是字段宽度而不是窗口宽度，所以同一套规则放进窄卡片也会正确回落，
+   标签不会再被压成一字一列。 */
+.output-page .wb-field-main{display:grid;grid-template-columns:minmax(8em,1fr) minmax(8.5rem,50%);align-items:center;gap:3px var(--sp-4);min-width:0}
 .output-page .wb-field-main>.wb-label{grid-column:1;grid-row:1;min-width:0;overflow-wrap:break-word}
 .output-page .wb-field-main>.wb-help{grid-column:1;grid-row:2}
-.output-page .wb-field-main>.wb-control{grid-column:2;grid-row:1 / span 2;justify-self:stretch;width:100%;max-width:none;min-width:0}
+.output-page .wb-field-main>.wb-control{grid-column:2;grid-row:1 / span 2;width:100%;max-width:none;min-width:0;display:block}
 .output-page .wb-field-main>.wb-field-error{grid-column:1 / -1;grid-row:3}
+/* 多行文本：标签一行，编辑器占下一整行。 */
+.output-page .wb-field:has(textarea) .wb-field-main{grid-template-columns:minmax(0,1fr)}
+.output-page .wb-field:has(textarea) .wb-field-main>.wb-control{grid-column:1;grid-row:2}
+.output-page .wb-field:has(textarea) .wb-field-main>.wb-field-error{grid-column:1;grid-row:3}
+@container (max-width:20rem){
+  .output-page .wb-field:not(:has(.wb-number)) .wb-field-main{grid-template-columns:minmax(0,1fr)}
+  .output-page .wb-field:not(:has(.wb-number)) .wb-field-main>.wb-control{grid-column:1;grid-row:2}
+  .output-page .wb-field:not(:has(.wb-number)) .wb-field-main>.wb-help{grid-column:1;grid-row:3}
+  .output-page .wb-field:not(:has(.wb-number)) .wb-field-main>.wb-field-error{grid-column:1;grid-row:4}
+}
+/* 数字字段只要放得下就同排：标签在左、数值按内容取宽并靠右。 */
+@container (min-width:14rem){
+  .output-page .wb-field:has(.wb-number) .wb-field-main{grid-template-columns:minmax(6.5em,1fr) auto;align-items:center;gap:3px var(--sp-2)}
+  .output-page .wb-field:has(.wb-number) .wb-field-main>.wb-control{grid-column:2;grid-row:1;width:auto;justify-self:end}
+}
+/* 更窄的数字卡：标签一行、数值一行，四列时也不会把 ① 挤到下一行。 */
+@container (max-width:14rem){
+  .output-page .wb-field:has(.wb-number) .wb-field-main{grid-template-columns:minmax(0,1fr);align-items:start;gap:2px}
+  .output-page .wb-field:has(.wb-number) .wb-field-main>.wb-control{grid-column:1;grid-row:2;width:100%;justify-self:stretch}
+  .output-page .wb-field:has(.wb-number) .wb-number{justify-content:flex-start}
+}
+/* 宽字段里分段控件靠右收口，和数字值对齐在同一列。 */
+@container (min-width:20rem){
+  .output-page .wb-field .wb-segmented{margin-left:auto}
+}
 .output-page .wb-field-side:empty{display:none}
 .output-page .wb-field-side:not(:empty){display:flex;align-items:center;flex-wrap:wrap;gap:calc(var(--sp-1) * 1.5);margin-top:calc(var(--sp-1) * 1.25);font-size:var(--fs-micro)}
 .output-page .wb-label{color:var(--t-text-soft);font-size:var(--fs-micro);font-weight:400;line-height:1.5}
 .output-page .wb-control{min-width:0}
 .output-page .wb-control>input,.output-page .wb-control>select,.output-page .wb-control>textarea,.output-page .wb-number,.output-page .wb-textarea-wrap>textarea{width:100%;min-width:0;min-height:26px;height:auto;margin:0;padding:0;border:0;border-radius:2px;background:transparent;color:var(--t-text-strong);box-shadow:none;font-size:var(--fs-body);line-height:1.5}
-.output-page .wb-number{display:flex;align-items:center;gap:calc(var(--sp-1) * 1.25)}
-.output-page .wb-number input{width:100%;min-width:0;min-height:26px;padding:0;border:0;background:transparent;font-size:var(--fs-lead);font-weight:600;box-shadow:none}
+.output-page .wb-number{display:flex;align-items:center;gap:calc(var(--sp-1) * 1.25);flex-wrap:nowrap;justify-content:flex-end;width:auto}
+.output-page .wb-number input{flex:0 0 auto;width:6ch;min-width:0;min-height:26px;padding:0;border:0;background:transparent;font-size:var(--fs-lead);font-weight:600;box-shadow:none;text-align:right}
 .output-page .wb-number .wb-range{display:none}
 .output-page textarea{resize:vertical;overflow-wrap:anywhere}
 .output-page .wb-actions{display:flex;align-items:center;flex-wrap:wrap;gap:calc(var(--sp-1) * 1.75);margin:calc(var(--sp-2) * 1.25) 0 0;padding:calc(var(--sp-3) * .75) 0 0;border-top:1px solid var(--t-line)}
 .output-page .wb-save,.output-page .wb-actions .button{min-height:28px;padding:var(--sp-1) var(--sp-2);font-size:var(--fs-micro)}
-.output-page .wb-actions-note{margin-left:auto;color:var(--t-text-faint);font-size:var(--fs-micro)}
+.output-page .wb-actions-note{margin-left:auto;flex-basis:auto;color:var(--t-text-faint);font-size:var(--fs-micro)}
 .output-page .wb-notice:not(.is-error){display:none}
 .output-page .wb-notice{margin:0;padding:calc(var(--sp-1) * 1.75) calc(var(--sp-3) * .75);font-size:var(--fs-micro)}
-.output-page .wb-segmented{gap:2px;padding:3px;border:0;background:var(--t-surface-sunken);box-shadow:none}
+.output-page .wb-segmented{width:max-content;max-width:100%;display:flex;flex-wrap:wrap;gap:2px;padding:3px;border:0;background:var(--t-surface-sunken);box-shadow:none}
+.output-page .wb-segmented-option{flex:0 0 auto}
 .output-page .wb-segmented-option span{min-height:29px;padding:3px var(--sp-2);font-size:var(--fs-micro)}
 .output-page .wb-segmented-option input:checked+span{box-shadow:inset 0 0 0 1px var(--t-accent);background:var(--t-surface-raised)}
 .output-page .wb-field:has(.wb-switch){padding:3px 0;border:0;background:transparent}
 .output-page .wb-field:has(.wb-switch) .wb-field-main{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:var(--sp-2);min-height:32px}
 .output-page .wb-field:has(.wb-switch) .wb-field-main>.wb-label{flex:0 1 auto;min-width:0}
-.output-page .wb-field:has(.wb-switch) .wb-field-main>.wb-control{flex:0 0 auto;width:auto;max-width:none}
+.output-page .wb-field:has(.wb-switch) .wb-field-main>.wb-control{flex:0 0 auto;width:auto;max-width:none;min-width:0}
 .output-page .wb-switch{min-height:28px;gap:calc(var(--sp-1) * 1.5)}
 .output-page .wb-switch-state{font-size:var(--fs-micro);white-space:nowrap}
 .output-page .wb-field:has(.wb-switch) .wb-control{flex:none}
-.output-page [data-wb-card="image_review"] .wb-fields{grid-template-columns:repeat(6,minmax(0,1fr))}
-.output-page [data-wb-card="image_review"] .wb-field{grid-column:span 2}
-.output-page [data-wb-card="image_review"] [data-wb-row="enable_group_nsfw_private_fallback"],.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_mode"],.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_sensitivity"],.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_custom_prompt"]{grid-column:1/-1}
-.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_mode"],.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_sensitivity"]{padding:0;border:0;background:transparent}
-.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_mode"] .wb-field-main,.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_sensitivity"] .wb-field-main{display:grid;grid-template-columns:100px minmax(0,1fr);align-items:center}
-.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_max_images"],.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_failure_action"],.output-page [data-wb-card="image_review"] [data-wb-row="review_provider"],.output-page [data-wb-card="image_review"] [data-wb-row="review_dual_provider"]{grid-column:span 3}
+/* 群图成图审核：开关、档位、几个数值与两个模型选择。
+   数值两列（卡片够宽时四列），开关、分段、失败策略与提示词各占整行。 */
+.output-page [data-wb-card="image_review"] .wb-card-body{container-type:inline-size;container-name:image-review}
+.output-page [data-wb-card="image_review"] .wb-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3)}
+.output-page [data-wb-card="image_review"] .wb-field{grid-column:span 1;min-width:0}
+.output-page [data-wb-card="image_review"] [data-wb-row="enable_group_nsfw_private_fallback"],
+.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_mode"],
+.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_sensitivity"],
+.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_failure_action"],
+.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_custom_prompt"]{grid-column:1/-1}
+.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_mode"],
+.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_sensitivity"]{padding:0;border:0;background:transparent}
+/* 两个模型选择：标签在上、下拉占满整行，长模型名不被裁掉。 */
+.output-page .wb-card[data-wb-card="image_review"] [data-wb-row="review_provider"] .wb-field-main,
+.output-page .wb-card[data-wb-card="image_review"] [data-wb-row="review_dual_provider"] .wb-field-main{grid-template-columns:minmax(0,1fr)}
+.output-page .wb-card[data-wb-card="image_review"] [data-wb-row="review_provider"] .wb-control,
+.output-page .wb-card[data-wb-card="image_review"] [data-wb-row="review_dual_provider"] .wb-control{grid-column:1;grid-row:2;width:100%}
+/* 宽卡片：数值排四列，两个模型选择各占半行，避免左边挤满、右边留空。 */
+@container image-review (min-width:56rem){
+  .output-page [data-wb-card="image_review"] .wb-fields{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .output-page [data-wb-card="image_review"] [data-wb-row="review_provider"],
+  .output-page [data-wb-card="image_review"] [data-wb-row="review_dual_provider"]{grid-column:span 2}
+}
 .output-page #imageOutputWorkspace .wb-card{padding:0;border:0;background:transparent}
 .output-page #imageOutputWorkspace .wb-card-head,.output-page #imageOutputWorkspace .wb-group-head{display:none}
 .output-page[data-output-tab-active="visual"] #imageOutputWorkspace [data-wb-group]:not([data-wb-group="triggers"]),.output-page[data-output-tab-active="capabilities"] #imageOutputWorkspace [data-wb-group="triggers"]{display:none}
 .output-page #imageOutputWorkspace [data-wb-row="trigger_mode"]{grid-column:1/-1;padding:0;border:0;background:transparent}
-.output-page #imageOutputWorkspace [data-wb-row="trigger_mode"] .wb-field-main{display:grid;grid-template-columns:100px minmax(0,1fr);align-items:center}
 .output-page #imageOutputWorkspace [data-wb-row="style_prompt"],.output-page #imageOutputWorkspace [data-wb-row="negative_prompt"]{grid-column:1/-1}
 .output-page #imageOutputWorkspace [data-wb-row="prompt_format"],.output-page #imageOutputWorkspace [data-wb-row="style"],.output-page #imageOutputWorkspace [data-wb-row="negative_mode"]{padding:0;border:0;background:transparent}
-.output-page #imageOutputWorkspace [data-wb-row="prompt_format"] .wb-field-main,.output-page #imageOutputWorkspace [data-wb-row="style"] .wb-field-main,.output-page #imageOutputWorkspace [data-wb-row="negative_mode"] .wb-field-main{display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:calc(var(--sp-3) * .75)}
-.output-page #imageOutputWorkspace [data-wb-row="prompt_format"] .wb-field-main>.wb-label,.output-page #imageOutputWorkspace [data-wb-row="style"] .wb-field-main>.wb-label,.output-page #imageOutputWorkspace [data-wb-row="negative_mode"] .wb-field-main>.wb-label{flex:0 1 auto;min-width:0}
-.output-page #imageOutputWorkspace [data-wb-row="prompt_format"] .wb-field-main>.wb-control,.output-page #imageOutputWorkspace [data-wb-row="style"] .wb-field-main>.wb-control,.output-page #imageOutputWorkspace [data-wb-row="negative_mode"] .wb-field-main>.wb-control{flex:0 1 auto;width:auto;max-width:none}
 .output-page #imageOutputWorkspace [data-wb-row="scene_presets_json"]{display:none!important}
 .output-page #imageOutputWorkspace [data-wb-group="scenes"]{display:none}
 .output-page #imageOutputWorkspace [data-wb-group="prompts"] textarea{min-height:35px;line-height:1.6}
@@ -311,6 +353,7 @@
   .output-page .wb-fields,.output-endpoint-extra,.output-local-grid,.image-materials-upload-fields,.image-materials-form-grid,.image-materials-usage-choices{grid-template-columns:minmax(0,1fr)}
   .output-page .wb-field-main{grid-template-columns:minmax(0,1fr)}
   .output-page .wb-field-main>.wb-control{grid-column:1;grid-row:auto;justify-self:stretch}
+  .output-page .wb-field .wb-segmented{margin-left:0}
   .output-page [data-wb-card="image_review"] .wb-fields{grid-template-columns:minmax(0,1fr)}
   .output-page [data-wb-card="image_review"] .wb-field{grid-column:1/-1}
   .output-page #imageOutputWorkspace [data-wb-row="trigger_mode"] .wb-field-main,.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_mode"] .wb-field-main,.output-page [data-wb-card="image_review"] [data-wb-row="group_nsfw_image_review_sensitivity"] .wb-field-main{grid-template-columns:minmax(0,1fr);gap:calc(var(--sp-1) * 1.25)}

@@ -97,7 +97,7 @@
        其中相对地址；只有确认官方配置未开启性能模式后才由 performance-gate.js
        激活，低配置设备不会下载 3D 体素包和整套工作区脚本。 -->
   <template id="companion-full-assets">
-    <link rel="stylesheet" href="bundle.css?v=870d53806d7bb2c0">
+    <link rel="stylesheet" href="bundle.css?v=8424f4cee1d4e881">
 
 
 
@@ -148,12 +148,12 @@
     <script defer src="page-motion.js?v=page-interactions-20261011"></script>
     <script defer src="entrance.js?v=entrance-state-build-20261001"></script>
     <script defer src="config-snapshot.js?v=brand-no-version-20261018"></script>
-    <script defer src="home-sidebar.js?v=agenda-progress-20261120"></script>
+    <script defer src="home-sidebar.js?v=state-age-20261120"></script>
     <script defer src="persona-designer-memory.js?v=persona-recreation-20261101"></script>
-    <script defer src="product-page.js?v=group-navigation-20261103"></script>
+    <script defer src="product-page.js?v=state-age-20261120"></script>
     <script defer src="confirmation-dialog.js?v=consolidated-20261024-r1"></script>
     <script defer src="native-extension-management.js?v=mobile-mihome-controls-20261026"></script>
-    <script defer src="native-extension-panel.js?v=mobile-pairing-confirm-20261030"></script>
+    <script defer src="native-extension-panel.js?v=audio-focus-20261120"></script>
     <script defer src="self-relationship.js?v=core-user-profile-20261007"></script>
     <script defer src="home-environment.js?v=weather-alert-label-20261118"></script>
     <script defer src="migration-config-review.js?v=consolidated-20261024-r1"></script>
@@ -171,31 +171,31 @@
     <script defer src="screen-observation.js?v=screen-retained-20261014"></script>
     <script defer src="screen-access.js?v=screen-retained-20261014"></script>
     <link rel="stylesheet" href="qzone-images.css?v=20261110-2">
-    <script defer src="config-port-page.js?v=config-port-20261110-r2"></script>
+    <script defer src="config-port-page.js?v=storage-layout-20261120"></script>
     <!-- app.js 先于 room-editor.js：体素在首屏就挂载，此时 room-editor 的
          顶层函数还不存在，mountStage 里的两处回调因此必须惰性解析（见
          app.js 的注释）。tests/test_voxel_mount_callbacks.cjs 守住这个顺序。 -->
-    <script defer src="app.js?v=home-ui-20261120"></script>
-    <script defer src="room-editor.js?v=transient-time-preview-20261029-r2"></script>
+    <script defer src="app.js?v=identity-segment-20261121"></script>
+    <script defer src="room-editor.js?v=room-theme-persist-20261120"></script>
     <script defer src="memory-page.js?v=memory-discard-20261112"></script>
-    <script defer src="contact-page.js?v=config-save-fastpath-20261111"></script>
+    <script defer src="contact-page.js?v=recipients-20261121"></script>
     <script defer src="learning-page.js?v=learning-record-ownership-20261012"></script>
     <script defer src="behavior-page.js?v=group-behavior-20261015"></script>
     <script defer src="learning-overview.js?v=learning-overview-20261103"></script>
-    <script defer src="learning-review-page.js?v=learning-record-ownership-20261012"></script>
-    <script defer src="expression-signals-page.js?v=snapshot-evidence-20261111"></script>
-    <script defer src="expression-samples-page.js?v=learning-record-ownership-20261012"></script>
+    <script defer src="learning-review-page.js?v=review-center-design-20261120"></script>
+    <script defer src="expression-signals-page.js?v=expression-kind-filter-20261120"></script>
+    <script defer src="expression-samples-page.js?v=samples-dedup-20261121"></script>
     <script defer src="self-review-page.js?v=self-review-switch-20261118"></script>
     <script defer src="state-maintenance.js?v=grant-scope-20261111"></script>
     <script defer src="state-contact.js?v=contact-event-freshness-20261016"></script>
     <script defer src="calendar-editor.js?v=schedule-workspace-20261003-r2"></script>
     <script defer src="state-editor.js?v=presence-role-scope-20261027"></script>
     <script defer src="state-page.js?v=grant-scope-20261111"></script>
-    <script defer src="reply-page.js?v=no-expression-diagnostics-20261120"></script>
-    <script defer src="host-options-page.js?v=forward-intake-settings-20261004"></script>
-    <script defer src="workbench-page.js?v=qzone-config-context-20261110"></script>
+    <script defer src="reply-page.js?v=text-preview-bottom-20261121"></script>
+    <script defer src="host-options-page.js?v=voice-global-collapse-20261121"></script>
+    <script defer src="workbench-page.js?v=identity-segment-20261121"></script>
     <script defer src="memory-settings-section.js?v=memory-config-ownership-20261001"></script>
-    <script defer src="config-editor.js?v=exploration-20261111-r2"></script>
+    <script defer src="config-editor.js?v=identity-segment-20261121"></script>
     <script defer src="output-page.js?v=image-save-20261112"></script>
     <script defer src="role-profile-draft.js?v=7.1.0"></script>
     <script defer src="role-profile-migration.js?v=migration-ui-20261015"></script>
@@ -206,7 +206,7 @@
     <script defer src="maintenance-page.js?v=maintenance-config-relative-20261120"></script>
     <script defer src="appearance-page.js?v=account-display-preferences-20261028"></script>
     <script defer src="backup-page.js?v=data-subpages-20261008-r2"></script>
-    <script defer src="storage-page.js?v=runtime-cache-clear-20261109"></script>
+    <script defer src="storage-page.js?v=storage-layout-20261120"></script>
     <script defer src="understanding-page.js?v=understanding-figma-layout-20261007"></script>
     <script defer src="module-ready.js?v=module-ready-20261028"></script>
     <script>
@@ -320,7 +320,7 @@
   <template data-workspace-bundle="host"><script src="workspace-bundles/host.js?v=group-navigation-20261103"></script></template>
   <template data-workspace-bundle="life"><script src="workspace-bundles/life.js?v=workspace-lazy-20261012"></script></template>
   <template data-workspace-bundle="relationships"><script src="workspace-bundles/relationships.js?v=workspace-lazy-20261012"></script></template>
-  <template data-workspace-bundle="identity"><script src="workspace-bundles/identity.js?v=tts-channel-bindings-20261027"></script></template>
+  <template data-workspace-bundle="identity"><script src="workspace-bundles/identity.js?v=stranger-block-20261121"></script></template>
   <template data-workspace-bundle="persona"><script src="workspace-bundles/persona.js?v=workspace-lazy-20261012"></script></template>
   <template data-workspace-bundle="designer"><script src="workspace-bundles/designer.js?v=persona-recreation-20261101"></script></template>
   <!-- 设置与迁移工作区：依赖 product-page.js 的桥接与错误翻译。 -->
@@ -329,6 +329,7 @@
   <!-- 忆忆策略位于忆忆页的独立视图。 -->
   <!-- 备份与还原：后端 backup_api.py 有六条真实路由，而这一页此前没有任何
        入口加载它——资料与维护页的挂载点永远停在「正在读取快照列表…」。 -->
+  <link rel="stylesheet" href="ui-field-align.css?v=layout4-20261121">
 </head>
 <body>
   <!-- 启动幕：首屏闸门（tokens.css 的 data-room-ready）在体素包解析完之前
