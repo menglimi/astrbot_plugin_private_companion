@@ -19792,12 +19792,12 @@ class PrivateCompanionPlugin(
                     )
                     working_text = corrected
                     resp.completion_text = corrected
-            if self.enable_llm_timer_scheduling and "<timer" in original_text.lower():
+            if "<timer" in original_text.lower():
                 cleaned_text, payloads = self._extract_timer_directives(original_text)
                 if cleaned_text != original_text:
                     working_text = cleaned_text
                     resp.completion_text = working_text
-                if payloads:
+                if payloads and self.enable_llm_timer_scheduling:
                     timer_source_text = _single_line(current_user.get("last_user_message"), 260) or working_text
                     await self._schedule_llm_timer_after_response_dedup(
                         event,
