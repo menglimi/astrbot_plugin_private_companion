@@ -14,6 +14,23 @@ from companion_v2.foundation.outcome import Outcome
 
 
 CORE_REPLY_CONTEXT_EXTRA = "_companion_v2_core_reply_context"
+# Pre-send verification rejections that intentionally silence an outbound reply
+# rather than representing a transport or authorization fault. Suppressing them
+# cleanly at the send boundary avoids bubbling unhandled TaskError tracebacks
+# into AstrBot's RespondStage.
+SILENT_SEND_DENIAL_CODES = frozenset({"message_withdrawn"})
+
+
+def _is_silent_send_denial(error: BaseException) -> bool:
+    return isinstance(error, TaskError) and error.code in SILENT_SEND_DENIAL_CODES
+
+
+def _clear_suppressed_result_chain(event: Any) -> None:
+    getter = getattr(event, "get_result", None)
+    result = getter() if callable(getter) else None
+    chain = getattr(result, "chain", None)
+    if isinstance(chain, list):
+        chain.clear()
 
 
 Authorize = Callable[[Any], Awaitable[Any]]
@@ -229,8 +246,12 @@ def prepare_core_reply_event(
         async def authorized_send(message: Any, *args: Any, **kwargs: Any) -> Any:
             try:
                 return await guarded_send(message, *args, **kwargs)
-            except BaseException:
+            except BaseException as error:
                 finish_core_reply_presence(event, force=True)
+                if _is_silent_send_denial(error):
+                    state["silent_suppressed"] = True
+                    _clear_suppressed_result_chain(event)
+                    return None
                 raise
 
         async def guarded_send(message: Any, *args: Any, **kwargs: Any) -> Any:
@@ -253,7 +274,7 @@ def prepare_core_reply_event(
                 if message is None:
                     return None
                 return await state["_original_send"](message, *args, **kwargs)
-            if state.get("group_participation", {}).get("mode") == "skip":
+            if state.get("silent_suppressed") or state.get("group_participation", {}).get("mode") == "skip":
                 return None
             if state["send_unknown"]:
                 raise TaskError("core_reply_delivery_unknown", "the platform send outcome is unknown; do not replay this reply")
@@ -357,8 +378,12 @@ def prepare_core_reply_event(
         async def authorized_streaming(*args: Any, **kwargs: Any) -> Any:
             try:
                 return await guarded_streaming(*args, **kwargs)
-            except BaseException:
+            except BaseException as error:
                 finish_core_reply_presence(event, force=True)
+                if _is_silent_send_denial(error):
+                    state["silent_suppressed"] = True
+                    _clear_suppressed_result_chain(event)
+                    return None
                 raise
 
         async def guarded_streaming(*args: Any, **kwargs: Any) -> Any:
@@ -366,7 +391,7 @@ def prepare_core_reply_event(
             # Its own streaming result therefore activates the send check here.
             if not state.get("delivery_guard_active") and not is_core_reply_stream(event):
                 return await state["_original_send_streaming"](*args, **kwargs)
-            if state.get("group_participation", {}).get("mode") == "skip":
+            if state.get("silent_suppressed") or state.get("group_participation", {}).get("mode") == "skip":
                 notify_delivery("finished")
                 restore_core_reply_event(event)
                 return None
@@ -479,6 +504,7 @@ def prepare_core_reply_event(
         wait_connection_changed=wait_connection_changed,
         delivery_guard_active=False,
         denial_notified=False,
+        silent_suppressed=False,
         send_attempts=0,
         send_returns=0,
         send_unknown=0,
@@ -555,6 +581,7 @@ def adopt_core_reply_event(
         # unknown or already-attempted sends stay fenced by guarded_send.
         if not state.get("send_unknown") and not state.get("send_attempts"):
             state["denial_notified"] = False
+            state["silent_suppressed"] = False
             state["_presence_finished"] = False
             state.pop("_text_presentation", None)
             state.pop("_text_presentation_removed", None)

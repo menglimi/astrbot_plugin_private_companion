@@ -77,7 +77,7 @@ def group_message_parts(event, account_id, *, native_parts=None):
     if native_parts is None and isinstance(segments, list):
         return segments
     parts = tuple(message.message if native_parts is None else native_parts)
-    if event.platform_meta.name not in OFFICIAL_PLATFORMS:
+    if _get(_get(event, "platform_meta"), "name") not in OFFICIAL_PLATFORMS:
         return parts
     identifiers = bot_mention_ids(event, account_id)
     restored = _official_original(event, identifiers)
@@ -98,11 +98,13 @@ def group_message_parts(event, account_id, *, native_parts=None):
                 result.append(SimpleNamespace(type="Plain", text=""))
         else:
             result.append(part)
+    if not inserted and restored:
+        result.append(SimpleNamespace(type="Plain", text=restored))
     return result
 
 
 def current_mention_text(target, event, account_id):
-    if str(target) in bot_mention_ids(event, account_id):
+    if target is not None and str(target).strip() in bot_mention_ids(event, account_id):
         return SELF_MENTION
     return mention_text(target, account_id)
 

@@ -59,6 +59,24 @@ def _is_sticker_segment(part):
     return "表情" in str(data.get("summary") or "")
 
 
+def _has_self_mention_segment(segments, event, account_id):
+    """True when the authenticated raw envelope directly @-mentions this bot."""
+    if not isinstance(segments, list):
+        return False
+    for part in segments:
+        if not isinstance(part, Mapping) or part.get("type") != "at":
+            continue
+        data = part.get("data")
+        if not isinstance(data, Mapping):
+            continue
+        try:
+            if current_mention_text(data.get("qq"), event, account_id) == SELF_MENTION:
+                return True
+        except (TaskError, ValueError, TypeError):
+            continue
+    return False
+
+
 def group_event_route(event):
     """Cross-check normalized fields against one supported authenticated event."""
     message, meta, session = event.message_obj, event.platform_meta, event.session
@@ -232,6 +250,9 @@ class NativeGroupBridge(NativePrivateBridge):
             else:
                 text.append("\n[消息组件不可用]\n")
         value = "".join(text)
+        if not has_text and _has_self_mention_segment(segments, event, route.account_id):
+            value = SELF_MENTION if not value.strip() else f"{SELF_MENTION} {value.strip()}"
+            has_text = True
         if ((not has_text and (require_text or not media_only_allowed))
                 or not value.strip() or len(value) > 65536):
             raise TaskError("host_text_invalid", "group input must be bounded nonempty text")
@@ -462,6 +483,8 @@ class NativeGroupBridge(NativePrivateBridge):
                     or len(video_locators) > MAX_VIDEOS):
                 raise TaskError("host_group_media_limit", "group attachments exceed the input budget")
             text = "".join(text_parts)
+            if not text.strip() and _has_self_mention_segment(original_parts, event, route.account_id):
+                text = SELF_MENTION
             if not text.strip() or len(text) > 65536:
                 raise TaskError("host_text_invalid", "group input must be bounded nonempty text")
             try:
