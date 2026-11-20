@@ -29,6 +29,9 @@ window.CompanionNativeExtensionPanel = (() => {
     return groups;
   }
   const sessions = new Map(), operations = new Map();
+  /* 从外面跳到「现实触及」时，先把「本机语音与叫醒」展开再滚动过去；
+     只用于一次性定位，不改变面板自己的展开状态。 */
+  let audioFocusPending = false;
   const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
   const secret = name => /token|secret|password|cookie|api_key|access_key|sessdata|auth_code/i.test(name);
@@ -228,6 +231,9 @@ window.CompanionNativeExtensionPanel = (() => {
       }).join("");
       const mobileOnly = this.onlyGroup === "mobile";
       const mobile = mobileOnly ? this.mobileConnectionCard() : "";
+      const focusAudio = this.name === "reality" && !mobileOnly && audioFocusPending;
+      if (focusAudio) audioFocusPending = false;
+      if (focusAudio) this.managementState = {...(this.managementState || {}), audioOpen:true};
       const heading = mobileOnly ? `<div class="mobile-config-heading"><h3>连接配置</h3><p>网关、配对身份与终端权限</p></div>`
         : `<header class="native-extension-head"><div><span class="native-extension-kicker">V2 内置能力</span><h3>${escape(names[this.name])}</h3><p>${escape(descriptions[this.name])}</p></div><div data-native-runtime></div></header><div class="native-extension-lifecycle" data-native-lifecycle></div>`;
       const management = !mobileOnly && ["reality", "live"].includes(this.name)
@@ -243,6 +249,13 @@ window.CompanionNativeExtensionPanel = (() => {
         onState:state => { this.managementState = state; },
         onUseHotkey:hotkey => this.useHotkey(hotkey),
       }) : null;
+      if (focusAudio && managementRoot) {
+        const audio = managementRoot.querySelector("[data-native-audio-details]");
+        if (audio) {
+          audio.open = true;
+          setTimeout(() => audio.scrollIntoView?.({block:"center"}), 0);
+        }
+      }
       this.filter(); this.setBusy(this.busy);
     }
     mobileConfiguration(key, field, value, parent) {
@@ -686,5 +699,7 @@ window.CompanionNativeExtensionPanel = (() => {
     for (const panel of sessions.values()) panel.stop();
     sessions.clear();
   }
-  return {mount, unmount, prune, refreshStatus, conditionMet};
+  return {mount, unmount, prune, refreshStatus, conditionMet,
+    /* 打开「现实触及」设置时把「本机语音与叫醒」展开并滚到视线内。 */
+    focusAudio: () => { audioFocusPending = true; }};
 })();

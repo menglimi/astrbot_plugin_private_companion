@@ -39,6 +39,27 @@ const ROOM_THEME_TO_HOUSE = {
 };
 const HOUSE_TO_ROOM_THEME = Object.fromEntries(Object.entries(ROOM_THEME_TO_HOUSE).map(([theme, house]) => [house, theme]));
 function roomThemeKey(houseStyle) { return HOUSE_TO_ROOM_THEME[houseStyle] || 'classic'; }
+const ROOM_HOUSE_STYLES = new Set(Object.values(ROOM_THEME_TO_HOUSE));
+/* 场景主题立即写入全局偏好：关掉拓展页时不会因为布置草稿没保存而退回庭院。
+   家具仍是草稿，取消布置会把这一个主题一起还原。 */
+function rememberRoomTheme() {
+  if (!voxelController || typeof state === 'undefined') return;
+  const layout = voxelController.getLayout?.();
+  if (!layout || !ROOM_HOUSE_STYLES.has(layout.houseStyle)) return;
+  state.roomHouseStyle = layout.houseStyle;
+  if (arrangementDraft?.role && state.roomLayouts?.[arrangementDraft.role]) {
+    state.roomLayouts[arrangementDraft.role].houseStyle = layout.houseStyle;
+  }
+  if (typeof persist === 'function') persist();
+}
+function restoreRoomTheme(theme) {
+  if (!theme || !ROOM_HOUSE_STYLES.has(theme) || typeof state === 'undefined') return;
+  state.roomHouseStyle = theme;
+  if (arrangementDraft?.role && state.roomLayouts?.[arrangementDraft.role]) {
+    state.roomLayouts[arrangementDraft.role].houseStyle = theme;
+  }
+  if (typeof persist === 'function') persist();
+}
 function syncRoomThemeButtons(theme) {
   const root = $('#roomEditor');
   if (!root?.querySelectorAll) return;
@@ -190,6 +211,7 @@ function enterRoomEditor() {
       button.addEventListener('click', () => {
         voxelController.setTheme(button.dataset.roomTheme);
         syncRoomThemeButtons(button.dataset.roomTheme);
+        rememberRoomTheme();
       });
     });
     syncRoomThemeButtons(roomThemeKey(voxelController.getState?.().houseStyle));
@@ -278,8 +300,10 @@ function finishRoomEditor(save) {
       else delete layout.items[entry.station].stored;
     }
     state.roomLayouts[draft.role] = layout;
-  } else if (!litePerformanceMode) {
-    voxelController?.setLayout(draft.layout);
+    state.roomHouseStyle = layout.houseStyle;
+  } else {
+    restoreRoomTheme(draft.layout?.houseStyle);
+    if (!litePerformanceMode) voxelController?.setLayout(draft.layout);
   }
   // Lite discards the temporary scene instead of repainting it at the compact size.
   if (litePerformanceMode) releaseLiteRoomScene();
@@ -324,7 +348,7 @@ function handleRoomEditorClick(el) {
   if (!arrangementDraft || roomEditorClosing) return false;
   if (el.hasAttribute('data-room-save')) finishRoomEditor(true);
   else if (el.hasAttribute('data-room-cancel')) finishRoomEditor(false);
-  else if (el.dataset.roomHouse) voxelController.updateHouseStyle(el.dataset.roomHouse);
+  else if (el.dataset.roomHouse) { voxelController.updateHouseStyle(el.dataset.roomHouse); rememberRoomTheme(); }
   else if (el.dataset.roomStyle) voxelController.updateFurniture({style: el.dataset.roomStyle});
   else if (el.hasAttribute('data-room-undo')) voxelController.undoEdit();
   else if (el.hasAttribute('data-room-redo')) voxelController.undoEdit(true);

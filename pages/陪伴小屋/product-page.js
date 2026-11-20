@@ -95,7 +95,13 @@ window.CompanionProduct = (() => {
     legacy_nothing_to_migrate:"这份旧版数据里没有可以自动迁移的来源。",
     legacy_scope_unavailable:"这份角色设置里没有要写入的配置分组，这一组会跳过，其余照常。",
     legacy_apply_failed:"迁移没有写入任何设置，请重新试算后再试一次。",
-    legacy_request_invalid:"这次操作缺少必要的信息，请重新走一遍迁移的三步。"};
+    legacy_request_invalid:"这次操作缺少必要的信息，请重新走一遍迁移的三步。",
+    /* 配置保存的回绝也要有中文落点：这些码会经 product.request 出现在
+       角色档案草稿、模型页等工作区里，不能只剩一句英文机器码。 */
+    role_profile_configuration_invalid:"角色档案没有通过校验：头像需为 24 KB 以内的 JPEG，单个字段与整份档案都有字数上限。草稿已保留，请调整后再保存。",
+    configuration_request_invalid:"请求格式有误或内容过大（角色头像上限 24 KB）。草稿已保留，请调整后再试。",
+    configuration_revision_conflict:"配置已经更新。草稿已保留，读取新版本后再核对。",
+    configuration_storage_unavailable:"配置存储暂时不可用，这次没有写入；请稍后重新保存。"};
   /* 主题六套，按明暗分两组，每套对应小屋的一个时段或陈设风格。
      色值不在这里写——tokens.css 是唯一色源，这里只有名字与分组。
      色卡预览靠给元素套上 data-theme 真实渲染，而不是各写一份色值副本
@@ -266,6 +272,15 @@ window.CompanionProduct = (() => {
   }
   const fail = (code, confirmed = false) => Object.assign(new Error(errors[code] || "暂不可读取，请刷新核对。"),
     {code, ...(confirmed ? {confirmed:true} : {})});
+  /* 结果未知的码：请求可能已经送到服务端并落库，也可能根本没发出去。
+     这些不能按「明确回绝」清掉待核对请求，只能继续沿用原操作核对。
+     其余机器码是插件自己写的域内错误，代表一次确定的服务端答复。 */
+  const UNCERTAIN_CODES = new Set(["bridge_timeout", "bridge_unavailable",
+    "invalid_response", "plugin_web_internal_error", "dashboard_bridge_not_ready",
+    "timeout", "request_timeout", "network_error", "canceled", "cancelled", "aborted"]);
+  const isUncertainCode = code => typeof code !== "string" || !code
+    || UNCERTAIN_CODES.has(code) || code.startsWith("bridge_")
+    || code.startsWith("dashboard_bridge_");
   let bridge, catalog, manifest, data = {}, failures = {}, failureCodes = {}, selected = {target_id:null,role_id:null,bot_id:null};
   let selectionGuard = () => true, selectionIntent = 0, selectionNotice = "";
   let browserPreferenceIdentity = null, browserPreferenceNotice = "";
@@ -605,13 +620,24 @@ window.CompanionProduct = (() => {
         });
       }
       /* 老版页面桥会把机器码放在 Error.message 或 Error.code 上，未必经过
-         unwrap()。先把已知码送回同一张表，避免 setup-guide 直接显示英文串。 */
-      if (error.code && errors[error.code]) throw fail(error.code, error.confirmed === true);
-      if (CODE.test(error.message || "") && errors[error.message]) throw fail(error.message, error.confirmed === true);
-      if (error.code) throw fail(error.code, error.confirmed === true);
-      if (/initialized|explicit V2 profile/i.test(error.message)) throw fail("staging_not_initialized");
-      if (/Dashboard|sign in/i.test(error.message)) throw fail("dashboard_identity_required");
-      throw fail(CODE.test(error.message || "") ? error.message : "invalid_response");
+         unwrap()。先把已知码送回同一张表，避免 setup-guide 直接显示英文串。
+         机器码本身是一份服务端回执：除连接层/宿主内部错误外，都按 confirmed
+         交给调用方；否则一次明确回绝会被当成「结果未知」反复核对。 */
+      const code = (typeof error?.code === "string" && error.code)
+        ? error.code : (CODE.test(error?.message || "") ? error.message : "");
+      if (code) {
+        const confirmed = error.confirmed === true || !isUncertainCode(code);
+        if (errors[code]) throw fail(code, confirmed);
+        if (confirmed) throw Object.assign(
+          new Error(method === "POST"
+            ? `保存没有通过（错误码：${code}），草稿已保留，请按提示调整后再试。`
+            : `读取没有完成（错误码：${code}），请刷新后重试。`),
+          {code, confirmed: true});
+        throw fail(code, false);
+      }
+      if (/initialized|explicit V2 profile/i.test(error.message)) throw fail("staging_not_initialized", true);
+      if (/Dashboard|sign in/i.test(error.message)) throw fail("dashboard_identity_required", true);
+      throw fail("invalid_response");
     }
   }
   /* 桥的 endpoint 是**插件相对**路径：不带前导斜杠，也**不带插件目录名**。
@@ -1046,6 +1072,9 @@ window.CompanionProduct = (() => {
   function stateCard() {
     return window.CompanionHomeSidebar.renderState({state:data.state,life:data.life,loading,unavailable,
       unavailableCode:name=>failureCodes[name]||""});
+  }
+  function stateAge() {
+    return window.CompanionHomeSidebar.stateAge?.({state:data.state,now:Date.now()}) || "";
   }
   function scheduleCard() {
     return window.CompanionHomeSidebar.renderSchedule({state:data.state,life:data.life,loading,unavailable,
@@ -1503,6 +1532,7 @@ window.CompanionProduct = (() => {
         const allowed=(method==="GET"&&["acquaintance","acquaintance/authorization","acquaintance/settings","acquaintance/strangers",
           "acquaintance/account-links","acquaintance/account-links/history"].includes(path))
            ||(method==="POST"&&["acquaintance/authorization","acquaintance/settings","acquaintance/identity","acquaintance/admin-name","acquaintance/stranger-target",
+             "acquaintance/stranger-remove","acquaintance/stranger-block","acquaintance/stranger-unblock",
              "acquaintance/account-links","acquaintance/account-links/unlink"].includes(path));
         if(!allowed)throw fail("invalid_response");
         mapped=relative(roleApi)+path.slice("acquaintance".length);
@@ -1673,7 +1703,7 @@ window.CompanionProduct = (() => {
        展示多 Bot / 多角色拓扑，再用 targets 给可接收迁移的角色补上真实路由。 */
     accounts:()=>catalog?.accounts||[], personas:()=>catalog?.personas||[],
     targetLabel,subjectLabel,platformLabel,accountLabel,roleLabel,scopeLabel,actorLabel,executorLabel,
-    get manifest(){return manifest;},get data(){return data;},stateCard,scheduleCard,capabilityCard,growthCard,memoryCard,
+    get manifest(){return manifest;},get data(){return data;},stateCard,stateAge,scheduleCard,capabilityCard,growthCard,memoryCard,
     workspace,workspaceDirtyDrafts,unmountWorkspace,mountWorkspace,workspaceAddress,providerAddress,extensionsMarkup,providersMarkup,capabilitiesMarkup,providerDetail,growthMarkup,
     extension:id=>manifest?.extensions?.find(p=>p.capability_id===id),
     provider:id=>manifest?.providers?.find(p=>p.capability_id===id),

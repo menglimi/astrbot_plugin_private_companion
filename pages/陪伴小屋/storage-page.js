@@ -64,12 +64,24 @@ window.CompanionStoragePage = (() => {
           <label class="storage-path-field"><span class="storage-field-label">运行资料位置 <em>重启生效</em></span><input name="path" type="text" autocomplete="off" spellcheck="false" placeholder="留空使用 AstrBot 默认目录" value="${text(state.form.path)}"><small>填写其他磁盘上的绝对目录。</small>${locationState}</label>
           <label class="storage-path-field"><span class="storage-field-label">备份快照位置 <em>${state.form.backup_path ? "独立目录" : "跟随资料"}</em></span><input name="backup_path" type="text" autocomplete="off" spellcheck="false" placeholder="留空跟随运行资料位置" value="${text(state.form.backup_path)}"><small>切换目录时迁移已有快照。</small>${backupLocation}</label>
         </div></section>
-        <section class="storage-panel"><h4>备份清理策略</h4><fieldset class="storage-retention"><label>每个运行档最多保留<input name="retention_count" type="number" min="1" max="200" step="1" value="${text(state.form.retention_count)}">份</label><label>保留最近<input name="retention_days" type="number" min="1" max="3650" step="1" value="${text(state.form.retention_days)}">天</label><small>新建快照时自动清理，始终保留最新一份。</small></fieldset>
-          ${cleanup}<div class="storage-actions"><button class="button primary small" type="submit"${state.busy ? " disabled" : ""}>保存存储设置</button><button class="button small" type="button" data-storage-refresh${state.busy ? " disabled" : ""}>重新读取</button></div>
+        <section class="storage-panel storage-policy"><h4>备份清理策略</h4>
+          <fieldset class="storage-retention">
+            <div class="storage-retention-fields">
+              <label>每个运行档最多保留<input name="retention_count" type="number" min="1" max="200" step="1" value="${text(state.form.retention_count)}">份</label>
+              <label>保留最近<input name="retention_days" type="number" min="1" max="3650" step="1" value="${text(state.form.retention_days)}">天</label>
+            </div>
+            <div class="storage-retention-aside"><small>新建快照时自动清理，始终保留最新一份。</small>${cleanup}</div>
+          </fieldset>
+          <div class="storage-actions storage-form-actions">
+            <button class="button primary small" type="submit"${state.busy ? " disabled" : ""}>保存存储设置</button>
+            <button class="button small" type="button" data-storage-refresh${state.busy ? " disabled" : ""}>重新读取</button>
+          </div>
         </section>
-        <section class="storage-panel"><h4>运行缓存</h4>
-          <p class="storage-cache-note">图片转述、失败冷却和诊断报告都可以随时重建；清理只释放当前进程里的缓存，不会删除对话、记忆、日记或已发送的图片。</p>
-          <div class="storage-actions"><button class="button small" type="button" data-storage-cache-clear${state.busy ? " disabled" : ""}>清理运行缓存</button></div>
+        <section class="storage-panel storage-cache-panel"><h4>运行缓存</h4>
+          <div class="storage-cache-row">
+            <p class="storage-cache-note">图片转述、失败冷却和诊断报告都可以随时重建；清理只释放当前进程里的缓存，不会删除对话、记忆、日记或已发送的图片。</p>
+            <div class="storage-actions"><button class="button small" type="button" data-storage-cache-clear${state.busy ? " disabled" : ""}>清理运行缓存</button></div>
+          </div>
         </section>
       </form>
       ${message}
