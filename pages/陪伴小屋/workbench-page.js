@@ -1,4 +1,4 @@
-/* 统一配置工作台 · 内核
+﻿/* 统一配置工作台 · 内核
    取代此前 reply / expression / semantic / config-editor 各自实现的保存生命周期。
    各页只声明「字段 + 作用范围 + 接口」，草稿、脏状态、幂等重试、版本冲突、
    层轨与范围来源提示由本文件统一负责。
@@ -50,12 +50,24 @@ window.CompanionWorkbench = (() => {
     configuration_window_selection_required: "此设置包含按窗口或用户关系生效的内容。请先在上方选择窗口，再查看和保存。",
     configuration_window_selection_mismatch: "此设置对应的私聊与所选窗口不同。请在上方选择需要配置的私聊窗口后编辑。",
     configuration_revision_conflict: "配置已经更新。草稿已保留，读取新版本后再核对。",
-    configuration_request_invalid: "请求格式有误，请刷新后重试。",
+    configuration_request_invalid: "请求格式有误或内容过大（角色头像上限 24 KB）。草稿已保留，请调整后再重试。",
     configuration_target_unavailable: "所选会话当前不可用，请在账号与会话中重新选择。",
     configuration_target_inactive: "所选私聊与当前配置上下文不一致，请重新选择账号与会话。",
     configuration_target_changed: "所选会话或角色已经变化，请重新读取后再操作。",
     invalid_configuration_value: "请核对数值类型与范围。",
     invalid_precision: "数值精度超出允许范围。",
+    /* 角色稳定档案的域内码：头像格式/大小与整份档案字数上限由
+       RoleProfileConfigurationOwner 校验。不映射的话，服务端的明确回绝
+       会被说成「连接没有返回保存确认」，进而把编辑器锁在待核对状态。 */
+    role_profile_configuration_invalid: "角色档案没有通过校验：头像需为 24 KB 以内的 JPEG，单个字段与整份档案都有字数上限。草稿已保留，请调整后再保存。",
+    role_profile_target_changed: "当前对象或角色绑定已变化，请重新读取后再保存。",
+    role_profile_scope_invalid: "这份角色档案只能在角色层保存，请重新选择角色后再试。",
+    /* 配置总线的存储/协议回绝：都是「没有写入」的明确答复。 */
+    configuration_storage_unavailable: "配置存储暂时不可用，这次没有写入；请稍后重新保存。",
+    configuration_operation_incomplete: "上次保存的操作回执还没写完整，请重新读取后再保存。",
+    configuration_scope_not_supported: "这一项不能保存在当前作用范围，请切换窗口或角色后再试。",
+    unknown_configuration_field: "这次提交包含当前分区不认识的字段，请刷新页面后再保存。",
+    invalid_configuration_patch: "这次提交的字段有重复或冲突，请刷新页面后再保存。",
     dashboard_identity_required: "请从已登录的 AstrBot 管理界面打开陪伴小屋。",
     core_access_required: "当前账号没有管理权限。",
     staging_not_initialized: "角色数据尚未加载，请重新读取。",
@@ -65,7 +77,9 @@ window.CompanionWorkbench = (() => {
     host_binding_changed: "当前角色绑定已变化，请重新读取角色状态。",
     host_persona_changed: "角色人格已变化，请重新读取角色状态。",
     bridge_timeout: "连接超时，请核对连接后重试。",
+    bridge_unavailable: "页面还没有接上 AstrBot 管理界面；请刷新页面后再试，草稿会保留。",
     invalid_response: "返回数据不完整，请刷新核对。",
+    plugin_web_internal_error: "插件内部处理失败，这次可能没有写入；请稍后重试并核对。草稿会保留。",
     /* 宿主对未注册路由的拒绝：通常是插件更新后还没重载，或新角色路由尚未挂上。 */
     plugin_route_missing: "这个页面的接口还没挂上：插件可能刚更新但未重载，或角色路由还没生效。先刷新本页再试；仍失败就在 AstrBot 插件页重载插件。",
     route_not_found: "当前页面请求的功能路由未注册；请把插件升级到最新版并重启 AstrBot 后重新打开。",
@@ -163,6 +177,25 @@ window.CompanionWorkbench = (() => {
   const localized = (problem, fallback) => errors[problem?.code]
     || (isCode(problem?.message) ? errors[problem.message] : problem?.message)
     || fallback;
+  /* 服务端的明确回绝与「结果未知」必须分开处理：
+     - 明确回绝：待核对请求必须结束，否则一次校验失败就把编辑器永久锁死；
+     - 结果未知：请求可能已落库，继续沿用同一个操作标识核对，不能重发新请求。
+
+     AstrBot 的页面桥把 `{status:"error", message:<机器码>}` 压成
+     `new Error(<机器码>)`，`code` 与 `confirmed` 都会丢。所以 `message`
+     是映射表里的机器码时，仍按「服务端已明确回绝」处理。
+     连接层与宿主内部错误不在其列：那两种情况下写入可能已经发生。 */
+  const UNCERTAIN_CODES = new Set(["bridge_timeout", "bridge_unavailable",
+    "invalid_response", "plugin_web_internal_error", "dashboard_bridge_not_ready",
+    "timeout", "request_timeout", "network_error", "canceled", "cancelled", "aborted"]);
+  const isUncertainCode = code => typeof code !== "string" || !code
+    || UNCERTAIN_CODES.has(code) || code.startsWith("bridge_")
+    || code.startsWith("dashboard_bridge_");
+  /* 回绝原因：优先用映射表；未映射的机器码原样带上，方便对照插件日志，
+     不再落进「连接没有返回保存确认」这种误导性的兜底。 */
+  const refusalNotice = (problem, code) => localized(problem, "")
+    || (code ? `保存没有通过（错误码：${code}），草稿已保留，请按提示调整后再试。`
+      : "保存没有通过，草稿已保留，请按提示调整后再试。");
   const icon = name => `<i data-lucide="${name}" aria-hidden="true"></i>`;
   let instanceSequence = 0;
   /* Short-lived stale-while-revalidate cache for workbench reads.  Page
@@ -980,10 +1013,13 @@ window.CompanionWorkbench = (() => {
       return `<div class="wb-textarea-wrap">${textarea}<span class="wb-text-length${count > item.maximumChars ? " is-over-limit" : ""}" data-wb-counter="${e(item.name)}">${count} / ${e(item.maximumChars)} 字</span></div>`;
     }
     const shown = e(toDisplay(item, value));
-    const step = item.kind === "int" ? "1" : String(1 / Math.pow(10, item.decimals));
+    /* 0–1 的概率在界面上按百分数编辑：步长与上下界也必须换算，
+       否则输入框写着 100%，下面却提示 0–1、每次只能加减 0.01。 */
+    const percent = item.kind === "float" && item.maximum === 1 && item.minimum === 0;
+    const step = percent ? "1" : item.kind === "int" ? "1" : String(1 / Math.pow(10, item.decimals));
     const bounds = item.hasBounds
-      ? `<span class="wb-range">${e(item.minimum)} – ${e(item.maximum)}</span>` : "";
-    const unit = item.kind === "float" && item.maximum === 1 && item.minimum === 0 ? " %" : "";
+      ? `<span class="wb-range">${e(toDisplay(item, item.minimum))} – ${e(toDisplay(item, item.maximum))}${percent ? "%" : ""}</span>` : "";
+    const unit = percent ? " %" : "";
     return `<span class="wb-number"><input type="number" data-wb-field="${e(item.name)}"`
       + ` min="${e(toDisplay(item, item.minimum))}" max="${e(toDisplay(item, item.maximum))}"`
       + ` step="${e(step)}" value="${shown}"${dis}>${unit ? `<span class="wb-unit">${unit.trim()}</span>` : ""}${bounds}</span>`;
@@ -1011,7 +1047,7 @@ window.CompanionWorkbench = (() => {
     return `<div class="wb-field${dirty}${inheritClass}${layerEditable ? "" : " is-layer-locked"}" data-wb-row="${e(name)}"${visible ? "" : " hidden"}>`
       + (container.presentation === "journal" ? "" : railMarkup(state, name, item, state.status?.provenance, container))
       + `<div class="wb-field-main"><span class="wb-label">${label}${fieldScopeMarkup(state, name, item, state.status?.provenance, container)}</span>`
-      + (item.help && container.presentation !== "journal" ? `<p class="wb-help" id="${e(helpId)}">${e(item.help)}</p>` : "")
+      + (item.help && container.presentation !== "journal" ? `<p class="wb-help" id="${e(helpId)}" title="${e(item.help)}">${e(item.help)}</p>` : "")
       + `<div class="wb-control">${controlMarkup(item, value, locked, state)}</div>`
       + `<p class="wb-field-error" id="${e(errorId)}" data-wb-field-error></p></div>`
       + `<div class="wb-field-side">${reset}</div></div>`;
@@ -1034,7 +1070,7 @@ window.CompanionWorkbench = (() => {
         /* 原来这里左侧还有一块 3:4 的虚线「像位」，只画姓名首字：
            它不读头像、不可点击、对屏幕阅读器隐藏，纯粹占掉 96px 宽。
            删掉这一格，六项基础身份按同一套紧凑两列排下去。 */
-        const identityFields = ["name", "gender", "birthday", "age", "species", "occupation"];
+        const identityFields = ["name", "gender", "birthday", "age", "occupation", "species"];
         rows = `<div class="wb-identity-card"><div class="wb-identity-rows">${identityFields.filter(name => names.includes(name))
             .map(name => fieldMarkup(s, container, name)).join("")}</div></div>`
           + names.filter(name => !identityFields.includes(name)).map(name => fieldMarkup(s, container, name)).join("");
@@ -1123,7 +1159,11 @@ window.CompanionWorkbench = (() => {
     return `<section class="wb-card${journal ? " wb-journal" : ""}" data-wb-card="${e(container.group)}">`
       + heading + `<div class="wb-card-body">`
        + (s.pending ? `<div class="wb-pending"><p>${e(pendingText)}</p>`
-           + `<button type="button" class="button small" data-wb-action="retry"${s.busy ? " disabled" : ""}>核对原保存结果</button></div>` : "")
+           + `<div class="wb-pending-actions">`
+           + `<button type="button" class="button small" data-wb-action="retry"${s.busy ? " disabled" : ""}>核对原保存结果</button>`
+           + `<button type="button" class="button small" data-wb-action="abandon"${s.busy ? " disabled" : ""}`
+           + ` title="不再核对这次请求，读取服务端当前值；草稿会保留">放弃核对并重新读取</button>`
+           + `</div></div>` : "")
       + legend + body
       + `<div class="wb-actions">`
       + `<span class="wb-save-context"><button type="button" class="wb-save${s.busy ? " is-busy" : ""}${s.savedState || ""}"`
@@ -1148,6 +1188,8 @@ window.CompanionWorkbench = (() => {
     return `<div class="wb-notice${tone}" role="status" aria-live="polite">`
       + `${icon(state.bad ? "alert-circle" : state.ok ? "check-circle-2" : "info")}`
       + `<span>${e(state.notice)}</span>`
+      + (state.restrictionCode?.startsWith("configuration_window_selection_")
+        ? `<button type="button" class="button small primary" data-wb-action="pick-window">选择窗口</button>` : "")
       + (state.stale ? `<button type="button" class="button small" data-wb-action="reconcile"${state.busy || state.loading || state.pending ? " disabled" : ""}>核对最新配置</button>` : "")
       + (!state.status && !state.stale ? `<button type="button" class="button small" data-wb-action="reload"${state.busy || state.loading ? " disabled" : ""}>重新读取</button>` : "")
       + `</div>`;
@@ -1203,7 +1245,7 @@ window.CompanionWorkbench = (() => {
        status: null, draft: null, base: null, pending: null, pendingReason: "",
       busy: false, loading: false, denied: false, stale: false, conflicts: {},
       notice: "", bad: false, ok: false, savedState: "", ticket: 0,
-      drawRails: true, container: null, timer: null,
+      drawRails: true, container: null, timer: null, restrictionCode: "",
       instanceId: `wb-${++instanceSequence}`, activeGroupId: initialSection, resetFields: [],
       visibleGroupIds: null,
     };
@@ -1404,6 +1446,11 @@ window.CompanionWorkbench = (() => {
         if (typeof problem?.message === "string" && /未找到该路由|route not found/i.test(problem.message)) {
           throw error("plugin_route_missing");
         }
+        /* 页面桥只把信封里的 message 转发过来：机器码落在 Error.message 上，
+           code 与 confirmed 都没有。认识的域内码说明服务端确实回过话，补上
+           confirmed，保存循环才会按「明确回绝」结束，而不是无限核对。 */
+        const routed = !problem?.code && isCode(problem?.message) ? problem.message : "";
+        if (routed && errors[routed] && !isUncertainCode(routed)) throw error(routed, true);
         throw problem;
       } finally { clearTimeout(timer); }
     }
@@ -2002,6 +2049,20 @@ window.CompanionWorkbench = (() => {
       if (!action) return;
       if (action === "save") { void save(false); return; }
       if (action === "retry") { void save(true); return; }
+      if (action === "abandon") { void abandonPending(); return; }
+      if (action === "pick-window") {
+        const picker = document.querySelector("[data-role-window]");
+        if (picker) {
+          picker.scrollIntoView?.({behavior: "smooth", block: "center"});
+          picker.focus?.({preventScroll: true});
+          try { picker.showPicker?.(); } catch (_) {}
+        } else {
+          document.querySelector("#shellPanel")?.scrollIntoView?.({behavior: "smooth", block: "start"});
+          state.notice = "请先在页面顶部的「会话」中选择窗口。";
+          state.bad = false; paint();
+        }
+        return;
+      }
       if (action === "reload") { void refresh({force: true}); return; }
       if (action === "reconcile") { void refresh(); return; }
       if (action === "reset") {
@@ -2536,6 +2597,7 @@ window.CompanionWorkbench = (() => {
           }
         }
         state.denied = false; state.bad = false;
+        state.restrictionCode = "";
         if (recoveredConflict) {
           state.bad = true;
           state.notice = "上次保存遇到配置版本冲突，服务端没有写入；草稿已恢复，请核对后重新保存。";
@@ -2578,6 +2640,9 @@ window.CompanionWorkbench = (() => {
         state.stale = preserveDraft;
         state.loading = false;
         state.denied = true; state.bad = true;
+        const problemCode = typeof problem?.code === "string" ? problem.code : "";
+        state.restrictionCode = problemCode.startsWith("configuration_window_selection_")
+          ? problemCode : "";
         state.notice = localized(problem, "暂时无法读取。请重新读取角色状态后重试。");
         paint();
       }
@@ -2586,7 +2651,8 @@ window.CompanionWorkbench = (() => {
     async function save(retry) {
       const restriction = state.status && statusRestriction?.(state.status);
       if (restriction) {
-        state.denied = true; state.notice = localized(error(restriction)); state.bad = false; paint(); return;
+        state.denied = true; state.restrictionCode = restriction;
+        state.notice = localized(error(restriction)); state.bad = false; paint(); return;
       }
       if (state.busy || state.loading || state.denied) return;
        if (!retry) {
@@ -2737,11 +2803,19 @@ window.CompanionWorkbench = (() => {
         state.busy = false;
         state.bad = true;
         const problemCode = problem?.code || (isCode(problem?.message) ? problem.message : "");
-        if (problem.confirmed || problemCode === "configuration_revision_conflict") {
+        const conflict = problemCode === "configuration_revision_conflict";
+        /* 明确回绝：服务端已答复「没有写入」，待核对请求到此为止；草稿保留，
+           用户改完可以重新保存。只有连接层/宿主内部错误才继续等待核对——
+           那两种情况写入可能已经落库，重发会变成第二次写。 */
+        const refused = problem.confirmed || conflict
+          || (!!problemCode && !isUncertainCode(problemCode));
+        if (refused) {
            state.pending = null; state.pendingReason = ""; savePending();
            clearAutoRecovery(request.operation_key);
-           state.stale = problemCode === "configuration_revision_conflict";
-           state.notice = localized(problem, "保存未通过。请读取当前设置后核对。");
+           state.stale = conflict;
+           state.notice = conflict
+             ? localized(problem, "配置已经更新。草稿已保留，读取新版本后再核对。")
+             : refusalNotice(problem, problemCode);
         } else {
            state.pendingReason = localized(problem, "连接没有返回保存确认。");
            state.pending.pending_reason = state.pendingReason.slice(0, 512);
@@ -2754,6 +2828,22 @@ window.CompanionWorkbench = (() => {
          }
         paint();
       }
+    }
+
+    /* 自动核对一直失败时，不能把编辑器永久锁在待核对状态。放弃这次请求并
+       重新读取：由服务端当前值回答「那次到底写没写」，草稿保留；如果服务端
+       值已经变了，refresh 会把它标成冲突让用户逐项选择。 */
+    async function abandonPending() {
+      if (!state.pending || state.busy || state.loading) return;
+      const operationKey = state.pending.operation_key;
+      state.pending = null;
+      state.pendingReason = "";
+      savePending();
+      clearAutoRecovery(operationKey);
+      state.notice = "已放弃核对这次请求，正在读取服务端当前配置；草稿会保留。";
+      state.bad = false; state.ok = false;
+      paint();
+      await refresh({force: true, allowCache: false});
     }
 
     async function saveField(name, value) {
@@ -2853,9 +2943,17 @@ window.CompanionWorkbench = (() => {
     }
 
     async function saveBeforeLeave() {
-      if (state.pending) return {error: '上次保存结果待核对，请回到这项配置核对原请求。'};
       if (state.busy || state.loading) return {error: '这项配置正在处理，请稍后再保存。'};
-      await save(false);
+      /* 有待核对请求时，「保存并切换」必须真的用原请求去核对——原来直接
+         回一句「请回到这项配置」，而弹窗本身就把人挡在离开动作前，等于没有
+         出路。核对成功就继续切换；仍然未知才把原因带回弹窗。 */
+      if (state.pending) {
+        await save(true);
+      } else {
+        await save(false);
+        /* 新保存的结果没回来时，自动核对也等不及；这里立即沿用同一请求核对一次。 */
+        if (state.pending) await save(true);
+      }
       return !dirty() && !state.pending ? true
         : {error: state.notice || state.pendingReason || '保存尚未确认，改动已保留，请回到配置中检查。'};
     }
@@ -2865,8 +2963,13 @@ window.CompanionWorkbench = (() => {
       state.draft = state.base ? draftFrom(state.base, state.status) : null;
       resets_ = [];
       state.conflicts = {}; state.stale = false;
-      // An unanswered request stays in sessionStorage for later reconciliation.
+      /* 用户明确选择放弃时，待核对请求也一起结束：不再让它在下次挂载时
+         重新把编辑器锁住；下一次读取会用服务端的当前值回答「到底写没写」，
+         服务端已经把值写进去的话会直接出现在基线上。 */
+      if (state.pending) clearAutoRecovery(state.pending.operation_key);
       state.pending = null;
+      state.pendingReason = "";
+      savePending();
       state.notice = ''; state.bad = false;
       paint();
       return true;
@@ -2894,3 +2997,4 @@ window.CompanionWorkbench = (() => {
       } catch { return []; }
     })};
 })();
+

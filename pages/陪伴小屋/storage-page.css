@@ -29,10 +29,20 @@
 .storage-path-field small,.storage-retention small{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.55;overflow-wrap:anywhere}
 .storage-location-note{margin:0;color:var(--t-text-faint);font-size:var(--fs-micro);overflow-wrap:anywhere}
 .storage-location-note.is-pending{color:var(--t-warn-ink)}
-.storage-retention{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2) var(--sp-4);margin:0;padding:0;border:0;min-width:0}
+/* 保留策略：两个数字项在左，当前清理结果在右，不再把两个 76px 的输入框
+   和保存按钮一起挤在整张卡片的左上角。 */
+.storage-retention{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(240px,.85fr);
+  gap:var(--sp-4);align-items:center;margin:0;padding:0;border:0;min-width:0}
+.storage-retention-fields{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2) var(--sp-4);min-width:0}
 .storage-retention label{display:flex;align-items:center;gap:var(--sp-2);color:var(--t-text);font-size:var(--fs-tiny);white-space:nowrap}
 .storage-retention input{width:76px;padding:var(--sp-2)}
-.storage-retention small{flex-basis:100%}
+.storage-retention-aside{display:grid;gap:var(--sp-2);justify-items:start;min-width:0}
+.storage-retention-aside .storage-cleanup-preview{border-top:0;padding-top:0}
+.storage-retention-aside .storage-cleanup-empty{margin:0}
+.storage-cache-row{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);flex-wrap:wrap}
+.storage-cache-row .storage-cache-note{flex:1 1 420px}
+.storage-cache-row .storage-actions{padding-top:0}
+.storage-form-actions{grid-column:1/-1;justify-content:flex-end;padding-top:var(--sp-2);border-top:1px solid var(--t-line)}
 .storage-cleanup-preview{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-3);padding-top:var(--sp-3);border-top:1px solid var(--t-line)}
 .storage-cleanup-preview>div{display:grid;gap:var(--sp-1);min-width:0}
 .storage-cleanup-preview>div strong{color:var(--t-text-strong);font-size:var(--fs-tiny)}
@@ -40,8 +50,12 @@
 .storage-cleanup-preview button.danger{color:var(--t-risk-ink)}
 .storage-cleanup-empty{margin:0}
 .storage-cache-note{margin:0;color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.6}
+/* 导入导出是两件并列的事：桌面并排，窄屏再叠起来。 */
+.config-port-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3);align-items:stretch}
+.config-port-grid>.storage-panel{height:100%}
+@media(max-width:900px){.config-port-grid{grid-template-columns:minmax(0,1fr)}}
 .storage-actions{display:flex;flex-wrap:wrap;gap:var(--sp-2);padding-top:var(--sp-2)}
 .storage-message{margin:0;padding:var(--sp-2) var(--sp-3);border-radius:var(--r-sm);background:var(--t-ok-quiet);color:var(--t-ok-ink);font-size:var(--fs-tiny);overflow-wrap:anywhere}
 .storage-message.is-error{background:var(--t-risk-quiet);color:var(--t-risk-ink)}
-@media(max-width:760px){.storage-usage-legend{grid-template-columns:1fr}.storage-location-grid{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}}
-@media(max-width:420px){.storage-usage-header{align-items:flex-start}.storage-usage-header strong,.storage-usage-header>div:first-child strong{font-size:var(--fs-title)}.storage-retention{align-items:flex-start;flex-direction:column}.storage-retention small{flex-basis:auto}}
+@media(max-width:760px){.storage-usage-legend{grid-template-columns:1fr}.storage-location-grid{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}.storage-retention{grid-template-columns:minmax(0,1fr)}.storage-form-actions{justify-content:flex-start}}
+@media(max-width:420px){.storage-usage-header{align-items:flex-start}.storage-usage-header strong,.storage-usage-header>div:first-child strong{font-size:var(--fs-title)}.storage-retention-fields{flex-direction:column;align-items:flex-start}.storage-cache-row{align-items:flex-start}}

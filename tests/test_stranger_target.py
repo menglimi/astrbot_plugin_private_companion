@@ -5,14 +5,15 @@ import json
 import unittest
 from contextlib import contextmanager
 from copy import deepcopy
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, patch
 
-from astrbot_host.acquaintance_api import (AcquaintanceWebAPI, STRANGER_REMOVE_PATH,
-                                            STRANGER_TARGET_PATH)
+from astrbot_host.acquaintance_api import (AcquaintanceWebAPI, STRANGER_BLOCK_PATH,
+                                            STRANGER_REMOVE_PATH, STRANGER_TARGET_PATH,
+                                            STRANGER_UNBLOCK_PATH)
 from astrbot_host.multi_settings import HostControlError, MultiHostSettings
-from astrbot_host.stranger_notice import CONTACT_KIND
+from astrbot_host.stranger_notice import BLOCK_KIND, CONTACT_KIND
 from companion_v2.execution.models import TaskError
 from tests.group_host_support import group_config
 from tests.multi_host_support import MultiFixture, multi_config
@@ -69,9 +70,14 @@ class StrangerTargetApiTests(unittest.IsolatedAsyncioTestCase):
         self.result = {"saved": True, "requires_reload": False, "requires_initialize": False,
                        "started": True, "startup_error": None}
         self.rows = []
+        self.blocked_rows = []
+
+        def read_all(sql, params=()):
+            return self.blocked_rows if params and params[0] == BLOCK_KIND else self.rows
+
         self.controller = NS(
             config=self.config, settings=MultiHostSettings.parse(self.config),
-            runtime=NS(read_all=lambda sql, params=(): self.rows),
+            runtime=NS(read_all=read_all),
             context=_native_context(), _terminated=False, _control_lock=asyncio.Lock(), now=lambda: None,
             apply_bindings=AsyncMock(side_effect=self.apply))
         self.api = AcquaintanceWebAPI(self.controller)
@@ -142,6 +148,77 @@ class StrangerTargetApiTests(unittest.IsolatedAsyncioTestCase):
         routes = {(path, tuple(methods)) for path, _, methods, _ in self.api.routes()}
         self.assertIn((STRANGER_TARGET_PATH, ("POST",)), routes)
         self.assertIn((STRANGER_REMOVE_PATH, ("POST",)), routes)
+        self.assertIn((STRANGER_BLOCK_PATH, ("POST",)), routes)
+        self.assertIn((STRANGER_UNBLOCK_PATH, ("POST",)), routes)
+
+    async def test_blocking_a_stranger_writes_only_that_mute_row(self):
+        written = []
+
+        class _Connection:
+            def execute(self, sql, params):
+                written.append((sql, params))
+                if sql.startswith("SELECT revision"):
+                    return NS(fetchone=lambda: None)
+                return NS(rowcount=1)
+
+        @contextmanager
+        def transaction():
+            yield _Connection()
+
+        self.controller.runtime = NS(transaction=transaction)
+        self.controller.now = lambda: datetime(2026, 11, 21, tzinfo=timezone.utc)
+        with patch("astrbot_host.acquaintance_api.request",
+                   NS(username="admin", query=_Query(), body=_Body(self.payload()))):
+            result = await self.api.block_stranger()
+        self.assertEqual(result["status"], "ok", result)
+        self.assertTrue(result["data"]["blocked"])
+        inserts = [params for sql, params in written if sql.startswith("INSERT INTO memory_views")]
+        self.assertEqual(len(inserts), 1)
+        view_id, subject, kind, revision = inserts[0][:4]
+        self.assertEqual(view_id, "stranger-block:qq-main:100:999")
+        self.assertEqual(subject, view_id)
+        self.assertEqual(kind, BLOCK_KIND)
+        self.assertEqual(revision, 1)
+        self.assertEqual(json.loads(inserts[0][4])["peer"], "999")
+
+    async def test_unblocking_a_stranger_deletes_only_that_mute_row(self):
+        deleted = []
+
+        class _Connection:
+            def execute(self, sql, params):
+                deleted.append((sql, params))
+                return NS(rowcount=1)
+
+        @contextmanager
+        def transaction():
+            yield _Connection()
+
+        self.controller.runtime = NS(transaction=transaction)
+        with patch("astrbot_host.acquaintance_api.request",
+                   NS(username="admin", query=_Query(), body=_Body(self.payload()))):
+            result = await self.api.unblock_stranger()
+        self.assertEqual(result["status"], "ok", result)
+        self.assertFalse(result["data"]["blocked"])
+        self.assertEqual(len(deleted), 1)
+        self.assertIn("DELETE FROM memory_views", deleted[0][0])
+        self.assertEqual(deleted[0][1], ("stranger-block:qq-main:100:999", BLOCK_KIND))
+
+    async def test_blocking_a_stranger_rejects_unknown_fields(self):
+        with patch("astrbot_host.acquaintance_api.request",
+                   NS(username="admin", query=_Query(),
+                      body=_Body({**self.payload(), "extra": True}))):
+            result = await self.api.block_stranger()
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["data"]["code"], "stranger_block_request_invalid")
+
+    async def test_the_list_reports_whether_each_row_is_muted(self):
+        self.rows = [{"document_json": _ledger("qq-main", "100", "999")}]
+        self.blocked_rows = [{"view_id": "stranger-block:qq-main:100:999"}]
+        muted = await self.read()
+        self.assertTrue(muted["data"]["items"][0]["blocked"])
+        self.blocked_rows = []
+        live = await self.read()
+        self.assertFalse(live["data"]["items"][0]["blocked"])
 
     async def test_removing_a_stranger_deletes_only_that_contact_row(self):
         deleted = []

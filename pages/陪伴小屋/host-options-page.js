@@ -77,15 +77,20 @@ window.CompanionHostOptionsPage = (() => {
         </div>
       </div>`;
     };
-    return `<section class="host-options-panel" aria-label="语音默认值">
-      <header class="host-options-heading"><div><h3>语音回复 · 开关与概率</h3>
-        <p>这一页只管“发不发语音、多大概率发”。本页默认值保存后需重启陪伴插件才会应用到新回复。发音人、音色、语速与试听在「模型与连接 → 语音」，分段与发送位置在「表达 → 语音」。</p></div></header>
+    return `<details class="host-options-panel voice-global" aria-label="全局语音默认值">
+      <summary class="voice-global-summary">
+        <span class="voice-global-title"><strong>全局语音默认值</strong>
+          <small>所有对象共用；保存后需重载陪伴插件才会应用到新回复。</small></span>
+        <span class="voice-global-state${value.enabled ? " is-on" : " is-off"}">${value.enabled
+          ? `总开关已开启 · 基础概率 ${base}%` : "总开关已关闭"}</span>
+      </summary>
+      <div class="voice-global-body">
       <nav class="host-options-jumps" aria-label="语音的其他配置位置">
         <a class="button small" href="#manage/models">发音人与音色 · 模型与连接</a>
         <a class="button small" href="#manage/models">试听与语种 · 同上（语音配置）</a>
         <a class="button small" href="#manage/expression/text">分段与发送位置 · 表达 / 文本</a>
       </nav>
-      ${!value.enabled ? '<p class="host-options-warning" role="note">语音总开关关闭时，对象页启用语音也不会合成。</p>' : ""}
+      ${!value.enabled ? '<p class="host-options-warning" role="note">语音总开关关闭时，本页窗口设置开启也不会合成。</p>' : ""}
       <form data-host-form="voice" novalidate>
         <div class="host-options-row"><div class="host-options-copy"><strong>允许语音回复</strong>
           <small>全局总开关。对象的「启用语音」也需要打开。</small></div>
@@ -101,7 +106,8 @@ window.CompanionHostOptionsPage = (() => {
           <button type="submit" class="button small primary" ${state.saving === "voice" ? "disabled" : ""}>${state.saving === "voice" ? "正在保存…" : "保存语音默认值"}</button>
         </footer>
       </form>
-    </section>`;
+      </div>
+    </details>`;
   }
 
   function renderPoke() {

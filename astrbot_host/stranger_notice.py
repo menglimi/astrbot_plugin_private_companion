@@ -38,7 +38,21 @@ UPSERT = """INSERT INTO memory_views VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
 COOLDOWN_KIND = "relationship.stranger_notice.v1"
 DAILY_KIND = "relationship.stranger_notice_day.v1"
 CONTACT_KIND = "relationship.stranger_contact.v1"
+BLOCK_KIND = "relationship.stranger_block.v1"
 OWNER = "relationship.stranger_notice"
+
+
+def stranger_block_view_id(platform_id, login, peer):
+    """One exact sender muted for one receiving account; never a wildcard."""
+    return "stranger-block:" + platform_id + ":" + login + ":" + peer
+
+
+def stranger_blocked(controller, route):
+    """Whether this sender is muted: no fixed reply, the ledger row stays."""
+    row = controller.runtime.read_one(
+        "SELECT view_id FROM memory_views WHERE view_id = ? AND kind = ?",
+        (stranger_block_view_id(route.platform_id, route.login, route.peer), BLOCK_KIND))
+    return row is not None
 
 
 @dataclass(frozen=True)
@@ -193,6 +207,10 @@ class StrangerNotice:
         session = controller.session
         replied = False
         try:
+            if stranger_blocked(controller, route):
+                # 被屏蔽的账号不收回执：既不回那句固定文案，也不占冷却与当天额度。
+                # finally 仍会记一条有界的联系记录，管理页据此显示「已屏蔽」。
+                return no_reply("stranger_blocked")
             if session is None or controller.runtime is None or session.application.state != "running":
                 return no_reply("stranger_notice_session_unavailable")
             defaults = self.defaults()
