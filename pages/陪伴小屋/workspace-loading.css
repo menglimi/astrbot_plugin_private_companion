@@ -2,6 +2,15 @@
   position:relative;
   min-height:620px;
 }
+/* A sandbox iframe has a 300px default width.  Without an explicit width it
+   renders a narrow workspace in the left corner of a full-width panel. */
+.product-workspace-frame{
+  display:block;
+  width:100%;
+  min-height:620px;
+  border:0;
+  background:transparent;
+}
 .product-workspace[data-load-state="loading"] .product-workspace-frame,
 .product-workspace[data-load-state="error"] .product-workspace-frame{
   visibility:hidden;

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import sqlite3
 import time
 from typing import Callable
 
@@ -94,7 +95,17 @@ class TickScheduler:
             if ran and self._rotated and self._clock() - started >= self._budget_seconds:
                 return TickReport(False, tuple(ran), results)
             unit = self._units[self._cursor]
-            results[unit.name] = unit.run()
+            try:
+                results[unit.name] = unit.run()
+            except sqlite3.OperationalError as error:
+                # A transient SQLite lock must not terminate the whole host
+                # loop. Keep the cursor on this unit so the next slice retries
+                # it; the rest of the rotation is deferred, not lost.
+                results[unit.name] = {
+                    "deferred": "sqlite_operational_error",
+                    "message": str(error)[:200],
+                }
+                return TickReport(False, tuple(ran), results)
             ran.append(unit.name)
             self._cursor += 1
             if self._cursor >= len(self._units):
