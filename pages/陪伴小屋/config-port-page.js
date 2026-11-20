@@ -38,6 +38,7 @@ window.CompanionConfigPortPage = (() => {
     root.innerHTML = `<div class="data-page-view" aria-labelledby="config-port-title">
       <header class="data-page-view-head"><span>04</span><h3 id="config-port-title">配置导入导出</h3></header>
       <p class="muted-text" data-config-port-scope>${e(state.scopeLabel || "尚未选择角色")}</p>
+      <div class="config-port-grid">
       <section class="storage-panel">
         <h4>导出配置</h4>
         <p class="muted-text">导出当前角色的开关与配置数值（JSON），包含标记为「所有角色共用」的安装级分区。不含角色档案、关系网、记忆、日记、图片或任何资料；其他角色与另一套安装可以导入同一份文件。</p>
@@ -53,6 +54,7 @@ window.CompanionConfigPortPage = (() => {
         </div>
         ${state.message ? `<p class="muted-text" role="status"${state.error ? ' style="color:var(--t-risk-ink)"' : ""}>${e(state.message)}</p>` : ""}
       </section>
+      </div>
     </div>`;
   }
 

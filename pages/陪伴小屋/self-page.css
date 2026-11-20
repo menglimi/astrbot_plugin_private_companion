@@ -113,7 +113,7 @@
 .self-page [data-wb-section-panel="platform_names"] .wb-fields{grid-template-columns:repeat(3,minmax(0,1fr))}
 .wb-identity-card{grid-column:1/-1;display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-4);align-items:start;
   min-width:0;padding:var(--sp-4);border:1px solid var(--t-line-firm);border-radius:var(--r-sm);background:var(--t-surface-soft)}
-.wb-identity-rows{display:grid;gap:var(--sp-2);min-width:0}
+.wb-identity-rows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2) var(--sp-4);min-width:0}
 .self-page .wb-journal .wb-identity-rows .wb-field{padding:0;border:0;background:transparent}
 .self-page .wb-journal .wb-identity-rows .wb-field-main{display:grid;grid-template-columns:76px minmax(0,1fr);gap:var(--sp-2);align-items:center}
 .self-page .wb-journal .wb-identity-rows .wb-label{margin:0;color:var(--t-text-faint);font-size:var(--fs-micro);font-weight:400}
@@ -215,6 +215,7 @@
   .self-page .wb-journal .wb-fields,.self-page [data-wb-section-panel="platform_names"] .wb-fields{grid-template-columns:minmax(0,1fr)}
   .self-page .wb-journal .wb-section-panel,.self-page .wb-journal .wb-card-body>.wb-group{padding:var(--sp-3)}
   .wb-identity-card{grid-template-columns:minmax(0,1fr);padding:var(--sp-3);gap:var(--sp-3)}
+  .self-page .wb-journal .wb-identity-rows{grid-template-columns:minmax(0,1fr)}
   .self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:minmax(0,1fr);gap:var(--sp-1)}
   .self-page .wb-journal .wb-identity-rows .wb-field-side{padding-left:0}
   .self-page .wb-journal .wb-actions .wb-scope{flex-basis:100%;margin-left:0}

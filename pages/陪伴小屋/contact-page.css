@@ -444,6 +444,20 @@
 .ct-block.is-ring-greet{--ring:var(--t-ok)}
 .ct-note{margin:0;font-size:var(--fs-tiny);color:var(--t-text-faint);line-height:1.6}
 
+/* 晨间唤醒 · 现实触及语音叫醒：与「角色作息」同排的右栏摘要卡。
+   这里只扳早晨照料的 enabled 与跳详细配置；具体时间、模式和授权仍在原生面板里。 */
+.ct-wake{gap:var(--sp-3)}
+.ct-wake-switch{align-items:flex-start}
+.ct-wake-switch .ct-switch-track{margin-top:2px}
+.ct-wake-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2) var(--sp-3)}
+.ct-wake-fields .ct-field{gap:var(--sp-1)}
+.ct-wake-fields .ct-field input,.ct-wake-fields .ct-field select{font-size:var(--fs-tiny);padding:var(--sp-1) var(--sp-2)}
+.ct-wake-mode,.ct-wake-message{grid-column:1/-1}
+.ct-wake .ct-switch:has(input:disabled){opacity:.62;cursor:default}
+.ct-wake-actions{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
+.ct-wake-notice{margin:0;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.55}
+.ct-wake-notice.is-error{color:var(--t-risk-ink)}
+
 /* 开关。整行可点，说明写在标签里——比把说明另起一行更省纵向空间。
    画法：轨道是一枚描边胶囊（不用 border，避免与内阴影叠出双层边），
    滑块是实心圆、带投影；开启时整条轨道填成实色、滑块反白。
@@ -1228,11 +1242,55 @@
 }
 
 /* Test recipients use the same controls, borders and theme as message tests. */
-.ct-test-recipient { display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:16px 0; border-bottom:1px solid var(--t-line); margin-bottom:16px; }
-.ct-test-recipient label { display:grid; gap:6px; flex:1 1 280px; min-width:0; }
+.ct-test-recipient { display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-3); padding:var(--sp-4) 0; border-bottom:1px solid var(--t-line); margin-bottom:var(--sp-4); }
+.ct-test-recipient label { display:grid; gap:calc(var(--sp-1) * 1.5); flex:1 1 280px; min-width:0; }
 .ct-test-recipient select { width:100%; max-width:100%; }
 .ct-test-recipient small, .ct-test-recipient-error { flex-basis:100%; }
 
 .ct-test-recipient-error { color:var(--t-risk); }
 
 .ct-test-recipient label.ct-test-forward-switch { display:flex; flex:1 1 100%; }
+
+/* ===== 清醒确认：标签在左，控件在右 =====
+   整段仍是通栏 block，但每一项不需要让两三位数字的输入框横跨整页。
+   标签与说明占左列，输入框/开关占右列；窄屏再折回单列，保持原有可读性。 */
+.ct-block.is-wake > .ct-switch,
+.ct-block.is-wake > .ct-field{
+  display:grid;
+  grid-template-columns:minmax(8em,1fr) minmax(160px,280px);
+  column-gap:var(--sp-6);
+  align-items:center;
+}
+.ct-block.is-wake > .ct-switch{
+  grid-template-columns:minmax(0,1fr) auto;
+  align-items:center;
+}
+.ct-block.is-wake > .ct-switch .ct-switch-text{grid-column:1;grid-row:1;min-width:0}
+.ct-block.is-wake > .ct-switch .ct-switch-track{
+  grid-column:2;grid-row:1;justify-self:end;margin-top:0;
+}
+.ct-block.is-wake > .ct-field{
+  grid-template-areas:"label control" "help control";
+  row-gap:var(--sp-1);
+}
+.ct-block.is-wake > .ct-field > .ct-field-label{grid-area:label}
+.ct-block.is-wake > .ct-field > .ct-field-help{grid-area:help;margin:0}
+.ct-block.is-wake > .ct-field > .ct-input-unit,
+.ct-block.is-wake > .ct-field > input{grid-area:control;width:100%}
+.ct-block.is-wake > .ct-field > .ct-input-unit input{min-width:0}
+.ct-block.is-wake .ct-input-unit i{min-width:2.2em}
+
+@media (max-width:720px){
+  .ct-block.is-wake > .ct-switch{
+    grid-template-columns:minmax(0,1fr);
+    grid-template-areas:"copy" "control";
+    row-gap:var(--sp-2);
+  }
+  .ct-block.is-wake > .ct-switch .ct-switch-text{grid-area:copy}
+  .ct-block.is-wake > .ct-switch .ct-switch-track{grid-area:control;justify-self:start}
+  .ct-block.is-wake > .ct-field{
+    grid-template-columns:minmax(0,1fr);
+    grid-template-areas:"label" "control" "help";
+    row-gap:var(--sp-2);
+  }
+}
