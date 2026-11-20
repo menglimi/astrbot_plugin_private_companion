@@ -195,6 +195,34 @@ class LinkedOwnerTests(LinkedReplyFixture, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(directory.authorize(first.actor, scope=second.scope, capability="memory.read",
                                             observed_at=at).is_success)
 
+    async def test_an_account_link_identity_of_the_joined_endpoint_lends_the_anchor_nothing_on_its_records(self):
+        from dataclasses import replace
+        from types import SimpleNamespace as NS
+        from companion_v2.identity_policy.management import PAGE_MANAGED_CAPABILITIES
+        from companion_v2.identity_policy.object_access import ObjectAccessPolicy
+        from companion_v2.relationships.account_links import PrivateAccountLinks
+        self.assertEqual((await self.link())["status"], "ok")
+        first = (await self.turn(0, "The linked conversation", "shared-identity-owner"))["context"]
+        second = (await self.turn(1, "The joined endpoint", "shared-identity-joined"))["context"]
+        # A CORE account-link identity saved for the joined endpoint and a third account only.
+        third = NS(scope=replace(second.scope, platform="qq-third", bot_id="102"), actor=second.actor,
+                   role_binding=second.role_binding, audience=NS(recipients=(second.actor.subject,)))
+        runtime = self.app.runtime
+        previous = getattr(runtime, "private_account_link_persona", None)
+        runtime.private_account_link_persona = lambda member: "original"
+        self.addCleanup(setattr, runtime, "private_account_link_persona", previous)
+        PrivateAccountLinks(runtime).configure(second, [second, third], persona_id="original", expected_revision=0,
+            share_context=False, operation_key="identity-for-joined", operator_id="owner", at=self.clock.now(),
+            identity={"enabled": True, "tier": "core",
+                      "permissions": {capability: True for capability in PAGE_MANAGED_CAPABILITIES}})
+        policy, at = ObjectAccessPolicy(runtime), self.clock.now()
+        on_joined_record = policy.feature_access(first.actor, scope=second.scope, action="access.policy.set",
+                                                 observed_at=at)
+        self.assertEqual(on_joined_record.failure and on_joined_record.failure.code, "core_access_required")
+        self.revoke(first, "memory.read")
+        own_grant = policy.feature_access(first.actor, scope=second.scope, action="memory.read", observed_at=at)
+        self.assertEqual(own_grant.failure and own_grant.failure.code, "authorization_revoked")
+
     async def test_a_refusal_made_before_linking_still_binds_the_endpoint(self):
         second = (await self.turn(1, "An independent endpoint", "refusal-before"))["context"]
         self.revoke(second, "memory.read")
