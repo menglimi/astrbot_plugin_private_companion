@@ -223,6 +223,44 @@ class LinkedOwnerTests(LinkedReplyFixture, unittest.IsolatedAsyncioTestCase):
         own_grant = policy.feature_access(first.actor, scope=second.scope, action="memory.read", observed_at=at)
         self.assertEqual(own_grant.failure and own_grant.failure.code, "authorization_revoked")
 
+    async def associate(self, first, second):
+        """Save an upstream account-link group of both endpoints through its Dashboard API."""
+        from unittest.mock import patch
+        from types import SimpleNamespace as NS
+        from astrbot_host.acquaintance_api import AcquaintanceWebAPI
+        from astrbot_host.account_link_api import AccountLinkWebAPI
+        from companion_v2.relationships.account_links import PrivateAccountLinks
+        from tests.test_person_authorization import _Query, _body
+
+        def person(context):
+            return {"subject_id": context.actor.subject.subject_id,
+                    "route": {"platform": context.scope.platform, "bot_id": context.scope.bot_id,
+                              "account_id": context.scope.account_id, "role_id": context.role_binding.role.subject_id}}
+        body = {**person(first), "members": [person(first), person(second)], "share_context": False,
+                "expected_revision": PrivateAccountLinks(self.controller.runtime).read()["revision"],
+                "operation_key": "associate"}
+        with patch("astrbot_host.acquaintance_api.request", NS(username="link-admin", query=_Query(""),
+                   body=_body(json.dumps(body).encode()))):
+            return await AccountLinkWebAPI(AcquaintanceWebAPI(self.controller)).save()
+
+    async def test_an_endpoint_of_a_linked_conversation_cannot_join_an_account_link(self):
+        first = (await self.turn(0, "Hello", "exclusive-owner"))["context"]
+        second = (await self.turn(1, "Hello", "exclusive-other"))["context"]
+        self.assertEqual((await self.link())["status"], "ok")
+        refused = await self.associate(first, second)
+        self.assertEqual((refused["status"], refused["data"].get("code")),
+                         ("error", "account_link_linked_conversation_conflict"))
+
+    async def test_an_endpoint_of_an_account_link_cannot_join_a_linked_conversation(self):
+        first = (await self.turn(0, "Hello", "exclusive-owner"))["context"]
+        second = (await self.turn(1, "Hello", "exclusive-other"))["context"]
+        associated = await self.associate(first, second)
+        self.assertEqual(associated["status"], "ok", associated)
+        refused = await self.link()
+        self.assertEqual((refused["status"], refused["data"].get("code")),
+                         ("error", "conversation_link_account_link_conflict"))
+        self.assertIsNone(self.controller.session.linked_conversations.get("owner-dialogue"))
+
     async def test_a_refusal_made_before_linking_still_binds_the_endpoint(self):
         second = (await self.turn(1, "An independent endpoint", "refusal-before"))["context"]
         self.revoke(second, "memory.read")

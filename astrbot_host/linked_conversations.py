@@ -227,6 +227,13 @@ class LinkedConversations:
             collision = self.for_origin(row["origin"])
             if collision is not None and collision["link_id"] != body["link_id"]:
                 raise TaskError("conversation_link_invalid", "an endpoint already belongs to another conversation")
+        from companion_v2.relationships.account_links import PrivateAccountLinks
+        associated = {(m["platform"], m["account_id"], m["native_account_id"])
+                      for group in PrivateAccountLinks(session.runtime).read()["groups"] for m in group["members"]}
+        if any((target.platform_id, target.account_id, target.participant_id) in associated
+               for target in [*targets, *([source] if source is not None else [])]):
+            raise TaskError("conversation_link_account_link_conflict",
+                            "an endpoint associated with other accounts cannot join a linked conversation")
         origins = {row["origin"] for row in members + (old["members"] if old else [])}
         if source is not None:
             origins.add(origin(source))

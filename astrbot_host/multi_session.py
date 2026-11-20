@@ -1742,7 +1742,7 @@ class MultiHostSession:
 
     def _linked_private_context(self, member):
         target = self.settings.private_target(member["platform"], member["account_id"], member["native_account_id"])
-        if target is None or self.authority.bot_id(target) != member["bot_id"]:
+        if target is None or target.bot_id != member["bot_id"]:
             raise TaskError("account_link_transport_unavailable", "associated account is no longer configured")
         context = self.authority.context(target.target_id, member["role_id"])
         from companion_v2.relationships.account_links import member_for
