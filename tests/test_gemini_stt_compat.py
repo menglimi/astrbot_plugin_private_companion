@@ -497,6 +497,11 @@ class GeminiSTTCompatibilityTests(GroupMediaFixture, unittest.IsolatedAsyncioTes
               "_hear_voice_non_hijacking": True, "_hear_voice_hijacked": False}, {}),
             ({"_hear_voice_should_reply": True, "_hear_voice_cache_only": False},
              {"result": MessageEventResult().continue_event()}),
+            # Empty Plain("") result placeholder is not a reply takeover, with or without STT extras.
+            ({"_hear_voice_should_reply": True, "_hear_voice_cache_only": False},
+             {"result": MessageEventResult().message("")}),
+            ({}, {"result": MessageEventResult().message("")}),
+            ({}, {"result": MessageEventResult().message("   ")}),
             # _hear_voice_* overrides stale/opposite _gemini_stt_* flags
             ({"_hear_voice_non_hijacking": True, "_hear_voice_hijacked": False,
               "_hear_voice_cache_only": False, "_hear_voice_should_reply": True,

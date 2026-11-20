@@ -87,7 +87,7 @@ from companion_v2.conversation import debounce_log
 from .astrbot_host.private_debounce import PrivateDebounce, PrivateDeliveryDedup
 from .astrbot_host.group_debounce import GroupDebounce, group_plain_text, replace_group_plain_text
 from companion_v2.adapters.astrbot.group import group_event_route
-from companion_v2.adapters.astrbot.voice_stt import read_stt_extra
+from companion_v2.adapters.astrbot.voice_stt import has_external_stt_extra, read_stt_extra
 from .astrbot_host.private_reply_followup import PrivateReplyFollowUps
 from .astrbot_host.event_routing import (
     COMPANION_INTAKE_PRIORITY, competing_command_handler, suppress_default_reply,
@@ -171,6 +171,22 @@ def _can_continue_astrbot_core_reply(code):
     return False
 
 
+def _chain_has_populated_content(chain: Any) -> bool:
+    """Return True when a message result chain contains non-empty text or a non-Plain component."""
+    if not chain:
+        return False
+    if not isinstance(chain, (list, tuple)):
+        return True
+    for part in chain:
+        kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
+        if kind == "Plain" or type(part).__name__ == "Plain":
+            if str(getattr(part, "text", "") or "").strip():
+                return True
+            continue
+        return True
+    return False
+
+
 def _has_populated_event_result(event: Any) -> bool:
     """Return True when an upstream handler already attached a concrete reply result on ``event``."""
     getter = getattr(event, "get_result", None)
@@ -182,7 +198,7 @@ def _has_populated_event_result(event: Any) -> bool:
     is_stopped = getattr(result, "is_stopped", None)
     if callable(is_stopped) and is_stopped():
         return True
-    if getattr(result, "chain", None) or getattr(result, "async_stream", None) is not None:
+    if _chain_has_populated_content(getattr(result, "chain", None)) or getattr(result, "async_stream", None) is not None:
         return True
     content_type = getattr(getattr(result, "result_content_type", None), "name", None)
     return content_type in {"LLM_RESULT", "STREAMING_RESULT", "STREAMING_FINISH", "AGENT_RUNNER_ERROR"}
@@ -213,11 +229,14 @@ def _should_skip_hijacked_external_stt(event: Any) -> bool:
     under ``on_stt_fail="pass"`` / ``"notify_pass"``; ``notify_pass`` may also set
     ``_hear_voice_notify_only_sent=True`` and fall back to ``event.send()`` which sets
     ``_has_send_oper=True``). Only legacy un-flagged STT plugins treat ``_has_send_oper`` as a
-    hijack takeover clue.
+    hijack takeover clue. Events without any external STT extra are never treated as an
+    external STT hijack.
     """
+    if not has_external_stt_extra(event):
+        return False
     getter = getattr(event, "get_extra", None)
     if not callable(getter):
-        return bool(getattr(event, "_has_send_oper", False))
+        return False
     hijacked = read_stt_extra(event, "hijacked")
     non_hijacking = read_stt_extra(event, "non_hijacking")
     notify_only_sent = read_stt_extra(event, "notify_only_sent")

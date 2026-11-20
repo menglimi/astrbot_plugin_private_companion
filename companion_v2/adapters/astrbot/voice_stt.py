@@ -43,6 +43,22 @@ def read_stt_extra(event, field: str, default=None):
     return default
 
 
+def has_external_stt_extra(event) -> bool:
+    """Return True when upstream ``astrbot_plugin_hear_voice``（兼容 ``_gemini_stt_*``）wrote any STT extra on ``event``."""
+    if event is None:
+        return False
+    getter = getattr(event, "get_extra", None)
+    if not callable(getter):
+        return False
+    if getter(ASTRBOT_STT_TRANSCRIPTS_EXTRA) is not None:
+        return True
+    return any(
+        getter(key) is not None
+        for keys in STT_EXTRA_KEYS.values()
+        for key in keys
+    )
+
+
 def _clean_stt_text(value) -> str:
     if not isinstance(value, str):
         return ""
