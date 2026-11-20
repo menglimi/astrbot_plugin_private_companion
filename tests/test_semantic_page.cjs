@@ -704,3 +704,185 @@ test('a deleted asset is not resurrected by the following refresh', async () => 
   assert.doesNotMatch(node.innerHTML, /待删除素材/, '已删除的素材不得被刷新合并回来');
   page.unmount();
 });
+
+test('batch import sends source_filename without pinning metadata.name and guards 0-byte or empty payloads', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node, {view: 'expression'});
+  requests[0].resolve({...settingsCatalog(), reaction_collection: {totals: {}, recent: []}});
+  await flush();
+
+  node.change('semanticFile', [
+    {name: 'IMG_001.png', size: 12, dataUrl: 'data:image/png;base64,AA=='},
+    {name: 'empty.png', size: 0, dataUrl: 'data:'},
+    {name: 'empty-payload.png', size: 10, dataUrl: 'data:image/png;base64,'},
+    {name: 'no-comma.png', size: 10, dataUrl: 'data:'},
+  ]);
+  await flush();
+  assert.equal(requests.length, 2, '0-byte and empty data URL files must not issue broken POST requests');
+  assert.equal(requests[1].values.action, 'import');
+  assert.equal(requests[1].values.content, 'AA==');
+  assert.deepEqual({...requests[1].values.metadata}, {source_filename: 'IMG_001.png'});
+  assert.equal(requests[1].values.metadata.name, undefined);
+  requests[1].resolve({created: true, item: {id: 'new-1'}});
+  await flush();
+  assert.equal(requests[2].method, 'GET');
+  requests[2].resolve({...settingsCatalog(), reaction_collection: {totals: {}, recent: []}});
+  await flush();
+  assert.match(node.innerHTML, /新增 1 张，失败 3 张/);
+
+  /* 单张 0 字节文件上传时直接给出明确的中文错误，不得回落成接口不匹配。 */
+  node.change('semanticFile', [{name: 'zero.png', size: 0, dataUrl: 'data:'}]);
+  await flush();
+  assert.equal(requests[3].method, 'GET');
+  requests[3].resolve({...settingsCatalog(), reaction_collection: {totals: {}, recent: []}});
+  await flush();
+  assert.match(node.innerHTML, /图片内容无效、为空或已损坏/);
+  assert.doesNotMatch(node.innerHTML, /host_image_invalid|接口不匹配/);
+  page.unmount();
+});
+
+test('image validation and animation limit error codes translate to Chinese messages', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node, {view: 'expression'});
+  requests[0].resolve({...settingsCatalog(), reaction_collection: {totals: {}, recent: []}});
+  await flush();
+
+  node.change('semanticFile', [{name: 'too-many-frames.gif', size: 100, dataUrl: 'data:image/gif;base64,AA=='}]);
+  await flush();
+  requests[1].reject(Object.assign(new Error('too many frames'), {code: 'host_animation_limit'}));
+  await flush();
+  requests[2].resolve({...settingsCatalog(), reaction_collection: {totals: {}, recent: []}});
+  await flush();
+  assert.match(node.innerHTML, /动图帧数或像素超过上限/);
+  assert.doesNotMatch(node.innerHTML, /host_animation_limit/);
+
+  node.change('semanticFile', [{name: 'broken.gif', size: 100, dataUrl: 'data:image/gif;base64,AA=='}]);
+  await flush();
+  requests[3].reject(Object.assign(new Error('corrupt'), {code: 'host_image_invalid'}));
+  await flush();
+  requests[4].resolve({...settingsCatalog(), reaction_collection: {totals: {}, recent: []}});
+  await flush();
+  assert.match(node.innerHTML, /图片内容无效、为空或已损坏/);
+  assert.doesNotMatch(node.innerHTML, /host_image_invalid/);
+  page.unmount();
+});
+
+test('refresh after import prepends newly uploaded stickers at the top and revives re-uploaded deletions', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node, {view: 'expression'});
+  const old2 = {id: 'old-2', kind: 'reaction', revision: 1, enabled: true, payload: {name: '旧表情二'}};
+  const old1 = {id: 'old-1', kind: 'reaction', revision: 1, enabled: true, payload: {name: '旧表情一'}};
+  const fresh = {id: 'new-3', kind: 'reaction', revision: 1, enabled: true, payload: {name: '新上传表情'}};
+  requests[0].resolve({...settingsCatalog(), items: [old2, old1], next_after: 'r:10'});
+  await flush();
+
+  node.change('semanticFile', [{name: 'fresh.png', size: 16, dataUrl: 'data:image/png;base64,AA=='}]);
+  await flush();
+  requests[1].resolve({created: true, item: fresh});
+  await flush();
+  assert.equal(requests[2].method, 'GET');
+  requests[2].resolve({...settingsCatalog(), items: [fresh, old2], next_after: 'r:11'});
+  await flush();
+  const posNew = node.innerHTML.indexOf('新上传表情');
+  const posOld2 = node.innerHTML.indexOf('旧表情二');
+  const posOld1 = node.innerHTML.indexOf('旧表情一');
+  assert.ok(posNew >= 0 && posOld2 > posNew && posOld1 > posOld2,
+    'newly uploaded item must appear before older items without dropping shifted rows');
+
+  /* 删除后重新上传同一哈希原图，不能被前端墓碑 deletedIds 隐藏。 */
+  node.click('[data-semantic-open]', {semanticOpen: 'new-3'});
+  requests[3].resolve({item: fresh});
+  await flush();
+  await node.click('[data-semantic]', {semantic: 'delete'});
+  requests[4].resolve({deleted: true});
+  await flush();
+  requests[5].resolve({...settingsCatalog(), items: [old2, old1], next_after: null});
+  await flush();
+  assert.doesNotMatch(node.innerHTML, /新上传表情/);
+
+  node.change('semanticFile', [{name: 'fresh.png', size: 16, dataUrl: 'data:image/png;base64,AA=='}]);
+  await flush();
+  requests[6].resolve({created: true, item: fresh});
+  await flush();
+  requests[7].resolve({...settingsCatalog(), items: [fresh, old2, old1], next_after: null});
+  await flush();
+  assert.match(node.innerHTML, /新上传表情/, 're-uploading a deleted asset must clear its tombstone');
+  page.unmount();
+});
+
+test('recognition ratio and pending summary use live catalog state rather than monotonic collection totals', async () => {
+  const {page, requests, root} = harness();
+  const node = root();
+  page.mount(node, {view: 'expression'});
+  requests[0].resolve({
+    ...settingsCatalog(),
+    catalog: {reaction: {total: 10, enabled: 10, pending: 0, recognized: 10, awaiting_confirmation: 0}},
+    reaction_collection: {
+      totals: {
+        private_capture: {pending_confirmation: 42, added: 5},
+        group_capture: {pending_confirmation: 18},
+      },
+      recent: [],
+    },
+  });
+  await flush();
+  assert.match(node.innerHTML, /自动识别 100%/);
+  assert.match(node.innerHTML, /<strong>10<\/strong><span>已识别<\/span>/);
+  assert.match(node.innerHTML, /<strong>0<\/strong><span>待处理<\/span>/);
+  assert.match(node.innerHTML, /待人工确认 42/, 'historical scope stats remain visible separately');
+  page.unmount();
+
+  /* 兼容未返回 recognized 的旧宿主，同样不把历史累计值计入待处理或拖低识别率。 */
+  const fallbackNode = root();
+  page.mount(fallbackNode, {view: 'expression'});
+  requests[1].resolve({
+    ...settingsCatalog(),
+    catalog: {reaction: {total: 10, enabled: 8, pending: 2}},
+    reaction_collection: {totals: {private_capture: {pending_confirmation: 50}}, recent: []},
+  });
+  await flush();
+  assert.match(fallbackNode.innerHTML, /自动识别 80%/);
+  assert.match(fallbackNode.innerHTML, /<strong>8<\/strong><span>已识别<\/span>/);
+  assert.match(fallbackNode.innerHTML, /<strong>2<\/strong><span>待处理<\/span>/);
+  page.unmount();
+});
+
+test('group view enables role-owned reaction management before selection_ready while keeping slang gated', async () => {
+  const {page, requests, root} = harness(true);
+  const exprNode = root();
+  page.mount(exprNode, {view: 'expression'});
+  requests[0].resolve({
+    ...settingsCatalog(),
+    selection_ready: false,
+    reaction_ready: true,
+    catalog: {reaction: {total: 1, enabled: 1, pending: 0, recognized: 1}},
+    items: [{id: 'reaction-1', kind: 'reaction', revision: 1, enabled: true, payload: {name: '群前素材'}}],
+  });
+  await flush();
+  assert.match(exprNode.innerHTML, /id="semanticFile"/);
+  assert.match(exprNode.innerHTML, /群前素材/);
+  assert.doesNotMatch(exprNode.innerHTML, /当前群会话尚无可验证的成员输入/);
+  page.unmount();
+
+  const allNode = root();
+  page.mount(allNode, {view: 'all'});
+  requests[1].resolve({
+    ...settingsCatalog(),
+    selection_ready: false,
+    reaction_ready: true,
+    items: [{id: 'reaction-1', kind: 'reaction', revision: 1, enabled: true, payload: {name: '表情页就绪'}}],
+  });
+  await flush();
+  assert.match(allNode.innerHTML, /id="semanticFile"/);
+  assert.match(allNode.innerHTML, /表情页就绪/);
+
+  allNode.click('[data-semantic-kind]', {semanticKind: 'slang'});
+  requests[2].resolve({...settingsCatalog(), selection_ready: false, reaction_ready: true, items: []});
+  await flush();
+  assert.match(allNode.innerHTML, /当前群会话尚无可验证的成员输入/);
+  assert.match(allNode.innerHTML, /data-semantic-kind="reaction"/, 'tabs stay accessible to switch back');
+  page.unmount();
+});

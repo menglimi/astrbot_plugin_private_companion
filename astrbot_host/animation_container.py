@@ -47,8 +47,17 @@ def _gif_frame_count(content):
     if header[10] & 128:
         take(3 * 2 ** ((header[10] & 7) + 1))
     count = 0
+    padding = 0
     while True:
         marker = take(1)[0]
+        if marker == 0x00:
+            # Some real-world encoders emit extra 0x00 block-terminator padding
+            # between blocks or before the 0x3B trailer; Pillow skips these.
+            padding += 1
+            if padding > 64:
+                _invalid()
+            continue
+        padding = 0
         if marker == 0x3B:
             return _bounded_count(count)
         if marker == 0x21:

@@ -109,7 +109,9 @@ async def fetch_attachment(value, *, maximum_bytes):
 
 def inspect_image(content, position):
     """Verify originals; animated formats retain a separately declared frame view."""
-    if type(content) is not bytes or not 0 < len(content) <= MAX_IMAGE_BYTES:
+    if type(content) is not bytes or not content:
+        raise TaskError("host_image_invalid", "image bytes are empty or invalid")
+    if len(content) > MAX_IMAGE_BYTES:
         raise TaskError("host_image_limit", "image exceeds the intake byte budget")
     try:
         with warnings.catch_warnings():
