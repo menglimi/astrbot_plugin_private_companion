@@ -104,6 +104,7 @@ class TelegramAloneFixture(PreferredChannelFixture):
         saved = await self.controller.apply_bindings(candidate)
         self.assertTrue(saved["started"], saved)
         self.app = self.controller.session.application
+        await self.recovered()
         return saved
 
     async def new_process(self):
@@ -116,6 +117,7 @@ class TelegramAloneFixture(PreferredChannelFixture):
         started = await self.controller.start()
         self.assertTrue(started.is_success, started.failure)
         self.app = self.controller.session.application
+        await self.recovered()
 
     async def history_seen_from(self, origin):
         cid = await self.manager.get_curr_conversation_id(origin)
@@ -125,7 +127,12 @@ class TelegramAloneFixture(PreferredChannelFixture):
         """What the human and the companion said, without the tool traffic in between."""
         return [text for text in await self.history_seen_from(origin) if text and not text.startswith("{")]
 
-    def health(self):
+    async def recovered(self):
+        """Upstream binds accounts in the background after a start; wait for it like its recovery tests."""
+        await self.controller.session.account_recovery.refresh(wait=True)
+
+    async def health(self):
+        await self.recovered()
         status = self.controller.status()
         return ((status["state"], status["accepting"], status["last_failure"]),
                 {row["platform_id"]: (row["state"] == "online", row["reason_code"] or None)
@@ -244,7 +251,7 @@ class RetiredQQScenario(TelegramAloneFixture):
         from companion_v2.conversation.reply_settings import ReplyConfigurationOwner, target_for
         from companion_v2.model_gateway.core_observations import observations_for_role
         from companion_v2.role_work.state.ownership import role_schedule_key
-        self.assertEqual(self.health()[0], ("running", True, None))
+        self.assertEqual((await self.health())[0], ("running", True, None))
         prepared = await self.turn(1, "still here", 10)
         context = prepared["context"]
         # The same conversation and history, on the same stored owners.
@@ -324,8 +331,8 @@ class DisconnectedQQTests(RetiredQQScenario, unittest.IsolatedAsyncioTestCase):
     async def test_telegram_keeps_the_conversation_while_the_qq_client_is_disconnected(self):
         await self.before_retirement()
         self.qq_disconnect()
-        self.assertEqual(self.health(), (("running", True, None),
-            {"qq-main": (False, "host_account_unavailable"), "tg-main": (True, None)}))
+        self.assertEqual((await self.health()), (("running", True, None),
+            {"qq-main": (False, "host_account_offline"), "tg-main": (True, None)}))
         self.nothing_goes_to_qq_from_here()
         fresh = await self.telegram_commands_and_controls(await self.telegram_keeps_the_conversation())
         self.assertEqual(self.sent_to_qq(), [])
@@ -339,8 +346,8 @@ class DisconnectedQQTests(RetiredQQScenario, unittest.IsolatedAsyncioTestCase):
         await self.before_retirement()
         self.native.platforms.pop("qq-main")
         await self.new_process()
-        self.assertEqual(self.health()[1]["qq-main"], (False, "host_platform_unavailable"))
-        self.assertEqual(self.health()[1]["tg-main"], (True, None))
+        self.assertEqual((await self.health())[1]["qq-main"], (False, "host_platform_unavailable"))
+        self.assertEqual((await self.health())[1]["tg-main"], (True, None))
         await self.telegram_commands_and_controls(await self.telegram_keeps_the_conversation())
 
 
@@ -358,10 +365,10 @@ class NoQQConfiguredTests(RetiredQQScenario, unittest.IsolatedAsyncioTestCase):
     async def test_telegram_keeps_the_conversation_with_qq_removed_from_configuration(self):
         await self.before_retirement()
         await self.remove_qq_from_configuration()
-        self.assertEqual(self.health(), (("running", True, None), {"tg-main": (True, None)}))
+        self.assertEqual((await self.health()), (("running", True, None), {"tg-main": (True, None)}))
         fresh = await self.telegram_commands_and_controls(await self.telegram_keeps_the_conversation())
         await self.new_process()
-        self.assertEqual(self.health(), (("running", True, None), {"tg-main": (True, None)}))
+        self.assertEqual((await self.health()), (("running", True, None), {"tg-main": (True, None)}))
         prepared = await self.turn(1, "after a restart", 30)
         self.assertEqual(await self.manager.get_curr_conversation_id(TELEGRAM), fresh)
         self.assertEqual((await self.spoken_on(TELEGRAM))[-2:], ["after a restart", "reply-B"])
@@ -438,7 +445,8 @@ class PreferredQQUnavailableTests(TelegramAloneFixture, unittest.IsolatedAsyncio
         self.nothing_goes_to_qq_from_here()
         self.assertEqual((await self.link_view())["background_destination"], "unavailable")
         report = await self.settled(context, first)
-        self.assertEqual((report["delivery"], report["reason"]), ("cancelled", "host_account_changed"))
+        # Upstream's connection layer names a disconnected client offline, not changed.
+        self.assertEqual((report["delivery"], report["reason"]), ("cancelled", "host_account_offline"))
         self.assertEqual(self.telegram_texts(), [])
         await self.select_telegram_and_wait_for(context, later)
         self.qq_connect()
@@ -792,7 +800,8 @@ class ScheduleCarrierTests(ContactLedgerFixture, unittest.IsolatedAsyncioTestCas
                 self.assertEqual(self.app.state, "running", self.app.failure_code)
                 await asyncio.sleep(0.05)
         await self.contact_recorded(telegram)
-        self.assertEqual(await self.evaluated(qq, telegram), [self.superseded, "recent_attempt_cooldown"])
+        # Upstream's connection gate skips the disconnected QQ window before the linked-conversation check.
+        self.assertEqual(await self.evaluated(qq, telegram), ["host_account_offline", "recent_attempt_cooldown"])
         self.assertEqual((self.telegram_texts(), self.sent_to_qq()), ([(OWNER, "thinking of you")], []))
         self.assertEqual((self.link_record()["preferred_target_id"], (await self.link_view())["background_destination"]),
                          ("second", "selected"))
@@ -992,7 +1001,7 @@ class OneCompanionWithoutQQTests(TelegramAloneFixture, unittest.IsolatedAsyncioT
         await self.remove_qq_from_configuration()
         await self.new_process()
 
-        self.assertEqual(self.health(), (("running", True, None), {"tg-main": (True, None)}))
+        self.assertEqual((await self.health()), (("running", True, None), {"tg-main": (True, None)}))
         self.assertEqual([target.target_id for target in self.controller.settings.targets], ["second"])
         telegram = self.controller.authority.context("second", "role-a")
         # One identity and one set of owners: those the conversation had on QQ.
@@ -1086,7 +1095,7 @@ class LinkedMappingSaveTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestC
         # Nothing was stopped or saved: the same session goes on with the same mapping and link.
         self.assertEqual((written, self.controller.config), ([], before))
         self.assertIs(self.controller.session, session)
-        self.assertEqual(self.health()[0], ("running", True, None))
+        self.assertEqual((await self.health())[0], ("running", True, None))
         self.assertEqual([row["origin"] for row in self.link_record()["members"]], [TELEGRAM])
         await self.turn(1, "still the conversation", 3)
 
@@ -1112,7 +1121,7 @@ class LinkedMappingSaveTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestC
         self.controller.save_plugin_config = save
         saved = await self.controller.apply_bindings(deepcopy(corrected))
         self.assertEqual((saved["started"], saved.get("startup_error"), written), (True, None, [corrected]), saved)
-        self.assertEqual(self.health()[0], ("running", True, None))
+        self.assertEqual((await self.health())[0], ("running", True, None))
         self.app = self.controller.session.application
         await self.turn(1, "still the conversation", 2)
         self.assertEqual((await self.spoken_on(TELEGRAM))[-4:],
@@ -1127,7 +1136,7 @@ class LinkedMappingSaveTests(TelegramAloneFixture, unittest.IsolatedAsyncioTestC
         self.controller.save_plugin_config = lambda document: None
         saved = await self.controller.apply_bindings(deepcopy(self.controller.config))
         self.assertEqual((saved["started"], saved.get("startup_error")), (True, None), saved)
-        self.assertEqual(self.health()[0], ("running", True, None))
+        self.assertEqual((await self.health())[0], ("running", True, None))
         self.app = self.controller.session.application
         # The remaining endpoint goes on; the removed one is as closed as before the save.
         await self.turn(remaining, "after the save", "3")

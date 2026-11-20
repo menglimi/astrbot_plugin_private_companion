@@ -153,7 +153,7 @@ class TelegramLinkedConversationTests(LinkedTelegramFixture, unittest.IsolatedAs
         await self.controller.session.linked_conversations.gate.drain()
         results = [message["content"] for message in await self.history() if message["role"] == "tool"]
         self.assertEqual([json.loads(result) for result in results],
-                         [{"code": "linked_revision_changed", "effect": "none", "state": "failed"}])
+                         [{"code": "linked_revision_changed", "effect": "none", "retry_disposition": "stop", "state": "failed"}])
         self.assertEqual(self.sent, [])
 
     async def test_a_failed_telegram_send_is_recorded_as_unknown_and_never_replayed_on_either_channel(self):

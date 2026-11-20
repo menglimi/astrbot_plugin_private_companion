@@ -148,7 +148,8 @@ class NativeAccountConnections:
         if record.identity is None:
             record.identity = identity
         connected = native_client_connected(platform, account.self_id, client)
-        transport = _transport(client, account.self_id)
+        # Telegram has no OneBot transport; its client is never probed for one.
+        transport = client if meta.name == "telegram" else _transport(client, account.self_id)
         replacement = (record.platform is not platform or record.client is not client
                        or record.transport is not transport)
         state, reason = ("online", "") if connected else ("waiting", "host_account_offline")
