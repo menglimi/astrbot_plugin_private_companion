@@ -1479,7 +1479,8 @@ class SetupWebAPI:
     @staticmethod
     def _diagnostic_delivery_targets(session, context, task_id):
         getter = getattr(session.application.proactive, "_delivery_rows", None)
-        router = getattr(getattr(session.application, "outbound", None), "private_account_router", None)
+        outbound = getattr(session.application, "outbound", None)
+        router = getattr(outbound, "private_account_router", None)
         rows = getter(task_id) if callable(getter) else ()
         recipients = []
         seen = set()
@@ -1487,7 +1488,7 @@ class SetupWebAPI:
             if row["state"] not in ("delivered", "accepted", "unknown", "dispatched"):
                 continue
             # A linked conversation's own route, else the account-link router's target, else the recipient.
-            route = session.application.outbound.route(row["delivery_id"])
+            route = outbound.route(row["delivery_id"]) if outbound is not None else None
             actual = router.actual_context(row["delivery_id"]) if router is not None and route is None else None
             scope = ScopeRef.restore(route["scope"]) if route is not None else (actual or context).scope
             key = (scope.platform, scope.account_id, scope.native_scope_id, row["state"])
