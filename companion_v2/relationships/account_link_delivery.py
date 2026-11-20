@@ -121,11 +121,7 @@ class PrivateAccountDelivery:
             failure_code=failure)
 
     def _pinned_diagnostic(self, request):
-        if request.owner != GROUP:
-            return False
-        row = self.runtime.read_one("SELECT record_json FROM proactive_contacts WHERE contact_id=?", (request.source_ref,))
-        data = json.loads(row["record_json"]) if row else {}
-        return data.get("administrator_test") is True and data.get("diagnostic_allow_linked_accounts") is not True
+        return pinned_diagnostic(self.runtime, request.owner, request.source_ref)
 
     def rejection_report(self, delivery_id):
         report = self._read(REJECTION_PREFIX + delivery_id)
@@ -277,3 +273,12 @@ class PrivateAccountDelivery:
             if receipt.status != "not_sent":
                 return normalized
         return normalized
+
+
+def pinned_diagnostic(runtime, owner, source_ref):
+    """An administrator diagnostic stays on its reviewed recipient unless it allows linked forwarding."""
+    if owner != GROUP:
+        return False
+    row = runtime.read_one("SELECT record_json FROM proactive_contacts WHERE contact_id=?", (source_ref,))
+    data = json.loads(row["record_json"]) if row else {}
+    return data.get("administrator_test") is True and data.get("diagnostic_allow_linked_accounts") is not True

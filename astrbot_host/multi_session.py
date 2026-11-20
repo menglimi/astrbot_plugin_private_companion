@@ -127,8 +127,18 @@ class LinkedReminderGuard(AccountExecutionGuard):
         except TaskError:
             return True  # the linked delivery refuses an unreadable record itself
 
+    def _pinned(self, spec):
+        """A diagnostic pinned to its recipient is delivered there, under that window's connection."""
+        from companion_v2.relationships.account_link_delivery import pinned_diagnostic
+        if spec.kind != "delivery.proactive.contact" or self.runtime is None:
+            return False
+        row = self.runtime.read_one("SELECT request_json FROM background_deliveries WHERE task_id = ?", (spec.task_id,))
+        request = json.loads(row["request_json"]) if row is not None else {}
+        return pinned_diagnostic(self.runtime, request.get("owner"), request.get("source_ref"))
+
     def capture(self, spec, definition, *, submitting=False):
-        if spec.kind in ("delivery.agenda.reminder", "delivery.proactive.contact") and self._linked(spec.context):
+        if (spec.kind in ("delivery.agenda.reminder", "delivery.proactive.contact") and self._linked(spec.context)
+                and not self._pinned(spec)):
             return None
         return super().capture(spec, definition, submitting=submitting)
 
