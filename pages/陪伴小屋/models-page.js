@@ -1146,18 +1146,44 @@ window.CompanionModelsPage = (() => {
     if (mode === "remote" && path.endsWith("/v1/chat/completions"))
       return '<div class="model-alert">当前接入方式是「远程 HTTP 服务」，但地址以 <code>/v1/chat/completions</code> 结尾。请改为 <code>/v1/systemone</code>，或切换到「OpenAI 兼容网关」；后端会拒绝这种跨协议配置。</div>';
     return ""; }
+  const isGroupLaya = s => s?.status?.scope_kind === "group" || s?.laya?.logsScopeKind === "group" || s?.laya?.logsUnavailable === true;
+  const layaLogsParams = s => (isGroupLaya(s) ? undefined : {scope: s?.laya?.logsScope || "all"});
   async function layaRefresh(s) { const l = s.laya, ticket = version; if (l.loading) return; l.loading = true; l.notice = "正在读取 Laya 配置…"; render();
-    try { const [config, history] = await Promise.allSettled([api("GET", path + "/laya"), api("GET", path + "/laya/logs")]); if (!current(ticket, s)) return;
+    try { const [config, history] = await Promise.allSettled([api("GET", path + "/laya"), api("GET", path + "/laya/logs", layaLogsParams(s))]); if (!current(ticket, s)) return;
       if (config.status === "rejected") throw config.reason;
       const data = config.value;
       if (!layaDirty(l) || l.stale) l.draft = layaDraftFrom(data); l.data = {...data, decision_fields: layaDraftFrom(data).decision_fields};
       l.logs = history.status === "fulfilled" ? history.value.events || [] : [];
       l.logsUnavailable = history.status === "fulfilled" && history.value.available === false;
+      l.logsScopeKind = history.status === "fulfilled" ? history.value.scope_kind || "" : "";
+      if (history.status === "fulfilled" && !isGroupLaya(s) && ["all", "current"].includes(history.value.scope)) l.logsScope = history.value.scope;
       l.logsError = history.status === "rejected";
       l.loaded = true; l.stale = false; l.bad = false;
       l.notice = l.logsError ? "Laya 配置已读取；近期记录暂不可用。" : "已读取 Laya 接入状态。"; }
     catch (err) { if (!current(ticket, s)) return; l.bad = true; l.notice = fail(err, "无法读取 Laya 配置。"); }
     finally { l.loading = false; if (current(ticket, s)) render(); } }
+  async function layaSwitchLogsScope(s, nextScope) {
+    const l = s.laya;
+    if (!["all", "current"].includes(nextScope) || l.logsScope === nextScope || l.loading || isGroupLaya(s)) return;
+    const ticket = version;
+    l.logsScope = nextScope;
+    l.logsError = false;
+    l.logsLoading = true;
+    render();
+    try {
+      const history = await api("GET", path + "/laya/logs", {scope: nextScope});
+      if (!current(ticket, s) || l.logsScope !== nextScope) return;
+      l.logs = history.events || [];
+      l.logsUnavailable = history.available === false;
+      l.logsScopeKind = history.scope_kind || "";
+      l.logsError = false;
+    } catch {
+      if (!current(ticket, s) || l.logsScope !== nextScope) return;
+      l.logsError = true;
+    } finally {
+      if (current(ticket, s) && l.logsScope === nextScope) { l.logsLoading = false; render(); }
+    }
+  }
   async function layaSave(s) { const l = s.laya; if (l.busy || l.loading || !l.data || l.stale || !layaDirty(l)) return;
     /* 保存时总是带上代理地址（含空串）：空串就是直连，不能让「没提交」被误读成
        「保持原值」。 */
@@ -1169,6 +1195,7 @@ window.CompanionModelsPage = (() => {
   /* 远程服务返回的 reason 已由后端脱敏，比 codes 里的通用文案更有诊断价值；
      状态码解释只在 Laya 这里使用，避免影响其他配置页的错误提示。 */
   const LAYA_HTTP_HINTS = {
+    401: "鉴权失败（401 Unauthorized），请核对 API Key 是否有效或已过期",
     403: "服务端拒绝访问（403 Forbidden），请核对 API Key、访问权限或服务端白名单",
     404: "接口路径不存在（404 Not Found），请核对服务地址是否带有正确的接口前缀",
     407: "代理要求先完成鉴权（407 Proxy Authentication Required），请核对代理账号与密码",
@@ -1189,7 +1216,7 @@ window.CompanionModelsPage = (() => {
     const http = /^Laya HTTP (\d{3})/.exec(detail);
     if (http) {
       const status = Number(http[1]);
-      const body = detail.slice(http[0].length).replace(/^[：:\s]+/, "").slice(0, 200);
+      const body = detail.slice(http[0].length).replace(/^[：:\s·]+/, "").slice(0, 200);
       return `Laya HTTP ${status} · ${layaHttpHint(status)}${body ? `；服务端原文：${body}` : ""}`;
     }
     if (detail && !CODE.test(detail)) return detail;
@@ -1204,15 +1231,25 @@ window.CompanionModelsPage = (() => {
     }
     const ticket = version; l.busy = true; l.test = {status: "testing"}; l.notice = l.data.mode === "local" ? "正在调用官方 Router；首次测试会自动下载检查点…" : l.data.mode === "jev" ? "正在调用 OpenAI 兼容网关…" : l.data.mode === "workers_ai" ? "正在调用 Cloudflare Workers AI…" : "正在调用官方 SystemOne HTTP 接口…"; render();
     try { const result = await api("POST", path + "/laya/test", {}, 600000); if (!current(ticket, s)) return;
+      if (result?.status === "failed") {
+        l.test = result; l.bad = true; l.notice = layaErrorText(result, "Laya 连接测试未完成。");
+        render(); await layaRefreshQuiet(s, ticket); return;
+      }
       l.test = result; l.notice = "Laya 调用完成；当前模式和检查点已验证。"; l.bad = false; await layaRefreshQuiet(s, ticket); }
     catch (err) { if (!current(ticket, s)) return; l.test = {status: "unknown", code: err.code || err.message, reason: err.reason || ""}; l.bad = true; l.notice = layaErrorText(err, "Laya 连接测试未完成。");
       /* 先把失败原因画出来，再补拉运行记录；日志读取慢时用户也不会一直停在等待态。 */
       render(); await layaRefreshQuiet(s, ticket); }
     finally { l.busy = false; if (current(ticket, s)) render(); } }
-  async function layaRefreshQuiet(s, ticket) { const [config, history] = await Promise.allSettled([api("GET", path + "/laya"), api("GET", path + "/laya/logs")]);
+  async function layaRefreshQuiet(s, ticket) { const [config, history] = await Promise.allSettled([api("GET", path + "/laya"), api("GET", path + "/laya/logs", layaLogsParams(s))]);
     if (!current(ticket, s)) return;
     if (config.status === "fulfilled") { s.laya.data = config.value; s.laya.draft = layaDraftFrom(config.value); }
-    if (history.status === "fulfilled") { s.laya.logs = history.value.events || []; s.laya.logsUnavailable = history.value.available === false; s.laya.logsError = false; }
+    if (history.status === "fulfilled") {
+      s.laya.logs = history.value.events || [];
+      s.laya.logsUnavailable = history.value.available === false;
+      s.laya.logsScopeKind = history.value.scope_kind || "";
+      if (!isGroupLaya(s) && ["all", "current"].includes(history.value.scope)) s.laya.logsScope = history.value.scope;
+      s.laya.logsError = false;
+    }
     else s.laya.logsError = true; }
   /* ---------- DeepSeek search binding ---------- */
   const searchDirty = x => !!x.data && !!x.draft
@@ -1271,6 +1308,10 @@ window.CompanionModelsPage = (() => {
     const text = String(l.previewText || "").trim(); if (!text) { l.bad = true; l.notice = "先输入一段测试消息。"; render(); return; }
     const ticket = version; l.busy = true; l.preview = {status: "testing"}; l.notice = "正在请求 Laya 进行语义分类…"; render();
     try { const result = await api("POST", path + "/laya/decide", {facts: {message_kind: "text", user_text: text}}, 125000); if (!current(ticket, s)) return;
+      if (result?.status === "failed") {
+        l.preview = result; l.bad = true; l.notice = layaErrorText(result, "Laya 决策调用未完成。");
+        render(); await layaRefreshQuiet(s, ticket); return;
+      }
       l.preview = result; l.notice = result.status === "skipped" ? "这条测试消息被规则跳过。" : "已收到 Laya 决策。"; l.bad = false; await layaRefreshQuiet(s, ticket); }
     catch (err) { if (!current(ticket, s)) return; l.preview = {status: "unknown", code: err.code || err.message, reason: err.reason || ""}; l.bad = true; l.notice = layaErrorText(err, "Laya 决策调用未完成。");
       /* 先让失败原因可见，再补拉运行记录，避免日志读取拖住错误提示。 */
@@ -1301,6 +1342,20 @@ window.CompanionModelsPage = (() => {
     else if (result.confidence_gate?.status === "confidence_unavailable")
       meta.push("当前服务未返回行动概率，阈值未强制执行");
     return `<div class="model-laya-result"><b>决策结果${meta.length ? ` · ${esc(meta.join(" · "))}` : ""}</b><code>${esc(JSON.stringify(decision, null, 2))}</code></div>`; }
+  function layaMaskScopeId(id) {
+    const text = String(id || "").trim();
+    if (text.length <= 6) return text;
+    return text.slice(0, 3) + "…" + text.slice(-3);
+  }
+  function layaScopeLabel(event) {
+    const scopeKind = event.scope_info?.kind || (event.source === "probe" ? "test" : "");
+    const nativeId = String(event.scope_info?.native_scope_id || "").trim();
+    const shortId = nativeId ? layaMaskScopeId(nativeId) : "";
+    if (scopeKind === "group") return shortId ? `群聊 ${shortId}` : "群聊";
+    if (scopeKind === "private") return shortId ? `私聊 ${shortId}` : "私聊";
+    if (scopeKind === "test") return "连接测试";
+    return scopeKind || "";
+  }
   function layaHistoryMarkup(l) { const events = Array.isArray(l.logs) ? l.logs : [];
     if (l.logsError) return '<p class="model-laya-history-empty">近期记录暂不可用；Laya 配置仍可查看和保存。</p>';
     if (l.logsUnavailable) return '<p class="model-laya-history-empty">当前群聊的近期决策记录暂不能按会话汇总；全局 Laya 配置仍可在此管理。</p>';
@@ -1317,7 +1372,14 @@ window.CompanionModelsPage = (() => {
       const diagnostics = hasDiagnostics
         ? `<div class="model-laya-diagnostics">${diagnostic("模型输入 · state 与分类问题", event.request, "未记录请求")}${diagnostic("模型原始响应", event.response, "未收到模型响应")}${diagnostic("处理结果 · 合同解析、范围修正与实际应用", event.processing, "未记录处理过程")}</div>`
         : '<small>该记录生成于详细诊断字段启用前。</small>';
-      return `<li data-state="${esc(event.status)}"><details><summary><span><strong>${esc(labels[event.status] || event.status)}</strong><small>${esc(time)} · ${esc(sources[event.source] || event.source || "未知来源")} · ${esc(event.mode)}</small></span><b>${event.elapsed_ms == null ? "—" : esc(event.elapsed_ms) + " ms"}</b></summary><div><small>${esc(event.reason_code || "分类结果")}</small>${enabledMarkup}<code>${esc(detail)}</code>${diagnostics}</div></details></li>`;
+      const sourceLabel = sources[event.source] || event.source || "未知来源";
+      const scopeLabel = layaScopeLabel(event);
+      const metaParts = [scopeLabel, scopeLabel === sourceLabel ? "" : sourceLabel, event.mode].filter(Boolean);
+      const action = event.decision && typeof event.decision === "object" && event.decision.action ? String(event.decision.action) : "";
+      const conf = event.processing?.action_confidence;
+      const confText = typeof conf === "number" && Number.isFinite(conf) ? ` (${(conf * 100).toFixed(1)}%)` : "";
+      const actionTag = action ? ` <span class="model-tag ${action === "silent" ? "n" : action === "wait" ? "a" : "g"}">action=${esc(action)}${esc(confText)}</span>` : "";
+      return `<li data-state="${esc(event.status)}"><details><summary><span><strong>${esc(labels[event.status] || event.status)}${actionTag}</strong><small>${esc(time)} · ${esc(metaParts.join(" · "))}</small></span><b>${event.elapsed_ms == null ? "—" : esc(event.elapsed_ms) + " ms"}</b></summary><div><small>${esc(event.reason_code || "分类结果")}</small>${enabledMarkup}<code>${esc(detail)}</code>${diagnostics}</div></details></li>`;
     }).join("")}</ol>`; }
   function layaContextMarkup() { const product = window.CompanionProduct, currentTarget = product?.target?.();
     if (!currentTarget) return "";
@@ -1369,7 +1431,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
         <div class="model-state">上游源码与版本：<a href="https://github.com/NandhaKishorM/laya" target="_blank" rel="noreferrer">NandhaKishorM/laya</a> · <a href="https://huggingface.co/convaiinnovations/laya-multilingual" target="_blank" rel="noreferrer">Multilingual 权重</a></div>
       </div>`}
       <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">调用预览</span><h3>测试一次语义决策</h3></div></div><label class="model-fd"><span class="model-cap">测试消息<em>只提交这段文字与固定的文本类型事实</em></span><textarea data-laya-preview rows="4" ${l.busy || l.loading ? "disabled" : ""}>${esc(l.previewText || "")}</textarea></label><div class="model-editor-actions"><button type="button" class="button primary" data-laya-decide ${l.busy || l.loading || !l.data.enabled ? "disabled" : ""}>调用 Laya</button></div>${l.preview ? layaResult(l.preview) : ""}</div>
-      <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">${l.logsUnavailable ? "当前会话" : "运行记录 · 最近 50 条"}</span><h3>Laya 调用日志</h3></div></div>${layaHistoryMarkup(l)}</div>
+      <div class="model-card"><div class="model-phead"><div class="model-grow"><span class="model-eb">${l.logsUnavailable ? "当前会话" : isGroupLaya(s) ? "本群运行记录 · 最近 50 条" : l.logsScope === "current" ? "当前会话 · 最近 50 条" : "全部来源 · 最近 50 条"}</span><h3>Laya 调用日志</h3></div>${isGroupLaya(s) ? "" : `<div class="model-st2"><div class="model-seg" role="group" aria-label="日志来源筛选"><button type="button" class="${(l.logsScope || "all") === "all" ? "on" : ""}" data-laya-logs-scope="all" aria-pressed="${(l.logsScope || "all") === "all"}" ${l.loading || l.logsLoading ? "disabled" : ""}>全部来源</button><button type="button" class="${l.logsScope === "current" ? "on" : ""}" data-laya-logs-scope="current" aria-pressed="${l.logsScope === "current"}" ${l.loading || l.logsLoading ? "disabled" : ""}>仅当前会话</button></div></div>`}</div>${layaHistoryMarkup(l)}</div>
     </div>`; }
   function layaInput(s, event) { const l = s.laya, t = event.target;
     if (event.type === "change" && t.matches("[data-laya-target]")) {
@@ -1389,6 +1451,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (event.type === "change") { l.bad = false; render(); } }
   function layaClick(s, event) { const t = event.target;
     if (t.closest("[data-laya-refresh]")) { layaRefresh(s); return; }
+    const logsScope = t.closest("[data-laya-logs-scope]"); if (logsScope) { layaSwitchLogsScope(s, logsScope.dataset.layaLogsScope); return; }
     if (t.closest("[data-laya-save]")) { layaSave(s); return; }
     const preset = t.closest("[data-laya-preset]"); if (preset) { layaApplyPreset(s, preset.dataset.layaPreset); return; }
     const copy = t.closest("[data-laya-copy]"); if (copy) { layaCopyInstall(s, copy.dataset.layaCopy); return; }
@@ -2576,13 +2639,13 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
         view: "generate", config: null, configBase: null, configDraft: null, configText: null, configTextBase: null,
         configLoading: false, configSaving: false, configBad: false, configNotice: "",
       },
-      laya: { data: null, draft: null, logs: [], loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "" },
+      laya: { data: null, draft: null, logs: [], logsScope: "all", logsScopeKind: "", logsLoading: false, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "" },
       search: { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "" },
       loading: false, busy: false, bad: false, denied: false, notice: "" };
     state.layer ||= "role"; if(!windowAvailable)state.layer="role"; state.providerTests ||= {}; state.testing ||= new Set();
     /* 展开状态按对象保存：刷新、切任务、切页回来都保持上次展开的分组，
        不再每次回到“全收起”或“全展开”。 */
-    state.expOpen = { ...restoreExpanded(key), ...(state.expOpen || {}) }; state.voice.lastTest ||= null; state.voice.editorValues ||= {}; state.voice.ttsTestResults ||= {}; state.voice.ttsTesting ||= false; state.voice.createDraft ||= { type: "", id: "" }; state.image.endpointTests ||= {}; state.image.endpointTestKeys ||= {}; state.image.endpointTesting ||= null; state.configDraft ||= null; state.peak ||= { on: true, provider: "", start: "09:00", end: "12:00" }; state.testing ||= new Set(); state.peak.windows ||= "09:00-12:00\n14:00-18:00"; state.laya ||= { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "" }; state.search ||= { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "" }; state.hoverProvider = "";
+    state.expOpen = { ...restoreExpanded(key), ...(state.expOpen || {}) }; state.voice.lastTest ||= null; state.voice.editorValues ||= {}; state.voice.ttsTestResults ||= {}; state.voice.ttsTesting ||= false; state.voice.createDraft ||= { type: "", id: "" }; state.image.endpointTests ||= {}; state.image.endpointTestKeys ||= {}; state.image.endpointTesting ||= null; state.configDraft ||= null; state.peak ||= { on: true, provider: "", start: "09:00", end: "12:00" }; state.testing ||= new Set(); state.peak.windows ||= "09:00-12:00\n14:00-18:00"; state.laya ||= { data: null, draft: null, logs: [], logsScope: "all", logsScopeKind: "", logsLoading: false, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "" }; state.laya.logsScope ||= "all"; state.laya.logsScopeKind ||= ""; state.search ||= { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "" }; state.hoverProvider = "";
     states.set(key, state);
     state.sub = ["map", "cfg", "pol"].includes(options.sub) ? options.sub : "map";
     root.addEventListener("input", input); root.addEventListener("change", input); root.addEventListener("click", click); root.addEventListener("pointerover", providerHover); root.addEventListener("pointerout", providerHover); root.addEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.addEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.addEventListener("focusout", window.CompanionWorkbench.scopeHintReset); render();

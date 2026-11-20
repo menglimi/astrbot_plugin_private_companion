@@ -32,7 +32,7 @@ const weatherModes = [
 const sceneTimes = [['dawn','清晨','sunrise'],['day','日间','sun'],['evening','暮色','sunset'],['night','夜晚','moon']];
 const initial = {
   role:'chengxi', view:'scene', scene:'day', sceneMode:'auto', weather:'clear', labels:true, largeText:false, reduceMotion:false,
-  roomLayouts:{}, roomHouseStyle:'classic',
+  roomLayouts:{},
   configSnapshotVersion:configSnapshot.version,
   modules:{content:'unknown',image:'unknown',together:'unknown',game:'unknown',screen:'unknown',reality:'unknown',live:'unknown',...configuredModules},
   notes:'下次去书店，想找一本有关植物的随笔。',
@@ -50,11 +50,6 @@ if (!weatherModes.some(item=>item.id===state.weather)) state.weather=initial.wea
 if (!sceneTimes.some(item=>item[0]===state.scene)) state.scene=initial.scene;
 if (!['auto','manual'].includes(state.sceneMode)) state.sceneMode='auto';
 if (!state.roomLayouts || typeof state.roomLayouts!=='object' || Array.isArray(state.roomLayouts)) state.roomLayouts={};
-const roomHouseStyles=['classic','cabin','coastal','french','loft','washitsu'];
-if(!roomHouseStyles.includes(state.roomHouseStyle)){
-  state.roomHouseStyle=Object.values(state.roomLayouts)
-    .map(layout=>layout&&layout.houseStyle).find(theme=>roomHouseStyles.includes(theme))||'classic';
-}
 const navGroups = [
   ['小屋', [['life','home','house','小屋'],['life','diary','notebook-pen','日记与生活']]],
   ['塑造角色', [['manage','governance','user-round','自我'],['manage','identity','network','关系网'],['manage','identity-people','users-round','用户'],['manage','identity-groups','messages-square','群聊'],['manage','memory','orbit','事实与经历'],['manage','learning','graduation-cap','学习与反思']]],
@@ -120,10 +115,6 @@ function setProfileAvatar(dataUrl){
   field.dispatchEvent(new Event('input',{bubbles:true}));
   return true;
 }
-/* 24 KiB JPEG 的 base64 长度 + "data:image/jpeg;base64," 前缀。
-   必须与 companion_v2/role_profile/configuration.py 的
-   MAX_AVATAR_DATA_URL_CHARS 一致；两边任一变化都要同步。 */
-const MAX_ROLE_AVATAR_DATA_URL_CHARS=32791;
 async function compressRoleAvatar(file){
   if(file.size>12*1024*1024)throw new Error('图片不能超过 12 MB');
   let source=null,release=()=>{};
@@ -149,7 +140,7 @@ async function compressRoleAvatar(file){
       context.drawImage(source,left,top,crop,crop,0,0,size,size);
       for(const quality of [.82,.72,.62,.52]){
         const value=canvas.toDataURL('image/jpeg',quality);
-        if(value.length<=MAX_ROLE_AVATAR_DATA_URL_CHARS)return value;
+        if(value.length<=32791)return value;
       }
     }
     throw new Error('压缩后仍超过头像大小限制，请选择更简单的图片');
@@ -641,12 +632,8 @@ function refreshStageForScope(){
 
 function mountVoxelScene(mount){
   if(!window.PrivateCompanionHomeRoom3D)throw new Error('体素场景资源未加载');
-  const saved=state.roomLayouts[layoutKey()];
-  const savedTheme=roomHouseStyles.includes(saved?.houseStyle)?saved.houseStyle:null;
-  const globalTheme=roomHouseStyles.includes(state.roomHouseStyle)?state.roomHouseStyle:null;
-  const houseStyle=savedTheme||globalTheme;
   voxelController=window.PrivateCompanionHomeRoom3D.mount(mount,{
-    layout:saved?{...saved, ...(houseStyle?{houseStyle}:{})}:null,
+    layout:state.roomLayouts[layoutKey()],
     light:state.scene==='evening'?'dusk':state.scene,
     reducedMotion:litePerformanceMode||state.reduceMotion,
     onSelect:openVoxelStation,
@@ -662,7 +649,6 @@ function mountVoxelScene(mount){
       toast(message);
     },
   });
-  if(!saved&&state.roomHouseStyle&&state.roomHouseStyle!=='classic')voxelController.setTheme(state.roomHouseStyle);
   syncFurnitureScene();
   voxelController.setAtmosphere({condition:state.weather});
   voxelController.setActive(true);
@@ -740,17 +726,10 @@ function renderShellSide(){
   icons(host);
 }
 let homeAgendaClockTimer=null;
-function refreshHomeStateAge(){
-  const node=$('[data-home-state-age]');
-  if(!node)return;
-  const next=product.stateAge?.()||"";
-  if(next)node.textContent=next;else node.remove();
-}
 async function refreshHomeAgendaClock(refresh=false){
   if(document.hidden||liteHomeSuspended()||!$('[data-home-agenda-clock]'))return;
   if(refresh)await product.refreshSummary?.();
   if(document.hidden||liteHomeSuspended())return;
-  refreshHomeStateAge();
   const host=$('[data-home-agenda-clock]');
   if(!host)return;
   const next=scheduleCard();
@@ -1778,9 +1757,8 @@ function refreshHomeCapabilities(){
 function scheduleCard(){return product.scheduleCard();}
 function stateCard(){return product.stateCard();}
 /* 右栏延续 V1 的状态摘要与日程时间线；标题和导航仍由小屋外壳负责。 */
-function sideBand(title,body,action,meta=""){return `<section class="home-band home-side-band"><header class="home-band-head"><h2>${title}</h2>${meta}${action}</header>${body}</section>`;}
-function stateAgeMarkup(){const age=product.stateAge?.()||"";return age?`<span class="home-side-age" data-home-state-age>${escapeHTML(age)}</span>`:"";}
-function homeStateBand(){return sideBand('此刻的状态',stateCard(),'<button type="button" class="text-button home-side-action" data-go="life" data-life-target="state">查看与更新</button>',stateAgeMarkup());}
+function sideBand(title,body,action){return `<section class="home-band home-side-band"><header class="home-band-head"><h2>${title}</h2>${action}</header>${body}</section>`;}
+function homeStateBand(){return sideBand('此刻的状态',stateCard(),'<button type="button" class="text-button home-side-action" data-go="life" data-life-target="state">查看与更新</button>');}
 function homeScheduleBand(){return sideBand('今日安排',`<div data-home-agenda-clock>${scheduleCard()}</div>`,'<button type="button" class="text-button home-side-action" data-shell-furniture="calendar">翻开日历</button>');}
 const observationFilters=[['records','日记与梦境'],['timeline','生活轨迹'],['state','状态变化'],['impact','交互影响']];
 /* 生活观察。
@@ -5029,8 +5007,7 @@ function renderLearningPage(){
       ?`<section class="learning-chain-top" aria-label="成长记录工作台"><section id="learningWorkspace" class="learning-workspace" aria-label="成长记录与进展"></section></section>`
       :`<div class="learning-hub-empty" role="status">请选择当前角色的私聊窗口以查看成长记录。</div>`;
   }
-  const reviewClass=learningTab==='review'?' is-review':'';
-  return `<div class="learning-hub${reviewClass}">${nav}<header class="learning-hub-head"><h1>学习与反思 <span>· ${escapeHTML(titles[learningTab]||'总览')}</span></h1></header><section class="learning-hub-panel" aria-label="${escapeHTML(titles[learningTab]||'总览')}">${content}</section></div>`;
+  return `<div class="learning-hub">${nav}<header class="learning-hub-head"><h1>学习与反思 <span>· ${escapeHTML(titles[learningTab]||'总览')}</span></h1></header><section class="learning-hub-panel" aria-label="${escapeHTML(titles[learningTab]||'总览')}">${content}</section></div>`;
 }
 /* 2026-09-30 接回：内容清空期间这一页只渲染一句占位，实现整体保留在 renderMaintenancePageOriginal。挂载点与挂载链从未动过，所以换回名字即可恢复。 */
 function renderMaintenancePage(){return renderMaintenancePageOriginal();}

@@ -1,4 +1,4 @@
-﻿/* 陪伴小屋 · 主动与联系（节律盘）
+/* 陪伴小屋 · 主动与联系（节律盘）
  *
  * 这一页管的是「她此刻会不会开口、按什么节律开口」。
  *
@@ -43,18 +43,6 @@ window.CompanionContactPage = (() => {
   let autoRecoveryTimer = null;
   let autoRecoveryAttempts = 0;
   const GROUP = "proactive.contact";
-  /* 现实触及的早晨照料按用户保存在原生模块里（走系统默认音频输出，通常是蓝牙音响；需要本人授权）。
-     晨间唤醒页只放一个摘要开关与入口，不再维护第二份闹钟配置。 */
-  const WAKE_MODE_LABELS = {gentle:"轻一点", normal:"正常", persistent:"执着一点"};
-  const NATIVE_WAKE_REASONS = {
-    native_extension_inactive:"现实触及还没启用，先在详细配置里启用。",
-    native_service_not_running:"现实触及服务还没运行起来，稍后再试。",
-    native_service_changed:"现实触及刚重新配置过，请再读取一次。",
-    native_management_unavailable:"暂时读不到现实触及的管理状态。",
-    native_reality_action_failed:"现实触及没有完成这次操作，请核对授权与设备。",
-    bridge_timeout:"等待现实触及响应超时，稍后重试。",
-    invalid_response:"现实触及返回的内容无法识别，稍后重试。",
-  };
   /* 15 类契机，归属三个语义桶——这个分法来自它们「凭什么开口」：
      关系本身、日程时刻、还是外部分享。矩阵按桶分行，不按字母序。 */
   const PURPOSE_BUCKETS = [
@@ -518,10 +506,6 @@ window.CompanionContactPage = (() => {
       materialsSharedCount:0, materialsTraceCount:0, materialsTraceTotal:0,
       materialsTraceState:"not_checked", materialsTraceContexts:0, materialsTraceUnavailable:0,
        editToken:"", configToken:"", configScope:"", configurationLoaded:false,
-      /* 晨间唤醒页右边的「现实触及 · 音响叫醒」摘要：现实触及的早晨照料按用户保存，
-         这里只负责读状态、扳开关和跳到详细配置，不在本页维护第二份闹钟配置。 */
-      nativeWake:{state:"idle", busy:false, userId:"", label:"", enabled:false, consent:false,
-        time:"", deadline:"", mode:"normal", message:"", notice:"", noticeBad:false},
        contractLoading:false, contractError:"", contractErrorCode:"",
       /* 草稿：只放用户真的改过的字段。提交时只发这些，未动的字段一个都不发——
          避免把「没看过的字段」当成「要保持的值」写回去。 */
@@ -1166,7 +1150,6 @@ window.CompanionContactPage = (() => {
         decimalRow("morning_wake_confidence_floor", "预测可信度下限", 0, 1, 0.05,
           "预测把握低于此值时不生成晨间问候。"),
       ])}
-      ${nativeWakeBlock()}
       ${fieldBlock("清醒确认", [
         toggle("morning_nudge_enabled", "允许轻声确认", "仅在清醒证据充分、窗口有效且没有新输入时提醒。"),
         numberRow("morning_nudge_delay_minutes", "确认前等待", "分钟", 10, 90, "给对方自然开口的时间。"),
@@ -1175,181 +1158,8 @@ window.CompanionContactPage = (() => {
         numberRow("wake_contact_min_confidence", "清醒迹象可信度", "%", 40, 100, "低于此值只保留诊断，不触发联系。"),
         numberRow("wake_contact_max_daily", "每日确认上限", "次", 0, 3, "按免打扰时区的本地日期计数。"),
         toggle("wake_require_device_evidence", "要求设备侧证据", "开启后只接受授权设备提供的清醒迹象。"),
-      ], "is-wide is-wake")}
+      ], "is-wide")}
     </div>`;
-  }
-  function defaultWakeTime() {
-    const start = String(value("wake_morning_start") || "");
-    return /^([01]\d|2[0-3]):[0-5]\d$/.test(start) ? start : "07:30";
-  }
-  /* 早晨照料按用户保存。优先用当前私聊对象，其次核心管理员；
-     只有一个用户时就用它；有多个又认不出目标时不替用户猜。 */
-  function pickWakeUser(management) {
-    const users = Array.isArray(management?.users)
-      ? management.users.filter(row => row && row.user_id) : [];
-    if (!users.length) return null;
-    const target = window.CompanionProduct?.target?.();
-    const targetId = target && target.scope_kind === "private" ? String(target.participant_id || "") : "";
-    const mobile = management?.configuration?.mobile || {};
-    const coreId = String(mobile.core_user_id || mobile.allowed_user_id || "");
-    for (const id of [targetId, coreId]) {
-      if (!id) continue;
-      const row = users.find(user => String(user.user_id) === id);
-      if (row) return row;
-    }
-    if (users.length === 1) return users[0];
-    const usable = users.filter(row => row.alarm?.enabled === true || row.consent?.confirmed === true);
-    return usable.length === 1 ? usable[0] : null;
-  }
-  function applyNativeWake(management) {
-    const row = pickWakeUser(management);
-    const mobile = management?.configuration?.mobile || {};
-    const fallbackId = String(mobile.core_user_id || mobile.allowed_user_id || "");
-    const alarm = row?.alarm && typeof row.alarm === "object" ? {...row.alarm} : {};
-    const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(alarm.time || "")) ? String(alarm.time) : defaultWakeTime();
-    data.nativeWake = {
-      state:"ready", busy:false,
-      userId:String(row?.user_id || fallbackId || ""),
-      label:String(row?.label || row?.user_id || fallbackId || ""),
-      enabled:row ? alarm.enabled === true : false,
-      consent:row ? row.consent?.confirmed === true || row.consent?.local_audio === true : false,
-      time,
-      deadline:String(alarm.deadline || ""),
-      mode:WAKE_MODE_LABELS[alarm.mode] ? alarm.mode : "normal",
-      message:String(alarm.message || ""),
-      alarm,
-      notice:"", noticeBad:false,
-    };
-  }
-  function wakeReason(error) {
-    return NATIVE_WAKE_REASONS[error?.code] || "现实触及暂时没有完成这次操作，请到详细配置里核对。";
-  }
-  async function loadNativeWake() {
-    const wake = data.nativeWake || {};
-    if (wake.busy || wake.state === "loading" || !window.CompanionProduct?.request) return;
-    const ticket = version;
-    data.nativeWake = {...wake, state:"loading", notice:"", noticeBad:false};
-    render();
-    try {
-      const result = await window.CompanionProduct.request("GET", "extensions");
-      if (!live(ticket)) return;
-      const record = result?.extensions?.reality;
-      if (!record?.management) {
-        data.nativeWake = {...data.nativeWake, state:"unavailable", busy:false,
-          notice:record ? "暂时读不到现实触及的管理状态。" : "现实触及未安装或尚未启用。"};
-        render(); return;
-      }
-      applyNativeWake(record.management);
-      render();
-    } catch (error) {
-      if (!live(ticket)) return;
-      data.nativeWake = {...data.nativeWake, state:"unavailable", busy:false, notice:wakeReason(error)};
-      render();
-    }
-  }
-  function maybeLoadNativeWake() {
-    if (!data || data.view !== "morning" || !data.settings) return;
-    if (data.nativeWake?.state !== "idle") return;
-    void loadNativeWake();
-  }
-  /* 卡片里的开关和时间/方式都写同一份早晨照料；每次提交都带上整份
-     alarm，避免把原生面板里配好的音量、星期或提示语冲掉。 */
-  async function persistNativeWake({enabled = data.nativeWake?.enabled === true,
-    time = data.nativeWake?.time || defaultWakeTime(), deadline = data.nativeWake?.deadline || "",
-    mode = data.nativeWake?.mode || "normal", message = data.nativeWake?.message || "",
-    success = "叫醒设置已保存。"} = {}) {
-    const wake = data.nativeWake;
-    if (!wake || wake.busy || wake.state !== "ready") return;
-    if (!wake.userId) {
-      data.nativeWake = {...wake, notice:"还没有可叫醒的私聊对象；先在详细配置里选择用户。", noticeBad:true};
-      render(); return;
-    }
-    if (enabled && !wake.consent) {
-      data.nativeWake = {...wake, notice:"音响要先由本人在私聊完成现实触及语音授权；详细配置里有授权入口。", noticeBad:true};
-      render(); return;
-    }
-    const clock = /^([01]\d|2[0-3]):[0-5]\d$/;
-    if (!clock.test(String(time || ""))) {
-      data.nativeWake = {...wake, notice:"请选择起床时间。", noticeBad:true};
-      render(); return;
-    }
-    if (deadline && (!clock.test(deadline) || deadline <= time)) {
-      data.nativeWake = {...wake, notice:"最晚时间需要晚于起床时间。", noticeBad:true};
-      render(); return;
-    }
-    const ticket = version;
-    data.nativeWake = {...wake, enabled, time, deadline, mode, message, busy:true, notice:"", noticeBad:false};
-    render();
-    try {
-      const record = await window.CompanionProduct.request("POST", "extensions/action", {
-        extension_id:"reality", action:"save",
-        payload:{...(wake.alarm || {}), user_id:wake.userId, enabled:enabled === true, time, deadline, mode, message},
-      }, {timeoutMs:65000});
-      if (!live(ticket)) return;
-      if (!record?.management) throw {code:"invalid_response"};
-      applyNativeWake(record.management);
-      data.nativeWake.notice = success;
-      render();
-    } catch (error) {
-      if (!live(ticket)) return;
-      data.nativeWake = {...wake, notice:wakeReason(error), noticeBad:true};
-      render();
-    }
-  }
-  function toggleNativeWake(next) {
-    if (next && !data.nativeWake?.consent) {
-      return persistNativeWake({enabled:true});
-    }
-    return persistNativeWake({enabled:next === true,
-      success:next ? "已开启音响叫醒。" : "已关闭音响叫醒。"});
-  }
-  function nativeWakeBlock() {
-    const wake = data.nativeWake || {};
-    const ready = wake.state === "ready";
-    const busy = wake.busy === true;
-    const on = ready && wake.enabled === true;
-    const time = wake.time || defaultWakeTime();
-    const editable = ready && !!wake.userId && !busy;
-    const detail = !ready
-      ? (wake.state === "loading" || wake.state === "idle" ? "正在读取现实触及…" : wake.notice || "暂时读不到现实触及状态。")
-      : !wake.userId ? "尚未选择私聊对象"
-      : !wake.consent ? "等待本人语音授权"
-      : on ? `每天 ${time} · ${WAKE_MODE_LABELS[wake.mode] || "正常"}${wake.deadline ? ` · 最晚 ${wake.deadline}` : ""}`
-      : "已关闭";
-    const hint = !ready
-      ? "现实触及的早晨照料单独管理；详细配置的「本机语音与叫醒」里可以启用、授权和调整时间。"
-      : !wake.userId ? "在详细配置里选择私聊用户并完成授权后，这里就能直接开关。"
-      : !wake.consent ? `${wake.label || wake.userId} 完成现实触及语音授权后才会出声。`
-      : `对象：${wake.label || wake.userId}。声音走系统默认音频输出（通常是已连接的蓝牙音响）；改动立即生效，不用本页保存，到点会先看你醒没醒，没回应才继续。`;
-    const notice = wake.notice
-      ? `<p class="ct-wake-notice${wake.noticeBad ? " is-error" : ""}" role="status" aria-live="polite">${e(wake.notice)}</p>` : "";
-    const fields = ready && wake.userId ? `<div class="ct-wake-fields">
-      <label class="ct-field"><span class="ct-field-label">起床时间</span>
-        <input type="time" data-native-wake-field="time" value="${e(time)}"${editable ? "" : " disabled"}></label>
-      <label class="ct-field"><span class="ct-field-label">最晚<small>可选</small></span>
-        <input type="time" data-native-wake-field="deadline" value="${e(wake.deadline || "")}"${editable ? "" : " disabled"}></label>
-      <label class="ct-field ct-wake-mode"><span class="ct-field-label">叫醒方式</span>
-        <select data-native-wake-field="mode"${editable ? "" : " disabled"}>${Object.entries(WAKE_MODE_LABELS)
-          .map(([key, text]) => `<option value="${key}"${wake.mode === key ? " selected" : ""}>${e(text)}</option>`).join("")}</select></label>
-      <label class="ct-field ct-wake-message"><span class="ct-field-label">想让你记得的事<small>可选</small></span>
-        <input type="text" data-native-wake-field="message" maxlength="240" value="${e(wake.message || "")}"
-          placeholder="例如：提醒我吃早餐"${editable ? "" : " disabled"}></label>
-    </div>` : "";
-    return `<section class="ct-block ct-wake" data-native-wake-card>
-      <h3>现实触及 · 音响叫醒</h3>
-      <label class="ct-switch ct-wake-switch">
-        <input type="checkbox" data-native-wake-toggle${on ? " checked" : ""}${ready && wake.userId && wake.consent && !busy ? "" : " disabled"}>
-        <span class="ct-switch-track"><i></i></span>
-        <span class="ct-switch-text"><strong>早晨音响叫醒</strong><small>${e(detail)}</small></span>
-      </label>
-      ${fields}
-      ${notice}
-      <div class="ct-wake-actions">
-        <button type="button" class="ct-btn" data-detail="cap-reality" data-native-wake-details>详细配置 ↗</button>
-        ${ready ? "" : `<button type="button" class="ct-btn" data-native-wake-retry>重试</button>`}
-      </div>
-      <p class="ct-note">${e(hint)}</p>
-    </section>`;
   }
   function fmtDuration(seconds) {
     if (!Number.isFinite(seconds)) return "—";
@@ -2325,10 +2135,6 @@ window.CompanionContactPage = (() => {
     data.viewShift = to > from ? 1 : to < from ? -1 : null;
     data.view = next;
     data.notice = "";
-    /* 晨间页的原生摘要每次进来重读：详细配置那边可能刚改过。 */
-    if (next === "morning" && data.nativeWake && data.nativeWake.state !== "loading") {
-      data.nativeWake = {...data.nativeWake, state:"idle", notice:""};
-    }
     if (next === "tests") void loadRecipients();
   }
   function render() {
@@ -2361,9 +2167,6 @@ window.CompanionContactPage = (() => {
       const dial = root.querySelector(".ct-dial");
       if (dial) { dial.classList.add("is-entering"); setTimeout(() => dial.classList.remove("is-entering"), 900); }
     }
-    /* 晨间页右边那块要读原生模块状态：第一次画出来后再发请求，
-       避免挂载阶段抢在桥接就绪之前。 */
-    maybeLoadNativeWake();
   }
 
   /* ---- 交互 ------------------------------------------------------------ */
@@ -2384,15 +2187,6 @@ window.CompanionContactPage = (() => {
     return focusGateSettings();
   }
   function clicked(event) {
-    if (event.target.closest("[data-native-wake-retry]")) {
-      data.nativeWake = {...data.nativeWake, state:"idle", notice:""};
-      render(); return;
-    }
-    /* 详细配置交给页外的 data-detail 处理去开「现实触及」原生面板；
-       先标记下一次挂载展开「本机语音与叫醒」，跳过去就能直接看到。 */
-    if (event.target.closest("[data-native-wake-details]")) {
-      window.CompanionNativeExtensionPanel?.focusAudio?.(); return;
-    }
     const view = event.target.closest("[data-view]");
     if (view) {
       switchView(view.dataset.view); render();
@@ -2431,7 +2225,6 @@ window.CompanionContactPage = (() => {
     const action = event.target.closest("[data-action]")?.dataset.action;
     if (action === "refresh") {
       data.notice = ""; data.error = false; loadContract();
-      data.nativeWake = {...data.nativeWake, state:"idle", notice:""};
       if (data.view === "materials") void loadMaterials();
       if (data.view === "tests") void loadRecipients();
       return;
@@ -2466,22 +2259,6 @@ window.CompanionContactPage = (() => {
     }
   }
   function changed(event) {
-    const wakeToggle = event.target.closest("[data-native-wake-toggle]");
-    if (wakeToggle) { void toggleNativeWake(wakeToggle.checked === true); return; }
-    const wakeField = event.target.closest("[data-native-wake-field]");
-    if (wakeField) {
-      const kind = wakeField.dataset.nativeWakeField, wake = data.nativeWake;
-      if (!wake || !["time", "deadline", "mode", "message"].includes(kind)) return;
-      const value = String(wakeField.value || "");
-      void persistNativeWake({
-        enabled:wake.enabled === true,
-        time:kind === "time" ? value : wake.time,
-        deadline:kind === "deadline" ? value : wake.deadline,
-        mode:kind === "mode" ? value : wake.mode,
-        message:kind === "message" ? value : wake.message,
-      });
-      return;
-    }
     const allowLinks = event.target.closest("[data-test-allow-links]");
     if (allowLinks) {
       if (!data.testBusy && !data.testUncertain) { data.testAllowLinkedAccounts = allowLinks.checked === true; data.confirmTest = ""; render(); }
@@ -2750,8 +2527,6 @@ window.CompanionContactPage = (() => {
     root = host; contactScope = currentContactScope();
     const cached = contactCache.get(contactScope);
     data = cached ? {...blank(), ...cached, confirmTest:"", testBusy:"", touched:new Set(cached.touched || []), draft:{...(cached.draft || {})}, pulse:new Set(), pulseNow:[], flip:null, flipNow:null, viewShift:null, viewShiftNow:null} : blank();
-    /* 原生模块状态不缓存：每次挂载都重新读，免得拿到上一次的半截请求。 */
-    data.nativeWake = {...blank().nativeWake};
     const testGuard = restoreProactiveTestGuard();
     if (testGuard) {
       data.testGuard = testGuard;
@@ -2814,4 +2589,3 @@ window.CompanionContactPage = (() => {
     get state() { return {data}; },
     _internals:{minutes, hm, angle, point, curveOf, curveText, tierOf, arc, quietSpan}};
 })();
-
