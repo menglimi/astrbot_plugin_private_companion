@@ -1,3 +1,16 @@
-/* Equal-height field rows: a toggle row and a numeric row in the same grid
-   row must share one bottom edge; otherwise one short cell looks detached. */
-.wb-fields{align-items:stretch}
+/* Equal-height field rows.
+   A short switch row next to a numeric field with a range hint used to end at
+   its own content height, so one border stopped early and the next row started
+   at the tallest cell.  Keep every card in a field grid sharing one row edge.
+   Layout columns (dial/preview/sidebar) intentionally keep align-items:start. */
+.wb-fields,
+.ct-controls,
+.ct-rest,
+.ct-wake-fields,
+.ct-purpose-groups,
+.ct-gate-pause,
+.member-fields,
+.member-reply-fields,
+.member-contact-purpose-tuning-fields {
+  align-items: stretch;
+}
