@@ -183,7 +183,8 @@ class MultiPrivateBridge(NativePrivateBridge):
 
     def account(self, scope):
         from companion_v2.conversation.linked_ownership import link_for_scope
-        if link_for_scope(self.authority.runtime, scope) is not None:
+        if (scope.installation_id == self.installation_id and scope.kind is ScopeKind.PRIVATE
+                and link_for_scope(self.authority.runtime, scope) is not None):
             target = self.target_for_scope(scope)
             account = self.accounts.get((target.platform_id, target.account_id))
             if account is not None:

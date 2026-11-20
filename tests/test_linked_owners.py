@@ -261,6 +261,16 @@ class LinkedOwnerTests(LinkedReplyFixture, unittest.IsolatedAsyncioTestCase):
                          ("error", "conversation_link_account_link_conflict"))
         self.assertIsNone(self.controller.session.linked_conversations.get("owner-dialogue"))
 
+    async def test_a_linked_scope_of_another_installation_has_no_account_on_this_bridge(self):
+        from dataclasses import replace
+        self.assertEqual((await self.link())["status"], "ok")
+        second = (await self.turn(1, "The joined endpoint", "installation-joined"))["context"]
+        bridge = self.controller.session.bridge
+        self.assertEqual(bridge.account(second.scope).platform_id, second.scope.platform)
+        with self.assertRaises(Exception) as refused:
+            bridge.account(replace(second.scope, installation_id="another-installation"))
+        self.assertEqual(getattr(refused.exception, "code", None), "host_account_changed")
+
     async def test_a_refusal_made_before_linking_still_binds_the_endpoint(self):
         second = (await self.turn(1, "An independent endpoint", "refusal-before"))["context"]
         self.revoke(second, "memory.read")
