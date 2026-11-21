@@ -163,9 +163,12 @@ class ReplyTextProcessingTests(unittest.TestCase):
         # 无 th 前缀、但以“用户说/用户问”开头的草稿也要清理。
         self.assertEqual(strip_internal_expression_protocol(
             "回答。\n用户问「在吗」。\nend真正的回答"), "回答。\n真正的回答")
+        self.assertEqual(strip_internal_expression_protocol(
+            "th用户问「发送在哪」。\n找按钮 send\n再给路径。end点右上角。"), "点右上角。")
         # 普通英文、代码与 ended/endpoint 不得误删。
         for text in ("The end of the story", "end of story", "print('end')", "ended here",
-                     "endpoint ready"):
+                     "endpoint ready", "「那一步可以用 end\n接着写下一行。」",
+                     "用户说法里提到 end\n这是第二段。", "```text\nth用户问\nend应保留\n```"):
             self.assertEqual(strip_internal_expression_protocol(text), text)
 
     def test_control_block_cleanup_handles_escaping_fullwidth_orphans_and_unknown_names(self):
