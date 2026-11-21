@@ -54,16 +54,19 @@ def released_receipt(reason: str, receipt_ref: str | None = None) -> str:
 @dataclass(frozen=True)
 class Amount:
     tokens: int
-    cost_microusd: int
+    cost_microusd: int | None
     input_tokens: int | None = None
     cached_input_tokens: int | None = None
     cache_creation_tokens: int | None = None
     output_tokens: int | None = None
 
     def __post_init__(self):
-        for value in (self.tokens, self.cost_microusd):
-            if type(value) is not int or not 0 <= value <= 10**12:
-                raise ValueError("usage must be bounded integer tokens and millionths of USD")
+        if type(self.tokens) is not int or not 0 <= self.tokens <= 10**12:
+            raise ValueError("usage must be bounded integer tokens and millionths of USD")
+        if self.cost_microusd is not None and (
+            type(self.cost_microusd) is not int or not 0 <= self.cost_microusd <= 10**12
+        ):
+            raise ValueError("usage must be bounded integer tokens and millionths of USD")
         for value in (self.input_tokens, self.cached_input_tokens, self.cache_creation_tokens, self.output_tokens):
             if value is not None and (type(value) is not int or not 0 <= value <= 10**12):
                 raise ValueError("usage detail must be a bounded nonnegative token count")
@@ -88,7 +91,7 @@ class BudgetPolicy:
     def __post_init__(self):
         if type(self.enabled) is not bool:
             raise ValueError("hard budget admission needs an explicit switch")
-        if not all(isinstance(value, Amount) for value in (
+        if not all(isinstance(value, Amount) and type(value.cost_microusd) is int for value in (
                 self.installation, self.bot, self.role, self.window, self.background)):
             raise ValueError("all daily budget ceilings must be explicit")
         if (self.background.tokens > self.installation.tokens

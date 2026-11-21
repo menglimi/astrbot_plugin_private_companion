@@ -321,7 +321,7 @@ class ScreenInterpretationService:
                 calls = self.runtime.read_all("""SELECT state, receipt_ref, actual_tokens, actual_cost
                     FROM model_calls WHERE task_id = ? ORDER BY position""", (run.task.task_id,))
                 if calls and all(row["state"] == "not_started" and row["receipt_ref"]
-                                 and row["actual_tokens"] == 0 and row["actual_cost"] == 0 for row in calls):
+                                 and row["actual_tokens"] == 0 and row["actual_cost"] in (0, None) for row in calls):
                     job["error_code"] = result.failure.code
                     return TaskResult("failed", "not_committed", receipt_ref=calls[-1]["receipt_ref"])
             raise TaskError(result.failure.code, result.failure.reason)
