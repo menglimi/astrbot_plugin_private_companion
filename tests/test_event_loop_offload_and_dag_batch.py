@@ -594,6 +594,18 @@ class EventLoopOffloadTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(seen_threads["life_auth"], loop_thread)
 
         # 4) NativePerceptionWebAPI: status, news_diagnostic, runtime_snapshot, material_pool
+        maintain_tasks = []
+
+        def maintain_role_on_loop(_settings):
+            seen_threads["perc_maintain_role"] = threading.get_ident()
+            loop = asyncio.get_running_loop()
+
+            async def warmup():
+                return "warmed"
+
+            maintain_tasks.append((loop, asyncio.create_task(warmup())))
+
+        fake_controller.session.application.contact_schedule.news_events.maintain_role = maintain_role_on_loop
         perc = NativePerceptionWebAPI(fake_controller)
         with (mock.patch("astrbot_host.native_perception_api.request", fake_req),
               mock.patch("astrbot_host.native_perception_api.dashboard_operator", return_value="op"),
@@ -609,7 +621,7 @@ class EventLoopOffloadTests(unittest.IsolatedAsyncioTestCase):
               mock.patch.object(perc, "_reality_camera_snapshot", return_value={}),
               mock.patch.object(perc, "_other_injections", return_value={}),
               mock.patch("astrbot_host.native_perception_api.ProactiveContactManagement",
-                         return_value=SimpleNamespace(status=lambda _op: Outcome.success({"settings": {}}))),
+                         return_value=SimpleNamespace(status=slow_sync("perc_contact", Outcome.success({"settings": {}})))),
               mock.patch("astrbot_host.native_perception_api.read_role_material_pool",
                          side_effect=slow_sync("perc_pool", {"items": [], "pool": {}, "summary": {}})),
               mock.patch("astrbot_host.web_api.outcome_response", side_effect=lambda o: o)):
@@ -630,7 +642,12 @@ class EventLoopOffloadTests(unittest.IsolatedAsyncioTestCase):
             out_m, ticks_m = await self._measure_concurrent_ticks(perc.material_pool())
             self.assertTrue(out_m.is_success)
             self.assertGreaterEqual(ticks_m, 3)
+            self.assertNotEqual(seen_threads["perc_contact"], loop_thread)
+            self.assertEqual(seen_threads["perc_maintain_role"], loop_thread)
             self.assertNotEqual(seen_threads["perc_pool"], loop_thread)
+            self.assertEqual(len(maintain_tasks), 1)
+            self.assertIs(maintain_tasks[0][0], asyncio.get_running_loop())
+            self.assertEqual(await maintain_tasks[0][1], "warmed")
 
     async def test_native_extensions_offload_to_worker_thread_without_blocking_loop(self):
         from astrbot_host.native_extensions.game.native_context import room_background as game_room_background

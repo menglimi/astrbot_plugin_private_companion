@@ -75,12 +75,12 @@ def rejected_before_generation(error):
     whether provider processing began. No completion was produced, so
     the caller may safely mark the model call as not started and avoid leaving
     a reflection batch permanently ``running``.
+
+    When an exception chain carries multiple HTTP statuses, classification
+    strictly follows the outermost valid status returned by
+    ``extract_error_status_code`` instead of falling through to an inner
+    ``__cause__`` status.
     """
-    seen = set()
-    while isinstance(error, Exception) and id(error) not in seen:
-        seen.add(id(error))
-        status = _direct_error_status_code(error)
-        if status in _HTTP_REJECTION_STATUSES:
-            return True
-        error = error.__cause__
-    return False
+    if not isinstance(error, Exception):
+        return False
+    return extract_error_status_code(error) in _HTTP_REJECTION_STATUSES

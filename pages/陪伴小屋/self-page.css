@@ -1,4 +1,4 @@
-/* 自我页 · 角色手帐。只在本页调整配置控件，保留工作台的保存与继承协议。 */
+﻿/* 自我页 · 角色手帐。只在本页调整配置控件，保留工作台的保存与继承协议。 */
 .self-page{display:grid;gap:var(--sp-4);width:100%;max-width:1120px;min-width:0;margin-inline:auto;container:self-journal / inline-size}
 .self-page [hidden]{display:none!important}
 .self-page.is-questionnaire-focus .journal-cover{display:none}
@@ -113,7 +113,7 @@
 .self-page [data-wb-section-panel="platform_names"] .wb-fields{grid-template-columns:repeat(3,minmax(0,1fr))}
 .wb-identity-card{grid-column:1/-1;display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-4);align-items:start;
   min-width:0;padding:var(--sp-4);border:1px solid var(--t-line-firm);border-radius:var(--r-sm);background:var(--t-surface-soft)}
-.wb-identity-rows{display:grid;gap:var(--sp-2);min-width:0}
+.wb-identity-rows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2) var(--sp-4);min-width:0}
 .self-page .wb-journal .wb-identity-rows .wb-field{padding:0;border:0;background:transparent}
 .self-page .wb-journal .wb-identity-rows .wb-field-main{display:grid;grid-template-columns:76px minmax(0,1fr);gap:var(--sp-2);align-items:center}
 .self-page .wb-journal .wb-identity-rows .wb-label{margin:0;color:var(--t-text-faint);font-size:var(--fs-micro);font-weight:400}
@@ -215,6 +215,7 @@
   .self-page .wb-journal .wb-fields,.self-page [data-wb-section-panel="platform_names"] .wb-fields{grid-template-columns:minmax(0,1fr)}
   .self-page .wb-journal .wb-section-panel,.self-page .wb-journal .wb-card-body>.wb-group{padding:var(--sp-3)}
   .wb-identity-card{grid-template-columns:minmax(0,1fr);padding:var(--sp-3);gap:var(--sp-3)}
+  .self-page .wb-journal .wb-identity-rows{grid-template-columns:minmax(0,1fr)}
   .self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:minmax(0,1fr);gap:var(--sp-1)}
   .self-page .wb-journal .wb-identity-rows .wb-field-side{padding-left:0}
   .self-page .wb-journal .wb-actions .wb-scope{flex-basis:100%;margin-left:0}
@@ -524,3 +525,62 @@ body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
   .self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:minmax(0,1fr);row-gap:var(--sp-1)}
   .self-page .wb-journal .wb-identity-rows .wb-control{width:100%}
 }
+
+/* ===== 自我页 · 身份章节 2026-11-21 ===== */
+.self-chapter-intro{display:grid;grid-template-columns:minmax(120px,160px) minmax(0,1fr);align-items:start;
+  gap:var(--sp-4);margin-bottom:var(--sp-3);padding:var(--sp-3) var(--sp-4);
+  border:1px solid var(--t-line);border-radius:var(--r-sm);
+  background:linear-gradient(120deg,color-mix(in srgb,var(--t-accent-quiet) 46%,transparent),transparent 62%),
+    var(--t-surface-soft);min-width:0}
+.self-chapter-kicker{flex:none;margin:0;color:var(--t-accent-ink);
+  font:650 var(--fs-micro)/1.4 var(--numeric-font);letter-spacing:.12em}
+.self-chapter-copy{display:grid;gap:var(--sp-1);min-width:0}
+.self-chapter-copy h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-title);line-height:1.3}
+.self-chapter-copy p{margin:0;max-width:72ch;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.7}
+
+/* 基础资料卡：姓名/性别并排，生日与种族整行，日期控件不再挤成多行。 */
+.self-page .wb-journal .wb-identity-card{padding:var(--sp-3) var(--sp-4);
+  border-color:var(--t-line);background:var(--t-surface-soft)}
+.self-page .wb-journal .wb-identity-card::before{content:"基础资料";
+  color:var(--t-text-faint);font:650 var(--fs-micro)/1.4 var(--numeric-font);
+  letter-spacing:.12em}
+.self-page .wb-journal .wb-identity-rows{gap:var(--sp-2) var(--sp-5)}
+.self-page .wb-journal .wb-identity-rows [data-wb-row="birthday"],
+.self-page .wb-journal .wb-identity-rows [data-wb-row="species"]{grid-column:1/-1}
+.self-page .wb-journal .wb-identity-rows [data-wb-row="birthday"] .wb-date{flex-wrap:wrap}
+.self-page .wb-journal .wb-identity-rows [data-wb-row="birthday"] .wb-date-text{flex:1 1 240px}
+
+/* 经历类文字单独成段。 */
+.self-page .wb-journal .wb-group[data-wb-group="identity"] .wb-field[data-wb-row="key_lore"]{
+  margin-top:var(--sp-3);padding-top:var(--sp-4);border-top:1px dashed var(--t-line-firm)}
+.self-page .wb-journal .wb-group[data-wb-group="identity"] .wb-field[data-wb-row="key_lore"]::before{
+  content:"设定与经历";grid-column:1/-1;margin-bottom:var(--sp-1);
+  color:var(--t-text-faint);font:650 var(--fs-micro)/1.4 var(--numeric-font);
+  letter-spacing:.12em}
+.self-page .wb-journal .wb-group[data-wb-group="identity"] :is(
+  [data-wb-row="key_lore"],[data-wb-row="identity"],[data-wb-row="character_extra"]) textarea{
+  min-height:112px}
+.self-page .wb-journal .wb-actions{position:static;bottom:auto}
+
+@media(max-width:760px){
+  .self-chapter-intro{grid-template-columns:minmax(0,1fr);gap:var(--sp-1)}
+  .self-page .wb-journal .wb-identity-card{padding:var(--sp-2)}
+  .self-page .wb-journal .wb-identity-rows{gap:var(--sp-2)}
+}
+
+/* 生日是 .wb-date，工作台为日期控件统一把控件放到标签列；在身份行里要放回第二列。 */
+.self-page .wb-journal .wb-identity-rows .wb-field:has(.wb-date) .wb-field-main > .wb-control{
+  grid-column:2;grid-row:1 / span 2;width:100%;max-width:none;justify-content:flex-start}
+@media(max-width:720px){
+  .self-page .wb-journal .wb-identity-rows .wb-field:has(.wb-date) .wb-field-main > .wb-control{
+    grid-column:1;grid-row:auto}
+}
+
+/* 设定与经历的分段标题：复用 wb-field 的 ::before 前必须完整复位，
+   否则会继承「改动竖线」的绝对定位和 2px 宽度。 */
+.self-page .wb-journal .wb-group[data-wb-group="identity"] .wb-field[data-wb-row="key_lore"]::before{
+  content:"设定与经历";position:static;display:block;width:auto;height:auto;
+  top:auto;bottom:auto;left:auto;margin:0 0 var(--sp-1);padding:0;
+  background:none;opacity:1;transform:none;grid-column:1/-1;
+  color:var(--t-text-faint);font:650 var(--fs-micro)/1.4 var(--numeric-font);letter-spacing:.12em}
+

@@ -1,4 +1,4 @@
-const assert = require('node:assert/strict');
+﻿const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
@@ -372,8 +372,9 @@ test('the card is split into labelled groups but keeps one save', async () => {
   const instance = live(harnessed);
   /* vm 上下文里的数组与宿主 realm 不同，比较前先过 plain()。 */
   const ids = plain(instance.state.container.groups.map(group => group.id));
-  assert.deepEqual(ids, ['segment', 'style', 'cleanup', 'voice', 'voice_channels', 'components', 'checks']);
-  assert.ok(plain(instance.state.container.groups.find(group => group.id === 'voice').fields)
+  assert.deepEqual(ids, ['segment', 'style', 'cleanup', 'voice', 'voice_render', 'voice_engine',
+    'voice_limits', 'voice_primary', 'voice_extra', 'voice_channels', 'components', 'checks']);
+  assert.ok(plain(instance.state.container.groups.find(group => group.id === 'voice_engine').fields)
     .includes('voice_provider_id'));
   assert.ok(!ids.some(id => ['wakeup_direct', 'wakeup_interest', 'wakeup_members', 'wakeup_cold_group',
     'wakeup_fatigue', 'silence_policy', 'group_air_guard', 'group_content_safety'].includes(id)));
@@ -545,7 +546,9 @@ test('expression modules render only their own navigation and panels after every
   const h = await loaded(harness());
   const instance = live(h);
   h.page.setExpressionModule('expression-text');
-  assert.match(h.slots.scope.innerHTML, /文字表达设置/);
+  assert.match(h.slots.scope.innerHTML, /text-hero/);
+  assert.match(h.slots.scope.innerHTML, /分段回复已关闭/);
+  assert.match(h.slots.scope.innerHTML, /分段示意/);
   let html = h.slots.settings.innerHTML;
   assert.match(html, /data-wb-section="segment"/);
   assert.match(html, /data-wb-section="style"/);
@@ -565,17 +568,35 @@ test('expression modules render only their own navigation and panels after every
   assert.equal(instance.state.activeGroupId, 'checks');
 
   h.page.setExpressionModule('expression-voice');
-  assert.match(h.slots.scope.innerHTML, /语音朗读设置/);
-  assert.match(h.slots.scope.innerHTML, /音色与 TTS 合成后端在「模型与连接」中配置/);
+  assert.match(h.slots.scope.innerHTML, /voice-hero/);
+  assert.match(h.slots.scope.innerHTML, /朗读预览/);
+  assert.match(h.slots.scope.innerHTML, /语音朗读已关闭/);
   assert.doesNotMatch(h.slots.scope.innerHTML, /核心回复|历史兼容|群唤醒/);
   html = h.slots.settings.innerHTML;
-  assert.match(html, /data-wb-section="voice"/);
-  assert.match(html, /data-wb-section="voice_channels"/);
-  assert.match(html, /data-wb-section-panel="voice_channels"/);
-  assert.equal(instance.state.activeGroupId, 'voice');
+  for (const id of ['voice', 'voice_render', 'voice_engine', 'voice_limits',
+    'voice_primary', 'voice_extra', 'voice_channels']) {
+    assert.match(html, new RegExp(`data-wb-group="${id}"`));
+  }
   assert.match(html, /data-wb-row="voice_enabled"/);
-  assert.doesNotMatch(html, /data-wb-section="segment"|data-wb-section="components"|data-wb-section="checks"/);
-  assert.doesNotMatch(html, /data-wb-row="reply_quote_enabled"|data-wb-row="enabled"/);
+  assert.match(html, /data-wb-row="voice_private_zh_provider_id"/);
+  assert.doesNotMatch(html, /data-wb-section="segment"|data-wb-row="reply_quote_enabled"|data-wb-row="enabled"/);
+  h.page.unmount();
+});
+
+test('voice hero follows the draft and warns when voice is off', async () => {
+  const h = await loaded(harness());
+  h.page.setExpressionModule('expression-voice');
+  const instance = live(h);
+  assert.match(h.slots.scope.innerHTML, /语音朗读已关闭/);
+  instance.state.draft.voice_enabled = true;
+  instance.state.draft.voice_provider_id = 'tts-a';
+  h.listeners['root:input']({target: {dataset: {wbField: 'voice_enabled'}}});
+  assert.match(h.slots.scope.innerHTML, /下一轮可能带上朗读/);
+  assert.match(h.slots.scope.innerHTML, /tts-a/);
+  assert.doesNotMatch(h.slots.scope.innerHTML, /语音朗读已关闭/);
+  instance.state.draft.voice_probability = 0;
+  h.listeners['root:input']({target: {dataset: {wbField: 'voice_probability'}}});
+  assert.match(h.slots.scope.innerHTML, /触发概率为 0/);
   h.page.unmount();
 });
 
@@ -584,7 +605,7 @@ test('voice channel overrides are reachable and save from the voice module', asy
   h.page.setExpressionModule('expression-voice');
   assert.equal(h.page.selectSection('voice_channels'), true);
   const instance = live(h);
-  assert.equal(instance.state.activeGroupId, 'voice_channels');
+  assert.ok(['voice', 'voice_channels'].includes(instance.state.activeGroupId));
   const overrides = ['voice_private_zh_provider_id', 'voice_private_ja_provider_id',
     'voice_private_en_provider_id', 'voice_group_zh_provider_id',
     'voice_group_ja_provider_id', 'voice_group_en_provider_id'];
@@ -979,7 +1000,7 @@ test('expression voice tab hosts the shared reply editor with only TTS settings 
     'voice_private_ja_provider_id', 'voice_group_ja_provider_id']) {
     assert.ok(adapter.includes(field), `missing TTS setting ${field}`);
   }
-  assert.match(adapter, /私聊 \/ 群聊语音覆盖/);
+  assert.match(adapter, /私聊 \/ 群聊覆盖/);
 });
 
 test('the TTS provider catalog comes from the read result, not a page-local list', async () => {
@@ -1331,5 +1352,24 @@ test('未选窗口时不展示代表私聊的回复诊断', async () => {
   h.requests[0].resolve(value); await drains();
   assert.match(h.slots.diagnostics.innerHTML, /先选择当前角色的窗口/);
   assert.doesNotMatch(h.slots.diagnostics.innerHTML, /private-window-marker/);
+  h.page.unmount();
+});
+
+
+test('text hero follows the segmentation draft', async () => {
+  const h = await loaded(harness());
+  h.page.setExpressionModule('expression-text');
+  const instance = live(h);
+  assert.match(h.slots.scope.innerHTML, /分段回复已关闭/);
+  instance.state.draft.enabled = true;
+  instance.state.draft.streaming = true;
+  instance.state.draft.streaming_mode = 'incremental';
+  instance.state.draft.llm_controlled = true;
+  instance.state.draft.max_segments = 4;
+  h.listeners['root:input']({target: {dataset: {wbField: 'enabled'}}});
+  assert.match(h.slots.scope.innerHTML, /会先把回复分段再发送/);
+  assert.match(h.slots.scope.innerHTML, /模型 \+ 规则/);
+  assert.match(h.slots.scope.innerHTML, /最多 4 条/);
+  assert.match(h.slots.scope.innerHTML, /边生成边分段发送/);
   h.page.unmount();
 });

@@ -81,7 +81,7 @@ class IntegrationWebAPI:
                         action="memory.manage",
                         observed_at=controller.now(),
                     ))
-                data = UnifiedCompanionExtensionAPI(controller).manifest()
+                data = UnifiedCompanionExtensionAPI(controller, claim=False).manifest()
                 data["nai"] = NAIImageBackend(controller.context, Path(controller.data_root) / "nai").status()
                 return {"status": "ok", "message": "", "data": data}
         except TaskError as error:

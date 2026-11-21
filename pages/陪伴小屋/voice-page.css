@@ -1,0 +1,185 @@
+﻿/* 语音朗读页 2026-11-21：状态头 + 朗读预览 + 分组卡片。
+   独立成文件，避免和 expression-config.css 里其他表达页的规则互相覆盖；
+   bundle 顺序在 workbench.css / console.css 之后。 */
+
+#replyWorkspace.expression-voice-focus{display:block;min-width:0}
+#replyWorkspace.expression-voice-focus>[data-reply-part="scope"]{
+  margin:0 0 var(--sp-3);padding:0;border:0;background:transparent;
+  font-size:inherit;line-height:inherit;color:inherit}
+
+/* 页面 h1 已经写着「语音朗读」，不再重复控制台分区标题。 */
+#expression-panel-expression-voice .console-section-head{display:none}
+#expression-panel-expression-voice .console-section-body{padding-top:0}
+#expression-panel-expression-voice .console-section{padding-top:0;border-top:0}
+
+/* ---------- 状态头 ---------- */
+.voice-hero{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(280px,.65fr);
+  gap:var(--sp-4);padding:var(--sp-4) var(--sp-5);min-width:0;
+  border:1px solid var(--t-line);border-radius:var(--r-md);
+  background:radial-gradient(130% 150% at 0% 0%,
+    color-mix(in srgb,var(--t-accent-quiet) 62%,transparent),transparent 58%),
+    var(--t-surface-raised)}
+.voice-hero-copy{display:grid;align-content:start;gap:var(--sp-2);min-width:0}
+.voice-hero-kicker{margin:0;color:var(--t-accent-ink);font:650 var(--fs-micro)/1.4 var(--numeric-font);
+  letter-spacing:.14em;text-transform:uppercase}
+.voice-hero h2{margin:0;color:var(--t-text-strong);font-size:var(--fs-head);line-height:1.3}
+.voice-hero-lede{margin:0;max-width:58ch;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.75}
+.voice-hero-alert{display:flex;align-items:flex-start;gap:var(--sp-1);margin:0;
+  padding:var(--sp-2) var(--sp-3);border-radius:var(--r-xs);
+  background:var(--t-warn-quiet);color:var(--t-warn-ink);
+  font-size:var(--fs-tiny);line-height:1.6}
+.voice-hero-alert svg{flex:none;width:14px;height:14px;margin-top:2px}
+.voice-hero-chips{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:var(--sp-2);margin-top:var(--sp-1)}
+.voice-chip{display:grid;gap:2px;min-width:0;padding:var(--sp-2);
+  border:1px solid var(--t-line);border-radius:var(--r-xs);
+  background:color-mix(in srgb,var(--t-surface) 78%,transparent)}
+.voice-chip small{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.5}
+.voice-chip strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:600;line-height:1.5}
+.voice-hero-actions{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin-top:var(--sp-1)}
+.voice-hero-actions .button{display:inline-flex;align-items:center;gap:var(--sp-1)}
+.voice-hero-actions svg{width:14px;height:14px}
+
+.voice-hero-preview{display:grid;align-content:start;gap:var(--sp-2);min-width:0;
+  padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);
+  background:var(--t-surface);box-shadow:var(--t-shadow)}
+.voice-hero-preview>header{display:flex;align-items:center;gap:var(--sp-2);min-width:0}
+.voice-hero-preview>header strong{color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:600}
+.voice-preview-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--t-ok);
+  box-shadow:0 0 0 3px var(--t-ok-quiet)}
+.voice-hero.is-off .voice-preview-dot{background:var(--t-text-faint);box-shadow:none}
+.voice-preview-badge{margin-left:auto;color:var(--t-text-faint);font-size:var(--fs-micro);white-space:nowrap}
+.voice-preview-text{margin:0;padding:var(--sp-2) 0;color:var(--t-text);font-size:var(--fs-body);line-height:1.8}
+.voice-wave{display:flex;align-items:flex-end;gap:3px;height:34px;padding:0 2px}
+.voice-wave i{flex:1;min-height:6px;height:calc(var(--h) * 1%);border-radius:3px;
+  background:linear-gradient(180deg,var(--t-accent),
+    color-mix(in srgb,var(--t-accent) 42%,transparent));transition:height .2s ease}
+.voice-hero.is-off .voice-wave i{background:var(--t-line-firm)}
+.voice-hero-preview>footer{display:flex;justify-content:space-between;gap:var(--sp-2);
+  color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.5}
+.voice-hero-preview>footer span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.voice-hero.is-off .voice-hero-preview{opacity:.72}
+
+/* ---------- 设置卡片 ---------- */
+#replyWorkspace.expression-voice-focus .wb-card{border:0;background:transparent;overflow:visible}
+#replyWorkspace.expression-voice-focus .wb-card-head{display:none}
+#replyWorkspace.expression-voice-focus .wb-rail-legend{display:none}
+#replyWorkspace.expression-voice-focus .wb-card-body{display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;
+  gap:var(--sp-3);padding:0}
+#replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice"]{grid-column:1;grid-row:1}
+#replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_engine"]{grid-column:2;grid-row:1}
+#replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_render"]{grid-column:1;grid-row:2}
+#replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_primary"]{grid-column:2;grid-row:2}
+#replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_limits"]{grid-column:1;grid-row:3}
+#replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_extra"]{grid-column:2;grid-row:3}
+#replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_channels"]{grid-column:1/-1;grid-row:4}
+#replyWorkspace.expression-voice-focus .wb-group{display:grid;align-content:start;gap:var(--sp-1);
+  min-width:0;margin:0!important;padding:var(--sp-3) var(--sp-4)!important;
+  border:1px solid var(--t-line)!important;border-radius:var(--r-md);
+  background:var(--t-surface)}
+#replyWorkspace.expression-voice-focus .wb-group-head{margin:0 0 var(--sp-1);
+  color:var(--t-text-strong);font-size:var(--fs-body);font-weight:650}
+#replyWorkspace.expression-voice-focus .wb-group>.wb-help{margin:0 0 var(--sp-1);max-width:64ch;
+  color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.6}
+#replyWorkspace.expression-voice-focus .wb-fields{display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+  gap:0 var(--sp-5);max-width:none}
+#replyWorkspace.expression-voice-focus .wb-field{grid-template-columns:10px minmax(0,1fr);
+  gap:var(--sp-1) var(--sp-2);padding:var(--sp-2) 0;
+  border-top:1px solid color-mix(in srgb,var(--t-line) 62%,transparent)}
+#replyWorkspace.expression-voice-focus .wb-field:first-child{border-top:0;padding-top:2px}
+#replyWorkspace.expression-voice-focus .wb-field>.wb-field-main{grid-column:2}
+#replyWorkspace.expression-voice-focus .wb-field-main{grid-template-columns:minmax(0,1fr);gap:0}
+#replyWorkspace.expression-voice-focus .wb-field-main>.wb-label{font-size:var(--fs-tiny);
+  font-weight:600;line-height:1.5}
+#replyWorkspace.expression-voice-focus .wb-field-main>.wb-help{
+  display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:1;
+  font-size:var(--fs-micro);line-height:1.55}
+#replyWorkspace.expression-voice-focus .wb-field-main>.wb-control{grid-column:1;grid-row:auto;
+  justify-self:stretch;width:100%;max-width:none;margin-top:var(--sp-1);justify-content:flex-start}
+#replyWorkspace.expression-voice-focus .wb-control input,
+#replyWorkspace.expression-voice-focus .wb-control select,
+#replyWorkspace.expression-voice-focus .wb-control textarea{width:100%;max-width:none;
+  min-height:34px;font-size:var(--fs-tiny)}
+#replyWorkspace.expression-voice-focus .wb-control textarea{min-height:64px;line-height:1.7}
+#replyWorkspace.expression-voice-focus .wb-field:hover,
+#replyWorkspace.expression-voice-focus .wb-field.is-inherited{background:transparent}
+#replyWorkspace.expression-voice-focus .wb-field:has(textarea),
+#replyWorkspace.expression-voice-focus .wb-field:has(.wb-word-editor),
+#replyWorkspace.expression-voice-focus .wb-field:has(.wb-keywords){grid-column:1/-1}
+#replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_channels"] .wb-fields{
+  grid-template-columns:repeat(3,minmax(0,1fr))}
+#replyWorkspace.expression-voice-focus .wb-actions{position:sticky;bottom:var(--sp-2);z-index:4;
+  margin:var(--sp-1) 0 0;padding:var(--sp-2) var(--sp-3);
+  border:1px solid var(--t-line);border-radius:var(--r-sm);
+  background:color-mix(in srgb,var(--t-surface-raised) 92%,transparent);
+  backdrop-filter:blur(8px);box-shadow:var(--t-shadow)}
+
+@media(max-width:1080px){
+  .voice-hero{grid-template-columns:minmax(0,1fr)}
+  .voice-hero-chips{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:900px){
+  #replyWorkspace.expression-voice-focus .wb-card-body{grid-template-columns:minmax(0,1fr)}
+  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group]{grid-column:1;grid-row:auto}
+}
+@media(max-width:560px){
+  #replyWorkspace.expression-voice-focus .wb-fields,
+  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_channels"] .wb-fields{
+    grid-template-columns:minmax(0,1fr)}
+}
+@media(max-width:560px){
+  .voice-hero{padding:var(--sp-3)}
+  .voice-hero-actions .button{flex:1 1 100%;justify-content:center}
+}
+@media(prefers-reduced-motion:reduce){
+  .voice-wave i{transition:none}
+}
+
+@media(max-width:900px){
+  #replyWorkspace.expression-voice-focus .wb-field-main>.wb-help{-webkit-line-clamp:2}
+}
+
+
+
+
+
+
+@media(max-width:760px){
+  /* 手机上常驻底部保存条会遮住字段，改成随内容排在最后。 */
+  #replyWorkspace.expression-voice-focus .wb-actions{position:static;bottom:auto}
+}
+@media(max-width:560px){
+  #replyWorkspace.expression-voice-focus .wb-group{padding:var(--sp-2) var(--sp-3)!important}
+  #replyWorkspace.expression-voice-focus .wb-control textarea{min-height:48px}
+  .voice-hero{padding:var(--sp-3)}
+}
+
+
+
+/* 全局语音默认值：折叠成一条状态摘要，避免和窗口设置混在一起。 */
+.expression-voice-workspace .voice-global{margin-top:var(--sp-3);padding:0!important;
+  border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface);overflow:clip}
+.voice-global-summary{display:flex;align-items:center;justify-content:space-between;
+  gap:var(--sp-3);padding:var(--sp-3) var(--sp-4);cursor:pointer;list-style:none}
+.voice-global-summary::-webkit-details-marker{display:none}
+.voice-global-summary::after{content:"›";flex:none;color:var(--t-text-faint);
+  font-size:var(--fs-title);line-height:1;transform:rotate(90deg);transition:transform .16s ease}
+.voice-global[open]>.voice-global-summary::after{transform:rotate(-90deg)}
+.voice-global-title{display:grid;gap:2px;min-width:0}
+.voice-global-title strong{color:var(--t-text-strong);font-size:var(--fs-body);font-weight:650}
+.voice-global-title small{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.6}
+.voice-global-state{flex:none;padding:var(--sp-1) var(--sp-2);border-radius:var(--r-pill);
+  font-size:var(--fs-micro);font-weight:600;white-space:nowrap}
+.voice-global-state.is-on{color:var(--t-ok-ink);background:var(--t-ok-quiet)}
+.voice-global-state.is-off{color:var(--t-warn-ink);background:var(--t-warn-quiet)}
+.voice-global-body{padding:var(--sp-3) var(--sp-4) var(--sp-4);border-top:1px solid var(--t-line)}
+.voice-global-body .host-options-jumps{margin:0 0 var(--sp-3)}
+@media(max-width:560px){
+  .voice-global-summary{align-items:flex-start;flex-direction:column;gap:var(--sp-1)}
+  .voice-global-body{padding:var(--sp-3)}
+}
+
+.voice-hero-hint{margin:0;color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.6}

@@ -56,13 +56,12 @@
 @keyframes wb-section-enter{from{opacity:.55;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 
 /* === 字段行 === */
-/* 字段按可用宽度自动分列：标量字段两三个一行，长控件整幅通栏。
-   此前是单列纵向堆叠——一组九个数字字段要滚九屏，而每个数字框还各自
-   拉伸到整幅宽，右侧全是空白。列宽 300px 是「标签 + 数字框 + 范围」放得下
-   又不至于把说明挤成两行的下限。 */
+/* 字段按可用宽度自动分列：宽页两列，对话框/侧栏这类窄容器自然回落单列。
+   下限 560px = 12em 标签 + 320px 控件 + 间距；再窄标签就会被折成两行。
+   长控件（多行文本、关键词、顺序编辑器）整幅通栏。 */
 .wb-fields{
-  display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
-  align-items:start;gap:0 var(--sp-5);
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(560px,1fr));
+  align-items:start;gap:0 var(--sp-6);
 }
 .wb-field{
   display:grid;grid-template-columns:auto minmax(0,1fr) auto;
@@ -437,6 +436,7 @@
   font-size:var(--fs-tiny);line-height:1.8;
 }
 .wb-pending p{margin:0;flex:1;min-width:180px}
+.wb-pending-actions{display:flex;gap:var(--sp-2);flex-wrap:wrap}
 
 /* 骨架屏 */
 .wb-skeleton{display:flex;flex-direction:column;gap:var(--sp-3)}
@@ -637,9 +637,10 @@
   .wb-tag-form input[type=text]{min-width:0}
 }
 
-/* 配置项标题在左、控件在右；范围提示附在标题旁。 */
-.wb-fields{grid-template-columns:minmax(0,1fr);gap:0;max-width:1040px}
-.wb-field{grid-template-columns:12px minmax(0,1fr) auto;align-items:center;
+/* 配置项标题在左、控件在右；范围提示附在标题旁。
+   右侧固定留出「恢复继承」槽位：只有被覆盖的行有按钮，按 auto 排会让同一列
+   的控件右边缘相差一个按钮宽，看上去一左一右。空槽也保留，所有控件共用一条右边缘。 */
+.wb-field{grid-template-columns:12px minmax(0,1fr) 64px;align-items:center;
   gap:var(--sp-2) var(--sp-4);padding:14px var(--sp-2) 14px 0}
 /* 层轨占据首列，主体与恢复继承动作分别排列。 */
 .wb-field>.wb-field-main{grid-column:2}
@@ -648,6 +649,14 @@
 }
 /* 自我页的 journal 是单列卡片，不能沿用工作台的第 2 列。 */
 .self-page .wb-journal .wb-field>.wb-field-main{grid-column:1}
+/* journal 不画层轨，字段行却仍按三列排：主体落在 12px 的层轨列里，只能按
+   内容撑开，控件右边缘比行边缘缩进 40px，还随控件类型各不相同。改成单列。 */
+.wb-journal .wb-field{grid-template-columns:minmax(0,1fr);padding-right:0}
+.wb-journal .wb-field>.wb-field-main{grid-column:1}
+.wb-journal .wb-field-side{grid-column:1;padding-left:0}
+.wb-journal .wb-field-side:empty{display:none}
+/* 回复页是常驻预览 + 六十多个字段的单独版式，保持原来的单列密度。 */
+#replyWorkspace .wb-fields{grid-template-columns:minmax(0,1fr);max-width:1040px}
 .wb-field-main{display:grid;grid-template-columns:minmax(12em,1fr) minmax(180px,360px);
   align-items:center;column-gap:var(--sp-5);row-gap:var(--sp-1)}
 .wb-field-main>.wb-label{grid-column:1;grid-row:1;align-self:end}

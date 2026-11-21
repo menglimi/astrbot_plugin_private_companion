@@ -1,0 +1,88 @@
+/* 角色策略页（学习与反思 → 角色策略）。
+ *
+ * 这一页只有两个配置编辑器：技能领域、表达学习策略；线上都用 journal 形态
+ * 渲染（分区平铺、没有侧栏）。工作台的默认形态是「1040px 单列表单贴在面板
+ * 左边」，在 1600+ 的窗口里右半页全是空白，字段也一行一个。这里把整页收成
+ * 一条居中的 1480 栏，两个编辑器各自成卡，字段两列排布：开关、下拉、数字这类
+ * 短字段两两成对，技能清单这类长控件仍通栏。
+ *
+ * 只在本页生效：.learning-policy-workspaces 是策略页独有的容器。用 :has()
+ * 认出策略页，不必在 app.js 里再加一个页面状态类。 */
+
+.learning-hub:has(.learning-policy-workspaces){max-width:1480px;margin-inline:auto;width:100%}
+
+/* 两张设置卡：标题、字段、保存条收进同一块卡，保存范围的边界一眼可见。 */
+.learning-policy-workspaces .config-editors{
+  padding:var(--sp-4) var(--sp-5);
+  border:1px solid var(--t-line);
+  border-radius:var(--r-md);
+  background:var(--t-surface);
+  box-shadow:var(--t-shadow);
+}
+.learning-policy-workspaces .wb-card-copy h3{font-size:var(--fs-lead)}
+
+/* 字段两列：工作台默认的单列 1040px 上限在宽屏下把表单拉成一长条。
+   沟留 30px，左列控件与右列标签之间才有清晰的分界。 */
+.learning-policy-workspaces .wb-fields{
+  max-width:none;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  align-items:stretch;
+  gap:0 var(--sp-6);
+}
+/* 同一行的两格等高，字段分隔线才对得齐；文字仍从格子上沿开始。 */
+.learning-policy-workspaces .wb-field{align-items:start}
+
+/* journal 里没有层轨节点，但字段行仍留着 12px 空列和 8px 右内边距，
+   控件因此比行的右边缘缩进 40 多像素——两列的控件右边缘看着歪。
+   这一页把空列去掉、右内边距归零，控件与分隔线同一条右边缘。 */
+.learning-policy-workspaces .wb-field{
+  grid-template-columns:minmax(0,1fr);
+  padding-right:0;
+}
+.learning-policy-workspaces .wb-field>.wb-field-main{grid-column:1}
+.learning-policy-workspaces .wb-field-side{grid-column:1;padding-left:0}
+/* 恢复继承按钮只在继承字段出现，空槽不占行高。 */
+.learning-policy-workspaces .wb-field-side:empty{display:none}
+
+/* 控件列固定 320：不同控件（下拉/数字/开关）右边缘才对得齐，
+   标签也有足够宽度，长标签不会把 ⓘ 挤到下一行。 */
+.learning-policy-workspaces .wb-field-main{grid-template-columns:minmax(12em,1fr) 320px}
+
+/* 数字控件的宽度原本随「范围提示」文字长短浮动（1–16 与 0–1 不是同一宽度），
+   同一列里输入框左边缘因此参差。固定块宽后，输入框左右边缘都成一条线。 */
+.learning-policy-workspaces .wb-number{width:180px;justify-content:flex-start}
+.learning-policy-workspaces .wb-number input{flex:0 0 148px;width:148px}
+
+/* 分区标题与字段左边缘对齐（工作台默认缩进 8px）。 */
+.learning-policy-workspaces .wb-group-head{margin-left:0}
+
+/* 保存条贴到卡片下缘：负边距与上面的卡片内边距成对出现。 */
+.learning-policy-workspaces .wb-actions{
+  margin-inline:calc(var(--sp-5) * -1);
+  margin-bottom:calc(var(--sp-4) * -1);
+  padding-inline:var(--sp-5);
+  padding-bottom:var(--sp-4);
+  border-radius:0 0 var(--r-md) var(--r-md);
+}
+
+/* 中窄屏：两列会把标签和控件挤成上行下行。单列后标签放到控件上方，
+   不再让标签留在最左、控件甩到最右，中间空出一大片。 */
+@media(max-width:1280px){
+  .learning-policy-workspaces .wb-fields{grid-template-columns:minmax(0,1fr)}
+  .learning-policy-workspaces .wb-field-main{grid-template-columns:minmax(0,1fr);row-gap:var(--sp-1)}
+  .learning-policy-workspaces .wb-field-main>.wb-control{
+    grid-column:1;grid-row:auto;justify-self:start;
+    width:100%;max-width:360px;justify-content:flex-start;
+  }
+  .learning-policy-workspaces .wb-field:has(textarea) .wb-field-main>.wb-control,
+  .learning-policy-workspaces .wb-field:has(.wb-word-editor) .wb-field-main>.wb-control{max-width:none}
+}
+@media(max-width:860px){
+  .learning-policy-workspaces .config-editors{padding:var(--sp-3)}
+  .learning-policy-workspaces .wb-actions{
+    margin-inline:calc(var(--sp-3) * -1);
+    margin-bottom:calc(var(--sp-3) * -1);
+    padding-inline:var(--sp-3);
+    padding-bottom:var(--sp-3);
+  }
+}
