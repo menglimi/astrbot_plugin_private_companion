@@ -1,6 +1,7 @@
 """Authenticated V2 semantic settings and owned reaction/vocabulary catalog."""
 
 import base64
+import binascii
 from collections import OrderedDict
 import io
 import json
@@ -8,6 +9,7 @@ import logging
 import sqlite3
 from PIL import Image
 from astrbot.api.web import request
+from companion_v2.conversation.media.models import MAX_IMAGE_BYTES
 from companion_v2.execution.models import TaskContext, TaskError, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind, ScopeRef
@@ -127,9 +129,35 @@ class SemanticWebAPI:
             service.check(context)
         return service, context
 
-    def recheck(self, selection, service, context):
+    def role_reaction_owner(self, selection, service, context):
+        """Return the role-owned reaction catalog key for a validated chat selection."""
+        if context is not None:
+            return service.ensure_reaction_catalog(context)
+        target_id, role_id = selection.get("target_id"), selection.get("role_id")
+        if not target_id or not role_id:
+            return None
+        settings = self.controller.settings
+        if not hasattr(settings, "all_targets"):
+            return None
+        target = settings.target(target_id)
+        if not isinstance(target, GroupTarget):
+            return None
+        if not any(p.bot_id == target.bot_id and p.role_id == role_id for p in settings.personas):
+            return None
+        return service.ensure_reaction_catalog_for_role(
+            self.controller.runtime.installation_id, target.bot_id, role_id)
+
+    def recheck(self, selection, service, context, *, reaction_owner=None):
         current, target = self.resolve(selection)
-        if current is not service or (service.owner(target) if target else None)!=(service.owner(context) if context else None):
+        if current is not service:
+            raise TaskError("semantic_scope_changed", "target changed during this operation")
+        if reaction_owner is not None:
+            if self.role_reaction_owner(selection, current, target) != reaction_owner:
+                raise TaskError("semantic_scope_changed", "target changed during this operation")
+            if target:
+                service.check(target)
+            return
+        if (service.owner(target) if target else None)!=(service.owner(context) if context else None):
             raise TaskError("semantic_scope_changed", "target changed during this operation")
         if context:
             service.check(context)
@@ -172,31 +200,42 @@ class SemanticWebAPI:
             self._preview_cache.popitem(last=False)
         return value
 
-    def status(self, service, context):
+    def status(self, service, context, *, reaction_owner=None):
         result = service.status()
-        result.update(selection_ready=context is not None, scope_kind=context.scope.kind.value if context else "global",
+        effective_reaction_owner = service.ensure_reaction_catalog(context) if context else reaction_owner
+        scope_kind = (context.scope.kind.value if context
+                      else "group" if effective_reaction_owner is not None else "global")
+        result.update(selection_ready=context is not None,
+                      reaction_ready=effective_reaction_owner is not None,
+                      scope_kind=scope_kind,
                       settings_scope="installation", catalog={})
-        if context:
-            reaction_owner = service.ensure_reaction_catalog(context)
-            slang_owner = service.owner(context)
+        if effective_reaction_owner is not None or context is not None:
+            slang_owner = service.owner(context) if context is not None else None
             with service.store.db() as db:
-                for kind in ("reaction","slang"):
-                    owner = reaction_owner if kind == "reaction" else slang_owner
+                for kind, owner in (("reaction", effective_reaction_owner), ("slang", slang_owner)):
+                    if owner is None:
+                        continue
                     counts = {str(r[0]):r[1] for r in db.execute("SELECT enabled,COUNT(*) FROM items WHERE owner=? AND kind=? GROUP BY enabled",(owner,kind))}
                     embedded = db.execute("""SELECT COUNT(*) FROM vectors v JOIN items i ON i.owner=v.owner AND i.kind=v.kind AND i.id=v.id
                         WHERE v.owner=? AND v.kind=? AND v.model=? AND v.revision=i.revision AND i.enabled=1""",(owner,kind,result["model_binding"])).fetchone()[0]
                     result["catalog"][kind] = {"enabled":counts.get("1",0),"disabled":counts.get("0",0),
                                                "total":sum(counts.values()),"embedded":embedded}
                     if kind == "reaction":
-                        # Match the UI's pending-only analyze action across the entire catalog,
-                        # rather than counting only the current 24-item page.
-                        result["catalog"][kind]["pending"] = db.execute(
-                            """SELECT COUNT(*) FROM items WHERE owner=? AND kind='reaction'
-                               AND json_extract(payload, '$.analysis')='pending'""",
-                            (owner,)
-                        ).fetchone()[0]
-            result["reaction_collection"] = (service.store.reaction_collection_summary(reaction_owner)
-                                             if context else {"totals": {}, "recent": []})
+                        # Compute live pending/recognized/awaiting-confirmation counts across
+                        # the whole catalog so progress never drifts from lifetime totals.
+                        stats = db.execute(
+                            """SELECT
+                                 COALESCE(SUM(CASE WHEN json_extract(payload, '$.analysis')='pending' THEN 1 ELSE 0 END), 0),
+                                 COALESCE(SUM(CASE WHEN json_extract(payload, '$.analysis') IN ('analyzed','auto_reviewed','manual','legacy_imported') THEN 1 ELSE 0 END), 0),
+                                 COALESCE(SUM(CASE WHEN json_extract(payload, '$.collection_state')='awaiting_confirmation' AND enabled=0 THEN 1 ELSE 0 END), 0)
+                               FROM items WHERE owner=? AND kind='reaction'""",
+                            (owner,),
+                        ).fetchone()
+                        result["catalog"][kind]["pending"] = stats[0]
+                        result["catalog"][kind]["recognized"] = stats[1]
+                        result["catalog"][kind]["awaiting_confirmation"] = stats[2]
+            result["reaction_collection"] = (service.store.reaction_collection_summary(effective_reaction_owner)
+                                             if effective_reaction_owner is not None else {"totals": {}, "recent": []})
         return result
 
     async def get(self):
@@ -206,7 +245,8 @@ class SemanticWebAPI:
                 raise ValueError("unexpected or duplicate fields")
             selection = {key:query[key] for key in ("target_id","role_id","session_id","global") if key in query}
             service, context = self.resolve(selection)
-            result = self.status(service,context)
+            reaction_owner = self.role_reaction_owner(selection, service, context)
+            result = self.status(service, context, reaction_owner=reaction_owner)
             if context is not None and hasattr(self.controller.settings, "all_targets"):
                 # Global settings requests intentionally carry no target/role.
                 # Resolve target-specific group sessions only for a chat scope.
@@ -218,9 +258,8 @@ class SemanticWebAPI:
             if kind not in ("reaction","slang"):
                 raise ValueError("unknown catalog")
             result.update(items=[],next_after=None)
-            if context:
-                owner = (service.ensure_reaction_catalog(context) if kind == "reaction"
-                         else service.owner(context))
+            owner = reaction_owner if kind == "reaction" else (service.owner(context) if context else None)
+            if owner is not None:
                 if query.get("id"):
                     item = service.store.get(owner,kind,query["id"])
                     result["item"] = self.public(item)
@@ -228,10 +267,10 @@ class SemanticWebAPI:
                         image = service.reactions.captured(item)
                         result["image_url"] = "data:"+image.descriptor.mime_type+";base64,"+base64.b64encode(image.content).decode("ascii")
                 else:
-                    page = service.store.list(owner,kind,after=query.get("after",""),limit=25)
+                    page, next_after = service.store.list_recent_page(owner, kind, after=query.get("after", ""), limit=24)
                     with service.store.db() as db:
                         items = []
-                        for item in page[:24]:
+                        for item in page:
                             vector = db.execute("""SELECT 1 FROM vectors WHERE owner=? AND kind=? AND id=?
                                 AND model=? AND revision=?""",
                                 (owner, kind, item["id"], result["model_binding"], item["revision"])
@@ -242,7 +281,7 @@ class SemanticWebAPI:
                             items.append({**public_item,
                                 "source_valid": service.slang.validate(item,context) if kind=="slang" else True})
                     result["items"] = items
-                    result["next_after"] = page[23]["id"] if len(page)>24 else None
+                    result["next_after"] = next_after
             return self.response(result)
         except (TaskError,ValueError,TypeError,KeyError) as error:
             return self.error(error)
@@ -280,12 +319,14 @@ class SemanticWebAPI:
                 raise ValueError("unsupported action or fields")
             selection = {k:data[k] for k in ("target_id","role_id","session_id","global") if k in data}
             service,context = self.resolve(selection)
-            validate = lambda:self.recheck(selection,service,context)
+            reaction_owner = self.role_reaction_owner(selection, service, context)
             if action=="configure":
                 result = await service.configure(data["changes"],data["revision"])
-                validate()
+                self.recheck(selection,service,context)
                 return self.response({"settings":result})
-            if context is None:
+            is_reaction_action = (action in ("import", "analyze")
+                                  or (action in ("edit", "delete", "search") and data.get("kind") == "reaction"))
+            if context is None and not (is_reaction_action and reaction_owner is not None):
                 settings = self.controller.settings
                 target_id = selection.get("target_id")
                 if (target_id and hasattr(settings, "all_targets")
@@ -293,21 +334,34 @@ class SemanticWebAPI:
                     raise TaskError("semantic_group_input_required",
                                     "the selected group session has no verified member input")
                 raise TaskError("semantic_target_unavailable","select a chat scope for semantic catalog data")
-            if action == "search":
-                kind = data["kind"]
-                owner = (service.ensure_reaction_catalog(context) if kind == "reaction"
-                         else service.owner(context))
-            elif action == "edit":
-                kind = data["kind"]
-                owner = (service.ensure_reaction_catalog(context) if kind == "reaction"
-                         else service.owner(context))
-            else:
-                owner = service.ensure_reaction_catalog(context)
+            owner = reaction_owner if is_reaction_action else service.owner(context)
+            validate = lambda: self.recheck(selection, service, context,
+                                            reaction_owner=reaction_owner if is_reaction_action else None)
             if action=="import":
-                if type(data["content"]) is not str or type(data.get("metadata",{})) is not dict:
+                metadata = data.get("metadata", {})
+                if type(metadata) is not dict:
                     raise ValueError("image and metadata required")
-                image = inspect_image(base64.b64decode(data["content"],validate=True),0)
-                item, created = service.reactions.import_image_with_status(owner, image, data.get("metadata",{}))
+                if ("source_filename" in metadata and metadata["source_filename"] is not None
+                        and type(metadata["source_filename"]) is not str):
+                    raise ValueError("invalid source filename")
+                raw_content = data.get("content")
+                if raw_content is None:
+                    raise TaskError("host_image_invalid", "image content is empty")
+                if type(raw_content) is not str:
+                    raise ValueError("image and metadata required")
+                encoded = raw_content.strip()
+                if not encoded:
+                    raise TaskError("host_image_invalid", "image content is empty")
+                if len(encoded) > (MAX_IMAGE_BYTES + 2) // 3 * 4:
+                    raise TaskError("host_image_limit", "image exceeds the intake byte budget")
+                try:
+                    decoded = base64.b64decode(encoded, validate=True)
+                except (binascii.Error, ValueError):
+                    raise TaskError("host_image_invalid", "image base64 content is invalid") from None
+                if not decoded:
+                    raise TaskError("host_image_invalid", "image content is empty")
+                image = inspect_image(decoded, 0)
+                item, created = service.reactions.import_image_with_status(owner, image, metadata)
                 result = {"item":self.public(item), "created": created}
             elif action=="analyze":
                 result = {"item":self.public(await service.reactions.analyze(owner,data["id"],validate))}
@@ -332,7 +386,9 @@ class SemanticWebAPI:
                     # every empty field and the vision model can never fill it.
                     changed_fields = {name for name, value in values.items()
                                       if value != item["payload"].get(name, "")}
-                    payload["analysis"]="manual"
+                    if changed_fields and (payload.get("description", "").strip()
+                                           or payload.get("analysis") != "pending"):
+                        payload["analysis"]="manual"
                     payload["manual_fields"] = sorted(set(payload.get("manual_fields", ())) | changed_fields)
                     if data["enabled"] and payload.get("collection_state") == "awaiting_confirmation":
                         payload["collection_state"] = "confirmed"

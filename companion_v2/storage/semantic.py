@@ -204,6 +204,39 @@ class SemanticStore:
                               (owner, kind, after, limit)).fetchall()
             return [{**dict(r), "payload": json.loads(r["payload"])} for r in rows]
 
+    def list_recent_page(self, owner, kind, *, after="", limit=24):
+        """Return up to ``limit`` items newest-first plus the next opaque cursor."""
+        if type(after) is not str or type(limit) is not int or limit < 1:
+            raise ValueError("invalid catalog pagination")
+        with self.db() as db:
+            if after:
+                if not after.startswith("r:") or not after[2:].isascii() or not after[2:].isdigit():
+                    raise ValueError("invalid catalog cursor")
+                cursor = int(after[2:])
+                if cursor < 1:
+                    raise ValueError("invalid catalog cursor")
+                rows = db.execute(
+                    "SELECT rowid AS _rowid, * FROM items WHERE owner=? AND kind=? AND rowid<? "
+                    "ORDER BY rowid DESC LIMIT ?",
+                    (owner, kind, cursor, limit + 1),
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT rowid AS _rowid, * FROM items WHERE owner=? AND kind=? "
+                    "ORDER BY rowid DESC LIMIT ?",
+                    (owner, kind, limit + 1),
+                ).fetchall()
+        has_more = len(rows) > limit
+        page = rows[:limit]
+        next_after = f"r:{page[-1]['_rowid']}" if has_more else None
+        items = []
+        for row in page:
+            record = dict(row)
+            record.pop("_rowid", None)
+            record["payload"] = json.loads(record["payload"])
+            items.append(record)
+        return items, next_after
+
     def record_slang_candidates(self, owner, event_key, terms, *, observed_at):
         """Accumulate bounded vocabulary counts once per authorized input source."""
         if (type(owner) is not str or not owner or type(event_key) is not str or not event_key
@@ -313,7 +346,7 @@ class SemanticStore:
             if db.execute("SELECT 1 FROM reaction_owner_migrations WHERE source_owner=? AND target_owner=?",
                           (source_owner, target_owner)).fetchone():
                 return False
-            rows = db.execute("SELECT * FROM items WHERE owner=? AND kind='reaction' ORDER BY id",
+            rows = db.execute("SELECT * FROM items WHERE owner=? AND kind='reaction' ORDER BY rowid, id",
                               (source_owner,)).fetchall()
             identifiers = tuple(row["id"] for row in rows)
             for row in rows:
