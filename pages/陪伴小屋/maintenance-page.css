@@ -2946,3 +2946,31 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
   .maint-log-row { grid-template-columns:64px 56px minmax(0,1fr); }
   .maint-log-logger { display:none; }
 }
+
+/* Model pricing currency switcher, FX rate pill, and cost basis badges */
+.maint-token-details > .maint-subhead { flex-wrap:wrap; align-items:center; gap:var(--sp-2) var(--sp-3); }
+.maint-token-details > .maint-subhead > .maint-pricing-controls,
+.maint-pricing-controls { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:var(--sp-2); min-width:0; }
+.maint-currency-switch { display:inline-flex; align-items:center; flex-shrink:0; padding:var(--sp-1); border:1px solid var(--t-line); border-radius:var(--r-sm); background:var(--t-surface-soft); gap:var(--sp-1); white-space:nowrap; }
+.maint-currency-switch button { appearance:none; border:1px solid transparent; background:transparent; color:var(--t-text-faint); font-size:var(--fs-micro); font-weight:600; padding:var(--sp-1) var(--sp-2); border-radius:var(--r-xs); white-space:nowrap; cursor:pointer; transition:background var(--dur-fast) ease, color var(--dur-fast) ease, border-color var(--dur-fast) ease; }
+.maint-currency-switch button:hover { color:var(--t-text-strong); }
+.maint-currency-switch button.is-active { background:var(--t-surface-raised); color:var(--t-accent-ink); border:1px solid var(--t-line); }
+.maint-rate-pill { display:inline-flex; align-items:center; flex-shrink:0; gap:var(--sp-2); padding:var(--sp-1) var(--sp-2); border:1px solid var(--t-line); border-radius:var(--r-sm); background:var(--t-surface-soft); color:var(--t-text-faint); font-size:var(--fs-micro); font-family:var(--numeric-font); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.maint-rate-sync { display:inline-flex; align-items:center; gap:var(--sp-1); border:0; border-left:1px solid var(--t-line); background:transparent; color:var(--t-accent-ink); font-size:var(--fs-micro); padding:0 0 0 var(--sp-2); white-space:nowrap; cursor:pointer; }
+.maint-rate-sync svg { width:12px; height:12px; }
+.maint-rate-sync:disabled { opacity:.55; cursor:wait; }
+.maint-pricing-link { display:inline-flex; align-items:center; flex-shrink:0; gap:var(--sp-1); padding:var(--sp-1) var(--sp-2); border:1px solid var(--t-line); border-radius:var(--r-sm); background:var(--t-surface-raised); color:var(--t-text-strong); font-size:var(--fs-micro); font-weight:500; white-space:nowrap; cursor:pointer; }
+.maint-token-details > .maint-subhead .maint-pricing-link span { color:inherit; }
+.maint-pricing-link:hover { border-color:var(--t-accent); color:var(--t-accent-ink); }
+.maint-pricing-link svg { width:13px; height:13px; }
+.maint-pricing-notice { width:100%; text-align:right; color:var(--t-accent-ink); font-size:var(--fs-micro); }
+.maint-cost-value { font-family:var(--numeric-font); font-variant-numeric:tabular-nums; color:var(--t-text-strong); }
+.maint-cost-unconfigured { color:var(--t-text-faint); font-size:var(--fs-micro); }
+.maint-cost-empty { color:var(--t-text-faint); }
+.maint-cost-basis { display:inline-block; margin-left:var(--sp-1); padding:0 var(--sp-1); border-radius:var(--r-2xs); font-size:var(--fs-micro); line-height:1.35; vertical-align:middle; background:var(--t-surface-soft); color:var(--t-text-faint); border:1px solid var(--t-line); }
+.maint-cost-basis[data-basis="estimated_local"] { background:var(--t-accent-quiet); color:var(--t-accent-ink); border-color:transparent; }
+.maint-cost-basis[data-basis="recorded"] { background:var(--t-ok-quiet); color:var(--t-ok-ink); border-color:transparent; }
+@media (max-width:760px) {
+  .maint-pricing-controls { justify-content:flex-start; }
+  .maint-pricing-notice { text-align:left; }
+}

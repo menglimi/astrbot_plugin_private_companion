@@ -79,7 +79,10 @@ window.CompanionModelsPage = (() => {
   };
   /* Real dashboard bridges reject failed requests with the error code carried in
      Error.message; the mocked bridge resolves error envelopes with Error.code. */
-  const fail = (err, fallback) => errors[err.code] || errors[err.message] || err?.reason || fallback;
+  const fail = (err, fallback) => errors[err.code] || errors[err.message]
+    || window.CompanionPricingWorkbench?.ERRORS?.[err.code]
+    || window.CompanionPricingWorkbench?.ERRORS?.[err.message]
+    || err?.reason || fallback;
   /* 后端把机器码放在信封的 message 上（页面桥只转发 message），所以取码要同时
      看 data.code 与 message；reason 里若是人话则原样保留。 */
   const CODE = /^[a-z][a-z0-9_]{2,60}$/;
@@ -377,7 +380,8 @@ window.CompanionModelsPage = (() => {
     life: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 2v4M16 2v4M3 10h18"/>',
     write: '<path d="M4 20l4-1 10-10-3-3L5 16l-1 4Z"/>',
     lane: '<path d="M4 6h16M4 12h16M4 18h16"/>',
-    decision: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><circle cx="12" cy="12" r="5"/><path d="m8.5 8.5 7 7M15.5 8.5l-7 7"/>' };
+    decision: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><circle cx="12" cy="12" r="5"/><path d="m8.5 8.5 7 7M15.5 8.5l-7 7"/>',
+    pricing: '<circle cx="12" cy="12" r="9"/><path d="M9 8.5 12 12l3-3.5M8.5 12.5h7M8.5 15.5h7M12 12v6"/>' };
   const groupIcon = name => ({ "对话": ICONS.reply, "主动与整理": ICONS.memory, "生活与成长": ICONS.life, "私人书写": ICONS.write }[name] || ICONS.lane);
   function topbar(s) {
     return `<div class="model-topbar"><span class="model-topbar-t">任务模型</span>${window.CompanionWorkbench.scopeHintMarkup(Object.entries(window.CompanionWorkbench.scopeObjectForEndpoint(PREFIX + taskPath)).filter(([name,value]) => value && (name !== "target" || windowAvailable)).map(([,value]) => value).join(" · ") || "当前配置", "查看任务模型配置对象")}
@@ -1306,6 +1310,16 @@ window.CompanionModelsPage = (() => {
   function searchClick(s, event) { const target = event.target;
     if (target.closest("[data-search-refresh]")) { searchRefresh(s); return; }
     if (target.closest("[data-search-save]")) searchSave(s); }
+  /* ---------- Pricing v2 workbench delegation ---------- */
+  const pricingWorkbench = () => window.CompanionPricingWorkbench || null;
+  function pricingCtx(s) {
+    const wb = pricingWorkbench();
+    s.pricing ||= wb?.createState?.() || {loaded: false, loading: false, busy: false, data: null, draft: null};
+    return {
+      state: s, p: s.pricing, path, api, render,
+      isCurrent: ticket => current(ticket, s), ticket: () => version, root: () => root, fail,
+    };
+  }
   async function layaDecide(s) { const l = s.laya; if (l.busy || l.loading || !l.data) return;
     if (layaDirty(l)) { l.bad = true; l.notice = "请先保存当前 Laya 配置，再执行决策预览。"; render(); return; }
     if ((l.draft?.mode || l.data.mode) === "local" && l.data.local_runtime_state === "gpu_unavailable") {
@@ -2121,7 +2135,8 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       ["voice", "语音模型", ICONS.voice, s.voice.data ? s.voice.data.providers.length : ""],
       ["image", "生图模型", ICONS.image, s.image.data ? s.image.data.actions.length : ""],
       ["search", "搜索服务", ICONS.search, s.search?.data?.deepseek_provider_id ? "已绑定" : ""],
-      ["laya", "Laya 决策", ICONS.decision, s.laya.data ? (s.laya.data.enabled ? "启用" : "") : ""]];
+      ["laya", "Laya 决策", ICONS.decision, s.laya.data ? (s.laya.data.enabled ? "启用" : "") : ""],
+      ["pricing", "计价与汇率", ICONS.pricing, pricingWorkbench()?.tabBadge?.(s.pricing) || ""]];
     return `<div class="model-tabs" role="tablist" aria-label="模型配置分类">${tabs.map(([id, label, ic, count]) =>
       `<button type="button" role="tab" data-model-tab="${id}" aria-selected="${s.tab === id}" class="${s.tab === id ? "on" : ""}">${icon(ic)}${label}${count !== "" ? `<span class="c">${count}</span>` : ""}</button>`).join("")}</div>`; }
   /* ---------- functional subtabs (design migration) ---------- */
@@ -2564,7 +2579,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     ruleInput(s, event); }
   function fnPane(s) { const sub = s.sub === "map" ? situationMap(s) : s.sub === "pol" ? replacementPolicy(s) : cfgPane(s);
     return `${topbar(s)}${subtabBar(s)}${sub}`; }
-  function pane(s) { if (s.tab !== "fn" && !path) return `<p class="model-empty">当前角色只有群聊模型入口，此处的模型连接服务暂不可用。功能模型仍可设置角色默认与本群覆盖。</p>`; if (s.tab === "voice") return voicePane(s); if (s.tab === "image") return imagePane(s); if (s.tab === "search") return searchPane(s); if (s.tab === "laya") return layaPane(s); return fnPane(s); }
+  function pane(s) { if (s.tab !== "fn" && !path) return `<p class="model-empty">当前角色只有群聊模型入口，此处的模型连接服务暂不可用。功能模型仍可设置角色默认与本群覆盖。</p>`; if (s.tab === "voice") return voicePane(s); if (s.tab === "image") return imagePane(s); if (s.tab === "search") return searchPane(s); if (s.tab === "laya") return layaPane(s); if (s.tab === "pricing") return pricingWorkbench()?.renderPane?.(pricingCtx(s)) || '<p class="model-empty">计价模块未加载。</p>'; return fnPane(s); }
   function drawer(s) { const id = s.drawer; if (!id) return "";
     const provider = s.status?.providers.find(p => p.id === id); if (!provider) return "";
     const tasks = snapshot(s), asMain = tasks.filter(t => providerFor(t, s.drafts.get(t.kind)) === id);
@@ -2585,17 +2600,19 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (s.tab === "image") { imageInput(s, event); return; }
     if (s.tab === "search") { searchInput(s, event); return; }
     if (s.tab === "laya") { layaInput(s, event); return; }
+    if (s.tab === "pricing") { pricingWorkbench()?.handleInput?.(pricingCtx(s), event); return; }
     fnInput(event); }
   function click(event) { if (window.CompanionWorkbench.scopeHintClick(event)) return; const s = state; if (!s || !root?.isConnected) return;
     const tab = event.target.closest("[data-model-tab]");
     if (tab) { const id = tab.dataset.modelTab; if (s.tab !== id) { s.tab = id;
         if (id !== "fn" && !path) { render(); return; }
-        if (id === "voice" && !state.voice.loaded) voiceRefresh(s); else if (id === "image" && !state.image.loaded) imageRefresh(s); else if (id === "search" && !state.search.loaded) searchRefresh(s); else if (id === "laya" && !state.laya.loaded) layaRefresh(s);
+        if (id === "voice" && !state.voice.loaded) voiceRefresh(s); else if (id === "image" && !state.image.loaded) imageRefresh(s); else if (id === "search" && !state.search.loaded) searchRefresh(s); else if (id === "laya" && !state.laya.loaded) layaRefresh(s); else if (id === "pricing" && !state.pricing?.loaded) pricingWorkbench()?.refresh?.(pricingCtx(s));
         render(); } return; }
     if (s.tab === "voice") { voiceClick(s, event); return; }
     if (s.tab === "image") { imageClick(s, event); return; }
     if (s.tab === "search") { searchClick(s, event); return; }
     if (s.tab === "laya") { layaClick(s, event); return; }
+    if (s.tab === "pricing") { pricingWorkbench()?.handleClick?.(pricingCtx(s), event); return; }
     fnClick(event); }
   function providerHover(event) {
     window.CompanionWorkbench.scopeHintReset(event);
@@ -2649,15 +2666,17 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       },
       laya: { data: null, draft: null, logs: [], logsScope: "all", logsScopeKind: "", logsLoading: false, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "" },
       search: { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "" },
+      pricing: pricingWorkbench()?.createState?.() || { loaded: false, loading: false, busy: false, data: null, draft: null },
       loading: false, busy: false, bad: false, denied: false, notice: "" };
     state.layer ||= "role"; if(!windowAvailable)state.layer="role"; state.providerTests ||= {}; state.testing ||= new Set();
     /* 展开状态按对象保存：刷新、切任务、切页回来都保持上次展开的分组，
        不再每次回到“全收起”或“全展开”。 */
-    state.expOpen = { ...restoreExpanded(key), ...(state.expOpen || {}) }; state.voice.lastTest ||= null; state.voice.editorValues ||= {}; state.voice.ttsTestResults ||= {}; state.voice.ttsTesting ||= false; state.voice.createDraft ||= { type: "", id: "" }; state.image.endpointTests ||= {}; state.image.endpointTestKeys ||= {}; state.image.endpointTesting ||= null; state.configDraft ||= null; state.peak ||= { on: true, provider: "", start: "09:00", end: "12:00" }; state.testing ||= new Set(); state.peak.windows ||= "09:00-12:00\n14:00-18:00"; state.laya ||= { data: null, draft: null, logs: [], logsScope: "all", logsScopeKind: "", logsLoading: false, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "" }; state.laya.logsScope ||= "all"; state.laya.logsScopeKind ||= ""; state.search ||= { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "" }; state.hoverProvider = "";
+    state.expOpen = { ...restoreExpanded(key), ...(state.expOpen || {}) }; state.voice.lastTest ||= null; state.voice.editorValues ||= {}; state.voice.ttsTestResults ||= {}; state.voice.ttsTesting ||= false; state.voice.createDraft ||= { type: "", id: "" }; state.image.endpointTests ||= {}; state.image.endpointTestKeys ||= {}; state.image.endpointTesting ||= null; state.configDraft ||= null; state.peak ||= { on: true, provider: "", start: "09:00", end: "12:00" }; state.testing ||= new Set(); state.peak.windows ||= "09:00-12:00\n14:00-18:00"; state.laya ||= { data: null, draft: null, logs: [], logsScope: "all", logsScopeKind: "", logsLoading: false, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "" }; state.laya.logsScope ||= "all"; state.laya.logsScopeKind ||= ""; state.search ||= { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "" }; state.pricing ||= pricingWorkbench()?.createState?.() || { loaded: false, loading: false, busy: false, data: null, draft: null }; state.hoverProvider = "";
+    if (pricingWorkbench()?.consumePendingTab?.()) state.tab = "pricing";
     states.set(key, state);
     state.sub = ["map", "cfg", "pol"].includes(options.sub) ? options.sub : "map";
     root.addEventListener("input", input); root.addEventListener("change", input); root.addEventListener("click", click); root.addEventListener("pointerover", providerHover); root.addEventListener("pointerout", providerHover); root.addEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.addEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.addEventListener("focusout", window.CompanionWorkbench.scopeHintReset); render();
-    if (state.tab && state.tab !== "fn") { if (!path) { render(); return; } if (state.tab === "voice" && !state.voice.loaded) voiceRefresh(state); else if (state.tab === "image" && !state.image.loaded) imageRefresh(state); else if (state.tab === "search" && !state.search.loaded) searchRefresh(state); else if (state.tab === "laya" && !state.laya.loaded) layaRefresh(state); }
+    if (state.tab && state.tab !== "fn") { if (!path) { render(); return; } if (state.tab === "voice" && !state.voice.loaded) voiceRefresh(state); else if (state.tab === "image" && !state.image.loaded) imageRefresh(state); else if (state.tab === "search" && !state.search.loaded) searchRefresh(state); else if (state.tab === "laya" && !state.laya.loaded) layaRefresh(state); else if (state.tab === "pricing" && !state.pricing?.loaded) pricingWorkbench()?.refresh?.(pricingCtx(state)); }
     else { refresh().catch(() => {}); } }
   /* Only the mounted scope can block navigation. Retained drafts belonging to
      another role or a closed page must not trigger a warning on every route. */
@@ -2732,6 +2751,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       }
     }
     if (s.search && searchDirty(s.search)) changed.push('联网搜索凭据来源');
+    if (s.pricing && pricingWorkbench()?.changedFields) changed.push(...pricingWorkbench().changedFields(s.pricing));
     return changed;
   }
   function isDirty() {
@@ -2740,7 +2760,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   async function saveBeforeLeave() {
     const s = state;
     if (!s || !root) return true;
-    if (s.busy || s.loading || s.voice?.busy || s.image?.busy || s.image?.configSaving || s.laya?.busy || s.search?.busy)
+    if (s.busy || s.loading || s.voice?.busy || s.image?.busy || s.image?.configSaving || s.laya?.busy || s.search?.busy || pricingWorkbench()?.isBusy?.(s.pricing))
       return {error:'模型配置正在处理，请稍后保存。'};
     if ([...s.drafts.values()].some(draft => draft.pending) || s.voice?.pending)
       return {error:'上次保存结果待核对，请回到模型配置中核对原请求。'};
@@ -2755,6 +2775,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       [s.image && imageConfigDirty(s.image), imageConfigSave, () => imageConfigDirty(s.image), () => s.image.configNotice],
       [s.laya && layaDirty(s.laya), layaSave, () => layaDirty(s.laya), () => s.laya.notice],
       [s.search && searchDirty(s.search), searchSave, () => searchDirty(s.search), () => s.search.notice],
+      [s.pricing && pricingWorkbench()?.isDirty?.(s.pricing), () => pricingWorkbench().save(pricingCtx(s)), () => pricingWorkbench().isDirty(s.pricing), () => s.pricing.notice],
     ]) {
       if (!needed) continue;
       await action(s);
@@ -2764,13 +2785,13 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     return !isDirty() ? true : {error:'还有配置未保存，改动仍保留。'};
   }
   function discardChanges() {
-    if (state?.busy || state?.voice?.busy || state?.image?.busy || state?.image?.configSaving || state?.laya?.busy || state?.search?.busy)
+    if (state?.busy || state?.voice?.busy || state?.image?.busy || state?.image?.configSaving || state?.laya?.busy || state?.search?.busy || pricingWorkbench()?.isBusy?.(state?.pricing))
       return {error:'正在保存，请等待结果后再切换。'};
     if (key) states.delete(key);
     unmount();
     return true;
   }
   const isBusy = () => Boolean(state && (state.busy || state.voice?.busy || state.voice?.ttsBusy
-    || state.voice?.ttsTesting || state.image?.busy || state.image?.configSaving || state.laya?.busy || state.search?.busy));
+    || state.voice?.ttsTesting || state.image?.busy || state.image?.configSaving || state.laya?.busy || state.search?.busy || pricingWorkbench()?.isBusy?.(state.pricing)));
   return { mount, unmount, isDirty, isBusy, changedFields, saveBeforeLeave, discardChanges };
 })();
