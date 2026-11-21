@@ -385,7 +385,8 @@ def prepare_core_reply_segmentation(event):
         if not core.get("delivery_guard_active") or getattr(message, "type", None) in {
                 "tool_call", "tool_result", "agent_stats", "reasoning", "break"}:
             return await state["send"](message, *args, **kwargs)
-        if state["stopped"]:
+        if state["stopped"] or core.get("silent_suppressed"):
+            state["stopped"] = True
             return None
         message = unwrap_core_forward_node(event, message)
         from .core_reply_reaction_delivery import capture_core_reaction_intent
@@ -451,6 +452,9 @@ def prepare_core_reply_segmentation(event):
         first_text_segment = next((index for index, part in enumerate(parts)
                                    if sent_core_text(part).strip()), 0)
         for index, part in enumerate(parts):
+            if state["stopped"] or core.get("silent_suppressed"):
+                state["stopped"] = True
+                break
             core["voice_segment_index"], core["voice_segment_count"] = index, len(parts)
             core["outbound_first_text_segment"] = first_text_segment
             try:
@@ -459,6 +463,9 @@ def prepare_core_reply_segmentation(event):
                 core.pop("voice_segment_index", None)
                 core.pop("voice_segment_count", None)
                 core.pop("outbound_first_text_segment", None)
+            if state["stopped"] or core.get("silent_suppressed"):
+                state["stopped"] = True
+                break
         return result
 
     state["wrapper"] = send_parts
@@ -503,7 +510,9 @@ def _group_under_concurrent_pressure(event):
 
 async def _send_part(event, state, part, args=(), kwargs=None):
     core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
-    if state["stopped"] or core.get("group_participation", {}).get("mode") == "skip":
+    if state["stopped"] or core.get("silent_suppressed") or core.get("group_participation", {}).get("mode") == "skip":
+        if core.get("silent_suppressed"):
+            state["stopped"] = True
         return None
     try:
         if state["sent"] and not _group_under_concurrent_pressure(event):
@@ -521,6 +530,9 @@ async def _send_part(event, state, part, args=(), kwargs=None):
         from .core_reply import finish_core_reply_presence
         finish_core_reply_presence(event, force=True)
         raise
+    if core.get("silent_suppressed"):
+        state["stopped"] = True
+        return None
     if core["send_attempts"] > attempts:
         state["sent"] += 1
     elif state["sent"] == sent_before:

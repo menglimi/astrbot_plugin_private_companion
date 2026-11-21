@@ -225,7 +225,7 @@ class UnifiedCompanionExtensionAPI:
     api_version = "companion.product.v1"
     memory_provider_api_version = PROVIDER_API_VERSION
 
-    def __init__(self, controller):
+    def __init__(self, controller, *, claim=False):
         self.controller = controller
         self._memory_page = MemoryPageAPI(controller)
         from .mobile_together import MobileTogetherBridge
@@ -236,13 +236,16 @@ class UnifiedCompanionExtensionAPI:
         from .native_extensions.reality.host_delivery import RealityHostDelivery
         self._reality_context = RealityHostContext(controller, self._mobile_together)
         self._reality_delivery = RealityHostDelivery(self._reality_context)
-        # Only select or replace the context-shared registry when constructing a facade.
-        # Later register/unregister/list/close calls must stay bound to this instance so
-        # a stale or terminated facade can never overwrite a newer host's registry.
+        # Only active host startup should claim and replace a live registry owned
+        # by another controller (claim=True). Lazy or secondary facades default to
+        # claim=False, and later register/unregister/list/close calls stay bound to
+        # this instance so a stale or draining controller never overwrites a newer
+        # host's active registry.
         self._memory_providers = shared_memory_provider_registry(
             self.controller.context,
             host_active=lambda: not getattr(self.controller, "_terminated", False),
             owner=self.controller,
+            claim=claim,
         )
 
     def register_memory_provider(self, provider_id, *, plugin, read=None, write=None, summary=None,

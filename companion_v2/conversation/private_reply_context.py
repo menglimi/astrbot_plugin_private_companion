@@ -9,14 +9,14 @@ from .native_history import dialogue
 
 
 INSTRUCTION = (
-    "private_reply_context 按真实输入时间和原生发送回调整理私聊时序，记录有界，不证明对方已读。"
+    "private_reply_context 按真实输入时间、原生发送回调与主动消息投递回执整理私聊时序，记录有界，不证明对方已读。"
     "turn_id 是本次请求内的短引用，同一值才表示同一轮；text_in_host_history 表示正文已在宿主历史中，"
     "text_in_current_prompt 表示正文就是本轮原话，省略重复正文不代表消息未发送。"
     "理解本轮短话时，先看 before_input 中在最早一条合并输入到达前已发出的内容；同一 turn_id 的多个气泡属于同一次回复。"
-    "before_input 只来自宿主原生历史；角色主动消息的投递回执可能只在 companion_background 的"
-    "「本窗口已发送的主动消息与提醒」里。用户短句紧接着主动消息时，先核对该节的最近气泡，"
-    "不要因为 before_input 没列出这几条就回退到更早的普通回复。"
-    "last_sent_reply_turn_id 只是最近发送的时间锚点，具体承接对象仍结合原话、明确引用、否定和话题判断。"
+    "有 sent_ref 的助手气泡来自主动消息投递回执，part.sequence 是该次主动联系内的气泡顺序。"
+    "背景对应条目标有 text_in_private_reply_context 时，可按 ref 和 part.sequence 找到时序里的原话。"
+    "时序未列出的主动消息或提醒也可在 companion_background 的「本窗口已发送的主动消息与提醒」中核对。"
+    "last_sent_reply_turn_id 只是最近已发送内容的时间锚点，具体承接对象仍结合原话、明确引用、否定和话题判断。"
     "after_input 中的消息是在本轮输入之后才发出的，不能把用户较早的应声或确认解释成对这些后来内容的回答。"
     "若 current_inputs 含多条合并输入，按各条 received_at 分别还原时序；前后列表以首条划界，"
     "两条输入之间发出的消息会出现在 after_input，可供后一条承接；不能用首条的时界代替各条输入的到达时间。"
@@ -57,8 +57,8 @@ def merged_input_sequence(entries):
     return sorted(result, key=lambda item: item["received_at"])
 
 
-def capture_private_reply_context(messages, context, native_input, *, at, merged_inputs=()):
-    """Read only authorized input observations and completed native send callbacks."""
+def capture_private_reply_context(messages, context, native_input, *, at, merged_inputs=(), confirmed_contacts=()):
+    """Merge authorized delivery material with input observations and native send callbacks."""
     if getattr(getattr(context, "scope", None), "kind", None) is not ScopeKind.PRIVATE:
         return None
     received = _moment(getattr(native_input, "at", None))
@@ -85,6 +85,20 @@ def capture_private_reply_context(messages, context, native_input, *, at, merged
                      limit=AFTER_TURNS * MAX_BUBBLES_PER_TURN, max_chars=1800,
                      include_turns=True)
 
+    sent_before, sent_after = [], []
+    for contact in confirmed_contacts:
+        sent_at = _moment(contact["delivered_at"])
+        if sent_at is None or sent_at > now or not contact["text"].strip():
+            continue
+        ref = contact["ref"]
+        entry = {"speaker": "assistant", "text": contact["text"], "at": stamp(sent_at),
+                 "turn_id": "contact:" + ref, "sent_ref": ref, "part": contact["part"]}
+        (sent_before if sent_at <= received else sent_after).append(entry)
+    if sent_before:
+        earlier = sorted((*earlier, *sent_before), key=lambda item: item["at"])
+    if sent_after:
+        later = sorted((*later, *sent_after), key=lambda item: item["at"])
+
     def project(items, *, after_input=False, limit):
         result = []
         previous_speaker = None
@@ -100,7 +114,10 @@ def capture_private_reply_context(messages, context, native_input, *, at, merged
                 previous_speaker = None
                 continue
             entry = {name: item[name] for name in ("speaker", "text", "at", "turn_id")}
-            if (entry["speaker"] == previous_speaker == "assistant" and entry["turn_id"]
+            if "sent_ref" in item:
+                entry.update(sent_ref=item["sent_ref"], part=item["part"])
+                result.append(entry)
+            elif (entry["speaker"] == previous_speaker == "assistant" and entry["turn_id"]
                     and result[-1]["turn_id"] == entry["turn_id"]):
                 result[-1]["text"] += "\n" + entry["text"]
                 result[-1]["at"] = entry["at"]
@@ -116,4 +133,5 @@ def capture_private_reply_context(messages, context, native_input, *, at, merged
     return {"input_received_at": stamp(received), "captured_at": stamp(now),
             "current_inputs": inputs, "before_input": before, "after_input": after,
             "last_sent_reply_turn_id": last_reply, "history_is_bounded": True,
-            "delivery_evidence": "native_send_return; recipient_read_unknown"}
+            "delivery_evidence": ("native_send_return; confirmed_contact_receipt; recipient_read_unknown"
+                                  if sent_before or sent_after else "native_send_return; recipient_read_unknown")}

@@ -51,7 +51,7 @@ DREAM_ANCHORS = ("梦", "做梦", "梦到", "梦境", "梦里的")
 
 
 def persona_life_content(draft, local_date):
-    """一条能被回忆起来的角色生活句：先点明这是角色自己的书写，再给正文。
+    """以角色自己的第一人称记录私人书写。
 
     正文原样进入记忆，不在这里摘要：牢插件要靠它回答「你最近写了什么」，而 V2
     库里的那份正文就是最小的可信原件。摘要属于派生材料，是另一条链路。
@@ -66,13 +66,13 @@ def persona_life_content(draft, local_date):
             parts.append(f"醒来只剩这些余韵：{afterglow}")
         if not parts:
             return ""
-        return f"Bot 在 {local_date} 做了一个梦。" + "".join(parts)
+        return f"我在 {local_date} 做了一个梦。" + "".join(parts)
     if not body:
         return ""
     form = draft.form.strip()
     if not form:
-        return f"Bot 在 {local_date} 写下了自己的日记：{body}"
-    return f"Bot 在 {local_date} 写下了自己的日记（{form}）：{body}"
+        return f"我在 {local_date} 写下了日记：{body}"
+    return f"我在 {local_date} 写下了日记（{form}）：{body}"
 
 
 @dataclass(frozen=True)

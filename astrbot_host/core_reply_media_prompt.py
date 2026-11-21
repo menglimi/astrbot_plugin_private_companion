@@ -47,8 +47,15 @@ def finalize_core_reply_media_prompt(event, run_context):
     voice = voice_prompt_instruction(prepared.get("voice_reply_policy"),
         prepared.get("voice_provider_instruction", ""),
         prepared.get("voice_rules_instruction", ""), singsing=bool(prepared.get("voice_singsing_enabled")))
-    reaction = core.get("_reaction_reply", {}).get("enabled", False)
-    instructions = [part for part in (voice, REACTION_INSTRUCTION if reaction else "") if part]
+    reaction_state = core.get("_reaction_reply")
+    reaction_enabled = bool(reaction_state.get("enabled", False)) if isinstance(reaction_state, Mapping) else False
+    # Keep the static reaction protocol in system_prompt keyed on window-level
+    # capability rather than the per-turn roll (enabled), so consecutive turns
+    # keep an identical sys_hash; the per-turn enabled/disabled directive rides
+    # in extra_user_content_parts via _turn_notes["reactions"].
+    reaction_capable = (bool(reaction_state.get("capable", reaction_enabled))
+                        if isinstance(reaction_state, Mapping) else False)
+    instructions = [part for part in (voice, REACTION_INSTRUCTION if reaction_capable else "") if part]
     if not instructions:
         return
     block = ("<companion_reply_presentation>\n"
@@ -63,16 +70,16 @@ def finalize_core_reply_media_prompt(event, run_context):
                   "朗读原文由程序合成音频，不要编造语音文件地址；工具正文和普通最终正文采用同一呈现设置。")
         if prepared.get("voice_singsing_enabled"):
             block += '唱歌样式仅限普通最终正文，不要在工具参数中使用 style="sing"。'
-    if (reaction and isinstance(policy, VoiceReplyPolicy) and policy.language == "ja"
+    if (reaction_capable and isinstance(policy, VoiceReplyPolicy) and policy.language == "ja"
             and policy.foreign_text_mode == "translation"
             and (policy.generation_mode == "model_tag" or policy.trigger_mode == "adaptive")):
-        block += ('\n本轮同时生成语音和表情判定，彼此独立。完整格式示例：'
+        block += ('\n当本轮允许表情判定且启用语音时，两者彼此独立。完整格式示例：'
                   '<pc_tts>おやすみ。ゆっくり休んでね。</pc_tts>晚安，好好休息呀。'
                   '<pc_reaction_expression>{"intent":"温柔道晚安，关心对方休息"}</pc_reaction_expression>。'
                   '实际回复按本轮语境和角色语气生成，不照抄示例。')
     previous = core.get("_media_prompt_instruction", "")
     remove = tuple(part for part in (previous, core.get("_voice_prompt_instruction", ""),
-                                    REACTION_INSTRUCTION if reaction else "") if part)
+                                    REACTION_INSTRUCTION if reaction_capable else "") if part)
     systems = [message for message in messages if _value(message, "role") == "system"]
     if not systems:
         from astrbot.core.agent.message import Message
@@ -119,8 +126,11 @@ def core_media_request_diagnostics(event, run_context):
     if not isinstance(prepared, Mapping):
         return None
     policy = prepared.get("voice_reply_policy")
-    reaction = bool(core.get("_reaction_reply", {}).get("enabled"))
-    if not isinstance(policy, VoiceReplyPolicy) and not reaction:
+    reaction_state = core.get("_reaction_reply")
+    reaction = bool(reaction_state.get("enabled")) if isinstance(reaction_state, Mapping) else False
+    reaction_capable = (bool(reaction_state.get("capable", reaction))
+                        if isinstance(reaction_state, Mapping) else False)
+    if not isinstance(policy, VoiceReplyPolicy) and not reaction_capable:
         return None
     systems = "\n".join(_text(_value(message, "content")) for message in run_context.messages
                         if _value(message, "role") == "system")
@@ -130,7 +140,8 @@ def core_media_request_diagnostics(event, run_context):
                 policy, prepared.get("voice_provider_instruction", ""),
                 prepared.get("voice_rules_instruction", ""),
                 singsing=bool(prepared.get("voice_singsing_enabled"))) in systems),
-            "reaction_enabled": reaction, "reaction_prompt_present": reaction and REACTION_INSTRUCTION in systems,
+            "reaction_enabled": reaction,
+            "reaction_prompt_present": reaction_capable and REACTION_INSTRUCTION in systems,
             "presentation_present": bool(block and block in systems)}
     core.setdefault("_media_request_diagnostics", []).append(note)
     logger.info("[CompanionV2][media] stage=request event_ref=%s voice_mode=%s voice_prompt=%s reaction_enabled=%s reaction_prompt=%s presentation=%s",

@@ -80,8 +80,11 @@ class RealitySnapshotAccess:
                 self.policy.scope_access(operator, scope=self.context.scope,
                     action="capability.role.set", observed_at=at, core_only=True).is_success)
             external = self.application.external
-            invokable = bool(external and any(tool.action == self.capability
-                             for tool in external.catalog_for(self.context)))
+            invokable = bool(external and (
+                external.is_invokable(self.capability, self.context, at)
+                if hasattr(external, "is_invokable")
+                else any(tool.action == self.capability for tool in external.catalog_for(self.context))
+            ))
             reason = ("capability_not_installed" if installed is None else
                       "reality_package_changed" if not same else
                       "capability_not_active" if not active else
