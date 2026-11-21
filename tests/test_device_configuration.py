@@ -40,7 +40,7 @@ class PhoneConfigurationTests(unittest.TestCase):
         values = {key.removeprefix(GROUP + "."): item.value for key, item in snapshot.fields.items()}
         self.assertFalse(values["enabled"])
         self.assertEqual(values["max_steps"], 4)
-        self.assertEqual(values["allowed_actions"], "launch,tap_text,tap,type,key,wait_text,done,fail")
+        self.assertEqual(values["allowed_actions"], "launch,tap_text,tap,swipe,type,key,wait_text,done,fail")
 
     def test_a_write_round_trips_and_parses_into_settings(self):
         changes = {

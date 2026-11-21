@@ -83,6 +83,7 @@ from .astrbot_host.calendar_command import parse_calendar_command
 from .astrbot_host.functional_commands import classify_functional_command, inject_functional_command_instruction
 from .astrbot_host.group_command import receive_group_llm_command
 from .astrbot_host.reset_command import receive_reset_command
+from .astrbot_host.phone_command import receive_phone_confirmation
 from companion_v2.conversation.group_llm_block import GroupLLMBlock
 from companion_v2.conversation.group_timing import SELF_MENTION
 from companion_v2.conversation import debounce_log
@@ -1037,6 +1038,13 @@ class PrivateCompanionV2StagingPlugin(Star):
                                       channel=channel, event_ref=event_ref, stage="admission")
                 return
         if channel == "private":
+            phone_command = await receive_phone_confirmation(self.staging, event, target=target)
+            if phone_command is not None:
+                suppress_default_reply(event)
+                if phone_command.failure is not None:
+                    self._record_no_reply(event, phone_command.failure.code, origin_key=origin_key,
+                                          channel=channel, event_ref=event_ref, stage="command")
+                return
             # 全部重置必须在建批次之前执行并直发回执：窗口重置会取消在途批次。
             try:
                 reset_command = await receive_reset_command(self.staging, event, target=target)

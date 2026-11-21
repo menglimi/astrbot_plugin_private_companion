@@ -45,6 +45,8 @@ class FakeAdb:
             ("-s", "SER123", "exec-out", "uiautomator", "dump", "/dev/tty"): HIERARCHY,
             ("-s", "SER123", "shell", "dumpsys", "power"):
                 "mWakefulness=Awake\nDisplay Power: state=ON\n",
+            ("-s", "SER123", "shell", "dumpsys", "window", "policy"):
+                "KeyguardServiceDelegate\n  showing=false\n  secure=true\n",
             ("-s", "SER123", "shell", "input", "keyevent", "WAKEUP"): "",
             ("-s", "SER123", "shell", "am", "force-stop", "com.example.app"): "",
             ("-s", "SER123", "exec-out", "screencap", "-p"): PNG,

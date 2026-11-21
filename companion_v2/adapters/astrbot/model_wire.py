@@ -7,6 +7,7 @@ import re
 from types import MappingProxyType
 
 from companion_v2.conversation.foreground import ClaimKind, DraftClaim, ModelDraft
+from companion_v2.device.prompt_image import PhonePromptImage
 from companion_v2.execution.models import digest, encode, encode_prompt
 from companion_v2.model_gateway.models import MAX_TOOL_CATALOG, ToolCall
 from companion_v2.model_gateway.perception import capability_instruction
@@ -190,11 +191,16 @@ def build_wire(envelope, *, model_name=""):
         for original in request.images:
             for ordinal, image in enumerate(original.rendered_images):
                 handle = "e_" + digest(image.source)
-                if evidence.get(handle) != image.source:
+                material_only = request.output_format == "phone_action" and isinstance(original, PhonePromptImage)
+                if evidence.get(handle) != image.source and not material_only:
                     raise ValueError("image is missing its original evidence material")
-                metadata = {"image_evidence": handle,
-                    "parent_source_id": image.parent.source_id, "component_position": image.descriptor.position,
-                    "coverage": "one_static_image"}
+                metadata = ({"image_material": "device_screenshot"}
+                            if material_only else {"image_evidence": handle})
+                metadata.update({
+                    "parent_source_id": image.parent.source_id,
+                    "component_position": image.descriptor.position,
+                    "coverage": "one_static_image",
+                })
                 if original.source in request.user_input_image_sources:
                     metadata["image_origin"] = "user_input"
                 if reply_images:
