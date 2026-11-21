@@ -113,7 +113,8 @@ def _bucket(value: Any) -> dict[str, Any]:
         "cache_other_input_tokens": cache_other,
         "cache_hit_reported": cache_hit_reported,
         "avg_latency_ms": latency,
-        "cost_microusd": 0,
+        "cost_microusd": (_integer(row.get("cost_microusd"))
+                          if row.get("cost_microusd") is not None else None),
     }
 
 

@@ -17,6 +17,17 @@ from .cache_diagnostics import (checked_signature, checked_signature_record, eve
 from .core_observations import (_parse_utc_timestamp, availability_summary,
                                 observations_with_scope_for_role, request_rows)
 from .models import MAX_MODEL_OUTPUT_TOKENS
+from .pricing import (
+    PricingSettingsStore,
+    effective_usd_cny_rate,
+    evaluate_call_cost_microusd,
+    lookup_pricing_schedule,
+    pricing_summary,
+    provider_needs_per_call_repricing,
+    resolve_effective_pricing,
+    resolve_pricing_rule,
+)
+from .pricing_catalog import PriceCatalogStore
 from .reply_efficiency import reply_efficiency_report
 from .refusal import canonical_refusal_terms
 from .replacement_rules import checked_rules, output_capabilities, validate_targets
@@ -587,7 +598,7 @@ class ModelManagement:
                     "host_state": self.app.state}
 
     @outcome
-    def maintenance(self, operator):
+    def maintenance(self, operator, *, provider_metadata=None):
         """Read role-scoped model usage and diagnostics without exposing prompt material."""
         with self.app.runtime.read_snapshot():
             self._authorize(operator)
@@ -618,6 +629,211 @@ class ModelManagement:
             def report_keys(kind):
                 source = usage_source(kind)
                 return ("all", "conversation", "legacy_conversation") if source == "conversation" else ("all", "plugin")
+
+            pricing_settings = PricingSettingsStore(self.app.runtime.data_root).read_safe()
+            pricing_catalog = PriceCatalogStore(self.app.runtime.data_root).read_safe()
+            usd_cny_rate = effective_usd_cny_rate(pricing_settings)
+            meta_map = provider_metadata if isinstance(provider_metadata, dict) else {}
+            provider_models = {item.binding.provider: item.model for item in self.app.router.providers.values()}
+            provider_clusters = {}
+            provider_own_sources = {}
+            for pid_key, info in meta_map.items():
+                if type(pid_key) is not str or not isinstance(info, dict):
+                    continue
+                if not provider_models.get(pid_key) and type(info.get("model")) is str and info["model"]:
+                    provider_models[pid_key] = info["model"]
+                if type(info.get("cluster_id")) is str and info["cluster_id"]:
+                    provider_clusters[pid_key] = info["cluster_id"]
+                if isinstance(info.get("own_source_ids"), (set, frozenset, list, tuple)):
+                    provider_own_sources[pid_key] = frozenset(str(x) for x in info["own_source_ids"] if x)
+
+            base_rule_cache = {}
+            complex_cache = {}
+            raw_base_pair_cache = {}
+            has_schedule_pair_cache = {}
+            static_eff_pair_cache = {}
+
+            def model_for(provider_id, call_model=""):
+                if type(call_model) is str and call_model.strip():
+                    return call_model.strip()
+                return provider_models.get(provider_id, "")
+
+            def _raw_base_for_pair(pid, cmodel):
+                pair = (pid, cmodel)
+                if pair not in raw_base_pair_cache:
+                    raw_base_pair_cache[pair] = resolve_pricing_rule(
+                        pid,
+                        cmodel,
+                        pricing_settings,
+                        catalog=pricing_catalog,
+                        own_source_ids=provider_own_sources.get(pid, frozenset()),
+                    )
+                return raw_base_pair_cache[pair]
+
+            def resolve_for_call(provider_id, cmodel, call_ts=None):
+                pid = provider_id if type(provider_id) is str else ""
+                pair = (pid, cmodel)
+                has_sched = has_schedule_pair_cache.get(pair)
+                if has_sched is None:
+                    has_sched = lookup_pricing_schedule(pid, cmodel, pricing_settings) is not None
+                    has_schedule_pair_cache[pair] = has_sched
+                if not has_sched or call_ts is None:
+                    if pair not in static_eff_pair_cache:
+                        static_eff_pair_cache[pair] = resolve_effective_pricing(
+                            pid,
+                            cmodel,
+                            pricing_settings,
+                            catalog=pricing_catalog,
+                            cluster_id=provider_clusters.get(pid),
+                            own_source_ids=provider_own_sources.get(pid, frozenset()),
+                            precomputed_base=_raw_base_for_pair(pid, cmodel),
+                        )
+                    return static_eff_pair_cache[pair]
+                return resolve_effective_pricing(
+                    pid,
+                    cmodel,
+                    pricing_settings,
+                    catalog=pricing_catalog,
+                    cluster_id=provider_clusters.get(pid),
+                    timestamp=call_ts,
+                    own_source_ids=provider_own_sources.get(pid, frozenset()),
+                    precomputed_base=_raw_base_for_pair(pid, cmodel),
+                )
+
+            def base_rule_for(provider_id):
+                pid = provider_id if type(provider_id) is str else ""
+                if pid not in base_rule_cache:
+                    base_rule_cache[pid] = resolve_for_call(pid, model_for(pid), None)
+                return base_rule_cache[pid]
+
+            def is_complex_provider(provider_id):
+                pid = provider_id if type(provider_id) is str else ""
+                if pid not in complex_cache:
+                    complex_cache[pid] = provider_needs_per_call_repricing(
+                        pid,
+                        model_for(pid),
+                        pricing_settings,
+                        catalog=pricing_catalog,
+                        cluster_id=provider_clusters.get(pid),
+                        own_source_ids=provider_own_sources.get(pid, frozenset()),
+                    )
+                return complex_cache[pid]
+
+            def enrich_aggregate(row, per_call_override=None):
+                data = {key: row[key] for key in row.keys()}
+                rec_calls = int(data.get("recorded_cost_calls") or 0)
+                rec_cost = int(data.get("recorded_cost_microusd") or 0)
+                unpriced = int(data.get("unpriced_calls") or 0)
+                est_calls = 0
+                est_cost = 0
+                remaining_unpriced = 0
+                if unpriced > 0:
+                    if per_call_override is not None:
+                        est_calls, est_cost, remaining_unpriced = per_call_override
+                    else:
+                        pid = data.get("provider") if type(data.get("provider")) is str else ""
+                        eff = base_rule_for(pid)
+                        if eff is not None:
+                            if eff.mode == "per_turn":
+                                computed = evaluate_call_cost_microusd(
+                                    eff, usd_cny_rate=usd_cny_rate, calls=unpriced,
+                                )
+                                if computed is not None:
+                                    est_cost = computed
+                                    est_calls = unpriced
+                                else:
+                                    remaining_unpriced = unpriced
+                            elif eff.mode == "per_request":
+                                req_count = int(data.get("unpriced_requests") or 0)
+                                computed = evaluate_call_cost_microusd(
+                                    eff, usd_cny_rate=usd_cny_rate, requests=req_count,
+                                )
+                                if computed is not None:
+                                    est_cost = computed
+                                    est_calls = unpriced
+                                else:
+                                    remaining_unpriced = unpriced
+                            else:
+                                u_in = int(data.get("unpriced_input_tokens") or 0)
+                                u_cached = int(data.get("unpriced_cached_input_tokens") or 0)
+                                u_create = int(data.get("unpriced_cache_creation_tokens") or 0)
+                                u_out = int(data.get("unpriced_output_tokens") or 0)
+                                u_flat = int(data.get("unpriced_flat_tokens") or 0)
+                                split_cost = (
+                                    evaluate_call_cost_microusd(
+                                        eff,
+                                        usd_cny_rate=usd_cny_rate,
+                                        input_tokens=u_in,
+                                        cached_input_tokens=u_cached,
+                                        cache_creation_tokens=u_create,
+                                        output_tokens=u_out,
+                                    ) or 0
+                                ) if (u_in or u_out) else 0
+                                flat_cost = (
+                                    evaluate_call_cost_microusd(
+                                        eff,
+                                        usd_cny_rate=usd_cny_rate,
+                                        total_tokens=u_flat,
+                                    ) or 0
+                                ) if u_flat else 0
+                                est_cost = split_cost + flat_cost
+                                est_calls = unpriced
+                        else:
+                            remaining_unpriced = unpriced
+                data["recorded_cost_calls"] = rec_calls
+                data["recorded_cost_microusd"] = rec_cost
+                data["estimated_cost_calls"] = est_calls
+                data["estimated_cost_microusd"] = est_cost
+                data["unpriced_token_calls"] = remaining_unpriced
+                data["cost_microusd"] = rec_cost + est_cost
+                return data
+
+            def enrich_recent_call(row):
+                data = {key: row[key] for key in row.keys()}
+                try:
+                    provider_record = json.loads(data["provider_json"])
+                except (TypeError, ValueError):
+                    provider_record = None
+                provider_id = provider_record.get("provider", "") if isinstance(provider_record, dict) else ""
+                call_model = provider_record.get("model", "") if isinstance(provider_record, dict) else ""
+                if type(provider_id) is not str:
+                    provider_id = ""
+                if type(call_model) is not str:
+                    call_model = ""
+                actual_cost = data.get("actual_cost")
+                if actual_cost is not None and actual_cost > 0:
+                    data["cost_basis"] = "recorded"
+                    data["cost_availability"] = "recorded"
+                    return data
+                if data.get("actual_tokens") is not None:
+                    call_ts = data.get("finished_at") or data.get("started_at") or data.get("created_at")
+                    cmodel = model_for(provider_id, call_model)
+                    eff = resolve_for_call(provider_id, cmodel, call_ts)
+                    if eff is not None:
+                        est = evaluate_call_cost_microusd(
+                            eff,
+                            usd_cny_rate=usd_cny_rate,
+                            input_tokens=data.get("input_tokens"),
+                            cached_input_tokens=data.get("cached_input_tokens"),
+                            cache_creation_tokens=data.get("cache_creation_tokens"),
+                            output_tokens=data.get("output_tokens"),
+                            total_tokens=data.get("actual_tokens"),
+                            model=cmodel,
+                            calls=1,
+                            requests=1,
+                            strict_expr=False,
+                        )
+                        if est is not None:
+                            data["actual_cost"] = est
+                            data["estimated_cost_microusd"] = est
+                            data["cost_basis"] = "estimated_local"
+                            data["cost_availability"] = "estimated_local"
+                            return data
+                data["actual_cost"] = None
+                data["cost_basis"] = "unconfigured"
+                data["cost_availability"] = "unconfigured"
+                return data
+
             ordered_days = sorted(all_days)
             batch_size = 300
             for offset in range(0, len(ordered_days), batch_size):
@@ -632,6 +848,25 @@ class ModelManagement:
                         COUNT(*) AS calls,
                         SUM(COALESCE(c.actual_tokens, 0)) AS tokens,
                         SUM(COALESCE(c.actual_cost, 0)) AS cost_microusd,
+                        SUM(CASE WHEN c.actual_cost IS NOT NULL AND c.actual_cost > 0 THEN c.actual_cost ELSE 0 END)
+                            AS recorded_cost_microusd,
+                        SUM(CASE WHEN c.actual_cost IS NOT NULL AND c.actual_cost > 0 THEN 1 ELSE 0 END)
+                            AS recorded_cost_calls,
+                        SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL THEN 1 ELSE 0 END)
+                            AS unpriced_calls,
+                        COUNT(DISTINCT CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                            THEN c.task_id END) AS unpriced_requests,
+                        SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                            THEN COALESCE(c.input_tokens, 0) ELSE 0 END) AS unpriced_input_tokens,
+                        SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                            THEN COALESCE(c.cached_input_tokens, 0) ELSE 0 END) AS unpriced_cached_input_tokens,
+                        SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                            THEN COALESCE(c.cache_creation_tokens, 0) ELSE 0 END) AS unpriced_cache_creation_tokens,
+                        SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                            THEN COALESCE(c.output_tokens, 0) ELSE 0 END) AS unpriced_output_tokens,
+                        SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                            AND c.input_tokens IS NULL AND c.output_tokens IS NULL THEN c.actual_tokens ELSE 0 END)
+                            AS unpriced_flat_tokens,
                         SUM(CASE WHEN c.actual_tokens IS NULL THEN 1 ELSE 0 END) AS unconfirmed_calls,
                         SUM(CASE WHEN f.call_id IS NULL THEN 0 ELSE 1 END) AS failures,
                         SUM(CASE WHEN c.state = 'unknown' THEN 1 ELSE 0 END) AS unknown_calls,
@@ -664,26 +899,143 @@ class ModelManagement:
                            OR (t.kind = ? AND t.origin_key = ?))
                      GROUP BY day, provider, kind""", account_keys + (MAIN_CHAIN_KIND, self.context.key))
 
+                # Switch to per-call timestamp-aware repricing ONLY for providers with
+                # per_tier, tiered_expr, or active pricing_schedules!
+                complex_providers = sorted({
+                    str(row["provider"] or "")
+                    for row in grouped_rows
+                    if int(row["unpriced_calls"] or 0) > 0 and is_complex_provider(row["provider"])
+                })
+                per_call_group = {}
+                per_call_hour = {}
+                if complex_providers:
+                    cp_placeholders = ",".join("?" for _ in complex_providers)
+                    complex_rows = self.app.runtime.read_all(f"""SELECT
+                            substr(COALESCE(c.finished_at, c.started_at, r.created_at), 1, 10) AS day,
+                            substr(COALESCE(c.finished_at, c.started_at, r.created_at), 12, 2) AS hour,
+                            COALESCE(c.finished_at, c.started_at, r.created_at) AS at_ts,
+                            CASE WHEN json_valid(c.provider_json)
+                                THEN COALESCE(json_extract(c.provider_json, '$.provider'), '') ELSE '' END AS provider,
+                            CASE WHEN json_valid(c.provider_json)
+                                THEN COALESCE(json_extract(c.provider_json, '$.model'), '') ELSE '' END AS call_model,
+                            t.kind AS kind,
+                            c.task_id AS task_id,
+                            c.actual_tokens, c.input_tokens, c.cached_input_tokens,
+                            c.cache_creation_tokens, c.output_tokens
+                        FROM model_calls c
+                        JOIN model_requests r ON r.task_id = c.task_id
+                        JOIN execution_tasks t ON t.task_id = c.task_id
+                        WHERE (EXISTS (SELECT 1 FROM model_call_accounts ca
+                                       WHERE ca.call_id = c.call_id AND ca.account_key IN ({placeholders}))
+                               OR (t.kind = ? AND t.origin_key = ?))
+                          AND (c.actual_cost IS NULL OR c.actual_cost = 0)
+                          AND c.actual_tokens IS NOT NULL
+                          AND (CASE WHEN json_valid(c.provider_json)
+                               THEN COALESCE(json_extract(c.provider_json, '$.provider'), '') ELSE '' END)
+                              IN ({cp_placeholders})""",
+                        account_keys + (MAIN_CHAIN_KIND, self.context.key) + tuple(complex_providers))
+                    seen_group_tasks = set()
+                    seen_hour_tasks = set()
+                    for crow in complex_rows:
+                        pid = str(crow["provider"] or "")
+                        cmodel = model_for(pid, crow["call_model"])
+                        eff = resolve_for_call(pid, cmodel, crow["at_ts"])
+                        gkey = (crow["day"], pid, crow["kind"])
+                        hkey = (crow["day"], crow["hour"], pid, crow["kind"])
+                        g_task_key = (gkey, crow["task_id"])
+                        h_task_key = (hkey, crow["task_id"])
+                        g_reqs = 0 if g_task_key in seen_group_tasks else 1
+                        h_reqs = 0 if h_task_key in seen_hour_tasks else 1
+                        seen_group_tasks.add(g_task_key)
+                        seen_hour_tasks.add(h_task_key)
+                        g_cost = evaluate_call_cost_microusd(
+                            eff,
+                            usd_cny_rate=usd_cny_rate,
+                            input_tokens=crow["input_tokens"],
+                            cached_input_tokens=crow["cached_input_tokens"],
+                            cache_creation_tokens=crow["cache_creation_tokens"],
+                            output_tokens=crow["output_tokens"],
+                            total_tokens=crow["actual_tokens"],
+                            model=cmodel,
+                            calls=1,
+                            requests=g_reqs,
+                            strict_expr=False,
+                        )
+                        h_cost = (
+                            g_cost
+                            if g_reqs == h_reqs
+                            else evaluate_call_cost_microusd(
+                                eff,
+                                usd_cny_rate=usd_cny_rate,
+                                input_tokens=crow["input_tokens"],
+                                cached_input_tokens=crow["cached_input_tokens"],
+                                cache_creation_tokens=crow["cache_creation_tokens"],
+                                output_tokens=crow["output_tokens"],
+                                total_tokens=crow["actual_tokens"],
+                                model=cmodel,
+                                calls=1,
+                                requests=h_reqs,
+                                strict_expr=False,
+                            )
+                        )
+                        ge, gc, gu = per_call_group.get(gkey, (0, 0, 0))
+                        if g_cost is not None:
+                            per_call_group[gkey] = (ge + 1, gc + g_cost, gu)
+                        else:
+                            per_call_group[gkey] = (ge, gc, gu + 1)
+                        he, hc, hu = per_call_hour.get(hkey, (0, 0, 0))
+                        if h_cost is not None:
+                            per_call_hour[hkey] = (he + 1, hc + h_cost, hu)
+                        else:
+                            per_call_hour[hkey] = (he, hc, hu + 1)
+
                 for row in grouped_rows:
+                    gkey = (row["day"], row["provider"], row["kind"])
+                    override = per_call_group.get(gkey) if is_complex_provider(row["provider"]) else None
+                    enriched = enrich_aggregate(row, per_call_override=override)
                     for key in report_keys(row["kind"]):
-                        reports[key].add_group(row)
+                        reports[key].add_group(enriched)
                 hour_rows = self.app.runtime.read_all(f"""SELECT
                         substr(COALESCE(c.finished_at, c.started_at, r.created_at), 1, 10) AS day,
                         substr(COALESCE(c.finished_at, c.started_at, r.created_at), 12, 2) AS hour,
+                        CASE WHEN json_valid(c.provider_json)
+                            THEN COALESCE(json_extract(c.provider_json, '$.provider'), '') ELSE '' END AS provider,
                         t.kind AS kind,
                         COUNT(*) AS calls, SUM(COALESCE(c.actual_tokens, 0)) AS tokens,
-                        SUM(COALESCE(c.actual_cost, 0)) AS cost_microusd
+                        SUM(COALESCE(c.actual_cost, 0)) AS cost_microusd,
+                        SUM(CASE WHEN c.actual_cost IS NOT NULL AND c.actual_cost > 0 THEN c.actual_cost ELSE 0 END)
+                            AS recorded_cost_microusd,
+                        SUM(CASE WHEN c.actual_cost IS NOT NULL AND c.actual_cost > 0 THEN 1 ELSE 0 END)
+                            AS recorded_cost_calls,
+                        SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL THEN 1 ELSE 0 END)
+                            AS unpriced_calls,
+                        COUNT(DISTINCT CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                            THEN c.task_id END) AS unpriced_requests,
+                        SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                            THEN COALESCE(c.input_tokens, 0) ELSE 0 END) AS unpriced_input_tokens,
+                        SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                            THEN COALESCE(c.cached_input_tokens, 0) ELSE 0 END) AS unpriced_cached_input_tokens,
+                        SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                            THEN COALESCE(c.cache_creation_tokens, 0) ELSE 0 END) AS unpriced_cache_creation_tokens,
+                        SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                            THEN COALESCE(c.output_tokens, 0) ELSE 0 END) AS unpriced_output_tokens,
+                        SUM(CASE WHEN (c.actual_cost IS NULL OR c.actual_cost = 0) AND c.actual_tokens IS NOT NULL
+                            AND c.input_tokens IS NULL AND c.output_tokens IS NULL THEN c.actual_tokens ELSE 0 END)
+                            AS unpriced_flat_tokens
                     FROM model_calls c
                     JOIN model_requests r ON r.task_id = c.task_id
                     JOIN execution_tasks t ON t.task_id = c.task_id
                     WHERE (EXISTS (SELECT 1 FROM model_call_accounts ca
                                    WHERE ca.call_id = c.call_id AND ca.account_key IN ({placeholders}))
                            OR (t.kind = ? AND t.origin_key = ?))
-                    GROUP BY day, hour, kind ORDER BY day, hour""",
+                    GROUP BY day, hour, provider, kind ORDER BY day, hour""",
                     account_keys + (MAIN_CHAIN_KIND, self.context.key))
                 for row in hour_rows:
+                    hkey = (row["day"], row["hour"], row["provider"], row["kind"])
+                    override = per_call_hour.get(hkey) if is_complex_provider(row["provider"]) else None
+                    enriched_hour = enrich_aggregate(row, per_call_override=override)
                     for key in report_keys(row["kind"]):
-                        reports[key].add_hour(row)
+                        reports[key].add_hour(enriched_hour)
                 recent_rows = self.app.runtime.read_all(f"""WITH samples AS (
                     SELECT c.state, c.position, c.actual_tokens, c.reserved_tokens,
                         c.receipt_ref,
@@ -705,27 +1057,100 @@ class ModelManagement:
                      SELECT * FROM samples WHERE source_position <= 80""",
                     account_keys + (MAIN_CHAIN_KIND, self.context.key))
                 for row in recent_rows:
+                    enriched_recent = enrich_recent_call(row)
                     for key in report_keys(row["kind"]):
-                        reports[key].add_recent(row)
+                        reports[key].add_recent(enriched_recent)
+            seen_core_turns = set()
             for row in core_rows:
+                pid = row["provider"] if type(row["provider"]) is str else ""
+                cmodel = model_for(pid)
+                call_ts = row.get("finished_at") or row.get("started_at") or row.get("created_at")
+                eff = resolve_for_call(pid, cmodel, call_ts)
+                measurable = (row["actual_tokens"] is not None
+                              or row["input_tokens"] is not None
+                              or row["output_tokens"] is not None)
+                turn_id = str(row.get("call_id") or "").rsplit(":", 1)[0]
+                turn_key = (turn_id, pid)
+                is_new_turn = turn_key not in seen_core_turns
+                if measurable:
+                    seen_core_turns.add(turn_key)
+                est = (
+                    evaluate_call_cost_microusd(
+                        eff,
+                        usd_cny_rate=usd_cny_rate,
+                        input_tokens=row["input_tokens"],
+                        cached_input_tokens=row["cached_input_tokens"],
+                        cache_creation_tokens=row["cache_creation_tokens"],
+                        output_tokens=row["output_tokens"],
+                        total_tokens=row["actual_tokens"],
+                        model=cmodel,
+                        calls=1,
+                        requests=1 if is_new_turn else 0,
+                        strict_expr=False,
+                    )
+                    if (eff is not None and measurable)
+                    else None
+                )
+                if est is not None:
+                    cost_meta = {
+                        "cost_microusd": est, "recorded_cost_calls": 0, "recorded_cost_microusd": 0,
+                        "estimated_cost_calls": 1, "estimated_cost_microusd": est, "unpriced_token_calls": 0,
+                    }
+                    enriched_core_recent = {
+                        **row, "actual_cost": est, "estimated_cost_microusd": est,
+                        "cost_basis": "estimated_local", "cost_availability": "estimated_local",
+                    }
+                else:
+                    cost_meta = {
+                        "cost_microusd": 0, "recorded_cost_calls": 0, "recorded_cost_microusd": 0,
+                        "estimated_cost_calls": 0, "estimated_cost_microusd": 0,
+                        "unpriced_token_calls": 1 if measurable else 0,
+                    }
+                    enriched_core_recent = {
+                        **row, "actual_cost": None, "cost_basis": "unconfigured",
+                        "cost_availability": "unavailable",
+                    }
+                core_group = {**row, **row["aggregate"], **cost_meta}
+                core_hour = {**row, **cost_meta}
                 for key in ("all", "conversation", "astrbot_core"):
-                    reports[key].add_group({**row, **row["aggregate"]})
-                    reports[key].add_hour(row)
-                    reports[key].add_recent(row)
+                    reports[key].add_group(core_group)
+                    reports[key].add_hour(core_hour)
+                    reports[key].add_recent(enriched_core_recent)
             cache_reports = _cache_diagnostic_summary(self.app.runtime, role_accounts, all_days, self.context.key,
                                                      core_rows=core_rows)
             usage_reports = {key: {**report.project(now), "cache_diagnostics": cache_reports[key]}
                              for key, report in reports.items()}
+            core_meta = reports["astrbot_core"]._cost_totals()
+            core_priced = core_meta["recorded_cost_calls"] + core_meta["estimated_cost_calls"]
+            core_unpriced = core_meta["unpriced_token_calls"]
+            core_cost_avail = ("unavailable" if core_priced == 0
+                               else "partial_estimated" if core_unpriced > 0
+                               else "estimated_local")
             usage_reports["astrbot_core"].update(execution_path="astrbot_core",
                 coverage=availability_summary(core_observations),
                 measurement_basis={"usage": "observed_provider_responses_with_explicit_fallback_scope",
-                                   "cache": "reported_fields_only", "cost": "unavailable",
+                                   "cache": "reported_fields_only", "cost": core_cost_avail,
                                    "signature": "runner_pre_provider_or_provider_request_hook"})
-            _unavailable_core_costs(usage_reports["astrbot_core"])
-            usage_reports["astrbot_core"]["cost_availability"] = "unavailable"
-            for key in ("all", "conversation"):
-                usage_reports[key]["cost_availability"] = "partial" if core_observations else "local_priced_subtotal"
-                usage_reports[key]["core_cost_availability"] = "unavailable"
+            if core_cost_avail == "unavailable":
+                _unavailable_core_costs(usage_reports["astrbot_core"])
+            usage_reports["astrbot_core"]["cost_availability"] = core_cost_avail
+            for key in ("all", "conversation", "plugin", "legacy_conversation"):
+                meta = reports[key]._cost_totals()
+                priced = meta["recorded_cost_calls"] + meta["estimated_cost_calls"]
+                unpriced = meta["unpriced_token_calls"]
+                if key in ("all", "conversation") and core_observations and core_cost_avail == "unavailable":
+                    avail = "partial"
+                elif priced == 0:
+                    avail = "unconfigured"
+                elif unpriced > 0:
+                    avail = "partial_estimated" if meta["estimated_cost_calls"] > 0 else "partial"
+                elif meta["estimated_cost_calls"] > 0:
+                    avail = "estimated_local"
+                else:
+                    avail = "local_priced_subtotal"
+                usage_reports[key]["cost_availability"] = avail
+                if key in ("all", "conversation"):
+                    usage_reports[key]["core_cost_availability"] = core_cost_avail
             usage_reports["legacy_conversation"]["execution_path"] = "legacy_v2_conversation"
             usage_reports["plugin"]["execution_path"] = "v2_background"
             today_account = role_accounts[now.date().isoformat()]
@@ -767,6 +1192,7 @@ class ModelManagement:
                     "usage_sources": {key: usage_reports[key] for key in ("conversation", "plugin", "astrbot_core", "legacy_conversation")},
                     "reply_efficiency": reply_efficiency_report(self.app.runtime, self.context, now, core_observations=core_7d),
                     "budget": budget, "providers": providers, "window_days": 30,
+                    "pricing": pricing_summary(pricing_settings, now=now),
                     "ledger_scope": "current_role", "runtime": runtime_diagnostics}
 
     @outcome

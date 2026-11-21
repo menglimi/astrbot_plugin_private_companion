@@ -26,6 +26,7 @@ from companion_v2.adapters.astrbot.provider import AstrBotTextProvider, REPLY_TA
 from companion_v2.configuration.store import open_configuration_store
 from companion_v2.adapters.astrbot.provider_catalog import (TextProviderSettings, assemble_providers,
     attach_native_video, loaded_routing)
+from companion_v2.model_gateway.pricing import tariff_resolver_for
 from companion_v2.adapters.astrbot.tools import CompositeAstrBotToolPort
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.conversation.content.authoring_tasks import authoring_profiles
@@ -523,13 +524,14 @@ class MultiHostSession:
         self.sync_native_bridge_pairs()
         from .account_recovery import AccountRecovery
         self.account_recovery = AccountRecovery(self)
+        self._tariff_resolver = tariff_resolver_for(runtime.data_root)
         self.model = AstrBotTextProvider(native_context, bridge=self.bridge,
             binding=ProviderBinding("model.text", common.provider_id, native_types.version, provider_fingerprint),
             provider_id=common.provider_id, version=native_types.version, provider_type=native_types.provider_types,
             function_tool_type=native_types.function_tool, tool_set_type=native_types.tool_set,
             tariff=common.tariff, maximum_output_tokens=max(common.max_output_tokens, PROVIDER_OUTPUT_FLOOR),
             maximum_input_estimate=common.maximum_input_estimate, output_parameter=common.output_parameter,
-            streaming=common.streaming)
+            streaming=common.streaming, tariff_resolver=self._tariff_resolver)
         self.model._current()
         self._model_defaults = TextProviderSettings(common.provider_id, common.tariff,
             max(common.max_output_tokens, PROVIDER_OUTPUT_FLOOR), common.maximum_input_estimate,
@@ -538,7 +540,7 @@ class MultiHostSession:
             text=self.model, settings=self._model_defaults)
         self.models = (self.model,) + assemble_providers(native_context, bridge=self.bridge,
             native_types=native_types, primary_id=common.provider_id, additional=common.additional_providers,
-            defaults=self._model_defaults)
+            defaults=self._model_defaults, tariff_resolver=self._tariff_resolver)
         fallback_provider_id, replacement_rules = loaded_routing(common.fallback_provider_id,
             common.replacement_rules, (model.binding.provider for model in self.models))
         profiles = (ModelTaskProfile(REPLY_KIND, Lane.FOREGROUND, common.provider_id, common.task_prompt,
@@ -650,7 +652,7 @@ class MultiHostSession:
         models = assemble_providers(self.bridge.context, bridge=self.bridge, native_types=self.types,
             primary_id=self.settings.common.provider_id,
             additional=self.settings.common.additional_providers, defaults=self._model_defaults,
-            only_ids=(provider_id,))
+            only_ids=(provider_id,), tariff_resolver=self._tariff_resolver)
         return models[0].local_provider() if models else None
 
     def scope(self, target, conversation_id):

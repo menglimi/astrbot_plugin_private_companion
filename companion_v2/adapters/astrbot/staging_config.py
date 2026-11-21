@@ -287,7 +287,7 @@ class StagingConfiguration:
             "access": {"authority_ref": self.authority_ref, "valid_from": self.valid_from.isoformat(),
                 "expires_at": self.expires_at.isoformat() if self.expires_at else None, "capabilities": list(self.capabilities)},
             "model": {"provider_id": self.provider_id, "provider_fingerprint": self.provider_fingerprint,
-                "tariff": asdict(self.tariff), "task_prompt": self.task_prompt, "max_output_tokens": self.max_output_tokens,
+                "tariff": self.tariff.document(), "task_prompt": self.task_prompt, "max_output_tokens": self.max_output_tokens,
                 "maximum_input_estimate": self.maximum_input_estimate, "output_parameter": self.output_parameter,
                 **({"streaming": True} if self.streaming else {})},
             "budget": self.budget.document(),
@@ -407,7 +407,8 @@ class StagingConfiguration:
             streaming = data["model"].pop("streaming", False) if isinstance(data["model"], dict) else False
             model = _fields(data["model"],
                 "provider_id provider_fingerprint tariff task_prompt max_output_tokens maximum_input_estimate output_parameter", "model")
-            tariff = UsageTariff(**_fields(model["tariff"], "input cached_input output", "model.tariff"))
+            tariff = UsageTariff(**_fields(model["tariff"], "input cached_input output", "model.tariff",
+                                           optional=("cache_creation", "configured")))
             budget = _fields(data["budget"], "installation bot role window background", "budget", optional=("enabled",))
             budget_enabled = budget.pop("enabled", True)
             amounts = {name: Amount(**_fields(

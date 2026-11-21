@@ -140,7 +140,7 @@ class GeminiNativeVideoProvider:
         estimated = build_wire(envelope, model_name=envelope.model_override or self.model).input_estimate()
         if estimated > self.maximum_input_estimate or envelope.max_output_tokens > self.maximum_output_tokens:
             raise TaskError("host_model_limit", "native video request exceeds its declared input or output profile")
-        return self.tariff.amount(estimated, 0, envelope.max_output_tokens)
+        return self.tariff.reserve_amount(estimated, envelope.max_output_tokens)
 
     async def probe(self):
         """Use the dashboard's context-free probe through this native transport."""
