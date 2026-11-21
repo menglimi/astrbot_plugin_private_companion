@@ -84,8 +84,17 @@ class CoreReplyReactionDeliveryTests(MultiFixture, unittest.IsolatedAsyncioTestC
         event, message = await self.prepare()
         self.assertFalse(event.get_extra("enable_streaming"))
         self.assertIn("<pc_reaction_expression>", self.request.system_prompt)
+        retrieval_started_after = []
+        search_native = self.semantic.reactions.search_native
+
+        async def observe_search(*args, **kwargs):
+            retrieval_started_after.append(len(event.sent))
+            return await search_native(*args, **kwargs)
+
+        self.semantic.reactions.search_native = observe_search
         await event.send(message)
         self.assertEqual(len(event.sent), 2)
+        self.assertEqual(retrieval_started_after, [1])
         self.assertEqual(event.sent[0].get_plain_text(), "你好！")
         wire = await AiocqhttpMessageEvent._parse_onebot_json(event.sent[1])
         self.assertEqual(wire[0]["type"], "image")
@@ -102,7 +111,7 @@ class CoreReplyReactionDeliveryTests(MultiFixture, unittest.IsolatedAsyncioTestC
         self.assertEqual(self.app.runtime.read_one("SELECT COUNT(*) n FROM conversation_batches", ())["n"], 0)
         self.assertEqual(self.native.provider.client.state.calls, [])
 
-    async def test_separate_after_reaction_waits_for_the_last_reply_segment(self):
+    async def test_separate_after_reaction_does_not_prepare_before_last_text_segment(self):
         from astrbot_host.core_reply_media_delivery import native_reply_messages
 
         event, _ = await self.prepare()
@@ -116,10 +125,11 @@ class CoreReplyReactionDeliveryTests(MultiFixture, unittest.IsolatedAsyncioTestC
                                           index, len(segments))
             output.extend(native_reply_messages(event, prepared))
 
-        self.assertEqual([item.get_plain_text() for item in output[:-1]], list(segments))
-        self.assertIsInstance(output[-1].chain[0], Image)
-        self.assertEqual(len(output), len(segments) + 1)
-        self.assertEqual(core["_reaction_reply"]["reason"], "prepared")
+        self.assertEqual([item.get_plain_text() for item in output], list(segments))
+        self.assertEqual(len(output), len(segments))
+        self.assertTrue(core["_reaction_reply"]["deferred_after_text"])
+        self.assertEqual(core["_reaction_reply"]["reason"], "intent_authored")
+        self.assertFalse(core["_reaction_reply"].get("attempted", False))
 
     async def test_before_and_same_message_delivery_modes_keep_caption_once(self):
         for mode in ("separate_before", "same_message"):
