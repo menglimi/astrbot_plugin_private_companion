@@ -216,21 +216,20 @@
     ? Array.from(value).slice(0, limit - 1).join("") + "…" : value;
 
   function readDirectoryPreferences() {
-    const toggle = $("hide-idle-users");
-    if (!toggle) return;
-    let stored = null;
-    try { stored = window.localStorage?.getItem("companion-v2.hide-idle-users"); } catch (_) { stored = null; }
-    hideIdleUsers = stored === null ? true : stored !== "false";
-    toggle.checked = hideIdleUsers;
+    /* “暂无往来”的普通用户永不在目录、图谱或往来分层里显示；
+       不提供关闭这个行为的入口，也不再读取旧 localStorage 偏好。 */
+    hideIdleUsers = true;
   }
   function saveDirectoryPreference() {
-    try { window.localStorage?.setItem("companion-v2.hide-idle-users", String(hideIdleUsers)); } catch (_) { /* 页面桥可能禁用存储 */ }
+    hideIdleUsers = true;
   }
   function hasInteraction(person) {
-    // A private/group route can exist with zero messages (the contact was
-    // discovered, configured or proposed), and that is exactly the "暂无来往"
-    // card. Interaction means an actual message, not the presence of a route.
-    return Boolean(number(person?.total?.msg_count) > 0
+    // A route that exists in the directory is already a relationship someone
+    // configured or discovered.  Counting only messages made those people fall
+    // back into the "暂无往来" bucket right after setup.  Keep route presence as
+    // interaction; only truly empty/unrelated people belong in the idle group.
+    return Boolean(person?.private_chat || person?.group_member
+      || number(person?.total?.msg_count) > 0
       || number(person?.private?.msg_count) > 0
       || Object.values(groupsOf(person)).some((item) => number(item?.msg_count) > 0));
   }
@@ -244,7 +243,7 @@
       if (filter === "stable" && !isPrivateUser(person)) return false;
       if (filter === "temporary" && !person.group_member) return false;
       if (filter === "discovered" && knownPerson(person)) return false;
-      if (filter !== "discovered" && !includeHidden && hideIdleUsers && isIdleOrdinaryUser(person)) return false;
+      if (isIdleOrdinaryUser(person)) return false;
       return true;
     });
   }
@@ -308,7 +307,7 @@
     if (!data) return [];
     return data.persons.filter((person) => {
       if (!matchesSearch(person)) return false;
-      if (hideIdleUsers && isIdleOrdinaryUser(person)) return false;
+      if (isIdleOrdinaryUser(person)) return false;
       if (graphScope === "private") return isPrivateUser(person);
       if (graphScope === "group") return person.group_member;
       return true;
@@ -548,20 +547,15 @@
     $("people-result-count").textContent = `${people.length} 人`;
     const visibilitySummary = $("people-visibility-summary");
     if (visibilitySummary) {
-      const hidden = data ? peopleForCurrentFilter({includeHidden: true}).length - people.length : 0;
-      visibilitySummary.textContent = filter === "discovered" ? "仅在 AstrBot 中发现的会话，可在此单独配置" : hideIdleUsers
-        ? hidden ? `已隐藏 ${hidden} 位无交往普通用户` : "默认隐藏无交往普通用户"
-        : "已显示全部用户";
+      visibilitySummary.textContent = filter === "discovered"
+        ? "仅在 AstrBot 中发现、且已有会话或配置的用户"
+        : "无往来用户不会显示";
     }
-    const toggle = $("hide-idle-users");
-    if (toggle) { toggle.checked = hideIdleUsers; toggle.disabled = filter === "discovered"; }
     if (!people.length) {
       const empty = node("div", undefined, "empty-state");
-      const hidden = data ? peopleForCurrentFilter({includeHidden: true}).length : 0;
-      const title = data ? searchTerm ? "没有符合的往来用户"
-        : hideIdleUsers && hidden ? "无交往普通用户已隐藏" : "这里还没有符合的用户" : "正在读取用户目录…";
-      empty.append(node("strong", title), node("p", data && hideIdleUsers && hidden
-        ? "关闭“隐藏无交往的普通用户”后可查看完整目录。" : "收到私聊或群聊记录后，用户会出现在这里。"));
+      const title = data ? searchTerm ? "没有符合的往来用户" : "这里还没有符合的用户"
+        : "正在读取用户目录…";
+      empty.append(node("strong", title), node("p", "无往来的普通用户不会出现在这里。"));
       grid.append(empty);
       return;
     }
@@ -793,7 +787,7 @@
     ].join("");
   }
   function renderNetworkOverview() {
-    const people = data ? data.persons.filter(matchesSearch) : [];
+    const people = data ? data.persons.filter(person => matchesSearch(person) && !isIdleOrdinaryUser(person)) : [];
     const visibleGroups = allGroups().filter(group => !searchTerm
       || groupSearchText(group).includes(searchTerm)
       || peopleInGroup(group, {honorSearch: false}).some(matchesSearch));
@@ -801,7 +795,6 @@
       {key: "both", match: person => person.private_chat && person.group_member},
       {key: "private", match: person => person.private_chat && !person.group_member},
       {key: "group", match: person => !person.private_chat && person.group_member},
-      {key: "idle", match: person => !person.private_chat && !person.group_member},
     ];
     const maxMessages = Math.max(1, ...people.map(person => number(person.total?.msg_count)));
     const counts = {};
@@ -1891,12 +1884,7 @@
     updateFilterButtons();
     renderPeople();
   }));
-  const idleToggle = $("hide-idle-users");
-  if (idleToggle) idleToggle.addEventListener("change", () => {
-    hideIdleUsers = Boolean(idleToggle.checked);
-    saveDirectoryPreference();
-    renderPeople();
-  });
+
   document.querySelectorAll(".group-status-filter").forEach((item) => item.addEventListener("click", () => {
     groupStatusFilter = item.dataset.groupFilter || "all";
     updateGroupFilters();
