@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import unittest
 
 from companion_v2.adapters.astrbot.provider import AstrBotTextProvider
-from companion_v2.configuration.models import ConfigLayer, ConfigTarget, EffectiveValue
+from companion_v2.configuration.models import ApplyMode, ConfigLayer, ConfigTarget, ConfigurationSnapshot, EffectiveValue
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.configuration.service import ConfigurationService
 from companion_v2.execution.models import Lane, TaskError
@@ -274,7 +274,7 @@ class OutputCeilingProjectionTests(unittest.TestCase):
         manager.context = SimpleNamespace(
             scope=SimpleNamespace(installation_id=INSTALLATION, bot_id=SCOPE.bot_id),
             role_binding=SimpleNamespace(role=ROLE))
-        manager._snapshots = lambda operator, profile, layer=None: (snapshot, snapshot, None)
+        manager._snapshots = lambda operator, profile, layer=None: (snapshot, snapshot, None, None, snapshot, snapshot)
         manager._prompt_sections = lambda *a, **k: []
         return manager, ModelTaskProfile(kind="role.expression.learn", lane=Lane.BACKGROUND,
                                          default_provider="primary", default_prompt="任务提示",
@@ -309,26 +309,30 @@ class InheritedDefaultSaveTests(unittest.TestCase):
         self.profile = ModelTaskProfile(kind="role.expression.learn", lane=Lane.BACKGROUND,
                                         default_provider="primary", default_prompt="任务提示",
                                         default_fallback="fallback", max_output_tokens=8192)
-        self.definitions = configuration_fields((self.profile,))
-        self.snapshot = SimpleNamespace(fields={
-            item.field_id: EffectiveValue(item.default, None, False) for item in self.definitions})
+        definitions = configuration_fields((self.profile,))
+        registry = FieldRegistry(version="inherited-output-defaults.v1", fields=definitions)
+        self.snapshot = ConfigurationSnapshot(
+            target=ConfigTarget(INSTALLATION, ConfigLayer.WINDOW, ROLE, SCOPE),
+            group_id=self.profile.group, schema_version=registry.version,
+            revision=0, change_sequence=0, edit_token="edit", resolution_token="resolution",
+            fields={item.field_id: EffectiveValue(item.default, None, False) for item in definitions},
+            consumer_id="model_gateway", apply_mode=ApplyMode.NEXT_TASK,
+        )
         self.manager = object.__new__(ModelManagement)
-        providers = {
-            provider: SimpleNamespace(maximum_output_tokens=4096, capabilities=("text",))
+        self.manager.context = None
+        providers = tuple(
+            SimpleNamespace(binding=SimpleNamespace(provider=provider),
+                            maximum_output_tokens=4096, capabilities=("text",))
             for provider in ("primary", "fallback")
-        }
-        self.manager.app = SimpleNamespace(router=SimpleNamespace(
-            providers=providers,
-            provider_for=providers.get,
-        ))
+        )
+        router = ModelRouter(SimpleNamespace(registry=registry), (self.profile,), providers)
+        self.manager.app = SimpleNamespace(router=router)
 
     def saved_limit(self, source):
         """A snapshot whose output limit was saved at ``source`` on an outer layer."""
         field_id = self.profile.group + ".max_output_tokens"
-        return SimpleNamespace(fields={
-            item.field_id: EffectiveValue(item.default,
-                source if item.field_id == field_id else None, False)
-            for item in self.definitions})
+        return replace(self.snapshot, fields={**self.snapshot.fields,
+            field_id: replace(self.snapshot.fields[field_id], source=source)})
 
     def changes(self, current=None, inherited=None, **changes):
         return self.manager._changes(self.profile, {"changes": changes, "reset": []},

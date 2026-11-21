@@ -130,9 +130,19 @@ window.CompanionModelsPage = (() => {
   const snapshot = s => s?.status?.tasks || [];
   const coreReply = task => task?.execution_path === "astrbot_core";
   const taskFields = task => coreReply(task) ? ["prompt", "replacement_rules"] : fields;
+  /* A cleared field still has a row saved on this layer, so it counts as
+     "configured here" exactly like an explicit one; the editor card already
+     treats it that way (its draft is not inherited). */
+  const ownsField = (task, name) => !!(task.fields[name]?.explicit
+    || task.fields[name]?.cleared || task.fields[name]?.replaced);
   const fallbackFor = task => {
     if (coreReply(task)) return "";
     const field = task.fields.fallback;
+    /* Recovery cleared a stored fallback that duplicated the primary; the task
+       really has no fallback even though the inherited value is still visible.
+       ``emptied`` covers rows inherited from another layer, which are not the
+       editor's own choice but are just as unusable. */
+    if (field?.cleared || field?.emptied) return "";
     if (field?.explicit) return field.value || "";
     return field?.value || field?.inherited_value || task.fields.provider?.inherited_value
       || task.fields.provider?.value || "";
@@ -144,8 +154,83 @@ window.CompanionModelsPage = (() => {
         && provider.capabilities.includes("text"))
   );
   const available = (s, task) => s.status.providers.filter(p => providerSupportsTask(task, p));
-  const effective = (task, draft, name) => draft.inherited[name] ? task.fields[name].inherited_value : draft.values[name];
+  /* The inherited value is computed for the parent layer alone, so with a local
+     primary override it can differ from the fallback this route actually runs.
+     The projected value already reflects the real route; prefer it and fall back
+     to the inherited value only when it is empty. */
+  /* Output use of a field. An emptied fallback is not a fallback even though the
+     parent view still carries a value for it, and for a settled primary the
+     inherited value can be a route this layer will never try. */
+  const effective = (task, draft, name) => {
+    if (!draft.inherited[name]) return draft.values[name];
+    if (name === "fallback") return fallbackShown(task, draft);
+    return task.fields[name].inherited_value;
+  };
   const providerFor = (task, draft) => coreReply(task) ? "" : effective(task, draft, "provider");
+  /* The primary this draft would save: a local value, or the parent value when
+     the user switches back to following it. */
+  const draftedProvider = (task, draft) => draft.inherited.provider
+    ? task.fields.provider.inherited_value : draft.values.provider;
+  /* Recovery emptied an inherited fallback only because it collided with the
+     primary this layer inherits. Moving the primary here — explicitly or by
+     following the parent instead — makes it live again, so the draft has to
+     account for it before saving. */
+  const primaryMoved = (task, draft) =>
+    draftedProvider(task, draft) !== task.fields.provider.value;
+  /* Recovery emptied an inherited fallback because it collided with the primary
+     this layer inherits. Moving the primary makes it live again as the profile's
+     fallback default — unless that default is the new primary, which collides
+     again. Returns null when the field is not an emptied inherited fallback. */
+  const emptiedFallback = (task, draft, name) => {
+    const field = task.fields[name];
+    if (!field.emptied || field.cleared) return null;
+    if (!primaryMoved(task, draft)) return "";
+    const value = field.recovered_value || field.stored_value || "";
+    return value === draftedProvider(task, draft) ? "" : value;
+  };
+  /* True when the draft resets a local fallback row but routing may still
+     resolve it to something this page cannot name (stale parent row, changed
+     primary). The host validates the save against the real route. */
+  const fallbackUnknown = (task, draft) => {
+    const field = task.fields.fallback;
+    if (!draft.inherited.fallback) return false;
+    if (field.explicit || field.replaced || field.cleared) {
+      /* The draft decides the primary, not the saved snapshot: switching it to
+         follow the parent is just as much a change as picking a value. */
+      const primarySettledHere = !draft.inherited.provider;
+      return !(primarySettledHere && field.parent_stored_usable);
+    }
+    if (primaryMoved(task, draft) && field.parent_stored && field.parent_stored_usable) {
+      const parentPrimaryStable = ["role", "window"].includes(task.fields.provider.inherited_source);
+      return draft.inherited.provider && !parentPrimaryStable;
+    }
+    return false;
+  };
+  /* The fallback the card should show and validate for this draft. A local row
+     that is being reset gives way to the parent's *stored* value when that row
+     is usable as-is; otherwise it is left unnamed rather than guessed. */
+  const fallbackShown = (task, draft) => {
+    if (!draft.inherited.fallback) return draft.values.fallback;
+    const field = task.fields.fallback;
+    const emptied = emptiedFallback(task, draft, "fallback");
+    if (emptied !== null) return emptied;
+    if (field.explicit || field.replaced || field.cleared) {
+      return fallbackUnknown(task, draft) ? "" : field.parent_stored;
+    }
+    /* An inherited row can be repointed by recovery too; once this draft moves
+       the primary, the parent's stored row is what runs again — unless that row
+       is stale, in which case recovery keeps the value already projected. */
+    if (primaryMoved(task, draft) && field.parent_stored) {
+      if (!field.parent_stored_usable) return field.value || "";
+      /* Following the parent re-runs recovery for the parent's primary. If that
+         primary itself came back from recovery, the stored fallback may collide
+         with it and be dropped; don't name a value the host will discard. */
+      const parentPrimaryStable = ["role", "window"].includes(task.fields.provider.inherited_source);
+      if (draft.inherited.provider && !parentPrimaryStable) return "";
+      return field.parent_stored;
+    }
+    return field.value || field.inherited_value;
+  };
   /* The routing ceiling of one draft: the strictest output capability among the
      providers this task can be sent to. Replacement-rule targets count too,
      because routing may pick one of them for the same task. */
@@ -234,7 +319,14 @@ window.CompanionModelsPage = (() => {
   const newDraft = task => ({ layer: task.configuration_layer || "role", token: task.edit_token,
     base: Object.fromEntries(Object.entries(task.fields).map(([name, field]) => [name, {...field}])),
     values: Object.fromEntries(fields.map(name => [name, task.fields[name].value])),
-    inherited: Object.fromEntries(fields.map(name => [name, !task.fields[name].explicit])), touched: false, stale: false, conflicts: [], pending: readPending(task.kind) });
+    /* ``cleared`` marks a stored value recovery stopped using: still in the
+       layer, but not what dispatch runs, so it is not "following the parent". */
+    inherited: Object.fromEntries(fields.map(name => [name, !task.fields[name].explicit
+      && !task.fields[name].cleared && !task.fields[name].replaced])),
+    /* Fields the user picked explicitly even though the value equals the
+       projection (a cleared fallback reset to "no fallback"): patchFor must
+       send them, otherwise the stored row survives untouched. */
+    chosen: {}, touched: false, stale: false, conflicts: [], pending: readPending(task.kind) });
   /* The replacement fields are optional in the payload: newer hosts expose them,
      older ones only ship the routing fields. Missing ones degrade to inherited. */
   const plainField = value => ({ value, inherited_value: value, source: "default", inherited_source: "default", explicit: false });
@@ -249,8 +341,24 @@ window.CompanionModelsPage = (() => {
       if (task.fields.replacement_scope === undefined) task.fields.replacement_scope = plainField("all"); }
     return data; }
   function patchFor(task, draft) { const changes = {}, reset = [];
-    for (const name of taskFields(task)) { const field = task.fields[name]; if (draft.inherited[name]) { if (field.explicit) reset.push(name); }
-      else if (!field.explicit || draft.values[name] !== field.value) changes[name] = draft.values[name]; }
+    for (const name of taskFields(task)) { const field = task.fields[name];
+      /* A cleared field still has a stored row even though the projection marks
+         it non-explicit: following the parent must reset it, and leaving it
+         alone must not rewrite the row with the routed placeholder. */
+      const stored = !!field.explicit || !!field.cleared || !!field.replaced;
+      if (draft.inherited[name]) { if (stored) reset.push(name); }
+      else if (!stored || draft.values[name] !== field.value || draft.chosen?.[name]) changes[name] = draft.values[name]; }
+    /* A cleared row is only rewritten when this draft moves the primary: an
+       untouched card must not report itself dirty and rewrite the row on the
+       next navigation. */
+    const primaryTouched = Object.hasOwn(changes, "provider") || reset.includes("provider");
+    if (primaryTouched) for (const name of taskFields(task)) { const field = task.fields[name];
+      if (!(field.cleared || field.replaced) || draft.inherited[name] || draft.chosen?.[name]) continue;
+      if (draft.values[name] !== field.value) continue;
+      /* An emptied row stays off; a substituted row is written back as the
+         value the card shows, so changing the primary does not silently
+         disable a fallback the operator can see. */
+      changes[name] = field.replaced && field.value ? field.value : ""; }
     // A fallback identical to the primary provider is not a fallback.  Keeping
     // it explicit makes every later edit fail the page's duplicate check and
     // the host's model_fallback_duplicate guard; normalize it to "no fallback".
@@ -268,6 +376,9 @@ window.CompanionModelsPage = (() => {
     const edited = [...Object.keys(patch.changes), ...patch.reset], next = newDraft(task);
     for (const name of edited) {
       next.values[name] = draft.values[name]; next.inherited[name] = draft.inherited[name];
+      /* Keep an explicit choice (clearing a recovered-away fallback): without it
+         the rebuilt draft matches the projection and the save would drop it. */
+      if (draft.chosen?.[name]) next.chosen[name] = true;
       const alreadyCurrent = draft.inherited[name] ? !task.fields[name].explicit
         : task.fields[name].explicit && draft.values[name] === task.fields[name].value;
       if ((!sameField(base[name], task.fields[name]) || draft.conflicts?.includes(name)) && !alreadyCurrent) next.conflicts.push(name);
@@ -349,7 +460,8 @@ window.CompanionModelsPage = (() => {
     const primary = projected(task, p, "provider"), fallback = projected(task, p, "fallback"), limit = projected(task, p, "max_output_tokens");
     const picked = [primary, ...(fallback ? [fallback] : [])], providers = picked.map(id => state.status.providers.find(provider => provider.id === id));
     const fallbackExplicit = Object.hasOwn(p.changes, "fallback")
-      || (!p.reset.includes("fallback") && task.fields.fallback.explicit);
+      || (!p.reset.includes("fallback")
+        && (task.fields.fallback.explicit || task.fields.fallback.replaced));
     /* A registry default is clamped by routing at send time, so a task may keep
        following it even when the selected provider is smaller: the save only
        carries the provider, and the sent envelope fits. */
@@ -383,7 +495,7 @@ window.CompanionModelsPage = (() => {
     return `<div class="model-topbar"><span class="model-topbar-t">任务模型</span>${window.CompanionWorkbench.scopeHintMarkup(Object.entries(window.CompanionWorkbench.scopeObjectForEndpoint(PREFIX + taskPath)).filter(([name,value]) => value && (name !== "target" || windowAvailable)).map(([,value]) => value).join(" · ") || "当前配置", "查看任务模型配置对象")}
       <span class="model-pill ${s.status?.host_state === "running" ? "ok" : "warn"}">${esc(s.status?.host_state === "running" ? "运行中" : s.status?.host_state || "未连接")}</span>
       <button type="button" class="button small" data-model-action="refresh" ${s.loading || s.busy ? "disabled" : ""}>刷新配置</button></div>`; }
-  function overview(s) { const tasks = snapshot(s), custom = tasks.filter(task => taskFields(task).some(name => task.fields[name].explicit)).length;
+  function overview(s) { const tasks = snapshot(s), custom = tasks.filter(task => taskFields(task).some(name => ownsField(task, name))).length;
     const withFb = tasks.filter(task => fallbackFor(task)).length;
     return `<div class="model-overview"><div><strong>${tasks.length}</strong><span>已注册任务</span></div>
       <div><strong>${s.status?.providers.length || 0}</strong><span>可用模型提供方</span></div>
@@ -419,14 +531,72 @@ window.CompanionModelsPage = (() => {
      模型名允许为空（本地测试适配器没有这个概念），所以后缀是可选的而不是拼死的。 */
   const providerLabel = provider => provider && provider.model
     ? `${provider.id} · ${provider.model}` : provider ? provider.id : "";
+  /* "上级"不是一个抽象层级：一个任务可能继承窗口、角色或安装级配置，也可能
+     落到 AstrBot 当前会话模型。标签必须说清是哪一层，否则用户无法判断自己
+     到底在跟随谁。失效的旧值会被后端替换成宿主模型，这里无需特判。
+     层名复用 configSource：同一来源在同一张卡片上只能有一种说法。 */
+  const parentRoute = field => {
+    const layer = configSource(field?.inherited_source || "default");
+    return field?.inherited_value ? `${layer}：${field.inherited_value}` : `${layer}（未设置）`;
+  };
+  /* The backend keeps a blank or unavailable provider on editable layers (role
+     and window) as a live failure and only recovers installation-layer values,
+     so following one produces a draft that cannot be saved. Mirror only that
+     layer distinction: projection already fills default/host blanks. Every
+     follow-parent entry point refuses it the same way. */
+  const unfollowableParent = (s, task) => {
+    const field = task.fields.provider;
+    if (field.inherited_source !== "role" && field.inherited_source !== "window") return null;
+    if (!field.inherited_value) return field;
+    /* Same capability filter the preview and the save path use: a provider that
+       exists but cannot serve this task is just as unusable as a removed one. */
+    return available(s, task).some(provider => provider.id === field.inherited_value) ? null : field;
+  };
+  const unfollowableNotice = field => !field.inherited_value
+    ? `上级（${configSource(field.inherited_source)}）保存的主模型是空值，跟随它无法路由；请先到上级修复。`
+    : `上级（${configSource(field.inherited_source)}）保存的主模型 ${field.inherited_value} 当前不可用，跟随它无法保存；请先到上级修复。`;
   const capabilityLabel = capability => ({
     text: "文本生成", image: "图片输入", audio: "音频输入", tools: "工具调用",
     embedding: "向量嵌入", video: "视频理解", video_relay: "视觉转接视频", vision: "图像理解", "conversation.reply": "对话回复",
   }[capability] || capability);
   function providerOptions(s, task, draft, name) { const providers = available(s, task);
-    const selected = draft.inherited[name] ? task.fields[name].inherited_value : draft.values[name];
-    return `${name === "fallback" ? '<option value="">不使用备用模型</option>' : ''}${providers.map(provider => `<option value="${esc(provider.id)}" ${selected === provider.id ? "selected" : ""}>${esc(providerLabel(provider))}</option>`).join("")}
-      ${selected && !providers.some(p => p.id === selected) ? `<option value="${esc(selected)}" selected>${esc(selected)} · 当前不可用</option>` : ""}`; }
+    const inherited = draft.inherited[name];
+    /* The primary select carries an explicit "follow the parent" option so a
+       task can leave its own value without hunting for the checkbox below.
+       Its value is a sentinel, not the empty string: a legacy converter may
+       have stored an explicit empty provider, and that broken state must not
+       render as if it followed the parent. */
+    /* A stored value recovery stopped using (it collided with the recovered
+       primary) is neither an explicit nor an inherited value. Show it as a
+       disabled marker so the user can see and replace the row that is still
+       saved. It only applies while the draft still holds the routed value: the
+       moment the user picks a provider, that choice must win in the select. */
+    const cleared = !!task.fields[name]?.cleared && !inherited && !draft.chosen?.[name]
+      && draft.values[name] === task.fields[name].value;
+    const selected = cleared ? "__cleared__"
+      : name === "provider"
+        ? (inherited ? "__inherit__" : draft.values[name])
+        : (inherited ? fallbackShown(task, draft) : draft.values[name]);
+    let empty;
+    if (name === "fallback") empty =
+      (cleared ? '<option value="__cleared__" selected disabled>已停用（本层保存的备用与主模型重复）</option>' : "")
+      /* Recovery may substitute a usable default; the stored row is still there
+         and must stay visible so it can be removed. */
+      + (task.fields[name].replaced
+        ? `<option value="__replaced__" disabled>本层保存的 ${esc(task.fields[name].stored_value)} 已被恢复替换</option>` : "")
+      + (fallbackUnknown(task, draft)
+        ? '<option value="" selected disabled>跟随上级（保存后按当前主模型解析）</option>'
+        : '<option value="">不使用备用模型</option>');
+    else {
+      const inheritedValue = task.fields.provider.inherited_value;
+      const unavailable = !!inheritedValue && !providers.some(provider => provider.id === inheritedValue);
+      empty = `${cleared ? '<option value="__cleared__" selected disabled>已停用（本层保存的主模型与备用冲突）</option>' : ""}`
+        + `<option value="__inherit__" ${selected === "__inherit__" ? "selected" : ""}>跟随上级（${esc(parentRoute(task.fields.provider))}${unavailable ? " · 当前不可用" : ""}）</option>`;
+    }
+    const blank = name === "provider" && !inherited && selected === ""
+      ? '<option value="" selected>未设置（本层保存为空值）· 当前不可用</option>' : "";
+    return `${empty}${blank}${providers.map(provider => `<option value="${esc(provider.id)}" ${selected === provider.id ? "selected" : ""}>${esc(providerLabel(provider))}</option>`).join("")}
+      ${selected && selected !== "__inherit__" && selected !== "__cleared__" && !providers.some(p => p.id === selected) ? `<option value="${esc(selected)}" selected>${esc(selected)} · 当前不可用</option>` : ""}`; }
   function conflictNotice(task, draft) {
     if (!draft.stale) return "";
     const value = field => String(field ?? "").slice(0, 200) || "空";
@@ -475,7 +645,7 @@ window.CompanionModelsPage = (() => {
       <div class="model-sc-bd">
         ${conflictNotice(task, draft)}
         ${draft.pending ? '<div class="model-alert">上次保存结果未确认。请核对原操作，避免重复提交。</div>' : ""}
-        <label class="model-fd"><span class="model-cap">主模型提供方 <em>上级默认 ${esc(task.fields.provider.inherited_value || "未设置")}</em></span>
+        <label class="model-fd"><span class="model-cap">主模型提供方 <em>跟随上级时为 ${esc(parentRoute(task.fields.provider))}</em></span>
           <span class="model-msel"><i style="background:${pillColor(main)}"></i><select data-model-field="provider" data-model-kind="${esc(task.kind)}" aria-label="${esc(info.label)} 主模型提供方" ${fieldLocked ? "disabled" : ""}>${providerOptions(s, task, draft, "provider")}</select></span></label>
         <label class="model-fd"><span class="model-cap">备用模型提供方 <em>主模型失败、超时或拒答时尝试一次</em></span>
           <span class="model-msel"><i style="background:${pillColor(fallback)}"></i><select data-model-field="fallback" data-model-kind="${esc(task.kind)}" aria-label="${esc(info.label)} 备用模型提供方" ${fieldLocked ? "disabled" : ""}>${providerOptions(s, task, draft, "fallback")}</select></span></label>
@@ -649,11 +819,23 @@ window.CompanionModelsPage = (() => {
     for (const kind of kinds) { const task = taskOf(s, kind), draft = s.drafts.get(kind); if (!task || !draft || draft.pending) continue;
       s.drafts.set(kind, newDraft(task)); count++; }
     s.bad = false; s.notice = count ? `已放弃 ${count} 项任务的草稿。` : '没有可放弃的草稿。'; render(); }
-  function restoreInherit(s, kinds) { let count = 0;
+  function restoreInherit(s, kinds) { let count = 0; const blocked = [];
     for (const kind of kinds) { const task = taskOf(s, kind), draft = s.drafts.get(kind); if (!task || !draft || draft.pending) continue;
+      /* Same guard as the per-field entry points: a blank parent provider keeps
+         its failure, so following it would only produce an unsaveable draft. */
+      const blockedParent = unfollowableParent(s, task);
+      if (blockedParent) {
+        blocked.push(`${taskName(kind).label}（${blockedParent.inherited_value ? "上级模型不可用" : "上级主模型为空"}）`);
+        continue;
+      }
+      /* Every field, the output limit included, follows the parent again, so
+         there is nothing to re-fit: the ceiling comes from the same layer. */
       for (const name of taskFields(task)) draft.inherited[name] = true;
       draft.touched = true; count++; }
-    s.bad = false; s.notice = count ? `已把 ${count} 项任务改为跟随上级配置，保存后生效。` : '没有可调整的任务。'; render(); }
+    s.bad = false;
+    s.notice = (count ? `已把 ${count} 项任务改为跟随上级配置，保存后生效。` : '没有可调整的任务。')
+      + (blocked.length ? `${count ? "" : " "}${blocked.length} 项已跳过：${blocked.join("、")}。` : "");
+    render(); }
   /* ---------- functional events ---------- */
   function fnInput(event) { const s = state; if (!s || s.busy || s.loading || s.denied) return; const target = event.target;
     /* The policy pane owns toggles and selects, so it gets every input event. */
@@ -666,13 +848,44 @@ window.CompanionModelsPage = (() => {
     if (target.matches("[data-model-assign]")) { assign(s, target.value); target.value = ""; return; }
     if (!kind) return;
     const inheritName = target.dataset.modelInherit;
-    if (inheritName) { const draft = s.drafts.get(kind); if (draft && !draft.pending && taskFields(taskOf(s, kind)).includes(inheritName)) { draft.inherited[inheritName] = target.checked; draft.touched = true; render(); } return; }
+    if (inheritName) { const draft = s.drafts.get(kind), task = taskOf(s, kind);
+      if (draft && !draft.pending && task && taskFields(task).includes(inheritName)) {
+        if (target.checked && inheritName === "provider" && unfollowableParent(s, task)) {
+          s.notice = unfollowableNotice(unfollowableParent(s, task));
+          s.bad = false; render(); return;
+        }
+        draft.inherited[inheritName] = target.checked; draft.touched = true;
+        /* The checkbox is the same provider switch as the select's follow-parent
+           option; both must re-fit a saved limit against the parent ceiling. */
+        if (target.checked && (inheritName === "provider" || inheritName === "fallback")) {
+          const adjusted = fitLimit(s, task, draft);
+          if (adjusted) { s.notice = limitNotice(task, draft, adjusted); s.bad = false; }
+        }
+        render(); } return; }
     const name = target.dataset.modelField; if (!name || !fields.includes(name)) return;
     const draft = s.drafts.get(kind), task = taskOf(s, kind); if (!draft || !task || draft.pending) return;
     if (!taskFields(task).includes(name)) return;
+    if (name === "provider" && target.value === "__inherit__") {
+      const parent = unfollowableParent(s, task);
+      if (parent) { s.notice = unfollowableNotice(parent); s.bad = false; render(); return; }
+      /* The follow-parent sentinel sets the same state as the inherit
+         checkbox; it never stands for a real provider id. Choosing a provider
+         re-fits the saved output limit, and the parent route is a provider
+         change too: without the same pass an explicit limit above the parent's
+         ceiling would keep Save disabled for a value the user did not touch. */
+      draft.inherited.provider = true; draft.touched = true;
+      const adjusted = fitLimit(s, task, draft);
+      if (adjusted) { s.notice = limitNotice(task, draft, adjusted); s.bad = false; }
+      render(); return;
+    }
     draft.values[name] = ["max_output_tokens", "timeout_seconds"].includes(name)
       ? (Number.isFinite(target.valueAsNumber) ? target.valueAsNumber : draft.values[name]) : target.value;
     draft.inherited[name] = false;
+    /* The user may deliberately choose the same value the projection shows
+       (clearing or confirming a recovered row); remember it so the save emits
+       it instead of leaving the old stored row in place. */
+    if ((task.fields[name]?.cleared || task.fields[name]?.replaced)
+        && draft.values[name] === task.fields[name].value) draft.chosen[name] = true;
     const adjusted = (name === "provider" || name === "fallback") && fitLimit(s, task, draft);
     if (adjusted) { s.notice = limitNotice(task, draft, adjusted); s.bad = false; }
     draft.touched = true;
@@ -2133,7 +2346,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     return `<div class="model-subtabs" role="tablist" aria-label="功能模型视图">${tabs.map(([id, label, ic, desc]) => `<button type="button" role="tab" data-model-sub="${id}" aria-selected="${s.sub === id}" class="${s.sub === id ? "on" : ""}"><span class="model-subtab-icon">${icon(ICONS[ic])}</span><span class="model-subtab-copy"><b>${label}</b><small>${desc}</small></span></button>`).join("")}</div>`; }
   function kpi(n, label, tone = "") { return `<div class="model-kpi ${tone}"><b>${n}</b><span>${esc(label)}</span></div>`; }
   function fnKpis(s) { const tasks = snapshot(s); const total = tasks.length; const providers = s.status?.providers.length || 0;
-    const withFb = tasks.filter(fallbackFor).length; const own = tasks.filter(t => taskFields(t).some(nm => t.fields[nm]?.explicit)).length;
+    const withFb = tasks.filter(fallbackFor).length; const own = tasks.filter(t => taskFields(t).some(nm => ownsField(t, nm))).length;
     return kpi(total, "需要模型的功能") + kpi(providers, "可用模型") + kpi(withFb, "已设回退", "g")
       + kpi(total - withFb, "暂无回退", "a") + kpi(own, "单独设置"); }
   function sitFilters(s) { const avSeg = [["slot", "按能力槽"], ["lane", "按前台 / 后台"]]; const afSeg = [["all", "全部"], ["nofb", "仅无备用"], ["own", "仅单独设置"]];
@@ -2143,7 +2356,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     ? `<button type="button" class="model-pill m${hovered === id ? " is-hovered" : ""}" data-provider-pill="${esc(id)}" style="--mc:${pillColor(id)}" title="查看 ${esc(id)} 的路由分工">${esc(id)}</button>`
     : `<span class="model-pill m none">${missing || "无回退"}</span>`;
   function situationMap(s) { const tasks = snapshot(s); const q = s.query.toLocaleLowerCase();
-    const match = t => { if (s.af === "nofb" && (coreReply(t) || fallbackFor(t))) return false; if (s.af === "own" && !taskFields(t).some(nm => t.fields[nm]?.explicit)) return false;
+    const match = t => { if (s.af === "nofb" && (coreReply(t) || fallbackFor(t))) return false; if (s.af === "own" && !taskFields(t).some(nm => ownsField(t, nm))) return false;
       if (!q) return true; const info = taskName(t.kind); return (info.label + info.group + info.description + t.kind).toLocaleLowerCase().includes(q); };
     let groups2;
     if (s.av === "lane") groups2 = [["前台 · 用户可见", tasks.filter(t => t.lane === "foreground")], ["后台 · 静默运行", tasks.filter(t => t.lane === "background")]];
@@ -2447,7 +2660,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       <div class="model-policy-editor">${task ? panel : '<div class="model-empty">当前没有可用的模型任务。</div>'}</div>
     </div>`; }
   function cfgPane(s) { const tasks = snapshot(s);
-    const own = tasks.filter(t => taskFields(t).some(nm => t.fields[nm]?.explicit)).length;
+    const own = tasks.filter(t => taskFields(t).some(nm => ownsField(t, nm))).length;
     const note = s.status ? `生效中 · ${own} / ${tasks.length} 项任务单独设置了模型` : "";
     const cmSeg = [["quick", "快速配置"], ["precise", "精确配置"]];
     const seg = `<div class="model-seg" role="group" aria-label="配置模式">${cmSeg.map(([id, label]) => `<button type="button" data-model-cm="${id}" aria-pressed="${s.cm === id}" class="${s.cm === id ? "on" : ""}">${label}</button>`).join("")}</div>`;

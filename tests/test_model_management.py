@@ -4,13 +4,14 @@ import unittest
 import json
 from dataclasses import asdict, replace
 from datetime import timedelta
+from types import MappingProxyType
 
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.configuration.registry import FieldRegistry
 from companion_v2.conversation.media.context_caption import context_caption_profile
 from companion_v2.conversation.media.image_narration import image_narration_profile
 from companion_v2.diagnostics.inbound import InboundNoReplyLedger
-from companion_v2.execution.models import digest, encode
+from companion_v2.execution.models import TaskError, digest, encode
 from companion_v2.model_gateway.management import ModelManagement
 from companion_v2.model_gateway.failures import ModelFailure
 from companion_v2.model_gateway.response_diagnostics import ResponseDiagnostics, ResponseTextSummary
@@ -668,3 +669,927 @@ class ModelManagementTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIn("primary", refused.failure.reason)
         self.assertIn("100", refused.failure.reason)
         self.assertNotIn("101", refused.failure.reason)
+
+    async def test_a_retired_inherited_provider_falls_back_to_the_host_model(self):
+        # 旧版迁移可能把已下线的 Provider 写进安装级默认。这个值不能再充当路由：
+        # 读取时按未设置处理，回退到 AstrBot 当前会话模型，页面的“跟随上级”
+        # 也才会指向一个真实可用的模型。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        now = self.app.now()
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+        self.app.router.default_provider_resolver = lambda context, profile: "host-alt"
+        # Use a host route that differs from the task default("primary"), so the
+        # assertion distinguishes the host conversation model from the fallback.
+        primary_provider = self.providers[0]
+        host_provider = replace(primary_provider,
+                                binding=replace(primary_provider.binding, provider="host-alt"))
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers, "host-alt": host_provider})
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        field = task["fields"]["provider"]
+        self.assertEqual((field["value"], field["source"]), ("host-alt", "host_conversation"))
+        self.assertEqual((field["inherited_value"], field["inherited_source"]),
+                         ("host-alt", "host_conversation"))
+
+    async def test_follow_parent_saves_even_when_the_inherited_provider_is_gone(self):
+        # 恢复「跟随上级」不能被继承值阻塞：reset 表示删除本层值，失效的继承 id
+        # 由路由回退处理，保存本身必须成功。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        now = self.app.now()
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+        self.app.router.default_provider_resolver = lambda context, profile: "primary"
+
+        status = self.manager.status(self.core, layer="role").unwrap()
+        task = next(item for item in status["tasks"] if item["kind"] == kind)
+        saved = self.manager.configure(self.core, {
+            "kind": kind, "layer": "role", "operation_key": "follow-parent",
+            "edit_token": task["edit_token"], "changes": {}, "reset": ["provider"],
+        }).unwrap()
+
+        self.assertFalse(saved["replayed"])
+        self.assertEqual(saved["task"]["fields"]["provider"]["value"], "primary")
+
+    async def test_a_retired_inherited_provider_falls_back_to_the_task_default(self):
+        # 后台任务没有可跟随的会话模型（解析器返回 None），失效的继承值同样
+        # 必须落到任务档默认模型，而不是继续冒充“上级默认”。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        now = self.app.now()
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+        self.app.router.default_provider_resolver = lambda context, profile: None
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        field = task["fields"]["provider"]
+        self.assertEqual((field["value"], field["source"]), ("primary", "default"))
+        self.assertEqual((field["inherited_value"], field["inherited_source"]),
+                         ("primary", "default"))
+
+    async def test_the_parent_view_is_answered_by_the_parent_route(self):
+        # 角色层自己指定了主模型和备用模型时，当前层不读宿主路线；但「跟随上级
+        # 时为 X」回答的是「删掉这层覆盖后会走哪个模型」，必须用上一层的路线来算。
+        # 借用当前层的答案会把宿主模型说成任务档默认，与实际路由不符。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+
+        def variant(name):
+            return replace(base, binding=replace(base.binding, provider=name))
+
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers, "extra-alt": variant("extra-alt"),
+            "host-alt": variant("host-alt")})
+        self.app.router.default_provider_resolver = lambda context, profile: "host-alt"
+        now = self.app.now()
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".provider": "primary", group + ".fallback": "extra-alt"},
+            observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        field = task["fields"]["provider"]
+
+        self.assertEqual((field["value"], field["source"]), ("primary", "role"))
+        self.assertEqual((field["inherited_value"], field["inherited_source"]),
+                         ("host-alt", "host_conversation"))
+
+    async def test_the_parent_view_still_opens_when_the_adapter_lookup_fails(self):
+        # 失效的安装层值在解析适配器时可能抛出 TaskError。上级视图只是展示，
+        # 不能因此让整个模型设置页打不开。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        now = self.app.now()
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+        router = self.app.router
+        real = router.provider_for
+
+        def flaky(provider_id):
+            if provider_id == "removed-provider":
+                raise TaskError("model_provider_unavailable", "host returned a mismatched adapter")
+            return real(provider_id)
+
+        router.provider_for = flaky
+        try:
+            task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                        if item["kind"] == kind)
+        finally:
+            router.provider_for = real
+
+        # The projection degrades to the stored value instead of recovering it:
+        # the page opens and shows what is saved, while dispatch keeps failing.
+        self.assertEqual(task["fields"]["provider"]["inherited_value"], "removed-provider")
+
+    async def test_a_save_cannot_recreate_a_cleared_fallback_duplicate(self):
+        # 投影会把与恢复后主模型重复的备用清空展示，但那一行仍保存在本层。
+        # 保存主模型为同一个值时，必须按保存值判定重复，而不是按投影的空值放行。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        now = self.app.now()
+        self.app.router.default_provider_resolver = lambda context, profile: "primary"
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".fallback": "primary"}, observed_at=now).unwrap()
+
+        status = self.manager.status(self.core, layer="role").unwrap()
+        task = next(item for item in status["tasks"] if item["kind"] == kind)
+        self.assertTrue(task["fields"]["fallback"].get("cleared"))
+        self.assertEqual(task["fields"]["fallback"]["value"], "")
+
+        refused = self.manager.configure(self.core, {
+            "kind": kind, "layer": "role", "operation_key": "rebuild-primary",
+            "edit_token": task["edit_token"], "changes": {"provider": "primary"}, "reset": [],
+        })
+
+        self.assertEqual(refused.failure.code, "model_fallback_duplicate")
+
+    async def test_a_window_save_cannot_recreate_a_cleared_fallback_duplicate(self):
+        # window 层是派发读取的层，explicit 直接生效：这里保存主模型为与
+        # 隐藏备用相同的值，下一次 resolve() 会真的报 model_fallback_duplicate。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        window = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.WINDOW,
+                              self.role_context.role_binding.role, self.role_context.scope,
+                              bot_id=self.role_context.scope.bot_id)
+        now = self.app.now()
+        self.app.router.default_provider_resolver = lambda context, profile: "primary"
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+        own = self.app.configuration.read(self.core, target=window, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=window, group_id=group,
+            operation=self.operation(window.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".fallback": "primary"}, observed_at=now).unwrap()
+
+        status = self.manager.status(self.core, layer="window").unwrap()
+        task = next(item for item in status["tasks"] if item["kind"] == kind)
+        self.assertTrue(task["fields"]["fallback"].get("cleared"))
+
+        refused = self.manager.configure(self.core, {
+            "kind": kind, "layer": "window", "operation_key": "rebuild-window-primary",
+            "edit_token": task["edit_token"], "changes": {"provider": "primary"}, "reset": [],
+        })
+
+        self.assertEqual(refused.failure.code, "model_fallback_duplicate")
+
+    async def test_following_an_unavailable_parent_provider_is_refused(self):
+        # window 层跟随上级时，上一层的显式坏值会被保存路径拒绝；UI 提前
+        # 拦截的理由就在这里。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        now = self.app.now()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+
+        status = self.manager.status(self.core, layer="window").unwrap()
+        task = next(item for item in status["tasks"] if item["kind"] == kind)
+        self.assertEqual(task["fields"]["provider"]["inherited_value"], "removed-provider")
+
+        refused = self.manager.configure(self.core, {
+            "kind": kind, "layer": "window", "operation_key": "follow-unavailable",
+            "edit_token": task["edit_token"], "changes": {}, "reset": ["provider"],
+        })
+
+        self.assertEqual(refused.failure.code, "model_provider_unavailable")
+
+    async def test_a_recovered_installation_value_is_not_marked_as_cleared(self):
+        # 安装层的值被恢复成宿主路线时，本层并没有保存过任何东西；把它标成
+        # cleared 会让页面当成"本层已单独设置"，保存时把宿主路线写死成本层值。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        now = self.app.now()
+        self.app.router.default_provider_resolver = lambda context, profile: "primary"
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        field = task["fields"]["provider"]
+
+        self.assertEqual(field["value"], "primary")
+        self.assertNotIn("cleared", field)
+        self.assertTrue(field["inherited_value"])
+
+    async def test_resetting_a_provider_does_not_false_positive_the_duplicate_guard(self):
+        # reset 只是删除本层 provider 行，比较时用的却是恢复后的路由值；那个值
+        # 不是本次保存写入的内容，拿它和存储的备用比较会误报 duplicate。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        now = self.app.now()
+        self.app.router.default_provider_resolver = lambda context, profile: "primary"
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".fallback": "primary"}, observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        saved = self.manager.configure(self.core, {
+            "kind": kind, "layer": "role", "operation_key": "reset-provider",
+            "edit_token": task["edit_token"], "changes": {}, "reset": ["provider"],
+        }).unwrap()
+
+        self.assertFalse(saved["replayed"])
+
+    async def test_a_registry_default_primary_does_not_collide_with_an_explicit_fallback(self):
+        # 主模型没有保存行、由宿主路线填充时投影是 host-alt；备用保存为插件
+        # 默认 primary。这是可派发的合法路由，保存其他字段不能被判成重复。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "host-alt": replace(base, binding=replace(base.binding, provider="host-alt"))})
+        self.app.router.default_provider_resolver = lambda context, profile: "host-alt"
+        now = self.app.now()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".fallback": "primary"}, observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        self.assertEqual(task["fields"]["provider"]["value"], "host-alt")
+        self.assertEqual(task["fields"]["fallback"]["value"], "primary")
+
+        saved = self.manager.configure(self.core, {
+            "kind": kind, "layer": "role", "operation_key": "edit-timeout",
+            "edit_token": task["edit_token"], "changes": {"timeout_seconds": 30}, "reset": [],
+        }).unwrap()
+
+        self.assertFalse(saved["replayed"])
+
+    async def test_resetting_a_window_provider_is_refused_when_it_collides_with_a_saved_fallback(self):
+        # window 层是派发读取的层：reset 主模型后继承到一个可用的 provider，
+        # 与本层显式备用相同，dispatch 会以 duplicate 拒绝，保存时就必须拦下。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        window = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.WINDOW,
+                              self.role_context.role_binding.role, self.role_context.scope,
+                              bot_id=self.role_context.scope.bot_id)
+        now = self.app.now()
+        for target, changes in ((role, {"provider": "primary"}),
+                                (window, {"fallback": "primary"})):
+            snapshot = self.app.configuration.read(self.core, target=target, group_id=group,
+                                                   observed_at=now).unwrap()
+            self.app.configuration.patch(self.core, target=target, group_id=group,
+                operation=self.operation(target.authorization_scope),
+                expected_edit_token=snapshot.edit_token,
+                changes={group + "." + name: value for name, value in changes.items()},
+                observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="window").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        refused = self.manager.configure(self.core, {
+            "kind": kind, "layer": "window", "operation_key": "reset-window-provider",
+            "edit_token": task["edit_token"], "changes": {}, "reset": ["provider"],
+        })
+
+        self.assertEqual(refused.failure.code, "model_fallback_duplicate")
+
+    async def test_a_hidden_fallback_is_compared_when_recovery_used_the_default(self):
+        # 恢复把隐藏的显式备用换成任务档默认时，投影里它不是空的；保存主模型
+        # 为该备用值时仍须判定重复，否则会留下永久不可路由的配置。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "secondary": replace(base, binding=replace(base.binding, provider="secondary"))})
+        self.app.router.profiles = MappingProxyType({
+            **self.app.router.profiles,
+            kind: replace(self.app.router.profiles[kind], default_fallback="secondary")})
+        self.app.router.default_provider_resolver = lambda context, profile: "primary"
+        now = self.app.now()
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".fallback": "primary"}, observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        self.assertEqual(task["fields"]["fallback"]["value"], "secondary")
+
+        refused = self.manager.configure(self.core, {
+            "kind": kind, "layer": "role", "operation_key": "set-primary-explicit",
+            "edit_token": task["edit_token"], "changes": {"provider": "primary"}, "reset": [],
+        })
+
+        self.assertEqual(refused.failure.code, "model_fallback_duplicate")
+
+    async def test_editing_an_unrelated_field_does_not_reject_a_recovered_route(self):
+        # 恢复把隐藏的备用重指到任务档默认后，路由是可用的；保存其他字段时
+        # 不能拿那行旧值去和恢复后的主模型比较。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "secondary": replace(base, binding=replace(base.binding, provider="secondary"))})
+        self.app.router.profiles = MappingProxyType({
+            **self.app.router.profiles,
+            kind: replace(self.app.router.profiles[kind], default_fallback="secondary")})
+        self.app.router.default_provider_resolver = lambda context, profile: "primary"
+        now = self.app.now()
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".fallback": "primary"}, observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        self.assertEqual(task["fields"]["fallback"]["value"], "secondary")
+
+        saved = self.manager.configure(self.core, {
+            "kind": kind, "layer": "role", "operation_key": "edit-timeout-recovered",
+            "edit_token": task["edit_token"], "changes": {"timeout_seconds": 30}, "reset": [],
+        }).unwrap()
+
+        self.assertFalse(saved["replayed"])
+
+    async def test_a_substituted_fallback_exposes_the_stored_row(self):
+        # 恢复把撞车的显式备用换成任务档默认时，那一行仍保存在本层；投影必须
+        # 让用户看得见它，否则宿主变化后备用会静默变回旧值。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "secondary": replace(base, binding=replace(base.binding, provider="secondary"))})
+        self.app.router.profiles = MappingProxyType({
+            **self.app.router.profiles,
+            kind: replace(self.app.router.profiles[kind], default_fallback="secondary")})
+        self.app.router.default_provider_resolver = lambda context, profile: "primary"
+        now = self.app.now()
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".fallback": "primary"}, observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        field = task["fields"]["fallback"]
+
+        self.assertEqual(field["value"], "secondary")
+        self.assertTrue(field.get("replaced"))
+        self.assertEqual(field.get("stored_value"), "primary")
+
+    async def test_a_reset_with_an_explicit_fallback_still_checks_the_duplicate(self):
+        # reset 只豁免 provider 一侧；同一次保存显式写入的 fallback 仍必须与
+        # 继承来的主模型比较，否则会存下一条派发永远丢弃的备用。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "secondary": replace(base, binding=replace(base.binding, provider="secondary"))})
+        now = self.app.now()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".provider": "secondary"}, observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        refused = self.manager.configure(self.core, {
+            "kind": kind, "layer": "role", "operation_key": "reset-and-write-fallback",
+            "edit_token": task["edit_token"], "changes": {"fallback": "primary"},
+            "reset": ["provider"],
+        })
+
+        self.assertEqual(refused.failure.code, "model_fallback_duplicate")
+
+    async def test_a_recovered_hidden_row_is_still_checked_for_its_ceiling(self):
+        # 恢复隐藏的备用会在主模型改变后重新生效，它的输出上限必须一起校验；
+        # 只检查投影里的替换值会放过一条随后被派发拒绝的路由。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "secondary": replace(base, binding=replace(base.binding, provider="secondary")),
+            "small": replace(base, binding=replace(base.binding, provider="small"),
+                             maximum_output_tokens=50)})
+        self.app.router.profiles = MappingProxyType({
+            **self.app.router.profiles,
+            kind: replace(self.app.router.profiles[kind], default_fallback="secondary")})
+        self.app.router.default_provider_resolver = lambda context, profile: "small"
+        now = self.app.now()
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".fallback": "small", group + ".max_output_tokens": 100},
+            observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        self.assertEqual(task["fields"]["fallback"]["value"], "secondary")
+        self.assertTrue(task["fields"]["fallback"].get("replaced"))
+
+        refused = self.manager.configure(self.core, {
+            "kind": kind, "layer": "role", "operation_key": "move-primary",
+            "edit_token": task["edit_token"], "changes": {"provider": "primary"}, "reset": [],
+        })
+
+        self.assertEqual(refused.failure.code, "model_output_limit")
+
+    async def test_a_recovered_default_fallback_is_checked_when_the_primary_moves(self):
+        # 注册表默认备用被恢复清空时，它不是本层显式行；但主模型一变，那条
+        # 默认备用会重新生效，上限必须一起校验。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        window = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.WINDOW,
+                              self.role_context.role_binding.role, self.role_context.scope,
+                              bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "big": replace(base, binding=replace(base.binding, provider="big"),
+                           maximum_output_tokens=8192)})
+        self.app.router.default_provider_resolver = lambda context, profile: "primary"
+        now = self.app.now()
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="window").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        self.assertEqual(task["fields"]["provider"]["value"], "primary")
+        self.assertEqual(task["fields"]["fallback"]["value"], "")
+
+        refused = self.manager.configure(self.core, {
+            "kind": kind, "layer": "window", "operation_key": "move-to-big",
+            "edit_token": task["edit_token"],
+            "changes": {"provider": "big", "max_output_tokens": 4096}, "reset": [],
+        })
+
+        self.assertEqual(refused.failure.code, "model_output_limit")
+
+    async def test_resetting_a_fallback_uses_the_parents_stored_value(self):
+        # 本层主模型显式时，父视图的恢复不会在这里发生；reset 备用后真正继承
+        # 的是父层存储值，而不是父视图因撞车清空的空值。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        window = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.WINDOW,
+                              self.role_context.role_binding.role, self.role_context.scope,
+                              bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "big": replace(base, binding=replace(base.binding, provider="big"),
+                           maximum_output_tokens=8192),
+            "fb": replace(base, binding=replace(base.binding, provider="fb"),
+                          maximum_output_tokens=8192)})
+        self.app.router.default_provider_resolver = lambda context, profile: "primary"
+        now = self.app.now()
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+        own = self.app.configuration.read(self.core, target=window, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=window, group_id=group,
+            operation=self.operation(window.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".provider": "big", group + ".fallback": "fb",
+                     group + ".max_output_tokens": 4096}, observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="window").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        self.assertEqual(task["fields"]["provider"]["value"], "big")
+
+        refused = self.manager.configure(self.core, {
+            "kind": kind, "layer": "window", "operation_key": "reset-fallback",
+            "edit_token": task["edit_token"], "changes": {}, "reset": ["fallback"],
+        })
+
+        self.assertEqual(refused.failure.code, "model_output_limit")
+
+    async def test_settling_the_primary_and_resetting_the_fallback_checks_the_inherited_route(self):
+        # 同一次保存把主模型写成显式值并 reset 备用时，保存后真正继承的备用
+        # 也要参与上限校验；父视图可能因恢复把它清空了。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "big": replace(base, binding=replace(base.binding, provider="big"),
+                           maximum_output_tokens=8192),
+            "fb": replace(base, binding=replace(base.binding, provider="fb"),
+                          maximum_output_tokens=8192)})
+        self.app.router.default_provider_resolver = lambda context, profile: "primary"
+        now = self.app.now()
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".provider": "removed-provider"}, observed_at=now).unwrap()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".fallback": "fb", group + ".max_output_tokens": 4096},
+            observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        refused = self.manager.configure(self.core, {
+            "kind": kind, "layer": "role", "operation_key": "settle-and-reset",
+            "edit_token": task["edit_token"], "changes": {"provider": "big"},
+            "reset": ["fallback"],
+        })
+
+        self.assertEqual(refused.failure.code, "model_output_limit")
+
+    async def test_resetting_a_provider_to_an_available_value_still_checks_duplicates(self):
+        # reset 后继承的是可用的显式主模型时，它与本层保存的备用相同就是真重复，
+        # 保存后每次保存都会被 duplicate 拒绝。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "big": replace(base, binding=replace(base.binding, provider="big"))})
+        now = self.app.now()
+        for target, changes in ((installation, {"provider": "primary"}),
+                                (role, {"provider": "big", "fallback": "primary"})):
+            snapshot = self.app.configuration.read(self.core, target=target, group_id=group,
+                                                   observed_at=now).unwrap()
+            self.app.configuration.patch(self.core, target=target, group_id=group,
+                operation=self.operation(target.authorization_scope),
+                expected_edit_token=snapshot.edit_token,
+                changes={group + "." + name: value for name, value in changes.items()},
+                observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        refused = self.manager.configure(self.core, {
+            "kind": kind, "layer": "role", "operation_key": "reset-to-available",
+            "edit_token": task["edit_token"], "changes": {}, "reset": ["provider"],
+        })
+
+        self.assertEqual(refused.failure.code, "model_fallback_duplicate")
+
+    async def test_a_stale_inherited_fallback_does_not_block_a_primary_change(self):
+        # 安装层失效的备用在保存后仍会被恢复隐藏；它不该被当成保存后的路由
+        # 参与校验，否则用户在页面上修不了这个值。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "secondary": replace(base, binding=replace(base.binding, provider="secondary"))})
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        self.app.router.default_provider_resolver = lambda context, profile: "primary"
+        now = self.app.now()
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".fallback": "removed-fallback"}, observed_at=now).unwrap()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".provider": "primary"}, observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        saved = self.manager.configure(self.core, {
+            "kind": kind, "layer": "role", "operation_key": "move-primary-stale-fb",
+            "edit_token": task["edit_token"], "changes": {"provider": "secondary"}, "reset": [],
+        }).unwrap()
+
+        self.assertFalse(saved["replayed"])
+
+    async def test_a_stale_inherited_fallback_does_not_block_a_fallback_reset(self):
+        # 同上：reset 备用时父层存储的失效值仍会被恢复，不能当保存后的路由。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        self.app.router.default_provider_resolver = lambda context, profile: "primary"
+        now = self.app.now()
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".fallback": "removed-fallback"}, observed_at=now).unwrap()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".provider": "primary", group + ".fallback": "secondary"},
+            observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        saved = self.manager.configure(self.core, {
+            "kind": kind, "layer": "role", "operation_key": "reset-fallback-stale-parent",
+            "edit_token": task["edit_token"], "changes": {}, "reset": ["fallback"],
+        }).unwrap()
+
+        self.assertFalse(saved["replayed"])
+
+    async def test_a_host_filled_fallback_is_not_replaced_by_the_registry_default(self):
+        # 备用没有保存行时，保存后生效的是宿主路线，不是注册表默认值；
+        # 用默认值校验会误拒一条实际可用的路由。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "big": replace(base, binding=replace(base.binding, provider="big"),
+                           maximum_output_tokens=8192),
+            "big2": replace(base, binding=replace(base.binding, provider="big2"),
+                            maximum_output_tokens=8192),
+            "host-big": replace(base, binding=replace(base.binding, provider="host-big"),
+                                maximum_output_tokens=8192)})
+        self.app.router.default_provider_resolver = lambda context, profile: "host-big"
+        now = self.app.now()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".provider": "big", group + ".max_output_tokens": 4096},
+            observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        self.assertEqual(task["fields"]["fallback"]["source"], "host_conversation")
+
+        saved = self.manager.configure(self.core, {
+            "kind": kind, "layer": "role", "operation_key": "move-to-big2",
+            "edit_token": task["edit_token"], "changes": {"provider": "big2"}, "reset": [],
+        }).unwrap()
+
+        self.assertFalse(saved["replayed"])
+
+    async def test_resetting_a_fallback_without_a_host_route_checks_the_registry_default(self):
+        # 后台任务没有宿主路线；reset 备用后生效的是注册表默认值（上限更低），
+        # 它必须参与上限校验。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "big": replace(base, binding=replace(base.binding, provider="big"),
+                           maximum_output_tokens=8192),
+            "fb": replace(base, binding=replace(base.binding, provider="fb"),
+                          maximum_output_tokens=8192)})
+        now = self.app.now()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".provider": "big", group + ".fallback": "fb",
+                     group + ".max_output_tokens": 4096}, observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        refused = self.manager.configure(self.core, {
+            "kind": kind, "layer": "role", "operation_key": "reset-fallback-no-host",
+            "edit_token": task["edit_token"], "changes": {}, "reset": ["fallback"],
+        })
+
+        self.assertEqual(refused.failure.code, "model_output_limit")
+
+    async def test_a_primary_change_checks_the_fallback_recovery_will_restore(self):
+        # 安装层失效的备用会在保存后恢复成宿主路线；它与新主模型不同，会真的
+        # 生效，因此必须校验它的上限。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "secondary": replace(base, binding=replace(base.binding, provider="secondary"),
+                                 maximum_output_tokens=8192)})
+        self.app.router.default_provider_resolver = lambda context, profile: "primary"
+        now = self.app.now()
+        parent = self.app.configuration.read(self.core, target=installation, group_id=group,
+                                             observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=installation, group_id=group,
+            operation=self.operation(installation.authorization_scope),
+            expected_edit_token=parent.edit_token,
+            changes={group + ".fallback": "removed-fallback"}, observed_at=now).unwrap()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".provider": "primary", group + ".max_output_tokens": 4096},
+            observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        refused = self.manager.configure(self.core, {
+            "kind": kind, "layer": "role", "operation_key": "move-primary-restores-fallback",
+            "edit_token": task["edit_token"], "changes": {"provider": "secondary"}, "reset": [],
+        })
+
+        self.assertEqual(refused.failure.code, "model_output_limit")
+
+    async def test_the_parent_stored_fallback_is_exposed_for_a_reset(self):
+        # reset 备用时真正继承的是父层存储值；投影把它清空/替换时，页面需要
+        # 这个值才能显示和校验一致。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        installation = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.INSTALLATION)
+        window = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.WINDOW,
+                              self.role_context.role_binding.role, self.role_context.scope,
+                              bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "big": replace(base, binding=replace(base.binding, provider="big")),
+            "fb": replace(base, binding=replace(base.binding, provider="fb")),
+            "stored-fb": replace(base, binding=replace(base.binding, provider="stored-fb"))})
+        now = self.app.now()
+        for target, changes in (
+                (installation, {"provider": "removed-provider", "fallback": "stored-fb"}),
+                (window, {"provider": "big", "fallback": "fb"})):
+            snapshot = self.app.configuration.read(self.core, target=target, group_id=group,
+                                                   observed_at=now).unwrap()
+            self.app.configuration.patch(self.core, target=target, group_id=group,
+                operation=self.operation(target.authorization_scope),
+                expected_edit_token=snapshot.edit_token,
+                changes={group + "." + name: value for name, value in changes.items()},
+                observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="window").unwrap()["tasks"]
+                    if item["kind"] == kind)
+
+        self.assertEqual(task["fields"]["fallback"]["parent_stored"], "stored-fb")
+
+    async def test_a_parent_without_a_fallback_row_exposes_no_stored_value(self):
+        # 父层没有备用行时，字段值是注册表默认，不是保存值；把它当成“上级
+        # 存储备用”会让页面展示一条 reset 后不会使用的路线。
+        kind = "conversation.context_image_caption"
+        group = "model." + kind
+        role = ConfigTarget(self.role_context.scope.installation_id, ConfigLayer.ROLE,
+                            self.role_context.role_binding.role, bot_id=self.role_context.scope.bot_id)
+        base = self.providers[0]
+        self.app.router.providers = MappingProxyType({
+            **self.app.router.providers,
+            "secondary": replace(base, binding=replace(base.binding, provider="secondary"))})
+        now = self.app.now()
+        own = self.app.configuration.read(self.core, target=role, group_id=group,
+                                          observed_at=now).unwrap()
+        self.app.configuration.patch(self.core, target=role, group_id=group,
+            operation=self.operation(role.authorization_scope), expected_edit_token=own.edit_token,
+            changes={group + ".provider": "primary", group + ".fallback": "secondary"},
+            observed_at=now).unwrap()
+
+        task = next(item for item in self.manager.status(self.core, layer="role").unwrap()["tasks"]
+                    if item["kind"] == kind)
+        field = task["fields"]["fallback"]
+
+        self.assertEqual(field.get("parent_stored"), "")
+        self.assertFalse(field.get("parent_stored_usable"))

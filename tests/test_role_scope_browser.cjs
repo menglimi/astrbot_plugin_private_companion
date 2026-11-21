@@ -147,11 +147,11 @@ test("完整小屋按当前 Bot 与角色切换工作区", {skip:chromium ? fals
   await t.test("模型页切换账号，群窗口使用群接口，未选窗口禁用窗口覆盖", async () => {
     await navigate("models");
     await openModelConfig();
-    await page.waitForFunction(()=>document.querySelector("select[data-model-field='provider']")?.value === "model-b");
+    await page.waitForFunction(()=>document.querySelector("select[data-model-field='provider'] option:checked")?.textContent.includes("model-b"));
     await selectRole("a");
     await expectRole("a");
     await openModelConfig();
-    await page.waitForFunction(()=>document.querySelector("select[data-model-field='provider']")?.value === "model-a");
+    await page.waitForFunction(()=>document.querySelector("select[data-model-field='provider'] option:checked")?.textContent.includes("model-a"));
     assert.equal(await page.locator("[data-model-layer='window']").isDisabled(),true);
     await page.locator("[data-role-window]").selectOption("group-a");
     await page.waitForFunction(()=>CompanionProduct.selection().target_id === "group-a");
