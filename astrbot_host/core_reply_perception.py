@@ -34,6 +34,8 @@ _POLICY = """角色状态材料说的是角色自己，不是用户的身体、�
 按本轮任务给出最终回复，不输出内部合同、资料 JSON、草稿、自我校对或编辑批注。本轮明确启用的媒体与分段格式仍按对应协议生成。""" + "\n" + PRIVATE_REPLY_INSTRUCTION
 _CONTEXT_PREFIX = "<companion_v2_context>\n"
 _CONTEXT_SUFFIX = "\n</companion_v2_context>"
+_HOST_KB_RESULTS_MARKER = "[Related Knowledge Base Results]:"
+_OFFICIAL_KB_MATERIAL_PREFIX = "knowledge_reference:astrbot:"
 _MODALITY_LABELS = {
     "text": "文本", "image": "图片", "audio": "音频", "video": "视频", "tools": "工具调用",
 }
@@ -493,7 +495,16 @@ def _confirmed_contact(material):
     return None
 
 
-def _structured_background(prepared, turn_context, private_context=None):
+def request_has_host_kb_results(request) -> bool:
+    """Return True when AstrBot core already injected official KB results into this request."""
+    for part in getattr(request, "extra_user_content_parts", ()) or ():
+        text = _part_text(part)
+        if isinstance(text, str) and _HOST_KB_RESULTS_MARKER in text:
+            return True
+    return False
+
+
+def _structured_background(prepared, turn_context, private_context=None, *, skip_official_kb=False):
     base = prepared.get("prompt_context_instruction")
     blocks = prepared.get("prompt_context_blocks")
     current = turn_context.strip()
@@ -507,20 +518,27 @@ def _structured_background(prepared, turn_context, private_context=None):
                       for entry in (private_context or {}).get(group, ()) if "sent_ref" in entry}
     sections = []
     for block in blocks:
-        if not timeline_parts or "materials" not in block:
+        if "materials" not in block:
             sections.append(block)
             continue
         materials = []
         for material in block["materials"]:
-            content = _confirmed_contact(material)
-            if content is not None and (content["ref"], content["part"]["sequence"]) in timeline_parts:
-                reduced = dict(content, text_in_private_reply_context=True)
-                del reduced["text"]
-                material = dict(material, content=reduced)
+            if (skip_official_kb and isinstance(material, Mapping)
+                    and str(material.get("kind") or "").startswith(_OFFICIAL_KB_MATERIAL_PREFIX)):
+                continue
+            if timeline_parts:
+                content = _confirmed_contact(material)
+                if content is not None and (content["ref"], content["part"]["sequence"]) in timeline_parts:
+                    reduced = dict(content, text_in_private_reply_context=True)
+                    del reduced["text"]
+                    material = dict(material, content=reduced)
             materials.append(material)
-        sections.append(dict(block, materials=materials))
-    result = {"sections": sections}
+        if materials:
+            sections.append(dict(block, materials=materials))
     additional = current[len(prefix):].strip()
+    if not sections and not additional:
+        return None
+    result = {"sections": sections}
     if additional:
         result["additional_guidance"] = additional
     return result
@@ -600,8 +618,9 @@ async def inject_core_reply_perception_context(event, request, *, native_context
         except Exception:
             # Optional chronological evidence must not block the ordinary reply.
             pass
-    from .core_reply_mentions import restore_group_mentions
+    from .core_reply_mentions import restore_bare_mention_prompt, restore_group_mentions
     restore_group_mentions(event, request, original, native_context)
+    restore_bare_mention_prompt(request, prepared)
     original_text = getattr(original, "group_message_text", None) or getattr(original, "text", None)
     if isinstance(original_text, str) and "[表情" in original_text:
         # Stickers are how people send a feeling without words. Tell the model
@@ -662,9 +681,13 @@ async def inject_core_reply_perception_context(event, request, *, native_context
         if getattr(original, "group_message_text", None) in (None, getattr(original, "text", None)):
             _restore_wake_prefix(event, request, original_text, prompt_text, native_context)
     turn_context = prepared.get("prompt_instruction")
+    host_kb_injected = request_has_host_kb_results(request)
     if isinstance(turn_context, str) and turn_context.strip():
-        details["companion_background"] = _structured_background(
-            prepared, turn_context, details.get("private_reply_context"))
+        background = _structured_background(
+            prepared, turn_context, details.get("private_reply_context"),
+            skip_official_kb=host_kb_injected)
+        if background:
+            details["companion_background"] = background
     participation_hint = _group_participation_hint(prepared)
     if participation_hint:
         details["group_participation_hint"] = participation_hint
@@ -760,8 +783,7 @@ async def inject_core_reply_perception_context(event, request, *, native_context
     from astrbot.core.agent.message import TextPart
 
     parts.append(TextPart(text=text).mark_as_temp())
-    state["_perception_background_injected"] = bool(
-        isinstance(turn_context, str) and turn_context.strip())
+    state["_perception_background_injected"] = bool(details.get("companion_background"))
     state["_perception_material_injected"] = bool(
         details.get("conversation") or details.get("expression_guidance")
         or details.get("image_reference_material") or details.get("private_reply_context")
@@ -800,6 +822,10 @@ def _apply_external_stt_to_request(event, request, parts, details):
         parts.append(TextPart(text=f"[语音消息转写：{transcript}]").mark_as_temp())
     if isinstance(getattr(request, "prompt", None), str) and request.prompt.strip() in ("", "[语音消息]"):
         request.prompt = f"{VOICE_TRANSCRIPT_PREFIX}{transcript}"
+    if hasattr(request, "retrieval_query"):
+        current_query = getattr(request, "retrieval_query", None)
+        if not isinstance(current_query, str) or not current_query.strip():
+            request.retrieval_query = transcript
     details["audio_transcription"] = {
         "state": "transcribed",
         "source": source or "hear_voice",

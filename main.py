@@ -58,6 +58,7 @@ from .astrbot_host.core_reply_turn_gate import close_core_reply_turn, install_co
 from .astrbot_host.core_reply_tool_guard import (
     close_core_reply_tool_guard, install_core_reply_tool_guard, mark_managed_turn,
 )
+from .astrbot_host.core_reply_mentions import prepare_bare_mention_request
 from .astrbot_host.core_reply_native_send import inject_core_reply_send_tool
 from .astrbot_host.core_reply_perception import (
     inject_core_reply_perception_context, inject_core_reply_perception_policy,
@@ -486,6 +487,12 @@ class PrivateCompanionV2StagingPlugin(Star):
             request.prompt = prompt.rstrip() + "\n" + extra_text
         else:
             request.prompt = extra_text
+        if hasattr(request, "retrieval_query"):
+            current_query = getattr(request, "retrieval_query", None)
+            if isinstance(current_query, str) and current_query.strip():
+                request.retrieval_query = current_query.rstrip() + "\n" + extra_text
+            else:
+                request.retrieval_query = request.prompt
         prepared = prepared_state.get("prepared") if isinstance(prepared_state, dict) else None
         if isinstance(prepared, dict):
             base = str(prepared.get("text") or "").rstrip()
@@ -1381,14 +1388,14 @@ class PrivateCompanionV2StagingPlugin(Star):
                 and (prepared.get("group_trigger") or {}).get("bare_mention")
                 and not str(getattr(event, "message_str", "") or "").strip()):
             # AstrBot's aiocqhttp adapter strips the leading self-@ from
-            # message_str; give bare self-mentions the canonical SELF_MENTION
-            # placeholder and stay off streaming so V2 intake & decoration run.
-            event.message_str = SELF_MENTION
-            if getattr(event, "message_obj", None) is not None:
-                event.message_obj.message_str = SELF_MENTION
-            setter = getattr(event, "set_extra", None)
-            if callable(setter):
-                setter("enable_streaming", False)
+            # message_str; keep event.message_str clean via an explicit
+            # conversation-bound request so _apply_kb() never embeds
+            # "<提及自己>", falling back only if no session conversation can be bound.
+            if not await prepare_bare_mention_request(
+                    event, native_context=getattr(self.staging, "context", None)):
+                event.message_str = SELF_MENTION
+                if getattr(event, "message_obj", None) is not None:
+                    event.message_obj.message_str = SELF_MENTION
         event.is_wake = True
         event.is_at_or_wake_command = True
         if channel == "private":

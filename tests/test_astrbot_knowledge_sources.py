@@ -8,7 +8,12 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import AsyncMock
 
-from astrbot_host.knowledge_sources import AstrBotKnowledgeSources
+from astrbot_host.knowledge_sources import (
+    AstrBotKnowledgeSources,
+    attach_official_knowledge,
+    clean_retrieval_query,
+    prepare_official_knowledge_hits,
+)
 
 
 class FakeHelper:
@@ -221,6 +226,98 @@ class AstrBotKnowledgeSourcesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.text for item in candidates], ["a0", "a1", "旧城有一座钟"])
         self.assertEqual(candidates[-1].knowledge_base_id, "kb-1")
         self.assertEqual(candidates[-1].document_id, "doc-2")
+
+    def test_clean_retrieval_query_rejects_json_blobs_and_placeholders(self):
+        self.assertEqual(clean_retrieval_query('{"materials": [{"text": "hello"}]}'), "")
+        self.assertEqual(clean_retrieval_query('[{"role": "user"}]'), "")
+        self.assertEqual(clean_retrieval_query("<提及自己>"), "")
+        self.assertEqual(clean_retrieval_query("  <attachment>  [图片]  "), "")
+        self.assertEqual(
+            clean_retrieval_query("<companion_v2_context>{\"a\":1}</companion_v2_context> <提及自己> 问一下设定"),
+            "问一下设定",
+        )
+
+    async def test_retrieve_delegates_to_kb_manager_and_respects_doc_filter_and_budget(self):
+        retrieve_mock = AsyncMock(return_value={
+            "context_text": "formatted",
+            "results": [
+                {
+                    "kb_id": "kb-1", "kb_name": "星河设定", "doc_id": "doc-2",
+                    "doc_name": "城市资料.md", "chunk_index": 7,
+                    "content": "维也纳音乐厅的钟楼在雪夜里鸣响", "score": 0.91,
+                },
+                {
+                    "kb_id": "kb-1", "kb_name": "星河设定", "doc_id": "doc-1",
+                    "doc_name": "角色资料.md", "chunk_index": -3,
+                    "content": "主角在海边弹琴", "score": 0.72,
+                },
+            ],
+        })
+        self.sources.manager.retrieve = retrieve_mock
+        self.sources.manager.helper.kb = self.sources.manager.kb
+
+        hits = await self.sources.retrieve("钢琴家后来去了哪里", ["kb:kb-1"], max_hits=4, char_budget=200)
+        self.assertEqual([item.text for item in hits], ["维也纳音乐厅的钟楼在雪夜里鸣响", "主角在海边弹琴"])
+        self.assertEqual([item.candidate_id for item in hits], ["astrbot:kb-1:doc-2:7", "astrbot:kb-1:doc-1:0"])
+        retrieve_mock.assert_awaited_once()
+        self.assertEqual(retrieve_mock.await_args.kwargs["query"], "钢琴家后来去了哪里")
+        self.assertEqual(retrieve_mock.await_args.kwargs["kb_names"], ["星河设定"])
+
+        doc_only = await self.sources.retrieve("钟楼", ["doc:kb-1:doc-2"], max_hits=4, char_budget=200)
+        self.assertEqual([item.document_id for item in doc_only], ["doc-2"])
+
+        json_skip = await self.sources.retrieve('{"materials":[1,2]}', ["kb:kb-1"])
+        self.assertEqual(json_skip, ())
+        self.assertEqual(retrieve_mock.await_count, 2)
+
+    async def test_retrieve_falls_back_only_when_kb_manager_unavailable_or_failed(self):
+        # Missing retrieve method -> returns None so caller falls back to candidates().
+        self.assertIsNone(await self.sources.retrieve("米拉", ["kb:kb-1"]))
+
+        # Raising retrieve -> logs warning and returns None so caller falls back.
+        self.sources.manager.retrieve = AsyncMock(side_effect=RuntimeError("embedding down"))
+        self.sources.manager.helper.kb = self.sources.manager.kb
+        with self.assertLogs("astrbot_host.knowledge_sources", level="WARNING"):
+            self.assertIsNone(await self.sources.retrieve("米拉", ["kb:kb-1"]))
+
+        # Broken helper init_error -> returns None so caller falls back.
+        self.sources.manager.retrieve = AsyncMock(return_value={"results": []})
+        self.sources.manager.helper.init_error = "embedding failed"
+        self.assertIsNone(await self.sources.retrieve("米拉", ["kb:kb-1"]))
+
+        # Clean empty semantic hit -> returns () (no fallback to noisy SQLite scan).
+        self.sources.manager.helper.init_error = None
+        self.assertEqual(await self.sources.retrieve("毫无关系的问句", ["kb:kb-1"]), ())
+
+    async def test_retrieve_sync_bridges_worker_thread_and_prepare_official_hits_respects_flag(self):
+        import asyncio
+        from companion_v2.knowledge.configuration import KnowledgeSettings
+        from companion_v2.knowledge.context import KnowledgeContext
+
+        retrieve_mock = AsyncMock(return_value={
+            "results": [{
+                "kb_id": "kb-1", "kb_name": "星河设定", "doc_id": "doc-1",
+                "doc_name": "角色资料.md", "chunk_index": 0,
+                "content": "语义命中：钢琴独奏会", "score": 0.88,
+            }],
+        })
+        self.sources.manager.retrieve = retrieve_mock
+        self.sources.manager.helper.kb = self.sources.manager.kb
+
+        knowledge = KnowledgeContext(settings_reader=lambda _ctx: KnowledgeSettings.from_values({
+            "source_ids": "kb:kb-1", "official_in_core": False,
+        }))
+        app = NS(messages=NS(knowledge=knowledge))
+        sources = attach_official_knowledge(app, NS(kb_manager=self.sources.manager))
+
+        # Worker thread sync bridge works on running loop.
+        bridged = await asyncio.to_thread(sources.retrieve_sync, "演奏会", ("kb:kb-1",))
+        self.assertEqual([item.text for item in bridged], ["语义命中：钢琴独奏会"])
+
+        # official_in_core=False skips unless include_official=True (Together/Game).
+        self.assertIsNone(await prepare_official_knowledge_hits(app, NS(), "演奏会"))
+        included = await prepare_official_knowledge_hits(app, NS(), "演奏会", include_official=True)
+        self.assertEqual([item.text for item in included], ["语义命中：钢琴独奏会"])
 
 
 if __name__ == "__main__":

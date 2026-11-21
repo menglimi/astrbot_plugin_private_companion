@@ -209,9 +209,11 @@ class ConversationMessages:
         for event in events:
             record = self._read_source(event.source, context, event.capability, at)
             source_text.append(record.payload)
+        user_text = "\n".join(source_text)
         return self.knowledge.contributions(
             context,
-            text=role_instruction + "\n" + "\n".join(source_text),
+            text=role_instruction + "\n" + user_text,
+            query_text=user_text,
             at=at,
             batch_id=batch_id,
             sources=self.sources,
