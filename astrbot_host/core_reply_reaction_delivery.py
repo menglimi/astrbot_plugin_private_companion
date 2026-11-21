@@ -47,7 +47,8 @@ def inject_core_reaction_instruction(event, request, semantic, turn_id):
     previous = core.get("_reaction_reply")
     previous = previous if isinstance(previous, dict) else {}
     core["_reaction_reply"] = previous | {
-        "semantic": semantic, "context": context, "turn_id": turn_id, "enabled": enabled,
+        "semantic": semantic, "context": context, "turn_id": turn_id,
+        "capable": capable, "enabled": enabled,
         # Kept here so an attempted/deferred turn still has a readable reason;
         # the response observer logs it before any capture can run.
         "reason": previous.get("reason", "")}
