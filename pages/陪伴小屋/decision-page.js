@@ -564,9 +564,29 @@ window.CompanionDecisionPage = (() => {
     </div>`;
   }
 
+  const GUARD_ERRORS = {
+    bridge_unavailable: "页面还没有接上 AstrBot 管理界面，请刷新页面后再试。",
+    bridge_timeout: "连接超时，请核对连接后重试。",
+    invalid_response: "返回数据不完整，请刷新页面后核对。",
+    request_failed: "请求未成功完成，请稍后重试。",
+    harassment_config_invalid: "防骚扰设置未通过校验，请核对参数与关键词格式。",
+    harassment_entry_invalid: "黑名单条目信息不完整或格式无效，请检查窗口、用户 ID 与时长。",
+    harassment_export_invalid: "导出请求无效，请刷新页面后重试。",
+    harassment_import_invalid: "导入的防骚扰 JSON 无效，请核对文件结构后再试。",
+  };
+  function guardErrorText(error) {
+    const code = typeof error?.code === "string" ? error.code : "";
+    const message = typeof error?.message === "string" ? error.message : "";
+    const wbErrors = window.CompanionWorkbench?.errors || {};
+    if (code && (GUARD_ERRORS[code] || wbErrors[code])) return GUARD_ERRORS[code] || wbErrors[code];
+    if (message && (GUARD_ERRORS[message] || wbErrors[message])) return GUARD_ERRORS[message] || wbErrors[message];
+    if (message && !/^[a-z][a-z0-9_]{2,60}$/.test(message)) return message;
+    return "请求未成功完成，请刷新页面后重试。";
+  }
+
   async function guardRequest(method, path, body) {
     const bridge = window.CompanionProduct?.bridgeNow?.() || await window.CompanionProduct?.bridgeFor?.();
-    if (!bridge) throw new Error("bridge_unavailable");
+    if (!bridge) throw Object.assign(new Error("bridge_unavailable"), {code: "bridge_unavailable"});
     const endpoint = harassment.endpoint + path;
     const response = method === "GET" ? await bridge.apiGet(endpoint) : await bridge.apiPost(endpoint, body);
     /* 失败回执有两层要认。
@@ -577,10 +597,16 @@ window.CompanionDecisionPage = (() => {
     const wrapped = response?.status === "error" ? response
       : ["ok", "error"].includes(response?.status) && response?.data !== undefined ? response
         : ["ok", "error"].includes(response?.data?.status) && response?.data?.data !== undefined ? response.data : null;
-    if (wrapped?.status === "error") throw Object.assign(new Error(wrapped.message || "request_failed"), {code: wrapped.message});
-    if (wrapped?.data?.status === "error") throw Object.assign(new Error(wrapped.data.message || "request_failed"), {code: wrapped.data.message});
+    if (wrapped?.status === "error") {
+      const code = wrapped.data?.code || wrapped.message || "request_failed";
+      throw Object.assign(new Error(wrapped.message || code), {code});
+    }
+    if (wrapped?.data?.status === "error") {
+      const code = wrapped.data.data?.code || wrapped.data.message || "request_failed";
+      throw Object.assign(new Error(wrapped.data.message || code), {code});
+    }
     const value = wrapped ? wrapped.data : response;
-    if (!value || typeof value !== "object") throw new Error("invalid_response");
+    if (!value || typeof value !== "object") throw Object.assign(new Error("invalid_response"), {code: "invalid_response"});
     return value;
   }
 
@@ -606,7 +632,7 @@ window.CompanionDecisionPage = (() => {
       harassment.missing = routeMissing(error);
       harassment.notice = harassment.missing
         ? "该页只对私聊窗口生效，当前插件版本也可能没有提供这组接口。"
-        : "读取防骚扰设置失败：" + (error?.message || "未知错误");
+        : "读取防骚扰设置失败：" + guardErrorText(error);
     } finally {
       harassment.loading = false;
       renderPanels();
@@ -625,7 +651,7 @@ window.CompanionDecisionPage = (() => {
       harassment.bad = false;
     } catch (error) {
       harassment.bad = true;
-      harassment.notice = "操作失败：" + (error?.message || "未知错误");
+      harassment.notice = "操作失败：" + guardErrorText(error);
     } finally {
       harassment.busy = false;
       renderPanels();
@@ -690,7 +716,7 @@ window.CompanionDecisionPage = (() => {
         harassment.notice = "已导出到下框。";
         harassment.bad = false;
       }).catch(error => {
-        harassment.notice = "导出失败：" + (error?.message || "未知错误");
+        harassment.notice = "导出失败：" + guardErrorText(error);
         harassment.bad = true;
       }).finally(() => { harassment.busy = false; renderPanels(); });
       return;

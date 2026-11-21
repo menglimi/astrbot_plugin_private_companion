@@ -13,6 +13,7 @@ window.CompanionModelsPage = (() => {
     fallback_on_refusal: "拒答替代", refusal_terms: "拒答匹配词", replacement_scope: "替换作用范围" };
   const groups = [
     ["对话", [["conversation.reply", "对话回复", "AstrBot 核心回复与 V2 附加提示"],
+      ["conversation.poke_reply", "戳一戳回复", "收到戳一戳时生成简短自然的回应"],
       ["conversation.context_image_caption", "图片摘要", "为已授权的历史图片提取可见内容"],
       ["conversation.image_narration", "当前图片转述", "为本轮已授权图片生成简短文字描述"],
       ["conversation.video_narration", "原生视频转述", "将原视频或压缩视频交给原生视频（如 Gemini）或 OpenAI 兼容视觉中转模型理解；支持主备降级与外置插件避让"]]],

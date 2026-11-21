@@ -11,7 +11,29 @@ window.CompanionConfigPortPage = (() => {
     configuration_target_unavailable: "当前角色的入口已不可用，请重新读取目录后再试。",
     configuration_port_group_unavailable: "当前群聊暂不支持配置导入导出；请明确选择该角色的私聊窗口后再操作。",
     configuration_port_window_required: "需要明确选择窗口",
+    configuration_port_invalid: "配置文件格式无效，请选择本插件导出的配置 JSON。",
+    configuration_port_unavailable: "该分区当前不可读取或保存，请稍后重试。",
+    configuration_port_unsupported: "该分区不支持配置导入导出。",
+    bridge_unavailable: "页面还没有接上 AstrBot 管理界面，请刷新页面后再试。",
+    bridge_timeout: "连接超时，请核对连接后重试。",
+    invalid_response: "返回数据不完整，请刷新页面后核对。",
   };
+  const EXTRA_SECTION_TITLES = {
+    "system.prompts": "系统提示词",
+  };
+  const isCode = value => typeof value === "string" && /^[a-z][a-z0-9_]{2,60}$/.test(value);
+  function sectionLabel(name) {
+    return window.CompanionConfigEditors?.spec?.[name]?.title || EXTRA_SECTION_TITLES[name] || name;
+  }
+  function errorText(codeOrError, fallback = "操作未通过校验，请稍后重试。") {
+    const code = typeof codeOrError === "string" ? codeOrError : (typeof codeOrError?.code === "string" ? codeOrError.code : "");
+    const message = typeof codeOrError === "string" ? codeOrError : (typeof codeOrError?.message === "string" ? codeOrError.message : "");
+    const wbErrors = window.CompanionWorkbench?.errors || {};
+    if (code && (errors[code] || wbErrors[code])) return errors[code] || wbErrors[code];
+    if (message && (errors[message] || wbErrors[message])) return errors[message] || wbErrors[message];
+    if (message && !isCode(message)) return message;
+    return fallback;
+  }
 
   function selection() {
     const product = window.CompanionProduct;
@@ -29,7 +51,7 @@ window.CompanionConfigPortPage = (() => {
   }
 
   function failure(error) {
-    return errors[error?.code] || (error?.code ? `（${error.code}）` : "请稍后重试。");
+    return errorText(error, "请稍后重试。");
   }
 
   function render() {
@@ -89,7 +111,7 @@ window.CompanionConfigPortPage = (() => {
       setTimeout(() => URL.revokeObjectURL(link.href), 1000);
       const sections = Object.keys(document?.sections || {}).length;
       const unavailable = Object.keys(document?.unavailable || {});
-      data.message = `已导出 ${sections} 个分区的配置。` + (unavailable.length ? `以下分区未包含：${unavailable.map(name => `${name}（${errors[document.unavailable[name]] || document.unavailable[name]}）`).join("、")}。` : "");
+      data.message = `已导出 ${sections} 个分区的配置。` + (unavailable.length ? `以下分区未包含：${unavailable.map(name => `${sectionLabel(name)}（${errorText(document.unavailable[name], "暂不可导出")}）`).join("、")}。` : "");
     } catch (error) {
       if (ticket === version) { data.error = true; data.message = `导出失败：${failure(error)}`; }
     }
@@ -119,7 +141,7 @@ window.CompanionConfigPortPage = (() => {
       if (ticket !== version) return;
       const applied = Object.keys(result?.applied || {});
       const failed = Object.keys(result?.failed || {});
-      data.message = `已导入 ${applied.length} 个分区。` + (failed.length ? `以下分区未导入：${failed.map(name => `${name}（${errors[result.failed[name]] || result.failed[name]}）`).join("、")}。` : "");
+      data.message = `已导入 ${applied.length} 个分区。` + (failed.length ? `以下分区未导入：${failed.map(name => `${sectionLabel(name)}（${errorText(result.failed[name], "未通过校验")}）`).join("、")}。` : "");
       data.error = failed.length > 0;
     } catch (error) {
       if (ticket === version) { data.error = true; data.message = `导入失败：${failure(error)}`; }

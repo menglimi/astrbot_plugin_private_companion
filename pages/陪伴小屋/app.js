@@ -4489,19 +4489,52 @@ function filterAllFunctions(value){
   const count=document.querySelector?.('[data-all-filter-count]');
   if(count)count.textContent=query?`${visible} 个入口`:'';
 }
-/* 全部功能：按 6.7.0 配置页的“功能开关总表”重做。只收真实布尔配置项，
-   按领域分组，行内切换、页面内保存；非布尔配置仍进入对应详情页。 */
-const allFeatureDomainOrder=["通用能力","私聊陪伴","用户与好感度","群聊功能","环境感知","外部记忆联动","长线主动","主动动作","图像与创作","实验功能","运行设置","其他功能"];
-const allFeatureDomainOf={
-  'expression.learning':'通用能力',reaction:'通用能力',recall:'通用能力',busy_gate:'通用能力',
-  web_understanding:'通用能力','role.growth.skills':'通用能力',
-  person:'用户与好感度',relationship_profile:'用户与好感度',private_access:'用户与好感度',role_profile:'私聊陪伴',
-  group_participation:'群聊功能',screen:'环境感知',knowledge:'环境感知',
-  'proactive.contact':'长线主动',qzone:'长线主动','photo.reference':'主动动作',
-  'image.output':'图像与创作',image_review:'图像与创作',quota:'图像与创作','content.authoring':'图像与创作',
-  wardrobe:'图像与创作',library:'图像与创作',budget:'运行设置',relay:'运行设置',
+/* 全部功能：以 config-editor.js 为单一文案真源，收录配置总线的全部真实布尔开关，
+   按 V2 功能领域归组，复合键索引避免重名覆盖；行内切换、按作用域分流保存，
+   复杂配置仍点击进入对应完整配置详情。 */
+const allFeatureDomainOrder=[
+  '跨窗口与跨群递话',
+  '群聊参与与行为',
+  '日记、睡眠与休息',
+  '生活节奏与防打扰',
+  'QQ 空间互动',
+  '图像、穿搭与创作',
+  '学习与成长',
+  '用户关系与准入',
+  '理解、知识与感知',
+  '全局检索与预算',
+  '其他功能',
+];
+const allFeatureDomainNotes={
+  '跨窗口与跨群递话':'跨私聊与群聊向外递话、接收他人递话与发送前确认规则。',
+  '群聊参与与行为':'群聊话题线、氛围参考、主动插话、复读处理与互动习惯学习。',
+  '日记、睡眠与休息':'每日日记、角色作息入睡、休息时段回复判定与书架阅读。',
+  '生活节奏与防打扰':'忙碌时回复顺延，以及主动联系总闸、节律、免打扰与各类契机开关。',
+  'QQ 空间互动':'QQ 空间动态点赞、评论回复、说说发布、生活说说与各主题条件开关。',
+  '图像、穿搭与创作':'对话生图与群图审核、角色参考图、衣柜穿搭与原生创作。',
+  '学习与成长':'私聊与群聊表达学习、样本复核及技能成长模拟。',
+  '用户关系与准入':'熟人卡、跨窗口在场、新用户默认权限与未绑定陌生号婉拒。',
+  '理解、知识与感知':'网页链接理解、撤回原文转写、屏幕解读及世界知识与成员资料注入。',
+  '全局检索与预算':'插件安装全局的表情检索策略与每日 Token 软限额总闸。',
+  '其他功能':'来自配置但暂未归入固定分组的开关。',
 };
-const allFeaturesState={roleKey:'',loading:false,loaded:false,attempted:false,error:'',notice:'',sections:{},draft:{},saving:false,domain:'all',status:'all'};
+const allFeatureDomainSections={
+  '跨窗口与跨群递话':['relay'],
+  '群聊参与与行为':['group_participation'],
+  '日记、睡眠与休息':['life','library'],
+  '生活节奏与防打扰':['busy_gate','proactive.contact'],
+  'QQ 空间互动':['qzone'],
+  '图像、穿搭与创作':['image.output','image_review','quota','photo.reference','wardrobe','content.authoring'],
+  '学习与成长':['expression.learning','role.growth.skills'],
+  '用户关系与准入':['person','private_access','private_access_installation','role_profile','relationship_profile'],
+  '理解、知识与感知':['web_understanding','recall','screen','knowledge'],
+  '全局检索与预算':['reaction','budget'],
+};
+const allFeatureDomainOf=Object.fromEntries(
+  Object.entries(allFeatureDomainSections).flatMap(([domain,sections])=>sections.map(section=>[section,domain]))
+);
+const ALL_FEATURE_INSTALLATION_SECTIONS=new Set(['proactive.contact','reaction','budget','private_access_installation']);
+const allFeaturesState={roleKey:'',ticket:0,loading:false,loaded:false,attempted:false,error:'',notice:'',sections:{},endpoints:{},draft:{},saving:false,domain:'all',status:'all'};
 function pluginRelativePath(path){
   const prefix='/astrbot_plugin_private_companion/';
   return typeof path==='string'&&path.startsWith(prefix)?path.slice(prefix.length):'';
@@ -4523,56 +4556,88 @@ function harassmentEndpoint(){
   const route=pluginRelativePath(product.role?.()?.reply_api);
   return route?route+'/harassment':'';
 }
-function allFeatureFieldSpec(group,field){
-  const spec=window.CompanionConfigEditors?.spec?.[group]||{};
-  return {label:spec.labels?.[field]||field,help:spec.helps?.[field]||"",groupTitle:spec.title||group};
+function allFeatureFieldSpec(sectionName,field){
+  const spec=window.CompanionConfigEditors?.spec?.[sectionName]||{};
+  return {label:spec.labels?.[field]||field,help:spec.helps?.[field]||'',groupTitle:spec.title||sectionName};
 }
-/* 旧版（6.7.0）配置页底部的「全部功能」开关总表：分组、说明、开关顺序与标题都沿用。 */
-const ALL_FEATURE_GROUPS=[{"title":"通用能力","note":"私聊、群聊和主动链路都会参考的状态、媒介、表达学习、收口与发送能力。","keys":["enable_humanized_states","enable_segmented_proactive_reply","inject_passive_states","enable_cycle_state","enable_skill_growth_simulation","enable_personal_goals","enable_message_debounce","enable_recall_enhancement","enable_private_image_self_recognition","enable_forward_message_adaptation","enable_expression_learning","enable_passive_response_review","enable_framework_error_leak_guard","enable_smart_silence","enable_proactive_quote_trigger_message","enable_tts_enhancement","enable_outbound_secret_redaction"]},{"title":"私聊陪伴","note":"回复策略、主动计划判定、正文终审和自然表达；两个主动审核开关彼此独立，关闭正文终审不会自动关闭计划人格判定。","keys":["enable_mai_style_integration","enable_intent_emotion_analysis","enable_llm_proactive_persona_judge","enable_proactive_message_review","enable_passive_topic_suppression","enable_relationship_analysis","enable_relationship_state_machine","enable_dialogue_episode_memory","enable_open_loop_tracking","enable_user_habit_learning","enable_food_menu_recommendation"]},{"title":"用户与好感度","note":"用户档案、用户画像、好感度总开关、互动状态与内容尺度配置。","keys":["enable_auto_user_profile_creation","enable_companion_memory","enable_custom_relationship_stage_policy","enable_relationship_content_tiers"]},{"title":"群聊功能","note":"按要解决的问题找开关：启用范围、续话、读空气、合并、理解、安全、唤醒、学习、复读、转述和跨用户记忆。","keys":["enable_group_companion","enable_group_member_safety","enable_group_conversation_followup","enable_group_air_reply_guard","enable_group_high_intensity_mode","enable_group_context_injection","enable_group_image_understanding","enable_group_injection_guard","enable_group_wakeup_enhancement","enable_group_member_profiles","enable_group_social_context","enable_group_repeat_follow","enable_atrelay_tools","enable_cross_user_memory_bridge"]},{"title":"环境感知","note":"时间、节假日、农历节气、平台和消息媒介。","keys":["enable_environment_perception","enable_holiday_perception","enable_platform_perception","enable_model_perception","enable_worldview_perception","enable_lunar_perception","enable_solar_term_perception","enable_almanac_perception","enable_yesterday_screen_diary_context"]},{"title":"外部记忆联动","note":"统一管理已适配的外部长期记忆插件；“我会牢牢记住你”/MemoryCompanion 与 LivingMemory 是当前支持项，不代表只绑定其中一种。","keys":["enable_livingmemory_integration"]},{"title":"长线主动","note":"外部动作和低频分享。","keys":["enable_bilibili_integration","enable_bilibili_boredom_watch","enable_news_integration","enable_news_daily_hot_read","enable_ai_daily_watch","enable_news_boredom_read","enable_external_event_self_link","enable_body_monitor_integration","enable_web_exploration","enable_web_exploration_boredom_search","enable_qzone_integration","enable_qzone_life_publish","enable_qzone_comment_inbox","enable_photo_text_action","enable_reading_archive_integration","enable_reading_archive_boredom_read","enable_reading_archive_ask_recommendation","enable_reading_archive_preference_influence","enable_reply_interception_forward","enable_creative_writing","creative_hidden_mode"]},{"title":"主动动作","note":"识屏、戳一戳和语音等实际对外动作；各动作独立控制额度与冷却。","keys":["enable_screen_glance_action","enable_poke_action","enable_voice_action"]}];
-const ALL_FEATURE_META={"enable_proactive_only_mode":["仅保留主动能力","只让本插件负责主动私聊调度、生成和发送；普通私聊/群聊放行给默认主链或其他插件。"],"enable_multi_persona_mode":["多人格支持模式","按人格隔离资料、日程、状态、日记、用户、群聊和 Token；会话人格由 AstrBot 路由决定。"],"enable_custom_relationship_stage_policy":["启用好感度系统","关闭后不记账、不更新关系或当前互动、不注入关系表达；用户档案和画像仍会更新，已有关系数据会保留。"],"enable_group_relationship_affinity":["测试群贡献好感度","默认关闭；只允许白名单测试群中明确 @/引用 Bot 且回复成功的正式用户事件按低权重结算。"],"enable_relationship_content_tiers":["关系内容尺度","把日常和非露骨暧昧纳入统一表达决策；关系阶段只是必要条件，不会自动升级尺度。"],"enable_auto_user_profile_creation":["用户档案","首次收到符合范围的真实消息时自动建立统一用户档案；不会自动授予私聊陪伴或主动联系权限。"],"enable_mai_style_integration":["私聊互动策略","把相处分寸、偏好和本轮接话方式注入回复。"],"enable_llm_proactive_persona_judge":["主动人格判定","主动计划到点后，判断这个念头是否符合角色、世界观、关系和当前打扰边界，再决定放行、改写、延后或取消。"],"enable_companion_memory":["本地陪伴画像","在插件内整理当前私聊的偏好、边界和关系线索；跨会话长期记忆依赖外部记忆插件。"],"enable_expression_learning":["表达方式学习","从选定私聊或群聊提取抽象表达特征，并按范围用于私聊被动、私聊主动和群聊回复。"],"enable_expression_manual_review":["观察素材审核","原始观察素材先进入待整理区；模型归纳的表达规则始终必须审核后使用。"],"enable_expression_style_review":["表达发送前审核","发送前检查表达学习过头、异常断句、照抄样本等问题。"],"enable_intent_emotion_analysis":["本地意图/情绪快判","用带置信度的本地规则识别求助、低落、玩笑、亲近和边界。"],"enable_passive_response_review":["被动回复复核","复核用户消息触发的回复；用于私聊普通回复，也用于群聊答疑唤醒保护，不影响主动消息终审。"],"enable_framework_error_leak_guard":["框架异常文本外发拦截","清理待发正文里的插件内部标签、AstrBot 核心标签和成对推理块；Markdown 代码示例保留。"],"enable_proactive_message_review":["主动私聊发送前终审","仅作用于主动私聊，独立按人格、上下文和真实来源判断原样发送、改写或取消。"],"enable_smart_silence":["智能沉默","私聊和群聊发送前判断是否应该收住话题；可只看明确边界，也可交给小模型结合上下文判断。"],"enable_passive_topic_suppression":["话题抑制","避免短时间反复主动提同一个话题。"],"enable_relationship_analysis":["模型关系站位分析","生成可选兼容画像诊断；不决定长期阶段、好感分或最终表达。"],"enable_relationship_state_machine":["关系距离感","把边界和回应情况归一为互动状态，再交给统一表达决策。"],"enable_emotion_simulation":["情绪模拟","维护短期情绪余波，归一后作为统一表达决策的输入。"],"enable_dialogue_episode_memory":["私聊片段","把连续对话整理成共同经历和可续话头。"],"enable_open_loop_tracking":["未完话头","记住对话里还留着、之后可能会回头接的事。"],"enable_user_habit_learning":["用户习惯画像","学习用户常在什么时段做什么、问什么；被动只在相关时理解，主动可到点关心。"],"enable_food_menu_recommendation":["吃什么候选","管理常吃菜、菜馆和外卖；用户纠结吃什么时，只取少量贴合项作为回复参考。"],"enable_humanized_states":["拟人生活状态","统一管理生活日程、日程细化、日记，以及精力、睡眠、梦境、健康、饥饿和周期等扮演状态。"],"enable_outbound_secret_redaction":["发送前敏感凭据脱敏","发送前自动隐藏回复中的 API Key、Token、Bearer、密码等敏感凭据。关闭后不再修改最终发送文本，请仅在确认误判时使用。"],"enable_daily_plan":["每日拟人化日程","每天按设定时间生成 Bot 从起床到入睡前的生活节奏。"],"enable_detail_enhancement":["日程细化","临近当前日程段时补充小事件、状态变化和可能的主动契机。"],"enable_daily_diary":["每日 Bot 日记","每天写一条短日记，作为次日状态延续和自然分享素材。"],"enable_health_state":["健康/不适状态","开启后视为可用，允许当前扮演状态出现生病、不舒服或恢复尾声。"],"enable_hunger_state":["饥饿/胃口状态","开启后视为可用，允许当前扮演状态出现饿、胃口不好或想吃东西。"],"enable_qq_presence_sync":["同步 QQ 在线状态","让日程细化把在线/忙碌等基础状态同步到 QQ；不包含自定义短状态。"],"enable_qq_custom_presence_sync":["同步 QQ 自定义短状态","默认关闭；仅协议端明确支持时再开启，用于“专注中/休息中”等短状态。"],"enable_segmented_proactive_reply":["分段发送","分段模块总开关；可分别启用 LLM 自主边界和插件规则补充分段，并统一安排语音、图片、@、表情与附件所在的消息链。"],"inject_passive_states":["被动状态注入","普通聊天前注入“当前扮演状态”，只影响语气、长短和节奏。"],"enable_passive_state_delta_injection":["被动状态增量注入","同一会话只在状态首次出现、明显变化或用户询问近况时注入短状态摘要，减少重复动态提示词。"],"enable_passive_state_continuity_anchor":["被动状态连续性锚点","默认关闭；仅在私聊被动增量注入的状态未变化轮次，注入不超过 300 字的 Bot 当下连续性提示。"],"enable_cycle_state":["生理期模拟","开启后允许周期状态轻度影响 Bot 的精力、语气和节奏；可选启用连续六阶段模拟。"],"enable_skill_growth_simulation":["技能成长","能力状态与边界；自定义技能请到学习页的技能成长区域管理。"],"enable_personal_goals":["个人目标","明确创建非创作型长期目标，并按真实完成的日程推进。"],"enable_message_debounce":["消息收口防抖","把文本、图片、转发后的补充说明合并进同一轮；旧版语义收口等待已并入文本补话等待。"],"enable_smart_message_debounce":["智能文本收口","先本地快判明确完整文本；“知道吗/问你个事/你猜”等短引子会先等补话。"],"enable_recall_enhancement":["撤回增强","感知撤回事件，支持发送前取消回复、短期防撤回转述和违禁词自动撤回。"],"enable_recall_cancel_reply":["撤回取消回复","撤回增强的子能力：触发/唤醒消息在 Bot 发出回复前被撤回时，静默取消本次回复和后续分段。"],"enable_recall_message_cache":["撤回消息缓存","撤回增强的子能力：短期缓存消息摘要，撤回后可在过期前转述。"],"enable_recall_transcribe_command":["撤回转述命令","允许通过命令查看当前会话最近撤回消息。"],"enable_forbidden_word_recall":["违禁词自动撤回","命中配置词表时，拦截 Bot 待发送内容或尝试撤回群聊/自身消息。"],"enable_private_image_self_recognition":["图片转述增强","处理私聊单图、引用图片、合并转发图片和 GIF 抽帧，并辅助判断角色归属。"],"enable_environment_perception":["环境感知","注入当前时间、日期语境、平台、群聊/私聊和消息媒介信息。"],"enable_weather_context":["天气上下文","读取当前天气作为日程、日记和主动契机的生活背景。"],"enable_environment_change_proactive":["环境突变主动消息","天气出现降雨、雷暴、降雪、雾、大风或明显温差时生成短时主动候选。"],"enable_balance_awareness":["余额感知","定期读取可支配余额；余额偏低时生成贴合人设、低压力的主动念头。"],"enable_holiday_perception":["节假日感知","识别工作日、周末、节假日和调休，影响生活节奏判断。"],"enable_platform_perception":["平台感知","识别 QQ/平台、私聊/群聊、群号群名以及图片语音视频消息。"],"enable_model_perception":["模型感知","识别当前会话 LLM、视觉转述、生图和 TTS 合成/文本转换能力。"],"enable_worldview_perception":["世界观适配感知","把插件能力和生活语境转换成当前人设世界观说法，默认关闭，避免和 AstrBot 人设重复。"],"enable_lunar_perception":["农历感知","可用时注入农历日期，辅助节日、生活氛围和日记语境。"],"enable_solar_term_perception":["节气感知","注入当天或临近节气，让日程和表达更贴合时令。"],"enable_almanac_perception":["轻量黄历","生成宜/忌氛围标签，默认关闭，避免玄学感太强。"],"enable_yesterday_screen_diary_context":["昨日屏幕日记","每天只读取 screen_companion 的昨日观察日记脱敏摘要，作为今日状态和日程背景，不读取实时屏幕。"],"enable_group_companion":["群聊启用范围","总开关、白名单/黑名单范围；某个群没反应时先看这里。"],"enable_group_member_safety":["群成员风控","模型保守识别明确指向 Bot 或群成员的持续骚扰、性骚扰、威胁和重复攻击；达到次数后停止响应该成员。"],"group_access_mode":"群聊启用模式","group_whitelist_ids":"群聊白名单","group_blacklist_ids":"群聊黑名单","enable_group_slang_learning":["群黑话学习","记录群内常用梗、简称和特殊表达。"],"enable_group_member_profiles":["群聊观察学习","学习群成员、关系网身份、黑话、话题线和群片段。"],"enable_group_context_injection":["群聊回复理解","回复时参考近期群聊、场景对象和合并消息转述。"],"enable_group_image_understanding":["群聊图片理解","控制是否识别新的群聊图片；关闭后不调用视觉模型，但缓存命中的图片语义仍会用于回复和群聊上下文。"],"enable_group_image_wakeup":["图片命中唤醒 Bot","仅在群聊图片理解和群聊唤醒强化同时开启时生效；图片视觉摘要命中 Bot 名称、强唤醒词或主要用户专属强唤醒词后，才把当前图片消息接入群聊回复链。"],"enable_group_injection_guard":["群聊安全保护","防注入、隐私隔离、公共群聊语气降噪和现实承诺保护。"],"enable_group_persona_denoise":["群聊人格降噪","降低群聊里的私聊腔、状态汇报和私聊关系外溢。"],"enable_forward_message_adaptation":["合并消息阅读","读取合并转发节点并整理成自然聊天记录，让 Bot 能理解转发里的发言顺序、人物和话题。"],"enable_group_scene_awareness":["群聊场景感知","推断当前消息是在对 Bot、某个群友还是整个群说话，减少误以为别人都在问自己。"],"enable_group_reality_promise_guard":["阻止群聊现实承诺","群聊里避免承诺自己能拉人、修网、开房间或操作现实设备；私聊扮演不受影响。"],"enable_group_wakeup_enhancement":["群聊主动唤醒","包含唤醒与插话：被叫到、兴趣/问题/冷群接话，以及低频主动插话。"],"enable_group_high_intensity_mode":["高压消息合并","多人或多条消息连续叫 Bot 时，先收口合并再回复。"],"enable_group_conversation_followup":["连续对话保持","用户叫过 Bot 后，没继续 @ 时判断是否仍在续话。"],"enable_group_air_reply_guard":["群聊读空气","互刷、晚安/谢谢/拜拜等收尾循环、话题结束时自动沉默。"],"enable_group_interjection":["群主动插话","允许 Bot 在群聊里主动插一句。谨慎开启。"],"enable_group_repeat_follow":["复读处理","同一句话连续复读达到阈值时，可跟读一次或打断一次。"],"enable_group_topic_threads":["群话题线","维护当前群聊正在聊什么，以及话题如何变化。"],"enable_group_episode_memory":["群聊片段","把群聊阶段性内容整理成摘要片段。"],"enable_group_interjection_feedback":["插话反馈","记录群友对主动插话的反应，后续调整频率。"],"enable_group_slang_meanings":["黑话释义","解释群内黑话。"],"enable_group_slang_web_search":["黑话联网参考","为已有黑话候选搜索外部解释，并判断是否匹配本群用法。默认关闭。"],"enable_group_relationship_graph":["群友互动图","记录成员之间近期谁常互相接话、玩梗或争论。"],"enable_group_privacy_guard":["群隐私保护","保护私聊信息。"],"enable_group_third_party_portrait_guard":["群聊第三方画像保护","拦截明确针对其他群成员的画像查询。"],"enable_worldbook_member_recognition":["群聊关系网","以 QQ 号确认稳定身份，关系备注和重要记忆都放在这里。"],"enable_cross_user_memory_bridge":["跨用户记忆","主要用户可查询 Bot 与其他用户/群聊的近期互动摘要；只读，不发送消息。"],"enable_atrelay_tools":["跨群转述","查询群成员、按关系网解析 @ 对象，并转述到群聊或私聊。"],"enable_livingmemory_integration":["外部记忆插件协同","统一接入已适配的外部长期记忆插件；当前支持“我会牢牢记住你”/MemoryCompanion 与 LivingMemory。"],"enable_bilibili_integration":["B站 AI Bot 联动","读取 B站 AI Bot 观看日志，并在合适节点私聊分享。"],"enable_bilibili_boredom_watch":["无聊刷 B 站","空档看视频。"],"enable_news_integration":["新闻阅读","低频读取 RSS/Atom 新闻源，形成近期见闻和主动分享素材。"],"enable_news_daily_hot_read":["每日热点","随日程或后台检查读取热点候选，形成当天的时讯见闻。"],"enable_news_boredom_read":["无聊看新闻","空档或无聊时扫几条新闻，按人格决定是否私聊提起。"],"enable_ai_daily_watch":["AI 日报/早报追踪","按配置时间读取黑鸦早报和橘鸦日报，到点后当天只尝试一次。"],"enable_external_event_self_link":["外界信息自我关联","让新闻和搜索结果先变成“这和我有什么关系”的内部意愿，再进入主动候选。"],"enable_body_monitor_integration":["健康事件联动","读取 Body Monitor 提供的健康事件，并在合适时生成低压力的主动关心。"],"enable_web_exploration":["主动搜索","按人格兴趣、最近话题、日程和心情低频使用 AstrBot 网页搜索，形成探索笔记。"],"enable_web_exploration_boredom_search":["空档自主搜索","空闲或无聊时先自行决定搜索主题，再调用网页搜索了解新鲜事物。"],"enable_qzone_integration":["QQ 空间动态","整合查看、点赞、评论和发布说说入口。"],"enable_qzone_life_publish":["生活说说","根据状态、日程和日记余味低频发布公开生活动态。"],"enable_qzone_generated_image_publish":["说说配图","发布生活说说时可按概率调用主动生图能力生成配图。"],"enable_qzone_comment_inbox":["评论收件箱","低频查看自己说说下的新评论，并按需公开追加回复。"],"enable_photo_text_action":["主动拍照/生图","允许 Bot 在合适的主动动机下生成真实图片；生图 API 地址、Key、模型和队列请到“模型配置 → 生图模型”配置。"],"enable_screen_glance_action":["主动识屏","允许 Bot 在合适动机下低频看一眼屏幕，并统一管理沉默后的额外识屏。"],"enable_poke_action":["主动戳一戳","允许 Bot 在想轻轻刷存在感或逗一下用户时主动戳一戳。"],"enable_reactive_poke":["被动戳一戳","允许 Bot 在被用户戳时以文字或 LLM 回复，并可能反戳回去。"],"enable_voice_action":["主动语音","允许 Bot 在合适的主动场景里留一小句语音；需要当前会话有可用 TTS provider。"],"enable_photo_reference_image":["参考图一致性","可选。自拍、人像、头像和角色表情包自动使用人设参考图或今日穿搭图保持外观；关闭后只按提示词生成。"],"enable_creative_cover_generation":["创作封面","可选。作品写出正文后调用当前文生图后端生成封面，并按作品类型、基调和内容自动匹配画风。"],"enable_group_nsfw_private_fallback":["群聊成图安全审核","群聊成图先经视觉审核；安全图发群，其余结果仅私聊原请求者。"],"enable_reading_archive_integration":["资料归档素材","检测到可用素材能力时，允许作为低频资料归档来源。"],"enable_reading_archive_boredom_read":["资料归档","空档、无聊或夜里低频自己搜索并阅读，形成内部印象。"],"enable_reading_archive_ask_recommendation":["征求推荐","空档或无聊时，低频私聊询问用户有没有合适的资料归档推荐。"],"enable_reading_archive_preference_influence":["资料偏好影响","评分样本足够后，把稳定偏好作为私聊资料互动的弱背景。"],"enable_unanswered_screen_peek_followup":["沉默后窥屏","主动消息后用户长时间没回、且 Bot 正好无聊时，可免日次数窥屏确认用户在做什么。"],"enable_goodnight_screen_check":["晚安识屏提醒","互道晚安后等待一次识屏判断；仅在明确仍活跃时轻声提醒休息。"],"enable_tts_enhancement":["TTS强化","支持中文聊天文本搭配外语语音块，统一处理生成路径、<tts> 标签规范化、语种控制与朗读文本清洗；生效范围可配置为普通回复，或普通回复加全部主动消息。"],"enable_proactive_quote_trigger_message":["引用触发消息","群聊回复、群主动插话和可追溯的私聊主动消息会引用触发消息；普通群回复可只在首次或对象变化时引用。"],"enable_reply_interception_forward":["回复拦截转发","把插件阻断、回复改写和主动消息拦截情况发送到指定私聊或群聊。"],"enable_creative_writing":["独立创作联动","安装 astrbot_plugin_content_companion 后由独立扩展负责创作项目、续写、审校、创作记忆和作品封面；未安装时才使用本体兼容回退。"],"enable_creative_work_read_guard":["创作原文读取保护","询问资料柜已有作品时先读取真实原文；关闭后不再强制调用工具或替换模型回复。"],"creative_hidden_mode":["低调创作模式","默认不汇报创作，只在节点或用户询问时自然提起。"],"enable_reaction_expression_experiment":["表情表达实验","主模型一次生成完整文字和隐藏表情意图，插件再按配置的位置发送合适图片；没有足够合适的候选时保持纯文字。"],"enable_maslow_motivation_experiment":["需求强化功能","实验性功能第一项：把主动念头按状态、安全、归属、尊重、成长和意义等内部需求层轻量分类，强化候选排序与可选日程倾向。"],"enable_experimental_motivation_model":["动机调度模型","实验性功能第二项：结合驱力、诱因和唤醒状态，对主动计划做轻量调权，并在主动排障中显示判断依据。"],"enable_personality_iteration_experiment":["角色贴合校准","实验性功能第三项：基于艾森克 PEN、大五人格、依恋风格和自我决定理论，帮用户判断行为是否贴近角色，并提示该怎么调整。"],"enable_daily_case_review_experiment":["每日逐案复盘","实验性功能：为普通回复、未回复、主动消息、TTS 和成员风控建立短期匿名案例，供每日巡视逐案判断。"],"enable_experimental_bluetooth_wakeup":["现实触及","把电脑音频与摄像头单帧观察接入 Bot 主动能力；两类设备分别授权，起床提醒只是其中一个计划场景。"]};
+function allFeatureKey(sectionName,field){
+  return `${sectionName}.${field}`;
+}
+function allFeatureIsInstallation(sectionName,section,field){
+  const layer=section?.fields?.[field]?.write_layer||section?.scope||'';
+  return layer==='installation'||ALL_FEATURE_INSTALLATION_SECTIONS.has(sectionName);
+}
+function allFeatureRows(section,sectionName=''){
+  const name=sectionName||section?.section||section?.group_id||'';
+  const fields=section?.fields||{},settings=section?.settings||{};
+  const specOrder=window.CompanionConfigEditors?.spec?.[name]?.order||[];
+  const boolFields=Object.entries(fields)
+    .filter(([field,meta])=>meta?.kind==='boolean'&&field in settings)
+    .map(([field])=>field);
+  const ordered=[];
+  const seen=new Set();
+  for(const field of specOrder){
+    if(boolFields.includes(field)&&!seen.has(field)){ordered.push(field);seen.add(field);}
+  }
+  for(const field of boolFields.sort()){
+    if(!seen.has(field)){ordered.push(field);seen.add(field);}
+  }
+  const endpoint=allFeaturesState.endpoints?.[name]||'';
+  return ordered.map(field=>{
+    const spec=allFeatureFieldSpec(name,field);
+    const isInstallation=allFeatureIsInstallation(name,section,field);
+    return {
+      key:allFeatureKey(name,field),
+      name,
+      field,
+      label:spec.label,
+      help:spec.help,
+      groupTitle:spec.groupTitle,
+      endpoint,
+      isInstallation,
+      scopeLabel:isInstallation?'所有角色共用':'当前角色/窗口',
+    };
+  });
+}
 function allFeatureIndex(){
   const index={};
-  for(const [name,section] of Object.entries(allFeaturesState.sections||{}))
-    for(const [field,meta] of Object.entries(section.fields||{}))
-      if(meta?.kind==='boolean'&&field in (section.settings||{}))index[field]={name,section};
+  for(const [name,section] of Object.entries(allFeaturesState.sections||{})){
+    for(const row of allFeatureRows(section,name))index[row.key]=row;
+  }
   return index;
 }
 function allFeatureBoardGroups(){
-  const index=allFeatureIndex(),used=new Set(),groups=[];
-  for(const group of ALL_FEATURE_GROUPS){
-    const rows=[];
-    for(const key of group.keys){
-      const hit=index[key];
-      if(!hit||used.has(key))continue;
-      used.add(key);
-      const spec=ALL_FEATURE_META[key]||[];
-      const fallback=allFeatureFieldSpec(hit.section?.group_id||'',key);
-      rows.push({field:key,name:hit.name,label:spec[0]||fallback.label,help:spec[1]||fallback.help});
+  const sections=allFeaturesState.sections||{};
+  const buckets=new Map(allFeatureDomainOrder.map(domain=>[domain,[]]));
+  const consumed=new Set();
+  for(const domain of allFeatureDomainOrder){
+    const preferred=allFeatureDomainSections[domain]||[];
+    for(const name of preferred){
+      if(!Object.hasOwn(sections,name))continue;
+      consumed.add(name);
+      buckets.get(domain).push(...allFeatureRows(sections[name],name));
     }
-    if(rows.length)groups.push({domain:group.title,note:group.note||'',rows});
   }
-  const relayRows=allFeatureRows(allFeaturesState.sections?.relay).map(row=>({...row,name:'relay'}));
-  for(const row of relayRows)if(index[row.field]?.name==='relay')used.add(row.field);
-  groups.unshift({domain:'跨窗口与跨群递话',note:'',rows:[...relayRows,{
-    field:'relay-settings',name:'relay',label:'递话目标与规则',
-    help:'私聊目标、群聊白名单、确认、字数与成员权限',link:true,
-  }]});
-  const extras=Object.keys(index).filter(key=>!used.has(key)).sort();
-  if(extras.length)groups.push({domain:'其他功能',note:'来自配置但暂未归入固定分组的开关。',
-    rows:extras.map(field=>{
-      const spec=ALL_FEATURE_META[field]||[],fallback=allFeatureFieldSpec(index[field].section?.group_id||'',field);
-      return {field,name:index[field].name,label:spec[0]||fallback.label,help:spec[1]||fallback.help};
-    })});
-  return groups;
-}
-function allFeatureRows(section){
-  const rows=[],fields=section?.fields||{},settings=section?.settings||{};
-  for(const [field,meta] of Object.entries(fields)){
-    if(meta?.kind!=='boolean'||!(field in settings))continue;
-    const spec=allFeatureFieldSpec(section?.group_id||'',field);
-    rows.push({field,label:spec.label,help:spec.help});
+  for(const name of Object.keys(sections).sort()){
+    if(consumed.has(name))continue;
+    const domain=allFeatureDomainOf[name]||'其他功能';
+    const target=buckets.get(domain)||buckets.get('其他功能');
+    target.push(...allFeatureRows(sections[name],name));
   }
-  return rows;
+  if(Object.hasOwn(sections,'relay')){
+    buckets.get('跨窗口与跨群递话').push({
+      key:'relay.relay-settings',
+      field:'relay-settings',
+      name:'relay',
+      label:'递话目标与规则',
+      help:'私聊目标、群聊白名单、确认、字数与成员权限',
+      scopeLabel:'当前角色/窗口',
+      link:true,
+    });
+  }
+  return allFeatureDomainOrder
+    .map(domain=>({domain,note:allFeatureDomainNotes[domain]||'',rows:buckets.get(domain)||[]}))
+    .filter(group=>group.rows.length>0);
 }
 function allFeatureDirty(group,field,value){
   const section=allFeaturesState.sections?.[group];
@@ -4586,8 +4651,15 @@ function allFeatureDirtyCount(){
   return count;
 }
 function allFeatureErrorText(error){
-  const code=error?.code||error?.message||'';
-  return window.CompanionProduct?.errorLabel?.(code)||String(error?.message||error||'读取配置失败');
+  const code=typeof error?.code==='string'?error.code:'';
+  const message=typeof error?.message==='string'?error.message:'';
+  const wbErrors=window.CompanionWorkbench?.errors||{};
+  if(code&&wbErrors[code])return wbErrors[code];
+  if(message&&wbErrors[message])return wbErrors[message];
+  if(message&&!/^[a-z][a-z0-9_]{2,60}$/.test(message))return message;
+  if(code&&window.CompanionProduct?.errorLabel)return window.CompanionProduct.errorLabel(code);
+  if(message&&window.CompanionProduct?.errorLabel)return window.CompanionProduct.errorLabel(message);
+  return '读取配置失败，请稍后重试。';
 }
 function updateAllFeatureSaveState(){
   const button=document.querySelector('[data-all-feature-save]');
@@ -4597,17 +4669,41 @@ function updateAllFeatureSaveState(){
   button.textContent=allFeaturesState.saving?'正在保存…':count?`保存更改（${count}）`:'保存更改';
 }
 async function loadAllFeatures(){
-  if(allFeaturesState.loading)return;
   const roleKey=window.CompanionProduct?.scopeKey?.()||'';
+  if(allFeaturesState.loading&&allFeaturesState.roleKey===roleKey)return;
+  const ticket=(allFeaturesState.ticket=(allFeaturesState.ticket||0)+1);
   const endpoint=pluginRelativePath(window.CompanionProduct?.role?.()?.config_api);
   allFeaturesState.loading=true;allFeaturesState.attempted=true;allFeaturesState.error='';allFeaturesState.loaded=false;
-  if(allFeaturesState.roleKey!==roleKey){allFeaturesState.roleKey=roleKey;allFeaturesState.sections={};allFeaturesState.draft={};}
+  if(allFeaturesState.roleKey!==roleKey){
+    allFeaturesState.roleKey=roleKey;
+    allFeaturesState.sections={};
+    allFeaturesState.endpoints={};
+    allFeaturesState.draft={};
+  }
   if(manageTab==='all')paintPanel();
   try{
     if(!endpoint)throw new Error('当前角色没有配置入口');
-    const payload=await window.CompanionProduct.request('GET',endpoint);
-    const sections=payload?.sections||{};
+    const requests=[window.CompanionProduct.request('GET',endpoint).then(payload=>({endpoint,payload}))];
+    if(endpoint!=='config'){
+      requests.push(
+        window.CompanionProduct.request('GET','config')
+          .then(payload=>({endpoint:'config',payload}))
+          .catch(()=>null)
+      );
+    }
+    const results=await Promise.all(requests);
+    if(ticket!==allFeaturesState.ticket)return;
+    const sections={},endpoints={};
+    for(const result of results){
+      if(!result?.payload?.sections||typeof result.payload.sections!=='object')continue;
+      for(const [name,section] of Object.entries(result.payload.sections)){
+        if(Object.hasOwn(sections,name))continue;
+        sections[name]=section;
+        endpoints[name]=result.endpoint;
+      }
+    }
     allFeaturesState.sections=sections;
+    allFeaturesState.endpoints=endpoints;
     allFeaturesState.draft={};
     for(const [name,section] of Object.entries(sections)){
       allFeaturesState.draft[name]={};
@@ -4616,19 +4712,26 @@ async function loadAllFeatures(){
           allFeaturesState.draft[name][field]=Boolean(section.settings[field]);
     }
     allFeaturesState.loaded=true;
-  }catch(error){allFeaturesState.error=allFeatureErrorText(error);}
-  finally{allFeaturesState.loading=false;if(manageTab==='all')paintPanel();}
+  }catch(error){
+    if(ticket===allFeaturesState.ticket)allFeaturesState.error=allFeatureErrorText(error);
+  }
+  finally{
+    if(ticket===allFeaturesState.ticket){
+      allFeaturesState.loading=false;
+      if(manageTab==='all')paintPanel();
+    }
+  }
 }
 async function saveAllFeatures(){
   if(allFeaturesState.saving)return;
-  const endpoint=pluginRelativePath(window.CompanionProduct?.role?.()?.config_api);
-  if(!endpoint)return;
+  const fallbackEndpoint=pluginRelativePath(window.CompanionProduct?.role?.()?.config_api);
   const pending=[];
   for(const [group,fields] of Object.entries(allFeaturesState.draft||{})){
     const changes={};
     for(const [field,value] of Object.entries(fields))
       if(allFeatureDirty(group,field,value))changes[field]=Boolean(value);
-    if(Object.keys(changes).length)pending.push({group,changes});
+    const targetEndpoint=allFeaturesState.endpoints?.[group]||fallbackEndpoint;
+    if(Object.keys(changes).length&&targetEndpoint)pending.push({group,changes,endpoint:targetEndpoint});
   }
   if(!pending.length)return;
   allFeaturesState.saving=true;allFeaturesState.notice='';allFeaturesState.error='';
@@ -4637,19 +4740,29 @@ async function saveAllFeatures(){
     for(const item of pending){
       const section=allFeaturesState.sections[item.group];
       const key=(globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`).replace(/-/g,'');
-      await window.CompanionProduct.request('POST',endpoint+'/configure',{
+      const saved=await window.CompanionProduct.request('POST',item.endpoint+'/configure',{
         section:item.group,operation_key:key,edit_token:section.edit_token,changes:item.changes});
+      if(section?.settings)Object.assign(section.settings,item.changes);
+      const nextToken=saved?.result?.edit_token||saved?.edit_token||'';
+      if(section&&nextToken)section.edit_token=nextToken;
     }
     allFeaturesState.notice='已保存';
     await loadAllFeatures();
-  }catch(error){allFeaturesState.error=allFeatureErrorText(error);}
+  }catch(error){
+    allFeaturesState.error=allFeatureErrorText(error);
+    if(manageTab==='all')paintPanel();
+  }
   finally{allFeaturesState.saving=false;updateAllFeatureSaveState();}
 }
 function renderAllFeatureBoard(){
+  const currentRoleKey=window.CompanionProduct?.scopeKey?.()||'';
+  if(allFeaturesState.loaded&&allFeaturesState.roleKey&&currentRoleKey&&allFeaturesState.roleKey!==currentRoleKey){
+    allFeaturesState.loaded=false;allFeaturesState.attempted=false;
+  }
   if(!allFeaturesState.loaded&&!allFeaturesState.loading&&!allFeaturesState.attempted)setTimeout(loadAllFeatures,0);
   const dirtyCount=allFeatureDirtyCount();
   const head=`<header class="all-functions-head"><div><p class="eyebrow">配置与功能</p><h1>全部功能</h1>
-    <p>按功能领域整理当前角色的功能开关；行内修改，页面内保存；复杂配置进入对应详情页。</p></div>
+    <p>按功能领域整理配置总线的全部功能开关（含当前角色/窗口与安装全局共用开关）；行内修改，页面内保存；复杂配置点击条目进入详情编辑，表达/状态/记忆等专用开关请在对应专题页调整。</p></div>
     <div class="all-functions-actions">${button('回到小屋','data-shell-home','small')}
       ${button('重新读取','data-all-feature-reload','small')}
       ${button(dirtyCount?`保存更改（${dirtyCount}）`:'保存更改',`data-all-feature-save ${dirtyCount?'':'disabled'}`,'small primary')}</div></header>`;
@@ -4658,20 +4771,21 @@ function renderAllFeatureBoard(){
   if(allFeaturesState.error)
     return `<div class="all-functions-page">${head}<div class="all-functions-error" role="alert">${escapeHTML(allFeaturesState.error)}<button type="button" class="button small" data-all-feature-reload>重新读取</button></div></div>`;
   const board=allFeatureBoardGroups();
-  const domain=allFeaturesState.domain||'all';
+  const domainNames=[...new Set(board.map(group=>group.domain))];
+  const domain=allFeaturesState.domain&&domainNames.includes(allFeaturesState.domain)?allFeaturesState.domain:'all';
   const status=allFeaturesState.status||'all';
   const allRows=board.flatMap(group=>group.rows.map(row=>({...row,domain:group.domain})));
+  const switchRows=allRows.filter(row=>!row.link);
   const isOn=row=>Boolean(allFeaturesState.draft?.[row.name]?.[row.field]);
-  const statusHit=row=>status==='all'||(status==='enabled'?isOn(row):!isOn(row));
+  const statusHit=row=>status==='all'||(!row.link&&(status==='enabled'?isOn(row):!isOn(row)));
   const domainHit=row=>domain==='all'||row.domain===domain;
   const visibleRows=allRows.filter(row=>domainHit(row)&&statusHit(row));
-  const enabledCount=allRows.filter(isOn).length;
-  const domainNames=[...new Set(board.map(group=>group.domain))];
+  const enabledCount=switchRows.filter(isOn).length;
   const domainCounts=Object.fromEntries(domainNames.map(name=>[name,allRows.filter(row=>row.domain===name).length]));
-  const statusCounts={all:allRows.length,enabled:allRows.filter(isOn).length,disabled:allRows.filter(row=>!isOn(row)).length};
+  const statusCounts={all:allRows.length,enabled:switchRows.filter(isOn).length,disabled:switchRows.filter(row=>!isOn(row)).length};
   const summary=`<div class="all-functions-summary">
-    <section class="all-functions-summary-card is-on"><span>已开启</span><b>${enabledCount} / ${allRows.length}</b><small>当前功能开关</small></section>
-    <section class="all-functions-summary-card"><span>未保存</span><b>${dirtyCount}</b><small>${dirtyCount?'保存后写入当前角色':'与已保存一致'}</small></section>
+    <section class="all-functions-summary-card is-on"><span>已开启</span><b>${enabledCount} / ${switchRows.length}</b><small>当前功能开关</small></section>
+    <section class="all-functions-summary-card"><span>未保存</span><b>${dirtyCount}</b><small>${dirtyCount?'保存后按作用域写入':'与已保存一致'}</small></section>
     <section class="all-functions-summary-card"><span>功能领域</span><b>${domainNames.length}</b><small>按使用场景分组</small></section></div>`;
   const domainChips=[['all','全部领域',allRows.length],...domainNames.map(name=>[name,name,domainCounts[name]])]
     .map(([id,label,count])=>`<button type="button" class="all-functions-chip${domain===id?' is-active':''}" data-all-feature-domain="${escapeHTML(id)}" aria-pressed="${domain===id}"><span>${escapeHTML(label)}</span><small>${count}</small></button>`).join('');
@@ -4683,19 +4797,19 @@ function renderAllFeatureBoard(){
   const sections=visibleBoard.map(({domain,note,rows:groupRows,index})=>{
     const id='all-feature-'+index;
     const rows=groupRows.map(row=>{
-      const search=normalizeSearchText([row.label,row.help,row.field,domain,row.name].join(' '));
+      const search=normalizeSearchText([row.label,row.help,row.field,row.key,row.groupTitle,row.scopeLabel,domain,row.name].join(' '));
       if(row.link)return `<button type="button" class="all-feature-row all-feature-link" data-all-feature-search="${escapeHTML(search)}"
         data-go="manage" data-manage="identity-access" data-page-anchor="identity-relay">
         <span class="all-feature-link-icon">${I('arrow-up-right')}</span>
-        <span class="all-feature-copy"><strong>${escapeHTML(row.label)}</strong><small>${escapeHTML(row.help)}</small>
-          <span class="all-feature-meta"><span class="all-feature-state">设置</span><span class="all-feature-scope">${escapeHTML(domain)}</span></span></span></button>`;
+        <span class="all-feature-copy"><strong>${escapeHTML(row.label)}</strong>${row.help?`<small>${escapeHTML(row.help)}</small>`:''}
+          <span class="all-feature-meta"><span class="all-feature-state">设置</span><span class="all-feature-scope">${escapeHTML(row.scopeLabel||domain)}</span></span></span></button>`;
       const checked=Boolean(allFeaturesState.draft?.[row.name]?.[row.field]);
       const dirty=allFeatureDirty(row.name,row.field,checked);
       return `<div class="all-feature-row${checked?' is-on':' is-off'}${dirty?' is-dirty':''}" data-all-feature-search="${escapeHTML(search)}">
         <label class="all-feature-toggle" aria-label="${escapeHTML(row.label)}"><input type="checkbox" data-all-feature-toggle data-all-feature-group="${escapeHTML(row.name)}" data-all-feature-field="${escapeHTML(row.field)}" ${checked?'checked':''}><span class="all-feature-toggle-visual" aria-hidden="true"></span></label>
         <button type="button" class="all-feature-copy" data-all-feature-open="${escapeHTML(row.name)}" data-all-feature-open-field="${escapeHTML(row.field)}">
-          <strong>${escapeHTML(row.label)}</strong><code>${escapeHTML(row.field)}</code><small>${escapeHTML(row.help||row.field)}</small>
-          <span class="all-feature-meta"><span class="all-feature-state">${checked?'已开启':'已关闭'}</span><span class="all-feature-scope">${escapeHTML(domain)}</span><span class="all-feature-open-hint">查看配置 ›</span></span>
+          <strong>${escapeHTML(row.label)}</strong><code>${escapeHTML(row.field)}</code>${row.help?`<small>${escapeHTML(row.help)}</small>`:''}
+          <span class="all-feature-meta"><span class="all-feature-state">${checked?'已开启':'已关闭'}</span><span class="all-feature-scope">${escapeHTML(row.scopeLabel||'当前角色/窗口')}</span><span class="all-feature-open-hint">查看配置 ›</span></span>
         </button></div>`;
     }).join('');
     return `<section class="all-feature-domain" id="${id}">
@@ -4726,15 +4840,27 @@ function openAllFeatureDetail(group, field=''){
   const body=`<p class="all-feature-detail-note">${escapeHTML(spec.note||'修改后会回到「全部功能」页显示；复杂字段在下方完整配置中编辑。')}</p>`
     +configEditors(id,[group],title);
   if(!openDetailDialog(title,body))return;
+  const targetSection=field?(spec.sections||[]).find(item=>Array.isArray(item.fields)&&item.fields.includes(field)):null;
+  const views=targetSection?.id?{[group]:{initialSection:targetSection.id}}:{};
   allFeatureDialogMount?.unmount?.();
-  allFeatureDialogMount=mountConfigEditor(id,[group]);
+  allFeatureDialogMount=mountConfigEditor(id,[group],views);
   if(allFeatureDialogMount)configEditorMounts.push(allFeatureDialogMount);
   if(field){
-    requestAnimationFrame(()=>{
+    if(targetSection?.id)allFeatureDialogMount?.selectSection?.(targetSection.id);
+    const scrollToField=(attempt=0)=>{
       const safe=globalThis.CSS?.escape?.(field)||field.replace(/["\\]/g,'\\$&');
-      const row=document.querySelector(`#${id} [data-config-field="${safe}"], #${id} [name="${safe}"]`);
-      row?.scrollIntoView?.({block:'center',behavior:'smooth'});
-    });
+      const row=document.querySelector(`#${id} [data-wb-field="${safe}"], #${id} [data-wb-row="${safe}"], #${id} [data-config-field="${safe}"], #${id} [name="${safe}"]`);
+      if(row){
+        if(row.closest?.('[hidden]')){
+          if(targetSection?.id)allFeatureDialogMount?.selectSection?.(targetSection.id);
+        }else{
+          row.scrollIntoView?.({block:'center',behavior:'smooth'});
+          return;
+        }
+      }
+      if(attempt<15&&document.querySelector(`#${id}`))setTimeout(()=>scrollToField(attempt+1),80);
+    };
+    requestAnimationFrame(()=>scrollToField());
   }
 }
 
@@ -5224,6 +5350,38 @@ function contentWorkspaceSurface(){
   if(!surface)return `<p>能力目录暂未读到，先到「模型与连接」核对 Content 内置能力。</p><div class="dialog-actions">${open}${button('模型与连接','data-go="manage" data-manage="models"','small')}</div>`;
   return surface+`<section class="extension-live-panel"><h3>作品列表</h3><p>只列出当前角色仍在架的作品标题与类型，不读取正文。</p><div id="contentWorksList">${button('读取作品列表','data-content-works','small')}</div></section><section class="extension-live-panel"><h3>作品库</h3><p>装配后可打开原稿、作品与续写候选；未装配时仍保留已有数据。</p><div class="dialog-actions">${open}</div></section>`;
 }
+function contentWorkTypeLabel(type){
+  const raw=String(type||'').trim();
+  if(!raw)return '未分类作品';
+  const labels={
+    story:'故事',short_story:'短篇故事',novel:'小说',fiction:'小说',
+    essay:'随笔',prose:'散文',article:'文章',note:'札记',notes:'札记',
+    poem:'诗歌',poetry:'诗歌',lyrics:'歌词',
+    script:'剧本',drama:'短剧',dialogue:'对白',storyboard:'分镜',
+    diary:'日记',journal:'日志',letter:'书信',review:'评论',
+    setting:'设定集',worldbook:'世界观设定',lore:'背景设定',character:'角色档案',
+    comic:'漫画',draft:'草稿',other:'其他作品',
+  };
+  return labels[raw.toLowerCase()]||raw;
+}
+function contentWorksErrorText(error){
+  const code=typeof error?.code==='string'?error.code:'';
+  const message=typeof error?.message==='string'?error.message:'';
+  const worksErrors={
+    works_request_invalid:'请先选择有效的私聊角色后再读取作品列表。',
+    works_target_unavailable:'当前所选角色或私聊目标不可用，请重新选择。',
+    works_scope_unavailable:'作品库属于私聊角色，请在私聊角色下查看。',
+    works_unavailable:'作品库当前不可用，请确认 Content 拓展已装配并稍后重试。',
+    content_provider_unavailable:'内置 Content 服务未运行，请稍后重试。',
+    stale_candidate:'候选稿版本已过期，请刷新后核对。',
+    content_append_only:'旧版续写候选仅包含追加片段，暂不支持直接采用。',
+  };
+  const wbErrors=window.CompanionWorkbench?.errors||{};
+  if(code&&(worksErrors[code]||wbErrors[code]))return worksErrors[code]||wbErrors[code];
+  if(message&&(worksErrors[message]||wbErrors[message]))return worksErrors[message]||wbErrors[message];
+  if(message&&!/^[a-z][a-z0-9_]{2,60}$/.test(message))return message;
+  return '作品列表读取失败，请稍后重试。';
+}
 async function loadContentWorks(){
   const host=$('#contentWorksList');
   if(!host)return;
@@ -5235,9 +5393,9 @@ async function loadContentWorks(){
     if(!data||typeof data!=='object')throw Object.assign(new Error('works_unavailable'),{code:'works_unavailable'});
     if(!data.available){host.innerHTML='<p class="muted-text">还没有可读的作品库，或 Content 拓展尚未装配。</p>';return;}
     if(!data.works?.length){host.innerHTML='<p class="muted-text">这个角色还没有在架作品。</p>';return;}
-    host.innerHTML=`<dl class="definition-list">${data.works.map(work=>`<div class="definition-row"><dt>${escapeHTML(work.title)}</dt><dd>${escapeHTML(work.work_type)} · 修订 ${Number(work.revision)||0}</dd></div>`).join('')}</dl>`;
+    host.innerHTML=`<dl class="definition-list">${data.works.map(work=>`<div class="definition-row"><dt>${escapeHTML(work.title)}</dt><dd>${escapeHTML(contentWorkTypeLabel(work.work_type))} · 修订 ${Number(work.revision)||0}</dd></div>`).join('')}</dl>`;
   }catch(error){
-    host.innerHTML=`<p class="muted-text">作品列表读取失败${error?.code?`（${escapeHTML(error.code)}）`:''}。</p>`;
+    host.innerHTML=`<p class="muted-text">${escapeHTML(contentWorksErrorText(error))}</p>`;
   }
 }
 function contentAssembleButton(){
@@ -5339,13 +5497,16 @@ const searchIndex=[
 ];
 const configSearchLocations={
   quota:{next:'manage',tab:'output',root:'#imageControlWorkspace'},image_review:{next:'manage',tab:'output',root:'#imageControlWorkspace'},
+  'image.output':{next:'manage',tab:'output',root:'#imageOutputWorkspace'},
   reaction:{next:'manage',tab:'expression',expressionModule:'expression-reaction',root:'#reactionConfigWorkspace'},
   busy_gate:{next:'manage',tab:'contact',contactView:'gates',root:'#replyGateConfigWorkspace'},budget:{next:'manage',tab:'models',root:'#budgetConfigWorkspace'},
   recall:{next:'manage',tab:'perception',root:'#recallConfigWorkspace'},screen:{next:'manage',tab:'perception',root:'#screenConfigWorkspace'},
+  web_understanding:{next:'manage',tab:'understanding',understandingTab:'web',root:'#webUnderstandingWorkspace'},
   person:{next:'manage',tab:'identity-people',identitySettings:'person',root:'#personConfigWorkspace'},private_access:{next:'manage',tab:'identity-people',identitySettings:'private-access',root:'#privateAccessWorkspace'},private_access_installation:{next:'manage',tab:'identity-people',identitySettings:'stranger-access',root:'#identityStrangerAccessSettingsWorkspace'},
   relay:{next:'manage',tab:'identity-access',root:'#relayConfigWorkspace'},
   role_growth:{next:'manage',tab:'identity-people',identitySettings:'person'},
   'role.growth.skills':{next:'manage',tab:'learning',subtab:'strategy',root:'#growthConfigWorkspace'},
+  'expression.learning':{next:'manage',tab:'learning',subtab:'strategy',root:'#expressionLearningConfigWorkspace'},
   role_profile:{next:'manage',tab:'governance',root:'#roleProfileConfigWorkspace'},
   relationship_profile:{next:'manage',tab:'governance',subtab:'relationship',root:'#relationshipProfileConfigWorkspace'},
   library:{next:'life',tab:'diary',subtab:'archive',root:'#libraryConfigWorkspace'},
@@ -5599,7 +5760,7 @@ function renderSearch(){
     const selected=index===activeSearchResultIndex;
     if(result.kind==='setting'){
       const {entry,location}=result;
-      const pageLabels={identity:'关系网','identity-people':'用户','identity-groups':'群聊','identity-access':'访问规则','identity-feelings':'关系与情感',contact:'主动联系',expression:'表达',governance:'自我',diary:'日记与生活',output:'产出',models:'模型与连接',perception:'感知',decision:'决策',action:'行动',learning:'学习与反思'};
+      const pageLabels={all:'全部功能',home:'首页与小屋',state:'状态与日程',diary:'日记与生活',identity:'关系网','identity-people':'用户','identity-groups':'群聊','identity-access':'访问规则','identity-feelings':'关系与情感',memory:'事实与经历',understanding:'理解',contact:'主动联系',expression:'表达',governance:'自我',output:'产出',models:'模型与连接',perception:'感知',decision:'决策',action:'行动',learning:'学习与反思',host:'账号与会话',maintenance:'治理与维护',data:'资料与维护',setup:'开始使用',persona:'人格处理',appearance:'外观与设置'};
       const context=['配置项',pageLabels[location.tab]||location.tab,
         entry.sectionTitle,entry.field].filter(Boolean).join(' · ');
       return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I('sliders-horizontal')}<span><strong>${highlightSearchText(entry.label,terms)}</strong><small>${highlightSearchText(context,terms)}</small></span></button>`;
