@@ -8,7 +8,7 @@
   <script src="/api/plugin/page/bridge-sdk.js" defer></script>
   <script src="../陪伴小屋/assets/lucide.min.js" defer></script>
   <script src="member-editor.js?v=cleanup-scope-contract-20261027" defer></script>
-  <script src="app.js?v=private-members-20261002" defer></script>
+  <script src="app.js?v=hide-idle-20261121" defer></script>
 </head>
 <body>
   <main class="relationship-app" data-view="network">
@@ -69,7 +69,7 @@
         <div class="network-summary-head">
           <strong id="network-summary-label">— 位用户</strong>
           <div class="network-legend" aria-label="往来分层">
-            <span data-kind="both">两边都有</span><span data-kind="private">仅私聊</span><span data-kind="group">仅群聊</span><span data-kind="idle" hidden>暂无往来</span>
+            <span data-kind="both">两边都有</span><span data-kind="private">仅私聊</span><span data-kind="group">仅群聊</span>
           </div>
         </div>
         <div class="network-tiers">
@@ -84,10 +84,6 @@
           <section class="network-tier" data-kind="group" aria-labelledby="network-group-heading">
             <header><span class="network-tier-dot" aria-hidden="true"></span><h3 id="network-group-heading">仅群聊</h3><strong id="network-group-count">0 人</strong></header>
             <div id="network-group-list" class="network-person-grid"></div>
-          </section>
-          <section class="network-tier" data-kind="idle" aria-labelledby="network-idle-heading" hidden>
-            <header><span class="network-tier-dot" aria-hidden="true"></span><h3 id="network-idle-heading">暂无往来</h3><strong id="network-idle-count">0 人</strong></header>
-            <div id="network-idle-list" class="network-person-grid"></div>
           </section>
         </div>
         <p class="network-summary-foot">条形表示消息数比例；群内互动只在群聊详情展示。</p>
@@ -140,10 +136,6 @@
           <button class="chip" type="button" data-filter="temporary" aria-pressed="false">群聊用户 <b id="chip-temporary">0</b></button>
           <button class="chip" type="button" data-filter="discovered" aria-pressed="false">其他会话 <b id="chip-discovered">0</b></button>
         </div>
-        <label class="user-visibility-toggle" for="hide-idle-users">
-          <input id="hide-idle-users" type="checkbox" checked>
-          <span><strong>隐藏无往来用户</strong></span>
-        </label>
       </div>
       <section id="stranger-contacts" class="stranger-contacts" aria-label="陌生号与新私聊">
         <header class="panel-heading compact-heading">
