@@ -22,7 +22,8 @@ from pathlib import Path
 from astrbot.api.web import request
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.outcome import Outcome
-from companion_v2.storage.management import cleanup_backups, cleanup_plan, inventory, retention_policy
+from companion_v2.storage.management import (auto_backup_policy, cleanup_backups, cleanup_plan,
+                                             inventory, retention_policy, valid_auto_backup_interval)
 
 from .backup_api import MAX_REQUEST_BYTES, backup_operation_lock
 from .management_identity import dashboard_operator
@@ -132,7 +133,7 @@ class StorageWebAPI:
                 "selected_backup_path": selected_backup, "backup_root": str(backup_directory),
                 "inventory": active_inventory,
                 "destination_free_bytes": desired_inventory["free_bytes"],
-                "policy": policy, "cleanup_preview": plan}
+                "policy": policy, "auto_backup": auto_backup_policy(configuration), "cleanup_preview": plan}
 
     # -- worker-thread helpers ------------------------------------------------
     #
@@ -224,10 +225,15 @@ class StorageWebAPI:
                         self._clean, runtime_root, installation_id, backup_directory, policy)
                     return {"status": "ok", "data": {**data, "cleanup_result": result}}
 
-                if set(document) != {
-                    "action", "path", "backup_path", "retention_count", "retention_days"
-                }:
+                required = {"action", "path", "backup_path", "retention_count", "retention_days"}
+                optional = set(auto_backup_policy({}))
+                if not required <= set(document) <= required | optional:
                     raise ValueError("unexpected fields")
+                schedule = {key: document[key] for key in optional if key in document}
+                if ("auto_backup_enabled" in schedule and type(schedule["auto_backup_enabled"]) is not bool
+                        or "auto_backup_interval_minutes" in schedule
+                        and not valid_auto_backup_interval(schedule["auto_backup_interval_minutes"])):
+                    raise ValueError("invalid automatic backup settings")
                 selected = document["path"]
                 selected_backup = document["backup_path"]
                 count, days = document["retention_count"], document["retention_days"]
@@ -275,7 +281,7 @@ class StorageWebAPI:
                         storage = {}
                     candidate["storage"] = {**storage, "path": selected.strip(),
                                             "backup_path": selected_backup.strip(),
-                                            "retention_count": count, "retention_days": days}
+                                            "retention_count": count, "retention_days": days, **schedule}
                     try:
                         save(candidate)
                     except Exception as error:

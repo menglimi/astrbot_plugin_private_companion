@@ -330,3 +330,36 @@ test("不完整的快照会单独列出来，而不是悄悄消失", async () =>
   assert.strictEqual(quarantine[1].confirm, true);
   assert.match(root.innerHTML, /没有删除任何文件/);
 });
+
+test("逐份删除复用行内危险按钮，并只在二次确认后发送所选快照", async () => {
+  const id = "a".repeat(32), hash = "b".repeat(64), calls = [];
+  let rows = [{snapshot_id: id, content_hash: hash, note: "待删的备份", created_at: "2026-11-18T00:00:00Z"}];
+  let pending = {snapshot_id: id};
+  const bridge = {
+    async apiGet(route) { return route === "backup" ? {snapshots: rows} : {pending}; },
+    async apiPost(route, body) { calls.push([route, body]); rows = []; return {snapshot_id: id}; },
+  };
+  const page = harness({bridge});
+  const root = element();
+  page.mount(root);
+  await settle(10);
+  assert.match(root.innerHTML, /data-backup-delete="[a-f0-9]+" disabled/);
+  root.fire("click", {target: element({"data-backup-delete": id})});
+  assert.doesNotMatch(root.innerHTML, /确认删除/);
+  page.unmount();
+  pending = null;
+  page.mount(root);
+  await settle(10);
+  root.fire("click", {target: element({"data-backup-delete": id})});
+  assert.match(root.innerHTML, /class="button small danger" data-backup-delete-confirm=/);
+  assert.match(root.innerHTML, /删除后无法用这份快照还原/);
+  assert.equal(calls.length, 0);
+  root.fire("click", {target: element({"data-backup-delete-abort": ""})});
+  assert.doesNotMatch(root.innerHTML, /确认删除/);
+  root.fire("click", {target: element({"data-backup-delete": id})});
+  root.fire("click", {target: element({"data-backup-delete-confirm": id})});
+  await settle(10);
+  assert.equal(JSON.stringify(calls), JSON.stringify([["backup/delete", {snapshot_id: id, confirmed_hash: hash, confirm: true}]]));
+  assert.match(root.innerHTML, /已删除.*备份快照/);
+  assert.doesNotMatch(root.innerHTML, /待删的备份/);
+});

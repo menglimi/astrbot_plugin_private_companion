@@ -35,7 +35,7 @@
   gap:var(--sp-4);align-items:center;margin:0;padding:0;border:0;min-width:0}
 .storage-retention-fields{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2) var(--sp-4);min-width:0}
 .storage-retention label{display:flex;align-items:center;gap:var(--sp-2);color:var(--t-text);font-size:var(--fs-tiny);white-space:nowrap}
-.storage-retention input{width:76px;padding:var(--sp-2)}
+.storage-retention input[type="number"]{width:76px;padding:var(--sp-2)}
 .storage-retention-aside{display:grid;gap:var(--sp-2);justify-items:start;min-width:0}
 .storage-retention-aside .storage-cleanup-preview{border-top:0;padding-top:0}
 .storage-retention-aside .storage-cleanup-empty{margin:0}

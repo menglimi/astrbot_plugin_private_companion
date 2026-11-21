@@ -93,6 +93,7 @@ class BackupWebAPI:
     def routes(self):
         return [(PREFIX, self.listing, ["GET"], "List completed V2 installation snapshots"),
                 (PREFIX + "/create", self.create, ["POST"], "Write a verified snapshot of this installation"),
+                (PREFIX + "/delete", self.delete, ["POST"], "Delete one confirmed installation snapshot"),
                 (PREFIX + "/inspect", self.inspect, ["GET"], "Verify one snapshot without restoring it"),
                 (PREFIX + "/restore/preview", self.preview, ["GET"], "Show what restoring one snapshot would replace"),
                 (PREFIX + "/restore", self.restore, ["POST"], "Stage a restore; the host applies it on restart"),
@@ -269,6 +270,20 @@ class BackupWebAPI:
         except (ValueError, UnicodeError, RecursionError):
             return outcome_response(Outcome.failed("backup_request_invalid", "invalid cancel command"))
         return await self._run("cancel_pending", arguments)
+
+    async def delete(self):
+        from .storage_api import storage_request_lock
+        from .web_api import outcome_response
+        try:
+            raw = await request.body()
+            if len(raw) > MAX_REQUEST_BYTES or request.query:
+                raise ValueError()
+            arguments = self._body(raw, ("snapshot_id", "confirmed_hash", "confirm"))
+        except (ValueError, UnicodeError, RecursionError):
+            return outcome_response(Outcome.failed("backup_request_invalid", "invalid delete command"))
+        # Resolve the active directory only after any relocation is done.
+        async with storage_request_lock(self.controller):
+            return await self._run("delete", arguments)
 
     async def quarantine(self):
         """Move an incomplete snapshot pair aside; nothing is deleted."""

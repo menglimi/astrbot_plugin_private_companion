@@ -487,8 +487,10 @@ class PrivateCompanionV2StagingPlugin(Star):
         if self._session_settings_warm_task is None or self._session_settings_warm_task.done():
             self._session_settings_warm_task = asyncio.create_task(
                 warm_session_settings(), name="companion-v2-session-settings-warmup")
-        # Started here, not after the host is up: the driver polls and no-ops
-        # until a running session exists, so a slow boot cannot lose it.
+        # Start both drivers before host startup; each checks its own readiness.
+        if getattr(self, "_automatic_backup", None) is None:
+            from .astrbot_host.automatic_backup import AutomaticBackup
+            self._automatic_backup = AutomaticBackup(self.staging).start()
         if self._qzone_life_publisher is None:
             from .astrbot_host.qzone_life_publish import QzoneLifePublisher
             self._qzone_life_publisher = QzoneLifePublisher(self.staging).start()
@@ -1992,6 +1994,13 @@ class PrivateCompanionV2StagingPlugin(Star):
                 await startup_task
             except asyncio.CancelledError:
                 pass
+        automatic_backup = getattr(self, "_automatic_backup", None)
+        self._automatic_backup = None
+        if automatic_backup is not None:
+            try:
+                await automatic_backup.close()
+            except Exception as error:
+                logger.warning("[CompanionV2] 自动滚动备份停机清理失败 error_type=%s", type(error).__name__)
         retire_reset_marker = getattr(self, "_retire_context_reset_marker", None)
         if retire_reset_marker is not None:
             retire_reset_marker()
