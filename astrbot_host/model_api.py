@@ -6,6 +6,7 @@ import inspect
 import json
 import logging
 import re
+import sqlite3
 from copy import deepcopy
 from pathlib import Path
 from time import monotonic
@@ -30,6 +31,7 @@ from companion_v2.model_gateway.pricing import (
 from companion_v2.model_gateway.pricing_catalog import PriceCatalogStore
 from companion_v2.model_gateway.pricing_expr import validate_tiered_expr_rule
 from companion_v2.proactive.search_settings import SearchSettingsError, SearchSettingsStore
+from companion_v2.storage.runtime import StorageOpenError
 
 from .management_identity import dashboard_operator
 from .core_reply_configuration import CORE_MANAGED_FIELDS, project_core_reply_configuration
@@ -571,19 +573,24 @@ class ModelWebAPI:
                     raise TaskError("staging_host_terminated", "plugin is stopped")
                 if session is None or runtime is None:
                     raise TaskError("staging_not_initialized", "load the V2 profile first")
-            _session, operator, manager, _status = await asyncio.to_thread(
-                self._authorized, layer=layer, authorize=False, session=session, runtime=runtime)
             if action == "status":
+                _session, operator, manager, _status = await asyncio.to_thread(
+                    self._authorized, layer=layer, authorize=False, session=session, runtime=runtime)
                 result = await asyncio.to_thread(manager.status, operator, layer=layer)
             elif action == "maintenance":
-                pricing_settings = await asyncio.to_thread(self._pricing_store(runtime).read_safe)
-                provider_metadata = await asyncio.to_thread(
-                    build_provider_metadata_map, self.controller, _session, pricing_settings
-                )
-                result = await asyncio.to_thread(
-                    manager.maintenance, operator, provider_metadata=provider_metadata
-                )
+                def _run_maintenance_core():
+                    sess, op, mgr, st = self._authorized(
+                        layer=layer, authorize=False, session=session, runtime=runtime
+                    )
+                    settings = self._pricing_store(runtime).read_safe()
+                    provider_metadata = build_provider_metadata_map(controller, sess, settings)
+                    res = mgr.maintenance(op, provider_metadata=provider_metadata)
+                    return sess, op, mgr, st, res
+
+                _session, operator, manager, _status, result = await asyncio.to_thread(_run_maintenance_core)
             else:
+                _session, operator, manager, _status = await asyncio.to_thread(
+                    self._authorized, layer=layer, authorize=False, session=session, runtime=runtime)
                 result = await asyncio.to_thread(manager.configure, operator, {**data, "layer": layer})
             if action in {"status", "configure"} and result.is_success:
                 if action == "status":
@@ -601,8 +608,21 @@ class ModelWebAPI:
                     self._pricing_catalog_service(runtime.data_root, _session).maybe_schedule_daily_sync()
                 except Exception:
                     logger.debug("[CompanionV2] 后台价格源自动同步调度跳过", exc_info=True)
-                payload["external_token_sources"] = await asyncio.to_thread(read_token_sources, self.controller)
-                payload["external_token_sources"]["main"] = await read_astrbot_token_usage(self.controller)
+
+                async def _safe_read_host_checks():
+                    try:
+                        return await asyncio.to_thread(read_host_checks, self.controller)
+                    except Exception:
+                        logger.exception("[CompanionV2] 排障主机检查读取失败")
+                        return None
+
+                ext_sources, main_usage, host_checks = await asyncio.gather(
+                    asyncio.to_thread(read_token_sources, self.controller),
+                    read_astrbot_token_usage(self.controller),
+                    _safe_read_host_checks(),
+                )
+                payload["external_token_sources"] = ext_sources
+                payload["external_token_sources"]["main"] = main_usage
                 memory_source = payload["external_token_sources"].get("memory")
                 if isinstance(memory_source, dict):
                     memory_source["linkage"] = await read_external_memory_summary(
@@ -611,11 +631,8 @@ class ModelWebAPI:
                 # maintenance read (the page already refreshes it) so no new
                 # polling path is introduced; a failure here must not hide the
                 # role-level accounting that already succeeded.
-                try:
-                    payload["host_checks"] = await asyncio.to_thread(
-                        read_host_checks, self.controller)
-                except Exception:
-                    logger.exception("[CompanionV2] 排障主机检查读取失败")
+                if host_checks is not None:
+                    payload["host_checks"] = host_checks
                 # External reads can take time; revalidate before returning the
                 # diagnostics rather than trusting the earlier authorization.
                 await asyncio.to_thread(manager.authorize, operator)
@@ -623,6 +640,11 @@ class ModelWebAPI:
             return self._response(result)
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
+        except (StorageOpenError, sqlite3.Error) as error:
+            logger.warning("[CompanionV2] 模型存储暂不可用 action=%s error_type=%s",
+                           action, type(error).__name__)
+            return self._response(Outcome.failed(
+                "model_storage_unavailable", "model storage is temporarily unavailable"))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
             return self._response(Outcome.failed("model_request_invalid", "invalid UTF-8 model request"))
 
@@ -695,6 +717,10 @@ class ModelWebAPI:
                 return self._response(result)
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
+        except (StorageOpenError, sqlite3.Error) as error:
+            logger.warning("[CompanionV2] 模型存储检查暂不可用 error_type=%s", type(error).__name__)
+            return self._response(Outcome.failed(
+                "model_storage_unavailable", "model storage is temporarily unavailable"))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
             return self._response(Outcome.failed("model_request_invalid", "invalid storage check request"))
 

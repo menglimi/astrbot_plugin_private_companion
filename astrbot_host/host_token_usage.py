@@ -1,6 +1,45 @@
 """Read AstrBot's persisted internal-agent usage, independently of V2 budgets."""
 
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
+import os
+from pathlib import Path
+from threading import Lock
+
+from companion_v2.model_gateway.maintenance_cache import _PreparedPayload
+
+_HOST_USAGE_CACHE_LOCK = Lock()
+_HOST_USAGE_CACHE: OrderedDict[tuple, tuple[datetime, datetime | None, _PreparedPayload]] = OrderedDict()
+_HOST_USAGE_CACHE_MAX = 4
+
+
+def _file_stat_token(path: Path) -> tuple[int, int, int, int] | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_ctime_ns, st.st_mtime_ns, st.st_size)
+
+
+def _resolve_sqlite_file(db_helper) -> Path | None:
+    raw = getattr(db_helper, "db_path", None)
+    if not isinstance(raw, (str, Path)):
+        return None
+    text = str(raw).strip()
+    if not text or text == ":memory:" or text.startswith("file:"):
+        return None
+    path = Path(text)
+    if not path.is_file():
+        return None
+    return path
+
+
+def _db_file_fingerprint(path: Path) -> tuple | None:
+    db_stat = _file_stat_token(path)
+    if db_stat is None:
+        return None
+    wal_stat = _file_stat_token(Path(str(path) + "-wal"))
+    return (db_stat, wal_stat)
 
 
 def _unavailable(reason):
@@ -44,13 +83,33 @@ async def read_astrbot_token_usage(controller, *, now=None):
         from sqlalchemy import case, func, select
         from astrbot.core.db.po import ProviderStat
 
+        explicit_now = now is not None
         now = now or datetime.now().astimezone()
         if now.tzinfo is None:
             now = now.astimezone()
+        db_helper = getter()
+        tz_offset_seconds = int(now.utcoffset().total_seconds())
+        db_file = None if explicit_now else _resolve_sqlite_file(db_helper)
+        file_fp_before = _db_file_fingerprint(db_file) if db_file is not None else None
+        cache_key = (
+            (str(db_file), now.date().isoformat(), tz_offset_seconds, file_fp_before)
+            if (db_file is not None and file_fp_before is not None)
+            else None
+        )
         end = now.astimezone(timezone.utc).replace(tzinfo=None)
+        if cache_key is not None:
+            with _HOST_USAGE_CACHE_LOCK:
+                cached = _HOST_USAGE_CACHE.get(cache_key)
+                if cached is not None:
+                    cached_at, next_stat_at, prepared = cached
+                    if cached_at <= end and (next_stat_at is None or end < next_stat_at):
+                        _HOST_USAGE_CACHE.move_to_end(cache_key)
+                        cloned = prepared.clone()
+                        cloned["updated_at"] = now.isoformat()
+                        return cloned
         start = (now.replace(hour=0, minute=0, second=0, microsecond=0)
                  - timedelta(days=365)).astimezone(timezone.utc).replace(tzinfo=None)
-        offset = f"{int(now.utcoffset().total_seconds())} seconds"
+        offset = f"{tz_offset_seconds} seconds"
         day = func.strftime("%Y-%m-%d", ProviderStat.created_at, offset)
         hour = func.strftime("%Y-%m-%dT%H", ProviderStat.created_at, offset)
         token_count = (ProviderStat.token_input_other + ProviderStat.token_input_cached
@@ -67,8 +126,10 @@ async def read_astrbot_token_usage(controller, *, now=None):
             func.sum(case((duration_known, 1), else_=0)).label("latency_samples"),
             func.sum(case((duration_known, (ProviderStat.end_time - ProviderStat.start_time) * 1000),
                           else_=0)).label("elapsed_ms")]
-        conditions = (ProviderStat.agent_type == "internal", ProviderStat.created_at <= end)
-        async with getter().get_db() as session:
+        internal_stats = ProviderStat.agent_type == "internal"
+        conditions = (internal_stats, ProviderStat.created_at <= end)
+        next_stat_at = None
+        async with db_helper.get_db() as session:
             totals = _bucket((await session.execute(select(*counters).where(*conditions))).mappings().one())
             providers = (await session.execute(select(ProviderStat.provider_id.label("key"), *counters)
                 .where(*conditions).group_by(ProviderStat.provider_id)
@@ -90,6 +151,9 @@ async def read_astrbot_token_usage(controller, *, now=None):
                 ProviderStat.start_time, ProviderStat.end_time)
                 .where(*conditions).order_by(ProviderStat.created_at.desc(), ProviderStat.id.desc())
                 .limit(80))).mappings().all()
+            if cache_key is not None:
+                next_stat_at = (await session.execute(select(func.min(ProviderStat.created_at))
+                    .where(internal_stats, ProviderStat.created_at > end))).scalar_one()
 
         by_day = {}
         for item in days:
@@ -120,7 +184,7 @@ async def read_astrbot_token_usage(controller, *, now=None):
                 "cache_hit_rate": None,
                 "usage_availability": "reported" if bucket["tokens"] is not None else "unavailable"})
         daily = list(by_day.values())
-        return {"available": True, "installed": True, "display_name": "AstrBot 全部会话",
+        result = {"available": True, "installed": True, "display_name": "AstrBot 全部会话",
             "source": "astrbot.provider_stats", "counted_in_private_companion_budget": False,
             "updated_at": now.isoformat(), "totals": totals, "daily": daily, "history": daily,
             "by_provider": [{"key": item["key"] or "未知 Provider", **_bucket(item)} for item in providers],
@@ -128,6 +192,15 @@ async def read_astrbot_token_usage(controller, *, now=None):
             "hourly": [{"key": item["key"], "day": item["key"][:10], "hour": item["key"][11:13],
                         **_bucket(item)} for item in reversed(hours)],
             "note": "按核心回复轮次汇总，包含工具续轮；缓存命中率与费用未提供。"}
+        if cache_key is not None and _db_file_fingerprint(db_file) == file_fp_before:
+            prepared = _PreparedPayload(result)
+            with _HOST_USAGE_CACHE_LOCK:
+                if cache_key in _HOST_USAGE_CACHE:
+                    _HOST_USAGE_CACHE.move_to_end(cache_key)
+                _HOST_USAGE_CACHE[cache_key] = (end, next_stat_at, prepared)
+                while len(_HOST_USAGE_CACHE) > _HOST_USAGE_CACHE_MAX:
+                    _HOST_USAGE_CACHE.popitem(last=False)
+        return result
     except (ImportError, AttributeError):
         return _unavailable("当前 AstrBot 版本未提供兼容的核心回复用量记录。")
     except Exception:
