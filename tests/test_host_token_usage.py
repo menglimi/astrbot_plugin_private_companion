@@ -124,3 +124,28 @@ class HostTokenUsageTests(unittest.IsolatedAsyncioTestCase):
         report = await read_astrbot_token_usage(self.controller, now=NOW)
         self.assertFalse(report["available"])
         self.assertNotIn("sensitive", json.dumps(report))
+
+    async def test_file_stat_cache_hits_and_invalidates_immediately_on_insert(self):
+        db_file = Path(self.temporary.name) / "host.db"
+        self.database.db_path = str(db_file)
+        recent_utc = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(tzinfo=None)
+        await self.insert(created_at=recent_utc, token_input_other=100, token_input_cached=0, token_output=20)
+        statements = []
+        event.listen(self.engine.sync_engine, "before_cursor_execute",
+                     lambda _connection, _cursor, statement, *_: statements.append(statement))
+        first = await read_astrbot_token_usage(self.controller)
+        self.assertEqual(first["totals"]["tokens"], 120)
+        first_queries = len(statements)
+        self.assertGreater(first_queries, 0)
+
+        # Second call with unchanged file stat must hit cache with 0 SQL queries and return an isolated copy.
+        first["totals"]["tokens"] = -1
+        second = await read_astrbot_token_usage(self.controller)
+        self.assertEqual(len(statements), first_queries)
+        self.assertEqual(second["totals"]["tokens"], 120)
+
+        # Inserting a new row updates file stat/WAL and immediately invalidates the cache.
+        await self.insert(created_at=recent_utc, token_input_other=200, token_input_cached=0, token_output=30)
+        third = await read_astrbot_token_usage(self.controller)
+        self.assertGreater(len(statements), first_queries)
+        self.assertEqual(third["totals"]["tokens"], 350)
