@@ -1505,7 +1505,7 @@
 .perception-hero .perception-reading-badge{grid-area:badge;justify-self:start;margin-top:1px}
 .perception-hero:hover{border-color:color-mix(in srgb,var(--board) 52%,var(--t-line));background:color-mix(in srgb,var(--board) 12%,var(--t-surface));transform:translateY(-1px);box-shadow:var(--t-shadow)}
 .perception-board .perception-hero.is-selected,.perception-board .perception-mini.is-selected{border-color:var(--t-accent);background:color-mix(in srgb,var(--t-accent) 10%,var(--t-surface));box-shadow:inset 3px 0 0 var(--t-accent),var(--t-shadow)}
-.perception-hero.is-time{background:linear-gradient(140deg,color-mix(in srgb,var(--t-ok) 10%,var(--t-surface)),var(--t-surface) 74%)}
+.perception-hero.is-time{container-type:inline-size;background:linear-gradient(140deg,color-mix(in srgb,var(--t-ok) 10%,var(--t-surface)),var(--t-surface) 74%)}
 .perception-hero.is-weather,.perception-hero.is-model{background:linear-gradient(140deg,color-mix(in srgb,var(--t-accent) 9%,var(--t-surface)),var(--t-surface) 74%)}
 .perception-hero.is-location{background:linear-gradient(140deg,color-mix(in srgb,var(--t-ok) 9%,var(--t-surface)),var(--t-surface) 74%)}
 .perception-hero.is-health{background:linear-gradient(140deg,color-mix(in srgb,var(--t-warn) 10%,var(--t-surface)),var(--t-surface) 74%)}
@@ -1515,7 +1515,7 @@
 .perception-hero-copy{display:grid;gap:3px;min-width:0}
 .perception-hero-copy small{color:var(--t-text-faint);font-size:var(--fs-micro);font-weight:600;line-height:1.25}
 .perception-hero-copy strong{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px;min-width:0;color:var(--t-text-strong);font-size:var(--fs-body);font-weight:700;line-height:1.35;overflow-wrap:anywhere}
-.perception-hero.is-time .perception-hero-copy strong b{font-size:calc(var(--fs-head) * 1.25);font-variant-numeric:tabular-nums}
+.perception-hero.is-time .perception-hero-copy strong b{font-size:clamp(var(--fs-lead),1.65vw,calc(var(--fs-head) * 1.25));font-size:clamp(var(--fs-lead),9cqi,calc(var(--fs-head) * 1.25));font-variant-numeric:tabular-nums;white-space:nowrap;line-height:1.2}
 .perception-clock-zone{color:var(--t-text-faint);font-size:var(--fs-micro);font-weight:500}
 .perception-clock-tag{padding:1px 6px;border:1px solid var(--t-line);border-radius:999px;background:var(--t-accent-quiet);color:var(--t-accent-ink);font-style:normal;font-size:var(--fs-micro)}
 .perception-clock-tag[hidden]{display:none}

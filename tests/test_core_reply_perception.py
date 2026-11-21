@@ -217,6 +217,25 @@ class CoreReplyPerceptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(payloads[0]["expression_guidance"], payloads[1]["expression_guidance"])
         self.assertNotEqual(payloads[0]["companion_background"], payloads[1]["companion_background"])
 
+    def test_role_style_replaces_default_and_can_be_disabled(self):
+        event = Event()
+        turn = prepared()
+        event.extra[CORE_REPLY_CONTEXT_EXTRA] = {"prepared": turn}
+        request = NS(system_prompt="AstrBot 人格")
+        inject_core_reply_perception_policy(event, request)
+        self.assertIn("日常闲聊的篇幅随本轮意思走", request.system_prompt)
+
+        turn["perception_style"] = "自己的表达风格"
+        inject_core_reply_perception_policy(event, request)
+        self.assertIn("自己的表达风格", request.system_prompt)
+        self.assertNotIn("日常闲聊的篇幅随本轮意思走", request.system_prompt)
+
+        turn["perception_style"] = ""
+        inject_core_reply_perception_policy(event, request)
+        self.assertNotIn("自己的表达风格", request.system_prompt)
+        self.assertIn("角色状态材料说的是角色自己", request.system_prompt)
+        self.assertEqual(request.system_prompt.count("【陪伴感知与自然表达】"), 1)
+
     async def test_language_voice_route_reaches_provider_input_and_tracks_live_drama_model(self):
         event = Event()
         event.extra["selected_provider"] = "chat-route"

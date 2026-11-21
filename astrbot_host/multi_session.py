@@ -1281,6 +1281,7 @@ class MultiHostSession:
                 context_sections, expression_signal_ids = (), ()
                 perception_options = None
                 perception_context, perception_instructions, perception_guidance = "", (), ""
+                perception_style = None
                 context_materials, preparation_steps = (), ()
                 try:
                     from .core_reply_context import build_core_reply_prompt
@@ -1322,6 +1323,7 @@ class MultiHostSession:
                         perception_context = getattr(prompt, "perception_context", "")
                         perception_instructions = getattr(prompt, "perception_instructions", ())
                         perception_guidance = getattr(prompt, "perception_guidance", "")
+                        perception_style = getattr(prompt, "perception_style", None)
                         preparation_steps = ({"name": "context_build", "state": "returned",
                             "started_at": stamp(build_started_at), "finished_at": stamp(self.now()),
                             "elapsed_ms": getattr(prompt, "build_ms", None)},)
@@ -1413,6 +1415,7 @@ class MultiHostSession:
                     "perception_context": perception_context,
                     "perception_instructions": perception_instructions,
                     "perception_guidance": perception_guidance,
+                    "perception_style": perception_style,
                     "context_materials": context_materials,
                     "preparation_steps": preparation_steps,
                     "expression_signal_ids": expression_signal_ids,

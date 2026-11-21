@@ -44,12 +44,14 @@ from companion_v2.references.wardrobe import (
     WardrobeConfigurationOwner,
     configuration_fields as wardrobe_fields,
 )
+from companion_v2.storage.generated_album import sync_generated_album_folder
 from companion_v2.storage.runtime import StorageRuntime
 
 
 MANAGEMENT_SCOPE = "page.management"
 MANAGEMENT_ACTION = "memory.manage"
 ALBUM_LIMIT = 16
+ALBUM_SYNC_PAGE_LIMIT = 32
 ALBUM_SELECTION_LIMIT = 24
 ALBUM_EXPORT_BYTES = 32 * 1024 * 1024
 ALBUM_HIDDEN_KEY_PREFIX = "image.album.hidden.v1:"
@@ -339,22 +341,67 @@ class ReferenceMaterialManagement:
         hidden = self._hide_album_ids(context, identifiers)
         return {"hidden": len(identifiers), "hidden_total": len(hidden)}
 
-    def open_album_folder(self, operator, context, *, at):
-        self._admit(operator, context, at)
+    def _iter_album_items(self, context, at):
+        hidden = self._hidden_album_ids(context)
+        cursor = None
+        seen_cursors = set()
+        seen_ids = set()
+        while True:
+            page = self.application.messages.generated_images.album_page(
+                context, at, limit=ALBUM_SYNC_PAGE_LIMIT, cursor=cursor)
+            for item in page.get("items") or ():
+                image_id = getattr(item, "image_id", None)
+                if not image_id or image_id in hidden or image_id in seen_ids:
+                    continue
+                seen_ids.add(image_id)
+                yield item
+            next_cursor = page.get("next_cursor")
+            if not next_cursor or next_cursor in seen_cursors:
+                break
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+
+    def open_album_folder(self, operator, context, *, at, role_id=None):
+        owner = self._admit(operator, context, at)
         from pathlib import Path
         root = Path(self.runtime.data_root).resolve()
         if not root.is_dir():
-            raise TaskError("generated_album_folder_unavailable", "the V2 data folder is unavailable")
+            raise TaskError("generated_album_folder_unavailable", "the generated album folder is unavailable")
+        bound_role = getattr(getattr(getattr(context, "role_binding", None), "role", None), "subject_id", None)
+        if role_id is not None:
+            if type(role_id) is not str:
+                raise TaskError("generated_album_folder_unavailable", "the requested role identifier is invalid")
+            if not role_id.strip():
+                effective_role_id = None
+            elif role_id != bound_role:
+                raise TaskError("reference_target_changed", "the requested role does not match the active role context")
+            else:
+                effective_role_id = role_id
+        else:
+            effective_role_id = bound_role if isinstance(bound_role, str) and bound_role.strip() else None
+        try:
+            entries = self._iter_album_items(context, at) if effective_role_id is not None else ()
+            synced = sync_generated_album_folder(root, entries, role_id=effective_role_id, owner=owner)
+        except (OSError, ValueError) as error:
+            raise TaskError("generated_album_folder_unavailable", "the generated album folder could not be prepared") from error
+        target = Path(synced["path"])
+        if not target.is_dir():
+            raise TaskError("generated_album_folder_unavailable", "the generated album folder is unavailable")
         try:
             if os.name == "nt":
-                os.startfile(str(root))
+                os.startfile(str(target))
             elif sys.platform == "darwin":
-                subprocess.Popen(["open", str(root)])
+                subprocess.Popen(["open", str(target)])
             else:
-                subprocess.Popen(["xdg-open", str(root)])
+                subprocess.Popen(["xdg-open", str(target)])
         except (OSError, AttributeError, ValueError) as error:
-            raise TaskError("generated_album_open_failed", "the V2 data folder could not be opened") from error
-        return {"path": str(root), "opened": True}
+            raise TaskError("generated_album_open_failed", "the generated album folder could not be opened") from error
+        return {
+            "path": synced["path"],
+            "opened": True,
+            "synced_count": synced["synced_count"],
+            "total_count": synced["total_count"],
+        }
 
     def album(self, operator, context, *, at, cursor=None):
         self._admit(operator, context, at)

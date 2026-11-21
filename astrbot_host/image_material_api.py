@@ -34,7 +34,7 @@ class ImageMaterialsWebAPI:
             (PREFIX + "/album", self.album, ["GET"], "Read the role-scoped generated image album"),
             (PREFIX + "/album/export", self.export_album, ["POST"], "Export selected generated images as a ZIP archive"),
             (PREFIX + "/album/hide", self.hide_album, ["POST"], "Remove selected generated images from the album"),
-            (PREFIX + "/album/open-folder", self.open_album_folder, ["POST"], "Open the V2 data folder"),
+            (PREFIX + "/album/open-folder", self.open_album_folder, ["POST"], "Open the role-scoped generated album folder"),
             (PREFIX + "/references/upload", self.upload_reference, ["POST"], "Upload one role-owned reference image"),
             (PREFIX + "/references", self.register_reference, ["POST"], "Register one explicit album image reference"),
             (PREFIX + "/references/update", self.update_reference, ["POST"], "Update one role image reference"),
@@ -108,7 +108,7 @@ class ImageMaterialsWebAPI:
                 elif action == "hide_album":
                     value = manager.hide_album_images(operator, context, at=at, image_ids=body["image_ids"])
                 elif action == "open_album_folder":
-                    value = manager.open_album_folder(operator, context, at=at)
+                    value = manager.open_album_folder(operator, context, at=at, role_id=body.get("role_id"))
                 elif action == "register_reference":
                     value = manager.register_from_album(operator, context, at=at, **body)
                 elif action == "upload_reference":
@@ -205,7 +205,7 @@ class ImageMaterialsWebAPI:
         return await self._post("hide_album", {"image_ids"})
 
     async def open_album_folder(self):
-        return await self._post("open_album_folder", set())
+        return await self._post("open_album_folder", set(), optional={"role_id"})
 
     async def register_reference(self):
         return await self._post("register_reference", {"image_id", "label", "roles", "operation_key"})

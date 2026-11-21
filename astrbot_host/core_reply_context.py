@@ -28,7 +28,7 @@ from companion_v2.knowledge.members import MEMBER_CLUE_INSTRUCTION
 from companion_v2.role_work.state.service import INSTRUCTION as STATE_INSTRUCTION
 from companion_v2.sources.dependencies import validation_batch
 from companion_v2.system_prompts.catalog import (
-    BACKGROUND_INSTRUCTION, KNOWLEDGE_INSTRUCTION, MEMORY_INSTRUCTION,
+    BACKGROUND_INSTRUCTION, CORE_REPLY_TIME_STYLE, KNOWLEDGE_INSTRUCTION, MEMORY_INSTRUCTION,
 )
 from companion_v2.system_prompts.context import SystemPromptContext
 from .core_reply_health import health_perception_snapshot
@@ -52,10 +52,10 @@ GROUP_INSTRUCTION = (
     "known_names 和旧记忆里的昵称都不是“在叫我”的证据：即使与别人提到或 @ 的名字相同，也不要接成"
     "“在叫我/你刚才叫我/是在叫我吗”；第三人称谈论同名角色不等于直接呼唤。"
 )
-CURRENT_TIME_INSTRUCTION = """current_local_time 是系统时钟按当前窗口配置时区投影出的本轮时间，用于理解现在、今天和问候时段。历史消息与摘要保留各自日期，不能充当当前时间。
-感知本轮 current_local_time 与最近历史消息时间戳的跨度：同一对话流内直接自然接话；隔了半天、隔夜或隔了几天再聊时，自然体现重逢或时隔感，不把几天前的话头当成上一秒刚说完直接硬接。
-时间只在相关时使用，不主动报时。用户说“还早”等话时结合玩笑、夸张或时区差异理解；只有对方问几点，或会影响实际安排时，才简短说明或确认，不据此推断对方已经睡着、刚起床或正在等待。
-用户问日期、星期、几点或“今天是什么日子”这类直接问题时，给出答案就够：不为了接话把别的话题、旧话头或对方没说过的半句话缀在后面。"""
+CURRENT_TIME_MEANING = (
+    "current_local_time 是系统时钟按当前窗口配置时区投影出的本轮时间，用于理解现在、今天和问候时段。"
+    "历史消息与摘要保留各自日期，不能充当当前时间。"
+)
 SENT_CONTINUATION_INSTRUCTION = (
     SENT_MESSAGE_INSTRUCTION +
     "这些是你自己在当前窗口已经发出的消息，可能尚未出现在 AstrBot 的普通会话历史中。"
@@ -86,6 +86,7 @@ class CoreReplyPrompt:
     stable_instruction: str = ""
     context_instruction: str = ""
     context_blocks: tuple[dict, ...] = ()
+    perception_style: str | None = None
 
 
 @dataclass(frozen=True)
@@ -437,7 +438,8 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
                         perception_data["interaction_gap"] = gap
             except Exception:
                 pass
-        instructions = [CURRENT_TIME_INSTRUCTION]
+        time_style = prompt_overrides.get("reply_time_style", CORE_REPLY_TIME_STYLE)
+        instructions = ["\n".join(filter(None, (CURRENT_TIME_MEANING, time_style)))]
         if settings["calendar_enabled"]:
             annual_calendars = None
             owner = getattr(messages, "role_state_context", None)
@@ -677,4 +679,5 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
         stable_instruction=stable_instruction,
         context_instruction=context_instruction,
         context_blocks=tuple(context_blocks),
+        perception_style=prompt_overrides.get("reply_style"),
     )
