@@ -73,7 +73,12 @@ function fixture(nai = null, album = {}) {
         if (endpoint === "image-materials/album/export") return {filename: "album.zip",
           data_url: "data:application/zip;base64,AAA", count: 1};
         if (endpoint === "image-materials/album/hide") return {hidden: 1, hidden_total: 1};
-        if (endpoint === "image-materials/album/open-folder") return {path: "C:\\data", opened: true};
+        if (endpoint === "image-materials/album/open-folder") return {
+          path: "C:\\data\\media\\generated-album\\role-a",
+          opened: true,
+          synced_count: 1,
+          total_count: 1,
+        };
         throw new Error(`unexpected request: ${method} ${endpoint}`);
       },
     },
@@ -313,7 +318,9 @@ test("gallery supports selection, export, delete and open-folder actions", async
   const gallery = state.single.get("#outputAlbumWorkspace");
   assert.match(gallery.innerHTML, /导出选中/);
   assert.match(gallery.innerHTML, /删除选中/);
-  assert.match(gallery.innerHTML, /打开数据目录/);
+  assert.match(gallery.innerHTML, /打开图库目录/);
+  assert.doesNotMatch(gallery.innerHTML, /打开数据目录/);
+  assert.doesNotMatch(gallery.innerHTML, /data-output-native-action="album-refresh"/);
 
   state.toggleAlbum("img-1", true);
   assert.match(gallery.innerHTML, /已选 <b>1<\/b> 张/);
@@ -333,6 +340,39 @@ test("gallery supports selection, export, delete and open-folder actions", async
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(state.requests.some(request => request.method === "POST" &&
     request.endpoint === "image-materials/album/open-folder"));
+  assert.match(gallery.innerHTML, /已打开产出图库目录（已同步 1 张，共 1 张）：C:\\data\\media\\generated-album\\role-a/);
+  state.page.unmount();
+});
+
+test("open-folder notice reports existing count without sync noise and maps album folder errors", async () => {
+  let mode = "already-synced";
+  const state = fixture(null, {
+    request: async (method, endpoint) => {
+      if (method === "GET" && endpoint === "image-materials/album") {
+        return {items: [{image_id: "img-1", thumbnail: "data:image/png;base64,AAA", width: 512, height: 512,
+          created_at: "2026-10-12T04:05:00Z", action: "image.generate"}], next_cursor: null};
+      }
+      if (method === "POST" && endpoint === "image-materials/album/open-folder") {
+        if (mode === "already-synced") {
+          return {path: "C:\\data\\media\\generated-album\\role-a", opened: true, synced_count: 0, total_count: 3};
+        }
+        throw Object.assign(new Error("failed"), {code: "generated_album_open_failed"});
+      }
+      throw new Error(`unexpected ${method} ${endpoint}`);
+    },
+  });
+  state.page.mount(state.root);
+  await new Promise(resolve => setImmediate(resolve));
+
+  state.clickAction("album-open-folder");
+  await new Promise(resolve => setImmediate(resolve));
+  const gallery = state.single.get("#outputAlbumWorkspace");
+  assert.match(gallery.innerHTML, /已打开产出图库目录（共 3 张）：C:\\data\\media\\generated-album\\role-a/);
+
+  mode = "error";
+  state.clickAction("album-open-folder");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(gallery.innerHTML, /无法打开产出图库目录，请检查运行环境权限。/);
   state.page.unmount();
 });
 

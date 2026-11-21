@@ -18,7 +18,7 @@ import tempfile
 MARKER_PREFIX = b"\x00PCIMG1/"
 
 
-def _extension(content: bytes, mime_type: str = "") -> str:
+def image_extension(content: bytes, mime_type: str = "") -> str:
     value = (mime_type or "").lower()
     if value in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
         return {"image/png": ".png", "image/jpeg": ".jpg",
@@ -51,7 +51,7 @@ def store_image(data_root: Path, content: bytes, *, mime_type: str = "") -> byte
     root = image_root(data_root)
     root.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256(content).hexdigest()
-    name = digest + _extension(content, mime_type)
+    name = digest + image_extension(content, mime_type)
     target = root / name
     if not target.is_file() or target.stat().st_size != len(content):
         handle, temporary = tempfile.mkstemp(prefix=".image-", suffix=".tmp", dir=root)
