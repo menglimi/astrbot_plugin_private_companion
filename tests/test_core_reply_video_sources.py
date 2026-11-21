@@ -17,6 +17,7 @@ from astrbot.core.agent.message import AudioURLPart, TextPart
 
 from astrbot_host import core_reply_video_sources as sources
 from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA
+from astrbot_host.video.fusion import MAX_CORE_VIDEO_DOWNLOAD_BYTES
 from companion_v2.adapters.astrbot.native import NativeConversationInput, NativeVideoLocator
 from companion_v2.execution.models import TaskContext
 from companion_v2.foundation.refs import AudienceRef, ScopeKind, ScopeRef, SubjectKind, SubjectRef
@@ -399,7 +400,10 @@ class CoreReplyVideoAttachTests(unittest.IsolatedAsyncioTestCase):
               patch(PLUGIN_DECODE, AsyncMock(return_value=self.sampled_video())) as decode):
             await self.plugin.restate_companion_core_video_state(event, request)
             await self.plugin.restate_companion_core_video_state(event, request)
-        reader.assert_awaited_once_with("C:\\host\\temp\\clip.mp4")
+        reader.assert_awaited_once_with(
+            "C:\\host\\temp\\clip.mp4",
+            maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES,
+        )
         decode.assert_awaited_once_with(original, 0)
         from astrbot_host.core_reply_perception import video_request_state
         self.assertEqual(video_request_state(request), "sampled_frames")
@@ -455,7 +459,10 @@ class CoreReplyVideoAttachTests(unittest.IsolatedAsyncioTestCase):
               patch(PLUGIN_FETCH, AsyncMock()) as previous_loader,
               patch(PLUGIN_DECODE, AsyncMock(return_value=self.sampled_video()))):
             await self.plugin.restate_companion_core_video_state(event, request)
-        current_loader.assert_awaited_once_with("C:\\host\\temp\\new.mp4")
+        current_loader.assert_awaited_once_with(
+            "C:\\host\\temp\\new.mp4",
+            maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES,
+        )
         previous_loader.assert_not_awaited()
         self.assertEqual(PLUGIN_SOURCES.take(key), ())
         from astrbot_host.core_reply_perception import video_request_state

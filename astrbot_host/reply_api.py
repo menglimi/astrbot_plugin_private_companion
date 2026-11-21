@@ -116,9 +116,11 @@ class ReplyWebAPI:
                 if result.is_success and action in ("status", "configure"):
                     status = result.value if action == "status" else result.value["status"]
                     status["tts"] = self._tts_catalog()
-                    # 附件解析器是否装好，直接随设置一起下发，理解页不用另开接口。
+                    # 附件解析器与视频工具是否装好，直接随设置一起下发，理解页不用另开接口。
                     from .files.parsing import parser_availability
+                    from .video.compressor import video_capabilities_status
                     status["documents"] = parser_availability()
+                    status["video"] = video_capabilities_status()
                     try:
                         from companion_v2.conversation.web_understanding import WebUnderstandingSettings
                         status["web"] = WebUnderstandingSettings(

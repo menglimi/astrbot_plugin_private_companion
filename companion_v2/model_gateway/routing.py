@@ -146,7 +146,8 @@ class ModelRouter:
             for rule in rules:
                 self.provider_for(rule.provider_id)
             validate_targets(rules, self.providers,
-                             capabilities=profile.capabilities, max_output_tokens=max_output_tokens)
+                             capabilities=profile.capabilities, max_output_tokens=max_output_tokens,
+                             task_kind=profile.kind)
         except TaskError:
             raise
         except ValueError as error:
@@ -186,7 +187,9 @@ class ModelRouter:
         ceiling, basis = self._output_ceiling(profile, snapshot, values, self.providers)
         if basis == "explicit":
             self._validate_route_targets(profile, values, max_output_tokens=ceiling)
-        if any(not set(profile.capabilities).issubset(provider.capabilities)
+        from .models import provider_supports_task
+
+        if any(not provider_supports_task(profile.kind, profile.capabilities, provider)
                or ceiling > provider.maximum_output_tokens for provider in providers):
             raise TaskError("model_capability_mismatch", "selected provider cannot fulfill this task profile")
         primary = providers[0]
@@ -238,8 +241,10 @@ class ModelRouter:
         except ValueError as error:
             raise TaskError("model_route_invalid", str(error)) from error
         values["max_output_tokens"] = ceiling
+        from .models import provider_supports_task
+
         for provider in selected:
-            if not set(profile.capabilities).issubset(provider.capabilities):
+            if not provider_supports_task(profile.kind, profile.capabilities, provider):
                 raise TaskError("model_capability_mismatch", "provider lacks required model task capabilities")
             if request.native_video_input and "video" not in provider.capabilities:
                 raise TaskError("model_capability_mismatch", "original video bytes require a native video provider")

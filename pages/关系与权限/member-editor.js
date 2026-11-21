@@ -45,7 +45,13 @@
     private_image_vision_wait_seconds: "图片转述等待时间（秒）",
     private_image_provider_failure_cooldown_seconds: "图片识别失败冷却（秒）",
     video_understanding_enabled: "启用视频理解", video_understanding_max_chars: "视频转述长度上限",
-    video_understanding_wait_seconds: "视频转述等待时间（秒）", video_self_recognition_hint: "视频自我识别线索",
+    video_understanding_wait_seconds: "视频转述等待时间（秒）",
+    video_understanding_target_mb: "视频压缩目标上限（MB）",
+    video_understanding_max_duration_seconds: "视频最大允许时长（秒）",
+    video_understanding_oversize_action: "视频超限处理方式",
+    video_understanding_quoted_enabled: "理解引用消息中的视频",
+    video_understanding_qa_enabled: "结合本轮提问回答视频内容",
+    video_self_recognition_hint: "视频自我识别线索",
     video_understanding_prompt: "视频理解提示词补充", file_understanding_enabled: "启用文件理解",
     file_understanding_format_groups: "可读取文件格式", file_understanding_max_size_mb: "文件大小上限（MB）",
     file_understanding_max_chars: "文件正文长度上限", file_understanding_timeout_seconds: "文件读取等待时间（秒）",
@@ -68,6 +74,7 @@
     voice_language: {zh: "中文", ja: "日语", en: "英语"},
     voice_foreign_text_mode: {original: "原文", translation: "中文译文", bilingual: "双语"},
     image_position: {after_text: "文字后", before_text: "文字前"},
+    video_understanding_oversize_action: {compress: "自动压缩后再发送", truncate: "截断至最大时长并压缩", reject: "超出限制时直接拒收"},
   };
   /* 主回复页已经停用「整段回复」，并把旧值 all 视为句中去重。
      成员页复用同一份回复设置，历史值读回时也要先归一，否则下拉框会
@@ -108,7 +115,10 @@
       "private_image_vision_custom_prompt", "private_image_vision_max_chars", "private_image_vision_wait_seconds",
       "private_image_provider_failure_cooldown_seconds"]},
     {title: "视频理解", fields: ["video_understanding_private_enabled", "video_understanding_enabled",
-      "video_understanding_max_chars", "video_understanding_wait_seconds", "video_self_recognition_hint",
+      "video_understanding_target_mb", "video_understanding_max_duration_seconds",
+      "video_understanding_oversize_action", "video_understanding_quoted_enabled",
+      "video_understanding_qa_enabled", "video_understanding_max_chars",
+      "video_understanding_wait_seconds", "video_self_recognition_hint",
       "video_understanding_prompt"]},
     {title: "文件理解", fields: ["file_understanding_private_enabled", "file_understanding_enabled",
       "file_understanding_format_groups", "file_understanding_max_size_mb", "file_understanding_max_chars",
@@ -1131,8 +1141,12 @@
     if (settings.enable_private_image_self_recognition) for (const name of ["enable_private_image_vision_cache",
       "private_image_vision_cache_max_items", "private_image_vision_custom_prompt", "private_image_vision_max_chars",
       "private_image_vision_wait_seconds", "private_image_provider_failure_cooldown_seconds"]) visible.add(name);
-    if (settings.video_understanding_enabled) for (const name of ["video_understanding_max_chars",
-      "video_understanding_wait_seconds", "video_self_recognition_hint", "video_understanding_prompt"]) visible.add(name);
+    if (settings.video_understanding_enabled) for (const name of [
+      "video_understanding_target_mb", "video_understanding_max_duration_seconds",
+      "video_understanding_oversize_action", "video_understanding_quoted_enabled",
+      "video_understanding_qa_enabled", "video_understanding_max_chars",
+      "video_understanding_wait_seconds", "video_self_recognition_hint",
+      "video_understanding_prompt"]) visible.add(name);
     if (settings.file_understanding_enabled) for (const name of ["file_understanding_format_groups",
       "file_understanding_max_size_mb", "file_understanding_max_chars", "file_understanding_timeout_seconds",
       "file_understanding_prompt"]) visible.add(name);

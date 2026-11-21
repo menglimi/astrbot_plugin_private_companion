@@ -483,6 +483,7 @@ class LocalProvider:
     # 允许空串而不是必填：本地测试适配器和部分第三方传输没有"模型"这个概念，
     # 让它们编一个名字出来，比让它们留空更糟。
     model: str = ""
+    supports_video_relay: bool = False
 
     def __post_init__(self):
         if type(self.default_streaming) is not bool:
@@ -507,6 +508,21 @@ class LocalProvider:
         object.__setattr__(self, "capabilities", tuple(self.capabilities))
         if type(self.supports_model_override) is not bool:
             raise ValueError("model override support must be explicit")
+        if type(self.supports_video_relay) is not bool:
+            raise ValueError("video relay capability flag must be explicit")
+
+
+def provider_supports_task(task_kind: str, required_capabilities, provider: LocalProvider) -> bool:
+    """Whether ``provider`` satisfies ``required_capabilities`` (allowing OpenAI visual video relay for narration)."""
+    if set(required_capabilities).issubset(provider.capabilities):
+        return True
+    if (
+        str(task_kind) == "conversation.video_narration"
+        and getattr(provider, "supports_video_relay", False) is True
+        and "text" in provider.capabilities
+    ):
+        return True
+    return False
 
 
 @dataclass(frozen=True)

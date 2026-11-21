@@ -40,7 +40,10 @@ PRIVATE_REPLY_FIELDS = frozenset((
     "private_image_vision_custom_prompt", "private_image_vision_max_chars",
     "private_image_vision_wait_seconds", "private_image_provider_failure_cooldown_seconds",
     "video_understanding_enabled", "video_understanding_max_chars",
-    "video_understanding_wait_seconds", "video_self_recognition_hint", "video_understanding_prompt",
+    "video_understanding_wait_seconds", "video_understanding_target_mb",
+    "video_understanding_max_duration_seconds", "video_understanding_oversize_action",
+    "video_understanding_quoted_enabled", "video_understanding_qa_enabled",
+    "video_self_recognition_hint", "video_understanding_prompt",
     "file_understanding_enabled", "file_understanding_format_groups", "file_understanding_max_size_mb",
     "file_understanding_max_chars", "file_understanding_timeout_seconds", "file_understanding_prompt",
 ))

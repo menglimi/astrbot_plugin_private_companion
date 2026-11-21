@@ -2311,3 +2311,38 @@ test('Laya test and preview surface 401/403 auth summary from ok-enveloped bridg
   assert.match(node.innerHTML, /服务端原文：invalid_api_key: Incorrect API key provided/);
   page.unmount();
 });
+
+test('video narration accepts OpenAI video relay providers alongside native video models and saves fallback', async () => {
+  const h = harness(), node = h.root(), data = status();
+  data.tasks.push(editable('conversation.video_narration', 'gemini-a', ['text', 'video'], 'background'));
+  data.providers.push(
+    {id: 'gemini-a', model: 'gemini-3.8-flash', capabilities: ['text', 'video'], max_output_tokens: 8192},
+    {id: 'relay-vision', model: 'gpt-4o-video-relay', capabilities: ['text', 'image'], supports_video_relay: true, max_output_tokens: 8192},
+    {id: 'text-only', model: 'plain-llm', capabilities: ['text'], supports_video_relay: false, max_output_tokens: 8192},
+  );
+  h.page.mount(node);
+  try {
+    h.requests[0].resolve(data);
+    await flush();
+    node.click('[data-model-sub]', {modelSub: 'cfg'});
+    node.click('[data-model-cm]', {modelCm: 'precise'});
+    node.click('[data-model-view]', {modelView: 'providers'});
+    assert.match(node.innerHTML, /视觉转接视频/);
+    node.click('[data-model-view]', {modelView: 'tasks'});
+    node.click('[data-model-open]', {modelOpen: 'conversation.video_narration'});
+    const card = node.innerHTML.split('data-fncard="conversation.video_narration"')[1].split('</article>')[0];
+    assert.match(card, /<option value="gemini-a" selected>gemini-a · gemini-3\.8-flash<\/option>/);
+    assert.match(card, /<option value="relay-vision"[^>]*>relay-vision · gpt-4o-video-relay<\/option>/);
+    assert.doesNotMatch(card, /<option value="primary"|<option value="secondary"|<option value="text-only"/);
+    node.change('[data-model-field]', {modelField: 'fallback', modelKind: 'conversation.video_narration', value: 'relay-vision'});
+    node.click('[data-model-action]', {modelAction: 'save-one', modelKind: 'conversation.video_narration'});
+    const post = h.requests.find(request => request.method === 'POST');
+    assert.deepEqual({...post.values.changes}, {fallback: 'relay-vision'});
+    const savedTask = editable('conversation.video_narration', 'gemini-a', ['text', 'video'], 'background');
+    savedTask.fields.fallback = {value: 'relay-vision', inherited_value: null, explicit: true};
+    post.resolve({replayed: false, task: savedTask});
+    await flush();
+  } finally {
+    h.page.unmount();
+  }
+});

@@ -6,6 +6,15 @@ from types import SimpleNamespace
 
 from companion_v2.conversation.group_timing import SELF_MENTION
 from .group_quotes import mention_text
+from .voice_stt import (
+    ASTRBOT_STT_TRANSCRIPTS_EXTRA,
+    STT_EXTRA_KEYS,
+    VOICE_TRANSCRIPT_PREFIX,
+    read_stt_extra,
+    trusted_stt_extra_transcript,
+    trusted_stt_extra_with_source,
+    trusted_stt_transcript,
+)
 
 
 QQ_MENTION = re.compile(r'<@!?(?P<short>[^<>\s]+)>|<qqbot-at-user\s+id="(?P<xml>[^"]+)"\s*/>')
@@ -110,13 +119,25 @@ def current_mention_text(target, event, account_id):
 
 
 def group_message_text(event, account_id):
-    """Text and mentions for the model, without attachment placeholders."""
+    """Text and mentions for the model, folding trusted upstream voice transcripts cleanly."""
+    stt_text = trusted_stt_transcript(event)
     text = []
+    stt_used = False
     for part in group_message_parts(event, account_id):
         kind = component_kind(part)
         data = part.get("data", {}) if isinstance(part, Mapping) else part
         if kind in ("Plain", "text"):
-            text.append(_get(data, "text", ""))
+            piece = _get(data, "text", "")
+            if stt_text and isinstance(piece, str) and piece.strip() == "[语音消息]" and not stt_used:
+                text.append(VOICE_TRANSCRIPT_PREFIX + stt_text)
+                stt_used = True
+            else:
+                if stt_text and isinstance(piece, str) and stt_text in piece:
+                    stt_used = True
+                text.append(piece)
         elif kind in ("At", "at"):
             text.append(current_mention_text(_get(data, "qq"), event, account_id))
+        elif kind in ("Record", "record") and stt_text and not stt_used:
+            text.append(VOICE_TRANSCRIPT_PREFIX + stt_text)
+            stt_used = True
     return "".join(text)

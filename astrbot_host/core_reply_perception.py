@@ -16,6 +16,11 @@ from urllib.request import url2pathname
 from companion_v2.conversation.media.understanding import ASTRBOT_ANIMATED_IMAGE_INSTRUCTION
 from companion_v2.conversation.voice_reply import VoiceReplyPolicy
 from companion_v2.conversation.private_reply_context import INSTRUCTION as PRIVATE_REPLY_INSTRUCTION
+from companion_v2.adapters.astrbot.voice_stt import (
+    VOICE_TRANSCRIPT_PREFIX,
+    trusted_stt_extra_transcript,
+    trusted_stt_extra_with_source,
+)
 
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA
 
@@ -689,6 +694,8 @@ async def inject_core_reply_perception_context(event, request, *, native_context
         if isinstance(decoded, Mapping):
             details["conversation"] = decoded
 
+    stt_transcribed = _apply_external_stt_to_request(event, request, parts, details)
+
     if (prepared.get("astrbot_animated_image_understanding_enabled") is True
             and _request_has_image(request) and has_animated_gif_image(event)):
         details["astrbot_animated_image_understanding"] = {
@@ -730,7 +737,7 @@ async def inject_core_reply_perception_context(event, request, *, native_context
                 {"status": "not_explicitly_declared"})
             perception["request_contents"] = {
                 "image": bool(getattr(request, "image_urls", None)),
-                "audio": bool(getattr(request, "audio_urls", None)),
+                "audio": bool(getattr(request, "audio_urls", None) or stt_transcribed),
                 "structured_tools": bool(getattr(getattr(request, "func_tool", None), "tools", None)),
                 # 外部视频插件在本插件之后（-300000）才追加内容块，所以这里只能
                 # 看到它之前的样子；最终视频状态由 -1000000 的钩子就地重写
@@ -759,6 +766,44 @@ async def inject_core_reply_perception_context(event, request, *, native_context
         or details.get("astrbot_animated_image_understanding"))
 
 
+def _trusted_external_stt_text(event):
+    """Read upstream ``astrbot_plugin_hear_voice``（兼容 ``_gemini_stt_*`` / ``astrbot_stt_transcripts``）extra transcript strictly."""
+    return trusted_stt_extra_transcript(event)
+
+
+def _apply_external_stt_to_request(event, request, parts, details):
+    """Adopt upstream ``astrbot_plugin_hear_voice``（兼容 ``_gemini_stt_*``）transcripts without re-transcribing or failing on dead Voice paths."""
+    transcript, source = trusted_stt_extra_with_source(event)
+    if not transcript:
+        return False
+    replaced_unavailable = False
+    already_present = transcript in str(getattr(request, "prompt", "") or "")
+    for part in parts if isinstance(parts, list) else ():
+        text = _part_text(part)
+        if not isinstance(text, str):
+            continue
+        if transcript in text:
+            already_present = True
+        if text.strip() in ("[Voice unavailable]", "[语音不可用]", "[语音消息]"):
+            replacement = f"[语音消息转写：{transcript}]"
+            if isinstance(part, Mapping):
+                part["text"] = replacement
+            else:
+                part.text = replacement
+            replaced_unavailable = True
+            already_present = True
+    if not already_present:
+        from astrbot.core.agent.message import TextPart
+
+        parts.append(TextPart(text=f"[语音消息转写：{transcript}]").mark_as_temp())
+    if isinstance(getattr(request, "prompt", None), str) and request.prompt.strip() in ("", "[语音消息]"):
+        request.prompt = f"{VOICE_TRANSCRIPT_PREFIX}{transcript}"
+    details["audio_transcription"] = {
+        "state": "transcribed",
+        "source": source or "hear_voice",
+        "replaced_unavailable": replaced_unavailable,
+    }
+    return True
 # ---- 本轮视频输入的状态 ----
 #
 # 视频不是 bool：核心写的只是一行路径占位符，画面进不进请求取决于另一个插件，
@@ -770,21 +815,46 @@ _VIDEO_INJECTED = "injected"
 _VIDEO_SAMPLED_FRAMES = "sampled_frames"
 _VIDEO_NATIVE_SUMMARY = "native_summary"
 _VIDEO_NATIVE_AND_SAMPLED = "native_and_sampled"
+_VIDEO_EXTERNAL_SUMMARY = "external_summary"
 _VIDEO_FRAME_ID_PREFIX = "companion-video-frame:"
 _VIDEO_NATIVE_SUMMARY_PREFIX = "<companion_video_native_summary>"
+_VIDEO_PLACEHOLDER_NEUTRALIZED_PREFIX = "[视频内容已由陪伴"
 #: AstrBot 的 ContentPart 只有 text/think/image_url/audio_url 四种 type，没有
 #: video，所以外部视频插件借 audio_url 传原始视频；data URI 的 MIME 是唯一判据。
 _VIDEO_DATA_PREFIX = "data:video/"
 #: 核心把附件写成一行文本（astr_main_agent._append_video_attachment 与 File 分支）。
 _VIDEO_PLACEHOLDER_RE = re.compile(
-    r"^\[(?P<kind>Video|File) Attachment(?: in quoted message)?: "
+    r"^\[(?P<kind>Video|File) Attachment(?P<quoted> in quoted message)?: "
     r"name (?P<name>.*?), (?P<location>path|ref) (?P<value>.*)\]$")
+_EXTERNAL_VIDEO_SUMMARY_RE = re.compile(
+    r"^\[视频「.*?」已由视觉服务（.*?）观看并分析，结果如下：\n.*—— 以上是外部视觉服务返回的数据",
+    re.DOTALL,
+)
+_EXTERNAL_VIDEO_NEUTRALIZED_RE = re.compile(
+    r"^\[视频(?:内容已随本消息直接提供（文件名 .+?）| .+? 已交给视觉模型分析，分析结果已随本消息以文字形式提供)"
+)
 #: QQ/NapCat 实测把用户发的视频当 File 组件投递，核心于是写 [File Attachment: ...]，
 #: 只有扩展名能区分视频和普通文件；`.ts` 不在表内：相比之下它更可能是源码。
 _VIDEO_SUFFIXES = frozenset({
     ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".flv", ".wmv", ".mpeg", ".mpg",
     ".3gp", ".ogv",
 })
+_EXCLUDED_VIDEO_SUFFIXES = frozenset({".ts", ".m2ts", ".mts"})
+
+
+def _is_video_suffix(name: str) -> bool:
+    from urllib.parse import urlparse
+
+    if not isinstance(name, str) or not name.strip():
+        return False
+    raw = name.strip()
+    if raw.startswith("base64://"):
+        return False
+    parsed = urlparse(raw).path if "://" in raw else raw
+    suffix = Path(parsed).suffix.lower()
+    if suffix in _EXCLUDED_VIDEO_SUFFIXES:
+        return False
+    return suffix in _VIDEO_SUFFIXES
 
 
 def _part_video_url(part):
@@ -797,38 +867,140 @@ def _part_video_url(part):
 
 
 def _is_video_placeholder(text):
-    """这段文本是不是核心写下的视频路径占位符。"""
+    """这段文本是不是核心写下的视频路径/链接占位符。"""
     match = _VIDEO_PLACEHOLDER_RE.match(text.strip()) if isinstance(text, str) else None
     if match is None:
         return False
     if match.group("kind") == "Video":
+        name = (match.group("name") or "").strip()
+        if name and Path(name).suffix.lower() in _EXCLUDED_VIDEO_SUFFIXES:
+            return False
         return True
-    return Path((match.group("name") or "").strip()).suffix.lower() in _VIDEO_SUFFIXES
+    return _is_video_suffix(match.group("name") or "") or _is_video_suffix(match.group("value") or "")
 
 
-def event_has_video(event):
-    """Recognize an original video component before AstrBot builds its request."""
+def _is_external_video_summary_text(text):
+    """严格匹配外部 video_vision 插件写入的结果或占位中立化文本，防止用户正文伪造。"""
+    if not isinstance(text, str):
+        return False
+    stripped = text.strip()
+    return bool(
+        _EXTERNAL_VIDEO_SUMMARY_RE.match(stripped)
+        or _EXTERNAL_VIDEO_NEUTRALIZED_RE.match(stripped)
+    )
+
+
+def event_has_video(event, *, include_quoted: bool = True):
+    """Recognize direct or quoted original video/mp4-file components (excluding .ts)."""
     parts = getattr(getattr(event, "message_obj", None), "message", ())
-    for part in parts if isinstance(parts, (list, tuple)) else ():
-        kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
-        if kind == "Video":
-            return True
-        if kind == "File" and Path(str(getattr(part, "name", "") or "")).suffix.lower() in _VIDEO_SUFFIXES:
-            return True
-    return False
+
+    def visit(items, depth=0):
+        if depth > 4:
+            return False
+        for part in items if isinstance(items, (list, tuple)) else ():
+            kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
+            if kind == "Video":
+                return True
+            if kind == "File":
+                if any(
+                    _is_video_suffix(str(getattr(part, attr, "") or ""))
+                    for attr in ("name", "file", "url")
+                ):
+                    return True
+            if include_quoted and kind == "Reply":
+                chain = getattr(part, "chain", None)
+                if visit(chain, depth + 1):
+                    return True
+        return False
+
+    return visit(parts)
+
+
+from dataclasses import dataclass as _dataclass
+
+
+@_dataclass(frozen=True)
+class VideoPlaceholder:
+    kind: str
+    name: str
+    location: str
+    value: str
+    quoted: bool
+    part: object
+
+
+def video_placeholders(request, *, include_quoted: bool = True) -> tuple[VideoPlaceholder, ...]:
+    """Return direct and optionally quoted video placeholders (path & ref, excl. .ts)."""
+    parts = getattr(request, "extra_user_content_parts", None)
+    found = []
+    for part in parts if isinstance(parts, list) else ():
+        raw = _part_text(part)
+        if not isinstance(raw, str):
+            continue
+        match = _VIDEO_PLACEHOLDER_RE.match(raw.strip())
+        if match is None or not _is_video_placeholder(raw):
+            continue
+        is_quoted = bool(match.group("quoted"))
+        if is_quoted and not include_quoted:
+            continue
+        found.append(
+            VideoPlaceholder(
+                kind=match.group("kind"),
+                name=(match.group("name") or "").strip(),
+                location=match.group("location"),
+                value=(match.group("value") or "").strip(),
+                quoted=is_quoted,
+                part=part,
+            )
+        )
+    return tuple(found)
 
 
 def video_placeholder_paths(request):
     """Return direct video paths already resolved by AstrBot for this request."""
-    parts = getattr(request, "extra_user_content_parts", None)
-    paths = []
-    for part in parts if isinstance(parts, list) else ():
-        value = _part_text(part)
-        match = _VIDEO_PLACEHOLDER_RE.match(value.strip()) if isinstance(value, str) else None
-        if (match is not None and "in quoted message" not in value
-                and match.group("location") == "path" and _is_video_placeholder(value)):
-            paths.append(match.group("value"))
-    return tuple(paths)
+    return tuple(
+        item.value
+        for item in video_placeholders(request, include_quoted=False)
+        if item.location == "path"
+    )
+
+
+def neutralize_video_placeholder(part, replacement_text: str) -> None:
+    """Replace an exposed local path or remote ref placeholder in-place."""
+    if isinstance(part, Mapping):
+        if "text" in part:
+            part["text"] = replacement_text
+    elif hasattr(part, "text"):
+        part.text = replacement_text
+
+
+def extract_video_question(event, request=None, prepared=None) -> str:
+    """Extract current-turn user plain text to focus video QA without system/noise markup."""
+    candidates = []
+    for obj in (prepared, request, event):
+        if isinstance(obj, Mapping):
+            val = obj.get("text") or obj.get("prompt")
+        else:
+            val = getattr(obj, "prompt", None) or getattr(obj, "message_str", None)
+        if isinstance(val, str) and val.strip():
+            candidates.append(val)
+    if not candidates:
+        parts = getattr(getattr(event, "message_obj", None), "message", ())
+        plain = " ".join(
+            getattr(part, "text", "")
+            for part in (parts if isinstance(parts, (list, tuple)) else ())
+            if getattr(getattr(part, "type", None), "value", getattr(part, "type", None)) == "Plain"
+            and isinstance(getattr(part, "text", None), str)
+        )
+        if plain.strip():
+            candidates.append(plain)
+    for raw in candidates:
+        cleaned = re.sub(r"<companion_[^>]+>.*?</companion_[^>]+>", " ", raw, flags=re.DOTALL)
+        cleaned = re.sub(r"<提及自己>|\[Video Attachment.*?\]|\[File Attachment.*?\]|\[语音消息\]|\[语音不可用\]|\[视频不可用\]|\[图片不可用\]", " ", cleaned)
+        cleaned = " ".join(cleaned.replace("\x00", "").split()).strip()
+        if cleaned:
+            return cleaned[:300]
+    return ""
 
 
 def _part_video_frame(part):
@@ -845,16 +1017,14 @@ def video_request_state(request):
 
     ``placeholder_only`` 表示只有文件名；``native_summary`` 表示独立的原生视频
     模型读了原视频并向核心请求提供临时转述；``sampled_frames`` 表示仅附抽帧图片；
-    ``native_and_sampled`` 表示多视频中两种形态并存；``injected`` 表示原视频块
-    被其它插件附上（AstrBot 可能仍在音频预处理时丢弃它）；``absent`` 表示无视频。
-
-    本插件的原生转述有明确标记；外部插件把视频交给视觉服务、再把一段**文字**
-    分析注入请求时，这里不会把它误认成 ``native_summary`` 或 ``injected``。
+    ``native_and_sampled`` 表示多视频中两种形态并存；``external_summary`` 表示
+    外部 ``video_vision`` 等插件已完成视觉理解；``injected`` 表示原视频块
+    被其它插件附上；``absent`` 表示无视频。
 
     只读 ``request``，不查任何插件状态。
     """
     parts = getattr(request, "extra_user_content_parts", None)
-    injected = frames = native = placeholders = 0
+    injected = frames = native = external = placeholders = 0
     for part in parts if isinstance(parts, list) else ():
         url = _part_video_url(part)
         if isinstance(url, str) and url.startswith(_VIDEO_DATA_PREFIX):
@@ -863,10 +1033,14 @@ def video_request_state(request):
         if _part_video_frame(part):
             frames += 1
             continue
-        if isinstance(_part_text(part), str) and _part_text(part).startswith(_VIDEO_NATIVE_SUMMARY_PREFIX):
+        text = _part_text(part)
+        if isinstance(text, str) and text.startswith(_VIDEO_NATIVE_SUMMARY_PREFIX):
             native += 1
             continue
-        if _is_video_placeholder(_part_text(part)):
+        if _is_external_video_summary_text(text):
+            external += 1
+            continue
+        if _is_video_placeholder(text):
             placeholders += 1
     if native and frames:
         return _VIDEO_NATIVE_AND_SAMPLED
@@ -874,6 +1048,8 @@ def video_request_state(request):
         return _VIDEO_NATIVE_SUMMARY
     if frames:
         return _VIDEO_SAMPLED_FRAMES
+    if external and placeholders == 0:
+        return _VIDEO_EXTERNAL_SUMMARY
     if injected:
         return _VIDEO_INJECTED
     return _VIDEO_PLACEHOLDER_ONLY if placeholders else _VIDEO_ABSENT
