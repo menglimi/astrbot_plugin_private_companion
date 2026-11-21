@@ -259,9 +259,9 @@ class NewsContactTests(ContactScheduleFixture, unittest.IsolatedAsyncioTestCase)
         self.assertEqual(saved["news_provenance"]["url"], "https://news.example/story-a")
         self.assertIn("news_event", saved["diagnostic_origin"])
         request = self.contact_calls()[0].original
-        self.assertIn("新闻按来源标题、摘要与发布时间分享", request.instruction)
+        self.assertIn("新闻按来源标题、摘要与发布时间分享", request.user_instruction)
         self.assertIn("沿用原人格", request.instruction)
-        self.assertIn("不固定兴奋、卖萌", request.instruction)
+        self.assertIn("不固定兴奋、卖萌", request.user_instruction)
         self.assertTrue(any(item.owner == SOURCE_OWNER for item in request.context.materials))
 
     async def test_news_sharing_prompt_and_natural_punctuation_create_separate_parts(self):
@@ -274,10 +274,12 @@ class NewsContactTests(ContactScheduleFixture, unittest.IsolatedAsyncioTestCase)
         self.settings(app, {"proactive_intensity_body_chars": 120}).unwrap()
 
         async def excited_sharing(envelope):
-            self.assertIn("把新闻当作看到值得分享的内容后想说的一段话", envelope.original.instruction)
-            self.assertIn("不固定兴奋、卖萌", envelope.original.instruction)
-            self.assertIn("无需压成一句", envelope.original.instruction)
-            self.assertIn("已配置规则分段", envelope.original.instruction)
+            guidance = envelope.original.user_instruction
+            self.assertIn("把新闻当作看到值得分享的内容后想说的一段话", guidance)
+            self.assertIn("不固定兴奋、卖萌", guidance)
+            self.assertIn("无需压成一句", guidance)
+            self.assertIn("已配置规则分段", guidance)
+            self.assertNotIn(LLM_SEGMENT_MARKER, guidance)
             self.assertNotIn(LLM_SEGMENT_MARKER, envelope.original.instruction)
             return answered(json.dumps({
                 "decision": "send",
@@ -320,8 +322,9 @@ class NewsContactTests(ContactScheduleFixture, unittest.IsolatedAsyncioTestCase)
             "content_cleanup_words": '["<newline>", "。", "！"]'}, "news-model-parts")
 
         async def model(envelope):
-            self.assertIn("即使正文偏好少标点", envelope.original.instruction)
-            self.assertIn(LLM_SEGMENT_MARKER, envelope.original.instruction)
+            guidance = envelope.original.user_instruction
+            self.assertIn("即使正文偏好少标点", guidance)
+            self.assertIn(LLM_SEGMENT_MARKER, guidance)
             self.configure_presentation(app, {"enabled": False}, "news-next-turn-disabled")
             return answered(json.dumps({"decision": "send",
                 "text": "我看到一个有趣的点\n" + LLM_SEGMENT_MARKER + "\n有点想知道接下来会怎样"},
@@ -352,7 +355,9 @@ class NewsContactTests(ContactScheduleFixture, unittest.IsolatedAsyncioTestCase)
         body = "看到这个消息就想分享给你。\n\n我有点好奇它接下来会怎样。"
 
         async def model(envelope):
-            self.assertIn("作为一条消息发送", envelope.original.instruction)
+            guidance = envelope.original.user_instruction
+            self.assertIn("作为一条消息发送", guidance)
+            self.assertNotIn(LLM_SEGMENT_MARKER, guidance)
             self.assertNotIn(LLM_SEGMENT_MARKER, envelope.original.instruction)
             return answered(json.dumps({"decision": "send", "text": body}, ensure_ascii=False))
 

@@ -121,6 +121,8 @@ class ProactiveVoicePokeTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.sent[0].poke)
         self.assertNotIn("voice_intent", self.called[0].original.instruction)
         self.assertNotIn("poke_intent", self.called[0].original.instruction)
+        self.assertNotIn("voice_intent", self.called[0].original.user_instruction)
+        self.assertNotIn("poke_intent", self.called[0].original.user_instruction)
 
     async def test_enabled_intents_seal_plans_outside_the_payload_fingerprint(self):
         app = await self.enabled_actions(voice_action_enabled=True, poke_action_enabled=True,
@@ -134,13 +136,13 @@ class ProactiveVoicePokeTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((data["voice"]["provider_id"], data["voice"]["position"], data["voice"]["delivery_mode"]),
                          ("", "after_media", "voice_and_text"))
         self.assertEqual(data["poke"], {"count": 1})
-        instruction = self.called[0].original.instruction
-        self.assertIn("voice_intent", instruction)
-        self.assertIn("不需要等用户明确要求语音", instruction)
-        self.assertIn("不要因为示例通常只写文字", instruction)
-        self.assertIn("早呀，今天想听你讲讲近况", instruction)
-        self.assertIn("poke_intent", instruction)
-        self.assertIn("不代表", instruction)
+        guidance = self.called[0].original.user_instruction
+        self.assertIn("voice_intent", guidance)
+        self.assertIn("不需要等用户明确要求语音", guidance)
+        self.assertIn("不要因为示例通常只写文字", guidance)
+        self.assertIn("早呀，今天想听你讲讲近况", guidance)
+        self.assertIn("poke_intent", guidance)
+        self.assertIn("不代表", guidance)
         row = app.proactive._delivery_row(task.task_id)
         request = DeliveryRequest.restore(row["request_json"])
         content = app.proactive.delivery_text(request, self.clock.now()).unwrap()
@@ -172,8 +174,8 @@ class ProactiveVoicePokeTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["voice"]["provider_id"], "japanese-tts")
         self.assertEqual(data["voice"]["timeout_seconds"], 17)
         self.assertEqual(self.sent[0].text, text)
-        self.assertIn("voice_text 使用自然日语", self.called[0].original.instruction)
-        self.assertIn("不会按字数截断", self.called[0].original.instruction)
+        self.assertIn("voice_text 使用自然日语", self.called[0].original.user_instruction)
+        self.assertIn("不会按字数截断", self.called[0].original.user_instruction)
 
     async def test_chinese_voice_reads_the_visible_text_even_when_model_rewrites_it(self):
         app = await self.enabled_actions(voice_action_enabled=True)
@@ -210,13 +212,13 @@ class ProactiveVoicePokeTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("voice", self.record(second.task_id))
         self.assertIsNone(self.sent[1].voice)
         self.assertEqual(self.record(second.task_id)["poke"], {"count": 1})
-        self.assertNotIn("voice_intent", self.called[1].original.instruction)
-        self.assertIn("poke_intent", self.called[1].original.instruction)
+        self.assertNotIn("voice_intent", self.called[1].original.user_instruction)
+        self.assertIn("poke_intent", self.called[1].original.user_instruction)
         self.advance(app, 61 * 60)
         self.choose(text="第三条：书店门口在放你喜欢的歌。")
         third = await self.send_once(app, "third")
         self.assertIn("voice", self.record(third.task_id))
-        self.assertIn("voice_intent", self.called[2].original.instruction)
+        self.assertIn("voice_intent", self.called[2].original.user_instruction)
 
     async def test_poke_daily_limit_counts_the_local_day_and_resets_after_local_midnight(self):
         app = await self.enabled_actions(poke_action_enabled=True, poke_action_daily_limit=1,
@@ -228,13 +230,13 @@ class ProactiveVoicePokeTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         second = await self.send_once(app, "second")
         self.assertEqual(self.record(first.task_id)["poke"], {"count": 1})
         self.assertNotIn("poke", self.record(second.task_id))
-        self.assertNotIn("poke_intent", self.called[1].original.instruction)
+        self.assertNotIn("poke_intent", self.called[1].original.user_instruction)
         # The relationship's own timezone (Asia/Shanghai by default) starts the new day at 16:00 UTC.
         self.advance(app, 16 * 3600)
         self.choose(text="第三条：新的一天开始了。")
         third = await self.send_once(app, "third")
         self.assertEqual(self.record(third.task_id)["poke"], {"count": 1})
-        self.assertIn("poke_intent", self.called[2].original.instruction)
+        self.assertIn("poke_intent", self.called[2].original.user_instruction)
 
     async def test_body_cleared_by_the_transaction_guard_seals_neither_plan(self):
         app = await self.enabled_actions(voice_action_enabled=True, poke_action_enabled=True,

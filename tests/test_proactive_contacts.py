@@ -109,13 +109,15 @@ class ProactiveContactTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         record = json.loads(row["record_json"])
         selected_purpose = record["purpose"]
         relationship_instruction = "这是主动表达方向，不代表用户说过特定关键词或当前有同等意愿。"
+        combined = self.called[-1].original.instruction + "\n" + self.called[-1].original.user_instruction
         if selected_purpose == "chat":
             self.assertNotIn("relationship_event", record["automatic_origin"])
-            self.assertNotIn(relationship_instruction, self.called[-1].original.instruction)
+            self.assertNotIn(relationship_instruction, combined)
         else:
             self.assertEqual(selected_purpose, "care")
             self.assertEqual(record["automatic_origin"]["relationship_event"]["purposes"], ["care"])
-            self.assertIn(relationship_instruction, self.called[-1].original.instruction)
+            self.assertIn(relationship_instruction, self.called[-1].original.user_instruction)
+            self.assertNotIn(relationship_instruction, self.called[-1].original.instruction)
 
     async def test_proactive_contact_uses_saved_segmentation_and_delivers_ordered_parts(self):
         app = await self.enabled()
@@ -332,7 +334,7 @@ class ProactiveContactTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         evidence = [item.payload for item in prompt.context.materials if item.purpose == "contact_evidence"]
         self.assertEqual(len(evidence), 1)
         self.assertIn("用户先前说过", evidence[0])
-        self.assertIn("未回应", prompt.instruction)
+        self.assertIn("未回应", prompt.user_instruction)
         self.assertEqual(self.sent[0].context, context)
         self.assertEqual(self.sent[0].text, "想起你上次提到的书，读到哪里了？")
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) FROM sources", ())[0], 1)
@@ -860,8 +862,9 @@ class ProactiveContactTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("dedup_candidate", purposes)
         self.assertNotIn("last_confirmed_reply", purposes)
         self.assertNotIn("只用标为 dedup_candidate", prompt.instruction)
-        self.assertIn("不要把缺少这些材料判为重复", prompt.instruction)
-        self.assertIn("除程序负责的授权和安全检查外，请选择 send", prompt.instruction)
+        self.assertNotIn("只用标为 dedup_candidate", prompt.user_instruction)
+        self.assertIn("不要把缺少这些材料判为重复", prompt.user_instruction)
+        self.assertIn("除程序负责的授权和安全检查外，请选择 send", prompt.user_instruction)
 
     async def test_confirmed_administrator_test_does_not_enable_the_saved_global_default(self):
         app = await self.enabled()

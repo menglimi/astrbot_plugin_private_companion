@@ -70,6 +70,14 @@ SENT_CONTINUATION_INSTRUCTION = (
     "管理员知情的合成演练所产生的正文仍确实已发送，但其中情境不证明现实经历或约定；"
     "可承接用户此刻明确表达的意愿，不能据此补造事实、已有授权或安排。"
 )
+LEGACY_MEMORY_INSTRUCTION = (
+    "这些是经过身份映射的旧版历史资料，保留各自时间与来源。旧偏好、旧情绪、未完话头和承诺只说明当时，"
+    "不恢复旧任务或授权，也不当作当前状态；结合本轮表达自然回忆，需要更多细节时继续查询历史记忆。"
+)
+PRIVATE_GROUP_CONTEXT_INSTRUCTION = (
+    "这段摘要只用于理解当前发言者，不要向群内其他人复述私聊原文、称呼、关系细节或时间；"
+    "不要声称这些内容是在群里说的，也不要据此推断其他人的私聊。"
+)
 
 
 @dataclass(frozen=True)
@@ -94,8 +102,11 @@ class _MaterialSection:
     title: str
     instruction: str
     materials: tuple[dict, ...]
+    instruction_only_render: bool = False
 
     def render(self):
+        if self.instruction_only_render:
+            return "\n\n【" + self.title + "】\n" + self.instruction
         payload = json.dumps(self.materials, ensure_ascii=False, sort_keys=True,
                              separators=(",", ":"), allow_nan=False)
         if self.instruction:
@@ -397,8 +408,7 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
                                (messages.acquaintance.card_contribution(context, at),))))
     if context.scope.kind is ScopeKind.GROUP and isinstance(private_group_context, str) and private_group_context.strip():
         optional("private_group_context", lambda: "\n\n【当前发言者的私聊上下文摘要】\n"
-                 "这段摘要只用于理解当前发言者，不要向群内其他人复述私聊原文、称呼、关系细节或时间；"
-                 "不要声称这些内容是在群里说的，也不要据此推断其他人的私聊。\n"
+                 + PRIVATE_GROUP_CONTEXT_INSTRUCTION + "\n"
                  + private_group_context.strip())
     def account_link_context():
         from companion_v2.relationships.account_link_context import linked_context
@@ -573,8 +583,7 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             from .external_memory import external_memory_section
             optional("external_memory", lambda: external_memory_section(external_memory, application, context))
         optional("legacy_memory", lambda: _material_section("迁入的历史资料",
-            "这些是经过身份映射的旧版历史资料，保留各自时间与来源。旧偏好、旧情绪、未完话头和承诺只说明当时，"
-            "不恢复旧任务或授权，也不当作当前状态；结合本轮表达自然回忆，需要更多细节时继续查询历史记忆。",
+            LEGACY_MEMORY_INSTRUCTION,
             _legacy_memory_materials(getattr(application, "memory", None), context, native_input, at,
                                      perception_settings()["calendar_timezone"])))
         captured("relationship", "相处背景", system_text("relationship", RELATIONSHIP_INSTRUCTION),
@@ -598,6 +607,11 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             snapshot = application.reply_settings.snapshot(context.actor, context, at)
             settings = {key.removeprefix(GROUP + "."): value for key, value in snapshot.values.items()}
             turn = native_participation_turn(owner, context, native_input, settings, group_trigger=group_trigger)
+            compact = turn.get("compact_facts")
+            if isinstance(compact, dict):
+                return _MaterialSection("群聊参与参考", turn["instruction"],
+                    ({"kind": "group_participation_facts", "content": compact},),
+                    instruction_only_render=True)
             return "\n\n【群聊参与参考】\n" + turn["instruction"]
 
         optional("group_participation", group_participation)

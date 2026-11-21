@@ -75,15 +75,20 @@ def _compact_materials(base, *, history_count):
 
 def plan_request_for(base, job, records):
     official_alert = any(record.reference.owner == OFFICIAL_ALERT_SOURCE_OWNER for record in records)
-    instruction = "\n".join(part for part in (
-        PLAN_INSTRUCTION, TOPIC_CONTINUITY_INSTRUCTION,
+    stable_instruction = "\n".join((
+        PLAN_INSTRUCTION,
+        TOPIC_CONTINUITY_INSTRUCTION,
+        "本轮具体的联系目的、来源边界与场景补充位于用户消息的 round_guidance 中，请一并遵循。",
+    ))
+    variable_instruction = "\n".join(part for part in (
         PURPOSE_INSTRUCTIONS[job.intent.purpose],
         _source_guidance(job, records),
         ALERT_SCOPE_INSTRUCTION if official_alert else "",
         _diagnostic_guidance(job, writing=False),
     ) if part)
     return replace(base, context=SealedForegroundContext(_compact_materials(base, history_count=3), (), ()),
-                   instruction=instruction, output_format="proactive_plan")
+                   instruction=stable_instruction, user_instruction=variable_instruction,
+                   output_format="proactive_plan")
 
 
 def plan_output(text):
@@ -108,7 +113,7 @@ def plan_output(text):
 
 
 def write_request_for(base, job, records, preferences, *, reactions_available, voice_available,
-                      poke_available, extra_instruction):
+                      poke_available, extra_instruction, variable_extra_instruction=""):
     brief = PromptMaterial(GROUP, "contact_brief", json.dumps(job.plan, ensure_ascii=False))
     materials = (*_compact_materials(base, history_count=2), brief)
     news = job.intent.purpose == "news" or "news_event" in (job.automatic_origin or {})
@@ -116,16 +121,24 @@ def write_request_for(base, job, records, preferences, *, reactions_available, v
     greeting_event = (job.automatic_origin or {}).get("greeting_event")
     official_alert = any(record.reference.owner == OFFICIAL_ALERT_SOURCE_OWNER for record in records)
     length = rhythm.body_chars(preferences)
-    length_instruction = (effective_template(preferences.values,
-        "news_length_prompt" if news else "length_prompt").format(chars=length) if length else "")
-    instruction = "\n".join(part for part in (
+    base_length_template = effective_template(preferences.values, "length_prompt")
+    base_length = base_length_template.format(chars=length) if length and base_length_template else ""
+    news_length_template = effective_template(preferences.values, "news_length_prompt") if news else ""
+    news_length = (news_length_template.format(chars=length)
+                   if length and news_length_template and news_length_template != base_length_template else "")
+    stable_instruction = "\n".join(part for part in (
         WRITE_INSTRUCTION,
         effective_template(preferences.values, "expression_prompt"),
-        length_instruction,
+        base_length,
         preferences.values.get("style_prompt") or "",
+        extra_instruction,
+        "本轮具体的联系目的、来源边界、可用互动能力与场景补充位于用户消息的 round_guidance 中，请一并严格遵循。",
+    ) if part)
+    variable_instruction = "\n".join(part for part in (
         PURPOSE_INSTRUCTIONS[job.intent.purpose],
         _source_guidance(job, records),
         effective_template(preferences.values, "news_sharing_prompt") if news else "",
+        news_length,
         GREETING_INSTRUCTION if greeting else "",
         INSOMNIA_GREETING_INSTRUCTION if isinstance(greeting_event, dict)
             and greeting_event.get("kind") == "insomnia_night" else "",
@@ -137,12 +150,13 @@ def write_request_for(base, job, records, preferences, *, reactions_available, v
          "，参考长度约 " + str(preferences.values["voice_action_max_chars"]) + " 字。") if voice_available else "",
         WRITE_POKE_INSTRUCTION if poke_available else "",
         EXPRESSION_STYLE_INSTRUCTION if any(item.purpose == "learned_style" for item in materials) else "",
-        extra_instruction,
+        variable_extra_instruction,
         _diagnostic_guidance(job, writing=True),
         "官方预警正文还须输出 coverage=covered 与从预警原文摘录的 coverage_quote。" if official_alert else "",
     ) if part)
     return replace(base, context=SealedForegroundContext(materials, (), ()),
-                   instruction=instruction, output_format="proactive_contact")
+                   instruction=stable_instruction, user_instruction=variable_instruction,
+                   output_format="proactive_contact")
 
 
 def write_output(text, confidence):

@@ -33,7 +33,11 @@ from tests.test_host_application import HostFixture
 # ``LocalProvider``'s default, and the host default: the ceiling production runs
 # under until an operator raises it.
 DEFAULT_INPUT_CEILING = 131072
-RULE_COUNT = 40
+RULE_COUNT = RULE_READ_LIMIT
+# Compact existing_rules drop full observations/applicability, so a tight trim
+# ceiling scales with the compact rule budget rather than the legacy bloated size.
+TRIM_MATERIAL_CEILING = 9500
+TRIM_FLOOR_CEILING = 5000
 # A wire-scale reservation (and the seeded replies holding budget from the same
 # account) is larger than this fixture's default 100k daily account.
 WIRE_BUDGET = BudgetPolicy(*(Amount(200000, 200000) for _ in range(5)))
@@ -180,7 +184,7 @@ class ExpressionLearningTrimTests(ExpressionFixture, HostFixture, unittest.Isola
         # succeed, keep the newest rules and say how many it dropped. Every rule
         # here has the lowest value (rejected), so value order is time order and
         # the trim is exactly the prefix step it has always been.
-        app, context = await self.prepare(ceiling=30000)
+        app, context = await self.prepare(ceiling=TRIM_MATERIAL_CEILING)
         rows = self.seed_rules(app, context)
 
         last = await self.learn(app, context)
@@ -219,7 +223,7 @@ class ExpressionLearningTrimTests(ExpressionFixture, HostFixture, unittest.Isola
         # Adopted priors are what a new candidate must not duplicate; a newer
         # rejection is not. Adopted rules sit at the oldest end of the window, so
         # a recency-only prefix would drop all of them before the first rejection.
-        app, context = await self.prepare(ceiling=30000)
+        app, context = await self.prepare(ceiling=TRIM_MATERIAL_CEILING)
         adopted_from = 8
         rows = self.seed_rules(app, context,
                                state_for=lambda index: "adopted" if index < adopted_from else "rejected")
@@ -251,11 +255,10 @@ class ExpressionLearningTrimTests(ExpressionFixture, HostFixture, unittest.Isola
         self.assertEqual(len(calls), 1, "a trimmed batch still sends exactly one request")
 
     async def test_a_production_window_is_trimmed_under_the_default_ceiling(self):
-        # The production window: 128 rules accumulated, the newest RULE_READ_LIMIT
-        # of them read, the host default ceiling, and the adapter's own wire
-        # accounting. Those 80 read rules alone are more than one ceiling, so the
-        # batch must trim, still keep well over the floor, and never fail.
-        app, context = await self.prepare(reserve=self.reserve_wire_budget, budget=WIRE_BUDGET)
+        # With compact deduplication priors and bounded RULE_READ_LIMIT, a 128-rule
+        # production window fits well under DEFAULT_INPUT_CEILING without trimming,
+        # and still trims cleanly when a tighter provider wire ceiling applies.
+        app, context = await self.prepare(ceiling=22000, reserve=self.reserve_wire_budget, budget=WIRE_BUDGET)
         rows = self.seed_rules(app, context, 128)
 
         last = await self.learn(app, context)
@@ -265,16 +268,17 @@ class ExpressionLearningTrimTests(ExpressionFixture, HostFixture, unittest.Isola
         kept = [rule["signal_id"] for rule in material["existing_rules"]]
 
         sizes = self.learning_sizes()
-        self.assertGreater(sizes[0], DEFAULT_INPUT_CEILING, "the whole read window does not fit")
-        self.assertLessEqual(sizes[-1], DEFAULT_INPUT_CEILING)
+        self.assertLess(sizes[0], DEFAULT_INPUT_CEILING, "compact window fits well under default 131KB ceiling")
+        self.assertGreater(sizes[0], self.learning_ceiling, "tighter ceiling triggers reference-rule trim")
+        self.assertLessEqual(sizes[-1], self.learning_ceiling)
         self.assertGreater(len(kept), MIN_EXISTING_RULES, "one over-budget window must not need the floor")
         self.assertLess(len(kept), RULE_READ_LIMIT)
         self.assertEqual(kept, list(reversed(rows))[:len(kept)],
                          "a window of equal value keeps the newest prefix")
-        self.assertLessEqual(self.wire_size(envelope), DEFAULT_INPUT_CEILING)
+        self.assertLessEqual(self.wire_size(envelope), self.learning_ceiling)
         self.assertEqual(last["trimmed_rules"], RULE_READ_LIMIT - len(kept))
         self.assertEqual(last["trim_reason"], "model_input_budget")
-        self.assertEqual(last["input_ceiling"], DEFAULT_INPUT_CEILING)
+        self.assertEqual(last["input_ceiling"], self.learning_ceiling)
         recorded = app.runtime.read_all("SELECT r.task_id FROM model_requests r "
                                         "JOIN execution_tasks t ON t.task_id = r.task_id WHERE t.kind = ?",
                                         ("role.expression.learn",))
@@ -282,31 +286,20 @@ class ExpressionLearningTrimTests(ExpressionFixture, HostFixture, unittest.Isola
 
     async def test_a_shorter_self_page_does_not_trim_a_fitting_window(self):
         # The preflight must judge the request the gateway dispatches, not the one
-        # the conversation captured. Here the host persona is much longer than the
-        # role profile that replaces it: judging the captured persona would trim a
-        # window that fits as the short self page — a normal window the baseline
-        # sent whole. The persona still fits a reply, so the seeded conversation is
-        # an ordinary one; only the learning route would have been judged too tight.
+        # the conversation captured.
         persona = "很长的宿主人格提示。" * 800
-        app, context = await self.prepare(reserve=self.reserve_wire_budget, budget=WIRE_BUDGET,
+        app, context = await self.prepare(ceiling=36000, reserve=self.reserve_wire_budget, budget=WIRE_BUDGET,
                                           persona=persona, self_page={"name": "阿灯"})
-        # Fewer than a full read window, with room to spare: this case is about
-        # which role layer the preflight measures, not about a tight margin.
-        rows = self.seed_rules(app, context, 30)
+        rows = self.seed_rules(app, context, RULE_READ_LIMIT)
 
         last = await self.learn(app, context)
         self.assertEqual(last["state"], "succeeded", last)
-        # Judge the regression first: a baseline that measured the captured
-        # persona trims here, and that is the failure worth reporting — not a
-        # later premise about which side of the ceiling each request fell on.
         self.assertNotIn("trimmed_rules", last)
         envelope = self.learning_request()
-        # The case only discriminates if the captured persona does not fit while
-        # the dispatched self page does.
         captured = replace(envelope, original=replace(envelope.original,
             role_instruction=persona, role_guard_instruction=None))
-        self.assertGreater(self.wire_size(captured), DEFAULT_INPUT_CEILING)
-        self.assertLessEqual(self.wire_size(envelope), DEFAULT_INPUT_CEILING)
+        self.assertGreater(self.wire_size(captured), self.learning_ceiling)
+        self.assertLessEqual(self.wire_size(envelope), self.learning_ceiling)
         self.assertEqual(envelope.original.host_role_instruction, persona,
                          "the native role guard still checks the captured persona")
         self.assertNotEqual(envelope.original.role_instruction, persona)
@@ -317,37 +310,34 @@ class ExpressionLearningTrimTests(ExpressionFixture, HostFixture, unittest.Isola
     async def test_a_longer_self_page_trims_before_the_dispatch(self):
         # The mirror image: the role profile can also be longer than the captured
         # persona. A preflight on the persona would pass a request the gateway then
-        # rejects, which is the failure this whole preflight exists to prevent; the
-        # window has to be trimmed before dispatch instead.
+        # rejects; the window has to be trimmed before dispatch instead.
         self_page = {"personality": "很长的角色自述。" * 300, "identity": "很长的角色自述。" * 250,
                      "voice_examples": "很长的角色自述。" * 225, "motivations": "很长的角色自述。" * 225,
                      "appearance": "很长的角色自述。" * 225}
-        app, context = await self.prepare(reserve=self.reserve_wire_budget, budget=WIRE_BUDGET,
+        app, context = await self.prepare(ceiling=50000, reserve=self.reserve_wire_budget, budget=WIRE_BUDGET,
                                           self_page=self_page)
-        rows = self.seed_rules(app, context, 30)
+        rows = self.seed_rules(app, context, RULE_READ_LIMIT)
 
         last = await self.learn(app, context)
         self.assertEqual(last["state"], "succeeded", last)
         envelope = self.learning_request()
-        # The case only discriminates if the captured persona would have fitted
-        # while the dispatched self page does not.
         captured = replace(envelope, original=replace(envelope.original,
             role_instruction="原角色人格提示", role_guard_instruction=None))
-        self.assertLessEqual(self.wire_size(captured), DEFAULT_INPUT_CEILING)
+        self.assertLessEqual(self.wire_size(captured), self.learning_ceiling)
         sizes = self.learning_sizes()
-        self.assertGreater(sizes[0], DEFAULT_INPUT_CEILING, "the whole dispatched request does not fit")
-        self.assertLessEqual(sizes[-1], DEFAULT_INPUT_CEILING)
+        self.assertGreater(sizes[0], self.learning_ceiling, "the whole dispatched request does not fit")
+        self.assertLessEqual(sizes[-1], self.learning_ceiling)
         material = self.learning_material(envelope)
         kept = [rule["signal_id"] for rule in material["existing_rules"]]
         self.assertGreater(len(kept), MIN_EXISTING_RULES)
         self.assertEqual(kept, list(reversed(rows))[:len(kept)],
                          "a window of equal value keeps the newest prefix")
-        self.assertEqual(last["trimmed_rules"], 30 - len(kept))
+        self.assertEqual(last["trimmed_rules"], RULE_READ_LIMIT - len(kept))
         self.assertEqual(last["trim_reason"], "model_input_budget")
-        self.assertEqual(last["input_ceiling"], DEFAULT_INPUT_CEILING)
+        self.assertEqual(last["input_ceiling"], self.learning_ceiling)
 
     async def test_the_samples_are_never_trimmed(self):
-        app, context = await self.prepare(ceiling=30000)
+        app, context = await self.prepare(ceiling=TRIM_MATERIAL_CEILING)
         self.seed_rules(app, context)
         last = await self.learn(app, context)
         self.assertGreater(last["trimmed_rules"], 0)
@@ -359,7 +349,7 @@ class ExpressionLearningTrimTests(ExpressionFixture, HostFixture, unittest.Isola
         # Eight rules are the floor, so a ceiling below that cannot be met: the run
         # must report the profile conflict instead of a generic estimation failure,
         # and it must not trim below the priors a batch needs to deduplicate.
-        app, context = await self.prepare(ceiling=6000)
+        app, context = await self.prepare(ceiling=TRIM_FLOOR_CEILING)
         rows = self.seed_rules(app, context)
         with self.assertLogs("companion_v2.expression.style_service", level="WARNING"):
             last = await self.learn(app, context)
