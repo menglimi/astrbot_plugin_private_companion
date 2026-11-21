@@ -19,7 +19,7 @@ from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
 
-from astrbot.core.agent.message import Message, TextPart
+from astrbot.core.agent.message import Message, TextPart, ThinkPart
 from astrbot.core.provider.entities import LLMResponse
 
 from astrbot_host import core_reply_history_guard as history_guard
@@ -212,6 +212,42 @@ class HistoryLegalityTests(unittest.TestCase):
 
 
 class CoreReplyHistoryGuardTests(unittest.TestCase):
+    def test_completed_reply_retains_real_reasoning_and_answer_before_replayed_turns(self):
+        replay = "<system_reminder>未来时间</system_reminder>th用户说「虚构话题」。\nend虚构回答。"
+        original = "先回应本轮用户。\n" + replay + "\n" + replay
+        answer = TextPart(text="这一条是真正发出去的回复。")
+        message = Message(role="assistant", content=[ThinkPart(think=original), answer])
+
+        req = NS(contexts=[message.model_dump()])
+        repair_request_history(_Event(), req)
+        self.assertEqual(req.contexts[0]["content"][0]["think"], "先回应本轮用户。")
+        self.assertEqual(req.contexts[0]["content"][1]["text"], answer.text)
+
+        context = NS(messages=[message])
+        repair_run_context_history(_Event(), context)
+        self.assertEqual(context.messages[0].content[0].think, "先回应本轮用户。")
+        self.assertEqual(context.messages[0].content[1], answer)
+        self.assertEqual(message.content[0].think, original)
+
+    def test_clean_or_signed_reasoning_and_tool_turns_are_preserved(self):
+        replay = "<system_reminder>时间</system_reminder>th用户说。\nend回答。"
+        repeated = replay + "\n" + replay
+        text_part = TextPart(text="正文")
+        pending_call = tool_call("call_1", name="lookup")
+        messages = [
+            Message(role="assistant", content=[ThinkPart(think=replay), text_part]),
+            Message(role="assistant", content=[ThinkPart(think="这是代码。\n```\n" + repeated + "\n```"), text_part]),
+            Message(role="assistant", content=[ThinkPart(think=repeated, encrypted="signature"), text_part]),
+            Message(role="assistant", content=[ThinkPart(think=repeated), text_part], tool_calls=[pending_call]),
+            Message(role="tool", content="结果", tool_call_id="call_1"),
+            Message(role="assistant", content=[ThinkPart(think=repeated)]),
+            Message(role="user", content=repeated),
+        ]
+        before = deepcopy(messages)
+        context = NS(messages=messages)
+        repair_run_context_history(_Event(), context)
+        self.assertEqual(context.messages, before)
+
     def test_request_hook_repairs_the_contexts_the_sdk_will_convert(self):
         event = _Event(event_ref="f0214b76bd5a4f60872ca89e16cc587f")
         req = NS(contexts=[user(), assistant_calls("call_314584"), assistant("除了我家那个死脑筋的经纪人还能有谁？")])

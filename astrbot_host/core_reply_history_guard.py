@@ -24,6 +24,7 @@ cannot execute.  Observed in production twice in 48h as AstrBot's
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -32,8 +33,10 @@ from companion_v2.conversation.history_legality import (
     ToolPairingRepair,
     repair_tool_call_pairing,
 )
+from companion_v2.conversation.text_processing import mask_markdown_code
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA
 from .core_reply_tool_guard import (
+    _value,
     declared_tool_names,
     drop_undeclared_companion_calls,
     is_managed_request,
@@ -43,6 +46,9 @@ from .core_reply_tool_guard import (
 
 
 logger = logging.getLogger(__name__)
+_REPLAYED_TURN_MARKER = re.compile(
+    r"(?P<open><system_reminder>)|</system_reminder>(?P<replay>[ \t\r\n]*th(?=[\u3400-\u9fff]))?"
+)
 
 
 def _event_ref(event: Any) -> str:
@@ -107,12 +113,69 @@ def _repair(messages: Any, event: Any, *, where: str) -> ToolPairingRepair:
     return report
 
 
+def _trim_replayed_reasoning(text):
+    if not isinstance(text, str) or text.count("</system_reminder>") < 2:
+        return text
+    first_replay = opened_at = None
+    for marker in _REPLAYED_TURN_MARKER.finditer(mask_markdown_code(text)):
+        if marker.group("open"):
+            opened_at = marker.start()
+        else:
+            if opened_at is not None and marker.group("replay"):
+                if first_replay is not None:
+                    return text[:first_replay].rstrip()
+                first_replay = opened_at
+            opened_at = None
+    return text
+
+
+def _copy_with(item, key, value):
+    return {**item, key: value} if isinstance(item, Mapping) else item.model_copy(update={key: value})
+
+
+def _trim_history_reasoning(messages, event, *, where):
+    if not isinstance(messages, list):
+        return
+    from astrbot.core.agent.message import Message, ThinkPart
+
+    trimmed = 0
+    for index, message in enumerate(messages):
+        if not isinstance(message, (Mapping, Message)) or _value(message, "role") != "assistant":
+            continue
+        if _value(message, "tool_calls") or _value(message, "reasoning_signature"):
+            continue
+        content = _value(message, "content")
+        if not isinstance(content, list) or not any(
+                _value(part, "type") == "text" and str(_value(part, "text", "") or "").strip()
+                for part in content):
+            continue
+        parts = [part for part in content if _value(part, "type") == "think"]
+        if any(_value(part, "encrypted") or _value(part, "signature") for part in parts):
+            continue
+        updated = []
+        for part in content:
+            if isinstance(part, (Mapping, ThinkPart)) and _value(part, "type") == "think":
+                original = _value(part, "think")
+                text = _trim_replayed_reasoning(original)
+                if text != original:
+                    part = _copy_with(part, "think", text)
+            updated.append(part)
+        if updated != content:
+            messages[index] = _copy_with(message, "content", updated)
+            trimmed += 1
+    if trimmed:
+        logger.info("[CompanionV2] 已清理历史推理重演 where=%s messages=%s event_ref=%s",
+                    where, trimmed, _event_ref(event))
+
+
 def repair_request_history(event: Any, req: Any) -> ToolPairingRepair:
     """Repair ``req.contexts`` before the SDK converts it into agent messages."""
     if not _is_companion_turn(event):
         return ToolPairingRepair()
-    report = _repair(getattr(req, "contexts", None), event, where="request")
-    drop_undeclared_companion_history(getattr(req, "contexts", None), req, event, where="request")
+    messages = getattr(req, "contexts", None)
+    _trim_history_reasoning(messages, event, where="request")
+    report = _repair(messages, event, where="request")
+    drop_undeclared_companion_history(messages, req, event, where="request")
     return report
 
 
@@ -120,7 +183,9 @@ def repair_run_context_history(event: Any, run_context: Any) -> ToolPairingRepai
     """Repair the messages the runner will actually send, if a hook got there first."""
     if not _is_companion_turn(event):
         return ToolPairingRepair()
-    report = _repair(getattr(run_context, "messages", None), event, where="run_context")
+    messages = getattr(run_context, "messages", None)
+    _trim_history_reasoning(messages, event, where="run_context")
+    report = _repair(messages, event, where="run_context")
     try:
         from .core_reply_tool_dispatch import active_core_runner
         runner = active_core_runner(event, run_context)
@@ -129,8 +194,7 @@ def repair_run_context_history(event: Any, run_context: Any) -> ToolPairingRepai
     if runner is not None:
         # The request the runner holds is the one that will be sent, so its tool
         # set -- not a re-derived one -- decides which example stays.
-        drop_undeclared_companion_history(getattr(run_context, "messages", None),
-                                          getattr(runner, "req", None), event, where="run_context")
+        drop_undeclared_companion_history(messages, getattr(runner, "req", None), event, where="run_context")
     return report
 
 
