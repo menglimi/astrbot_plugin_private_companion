@@ -10,7 +10,45 @@
     configuration_revision_conflict: "设置已变化，请刷新后重新保存。", core_access_required: "当前账号没有本体管理权限。", source_revoked: "原文已撤回，依赖它的内容已停止使用。", life_activity_not_removable: "只有已完成或已取消的阅读记录可以删除。" };
   let bridge, state, selected, dialogAction, dialogItem, busy = false, dirty = false, tab = "archive";
   let datePages = [null], datePage = 0, activityCursor = null, polling = null;
+  const renderedKeys = { journalList: null, journalDetail: null, reading: null, sleep: null, receipts: null };
+  const animatedLists = new Set();
   const pending = new Map();
+  function resetRenderKeys() {
+    for (const key of Object.keys(renderedKeys)) renderedKeys[key] = null;
+  }
+  function applyEntranceClass(list, listId, hasItems, background = false) {
+    const animate = !background && hasItems && !animatedLists.has(listId);
+    if (animate) animatedLists.add(listId);
+    list.classList?.toggle?.("is-initial-render", animate);
+  }
+  function activitySignature(item) {
+    return {
+      activity_id: item.activity_id, revision: item.revision, kind: item.kind, state: item.state,
+      title: item.title, started_at: item.started_at, due_at: item.due_at,
+      book_progress: item.book_progress || null, unavailable_reason: item.unavailable_reason || null,
+      reflection: item.reflection || null, task_state: item.task?.state || null,
+      view_token: item.view_token || null,
+    };
+  }
+  function pollDelay(currentState) {
+    if (!currentState || document.hidden) return 0;
+    if (currentState.running?.length > 0) return 3000;
+    if (currentState.activities.some(a => a.state === "active" && a.kind !== "sleep")) return 15000;
+    if (currentState.activities.some(a => a.state === "active")) return 30000;
+    if (currentState.config?.reading_enabled) return 15000;
+    return 0;
+  }
+  function schedulePolling() {
+    clearTimeout(polling);
+    polling = null;
+    const delay = pollDelay(state);
+    if (delay > 0) {
+      polling = setTimeout(() => {
+        polling = null;
+        if (!busy && !document.hidden) load(true, true);
+      }, delay);
+    }
+  }
   const booleanFields = ["enabled", "diary_enabled", "sleep_enabled", "reading_enabled", "derive_enabled"];
   const configFields = [...booleanFields, "timezone", "diary_time", "sleep_time", "sleep_timezone", "sleep_variation_minutes", "sleep_window_minutes", "sleep_minutes"];
   const date = value => value ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "—";
@@ -101,16 +139,31 @@
     const b = node("button", label, ["delete", "cancel", "withdraw"].includes(action) ? "danger" : "secondary");
     b.type = "button"; b.addEventListener("click", () => direct ? send(action, {}, item) : open(action, item)); return b;
   }
-  function renderArchive() {
-    const list = $("journal-list"); list.replaceChildren();
-    if (!state.journals.length) list.append(node("p", "这里还没有日记或梦境。", "empty"));
+  function renderArchive(background = false) {
     selected = state.journals.find(j => j.kind === selected?.kind && j.local_date === selected?.local_date) || state.journals[0] || null;
-    for (const item of state.journals) {
-      const b = node("button", `${item.local_date} · ${kind(item)}`, "journal-link"); b.type = "button";
-      b.setAttribute("aria-current", String(item === selected));
-      b.append(node("small", item.state === "deleted" ? "已删除" : item.unavailable_reason ? "来源不可用" : (item.body || item.afterglow || "").slice(0, 45)));
-      b.addEventListener("click", () => { selected = item; renderArchive(); }); list.append(b);
+    const selectedKey = selected ? `${selected.kind}:${selected.local_date}` : "";
+    const list = $("journal-list");
+    const listKey = JSON.stringify(state.journals);
+    if (listKey !== renderedKeys.journalList) {
+      renderedKeys.journalList = listKey;
+      applyEntranceClass(list, "journal-list", state.journals.length > 0, background);
+      list.replaceChildren();
+      if (!state.journals.length) list.append(node("p", "这里还没有日记或梦境。", "empty"));
+      for (const item of state.journals) {
+        const b = node("button", `${item.local_date} · ${kind(item)}`, "journal-link"); b.type = "button";
+        b.dataset.journalKey = `${item.kind}:${item.local_date}`;
+        b.setAttribute("aria-current", String(item === selected));
+        b.append(node("small", item.state === "deleted" ? "已删除" : item.unavailable_reason ? "来源不可用" : (item.body || item.afterglow || "").slice(0, 45)));
+        b.addEventListener("click", () => { selected = item; renderArchive(false); }); list.append(b);
+      }
+    } else {
+      list.querySelectorAll(".journal-link").forEach(btn => {
+        if (btn.dataset && "journalKey" in btn.dataset) btn.setAttribute("aria-current", String(btn.dataset.journalKey === selectedKey));
+      });
     }
+    const detailKey = JSON.stringify(selected);
+    if (detailKey === renderedKeys.journalDetail) return;
+    renderedKeys.journalDetail = detailKey;
     const detail = $("journal-detail"); detail.replaceChildren();
     if (!selected) { detail.append(node("p", "选择一篇日记或梦境。", "empty")); return; }
     const item = selected;
@@ -128,10 +181,17 @@
     else { if (!item.unavailable_reason) actions.append(actionButton("更正正文", "edit", item), actionButton("提取索引", "derive", item, true)); actions.append(actionButton("删除", "delete", item)); }
     detail.append(actions);
   }
-  function renderActivities() {
+  function renderActivities(background = false) {
     for (const type of ["reading", "sleep"]) {
-      const list = $(type + "-list"); list.replaceChildren();
       const items = state.activities.filter(a => a.kind === type);
+      const key = JSON.stringify(type === "reading"
+        ? { items: items.map(activitySignature), reading_enabled: Boolean(state.config?.reading_enabled), next_reading_at: state.next_reading_at || null }
+        : { items: items.map(activitySignature) });
+      if (key === renderedKeys[type]) continue;
+      renderedKeys[type] = key;
+      const list = $(type + "-list");
+      applyEntranceClass(list, type + "-list", items.length > 0, background);
+      list.replaceChildren();
       if (!items.length) list.append(node("p", type === "reading" ? "本批暂无阅读片段。" : "本批没有睡眠记录。", "empty"));
       for (const item of items) {
         const card = node("article", undefined, "activity");
@@ -160,9 +220,15 @@
     }
   }
   const blockedRetries = new Set();
-  function renderReceipts() {
-    const list = $("receipt-list"); list.replaceChildren();
+  function renderReceipts(background = false) {
     const receipts = [...new Map(state.receipts.map(r => [r.operation_id || r.key, r])).values()].reverse();
+    const unresolved = state.journal_unresolved === true;
+    const key = JSON.stringify({ receipts, unresolved, blocked: [...blockedRetries].sort() });
+    if (key === renderedKeys.receipts) return;
+    renderedKeys.receipts = key;
+    const list = $("receipt-list");
+    applyEntranceClass(list, "receipt-list", receipts.length > 0, background);
+    list.replaceChildren();
     if (!receipts.length) list.append(node("p", "暂无书写执行记录。", "empty"));
     receipts.forEach((item, index) => {
       const card = node("article", undefined, "activity");
@@ -174,7 +240,6 @@
     // 否则同一天会多出第二条书写。retryable=false 由后端按操作状态给出。
     const failed = receipts.map((item, index) => ({item, index}))
       .filter(({item}) => item.state === "failed" && item.operation_id && item.retryable !== false);
-    const unresolved = state.journal_unresolved === true;
     for (const id of ["retry-id", "dream-retry"]) {
       const select = $(id), previous = select.value;
       select.replaceChildren(new Option(id === "dream-retry" ? "首次记录" : unresolved ? "有一次书写结果未确定，暂不能重试" : failed.length ? "选择失败的书写" : "暂无已确定失败的书写", ""),
@@ -206,29 +271,31 @@
     $("sleep-recommended").textContent = plan.recommended_duration_minutes
       ? `${Math.round(plan.recommended_duration_minutes / 60 * 10) / 10} 小时` : "—";
   }
-  function render() {
+  function render(background = false) {
     $("role").textContent = roleName();
     $("participant").textContent = display().subject_name || "当前聊天对象";
     $("host-state").textContent = names[state.host_state] || "状态待核对";
     $("routine-state").textContent = state.config.enabled ? "已启用" : "未启用";
     $("next-routines").textContent = [state.next_diary_at ? "下次日记：" + date(state.next_diary_at) : "", state.next_sleep_at ? "下次入睡：" + date(state.next_sleep_at) : ""].filter(Boolean).join(" · ");
     renderSleepPlan();
-    if (!dirty) configFields.forEach(k => { if (booleanFields.includes(k)) $(k).checked = state.config[k]; else $(k).value = state.config[k]; });
-    renderArchive(); renderActivities(); renderReceipts(); controls(busy);
+    if (!dirty) configFields.forEach(k => {
+      const input = $(k);
+      if (booleanFields.includes(k)) { const next = Boolean(state.config[k]); if (input.checked !== next) input.checked = next; }
+      else { const next = String(state.config[k] ?? ""); if (String(input.value ?? "") !== next) input.value = state.config[k]; }
+    });
+    renderArchive(background); renderActivities(background); renderReceipts(background); controls(busy);
     if (state.failure_code) notice(errors[state.failure_code] || "生活日程已暂停，请检查执行权限与设置。", true);
   }
-  async function load(preserveNotice = false) {
+  async function load(preserveNotice = false, background = false) {
     if (!bridge) return;
     try {
       state = await api("GET", { ...(datePages[datePage] ? { before: datePages[datePage] } : {}), ...(activityCursor ? { after_activity: activityCursor } : {}) });
-      if (!preserveNotice) notice(""); render();
-      clearTimeout(polling);
-      if (state.running.length || state.activities.some(a => a.state === "active") || state.config.reading_enabled) {
-        const active = state.running.length || state.activities.some(a => a.state === "active");
-        polling = setTimeout(() => { if (!busy && !document.hidden) load(true); }, active ? 3000 : 15000);
-      }
+      if (!preserveNotice) notice(""); render(background);
+      schedulePolling();
     } catch (error) {
       state = selected = null;
+      resetRenderKeys();
+      clearTimeout(polling); polling = null;
       ["journal-list", "journal-detail", "reading-list", "sleep-list", "receipt-list", "retry-id", "dream-retry"].forEach(id => $(id).replaceChildren());
       $("retry-form").hidden = true;
       for (const id of ["role", "participant", "sleep-scope", "sleep-executor", "sleep-next", "sleep-active-wake", "sleep-pressure", "sleep-debt", "sleep-workload", "sleep-recommended"]) $(id).textContent = "—";
@@ -304,7 +371,10 @@
   $("newer").addEventListener("click", () => { datePage--; load(); });
   $("more-activities").addEventListener("click", () => { activityCursor = state.next_activity; load(); });
   $("first-activities").addEventListener("click", () => { activityCursor = null; load(); });
-  document.addEventListener("visibilitychange", () => { if (!document.hidden && !busy) load(true); });
-  document.addEventListener("companion-mappings-change", () => { if (bridge && !busy) void load(true); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { clearTimeout(polling); polling = null; return; }
+    if (bridge && !busy) load(true, true);
+  });
+  document.addEventListener("companion-mappings-change", () => { if (bridge && !busy) void load(true, true); });
   (async () => { try { await window.AstrBotPluginPage.ready(); bridge = window.AstrBotPluginPage; await load(); } catch (_) { notice("无法连接管理界面，请从 AstrBot 插件页面重新打开。", true); } })();
 })();
