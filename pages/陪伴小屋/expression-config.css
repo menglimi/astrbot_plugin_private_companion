@@ -58,8 +58,10 @@
 
 /* 语音页：把对象设置与全局默认值叠成工作区，使用完整工作区宽度。
    分段预览在语音页不渲染（reply-page.js 的 previewEnabled 对语音返回 false），
-   所以模板必须是单列，预览槽位也要真正隐藏，否则右侧会留一条空列。 */
-#replyWorkspace.expression-voice-focus{grid-template-columns:minmax(0,1fr)}#replyWorkspace.expression-voice-focus .wb-section-layout{grid-template-columns:minmax(0,1fr);gap:0}#replyWorkspace.expression-voice-focus .wb-section-sidebar{display:none}#replyWorkspace.expression-voice-focus [data-wb-section-panel]:not([data-wb-section-panel="voice"]){display:none}#replyWorkspace.expression-voice-focus>[data-reply-part="preview"]{display:none}.expression-voice-workspace{display:grid;gap:var(--sp-5)}.expression-voice-workspace .host-options-panel{margin-top:0;padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--expression-panel-soft)}.expression-voice-workspace .host-options-heading h3{font-size:var(--fs-title)}
+   所以模板必须是单列，预览槽位也要真正隐藏，否则右侧会留一条空列。
+   分组展开由 reply-page.js 动态将 workbench 的 navigationLimit 置 0 负责，
+   不再在 CSS 强行隐藏侧栏或其余分节面板。 */
+#replyWorkspace.expression-voice-focus{grid-template-columns:minmax(0,1fr)}#replyWorkspace.expression-voice-focus>[data-reply-part="preview"]{display:none}.expression-voice-workspace{display:grid;gap:var(--sp-5)}.expression-voice-workspace .host-options-panel{margin-top:0;padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--expression-panel-soft)}.expression-voice-workspace .host-options-heading h3{font-size:var(--fs-title)}
 
 /* 常规回复/平台动作工作台直接复用 workbench.css 的容器两行结构（标题 ↔ 控件 + 通栏说明），
    不再使用重复类名强行压窄或锁死桌面两栏，避免 1440px 溢出和移动端错位。 */

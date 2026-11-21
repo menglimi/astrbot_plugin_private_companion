@@ -1326,7 +1326,7 @@ window.CompanionWorkbench = (() => {
       notice: "", bad: false, ok: false, savedState: "", ticket: 0,
       drawRails: true, container: null, timer: null, restrictionCode: "",
       instanceId: `wb-${++instanceSequence}`, activeGroupId: initialSection, resetFields: [],
-      visibleGroupIds: null,
+      visibleGroupIds: null, navigationLimit,
     };
     /* 被显式「恢复继承」的字段：保存时要作为 reset_to_inherit 发出去，
        而不是留一份与继承值相同的显式副本。 */
@@ -1467,7 +1467,8 @@ window.CompanionWorkbench = (() => {
       const layers = Array.isArray(status.layers) && status.layers.length
         ? status.layers : ["installation", "role", "window"];
       return {
-        group, title, note, order: names, fields, layers, groups, scopeNote, navigationLimit,
+        group, title, note, order: names, fields, layers, groups, scopeNote,
+        navigationLimit: state.navigationLimit,
         scopeObject: typeof scopeObject === "function" ? scopeObject() : scopeObject || scopeObjectForEndpoint(endpoint),
         presentation, sectionTabPrefix,
         writeLayer: status.scope || layers[layers.length - 1],
@@ -1704,9 +1705,13 @@ window.CompanionWorkbench = (() => {
       if (focus) focusSection(id);
     }
 
-    function setVisibleGroups(ids, preferredId = "") {
+    function setVisibleGroups(ids, preferredId = "", options = {}) {
       const requested = Array.isArray(ids) ? new Set(ids.map(String)) : null;
       state.visibleGroupIds = requested?.size ? requested : null;
+      if (options && typeof options.navigationLimit === "number" && Number.isFinite(options.navigationLimit)) {
+        state.navigationLimit = options.navigationLimit;
+        if (state.container) state.container.navigationLimit = options.navigationLimit;
+      }
       const groups = state.container?.groups || [];
       const visible = state.visibleGroupIds
         ? groups.filter(group => state.visibleGroupIds.has(group.id)) : groups;
@@ -3011,6 +3016,7 @@ window.CompanionWorkbench = (() => {
       state.ok = false; state.savedState = ""; state.drawRails = true;
       state.stale = false; state.conflicts = {};
       state.visibleGroupIds = null;
+      state.navigationLimit = navigationLimit;
       resets_ = [];
     }
 

@@ -753,6 +753,7 @@ function renderShellSide(){
         agendaHost.innerHTML=nextSchedule;
         const current=agendaHost.querySelector?.('.home-agenda-scroll');
         if(current){current.scrollTop=scrollTop;if(restoreFocus)current.focus({preventScroll:true});}
+        window.CompanionHomeSidebar?.syncScrollFade?.(agendaHost);
       }
       shellSideAge=nextAge;
       shellSideSchedule=nextSchedule;
@@ -765,6 +766,7 @@ function renderShellSide(){
   shellSideAge=nextAge;
   shellSideSchedule=nextSchedule;
   icons(host);
+  window.CompanionHomeSidebar?.syncScrollFade?.(host);
 }
 let homeAgendaClockTimer=null;
 function refreshHomeStateAge(){
@@ -791,6 +793,7 @@ async function refreshHomeAgendaClock(refresh=false){
     shellSideSchedule=next;
     const current=host.querySelector('.home-agenda-scroll');
     if(current){current.scrollTop=scrollTop;if(restoreFocus)current.focus({preventScroll:true});}
+    window.CompanionHomeSidebar?.syncScrollFade?.(host);
   }
 }
 function armHomeAgendaClock(){
@@ -812,7 +815,8 @@ function armHomeAgendaClock(){
  * 看不出这页到底在管什么。现在补上。 */
 function panelHead(title,subtitle,icon,extra='',titleActions=''){
   const copy=`<div class="shell-panel-copy"><h2>${title}</h2>${subtitle?`<p>${subtitle}</p>`:''}</div>`;
-  return `<header class="shell-panel-head">${I(icon)}${copy}${titleActions}${extra?`<span class="panel-spacer"></span>${extra}`:''}</header>`;
+  const actions=`${titleActions}${extra}`;
+  return `<header class="shell-panel-head">${I(icon)}${copy}${actions?`<div class="shell-panel-actions">${actions}</div>`:''}</header>`;
 }
 
 /* 家具说明视图。速览条选中的家具，面板直接承载它的工作区（2026-09-29 设计稿）：
@@ -874,10 +878,13 @@ function renderSectionPanel(id){
     all:renderAllFunctionsPage,
     data:renderData}[id];
   if(!renderer)return renderHomePanel();
-  const diagnosticsLink = id === 'expression' || id === 'decision'
-    ? '<a class="text-button reply-diagnostics-link" href="#manage/maintenance/reply-diagnostics">查看本会话回复诊断</a>' : '';
+  const headerActions = id === 'expression' || id === 'decision'
+    ? '<a class="text-button reply-diagnostics-link" href="#manage/maintenance/reply-diagnostics">查看本会话回复诊断</a>'
+    : id === 'maintenance' && maintenancePane !== 'patrol' && maintenancePane !== 'reply-diagnostics'
+      ? `<button class="button small shell-panel-secondary-action" type="button" data-maint-open-patrol>${I('clipboard-check')}<span>每日巡视设置</span></button>`
+      : '';
   const icon=id==='phone'?'smartphone':id==='mobile'?'link-2':'settings-2';
-  return panelHead(heading,subtitle,icon,button('回到小屋','data-shell-home'),diagnosticsLink)
+  return panelHead(heading,subtitle,icon,button('回到小屋','data-shell-home'),headerActions)
     +`<div class="shell-panel-body">${renderer()}</div>`;
 }
 
@@ -4180,7 +4187,7 @@ function renderMaintenancePageOriginal(){
     <section class="content-panel" aria-labelledby="reply-diagnostics-heading"><h3 id="reply-diagnostics-heading">当前会话的回复诊断</h3>
       <div id="replyDiagnosticsWorkspace">${consoleLoading('正在打开回复诊断…')}</div></section></div>`;
   if(maintenancePane==='patrol')return `<div class="maintenance-page"><nav class="maint-subnav" aria-label="治理与维护二级导航"><button type="button" data-go="manage" data-manage="maintenance">返回运行诊断</button><button type="button" aria-current="page">每日巡视</button></nav><section id="roleStateWorkspace" data-state-section="patrol" aria-label="每日巡视维护设置"></section></div>`;
-  return `<div class="maintenance-page"><div class="maintenance-settings-entry"><button class="button small" type="button" data-maint-open-patrol>${I('clipboard-check')}每日巡视设置</button></div><section id="maintenanceWorkspace" aria-label="运行诊断与排障"></section></div>`;
+  return `<div class="maintenance-page"><section id="maintenanceWorkspace" aria-label="运行诊断与排障"></section></div>`;
 }
 function renderExpressionLearning(){
   return `<section id="expressionWorkspace" aria-label="表达学习设置">${consoleLoading('正在读取表达学习设置…')}</section>`;
