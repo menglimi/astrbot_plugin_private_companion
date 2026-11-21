@@ -76,7 +76,7 @@ class OriginalQuestionnaireBrowserTests(unittest.TestCase):
         self.context.close()
 
     def test_original_questionnaire_full_workflow_and_old_version_restore(self):
-        self.assertEqual(self.page.locator('[data-persona-recreation="questionnaire"]').get_attribute("aria-pressed"), "true")
+        self.assertEqual(self.page.locator('[data-persona-recreation="questionnaire"]').get_attribute("aria-selected"), "true")
         self.frame.locator("#load-version").click()
         self.assertEqual(self.frame.locator('[data-review-raw="right"]').input_value(), "原问卷已保存的旧稿")
         self.frame.locator('[data-prev="1"]').click()
