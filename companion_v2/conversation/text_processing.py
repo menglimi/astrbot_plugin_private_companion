@@ -267,8 +267,13 @@ _CONTROL_CANDIDATE_PATTERN = re.compile(
     rf"(?:{_CONTROL_REGISTERED_PATTERN}|{_CONTROL_NAMESPACE_PATTERN})",
     re.IGNORECASE,
 )
-_CONTROL_CODE_SPAN_PATTERN = re.compile(
-    r"(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\r\n]+`)", re.MULTILINE,
+_CODE_QUOTE = re.compile(r" {0,3}>[ \t]?")
+_CODE_FENCE = re.compile(r"[ \t]*(`{3,}|~{3,})(.*)")
+_CODE_LIST_PREFIX = re.compile(r"[ \t]*(?:(?:[-+*]|[0-9]{1,9}[.)])[ \t]+)+")
+_CODE_INDENT = re.compile(r"(?: {4}| {0,3}\t)")
+_INLINE_CODE = re.compile(
+    r"(?<!`)(?P<delimiter>`+)(?!`)(?:[^\r\n]|\r?\n(?![ \t]*\r?\n))+?"
+    r"(?<!`)(?P=delimiter)(?!`)"
 )
 _CONTROL_CODE_MASK_HEAD = "\x01PCCS"
 _CONTROL_CODE_MASK_TAIL = "\x02"
@@ -381,8 +386,78 @@ def _control_rules(exclude, *, truncate):
     return result
 
 
+def _code_quote_body(line, limit=None):
+    depth, offset = 0, 0
+    while limit is None or depth < limit:
+        prefix = _CODE_QUOTE.match(line, offset)
+        if not prefix:
+            break
+        depth, offset = depth + 1, prefix.end()
+    return depth, line[offset:]
+
+
+def _markdown_code_blocks(text):
+    offset, fence = 0, None
+    paragraph_depth = None
+    for original in text.splitlines(keepends=True):
+        line = original.rstrip("\r\n")
+        end = offset + len(line)
+        if fence:
+            depth, body = _code_quote_body(line, fence_depth)
+            if depth == fence_depth:
+                closing = _CODE_FENCE.fullmatch(body)
+                if closing and closing[1][0] == fence[0] and len(closing[1]) >= len(fence) and not closing[2].strip():
+                    yield start, end
+                    fence = None
+                offset += len(original)
+                continue
+            yield start, offset
+            fence = None
+        depth, body = _code_quote_body(line)
+        opening = _CODE_FENCE.fullmatch(_CODE_LIST_PREFIX.sub("", body, count=1))
+        if opening and (opening[1][0] != "`" or "`" not in opening[2]):
+            start, fence_depth, fence = offset, depth, opening[1]
+            paragraph_depth = None
+        elif _CODE_INDENT.match(body) and paragraph_depth != depth:
+            yield offset, end
+        elif body.strip():
+            paragraph_depth = depth
+        else:
+            paragraph_depth = None
+        offset += len(original)
+    if fence:
+        yield start, len(text)
+
+
+def _inline_code_runs(text):
+    cursor = 0
+    for match in _INLINE_CODE.finditer(text):
+        if cursor < match.start():
+            yield False, text[cursor:match.start()]
+        yield True, match.group(0)
+        cursor = match.end()
+    if cursor < len(text):
+        yield False, text[cursor:]
+
+
+def markdown_code_runs(text):
+    """Yield literal Markdown code separately from text eligible for control tags."""
+    cursor = 0
+    for start, end in _markdown_code_blocks(text):
+        yield from _inline_code_runs(text[cursor:start])
+        yield True, text[start:end]
+        cursor = end
+    yield from _inline_code_runs(text[cursor:])
+
+
+def mask_markdown_code(text):
+    return "".join(re.sub(r"[^\r\n]", " ", run) if is_code else run
+                   for is_code, run in markdown_code_runs(text))
+
+
 def _mask_control_code_spans(value):
-    spans = [match.group(0) for match in _CONTROL_CODE_SPAN_PATTERN.finditer(value)]
+    runs = tuple(markdown_code_runs(value))
+    spans = [run for is_code, run in runs if is_code]
     if not spans:
         return value, None
     for base in range(_CONTROL_CODE_MASK_ATTEMPTS):
@@ -390,14 +465,8 @@ def _mask_control_code_spans(value):
         tokens = [f"{head}{index}{_CONTROL_CODE_MASK_TAIL}" for index in range(len(spans))]
         if any(token in value for token in tokens):
             continue
-        state = {"next": 0}
-
-        def collect(_match, _tokens=tokens):
-            token = _tokens[state["next"]]
-            state["next"] += 1
-            return token
-
-        masked = _CONTROL_CODE_SPAN_PATTERN.sub(collect, value)
+        placeholders = iter(tokens)
+        masked = "".join(next(placeholders) if is_code else run for is_code, run in runs)
         restore = re.compile(rf"{re.escape(head)}(\d+){re.escape(_CONTROL_CODE_MASK_TAIL)}")
         return masked, (restore, spans)
     return value, None

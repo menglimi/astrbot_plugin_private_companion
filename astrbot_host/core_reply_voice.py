@@ -8,8 +8,10 @@ from astrbot.api import logger
 from astrbot.core.message.components import At, AtAll, Plain, Record, Reply
 from astrbot.core.message.message_event_result import MessageChain
 
+from companion_v2.conversation.text_processing import markdown_code_runs, unwrap_text_emit_calls
 from companion_v2.conversation.voice_reply import (
     VoiceReplyPolicy,
+    authored_singing,
     detected_speech_language,
     separate_spoken,
     speech_candidates,
@@ -19,20 +21,35 @@ from companion_v2.conversation.voice_reply import (
     voice_wrapper_pairing,
 )
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA
-from companion_v2.conversation.voice_markup import slice_speech, visible_speech
+from companion_v2.conversation.voice_markup import slice_speech, strip_singing_provider_cue, visible_speech
+from .voice import singsing_config_origin
 
 
-def voice_prompt_instruction(policy, provider_instruction="", rules_override=""):
+_SINGSING_INSTRUCTION = (
+    '遵守本轮触发条件和朗读范围，按语境自主选择说话或唱歌。'
+    '适合说话时用 <pc_tts>实际要说的话</pc_tts>，'
+    '适合唱歌时在最终正文用 <pc_tts style="sing">实际要唱的歌词</pc_tts>；'
+    '同一条回复只选一种语音方式，多个唱歌标签均注明 style="sing"。'
+    '按语境决定，触发模式允许且无合适内容时可以回复纯文字；用户只要文字时不要使用语音标签。'
+    '用户明确要语音或唱歌时优先按其要求；不能满足时坦诚回复，不声称已经发送。'
+    '唱歌标签内只写歌词，不叠加表演标记；不要在可见正文中写合成指令。'
+)
+
+
+def voice_prompt_instruction(policy, provider_instruction="", rules_override="", *, singsing=False):
     if not isinstance(policy, VoiceReplyPolicy):
         return ""
     from companion_v2.conversation.voice_reply import capability_instruction
 
     rules = (policy.instruction_with_rules(rules_override)
              if isinstance(rules_override, str) and rules_override.strip() else policy.instruction)
-    return "\n".join(part for part in (capability_instruction(policy), rules, provider_instruction) if part)
+    singing_instruction = (_SINGSING_INSTRUCTION
+                           if singsing and policy.uses_model_tags and policy.direction_mode != "off" else "")
+    return "\n".join(part for part in (capability_instruction(policy), rules, provider_instruction,
+                                      singing_instruction) if part)
 
 
-def observe_core_voice_response(event, response):
+def observe_core_voice_response(event, response, *, final=True):
     """Capture speech before native regex segmentation can break its wrappers."""
     core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
     if (not isinstance(core, dict) or response is None or getattr(response, "is_chunk", False)
@@ -44,14 +61,27 @@ def observe_core_voice_response(event, response):
     core["_voice_observed_response"] = response
     prepared = core.get("prepared")
     policy = prepared.get("voice_reply_policy") if isinstance(prepared, Mapping) else None
-    text = getattr(response, "completion_text", "") or ""
-    visible, spans = separate_spoken(text, policy)
+    singsing = bool(isinstance(prepared, Mapping) and prepared.get("voice_singsing_enabled"))
+    result_chain = getattr(response, "result_chain", None)
+    chain = getattr(result_chain, "chain", None)
+    if isinstance(chain, list):
+        text = _plain_text(result_chain)
+        visible, spans, cleaned = _clean_plain_runs(result_chain, policy, unwrap_calls=False, singsing=singsing)
+        if visible != text:
+            chain[:] = cleaned.chain
+    else:
+        text = getattr(response, "completion_text", "") or ""
+        visible, spans = separate_spoken(text, policy, singsing=singsing)
+        if visible != text:
+            response.completion_text = visible
+    core["_voice_checked_code_reply"] = visible if any(is_code for is_code, _ in markdown_code_runs(visible)) else ""
     repaired = core.pop("_voice_repaired_response", None)
     if repaired is not None and repaired["response"] is response:
         core["_voice_authored"] = repaired["plan"]
         spans = repaired["plan"]["spans"]
     elif spans:
-        core["_voice_authored"] = {"visible": visible, "spans": spans, "cursor": 0, "used": set()}
+        core["_voice_authored"] = {"visible": visible, "spans": spans, "cursor": 0, "used": set(),
+            "singing": bool(final and singsing and authored_singing(text))}
     else:
         core.pop("_voice_authored", None)
     if isinstance(policy, VoiceReplyPolicy):
@@ -61,11 +91,6 @@ def observe_core_voice_response(event, response):
         logger.info("[CompanionV2][media] stage=response event_ref=%s media=voice mode=%s spans=%s reason=%s",
                     prepared.get("event_ref", "unknown"), policy.trigger_mode, len(spans),
                     core["_voice_response_diagnostics"]["reason"])
-    if visible != text:
-        response.completion_text = visible
-        for part in getattr(getattr(response, "result_chain", None), "chain", ()):
-            if isinstance(part, Plain):
-                part.text = separate_spoken(part.text, policy)[0]
 
 
 def capture_core_voice_message(event, message):
@@ -73,13 +98,13 @@ def capture_core_voice_message(event, message):
     core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
     prepared = core.get("prepared") if isinstance(core, dict) else None
     policy = prepared.get("voice_reply_policy") if isinstance(prepared, Mapping) else None
-    if not isinstance(policy, VoiceReplyPolicy):
+    source = _plain_text(message)
+    if not isinstance(policy, VoiceReplyPolicy) or _already_checked_code(core, source):
         return message
-    visible, spans, cleaned = _clean_plain_runs(message, policy)
+    visible, spans, cleaned = _clean_plain_runs(message, policy, singsing=bool(prepared.get("voice_singsing_enabled")))
     if spans:
         core["_voice_authored"] = {"visible": visible, "spans": spans, "cursor": 0, "used": set()}
         return cleaned
-    source = _plain_text(message)
     if visible == source:
         return message
     # 未配对/未闭合的语音包装已经被 separate_spoken 去掉；这里如果退回原始消息，
@@ -185,10 +210,19 @@ def _plain_text(message):
     return message if isinstance(message, str) else ""
 
 
-def _clean_plain_runs(message, policy):
-    from companion_v2.conversation.text_processing import unwrap_text_emit_calls
+def _already_checked_code(core, source):
+    """Do not reinterpret a literal tag if Core separated it from its fence."""
+    authored = core.get("_voice_checked_code_reply", "") if isinstance(core, dict) else ""
+    segment = source.strip()
+    return bool(segment and segment in authored)
+
+
+def _clean_plain_runs(message, policy, *, unwrap_calls=True, singsing=False):
+    def separate(text):
+        return separate_spoken(unwrap_text_emit_calls(text) if unwrap_calls else text, policy, singsing=singsing)
+
     if isinstance(message, str):
-        visible, spans = separate_spoken(unwrap_text_emit_calls(message), policy)
+        visible, spans = separate(message)
         return visible, spans, visible
 
     chain = getattr(message, "chain", None)
@@ -201,15 +235,19 @@ def _clean_plain_runs(message, policy):
             output.append(component)
             index += 1
             continue
+        start = index
         run = []
         while index < len(chain) and isinstance(chain[index], Plain):
             run.append(chain[index].text)
             index += 1
-        run_visible, run_spans = separate_spoken(unwrap_text_emit_calls("".join(run)), policy)
+        source = "".join(run)
+        run_visible, run_spans = separate(source)
         offset = sum(map(len, visible_parts))
         spans.extend((offset + position, speech) for position, speech in run_spans)
         visible_parts.append(run_visible)
-        if run_visible:
+        if run_visible == source:
+            output.extend(chain[start:index])
+        elif run_visible:
             output.append(Plain(run_visible))
     visible = "".join(visible_parts)
     derive = getattr(message, "derive", None)
@@ -217,7 +255,7 @@ def _clean_plain_runs(message, policy):
     return visible, tuple(spans), cleaned
 
 
-def _message_with_voice(message, visible, records, policy, *, hide_text):
+def _message_with_voice(message, visible, records, policy, *, hide_text, singing=False):
     chain = getattr(message, "chain", None)
     if not isinstance(chain, (list, tuple)):
         chain = [Plain(message)] if isinstance(message, str) and message else []
@@ -236,7 +274,9 @@ def _message_with_voice(message, visible, records, policy, *, hide_text):
         else:
             output.append(component)
 
-    if policy.position == "before_text":
+    if singing:
+        insert_at = len(output)
+    elif policy.position == "before_text":
         insert_at = first_plain if first_plain is not None else 0
     elif policy.position == "after_text":
         insert_at = last_plain + 1 if last_plain is not None else 0
@@ -262,7 +302,14 @@ async def prepare_core_reply_voice_message(
 ):
     """Synthesize one completed segment while preserving text and media order."""
     policy = prepared.get("voice_reply_policy") if hasattr(prepared, "get") else None
+    get_extra = getattr(event, "get_extra", None)
+    core = get_extra(CORE_REPLY_CONTEXT_EXTRA) if callable(get_extra) else None
+    source = _plain_text(message)
+    matching_source = getattr(message, "_companion_v2_voice_source", source)
+    checked_code = _already_checked_code(core, matching_source)
     if not isinstance(policy, VoiceReplyPolicy):
+        if checked_code:
+            return message
         if isinstance(message, str):
             return strip_voice_markup(message)
         chain = getattr(message, "chain", None)
@@ -270,13 +317,13 @@ async def prepare_core_reply_voice_message(
                 isinstance(part, Plain) and strip_voice_markup(part.text) != part.text for part in chain):
             return _clean_plain_runs(message, None)[2]
         return message
-    core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
     diagnostics = core.setdefault("_voice_reply_diagnostics", []) if isinstance(core, dict) else []
+    singsing = bool(prepared.get("voice_singsing_enabled"))
     note = {"segment": segment_index + 1, "language": policy.language, "state": "not_started"}
     diagnostics.append(note)
-    if not callable(renderer) or not callable(getattr(event, "get_extra", None)):
+    if not callable(renderer) or not callable(get_extra):
         note["state"] = "renderer_unavailable"
-        return _clean_plain_runs(message, policy)[2]
+        return message if checked_code else _clean_plain_runs(message, policy, singsing=singsing)[2]
 
     chain = getattr(message, "chain", None)
     if isinstance(message, Record) or (isinstance(chain, (list, tuple)) and
@@ -290,32 +337,37 @@ async def prepare_core_reply_voice_message(
     # below: bailing out here dropped the speech collected so far and the turn
     # ended silently.
     whole = policy.segment_mode == "whole" and isinstance(core, dict)
-    source = _plain_text(message)
     if not source.strip() and not whole:
         note["state"] = "no_text"
         return message
 
-    visible, spans, cleaned_message = _clean_plain_runs(message, policy)
+    visible, spans, cleaned_message = ((source, (), message) if checked_code
+                                       else _clean_plain_runs(message, policy, singsing=singsing))
     if not visible.strip() and not whole:
         note["state"] = "no_visible_text"
         return cleaned_message
-    captured_speech = _captured_speech(core, getattr(message, "_companion_v2_voice_source", visible)) if not spans else ""
+    voice_source = getattr(message, "_companion_v2_voice_source", source if checked_code else visible)
+    captured_speech = _captured_speech(core, voice_source) if not spans else ""
     candidates = speech_candidates(visible, (visible,), spans, policy)
     segment_speech = captured_speech or (candidates[0].strip() if candidates else "")
+    singing = bool(captured_speech and isinstance(core, dict) and singsing
+                   and core.get("_voice_authored", {}).get("singing", False))
     if whole:
         # Whole-reply voice waits until every text segment has been prepared,
         # then synthesizes the joined speech once.  Per-segment TTS cuts the
         # sentence context and produces noticeably flatter prosody.
-        bucket = core.setdefault("_voice_whole_segments", {"visible": [], "speech": []})
+        bucket = core.setdefault("_voice_whole_segments", {"visible": [], "speech": [], "singing": True})
         if visible.strip():
             bucket["visible"].append(visible)
         if segment_speech:
             bucket["speech"].append(segment_speech)
+            bucket["singing"] = bucket.get("singing", False) and singing
         if segment_index < segment_count - 1:
             note["state"] = "segment_deferred"
             return cleaned_message
         visible = "\n".join(bucket["visible"]).strip()
         speech = "\n".join(bucket["speech"]).strip()
+        singing = bucket.get("singing", False)
         core.pop("_voice_whole_segments", None)
         if not speech:
             note["state"] = "no_authored_speech"
@@ -335,7 +387,12 @@ async def prepare_core_reply_voice_message(
             logger.info("[CompanionV2][media] stage=delivery event_ref=%s media=voice state=%s segment=%s/%s",
                         prepared.get("event_ref", "unknown"), note["state"], segment_index + 1, segment_count)
             return cleaned_message
+    if singsing:
+        speech = strip_singing_provider_cue(speech)
     chunks = speech_chunks(speech, policy.max_speech_chars)
+    if not chunks:
+        note["state"] = "no_authored_speech"
+        return cleaned_message
     note["chars"], note["chunks"] = len(speech), len(chunks)
 
     context = prepared.get("context")
@@ -367,6 +424,11 @@ async def prepare_core_reply_voice_message(
                 render_options["model_override"] = model_override
             if voice_override:
                 render_options["voice_override"] = voice_override
+            if singing:
+                render_options["singing"] = True
+                umo = getattr(event, "unified_msg_origin", "")
+                if umo:
+                    render_options.update(singing_umo=umo, singing_config_umo=singsing_config_origin(event))
             render = renderer(context, chunk, **render_options)
             budget = tts_wait_budget(policy, segment_index=segment_index,
                                      segment_count=segment_count, whole_reply=whole)
@@ -382,6 +444,8 @@ async def prepare_core_reply_voice_message(
                 raise ValueError("tts_audio_unavailable")
             record = Record(file=file_value, text=chunk)
             object.__setattr__(record, "_companion_v2_spoken_text", visible_speech(chunk).strip())
+            if singing:
+                object.__setattr__(record, "_companion_v2_optional_singing", True)
             records.append(record)
     except asyncio.CancelledError:
         if claim is not None:
@@ -409,8 +473,9 @@ async def prepare_core_reply_voice_message(
     native_text_carrier = (callable(platform) and platform() == "wechat_native"
                            and any(isinstance(part, (Reply, At, AtAll))
                                    for part in getattr(cleaned_message, "chain", ())))
-    return _message_with_voice(cleaned_message, visible, records, policy,
+    return _message_with_voice(cleaned_message, visible, records, policy, singing=singing,
                                hide_text=(policy.delivery_mode == "voice_only"
+                                          and not singing
                                           and not (policy.segment_mode == "whole" and segment_count > 1)
                                           and same_text and not native_text_carrier))
 

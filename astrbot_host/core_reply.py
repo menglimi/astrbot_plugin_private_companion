@@ -282,7 +282,7 @@ def prepare_core_reply_event(
                                    state.get("voice_segment_count", 1))
                 if isawaitable(message):
                     message = await message
-            from .core_reply_media_delivery import native_reply_messages, native_wire_message
+            from .core_reply_media_delivery import is_optional_singing_message, native_reply_messages, native_wire_message
             from .core_reply_voice import commit_pending_voice_claim, release_pending_voice_claim
             from .core_reply_idempotency import (record_core_reply_delivery,
                                                   should_drop_core_reply_duplicate)
@@ -307,18 +307,22 @@ def prepare_core_reply_event(
                 from .core_reply_behavior import observe_core_behavior_delivery
                 observe_core_behavior_delivery(event, part, "started")
                 try:
-                    result = await state["_original_send"](wire, *args, **kwargs)
+                    send_result = await state["_original_send"](wire, *args, **kwargs)
                 except BaseException:
                     state["send_unknown"] += 1
                     notify_delivery("unknown")
                     observe_core_behavior_delivery(event, part, "unknown")
                     raise
-                if result is False:
+                if send_result is False:
                     release_pending_voice_claim(event)
+                    if is_optional_singing_message(part):
+                        observe_core_behavior_delivery(event, part, "failed")
+                        break
                     state["send_failed"] += 1
                     notify_delivery("failed")
                     observe_core_behavior_delivery(event, part, "failed")
                     raise TaskError("core_reply_platform_unavailable", "the platform did not accept this reply")
+                result = send_result
                 state["send_returns"] += 1
                 record_core_reply_delivery(event, part)
                 from astrbot.core.message.components import Record
@@ -702,7 +706,8 @@ def inject_core_reply_prompt(event: Any, req: Any) -> None:
     voice_instruction = voice_prompt_instruction(
         prepared.get("voice_reply_policy") if isinstance(prepared, Mapping) else None,
         prepared.get("voice_provider_instruction", "") if isinstance(prepared, Mapping) else "",
-        prepared.get("voice_rules_instruction", "") if isinstance(prepared, Mapping) else "")
+        prepared.get("voice_rules_instruction", "") if isinstance(prepared, Mapping) else "",
+        singsing=bool(isinstance(prepared, Mapping) and prepared.get("voice_singsing_enabled")))
     previous_voice = state.pop("_voice_prompt_instruction", None)
     if previous_voice and previous_voice in req.system_prompt:
         req.system_prompt = req.system_prompt.replace(previous_voice, "", 1).rstrip()

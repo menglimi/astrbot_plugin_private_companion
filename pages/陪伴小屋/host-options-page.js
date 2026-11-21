@@ -96,6 +96,10 @@ window.CompanionHostOptionsPage = (() => {
           <small>全局总开关。对象的「启用语音」也需要打开。</small></div>
           <label class="host-options-switch"><input type="checkbox" name="enabled" data-wb-field="enabled" ${value.enabled ? "checked" : ""}>
             <span>${value.enabled ? "已开启" : "已关闭"}</span></label></div>
+        <div class="host-options-row"><div class="host-options-copy"><strong>普通回复自主唱歌</strong>
+          <small>须通过本轮语音准入，只支持已选的 Fish Audio Drama 3。请保持 AstrBot 与本会话的 TTS 开启，并在 AstrBot 将该会话所用预设的自动转语音概率设为 0；此处不会修改 AstrBot 设置。替代使用时请关闭独立的 SingSing 插件。</small></div>
+          <label class="host-options-switch"><input type="checkbox" name="singsing_enabled" data-wb-field="singsing_enabled" ${value.singsing_enabled ? "checked" : ""}>
+            <span>${value.singsing_enabled ? "已开启" : "已关闭"}</span></label></div>
         <div class="host-options-row"><div class="host-options-copy"><strong>基础触发概率</strong>
           <small>私聊或群聊没有覆盖值时使用。</small></div>
           <label class="host-options-percent"><input type="number" name="probability" min="0" max="100" step="1"
@@ -245,6 +249,7 @@ window.CompanionHostOptionsPage = (() => {
     try {
       if (group === "voice") {
         changes = {enabled: !!formElement(form, "enabled")?.checked,
+          singsing_enabled: !!formElement(form, "singsing_enabled")?.checked,
           probability: fraction(form, "probability"),
           private_probability: fraction(form, "private_probability", "private_probability_inherit"),
           group_probability: fraction(form, "group_probability", "group_probability_inherit")};
@@ -356,6 +361,7 @@ window.CompanionHostOptionsPage = (() => {
   function searchEntries() {
     const voice = [
       ["enabled", "允许语音回复", "全局总开关", ["TTS", "语音总开关"]],
+      ["singsing_enabled", "普通回复自主唱歌", "语音默认值", ["SingSing", "语音", "唱歌"]],
       ["probability", "基础触发概率", "语音默认值", ["TTS", "默认概率"]],
       ["private_probability", "私聊默认概率", "语音默认值", ["TTS", "私聊覆盖"]],
       ["group_probability", "群聊默认概率", "语音默认值", ["TTS", "群聊覆盖"]],

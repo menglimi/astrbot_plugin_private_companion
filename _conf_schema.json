@@ -444,6 +444,13 @@
         "default": false,
         "invisible": true
       },
+      "singsing_enabled": {
+        "description": "普通回复自主唱歌",
+        "type": "bool",
+        "default": false,
+        "invisible": true,
+        "hint": "保持 AstrBot 与本会话的 TTS 开启，将当前配置预设的自动转语音概率设为 0，以避免通常的自动 TTS。要让正文不转为图片，请关闭 T2I。唱歌仅支持已选的 Fish Audio Drama 3；不影响主动联系。"
+      },
       "trigger_mode": {
         "description": "语音触发",
         "type": "string",

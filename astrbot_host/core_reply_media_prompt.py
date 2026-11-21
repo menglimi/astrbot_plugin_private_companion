@@ -46,7 +46,7 @@ def finalize_core_reply_media_prompt(event, run_context):
         return
     voice = voice_prompt_instruction(prepared.get("voice_reply_policy"),
         prepared.get("voice_provider_instruction", ""),
-        prepared.get("voice_rules_instruction", ""))
+        prepared.get("voice_rules_instruction", ""), singsing=bool(prepared.get("voice_singsing_enabled")))
     reaction = core.get("_reaction_reply", {}).get("enabled", False)
     instructions = [part for part in (voice, REACTION_INSTRUCTION if reaction else "") if part]
     if not instructions:
@@ -61,6 +61,8 @@ def finalize_core_reply_media_prompt(event, run_context):
     if voice and "send_message_to_user" in core.get("_native_tool_names", ()):
         block += ("\n通过 send_message_to_user 投递本轮正文时，plain.text 字段也使用上述语音标签与译文格式。"
                   "朗读原文由程序合成音频，不要编造语音文件地址；工具正文和普通最终正文采用同一呈现设置。")
+        if prepared.get("voice_singsing_enabled"):
+            block += '唱歌样式仅限普通最终正文，不要在工具参数中使用 style="sing"。'
     if (reaction and isinstance(policy, VoiceReplyPolicy) and policy.language == "ja"
             and policy.foreign_text_mode == "translation"
             and (policy.generation_mode == "model_tag" or policy.trigger_mode == "adaptive")):
@@ -126,7 +128,8 @@ def core_media_request_diagnostics(event, run_context):
     note = {"voice_mode": policy.trigger_mode if isinstance(policy, VoiceReplyPolicy) else "disabled",
             "voice_prompt_present": bool(policy and voice_prompt_instruction(
                 policy, prepared.get("voice_provider_instruction", ""),
-                prepared.get("voice_rules_instruction", "")) in systems),
+                prepared.get("voice_rules_instruction", ""),
+                singsing=bool(prepared.get("voice_singsing_enabled"))) in systems),
             "reaction_enabled": reaction, "reaction_prompt_present": reaction and REACTION_INSTRUCTION in systems,
             "presentation_present": bool(block and block in systems)}
     core.setdefault("_media_request_diagnostics", []).append(note)
