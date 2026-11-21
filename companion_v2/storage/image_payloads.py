@@ -18,7 +18,7 @@ import tempfile
 MARKER_PREFIX = b"\x00PCIMG1/"
 
 
-def _extension(content: bytes, mime_type: str = "") -> str:
+def image_extension(content: bytes, mime_type: str = "") -> str:
     value = (mime_type or "").lower()
     if value in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
         return {"image/png": ".png", "image/jpeg": ".jpg",
@@ -34,8 +34,37 @@ def _extension(content: bytes, mime_type: str = "") -> str:
     return ".bin"
 
 
+_extension = image_extension
+
+
 def image_root(data_root: Path) -> Path:
     return Path(data_root) / "media" / "conversation-images"
+
+
+def stored_image_path(data_root: Path, content: bytes, *, mime_type: str = "") -> Path | None:
+    """Return the existing immutable hash-addressed file path if present on disk."""
+    if not isinstance(content, bytes) or not content:
+        return None
+    root = image_root(data_root)
+    if not root.is_dir():
+        return None
+    root_resolved = root.resolve()
+    digest = hashlib.sha256(content).hexdigest()
+    preferred = image_extension(content, mime_type)
+    candidates = (preferred, *(ext for ext in (".png", ".jpg", ".webp", ".gif", ".bin") if ext != preferred))
+    for ext in candidates:
+        candidate = root / (digest + ext)
+        if candidate.is_symlink():
+            continue
+        try:
+            resolved = candidate.resolve()
+            if resolved.parent != root_resolved or not candidate.is_file():
+                continue
+            if candidate.stat().st_size == len(content):
+                return resolved
+        except OSError:
+            continue
+    return None
 
 
 def is_marker(value) -> bool:

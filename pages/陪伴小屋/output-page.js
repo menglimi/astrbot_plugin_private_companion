@@ -18,8 +18,8 @@ window.CompanionOutputPage=(()=>{
     staging_native_reconnect_failed:"V2 执行器重连失败，请查看 AstrBot 日志中的 CompanionV2 错误后再试。",
     generated_album_selection_invalid:"请选择 1–24 张不重复的产出图片。",
     generated_album_export_too_large:"选中的图片总大小超过导出上限，请少选几张。",
-    generated_album_folder_unavailable:"V2 数据目录当前不可用。",
-    generated_album_open_failed:"无法打开 V2 数据目录，请检查运行环境权限。",
+    generated_album_folder_unavailable:"产出图库目录当前不可用。",
+    generated_album_open_failed:"无法打开产出图库目录，请检查运行环境权限。",
     generated_image_missing:"选中的图片已经不在图库中，请刷新后重试。",
     photo_reference_disabled:"参考图功能当前关闭，请先在「参考图与衣柜」里开启。",
     reference_roles_invalid:"请至少选择一个参考用途。",
@@ -147,7 +147,7 @@ window.CompanionOutputPage=(()=>{
     if(albumItems.length){
       const selected=albumSelectedIds.size;
       const all=albumItems.every(item=>albumSelectedIds.has(item.image_id));
-      body+='<div class="output-album-toolbar"><label class="output-album-check"><input type="checkbox" data-output-album-select-all'+(all?' checked':'')+' aria-label="全选产出图片">全选</label><span class="output-album-selected">已选 <b>'+selected+'</b> 张</span><div class="output-album-actions"><button type="button" class="button small primary" data-output-native-action="album-export"'+(selected&&!albumBusy?'':' disabled')+'>'+(albumBusy==='export'?'正在导出…':'导出选中')+'</button><button type="button" class="button small" data-output-native-action="album-reference"'+(selected===1&&!albumBusy?'':' disabled')+'>加入参考图</button><button type="button" class="button small danger" data-output-native-action="album-hide"'+(selected&&!albumBusy?'':' disabled')+'>'+(albumBusy==='hide'?'正在删除…':'删除选中')+'</button><button type="button" class="button small" data-output-native-action="album-open-folder"'+(albumBusy?' disabled':'')+'>'+(albumBusy==='folder'?'正在打开…':'打开数据目录')+'</button><button type="button" class="button small" data-output-native-action="album-refresh"'+(albumBusy?' disabled':'')+'>刷新图库</button></div></div>';
+      body+='<div class="output-album-toolbar"><label class="output-album-check"><input type="checkbox" data-output-album-select-all'+(all?' checked':'')+' aria-label="全选产出图片">全选</label><span class="output-album-selected">已选 <b>'+selected+'</b> 张</span><div class="output-album-actions"><button type="button" class="button small primary" data-output-native-action="album-export"'+(selected&&!albumBusy?'':' disabled')+'>'+(albumBusy==='export'?'正在导出…':'导出选中')+'</button><button type="button" class="button small" data-output-native-action="album-reference"'+(selected===1&&!albumBusy?'':' disabled')+'>加入参考图</button><button type="button" class="button small danger" data-output-native-action="album-hide"'+(selected&&!albumBusy?'':' disabled')+'>'+(albumBusy==='hide'?'正在删除…':'删除选中')+'</button><button type="button" class="button small" data-output-native-action="album-open-folder"'+(albumBusy?' disabled':'')+'>'+(albumBusy==='folder'?'正在打开…':'打开图库目录')+'</button></div></div>';
     }
     body+=renderAlbumReference();
     if(albumNotice)body+='<div class="output-album-notice'+(albumError?' is-error':'')+'" role="status">'+esc(albumNotice)+'</div>';
@@ -277,12 +277,15 @@ window.CompanionOutputPage=(()=>{
   }
   async function openAlbumFolder(){
     if(albumBusy)return;
-    const id=ticket;albumBusy="folder";albumNotice="正在打开数据目录…";albumError="";renderAlbum();
+    const id=ticket;albumBusy="folder";albumNotice="正在同步并打开图库目录…";albumError="";renderAlbum();
     try{
       const data=await product().request("POST",albumEndpoint()+"/open-folder",{});
       if(!live(id))return;
-      albumNotice=`已打开数据目录：${data?.path||"当前运行数据目录"}`;
-    }catch(error){if(live(id)){albumError=ERRORS[error?.code]||ERRORS[error?.message]||error?.message||"无法打开数据目录";albumNotice=albumError;}}
+      const total=typeof data?.total_count==="number"&&Number.isFinite(data.total_count)&&data.total_count>=0?data.total_count:NaN;
+      const synced=typeof data?.synced_count==="number"&&Number.isFinite(data.synced_count)&&data.synced_count>0?data.synced_count:0;
+      const summary=Number.isFinite(total)?(synced?`（已同步 ${synced} 张，共 ${total} 张）`:`（共 ${total} 张）`):"";
+      albumNotice=`已打开产出图库目录${summary}：${data?.path||"产出图库目录"}`;
+    }catch(error){if(live(id)){albumError=ERRORS[error?.code]||ERRORS[error?.message]||error?.message||"无法打开产出图库目录";albumNotice=albumError;}}
     finally{if(live(id)){albumBusy="";renderAlbum();}}
   }
   function openAlbumReference(){
