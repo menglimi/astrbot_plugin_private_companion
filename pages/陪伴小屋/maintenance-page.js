@@ -18,7 +18,90 @@ window.CompanionMaintenancePage = (() => {
     const amount = value == null || String(value).trim() === "" ? NaN : Number(value);
     return Number.isFinite(amount) ? new Intl.NumberFormat("zh-CN", {maximumFractionDigits: 6}).format(amount) : "—";
   };
-  const cost = value => value == null ? "费用未观测" : "US$" + ((Number(value) || 0) / 1000000).toFixed(6);
+  const PRICING_DISPLAY_CACHE_KEY = "companion-pricing-display.v1";
+  const MODELS_PENDING_TAB_KEY = "companion-models-pending-tab.v1";
+  function pricingMeta(data = state?.data) {
+    const raw = data?.pricing;
+    if (!raw || typeof raw !== "object") return null;
+    const rate = Number(raw.usd_cny_rate);
+    return {
+      display_currency: raw.display_currency === "USD" ? "USD" : "CNY",
+      usd_cny_rate: Number.isFinite(rate) && rate >= 1 && rate <= 100 ? rate : 7.2,
+      rate_mode: raw.rate_mode === "manual" ? "manual" : "auto",
+      rate_source: String(raw.rate_source || "static_fallback"),
+      rate_updated_at: raw.rate_updated_at || null,
+      rate_stale: Boolean(raw.rate_stale),
+      use_builtin_presets: raw.use_builtin_presets !== false,
+      configured_provider_count: Number(raw.configured_provider_count) || 0,
+      revision: typeof raw.revision === "string" ? raw.revision : "",
+    };
+  }
+  function activePricing(data = state?.data) {
+    const meta = pricingMeta(data);
+    const currency = state?.currencyOverride || meta?.display_currency || "USD";
+    const rate = meta?.usd_cny_rate || 7.2;
+    const modern = Boolean(meta || state?.currencyOverride);
+    return {currency, rate, modern, meta};
+  }
+  function rememberPricingDisplay(currency, rate) {
+    try {
+      localStorage.setItem(PRICING_DISPLAY_CACHE_KEY, JSON.stringify({currency, usd_cny_rate: rate}));
+    } catch (_) {}
+  }
+  function formatCurrencyAmount(microusd, options = {}) {
+    if (microusd == null || !Number.isFinite(Number(microusd))) return "未设单价";
+    const currency = options.currency === "USD" ? "USD" : "CNY";
+    const rate = Number.isFinite(Number(options.rate)) && Number(options.rate) >= 1 ? Number(options.rate) : 7.2;
+    const modern = options.modern !== false;
+    const usd = Number(microusd) / 1000000;
+    if (!modern && currency === "USD") return "US$" + usd.toFixed(6);
+    const amount = currency === "CNY" ? usd * rate : usd;
+    const symbol = currency === "CNY" ? "¥" : "US$";
+    const abs = Math.abs(amount);
+    if (abs === 0) return symbol + "0.00";
+    if (abs >= 1) return symbol + amount.toFixed(2);
+    if (abs >= 0.0001) return symbol + amount.toFixed(4);
+    return symbol + amount.toFixed(6);
+  }
+  const cost = value => formatCurrencyAmount(value, activePricing());
+  function costBasisLabel(basis) {
+    return ({estimated_local: "本地估算", recorded: "已记录", mixed: "记录+估算", unconfigured: "未设单价"})[basis] || "";
+  }
+  function costCellMarkup(row) {
+    if (row?.cost_microusd == null) {
+      if (row && Number(row.calls) === 0 && (row.tokens == null || Number(row.tokens) === 0)) {
+        return '<span class="maint-cost-empty">—</span>';
+      }
+      return '<span class="maint-cost-unconfigured">未设单价</span>';
+    }
+    const text = cost(row.cost_microusd);
+    const basis = row.cost_basis && row.cost_basis !== "unconfigured" ? costBasisLabel(row.cost_basis) : "";
+    const badge = basis ? ' <span class="maint-cost-basis" data-basis="' + escapeHtml(row.cost_basis) + '">' + escapeHtml(basis) + '</span>' : "";
+    return '<span class="maint-cost-value">' + escapeHtml(text) + '</span>' + badge;
+  }
+  function rateSourceLabel(source, mode) {
+    if (mode === "manual" || source === "manual") return "手动";
+    if (source === "static_fallback") return "默认参考";
+    return "自动";
+  }
+  function pricingControlsMarkup() {
+    const {currency, rate, meta} = activePricing();
+    if (meta) rememberPricingDisplay(currency, rate);
+    const modeLabel = meta ? rateSourceLabel(meta.rate_source, meta.rate_mode) : "默认参考";
+    const updatedHint = meta?.rate_updated_at ? " · 更新于 " + time(meta.rate_updated_at) : "";
+    const syncBusy = Boolean(state?.pricingSyncing);
+    const notice = state?.pricingNotice ? '<span class="maint-pricing-notice" role="status">' + escapeHtml(state.pricingNotice) + '</span>' : "";
+    return '<div class="maint-pricing-controls">' +
+      '<div class="maint-currency-switch" role="group" aria-label="计价币种">' +
+        '<button type="button" data-currency-switch="CNY" aria-pressed="' + (currency === "CNY") + '" class="' + (currency === "CNY" ? "is-active" : "") + '">¥ 人民币</button>' +
+        '<button type="button" data-currency-switch="USD" aria-pressed="' + (currency === "USD") + '" class="' + (currency === "USD" ? "is-active" : "") + '">$ 美元</button>' +
+      '</div>' +
+      '<span class="maint-rate-pill" title="1 USD = ¥' + rate.toFixed(4) + escapeHtml(updatedHint) + '">1 USD = ¥' + rate.toFixed(2) + ' · ' + escapeHtml(modeLabel) +
+        '<button type="button" class="maint-rate-sync" data-pricing-sync-rates ' + (syncBusy ? "disabled" : "") + ' aria-label="刷新实时汇率" title="刷新实时汇率">' +
+          '<i data-lucide="refresh-cw" aria-hidden="true"></i><span>' + (syncBusy ? "刷新中" : "刷新汇率") + '</span></button></span>' +
+      '<button type="button" class="maint-pricing-link" data-open-pricing-settings data-go="manage" data-manage="models"><i data-lucide="sliders-horizontal" aria-hidden="true"></i><span>设置模型单价</span></button>' +
+      notice + '</div>';
+  }
   const percent = value => value == null ? "—" : Math.max(0, Number(value) || 0).toFixed(1) + "%";
   const localDay = value => {
     const date = value instanceof Date ? value : new Date(value || Date.now());
@@ -1370,9 +1453,16 @@ window.CompanionMaintenancePage = (() => {
     let latencyWeighted = 0;
     let latencySamples = 0;
     let pricedRows = 0;
+    let recordedRows = 0;
+    let estimatedRows = 0;
     for (const row of rows) {
       for (const name of fields) result[name] += Number(row[name]) || 0;
-      if (row.cost_microusd != null) pricedRows += 1;
+      if (row.cost_microusd != null) {
+        pricedRows += 1;
+        if (row.cost_basis === "estimated_local") estimatedRows += 1;
+        else if (row.cost_basis === "mixed") { recordedRows += 1; estimatedRows += 1; }
+        else recordedRows += 1;
+      }
       const samples = Number(row.latency_samples) || (row.avg_latency_ms == null ? 0 : Number(row.calls) || 0);
       latencyWeighted += (Number(row.avg_latency_ms) || 0) * samples;
       latencySamples += samples;
@@ -1381,7 +1471,12 @@ window.CompanionMaintenancePage = (() => {
     for (const name of ["tokens", "reported_tokens", "input_tokens", "output_tokens", "cached_input_tokens", "cache_creation_tokens"]) {
       if (rows.length && !rows.some(row => row[name] != null)) result[name] = null;
     }
-    if (rows.length && !pricedRows) result.cost_microusd = null;
+    if (!pricedRows) {
+      result.cost_microusd = null;
+      result.cost_basis = "unconfigured";
+    } else {
+      result.cost_basis = !estimatedRows ? "recorded" : !recordedRows ? "estimated_local" : "mixed";
+    }
     return result;
   }
 
@@ -1397,7 +1492,8 @@ window.CompanionMaintenancePage = (() => {
       row, day: selectedDay(data), calls, knownCalls,
       confirmedRate: calls ? Math.round(knownCalls * 1000 / calls) / 10 : null,
       tokens: Number(row.tokens) || 0,
-      cost: data.execution_path === "astrbot_core" || row.cost_microusd == null ? null : Number(row.cost_microusd) || 0,
+      cost: row.cost_microusd == null ? null : Number(row.cost_microusd) || 0,
+      costBasis: row.cost_basis || (row.cost_microusd == null ? "unconfigured" : "recorded"),
       failures: Number(row.failures) || 0,
       unconfirmed, unknown: Number(row.unknown_calls) || 0, active: Number(row.active_calls) || 0,
       cacheCalls, cacheTelemetryCalls: Number(row.cache_telemetry_calls) || 0,
@@ -1671,7 +1767,7 @@ window.CompanionMaintenancePage = (() => {
         (row.tokens == null ? '<td class="col-primary is-zero">未知</td>' : numCell(row.tokens, "col-primary")) +
         pairCell(row.input_tokens, row.output_tokens) +
         textCell(escapeHtml(stateName(row.state)), "col-text") +
-        '<td>' + (row.cost_microusd == null ? "—" : cost(row.cost_microusd)) + '</td></tr>').join("") +
+        '<td>' + costCellMarkup(row) + '</td></tr>').join("") +
       '</tbody></table></div><button type="button" class="maint-open-recent" data-maint-nav="recent">打开最近调用筛选</button>';
   }
 
@@ -1686,7 +1782,7 @@ window.CompanionMaintenancePage = (() => {
         numCell(row.calls) + numCell(row.failures) +
         '<td>' + percent(Number(row.cache_input_tokens) ? Number(row.cached_input_tokens) * 100 / Number(row.cache_input_tokens) : null) + '</td>' +
         '<td>' + (row.avg_latency_ms == null ? "—" : number(row.avg_latency_ms) + " ms") + '</td>' +
-        '<td>' + cost(row.cost_microusd) + '</td></tr>').join("") +
+        '<td>' + costCellMarkup(row) + '</td></tr>').join("") +
       '</tbody></table></div>';
   }
 
@@ -1700,7 +1796,7 @@ window.CompanionMaintenancePage = (() => {
         numCell(row.calls) + pairCell(row.failures, row.unconfirmed_calls) +
         pairCell(row.cached_input_tokens, row.cache_creation_tokens) +
         '<td>' + (row.avg_latency_ms == null ? "—" : number(row.avg_latency_ms) + " ms") + '</td>' +
-        '<td>' + cost(row.cost_microusd) + '</td></tr>').join("") +
+        '<td>' + costCellMarkup(row) + '</td></tr>').join("") +
       '</tbody></table></div>';
   }
 
@@ -1773,7 +1869,7 @@ window.CompanionMaintenancePage = (() => {
         index === 0 ? "open" : "", escapeHtml(time(row.at)), escapeHtml(taskName(row.kind)),
         escapeHtml(row.provider || "未知 Provider"), escapeHtml(tokens), escapeHtml(row.state), escapeHtml(stateName(row.state)),
         row.input_tokens == null ? "未观测" : number(row.input_tokens), row.output_tokens == null ? "未观测" : number(row.output_tokens), escapeHtml(cache),
-        row.cost_microusd == null ? "费用未观测" : cost(row.cost_microusd) + " 本地计价",
+        row.cost_microusd == null ? "未设单价" : cost(row.cost_microusd) + " " + (costBasisLabel(row.cost_basis) || "本地计价"),
         row.latency_ms == null ? "耗时未记录" : number(row.latency_ms) + " ms", failure, response);
     }).join("") + "</div>";
   }
@@ -3324,8 +3420,17 @@ window.CompanionMaintenancePage = (() => {
     const endDay = state.period === "date" ? stats.day : today;
     const activeDetail = ["daily", "providers", "tasks", "recent"].includes(state.tokenDetailView) ? state.tokenDetailView : "daily";
     const coreCoverage = data.execution_path === "astrbot_core" ? data.coverage : data.usage_sources?.astrbot_core?.coverage;
-    const priceNote = data.execution_path === "astrbot_core" ? "核心费用未提供" : stats.cost == null ? "费用未观测" :
-      cost(stats.cost) + " 已计价部分" + (data.cost_availability === "partial" ? " · 核心费用未提供" : "");
+    const hasPricingMeta = Boolean(pricingMeta());
+    const basisNote = stats.costBasis === "estimated_local" ? " 本地估算"
+      : stats.costBasis === "mixed" ? " 本地估算"
+      : hasPricingMeta ? " 已记录" : " 已计价部分";
+    const priceNote = data.execution_path === "astrbot_core"
+      ? (stats.cost == null ? "核心费用未提供"
+        : cost(stats.cost) + " 本地估算" + (data.cost_availability === "partial_estimated" ? " · 部分未设单价" : ""))
+      : stats.cost == null ? "未设单价"
+      : cost(stats.cost) + basisNote
+        + (data.cost_availability === "partial" ? " · 核心费用未提供"
+          : data.cost_availability === "partial_estimated" ? " · 部分未设单价" : "");
     const observationNote = coreCoverage ? '<p class="maint-scope-note">核心累计观测 ' + number(coreCoverage.turns) + ' 回合 · ' +
       number(coreCoverage.observed_requests) + ' 次实际请求 · ' + number(coreCoverage.fallback_usage_observations) +
       ' 条汇总或最后响应。' + (coreCoverage.partial_request_observation_turns ? number(coreCoverage.partial_request_observation_turns) +
@@ -3341,7 +3446,7 @@ window.CompanionMaintenancePage = (() => {
         state.period === "7d" ? "近 7 日用量趋势" : state.period === "today" ? "近 14 日用量趋势" : state.period === "date" ? label + "用量趋势" : "近 30 日用量趋势",
         "按确认 Token 分段；选择日期查看该日用量") +
       breakdownPanelMarkup(providerRows, taskRows, label, data.windows?.["7d"]?.providers, data.windows?.["7d"]?.tasks) + '</div>' +
-      '<section class="maint-history-panel maint-token-details" id="maint-history"><div class="maint-subhead"><div><strong>调用与用量明细</strong><span>Provider 回执和本地计价分列展示</span></div></div>' +
+      '<section class="maint-history-panel maint-token-details" id="maint-history"><div class="maint-subhead"><div><strong>调用与用量明细</strong><span>Provider 回执和本地计价分列展示</span></div>' + pricingControlsMarkup() + '</div>' +
       tokenDetailTabsMarkup(activeDetail, [["daily", "每日明细"], ["providers", "Provider 明细"], ["tasks", "任务明细"], ["recent", "最近调用"]]) +
       tokenDetailPanel("daily", activeDetail, historyMarkup(data)) + tokenDetailPanel("providers", activeDetail, detailTable(providerRows, "providers")) +
       tokenDetailPanel("tasks", activeDetail, detailTable(taskRows, "tasks")) + tokenDetailPanel("recent", activeDetail, recentPreviewMarkup(data)) + '</section>';
@@ -4379,6 +4484,85 @@ window.CompanionMaintenancePage = (() => {
     }
   }
 
+  async function switchCurrency(nextCurrency) {
+    if (!state || !["CNY", "USD"].includes(nextCurrency)) return;
+    const current = state;
+    const ticket = generation;
+    current.currencyOverride = nextCurrency;
+    current.pricingNotice = "";
+    const meta = pricingMeta(current.data);
+    if (meta && current.data?.pricing) {
+      current.data.pricing = {...current.data.pricing, display_currency: nextCurrency};
+      rememberPricingDisplay(nextCurrency, meta.usd_cny_rate);
+    } else {
+      rememberPricingDisplay(nextCurrency, 7.2);
+    }
+    render();
+    if (!meta?.revision) return;
+    try {
+      const updated = await api("POST", modelPath() + "/pricing", {
+        revision: meta.revision,
+        changes: {display_currency: nextCurrency},
+      });
+      if (ticket !== generation || state !== current) return;
+      if (updated && current.data) {
+        current.data.pricing = {
+          ...(current.data.pricing || {}),
+          display_currency: updated.display_currency || nextCurrency,
+          usd_cny_rate: updated.exchange_rate?.effective_usd_cny ?? meta.usd_cny_rate,
+          rate_mode: updated.exchange_rate?.mode || meta.rate_mode,
+          rate_source: updated.exchange_rate?.effective_source || meta.rate_source,
+          rate_updated_at: updated.exchange_rate?.fetched_at ?? meta.rate_updated_at,
+          revision: updated.revision || meta.revision,
+        };
+        current.currencyOverride = "";
+        rememberPricingDisplay(current.data.pricing.display_currency, current.data.pricing.usd_cny_rate);
+        render();
+      }
+    } catch (_) {
+      /* Local display currency remains active even if background persistence fails. */
+    }
+  }
+
+  async function syncExchangeRates() {
+    if (!state || state.pricingSyncing) return;
+    const current = state;
+    const ticket = generation;
+    current.pricingSyncing = true;
+    current.pricingNotice = "正在获取最新汇率…";
+    render();
+    try {
+      const result = await api("POST", modelPath() + "/pricing/sync-rates", {});
+      if (ticket !== generation || state !== current) return;
+      const fx = result?.exchange_rate;
+      const sync = result?.sync || {};
+      if (current.data && fx) {
+        current.data.pricing = {
+          ...(current.data.pricing || {}),
+          display_currency: result.display_currency || current.data.pricing?.display_currency || "CNY",
+          usd_cny_rate: fx.effective_usd_cny ?? current.data.pricing?.usd_cny_rate ?? 7.2,
+          rate_mode: fx.mode || "auto",
+          rate_source: fx.effective_source || fx.source || "static_fallback",
+          rate_updated_at: fx.fetched_at || null,
+          rate_stale: Boolean(fx.stale),
+          revision: result.revision || current.data.pricing?.revision || "",
+        };
+        rememberPricingDisplay(current.data.pricing.display_currency, current.data.pricing.usd_cny_rate);
+      }
+      current.pricingNotice = sync.synced
+        ? "已更新：1 USD = ¥" + Number(sync.usd_cny_rate || fx?.effective_usd_cny || 7.2).toFixed(4)
+        : (sync.error || "汇率刷新失败，继续使用当前汇率");
+    } catch (_) {
+      if (ticket !== generation || state !== current) return;
+      current.pricingNotice = "汇率刷新失败，继续使用当前汇率";
+    } finally {
+      if (ticket === generation && state === current) {
+        current.pricingSyncing = false;
+        render();
+      }
+    }
+  }
+
   function exportTokens() {
     const globalSource = state?.tokenSource === "main" ? state.data?.external_token_sources?.main : null;
     if (!state?.data || !localUsage(state.data, state.tokenSource) && !globalSource?.available || typeof document === "undefined" || typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return;
@@ -4594,6 +4778,13 @@ window.CompanionMaintenancePage = (() => {
     if (target.closest("[data-clear-trace]") && state) { state.traceFilter = null; setMaintenanceView("recent"); render(); return; }
     if (target.closest("[data-toggle-calls]") && state) { state.showAllCalls = !state.showAllCalls; render(); return; }
     if (target.closest("[data-export-tokens]")) { exportTokens(); return; }
+    const currencyBtn = target.closest("[data-currency-switch]");
+    if (currencyBtn && state) { void switchCurrency(currencyBtn.dataset.currencySwitch); return; }
+    if (target.closest("[data-pricing-sync-rates]")) { void syncExchangeRates(); return; }
+    if (target.closest("[data-open-pricing-settings]")) {
+      try { sessionStorage.setItem(MODELS_PENDING_TAB_KEY, "pricing"); } catch (_) {}
+      return;
+    }
     if (target.closest("[data-balance-refresh]")) { void refreshBalance(); return; }
     if (target.closest("[data-memory-start]")) { startMemoryDiagnostic(); return; }
     if (target.closest("[data-memory-stop]")) { stopMemoryDiagnostic(); return; }
@@ -4788,6 +4979,7 @@ window.CompanionMaintenancePage = (() => {
       proactiveTesting: false, proactiveConfirming: false, proactiveNotice: "", proactivePurpose: "care", proactiveTest: null,
       test: null, voiceTest: null, imageTest: null, provider: "", voiceProvider: "", imageAction: "", voiceLanguage: "zh",
       storageTest: null, storageTesting: false, balance: null, balanceLoaded: false, balanceLoading: false,
+      currencyOverride: "", pricingSyncing: false, pricingNotice: "",
       diagnosticNotice: "", diagnosticClearTimer: null, diagnosticResultExpiresAt: 0,
       memorySamples: [], memoryRunning: false, memorySampling: false, memoryComplete: false,
       memoryError: "", memoryStopReason: "", memoryTimer: null, memoryStartedAt: 0,
@@ -4833,7 +5025,7 @@ window.CompanionMaintenancePage = (() => {
     }
   }
 
-  return {mount, unmount};
+  return {mount, unmount, formatCurrencyAmount};
 })();
 
 

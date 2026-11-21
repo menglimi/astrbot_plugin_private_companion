@@ -284,7 +284,7 @@ class BudgetLedger:
 
     def reserve(self, run: TaskRun, *, call_id: str, position: int,
                 provider: ProviderBinding, amount: Amount):
-        if self.runtime is not run.supervisor.runtime or not isinstance(amount, Amount):
+        if self.runtime is not run.supervisor.runtime or not isinstance(amount, Amount) or type(amount.cost_microusd) is not int:
             raise ValueError("model reservation must share the task runtime and use explicit amounts")
         with self.runtime.transaction() as connection:
             run.validate()
@@ -393,17 +393,18 @@ class BudgetLedger:
                 task = connection.execute("SELECT kind FROM execution_tasks WHERE task_id = ?", (row["task_id"],)).fetchone()
                 accounts = connection.execute("SELECT account_key FROM model_call_accounts WHERE call_id = ?", (call_id,)).fetchall()
                 if task is None or task["kind"] != MAIN_CHAIN_KIND:
+                    settled_cost = usage.cost_microusd or 0
                     for account in accounts:
                         if released:
                             # The expired-reservation sweep already returned this
                             # hold; a late receipt may still charge confirmed usage.
                             connection.execute("""UPDATE model_budget_accounts SET spent_tokens = spent_tokens + ?,
                                 spent_cost = spent_cost + ? WHERE account_key = ?""",
-                                (usage.tokens, usage.cost_microusd, account["account_key"]))
+                                (usage.tokens, settled_cost, account["account_key"]))
                         else:
                             connection.execute("""UPDATE model_budget_accounts SET held_tokens = held_tokens - ?,
                                 held_cost = held_cost - ?, spent_tokens = spent_tokens + ?, spent_cost = spent_cost + ? WHERE account_key = ?""",
-                                (row["reserved_tokens"], row["reserved_cost"], usage.tokens, usage.cost_microusd, account["account_key"]))
+                                (row["reserved_tokens"], row["reserved_cost"], usage.tokens, settled_cost, account["account_key"]))
             # A late accounting receipt cannot resurrect a discarded draft or replay a call.
             state = row["state"] if row["state"] in ("generated", "discarded", "not_started") else response.status
             connection.execute("""UPDATE model_calls SET state = ?, actual_tokens = ?, actual_cost = ?,
