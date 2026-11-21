@@ -311,11 +311,13 @@
 .home-side-band{min-width:0;padding-top:var(--sp-4)}
 .shell-side>.home-side-band:first-child{padding-top:0;border-top:0}
 .home-side-band .home-band-head{
-  flex-direction:row;align-items:center;flex-wrap:nowrap;gap:var(--sp-2);margin-bottom:var(--sp-3);
+  flex-direction:row;align-items:center;justify-content:flex-start;flex-wrap:nowrap;gap:var(--sp-2);margin-bottom:var(--sp-3);
 }
 .home-side-band .home-band-head h2{font-size:var(--fs-lead);letter-spacing:0}
+.home-side-age{flex:none;color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.4;white-space:nowrap}
+.home-side-age::before{content:"·";margin-right:var(--sp-1)}
 .home-side-action{
-  flex:none;min-height:36px;padding:var(--sp-1) 0 var(--sp-1) var(--sp-2);font-size:var(--fs-tiny);
+  flex:none;margin-left:auto;min-height:36px;padding:var(--sp-1) 0 var(--sp-1) var(--sp-2);font-size:var(--fs-tiny);
   color:var(--t-accent-ink);white-space:nowrap;
 }
 .home-side-action:focus-visible{outline:2px solid var(--t-accent);outline-offset:3px;border-radius:var(--r-2xs)}

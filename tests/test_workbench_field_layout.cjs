@@ -98,7 +98,9 @@ test("字段容器按可用宽度分列，而不是每字段一整行", () => {
   const autoFit = fields.match(/grid-template-columns:\s*repeat\(auto-fit,\s*minmax\((\d+)px/);
   assert.ok(autoFit, ".wb-fields 需要 repeat(auto-fit,minmax(Npx,1fr)) 才能在宽屏并排、窄屏回落");
   const minimum = Number(autoFit[1]);
-  assert.ok(minimum >= 240 && minimum <= 380,
+  /* 字段行是「标签在左、控件在右」的双栏，一列至少要有 12em 标签 + 180px
+     控件的位置；低于 420 会把标签折成两行，高于 640 又退回一行一个字段。 */
+  assert.ok(minimum >= 420 && minimum <= 640,
     `列宽下限 ${minimum}px 不在合理区间：太小会把标签挤成两行，太大又退回一行一个字段`);
   assert.doesNotMatch(fields, /flex-direction:\s*column/,
     ".wb-fields 又变成纵向堆叠了：这正是本次修复要消掉的那个形状");
@@ -106,7 +108,9 @@ test("字段容器按可用宽度分列，而不是每字段一整行", () => {
 
 test("字段保留层轨、主体与操作三列，范围说明按需显示", () => {
   assert.match(rule(".wb-field"), /display:\s*grid/);
-  assert.match(rule(".wb-field"), /grid-template-columns:\s*12px\s+minmax\(0,\s*1fr\)\s+auto/);
+  /* 第三列是固定的「恢复继承」槽位：按 auto 排时，只有被覆盖的行有按钮，
+     同一列的控件右边缘会相差一个按钮宽，看上去一左一右。 */
+  assert.match(rule(".wb-field"), /grid-template-columns:\s*12px\s+minmax\(0,\s*1fr\)\s+64px/);
   assert.match(rule(".wb-field>.wb-field-main"), /grid-column:2/);
   assert.match(rule(".wb-context-tip:not(:popover-open)"), /display:none/);
   assert.match(rule(".wb-rail"), /display:flex;flex-direction:column/);

@@ -347,6 +347,16 @@ class AstrBotMultiController:
                     binding.persona_id, candidates[0].persona_id)
         return match
 
+    async def proactive_diagnostic_targets(self):
+        """Every configured private route that currently resolves to a core user.
+
+        The setup page needs the whole list so an administrator with several core
+        windows can pick and save one diagnostic recipient.  The singular resolver
+        below stays the strict "exactly one" view used by the legacy setup flow.
+        """
+        await self._open_async()
+        return await asyncio.to_thread(self._core_proactive_candidates)
+
     async def proactive_diagnostic_target(self):
         """Resolve a unique configured private route owned by a current core user.
 
@@ -357,7 +367,8 @@ class AstrBotMultiController:
         await self._open_async()
         return await asyncio.to_thread(self._resolve_proactive_diagnostic_target)
 
-    def _resolve_proactive_diagnostic_target(self):
+    def _core_proactive_candidates(self):
+        """Configured exact private targets whose subject is a current core user."""
         settings = self._settings()
         if self.runtime is None or self.authority is None:
             raise TaskError("setup_binding_confirmation_required",
@@ -382,6 +393,10 @@ class AstrBotMultiController:
                 continue
             if actor.subject == subject:
                 candidates.append(target)
+        return candidates
+
+    def _resolve_proactive_diagnostic_target(self):
+        candidates = self._core_proactive_candidates()
 
         if len(candidates) != 1:
             code = "setup_core_window_ambiguous" if candidates else "setup_binding_confirmation_required"

@@ -39,6 +39,7 @@ from .astrbot_host.multi_controller import AstrBotMultiController
 from .astrbot_host.conversation_reset import install_native_reset_marker
 from .astrbot_host.core_reply import (
     CORE_REPLY_CONTEXT_EXTRA,
+    SILENT_SEND_DENIAL_CODES,
     activate_core_reply_delivery_guard,
     adopt_core_reply_event,
     inject_core_reply_prompt,
@@ -83,6 +84,7 @@ from .astrbot_host.functional_commands import classify_functional_command, injec
 from .astrbot_host.group_command import receive_group_llm_command
 from .astrbot_host.reset_command import receive_reset_command
 from companion_v2.conversation.group_llm_block import GroupLLMBlock
+from companion_v2.conversation.group_timing import SELF_MENTION
 from companion_v2.conversation import debounce_log
 from .astrbot_host.private_debounce import PrivateDebounce, PrivateDeliveryDedup
 from .astrbot_host.group_debounce import GroupDebounce, group_plain_text, replace_group_plain_text
@@ -215,7 +217,7 @@ class PrivateCompanionV2StagingPlugin(Star):
                 logger.warning("[CompanionV2] 启动时已自动修复旧策略字段：%s", repaired)
             # One public facade exposes the body and its seven internal modules.
             # Independent third-party integrations use their documented APIs.
-            self.extension_api = UnifiedCompanionExtensionAPI(self.staging)
+            self.extension_api = UnifiedCompanionExtensionAPI(self.staging, claim=True)
             global _ACTIVE_EXTENSION_API
             _ACTIVE_EXTENSION_API = self.extension_api
             try:
@@ -718,10 +720,14 @@ class PrivateCompanionV2StagingPlugin(Star):
             self._record_no_reply(event, "core_reply_send_denied", origin_key=origin_key,
                                   channel=channel, event_ref=event_ref, stage="delivery",
                                   turn=event_ref, code=reason)
-            logger.warning("[CompanionV2] 核心回复发送前复核失败，这条已生成的回复没有发出 "
-                           "event_ref=%s code=%s 说明=%s", event_ref, reason,
-                           CORE_REPLY_SEND_DENIAL_HINTS.get(
-                               reason, "发送前复核未通过，这条已生成的回复没有发出"))
+            hint = CORE_REPLY_SEND_DENIAL_HINTS.get(
+                reason, "发送前复核未通过，这条已生成的回复没有发出")
+            if reason in SILENT_SEND_DENIAL_CODES:
+                logger.info("[CompanionV2] 核心回复按撤回静默跳过发送 event_ref=%s code=%s 说明=%s",
+                            event_ref, reason, hint)
+            else:
+                logger.warning("[CompanionV2] 核心回复发送前复核失败，这条已生成的回复没有发出 "
+                               "event_ref=%s code=%s 说明=%s", event_ref, reason, hint)
 
         def observe_core_send(current, text):
             observer = getattr(getattr(self.staging, "session", None), "core_reply_observations", None)
@@ -1020,8 +1026,12 @@ class PrivateCompanionV2StagingPlugin(Star):
                                     event_ref, candidate.failure.code)
                         return
                     suppress_default_reply(event)
-                    logger.warning("[CompanionV2] 群回复候选检查失败 event_ref=%s code=%s",
-                                   event_ref, candidate.failure.code)
+                    if candidate.failure.code == "host_text_invalid":
+                        logger.debug("[CompanionV2] 群回复候选跳过无正文消息 event_ref=%s code=%s",
+                                     event_ref, candidate.failure.code)
+                    else:
+                        logger.warning("[CompanionV2] 群回复候选检查失败 event_ref=%s code=%s",
+                                       event_ref, candidate.failure.code)
                     return
                 group_admission = candidate.unwrap()
             except Exception as error:
@@ -1259,6 +1269,18 @@ class PrivateCompanionV2StagingPlugin(Star):
                             event_ref, prepared.get("turn_id"), action, closing.get("reason"))
             return
         prepare_core_reply_streaming_boundary(event)
+        if (channel == "group"
+                and (prepared.get("group_trigger") or {}).get("bare_mention")
+                and not str(getattr(event, "message_str", "") or "").strip()):
+            # AstrBot's aiocqhttp adapter strips the leading self-@ from
+            # message_str; give bare self-mentions the canonical SELF_MENTION
+            # placeholder and stay off streaming so V2 intake & decoration run.
+            event.message_str = SELF_MENTION
+            if getattr(event, "message_obj", None) is not None:
+                event.message_obj.message_str = SELF_MENTION
+            setter = getattr(event, "set_extra", None)
+            if callable(setter):
+                setter("enable_streaming", False)
         event.is_wake = True
         event.is_at_or_wake_command = True
         if channel == "private":

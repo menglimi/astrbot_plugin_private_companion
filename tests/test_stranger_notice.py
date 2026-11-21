@@ -104,6 +104,31 @@ class StrangerNoticeTests(StrangerFixture, unittest.IsolatedAsyncioTestCase):
                          "婉拒陌生人不该签发任何授权")
         self.assertEqual(receipt["count_today"], 1)
 
+    async def test_a_blocked_stranger_is_ignored_but_stays_in_the_ledger(self):
+        from astrbot_host.stranger_notice import BLOCK_KIND, CONTACT_KIND, stranger_block_view_id
+        from companion_v2.execution.models import encode, stamp
+
+        app = await self.start_host()
+        event = self.event()
+        login = str(event.message_obj.raw_message["self_id"])
+        at = self.clock.now()
+        view_id = stranger_block_view_id("qq-main", login, "999")
+        with app.runtime.transaction() as connection:
+            connection.execute(
+                "INSERT INTO memory_views VALUES (?, ?, ?, ?, 'active', ?, ?, ?)",
+                (view_id, view_id, BLOCK_KIND, 1, encode({}), encode({}), stamp(at)))
+
+        receipt = await self.handle(self.event(identifier="blocked-attempt"))
+
+        self.assertIsNone(receipt)
+        self.assertEqual(self.sent_texts(), [], "被屏蔽的账号不该再收到固定文案")
+        rows = app.runtime.read_all(
+            "SELECT document_json FROM memory_views WHERE kind = ?", (CONTACT_KIND,))
+        self.assertEqual(len(rows), 1)
+        document = json.loads(rows[0]["document_json"])
+        self.assertEqual(document["last_outcome"], "stranger_blocked")
+        self.assertEqual(document["attempts"], 1)
+
     async def test_group_temporary_session_gets_the_configured_refusal(self):
         await self.start_host()
         event = self.event(identifier="temp-session")

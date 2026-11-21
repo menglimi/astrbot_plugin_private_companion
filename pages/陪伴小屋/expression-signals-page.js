@@ -12,6 +12,12 @@ window.CompanionExpressionSignalsPage = (() => {
     play:"玩笑", tease:"打趣", intimacy:"亲昵", boundary:"边界", emotion:"情绪表达", casual:"闲聊",
     proactive:"主动联系", any:"不限"};
   const STATE_FILTERS = [["pending", "待审"], ["active", "已启用"], ["retired", "已停用"], ["rejected", "已拒绝"]];
+  /* 学习库的主分类只有两类：情境表达和语法句式。dimension 是二级统计，
+     只用于排查「这条规则偏向措辞还是句法」，不再当成页面主筛选。 */
+  const KIND_FILTERS = [["all", "全部"], ["style", "情境表达"], ["grammar", "语法句式"]];
+  const kindOf = item => item?.expression?.kind === "grammar" ? "grammar"
+    : item?.expression?.kind === "style" ? "style"
+      : item?.dimension === "sentence_rhythm" ? "grammar" : "style";
   const FILTERS = [
     ["all", "全部"], ...Object.entries(DIMENSION),
   ];
@@ -479,7 +485,7 @@ window.CompanionExpressionSignalsPage = (() => {
     return `<article class="lh-signal-card ${pending ? "is-pending" : adopted ? "is-adopted" : "is-retired"}${unavailable ? " is-unavailable" : ""}">
       <header class="lh-signal-card-head"><div class="lh-signal-card-meta"><span class="lh-signal-dimension">${e(DIMENSION[item.dimension] || item.dimension || "表达规则")}</span>
         <span class="lh-signal-source">${source}</span><span class="lh-signal-scope">记录来源 · ${e(sourceLabel(item._source))}</span>
-        <span class="lh-signal-state">${e(stateText)}${rotated ? " · 仅原会话窗口" : ""}</span>${form ? `<span class="lh-signal-kind">${form.kind === "grammar" ? "语法句式" : "情境表达"}</span>` : ""}</div><div class="lh-signal-card-tools">${exportChoice}<span class="lh-signal-uses">${e(item.injections || 0)} 次引用</span></div></header>
+        <span class="lh-signal-state">${e(stateText)}${rotated ? " · 仅原会话窗口" : ""}</span><span class="lh-signal-kind is-${kindOf(item)}">${kindOf(item) === "grammar" ? "语法句式" : "情境表达"}</span></div><div class="lh-signal-card-tools">${exportChoice}<span class="lh-signal-uses">${e(item.injections || 0)} 次注入</span></div></header>
       <h3>${e(title)}</h3>${body ? `<p class="lh-signal-observation">${e(body)}</p>` : ""}
       ${form ? `<dl class="lh-signal-usage"><dt>怎么用</dt><dd>${e(item.proposal)}</dd>${form.avoid ? `<dt>何时不用</dt><dd>${e(form.avoid)}</dd>` : ""}</dl>` : ""}
       ${renderApplicability(item.applicability)}
@@ -532,15 +538,15 @@ window.CompanionExpressionSignalsPage = (() => {
   }
   function render() {
     if (!root) return;
-    const counts = Object.fromEntries(FILTERS.map(([key]) => [key, key === "all" ? items.length : items.filter(item => item.dimension === key).length]));
-    const filters = FILTERS.map(([key, label]) => `<button type="button" class="lh-signal-filter${filter === key ? " is-active" : ""}" data-signal-filter="${key}" aria-pressed="${filter === key}"${writing ? " disabled" : ""}>${label}${filter === "all" || key === filter ? `<span>${counts[key] || 0}</span>` : ""}</button>`).join("");
+    const kindCounts = Object.fromEntries(KIND_FILTERS.map(([key]) => [key, key === "all" ? items.length : items.filter(item => kindOf(item) === key).length]));
+    const kindFilters = KIND_FILTERS.map(([key, label]) => `<button type="button" class="lh-signal-filter${kindFilter === key ? " is-active" : ""}" data-signal-kind="${key}" aria-pressed="${kindFilter === key}"${writing ? " disabled" : ""}>${label}<span>${kindCounts[key] || 0}</span></button>`).join("");
     const stateTabs = STATE_FILTERS.map(([key, label]) => {
       const state=key==="active"?"adopted":key;
       const known=Object.values(countsBySource);
       const count=known.length?known.reduce((sum,source)=>sum+(Number(source[state])||0),0):key===stateFilter?items.length:null;
       return `<button type="button" class="lh-signal-state-tab${stateFilter === key ? " is-active" : ""}" data-signal-state="${key}" aria-pressed="${stateFilter === key}"${writing ? " disabled" : ""}>${label}${count===null?"":`<span>${count}</span>`}</button>`;
     }).join("");
-    const visible = items.filter(item=>(kindFilter==="all" || item.expression?.kind===kindFilter)
+    const visible = items.filter(item=>(kindFilter==="all" || kindOf(item)===kindFilter)
       && (sourceFilter==="all" || item._source.key===sourceFilter));
     const rows = visible.map(renderItem).join("");
     const unavailablePending = stateFilter === "pending"
@@ -566,8 +572,8 @@ window.CompanionExpressionSignalsPage = (() => {
     root.innerHTML = `<section class="lh-signal-list" aria-label="表达规则库"><header class="lh-signal-head"><div><h3>表达规则库</h3><span class="lh-signal-capacity">${e(cap)}</span></div>
       <div class="lh-signal-head-tools"><a class="lh-command" href="#manage/learning/strategy">学习设置</a>${cleanup}<button type="button" class="lh-command" data-share-toggle aria-expanded="${transferOpen}">${transferOpen ? "收起分享" : "分享 / 导入"}</button><button type="button" class="lh-refresh" data-signal-refresh aria-label="重新读取" title="重新读取" ${busy || transferBusy ? "disabled" : ""}><i data-lucide="refresh-cw"></i></button></div></header>
       <div class="lh-signal-state-filters" role="group" aria-label="规则状态">${stateTabs}</div>
-      <div class="lh-signal-toolbar"><div class="lh-signal-filters" role="group" aria-label="表达规则筛选">${filters}</div></div>
-      <div class="lh-signal-selects"><label>学习类型<select data-rule-kind-filter><option value="all">全部类型</option><option value="style" ${kindFilter==="style"?"selected":""}>情境表达</option><option value="grammar" ${kindFilter==="grammar"?"selected":""}>语法句式</option></select></label>
+      <div class="lh-signal-toolbar"><div class="lh-signal-filters" role="group" aria-label="表达学习类型">${kindFilters}</div></div>
+      <div class="lh-signal-selects"><label>表达维度<select data-signal-dimension-filter><option value="all">全部维度</option>${Object.entries(DIMENSION).map(([key,label])=>`<option value="${key}" ${filter===key?"selected":""}>${label}</option>`).join("")}</select></label>
       ${sources.length>1?`<label>记录来源<select data-rule-source-filter><option value="all">全部来源</option>${sources.map(source=>`<option value="${e(source.key)}" ${sourceFilter===source.key?"selected":""}>${e(sourceLabel(source))}</option>`).join("")}</select></label>`:""}</div>
       ${transfer}
       ${renderEditor()}
@@ -748,8 +754,8 @@ window.CompanionExpressionSignalsPage = (() => {
     if (event.target.closest("[data-share-download]")) { downloadExport(); return; }
     const stateButton = event.target.closest("[data-signal-state]");
     if (stateButton) { const next = STATE_FILTERS.some(([key]) => key === stateButton.dataset.signalState) ? stateButton.dataset.signalState : "active"; if (next !== stateFilter) { stateFilter = next; void read(mountTicket); } return; }
-    const filterButton = event.target.closest("[data-signal-filter]");
-    if (filterButton) { const next = FILTERS.some(([key]) => key === filterButton.dataset.signalFilter) ? filterButton.dataset.signalFilter : "all"; if (next !== filter) { filter = next; void read(mountTicket); } return; }
+    const kindButton = event.target.closest("[data-signal-kind]");
+    if (kindButton) { const next = KIND_FILTERS.some(([key]) => key === kindButton.dataset.signalKind) ? kindButton.dataset.signalKind : "all"; if (next !== kindFilter) { kindFilter = next; render(); } return; }
     if (event.target.closest("[data-signal-refresh]")) { void read(mountTicket, "refresh"); return; }
     if (event.target.closest("[data-signal-more]")) { void read(mountTicket, "append"); return; }
     if (event.target.closest("[data-signal-cleanup]")) { void cleanupUnavailable(); return; }
@@ -761,8 +767,8 @@ window.CompanionExpressionSignalsPage = (() => {
   function onChange(event) {
     if (writing || transferBusy) return;
     if (updateDraft(event.target)) return;
-    const kind = event.target.closest("[data-rule-kind-filter]");
-    if (kind) {kindFilter=kind.value;render();return;}
+    const dimension = event.target.closest("[data-signal-dimension-filter]");
+    if (dimension) { const next = FILTERS.some(([key]) => key === dimension.value) ? dimension.value : "all"; if (next !== filter) { filter = next; void read(mountTicket); } return; }
     const source = event.target.closest("[data-rule-source-filter]");
     if (source) {sourceFilter=source.value;rebuildItems();render();return;}
     const destination=event.target.closest("[data-share-target]");

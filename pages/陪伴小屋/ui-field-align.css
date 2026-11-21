@@ -1,0 +1,122 @@
+/* Equal-height field rows.
+   A short switch row next to a numeric field with a range hint used to end at
+   its own content height, so one border stopped early and the next row started
+   at the tallest cell.  Keep every card in a field grid sharing one row edge.
+   Layout columns (dial/preview/sidebar) intentionally keep align-items:start. */
+.wb-fields,
+.ct-controls,
+.ct-rest,
+.ct-wake-fields,
+.ct-purpose-groups,
+.ct-gate-pause,
+.member-fields,
+.member-reply-fields,
+.member-contact-purpose-tuning-fields {
+  align-items: stretch;
+}
+
+/* The reply page keeps a sticky live preview beside the editor only when the
+   editor still has room for its own section rail.  At the old 1100px cutoff a
+   1280/1366 desktop squeezed the rail, the fields and the preview into three
+   narrow strips, and the preview's two-column body overflowed instead of
+   stacking.  Move the preview below the editor earlier, and let its body stack
+   when the preview itself is narrow. */
+#replyWorkspace { container-type: inline-size; }
+
+@media (max-width: 1450px) {
+  #replyWorkspace { grid-template-columns: minmax(0, 1fr); }
+  #replyWorkspace > [data-reply-part="preview"] { min-width: 0; }
+  .reply-preview {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+}
+
+.reply-preview { container-type: inline-size; }
+
+@container (max-width: 620px) {
+  .reply-preview-grid { grid-template-columns: minmax(0, 1fr); }
+  .reply-preview-inputs,
+  .reply-preview-output-wrap { min-width: 0; }
+}
+
+/* A control used to be vertically centred over label + help.  A three-line
+   help therefore pushed its input lower than the input in the next column.
+   Anchor the control to the label row instead, so every input in a row starts
+   at the same baseline; help stays below the label in its own column. */
+@media (min-width: 721px) {
+  .wb-field:not(:has(textarea)):not(:has(.wb-word-editor)):not(:has(.wb-keywords)):not(:has(.wb-source-picker)):not(:has(.wb-order-editor)):not(:has(.wb-date)) .wb-field-main > .wb-control {
+    grid-row: 1;
+    align-self: start;
+    margin-top: 1px;
+  }
+}
+
+/* Stretching the outer row is not enough if the field still centres its own
+   rail/label/control inside that height: a short switch field and a taller
+   number field end up on different vertical baselines.  Top-align the field
+   contents and the label/control pair. */
+.wb-fields > .wb-field {
+  align-items: start;
+}
+
+.wb-fields > .wb-field > .wb-field-main {
+  align-items: start;
+}
+
+.wb-field-main > .wb-label {
+  align-self: start;
+}
+
+/* At wide desktop the old 560px minimum produced three narrow columns whose
+   long labels wrapped into three lines.  Two roomy columns read better and
+   keep the help text from changing the control's vertical position. */
+.wb-fields {
+  grid-template-columns: repeat(auto-fit, minmax(min(700px, 100%), 1fr));
+}
+
+/* Keep the control near its label instead of pinning it to the far edge of a
+   1000px column.  The label column may grow to 18em; the control stays a
+   compact 140–300px block and the pair is left-aligned. */
+.wb-field-main,
+#replyWorkspace .wb-field-main {
+  grid-template-columns: minmax(10em, 18em) minmax(140px, 300px);
+  justify-content: start;
+}
+
+.wb-field-main > .wb-control,
+#replyWorkspace .wb-field-main > .wb-control {
+  justify-self: start;
+  max-width: 320px;
+  width: 100%;
+  justify-content: flex-start;
+}
+
+/* Direct field rows only: identity rows are nested inside .wb-identity-card
+   and keep their own 96px label column. */
+.wb-fields > .wb-field > .wb-field-main,
+#replyWorkspace .wb-fields > .wb-field > .wb-field-main {
+  grid-template-columns: minmax(9em, 12em) minmax(0, 1fr);
+  justify-content: start;
+}
+
+.wb-fields > .wb-field > .wb-field-main > .wb-control,
+#replyWorkspace .wb-fields > .wb-field > .wb-field-main > .wb-control {
+  justify-content: flex-start;
+  justify-self: start;
+  max-width: 320px;
+  width: 100%;
+}
+
+/* Birthday is a multi-part lunar/solar control; it must not share a narrow
+   identity cell with gender/age. */
+.self-page .wb-journal .wb-identity-rows .wb-field:has(.wb-date) {
+  grid-column: 1 / -1;
+}
+
+.self-page .wb-journal .wb-identity-rows .wb-field-main {
+  grid-template-columns: 96px minmax(220px, 1fr);
+}
+
+
