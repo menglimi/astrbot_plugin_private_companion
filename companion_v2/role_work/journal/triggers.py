@@ -131,8 +131,11 @@ class JournalTriggers:
             WHERE origin_key = ? AND kind = 'role.journal.select'
             AND json_extract(record_json, '$.spec.idempotency_key') LIKE ? ORDER BY task_id""",
             (context.key, operation_id + ":select:batch:%"))
-        return tuple(_ChildStatus(row["task_id"], row["state"], json.loads(row["record_json"])["effect"],
-                                  json.loads(row["record_json"])["reason"]) for row in rows)
+        batches = []
+        for row in rows:
+            data = json.loads(row["record_json"])
+            batches.append(_ChildStatus(row["task_id"], row["state"], data["effect"], data["reason"]))
+        return tuple(batches)
 
     def _receipt(self, context, operation, *, replayed=False, failure_code=None):
         selection, writing = self._tasks_for(context, operation.operation.operation_id)

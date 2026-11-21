@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import base64
+from collections import OrderedDict
 from hashlib import sha256
 from io import BytesIO
 import json
 import os
 import subprocess
 import sys
+from threading import Lock
 import warnings
 import zipfile
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -57,8 +59,57 @@ ALBUM_EXPORT_BYTES = 32 * 1024 * 1024
 ALBUM_HIDDEN_KEY_PREFIX = "image.album.hidden.v1:"
 THUMBNAIL_BYTES = 160 * 1024
 REFERENCE_THUMBNAIL_BYTES = 64 * 1024
+THUMBNAIL_CACHE_MAX_ENTRIES = 256
 UPLOAD_MAX_BYTES = 12 * 1024 * 1024
 IMAGE_ROLES = tuple(role.value for role in ReferenceRole)
+
+_THUMBNAIL_CACHE_LOCK = Lock()
+_THUMBNAIL_CACHE: OrderedDict[tuple[bytes, int, int, int, str | None], str] = OrderedDict()
+
+
+def _cached_thumbnail(
+    payload: bytes,
+    *,
+    size: int,
+    quality: int,
+    byte_limit: int,
+    alpha_bg: str | None,
+    error_code: str,
+    error_message: str,
+) -> str:
+    """Encode and LRU-cache a JPEG data-URL thumbnail keyed by content SHA-256."""
+    cache_key = (sha256(payload).digest(), size, quality, byte_limit, alpha_bg)
+    with _THUMBNAIL_CACHE_LOCK:
+        cached = _THUMBNAIL_CACHE.get(cache_key)
+        if cached is not None:
+            _THUMBNAIL_CACHE.move_to_end(cache_key)
+            return cached
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        with Image.open(BytesIO(payload)) as source:
+            source.load()
+            if alpha_bg is not None:
+                preview = ImageOps.exif_transpose(source)
+                preview.thumbnail((size, size), Image.Resampling.LANCZOS)
+                rgba = preview.convert("RGBA")
+                canvas = Image.new("RGB", rgba.size, alpha_bg)
+                canvas.paste(rgba, mask=rgba.getchannel("A"))
+                thumbnail = BytesIO()
+                canvas.save(thumbnail, format="JPEG", quality=quality, optimize=True)
+            else:
+                source.thumbnail((size, size), Image.Resampling.LANCZOS)
+                thumbnail = BytesIO()
+                source.convert("RGB").save(thumbnail, format="JPEG", quality=quality, optimize=True)
+    data = thumbnail.getvalue()
+    if not data or len(data) > byte_limit:
+        raise TaskError(error_code, error_message)
+    encoded = "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii")
+    with _THUMBNAIL_CACHE_LOCK:
+        _THUMBNAIL_CACHE[cache_key] = encoded
+        _THUMBNAIL_CACHE.move_to_end(cache_key)
+        while len(_THUMBNAIL_CACHE) > THUMBNAIL_CACHE_MAX_ENTRIES:
+            _THUMBNAIL_CACHE.popitem(last=False)
+    return encoded
 
 
 def _asset_view(repository, owner, asset):
@@ -169,21 +220,15 @@ class ReferenceMaterialManagement:
 
     @staticmethod
     def _thumbnail(payload, *, byte_limit, size=256):
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(BytesIO(payload)) as source:
-                source.load()
-                preview = ImageOps.exif_transpose(source)
-                preview.thumbnail((size, size), Image.Resampling.LANCZOS)
-                rgba = preview.convert("RGBA")
-                canvas = Image.new("RGB", rgba.size, "#f3f4f4")
-                canvas.paste(rgba, mask=rgba.getchannel("A"))
-                thumbnail = BytesIO()
-                canvas.save(thumbnail, format="JPEG", quality=68, optimize=True)
-        data = thumbnail.getvalue()
-        if not data or len(data) > byte_limit:
-            raise TaskError("reference_thumbnail_invalid", "a reference preview exceeds its image budget")
-        return "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii")
+        return _cached_thumbnail(
+            payload,
+            size=size,
+            quality=68,
+            byte_limit=byte_limit,
+            alpha_bg="#f3f4f4",
+            error_code="reference_thumbnail_invalid",
+            error_message="a reference preview exceeds its image budget",
+        )
 
     @staticmethod
     def _validate_upload(payload, declared_mime):
@@ -412,21 +457,22 @@ class ReferenceMaterialManagement:
         for item in page["items"]:
             if item.image_id in hidden:
                 continue
-            with Image.open(BytesIO(item.content)) as source:
-                source.load()
-                source.thumbnail((480, 480), Image.Resampling.LANCZOS)
-                thumbnail = BytesIO()
-                source.convert("RGB").save(thumbnail, format="JPEG", quality=76, optimize=True)
-            data = thumbnail.getvalue()
-            if not data or len(data) > THUMBNAIL_BYTES:
-                raise TaskError("generated_album_thumbnail_invalid", "an album preview exceeds its image budget")
+            thumbnail_url = _cached_thumbnail(
+                item.content,
+                size=480,
+                quality=76,
+                byte_limit=THUMBNAIL_BYTES,
+                alpha_bg=None,
+                error_code="generated_album_thumbnail_invalid",
+                error_message="an album preview exceeds its image budget",
+            )
             items.append({
                 "image_id": item.image_id,
                 "created_at": item.created_at,
                 "action": item.action,
                 "width": item.descriptor.width,
                 "height": item.descriptor.height,
-                "thumbnail": "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii"),
+                "thumbnail": thumbnail_url,
             })
         return {"items": items, "next_cursor": page["next_cursor"]}
 

@@ -393,6 +393,13 @@ class StorageRuntime:
     # parameters, so it is safe to log and it is what makes the next stall name
     # itself. Truncated so one slow event stays one line.
     SLOW_OPERATION_STATEMENT_CHARS = 160
+    _PERFORMANCE_INDEX_STATEMENTS = (
+        (
+            "idx_execution_tasks_origin_kind_id",
+            "CREATE INDEX IF NOT EXISTS idx_execution_tasks_origin_kind_id "
+            "ON execution_tasks(origin_key, kind, task_id)",
+        ),
+    )
 
     def __init__(self, *, data_root: Path, installation_id: str) -> None:
         if not installation_id or installation_id != installation_id.strip():
@@ -612,7 +619,7 @@ class StorageRuntime:
         result = None
         try:
             checkpoint = sqlite3.connect(str(self._database_path), timeout=0.0, isolation_level=None)
-            checkpoint.execute("PRAGMA synchronous = FULL")
+            checkpoint.execute("PRAGMA synchronous = NORMAL")
             row = checkpoint.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
             result = tuple(int(value) for value in row)
             return result
@@ -754,7 +761,7 @@ class StorageRuntime:
                         check_same_thread=False)
                     connection.row_factory = sqlite3.Row
                     connection.execute("PRAGMA foreign_keys = ON")
-                    connection.execute("PRAGMA synchronous = FULL")
+                    connection.execute("PRAGMA synchronous = NORMAL")
                     connection.execute("PRAGMA busy_timeout = 5000")
                     connection.execute("PRAGMA wal_autocheckpoint = 0")
                     connection.execute("PRAGMA query_only = ON")
@@ -849,7 +856,7 @@ class StorageRuntime:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA journal_mode = WAL")
-            connection.execute("PRAGMA synchronous = FULL")
+            connection.execute("PRAGMA synchronous = NORMAL")
             connection.execute("PRAGMA busy_timeout = 5000")
             connection.execute("PRAGMA wal_autocheckpoint = 0")
             # The store is routinely hundreds of MB because generated images
@@ -975,6 +982,7 @@ class StorageRuntime:
                 self._migrate_v66_to_v67(connection)
                 self._migrate_v67_to_v68(connection)
                 self._migrate_v68_to_v69(connection)
+                self._ensure_performance_indexes(connection)
                 return
             if "runtime_metadata" not in existing_tables:
                 raise StorageOpenError("V2 data root is partially initialized")
@@ -1826,6 +1834,19 @@ class StorageRuntime:
             self._validate_v68_migration_record(connection)
             if not early_v70:
                 self._validate_v69_migration_record(connection)
+            self._ensure_performance_indexes(connection)
+
+    @staticmethod
+    def _ensure_performance_indexes(connection: sqlite3.Connection) -> None:
+        existing = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name IS NOT NULL"
+            )
+        }
+        for name, statement in StorageRuntime._PERFORMANCE_INDEX_STATEMENTS:
+            if name not in existing:
+                connection.execute(statement)
 
     @staticmethod
     def _prepare_early_v70_laya_schema(connection):
