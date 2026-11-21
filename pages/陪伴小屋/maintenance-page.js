@@ -197,9 +197,31 @@ window.CompanionMaintenancePage = (() => {
     game: ["共同游玩 Token", "共同游玩内部统计暂不可用。", "游戏回复、海龟汤和画面识别按实际模型回执单独统计，不计入普通核心回复。"],
     main: ["AstrBot 全部会话", "AstrBot 全局用量暂不可用。", "重新读取宿主用量记录。"],
   };
-  const routeError = code => ({
+  const API_GET_TIMEOUT_MS = 30000;
+  const MACHINE_CODE = /^[a-z][a-z0-9_]{2,60}$/;
+  const SESSION_FATAL_CODES = new Set([
+    "dashboard_identity_required",
+    "staging_host_terminated",
+    "staging_not_initialized",
+  ]);
+  const ROUTE_ERROR_MESSAGES = {
     dashboard_identity_required: "请从已登录的 AstrBot 管理页面打开。",
+    core_access_required: "当前管理账号没有该维护接口的访问权限。",
     staging_not_initialized: "先在账号与会话中初始化一个运行实例。",
+    staging_host_terminated: "角色运行实例已停止或重载，请重新读取状态或重新打开插件页面。",
+    bridge_timeout: "读取超时（超过 30 秒）：后端响应偏慢或正在重建快照，请稍后重试。",
+    bridge_unavailable: "页面桥尚未就绪：请确认是从 AstrBot 管理页面打开，并刷新或重试。",
+    dashboard_bridge_not_ready: "页面桥尚未就绪：请稍候片刻后点击重试。",
+    model_storage_unavailable: "角色账本存储暂时不可用（SQLite 正忙或读取异常），请稍后重试。",
+    maintenance_group_only_role: "当前群聊角色未绑定私聊维护接口，暂不提供角色账本与维护面板。",
+    maintenance_model_api_missing: "当前对象尚未分配模型管理接口，请先在「账号与会话」确认角色映射。",
+    maintenance_payload_invalid: "维护接口返回的数据结构不完整，请重新读取状态后再试。",
+    http_401: "管理登录状态已过期（HTTP 401），请重新登录 AstrBot 管理页面后再试。",
+    http_403: "没有权限访问当前维护接口（HTTP 403），请确认管理身份后再试。",
+    http_404: "当前维护接口路由不存在（HTTP 404），请确认角色已绑定私聊维护接口或插件已完成加载。",
+    http_429: "请求过于频繁（HTTP 429），请稍候几秒后再试。",
+    http_5xx: "服务端处理维护请求时发生异常（HTTP 5xx），可能是插件正在重载或后端短暂繁忙，请稍后重试。",
+    network_error: "网络连接中断或后端暂未响应，请检查 AstrBot 服务状态后重试。",
     model_provider_unavailable: "这个 Provider 当前没有可用的 V2 适配器。",
     model_probe_timeout: "探测超过 30 秒，结果未知。",
     model_probe_failed: "Provider 没有通过连接探测。",
@@ -214,7 +236,73 @@ window.CompanionMaintenancePage = (() => {
     model_configuration_invalid: "提示词或模型配置没有通过校验，请检查长度和内容。",
     model_task_unavailable: "这个模型任务当前没有注册，无法保存提示词。",
     model_configuration_busy: "配置正在处理，请稍后重试。",
-  })[code] || "检查失败，请重新读取状态后再试。";
+  };
+
+  function httpStatusCode(input) {
+    if (!input) return 0;
+    const direct = typeof input === "object"
+      ? Number(input.status ?? input.statusCode ?? input.response?.status)
+      : NaN;
+    if (Number.isInteger(direct) && direct >= 400 && direct < 600) return direct;
+    const text = typeof input === "string" ? input : String(input.message || "");
+    const match = text.match(/(?:HTTP(?:\/\d(?:\.\d)?)?\s+|status(?:\s+code)?\s*[:=]?\s*|错误码[：:]\s*)([45]\d{2})(?!\d)/i)
+      || text.match(/^\s*([45]\d{2})(?:\s|$)/);
+    return match ? Number(match[1]) : 0;
+  }
+
+  function errorCodeOf(input) {
+    if (!input) return "";
+    if (typeof input === "string") {
+      const trimmed = input.trim();
+      if (!trimmed) return "";
+      if (ROUTE_ERROR_MESSAGES[trimmed] || MACHINE_CODE.test(trimmed)) return trimmed;
+      const status = httpStatusCode(trimmed);
+      if (status === 401) return "http_401";
+      if (status === 403) return "http_403";
+      if (status === 404) return "http_404";
+      if (status === 429) return "http_429";
+      if (status >= 500 && status < 600) return "http_5xx";
+      if (/ECONNABORTED|ETIMEDOUT|timed?\s*out|timeout/i.test(trimmed)) return "bridge_timeout";
+      if (/Failed to fetch|Network\s*Error|ERR_NETWORK|ECONNREFUSED|ECONNRESET|Load failed|fetch failed|socket hang up|network/i.test(trimmed)) return "network_error";
+      if (/bridge.*(?:unavailable|not ready)|页面桥尚未就绪/i.test(trimmed)) return "bridge_unavailable";
+      if (/staging_host_terminated|host terminated/i.test(trimmed)) return "staging_host_terminated";
+      if (/initialized|explicit V2 profile/i.test(trimmed)) return "staging_not_initialized";
+      if (/Dashboard|sign in|dashboard_identity/i.test(trimmed)) return "dashboard_identity_required";
+      return "";
+    }
+    const rawCode = typeof input.code === "string" ? input.code.trim() : "";
+    if (rawCode) {
+      if (ROUTE_ERROR_MESSAGES[rawCode] || MACHINE_CODE.test(rawCode)) return rawCode;
+      if (/^(?:ECONNABORTED|ETIMEDOUT)$/i.test(rawCode)) return "bridge_timeout";
+      if (/^(?:ERR_NETWORK|ECONNREFUSED|ECONNRESET|ENOTFOUND)$/i.test(rawCode)) return "network_error";
+    }
+    const status = httpStatusCode(input);
+    if (status === 401) return "http_401";
+    if (status === 403) return "http_403";
+    if (status === 404) return "http_404";
+    if (status === 429) return "http_429";
+    if (status >= 500 && status < 600) return "http_5xx";
+    return errorCodeOf(String(input.message || ""));
+  }
+
+  function routeError(codeOrError) {
+    const code = errorCodeOf(codeOrError);
+    const status = httpStatusCode(codeOrError);
+    if (code === "http_5xx" && status >= 500 && status < 600) {
+      return "服务端处理维护请求时发生异常（HTTP " + status + "），可能是插件正在重载或后端短暂繁忙，请稍后重试。";
+    }
+    if (code && ROUTE_ERROR_MESSAGES[code]) return ROUTE_ERROR_MESSAGES[code];
+    if (status >= 500 && status < 600) {
+      return "服务端处理维护请求时发生异常（HTTP " + status + "），可能是插件正在重载或后端短暂繁忙，请稍后重试。";
+    }
+    if (status >= 400 && status < 500) {
+      return "维护请求被拒绝（HTTP " + status + "），请检查管理状态或重试。";
+    }
+    if (code && MACHINE_CODE.test(code)) {
+      return "请求未完成（错误码：" + code + "），请重新读取状态后再试。";
+    }
+    return "检查失败，请重新读取状态后再试。";
+  }
 
   let root = null;
   let state = null;
@@ -232,13 +320,14 @@ window.CompanionMaintenancePage = (() => {
       }
       const role = window.CompanionProduct?.role?.() || {};
       const selection = window.CompanionProduct?.selection?.() || {};
+      const resolvedEndpoint = resolveModelContext().endpoint || role.model_api;
       const fallback = [selection.installation_id, selection.target_id, role.installation_id,
-        role.target_id, role.role_id, role.model_api].filter(value => value != null && String(value).trim());
+        role.target_id, role.role_id, resolvedEndpoint].filter(value => value != null && String(value).trim());
       return fallback.length ? fallback.join(":") : "default";
     } catch (_) { return "default"; }
   }
   function cacheMaintenanceState() {
-    if (!state || !maintenanceScope) return;
+    if (!state || !maintenanceScope || !state.data) return;
     maintenanceCache.set(maintenanceScope, {
       data: state.data, integrations: state.integrations, modelStatus: state.modelStatus,
       balance: state.balance, balanceLoaded: state.balanceLoaded,
@@ -569,19 +658,140 @@ window.CompanionMaintenancePage = (() => {
     return '<section class="maint-source-comparison" aria-label="Token 来源同周期对照"><div class="maint-subhead"><strong>来源同周期对照</strong><span>' + escapeHtml(periodLabel) + ' · 各账本独立统计</span></div><div class="maint-source-compare-head"><span>来源</span><span>Token</span><span>调用</span><span>命中率</span><span>回执覆盖</span><span>状态</span></div><div class="maint-source-compare-list">' + rows + '</div><p class="maint-source-compare-note"><i data-lucide="info"></i>角色总用量 = 对话主链 + 插件附加任务。外部插件账本分别列出；未接入来源不使用角色数据填充。</p></section>';
   }
 
-  function modelPath() {
-    const endpoint = window.CompanionProduct?.role()?.model_api;
-    if (typeof endpoint !== "string" || !endpoint.startsWith(PREFIX + "/")
-        || /[?#%\\:]/.test(endpoint) || endpoint.split("/").slice(1).some(part => !part || part === "." || part === "..")) {
-      throw new Error("当前对象没有模型管理接口。请先选择已初始化的会话角色。");
+  function isValidModelEndpoint(endpoint) {
+    return typeof endpoint === "string"
+      && endpoint.startsWith(PREFIX + "/")
+      && !/[?#%\\:]/.test(endpoint)
+      && !endpoint.split("/").slice(1).some(part => !part || part === "." || part === "..");
+  }
+
+  function resolveModelContext() {
+    const product = window.CompanionProduct;
+    const role = product?.role?.() || null;
+    const currentTarget = product?.target?.() || null;
+    const ownerTarget = product?.roleTarget?.() || null;
+    const ownerRole = ownerTarget?.roles?.find(item => item?.role_id === role?.role_id) || null;
+    /* 群聊窗口下的 GroupModelWebAPI 不提供 /maintenance、/voice、/image、/balance 等
+       角色维护路由。与 models-page.js 一致：优先通过 roleTarget() 取该角色绑定的私聊
+       model_api；仅在非群聊作用域下才回退到 role().model_api，避免对群聊路由发 404。 */
+    if (ownerTarget && ownerTarget.scope_kind !== "group" && isValidModelEndpoint(ownerRole?.model_api)) {
+      return {
+        status: "ready",
+        endpoint: ownerRole.model_api,
+        path: ownerRole.model_api.slice(PREFIX.length),
+        viaGroupFallback: currentTarget?.scope_kind === "group",
+      };
     }
-    return endpoint.slice(PREFIX.length);
+    if (ownerTarget?.scope_kind === "group" || currentTarget?.scope_kind === "group" || role?.scope_kind === "group") {
+      return {status: "group_only", endpoint: "", path: "", viaGroupFallback: false};
+    }
+    if (isValidModelEndpoint(role?.model_api)) {
+      return {
+        status: "ready",
+        endpoint: role.model_api,
+        path: role.model_api.slice(PREFIX.length),
+        viaGroupFallback: false,
+      };
+    }
+    return {status: "missing", endpoint: "", path: "", viaGroupFallback: false};
+  }
+
+  function mountReadiness() {
+    const product = window.CompanionProduct;
+    const conn = typeof product?.connection === "function" ? product.connection() : null;
+    const connState = conn?.state || "";
+    const role = typeof product?.role === "function" ? product.role() : null;
+    if (connState === "checking") {
+      return {
+        kind: "waiting",
+        title: "正在连接角色与会话目录",
+        detail: product?.workspaceHint?.() || conn?.detail || "等待宿主完成角色目录读取后自动加载维护面板…",
+      };
+    }
+    if (!role) {
+      const hasDirectory = typeof product?.directory === "function" ? Boolean(product.directory()) : false;
+      if (!hasDirectory && connState !== "connected") {
+        if (connState === "unavailable" || connState === "ready") {
+          return {
+            kind: "waiting_hint",
+            title: "角色与会话目录尚未就绪",
+            detail: product?.workspaceHint?.() || conn?.detail || "等待账号与会话目录就绪，可点击重新读取或前往「账号与会话」检查连接。",
+          };
+        }
+        return {
+          kind: "waiting",
+          title: "正在等待角色与会话目录就绪",
+          detail: product?.workspaceHint?.() || "角色目录就绪后将自动加载维护面板…",
+        };
+      }
+      return {
+        kind: "waiting_hint",
+        title: "尚未选定可用角色",
+        detail: product?.workspaceHint?.() || "请先在「账号与会话」配置并选择已初始化的角色后再查看维护面板。",
+      };
+    }
+    const resolved = resolveModelContext();
+    if (resolved.status === "group_only") {
+      return {kind: "group_only"};
+    }
+    if (resolved.status === "missing") {
+      return {
+        kind: "waiting_hint",
+        title: "当前角色尚未分配维护接口",
+        detail: product?.workspaceHint?.() || routeError("maintenance_model_api_missing"),
+      };
+    }
+    return {kind: "ready", path: resolved.path};
+  }
+
+  function modelPath() {
+    const resolved = resolveModelContext();
+    if (resolved.status === "ready") return resolved.path;
+    const code = resolved.status === "group_only"
+      ? "maintenance_group_only_role"
+      : "maintenance_model_api_missing";
+    const error = new Error(routeError(code));
+    error.code = code;
+    throw error;
+  }
+
+  function boundedApiGet(promise, timeoutMs = API_GET_TIMEOUT_MS) {
+    const hasWindowTimer = typeof window.setTimeout === "function";
+    const hasGlobalTimer = !hasWindowTimer && typeof setTimeout === "function";
+    if (!hasWindowTimer && !hasGlobalTimer) return promise;
+    let timer = null;
+    const clear = () => {
+      if (timer == null) return;
+      const id = timer;
+      timer = null;
+      if (hasWindowTimer) window.clearTimeout?.(id);
+      else if (typeof clearTimeout === "function") clearTimeout(id);
+    };
+    return new Promise((resolve, reject) => {
+      const onTimeout = () => {
+        timer = null;
+        const error = new Error(routeError("bridge_timeout"));
+        error.code = "bridge_timeout";
+        reject(error);
+      };
+      timer = hasWindowTimer
+        ? window.setTimeout(onTimeout, timeoutMs)
+        : setTimeout(onTimeout, timeoutMs);
+      Promise.resolve(promise).then(
+        value => { clear(); resolve(value); },
+        reason => { clear(); reject(reason); }
+      );
+    });
   }
 
   async function api(method, path, body) {
     const product = window.CompanionProduct;
     const bridge = product?.bridgeNow?.() || await product?.bridgeFor?.();
-    if (!bridge) throw new Error("页面桥尚未就绪，请重新读取。");
+    if (!bridge) {
+      const error = new Error(routeError("bridge_unavailable"));
+      error.code = "bridge_unavailable";
+      throw error;
+    }
     /* The Dashboard bridge owns the plugin prefix and rejects `?` inside the
        endpoint.  Split query fields out and pass them through the bridge's
        query argument instead. */
@@ -591,14 +801,15 @@ window.CompanionMaintenancePage = (() => {
     const query = {};
     for (const [key, value] of new URLSearchParams(rawQuery)) query[key] = value;
     const response = method === "GET"
-      ? await bridge.apiGet(route, Object.keys(query).length ? query : undefined)
+      ? await boundedApiGet(bridge.apiGet(route, Object.keys(query).length ? query : undefined))
       : await bridge.apiPost(route, body || {});
     let value = response;
     for (let depth = 0; depth < 3; depth += 1) {
       if (value?.status === "error") {
-        const code = value?.data?.code || value?.code || "";
-        const error = new Error(routeError(code));
-        error.code = code;
+        const code = value?.data?.code || value?.code
+          || (MACHINE_CODE.test(String(value?.message || "").trim()) ? String(value.message).trim() : "");
+        const error = new Error(routeError(code || value?.message || ""));
+        if (code) error.code = code;
         throw error;
       }
       if (value?.status === "ok" && Object.hasOwn(value, "data")) {
@@ -2226,7 +2437,7 @@ window.CompanionMaintenancePage = (() => {
       }
     } catch (error) {
       if (ticket === generation && state === current && current.memoryRunning) {
-        current.memoryError = routeError(error.code || error.message);
+        current.memoryError = routeError(error);
         current.memoryRunning = false;
         current.memoryStopReason = "采样已中断";
       }
@@ -3553,6 +3764,34 @@ window.CompanionMaintenancePage = (() => {
     const samples = root.querySelectorAll?.("details[data-reply-sample]");
     if (samples?.length) state.openReplySamples = new Set(Array.from(samples)
       .filter(item => item.open).map(item => item.dataset.replySample));
+    if (!state.data && state.readiness?.kind === "waiting") {
+      root.innerHTML = '<div class="maint-loading" data-maint-waiting role="status"><span class="maint-loading-mark"><i data-lucide="activity"></i></span><div class="maint-source-copy"><strong>' +
+        escapeHtml(state.readiness.title || "正在连接角色与会话目录") + '</strong><small>' +
+        escapeHtml(state.readiness.detail || "等待宿主完成角色目录读取后自动加载维护面板…") + '</small></div><span class="maint-loading-line"></span></div>';
+      window.lucide?.createIcons?.();
+      return;
+    }
+    if (!state.data && state.readiness?.kind === "group_only") {
+      const roleName = window.CompanionProduct?.roleLabel?.() || "当前角色";
+      root.innerHTML = '<div class="maint-source-unavailable" data-maint-guidance="group-only" role="status"><div class="maint-source-glyph"><i data-lucide="users-round"></i></div><div class="maint-source-copy">' +
+        '<span class="maint-eyebrow">治理与维护 / 群聊专属角色</span><strong>当前群聊角色暂未绑定私聊维护接口</strong><p>角色「' +
+        escapeHtml(roleName) + '」目前仅配置在群聊窗口中，没有对应的私聊模型账本与维护路由，因此暂不展示 Token 账本、缓存诊断与运行排障。</p>' +
+        '<small>如需查看该角色的治理与维护面板，请先到「账号与会话」为该角色绑定一个私聊窗口目标，或切换至已绑定私聊窗口的角色后再查看。</small>' +
+        '<div class="maint-source-boundary"><span><i data-lucide="shield-check"></i>群聊窗口运行不受影响</span><span><i data-lucide="layers-3"></i>群聊模型与任务配置可在「模型与连接」查看</span></div>' +
+        '<button type="button" class="maint-source-return" data-go="manage" data-manage="host"><i data-lucide="settings-2"></i><span>前往账号与会话</span></button> ' +
+        '<button type="button" class="maint-source-return" data-refresh><i data-lucide="refresh-cw"></i><span>重新检查</span></button></div></div>';
+      window.lucide?.createIcons?.();
+      return;
+    }
+    if (!state.data && state.readiness?.kind === "waiting_hint") {
+      root.innerHTML = '<div class="maint-source-unavailable" data-maint-guidance="waiting-hint" role="status"><div class="maint-source-glyph"><i data-lucide="compass"></i></div><div class="maint-source-copy">' +
+        '<span class="maint-eyebrow">治理与维护 / 等待目录就绪</span><strong>' + escapeHtml(state.readiness.title || "角色与会话目录尚未就绪") + '</strong><p>' +
+        escapeHtml(state.readiness.detail || "请先完成账号与会话连接后再读取维护面板。") + '</p>' +
+        '<button type="button" class="maint-source-return" data-workspace-retry data-refresh><i data-lucide="refresh-cw"></i><span>重新读取</span></button> ' +
+        '<button type="button" class="maint-source-return" data-go="manage" data-manage="host"><i data-lucide="settings-2"></i><span>前往账号与会话</span></button></div></div>';
+      window.lucide?.createIcons?.();
+      return;
+    }
     if (!state.data && state.loading) {
       root.innerHTML = '<div class="maint-loading"><span class="maint-loading-mark"><i data-lucide="activity"></i></span><strong>正在读取角色账本与运行快照</strong><span class="maint-loading-line"></span></div>';
       window.lucide?.createIcons?.();
@@ -3612,11 +3851,18 @@ window.CompanionMaintenancePage = (() => {
       "system-prompts": "核心回复固定规则 · 修改前请阅读风险说明",
       logs: "当前插件进程的最近日志 · 排障时可搜索、按级别筛选"};
     const boardTitle = boardTitles[state.activeMaintenanceNav] || "运行态势";
+    const syncErrorBanner = state.error
+      ? '<div class="maint-balance-availability" data-maint-sync-notice role="status"><div><i data-lucide="alert-triangle"></i><span><strong>同步异常</strong><small>上次同步 · ' +
+        escapeHtml(time(roleData.generated_at)) + '</small></span></div><p><b>保留上次同步快照</b><span>' +
+        escapeHtml(state.error) + '</span></p><button class="maint-balance-query" type="button" data-refresh ' +
+        (state.loading ? "disabled" : "") + '><i data-lucide="refresh-cw"></i><span>' +
+        (state.loading ? "正在重试" : "重试") + '</span></button></div>'
+      : "";
     root.innerHTML = '<div class="maint-board"><header class="maint-board-head"><div class="maint-board-copy"><span class="maint-eyebrow">陪伴 / 信号室</span><h2>' + boardTitle + '</h2><p>' +
       (boardDescriptions[state.activeMaintenanceNav] || "运行态势 · 当前角色用量、预算与调用构成。") + '</p></div>' +
       '<div class="maint-board-actions"><span class="maint-live" data-state="' + (state.error ? "warn" : "ok") + '"><i></i>' + (state.loading ? "正在同步" : state.error ? "同步异常" : "已连接") +
       '</span><span class="maint-updated">同步于 ' + escapeHtml(time(data.generated_at)) + '</span>' + exportMarkup + '<button class="maint-refresh" type="button" data-refresh ' + (state.loading ? "disabled" : "") + ' aria-label="刷新运行统计" title="刷新运行统计"><i data-lucide="refresh-cw"></i><span>' + (state.loading ? "同步中" : "刷新") +
-      '</span></button></div></header>' + navMarkup + '<section class="maint-view" data-maint-view="overview"' + (state.activeMaintenanceNav === "overview" ? "" : " hidden") + '><section class="maint-token-section" id="maint-token-section" aria-labelledby="maint-usage-heading"><div class="maint-panel-heading"><div><span class="maint-eyebrow">令牌 / 00</span><h3 id="maint-usage-heading">Token 统计管理</h3><p class="maint-scope-note"><i data-lucide="shield-check"></i> ' +
+      '</span></button></div></header>' + syncErrorBanner + navMarkup + '<section class="maint-view" data-maint-view="overview"' + (state.activeMaintenanceNav === "overview" ? "" : " hidden") + '><section class="maint-token-section" id="maint-token-section" aria-labelledby="maint-usage-heading"><div class="maint-panel-heading"><div><span class="maint-eyebrow">令牌 / 00</span><h3 id="maint-usage-heading">Token 统计管理</h3><p class="maint-scope-note"><i data-lucide="shield-check"></i> ' +
       escapeHtml(tokenScopeNote) +
       '</p></div></div>' +
       '<div class="maint-token-redesign">' + tokenDashboardControlsMarkup(today, roleData) + (localSource
@@ -3643,23 +3889,205 @@ window.CompanionMaintenancePage = (() => {
     window.lucide?.createIcons?.();
   }
 
-  async function refresh() {
-    if (!state || state.loading) return;
+  function usageBucketFingerprint(bucket) {
+    if (!bucket || typeof bucket !== "object") return "";
+    return [
+      bucket.day ?? bucket.key ?? "",
+      bucket.calls ?? "",
+      bucket.tokens ?? "",
+      bucket.input_tokens ?? "",
+      bucket.output_tokens ?? "",
+      bucket.cached_input_tokens ?? "",
+      bucket.cache_creation_tokens ?? "",
+      bucket.cache_reported_calls ?? "",
+      bucket.cost_microusd ?? "",
+      bucket.failures ?? "",
+      bucket.unknown_calls ?? "",
+      bucket.active_calls ?? "",
+      bucket.unconfirmed_calls ?? "",
+    ].join(",");
+  }
+
+  function recentHeadFingerprint(rows) {
+    if (!Array.isArray(rows) || !rows.length) return "0";
+    const head = rows[0] || {};
+    const tail = rows[rows.length - 1] || {};
+    return [
+      rows.length,
+      head.at ?? head.received_at ?? head.turn_id ?? "",
+      head.kind ?? head.execution_path ?? "",
+      head.provider ?? "",
+      head.state ?? head.outcome ?? "",
+      head.tokens ?? "",
+      head.failure_code ?? "",
+      tail.at ?? tail.received_at ?? tail.turn_id ?? "",
+    ].join(",");
+  }
+
+  function cacheDiagnosticsFingerprint(diag) {
+    if (!diag || typeof diag !== "object") return "";
+    const dailyRows = Array.isArray(diag.daily) ? diag.daily : [];
+    const lastDay = dailyRows[dailyRows.length - 1] || {};
+    const events = Array.isArray(diag.recent_events) ? diag.recent_events : [];
+    const headEvent = events[0] || {};
+    return [
+      dailyRows.length,
+      lastDay.day ?? "",
+      lastDay.signature_calls ?? "",
+      lastDay.baseline_calls ?? "",
+      lastDay.hit_calls ?? "",
+      lastDay.miss_calls ?? "",
+      events.length,
+      headEvent.at ?? headEvent.kind ?? headEvent.reason ?? headEvent.cause ?? "",
+      diag.summary?.hit_rate ?? "",
+      diag.summary?.calls ?? "",
+    ].join(",");
+  }
+
+  function usageSourceFingerprint(source) {
+    if (!source || typeof source !== "object") return "";
+    const dailyRows = Array.isArray(source.daily) ? source.daily : [];
+    const lastDaily = dailyRows[dailyRows.length - 1];
+    return [
+      source.available ?? "",
+      source.installed ?? "",
+      source.reason ?? "",
+      usageBucketFingerprint(source.summary),
+      usageBucketFingerprint(source.totals),
+      dailyRows.length,
+      usageBucketFingerprint(lastDaily),
+      recentHeadFingerprint(source.recent),
+      cacheDiagnosticsFingerprint(source.cache_diagnostics),
+    ].join("|");
+  }
+
+  function maintenanceSnapshot(current) {
+    if (!current) return "";
+    const base = [
+      current.error || "",
+      current.errorCode || "",
+      current.readiness?.kind || "",
+      current.activeMaintenanceNav || "",
+      current.tokenSource || "",
+      current.period || "",
+      current.selectedDate || "",
+    ];
+    const data = current.data;
+    if (!data || typeof data !== "object") return base.join("::") + "::nodata";
+    const dailyRows = Array.isArray(data.daily) ? data.daily : [];
+    const historyRows = Array.isArray(data.history) ? data.history : [];
+    const hourlyRows = Array.isArray(data.hourly) ? data.hourly : [];
+    const budget = data.budget || {};
+    const runtime = data.runtime || {};
+    const hostChecks = data.host_checks || {};
+    const eff = data.reply_efficiency || {};
+    const usageSources = data.usage_sources && typeof data.usage_sources === "object"
+      ? Object.keys(data.usage_sources).sort().map(key => key + "=" + usageSourceFingerprint(data.usage_sources[key])).join(";")
+      : "";
+    const externalSources = data.external_token_sources && typeof data.external_token_sources === "object"
+      ? Object.keys(data.external_token_sources).sort().map(key => key + "=" + usageSourceFingerprint(data.external_token_sources[key])).join(";")
+      : "";
+    const voiceProviders = Array.isArray(current.integrations?.voice?.providers) ? current.integrations.voice.providers : [];
+    const imageActions = Array.isArray(current.integrations?.image?.actions) ? current.integrations.image.actions : [];
+    const modelTasks = Array.isArray(current.modelStatus?.tasks) ? current.modelStatus.tasks : [];
+    const modelProviders = Array.isArray(current.modelStatus?.providers) ? current.modelStatus.providers : [];
+    return [
+      ...base,
+      usageBucketFingerprint(data.summary),
+      usageBucketFingerprint(data.totals),
+      usageBucketFingerprint(data.windows?.["7d"]?.totals),
+      usageBucketFingerprint(data.windows?.["30d"]?.totals),
+      dailyRows.length + ":" + usageBucketFingerprint(dailyRows[dailyRows.length - 1]),
+      historyRows.length + ":" + usageBucketFingerprint(historyRows[historyRows.length - 1]),
+      hourlyRows.length + ":" + usageBucketFingerprint(hourlyRows[hourlyRows.length - 1]),
+      [
+        budget.hard_limit_enabled ?? "",
+        budget.limit_tokens ?? "",
+        budget.spent_tokens ?? "",
+        budget.held_tokens ?? "",
+        budget.soft_limit_enabled ?? "",
+        budget.soft_limit_tokens ?? "",
+        budget.pending_usage_calls ?? "",
+        budget.pending_usage_tokens ?? "",
+      ].join(","),
+      recentHeadFingerprint(data.recent),
+      cacheDiagnosticsFingerprint(data.cache_diagnostics),
+      [
+        eff.summary?.samples ?? "",
+        eff.summary?.completed ?? "",
+        eff.summary?.median_end_to_end_ms ?? "",
+        eff.summary?.median_end_to_end_send_returned_ms ?? "",
+        Array.isArray(eff.daily) ? eff.daily.length : 0,
+        recentHeadFingerprint(eff.recent),
+      ].join(","),
+      [
+        Array.isArray(data.providers) ? data.providers.map(p => (p?.id || "") + ":" + (p?.model || "")).join(",") : "",
+        Array.isArray(runtime.inbound_no_replies) ? runtime.inbound_no_replies.length + ":" + (runtime.inbound_no_replies[0]?.at ?? "") : "",
+        Array.isArray(runtime.conversation) ? runtime.conversation.length + ":" + (runtime.conversation[0]?.state ?? "") : "",
+        Array.isArray(runtime.proactive) ? runtime.proactive.length + ":" + (runtime.proactive[0]?.state ?? "") : "",
+        Array.isArray(runtime.debounce_trace) ? runtime.debounce_trace.length : "",
+        runtime.storage?.ok ?? runtime.storage?.status ?? "",
+        runtime.identity_scope?.operator_id ?? "",
+        hostChecks.backup?.status ?? hostChecks.backup?.last_backup_at ?? "",
+        hostChecks.mobile?.status ?? hostChecks.mobile?.enabled ?? "",
+      ].join("|"),
+      usageSources,
+      externalSources,
+      voiceProviders.map(p => (p?.id || "") + ":" + (p?.loaded ?? "")).join(","),
+      imageActions.map(a => (a?.action || "") + ":" + (a?.registered ?? "") + ":" + (a?.current ?? "")).join(","),
+      modelProviders.map(p => p?.id || "").join(","),
+      modelTasks.map(t => (t?.kind || "") + ":" + (t?.edit_token || "") + ":" + (t?.application_state || "")).join(","),
+    ].join("\n");
+  }
+
+  async function refresh({silent = false} = {}) {
+    if (!state) return;
+    if (silent ? (state.loading || state.backgroundLoading) : state.loading) return;
     const current = state;
+    const readiness = mountReadiness();
+    const previousReadinessKind = current.readiness?.kind || "";
+    current.readiness = readiness;
+    if (readiness.kind !== "ready") {
+      if (readiness.kind === "group_only") {
+        current.data = null;
+        current.integrations = {};
+        current.modelStatus = null;
+        current.error = "";
+        current.errorCode = "";
+      }
+      current.loading = false;
+      current.backgroundLoading = false;
+      if (!silent || previousReadinessKind !== readiness.kind) render();
+      return;
+    }
     const ticket = generation;
-    current.loading = true;
-    current.error = "";
+    const seq = (current.refreshSeq = (current.refreshSeq || 0) + 1);
+    const previousSnapshot = silent ? maintenanceSnapshot(current) : null;
+    const previousError = current.error;
     let queryBalance = false;
-    render();
+    if (silent) {
+      current.backgroundLoading = true;
+    } else {
+      current.backgroundLoading = false;
+      current.loading = true;
+      current.error = "";
+      current.errorCode = "";
+      render();
+    }
     try {
-      const path = modelPath();
-      queryBalance = !current.balanceLoaded;
+      const path = readiness.path || modelPath();
       const values = await Promise.allSettled([api("GET", path + "/maintenance"), api("GET", path + "/voice"),
         api("GET", path + "/image"), api("GET", path)]);
-      if (ticket !== generation || state !== current) return;
+      if (ticket !== generation || state !== current || current.refreshSeq !== seq) return;
       if (values[0].status === "rejected") throw values[0].reason;
       const data = values[0].value;
-      if (!data || !data.summary || !Array.isArray(data.daily)) throw new Error("返回的数据结构不完整。");
+      if (!data || !data.summary || !Array.isArray(data.daily)) {
+        const invalid = new Error(routeError("maintenance_payload_invalid"));
+        invalid.code = "maintenance_payload_invalid";
+        throw invalid;
+      }
+      current.error = "";
+      current.errorCode = "";
       current.data = data;
       current.integrations = {
         voice: values[1].status === "fulfilled" ? values[1].value : null,
@@ -3669,19 +4097,37 @@ window.CompanionMaintenancePage = (() => {
       current.provider = current.provider || data.providers?.[0]?.id || "";
       current.voiceProvider = current.voiceProvider || current.integrations.voice?.providers?.[0]?.id || "";
       current.imageAction = current.imageAction || current.integrations.image?.actions?.[0]?.action || "";
+      queryBalance = !current.balanceLoaded;
+      cacheMaintenanceState();
     } catch (error) {
-      if (ticket !== generation || state !== current) return;
-      /* 主统计读取失败后必须进入明确的错误页；继续保留旧账本、集成状态或
-         模型快照会让 Token、缓存和最近调用看起来像刚刚同步成功。余额是独立
-         查询，仍由 refreshBalance() 单独维护。 */
-      current.data = null;
-      current.integrations = {};
-      current.modelStatus = null;
-      current.error = routeError(error.code || error.message);
+      if (ticket !== generation || state !== current || current.refreshSeq !== seq) return;
+      const code = errorCodeOf(error);
+      const message = routeError(error);
+      const fatal = SESSION_FATAL_CODES.has(code);
+      /* 已有可用快照时，后台轮询或短暂失败必须保留当前账本/集成/模型快照，
+         只点亮“同步异常”状态灯与内联重试条；仅首次无数据或会话级致命错误
+         （未登录/实例已停/未初始化）才切入整页离线态。 */
+      if (!current.data || fatal) {
+        current.data = null;
+        current.integrations = {};
+        current.modelStatus = null;
+      }
+      current.errorCode = code;
+      current.error = message;
     } finally {
-      if (ticket === generation && state === current) {
-        current.loading = false;
-        render();
+      if (ticket === generation && state === current && current.refreshSeq === seq) {
+        if (silent) {
+          current.backgroundLoading = false;
+          if (maintenanceSnapshot(current) !== previousSnapshot || current.error !== previousError) {
+            render();
+          } else if (current.data?.generated_at) {
+            const updated = root?.querySelector?.(".maint-updated");
+            if (updated) updated.textContent = "同步于 " + time(current.data.generated_at);
+          }
+        } else {
+          current.loading = false;
+          render();
+        }
         if (queryBalance) void refreshBalance();
       }
     }
@@ -3727,7 +4173,7 @@ window.CompanionMaintenancePage = (() => {
         suggestion: result.status === "ok" ? "Provider 可响应；若真实回复仍失败，请继续检查任务路由与回执。" : "核对 Provider 是否在线、接口配置和当前网络后再运行探测。"};
     } catch (error) {
       if (ticket !== generation || state !== current) return;
-      current.test = {status: "failed", code: error.code || "model_probe_failed", title: "文本 Provider 探测失败", message: routeError(error.code || error.message),
+      current.test = {status: "failed", code: errorCodeOf(error) || "model_probe_failed", title: "文本 Provider 探测失败", message: routeError(error),
         suggestion: "核对 Provider 状态与接口配置后重试。"};
     } finally {
       if (ticket === generation && state === current) {
@@ -3763,7 +4209,7 @@ window.CompanionMaintenancePage = (() => {
         suggestion: status === "ok" ? "使用结果卡片中的播放器试听这次合成。" : "检查 AstrBot 中 Provider 是否加载，并确认语言绑定后重试。"};
     } catch (error) {
       if (ticket !== generation || state !== current) return;
-      current.voiceTest = {status: "failed", code: error.code || "model_voice_probe_failed", title: "TTS 合成失败", message: routeError(error.code || error.message),
+      current.voiceTest = {status: "failed", code: errorCodeOf(error) || "model_voice_probe_failed", title: "TTS 合成失败", message: routeError(error),
         suggestion: "检查语音 Provider 是否加载，以及所选语言是否已配置。"};
     } finally {
       if (ticket === generation && state === current) {
@@ -3789,7 +4235,7 @@ window.CompanionMaintenancePage = (() => {
       current.imageTest = result;
     } catch (error) {
       if (ticket !== generation || state !== current) return;
-      current.imageTest = {action: current.imageAction, registered: false, current: false, error: routeError(error.code || error.message)};
+      current.imageTest = {action: current.imageAction, registered: false, current: false, error: routeError(error)};
     } finally {
       if (ticket === generation && state === current) {
         current.imageTesting = false;
@@ -3820,7 +4266,7 @@ window.CompanionMaintenancePage = (() => {
         suggestion: result.status === "ok" ? "只读完整性检查通过，数据库页数未被更改。" : "保留数据库现状并检查插件日志与外键异常样本。"};
     } catch (error) {
       if (ticket !== generation || state !== current) return;
-      current.storageTest = {status: "failed", code: error.code || "model_storage_check_failed", title: "SQLite 完整性检查失败", message: routeError(error.code || error.message),
+      current.storageTest = {status: "failed", code: errorCodeOf(error) || "model_storage_check_failed", title: "SQLite 完整性检查失败", message: routeError(error),
         suggestion: "确认当前管理身份仍有效，并稍后重新运行只读检查。"};
     } finally {
       if (ticket === generation && state === current) {
@@ -4261,11 +4707,38 @@ window.CompanionMaintenancePage = (() => {
     delete section.dataset.activePart;
   }
 
+  function onScopeChanged() {
+    if (!state || !root) return;
+    const readiness = mountReadiness();
+    state.readiness = readiness;
+    if (readiness.kind === "ready") {
+      const nextScope = currentMaintenanceScope();
+      if (nextScope !== maintenanceScope) {
+        maintenanceScope = nextScope;
+        const cached = maintenanceCache.get(maintenanceScope);
+        if (cached?.data && !state.data) Object.assign(state, cached);
+      }
+      void refresh({silent: Boolean(state.data)});
+      return;
+    }
+    if (readiness.kind === "group_only") {
+      state.data = null;
+      state.integrations = {};
+      state.modelStatus = null;
+      state.error = "";
+      state.errorCode = "";
+      render();
+      return;
+    }
+    if (!state.data) render();
+  }
+
   function unmount() {
     generation += 1;
     cacheMaintenanceState();
     if (state?.refreshTimer) window.clearInterval?.(state.refreshTimer);
     if (state?.memoryTimer != null) window.clearTimeout?.(state.memoryTimer);
+    window.removeEventListener?.("companion:scope-changed", onScopeChanged);
     clearDiagnosticExpiry(state);
     clearVoiceAudio();
     if (root) {
@@ -4286,7 +4759,9 @@ window.CompanionMaintenancePage = (() => {
     if (!root) return;
     maintenanceScope = currentMaintenanceScope();
     generation += 1;
-    state = {data: null, integrations: {}, error: "", loading: false, testing: false, voiceTesting: false, imageTesting: false,
+    const readiness = mountReadiness();
+    state = {data: null, integrations: {}, error: "", errorCode: "", readiness, loading: false, backgroundLoading: false,
+      testing: false, voiceTesting: false, imageTesting: false,
       proactiveTesting: false, proactiveConfirming: false, proactiveNotice: "", proactivePurpose: "care", proactiveTest: null,
       test: null, voiceTest: null, imageTest: null, provider: "", voiceProvider: "", imageAction: "", voiceLanguage: "zh",
       storageTest: null, storageTesting: false, balance: null, balanceLoaded: false, balanceLoading: false,
@@ -4308,24 +4783,31 @@ window.CompanionMaintenancePage = (() => {
       systemPromptMessage: "", systemPromptMessageKind: "", systemPromptSaving: false,
       systemPromptOperationKey: "", systemPromptOperationKind: "",
       logs: null, logsLoaded: false, logsLoading: false, logsError: "", logLevel: "", logQuery: ""};
-    const cached = maintenanceCache.get(maintenanceScope);
-    if (cached) Object.assign(state, cached);
+    const cached = readiness.kind === "ready" ? maintenanceCache.get(maintenanceScope) : null;
+    if (cached?.data) Object.assign(state, cached);
     state.onViewChange?.(state.activeMaintenanceNav);
     root.addEventListener("click", click);
     root.addEventListener("change", change);
     root.addEventListener("input", input);
     root.addEventListener("pointerover", cachePartHover);
     root.addEventListener("pointerout", cachePartHover);
+    window.addEventListener?.("companion:scope-changed", onScopeChanged);
     if (typeof window.setInterval === "function") {
       state.refreshTimer = window.setInterval(() => {
-        if ((typeof document === "undefined" || document.visibilityState === "visible") && state && !state.loading) void refresh();
+        if ((typeof document === "undefined" || document.visibilityState === "visible") && state && !state.loading && !state.backgroundLoading) {
+          if (mountReadiness().kind === "ready") void refresh({silent: Boolean(state.data)});
+        }
       }, 45000);
     }
     if (hasDiagnosticResults(state)) {
       if (state.diagnosticResultExpiresAt > Date.now()) scheduleDiagnosticAutoClear(state, generation);
       else { state.diagnosticResultExpiresAt = 0; clearDiagnosticResults("auto", state); }
     }
-    void refresh();
+    if (readiness.kind === "ready") {
+      void refresh();
+    } else {
+      render();
+    }
   }
 
   return {mount, unmount};

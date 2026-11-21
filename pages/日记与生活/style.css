@@ -74,18 +74,18 @@ main > *:nth-child(n+4) { animation-delay: .12s; }
 #notice { animation: rise .35s both; }
 .journal-link { transition: background .25s, border-color .25s, transform .25s; }
 .journal-link:hover { background: var(--surface-muted); border-left-color: var(--accent); transform: translateX(2px); }
-#journal-list .journal-link { animation: rise .4s both; }
-#journal-list .journal-link:nth-child(1) { animation-delay: .02s; }
-#journal-list .journal-link:nth-child(2) { animation-delay: .05s; }
-#journal-list .journal-link:nth-child(3) { animation-delay: .08s; }
-#journal-list .journal-link:nth-child(4) { animation-delay: .11s; }
-#journal-list .journal-link:nth-child(n+5) { animation-delay: .14s; }
+#journal-list.is-initial-render .journal-link { animation: rise .4s both; }
+#journal-list.is-initial-render .journal-link:nth-child(1) { animation-delay: .02s; }
+#journal-list.is-initial-render .journal-link:nth-child(2) { animation-delay: .05s; }
+#journal-list.is-initial-render .journal-link:nth-child(3) { animation-delay: .08s; }
+#journal-list.is-initial-render .journal-link:nth-child(4) { animation-delay: .11s; }
+#journal-list.is-initial-render .journal-link:nth-child(n+5) { animation-delay: .14s; }
 .activity, .retry-form { transition: transform .3s cubic-bezier(.2,.8,.2,1), box-shadow .3s, border-color .3s; }
 .activity:hover, .retry-form:hover { transform: translateY(-2px); box-shadow: 0 2px 4px rgba(59,62,82,.06), 0 12px 30px rgba(79,83,168,.12); border-color: var(--line-strong); }
-.activity { animation: rise .45s both; }
-.activity:nth-child(2) { animation-delay: .05s; }
-.activity:nth-child(3) { animation-delay: .1s; }
-.activity:nth-child(n+4) { animation-delay: .14s; }
+.activity-list.is-initial-render .activity { animation: rise .45s both; }
+.activity-list.is-initial-render .activity:nth-child(2) { animation-delay: .05s; }
+.activity-list.is-initial-render .activity:nth-child(3) { animation-delay: .1s; }
+.activity-list.is-initial-render .activity:nth-child(n+4) { animation-delay: .14s; }
 details[open] #config-form { animation: rise .35s both; }
 .tabs button { transition: color .25s, background .25s, border-color .25s; }
 .tabs button:hover { background: var(--surface-muted); }
