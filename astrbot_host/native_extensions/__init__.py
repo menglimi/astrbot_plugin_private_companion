@@ -18,8 +18,8 @@ from companion_v2.capabilities.native import invocation_request, json_document, 
 from companion_v2.capabilities.native_reads import READ_ACTIONS, NativeReadConsumer
 from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.capabilities.models import CapabilityDesiredState
-from companion_v2.conversation.external_tools import ExternalToolResponse
-from companion_v2.execution.models import TaskError, digest, encode, require
+from companion_v2.conversation.external_tools import ExternalToolInvocation, ExternalToolResponse
+from companion_v2.execution.models import TaskError, digest, encode, encode_prompt, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import SourceRef, VersionRef
 from companion_v2.sources.models import GovernanceState, SourceRecord
@@ -312,6 +312,8 @@ class NativeExtensionRegistry(AstrBotToolPort):
         if runtime is None or self._closed or (self.application is not None and self.application is not application):
             raise ValueError("native registry must attach to one V2 application")
         self.application, self.runtime = application, runtime
+        if getattr(application, "daily_outfit", None) is not None:
+            application.daily_outfit.port = self
         # The real V2 application always exposes ``tasks.identity``.  Keep
         # registry attachment tolerant of a lightweight host fixture (or a
         # partially constructed application) and defer the Screen consumer
@@ -425,7 +427,42 @@ class NativeExtensionRegistry(AstrBotToolPort):
             await self.role_guard(invocation.context.scope, invocation.context.role_binding)
             self._guard(host_tool_id, invocation)
 
-    async def invoke(self, host_tool_id, invocation):
+    def outfit_image_route(self, context, identity=None):
+        external = self.application.external if self.application else None
+        if external is None:
+            return None
+        actions = ("image.edit", "image.generate") if identity else ("image.generate",)
+        for action in actions:
+            for declaration in self.declarations():
+                if declaration.descriptor.tool.action != action or not self.current_declaration(declaration.host_tool_id):
+                    continue
+                lease = self._entries[declaration.host_tool_id][1]
+                if callable(getattr(lease, "factory", None)) and lease.state != "running":
+                    continue
+                if external.is_invokable(action, context, self.now()):
+                    return declaration
+        return None
+
+    async def outfit_persona(self, context):
+        if self.persona_guard is None:
+            return ""
+        persona = await self.persona_guard(context.scope, context.role_binding)
+        return persona["prompt"]
+
+    async def generate_outfit_image(self, run, prompt, identity):
+        context = run.task.spec.context
+        declaration = self.outfit_image_route(context, identity)
+        if declaration is None:
+            raise TaskError("daily_outfit_image_unavailable", "the role has no active Image route")
+        arguments = {"prompt": prompt}
+        if declaration.descriptor.tool.action == "image.edit":
+            arguments.update(reference_ids=[identity], reference_indices=[], reference_roles=["identity"])
+        invocation = ExternalToolInvocation(run.task.spec.request_ref, run.task.task_id, "daily-outfit",
+            context, declaration.descriptor, encode_prompt(arguments), run.task.spec.deadline_at, run.validate, run)
+        run.begin_effect()
+        return await self.invoke(declaration.host_tool_id, invocation, role_references_only=True)
+
+    async def invoke(self, host_tool_id, invocation, *, role_references_only=False):
         entry = self._entries.get(host_tool_id)
         if entry is None or entry[0].descriptor != invocation.descriptor:
             raise TaskError("native_provider_changed", "the original native declaration is unavailable")
@@ -442,7 +479,7 @@ class NativeExtensionRegistry(AstrBotToolPort):
         reference_lease = None
         if action == "image.mask_edit" or (action == "image.edit"
                 and json.loads(invocation.arguments_json).get("artifact_id", "") == ""):
-            reference_lease = ImageReferenceLease(self, invocation)
+            reference_lease = ImageReferenceLease(self, invocation, role_references_only=role_references_only)
         screen_check = self.screen.preflight(invocation) if self.screen is not None and invocation.descriptor.tool.action == SCREEN_ACTION else None
         camera_check = None
         if self.camera is not None and action == REALITY_CAMERA_ACTION:

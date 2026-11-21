@@ -194,6 +194,35 @@ class KnowledgeImportTests(Fixture):
         self.assertIsNotNone(contributions[0].source)
         self.assertTrue(self.sources.validate_reference(contributions[0].source, observed_at=NOW).is_success)
 
+    def test_core_reply_retrieves_official_kb_only_when_the_opt_in_is_on(self):
+        observed = []
+
+        def official_reader(source_ids, **bounds):
+            observed.append(tuple(source_ids))
+            return (KnowledgeCandidate("astrbot:kb-1:doc-1:0", "米拉喜欢雨天散步",
+                knowledge_base_id="kb-1", document_id="doc-1", document_name="角色资料.md",
+                chunk_index=0),)
+
+        task = task_context(SCOPE)
+        audience = task.audience
+
+        def build(values):
+            settings = KnowledgeSettings.from_values(values)
+            return KnowledgeContext(KnowledgeRetriever(()), runtime=self.runtime,
+                settings_reader=lambda _: settings, official_candidate_reader=official_reader)
+
+        off = build({"source_ids": "kb:kb-1"}).core_background_contributions(
+            task, text="米拉的雨天习惯", at=NOW, batch_id="core-off",
+            sources=self.sources, audience=audience)
+        self.assertEqual(off, ())
+        self.assertEqual(observed, [])
+
+        on = build({"source_ids": "kb:kb-1", "official_in_core": True}).core_background_contributions(
+            task, text="米拉的雨天习惯", at=NOW, batch_id="core-on",
+            sources=self.sources, audience=audience)
+        self.assertEqual(observed, [("kb:kb-1",)])
+        self.assertEqual([item.payload for item in on], ["米拉喜欢雨天散步"])
+
     def test_role_and_group_boundaries_isolate_imported_entries(self):
         importer = self.importer()
         importer.import_source(self.spec("worldbook:shared"), lambda item: worldbook(

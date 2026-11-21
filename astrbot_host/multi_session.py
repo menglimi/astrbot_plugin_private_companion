@@ -47,6 +47,7 @@ from companion_v2.conversation.media.image_narration import image_narration_prof
 from companion_v2.conversation.media.video.narration import video_narration_profile
 from companion_v2.conversation.media.understanding import intake_settings as file_intake_settings
 from companion_v2.screen.interpretation import screen_interpretation_profile
+from companion_v2.device.action_service import phone_profile
 from companion_v2.reality.model_profile import reality_text_profile
 from .settings import HostControlError
 from .display_names import event_person_names
@@ -576,6 +577,7 @@ class MultiHostSession:
                     image_review_profile(common.provider_id),
                     context_caption_profile(common.provider_id),
                     screen_interpretation_profile(common.provider_id),
+                    phone_profile(common.provider_id, max_output_tokens=min(1024, common.max_output_tokens)),
                     reality_text_profile(common.provider_id),
                     *authoring_profiles(common.provider_id, draft_tokens=common.max_output_tokens),
                     *writing_profiles(common.provider_id, max_output_tokens=common.max_output_tokens),

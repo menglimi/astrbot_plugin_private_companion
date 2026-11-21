@@ -43,6 +43,8 @@ class ImageMaterialsWebAPI:
             (PREFIX + "/wardrobe", self.register_wardrobe, ["POST"], "Add one role wardrobe item"),
             (PREFIX + "/wardrobe/withdraw", self.withdraw_wardrobe, ["POST"], "Withdraw one role wardrobe item"),
             (PREFIX + "/daily-outfit", self.select_daily_outfit, ["POST"], "Choose today's role outfit"),
+            (PREFIX + "/daily-outfit/photo", self.daily_outfit_photo, ["GET"], "Read today's generated outfit photo"),
+            (PREFIX + "/daily-outfit/generate", self.generate_daily_outfit_photo, ["POST"], "Generate today's role outfit photo"),
         ]
 
     async def _operator_context(self, *, allow_cursor=False):
@@ -131,6 +133,10 @@ class ImageMaterialsWebAPI:
                     value = manager.register_wardrobe_item(operator, context, at=at, **body)
                 elif action == "withdraw_wardrobe":
                     value = manager.withdraw_wardrobe_item(operator, context, body["item_id"], at=at)
+                elif action == "daily_outfit_photo":
+                    value = manager.daily_outfit_photo(operator, context, at=at)
+                elif action == "generate_daily_outfit_photo":
+                    value = manager.generate_daily_outfit_photo(operator, context, at=at, **body)
                 else:
                     value = manager.select_daily_outfit(operator, context, body["item_id"], at=at)
                 return outcome_response(Outcome.success(value))
@@ -231,3 +237,9 @@ class ImageMaterialsWebAPI:
 
     async def select_daily_outfit(self):
         return await self._post("select_daily_outfit", {"item_id"})
+
+    async def daily_outfit_photo(self):
+        return await self._run("daily_outfit_photo")
+
+    async def generate_daily_outfit_photo(self):
+        return await self._post("generate_daily_outfit_photo", {"operation_key"})

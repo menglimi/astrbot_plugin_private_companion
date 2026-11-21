@@ -1759,8 +1759,8 @@ test('the reference section keeps the daily outfit switch independent', async ()
   const painted = harnessed.painted['photo.reference'];
   assert.match(painted, /data-wb-group="switches"/);
   assert.match(painted, /data-wb-group="rotation"/);
-  /* 同意参考图不等于同意每天出穿搭图，文案必须说清这一点。 */
-  assert.match(painted, /不等于同意每天都出一张穿搭图/);
+  assert.match(painted, /每日穿搭图有独立开关/);
+  assert.match(painted, /根据角色设定、当天日程和已配置的天气生成穿搭图/);
   assert.match(painted, /允许群聊使用参考图/);
   assert.match(painted, /配置里不存文件路径/);
   assert.match(painted, /当前角色默认/);

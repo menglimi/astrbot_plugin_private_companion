@@ -111,8 +111,7 @@ window.CompanionShell = (() => {
      六项悬在左栏顶部，而下面两组却有「能力配置」「设置」——同一列里一半有
      标题一半没有，看起来像漏渲染。
      「状态与日程」「日记与生活」不再单列成组：它们本来就能从首页右栏和家具
-     进入，单开一组把左栏撑到要滚动。手机连接放进「专题配置」末尾，因为它是
-     一次性的配对与网关设置，不属于能力页里的日常操作。 */
+     进入，单开一组把左栏撑到要滚动。 */
   const RAIL_GROUPS = [
     ["专题配置", [
       ["identity", "network", "关系网"],
@@ -121,7 +120,8 @@ window.CompanionShell = (() => {
       ["learning", "graduation-cap", "学习与反思"],
       ["models", "sliders-horizontal", "模型与连接"],
       ["maintenance", "settings-2", "治理与维护"],
-      ["mobile", "smartphone", "手机连接"],
+      ["phone", "smartphone", "手机使用"],
+      ["mobile", "link-2", "手机端连接"],
     ]],
     ["能力配置", [
       ["perception", "scan-eye", "感知"],

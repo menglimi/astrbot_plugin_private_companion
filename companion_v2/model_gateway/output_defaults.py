@@ -43,6 +43,7 @@ STRUCTURED_KINDS = frozenset({
     "calendar.plan",
     "screen.interpretation",
     "reality.text",
+    "phone.act",
 })
 
 # kind -> (thinking factor, absolute floor). Short tasks keep the host default

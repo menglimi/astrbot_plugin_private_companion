@@ -869,14 +869,15 @@ function renderSectionPanel(id){
     'identity-access':renderIdentityAccessPage,'identity-feelings':renderIdentityFeelingsPage,
     contact:renderContactPage,memory:renderMemoryPage,
     models:renderModelsPage,maintenance:renderMaintenancePage,learning:renderLearningPage,
-    mobile:renderMobileConnection,
+    phone:renderPhoneUsage,mobile:renderMobileConnection,
     setup:renderSetupPage,host:renderHostPage,appearance:renderAppearancePage,
     all:renderAllFunctionsPage,
     data:renderData}[id];
   if(!renderer)return renderHomePanel();
   const diagnosticsLink = id === 'expression' || id === 'decision'
     ? '<a class="text-button reply-diagnostics-link" href="#manage/maintenance/reply-diagnostics">查看本会话回复诊断</a>' : '';
-  return panelHead(heading,subtitle,'settings-2',button('回到小屋','data-shell-home'),diagnosticsLink)
+  const icon=id==='phone'?'smartphone':id==='mobile'?'link-2':'settings-2';
+  return panelHead(heading,subtitle,icon,button('回到小屋','data-shell-home'),diagnosticsLink)
     +`<div class="shell-panel-body">${renderer()}</div>`;
 }
 
@@ -1141,9 +1142,8 @@ function mountPanelWorkspaces(){
     :window.CompanionImageMaterialsPage?.unmount());
   if($('#modelWorkspace'))guarded('模型与连接',()=>window.CompanionModelsPage?.mount($('#modelWorkspace')));
   const mobileConnectionHost=$('#mobileConnectionWorkspace');
-  guarded('手机连接',()=>mobileConnectionHost
-    ?window.CompanionNativeExtensionPanel?.mount(mobileConnectionHost,{extensionId:'reality',onlyGroup:'mobile'})
-    :window.CompanionNativeExtensionPanel?.prune());
+  if(mobileConnectionHost)guarded('手机端连接',()=>
+    window.CompanionNativeExtensionPanel?.mount(mobileConnectionHost,{extensionId:'reality',onlyGroup:'mobile'}));
   const semanticLearningHost=$('#semanticLearningWorkspace');
   const semanticExpressionHost=$('#semanticExpressionWorkspace');
   const semanticScope=semanticExpressionHost?learningScope('expression'):null;
@@ -1937,7 +1937,8 @@ function renderAppearanceSurfaces(){
 const manageTabs=[
   ['all','layout-grid','全部功能'],
   ['perception','scan-eye','感知'],['understanding','brain-circuit','理解'],['decision','brain','决策'],['action','play','行动'],['contact','heart-handshake','主动联系'],['expression','message-square-more','表达'],['output','shapes','产出'],['governance','user-round','自我'],
-  ['identity','network','关系网'],['identity-people','users-round','用户'],['identity-groups','messages-square','群聊'],['identity-access','shield-check','访问规则'],['identity-feelings','heart-handshake','关系与情感'],['memory','orbit','事实与经历'],['learning','graduation-cap','学习与反思'],['models','sliders-horizontal','模型与连接'],['maintenance','settings-2','治理与维护'],['mobile','smartphone','手机连接'],
+  ['identity','network','关系网'],['identity-people','users-round','用户'],['identity-groups','messages-square','群聊'],['identity-access','shield-check','访问规则'],['identity-feelings','heart-handshake','关系与情感'],['memory','orbit','事实与经历'],['learning','graduation-cap','学习与反思'],['models','sliders-horizontal','模型与连接'],['maintenance','settings-2','治理与维护'],
+  ['phone','smartphone','手机使用'],['mobile','link-2','手机端连接'],
   ['setup','rocket','开始使用'],
   ['host','power','账号与会话'],['appearance','palette','外观与设置'],['data','database','资料与维护'],
 ];
@@ -4160,25 +4161,17 @@ function renderMemoryPageOriginal(){return consoleSections([
 function renderModelsPage(){return `<div class="models-management-page"><section id="modelWorkspace" class="console-section" aria-label="任务模型配置">${consoleLoading('正在读取任务模型配置…')}</section><section class="models-budget-section" aria-labelledby="models-budget-heading"><div><h2 id="models-budget-heading">后台任务预算</h2><p>达到限额后暂停启动新的可选任务；已运行的任务会完成，交互回复不受影响。</p></div>${configEditors('budgetConfigWorkspace',['budget'],'后台任务预算')}</section></div>`;}
 /* 治理与维护 = 账号与会话运行状态 + 备份与还原。风控与用量那两块本来就没有可写端点，
    旧版各放一张 boundaryCard 解释「为什么没有开关」；按「接不上就删」直接去掉。 */
-/* 手机连接：配对与网关设置单独一页。
-   字段仍由现实触及的 mobile 分组提供，这里只挂那一组，避免和感知页出现两份表单。 */
+function renderPhoneUsage(){
+  const guide=typeof product.role()?.config_api==='string'?'':pageNeedsTarget('手机使用');
+  return `<div class="phone-usage-page">${guide||
+    `<section id="phoneSetupWorkspace" class="phone-setup" aria-labelledby="phoneSetupTitle"></section>
+    <details class="phone-advanced"><summary>${I('sliders-horizontal')}高级设置</summary>
+      <section id="phoneAdbWorkspace" aria-label="手机使用设置">${consoleLoading('正在读取手机使用设置…')}</section>
+    </details>`}</div>`;
+}
 function renderMobileConnection(){
   return `<div class="mobile-connection-page">
-    <section class="mobile-connection-guide" aria-labelledby="mobileConnectionGuideTitle">
-      <details open>
-        <summary><span><h2 id="mobileConnectionGuideTitle">手机陪伴终端怎么连</h2><small>三步完成配对；展开设置分区后再逐项调整</small></span><i data-lucide="chevron-down" aria-hidden="true"></i></summary>
-        <div class="mobile-connection-guide-body">
-          <ol>
-            <li>在「网关与访问」中填写监听地址与端口；同一局域网填本机内网地址。</li>
-            <li>在「配对与身份」中设置配对令牌，并把「绑定的 AstrBot 用户 ID」填成要接收消息的用户。</li>
-            <li>手机端填同一组地址与令牌完成配对；位置与屏幕共享再按各自分区开启。</li>
-            <li>健康摘要统一在「感知 → 模型能力 → 对话感知与表达偏好」的「健康感知」开关管理；打开时会一并准备手机健康接收与当前私聊授权。</li>
-          </ol>
-          <p>令牌只在保存时写入，页面不回显；换令牌后手机端需要重新配对。</p>
-        </div>
-      </details>
-    </section>
-    <section id="mobileConnectionWorkspace" class="mobile-connection-settings" aria-label="手机连接设置">${consoleLoading('正在读取手机连接设置…')}</section>
+    <section id="mobileConnectionWorkspace" aria-label="手机端连接设置">${consoleLoading('正在读取手机端连接设置…')}</section>
   </div>`;
 }
 function renderMaintenancePageOriginal(){
@@ -4348,6 +4341,16 @@ function renderConfigEditors(){
   if($('#groupDenoiseWorkspace'))configEditorMounts.push(mountConfigEditor('groupDenoiseWorkspace',['group_participation'],{
     group_participation:{sectionIds:['denoise'],title:'群聊表达去噪',note:'只影响群聊回复的表达腔调。'}
   }));
+  if($('#phoneAdbWorkspace')){
+    const setup=$('#phoneSetupWorkspace');
+    const editor=mountConfigEditor('phoneAdbWorkspace',['device.phone'],{
+      'device.phone':{navigationLimit:0,onStatus:status=>setup?.phoneSetup?.syncStatus(status)}
+    });
+    if(editor)configEditorMounts.push(editor);
+    const role=product.role();
+    const configApi=role?.config_api||(role?.reply_api?.endsWith('/reply')?role.reply_api.slice(0,-6)+'/config':'');
+    window.CompanionPhoneSetup?.mount(setup,{editor,configApi});
+  }
    /* proactive.contact（160 项、四层）同样长期是「编辑器与声明都在、却没有挂载点」
       的缺口——它连编辑器与声明都没有。主动联系页保留完整直接配置；感知页按来源
       筛选同一合同的相关分段，两个入口共用编辑器与令牌。 */
@@ -4437,6 +4440,8 @@ const manageSubtitles={
   setup:'',
   host:'发现 Bot 账号、人格和会话窗口，并管理它们的绑定与运行。',
   maintenance:'查看运行诊断与排障状态。',
+  phone:'',
+  mobile:'',
   data:'',
   appearance:'',
 };
@@ -4447,7 +4452,8 @@ const allFunctionsGroups=[
     ['setup','rocket','开始使用','首次连接、选择对象与决定发送方式'],
     ['host','power','账号与会话','Bot 账号、人格映射与会话窗口'],
     ['models','sliders-horizontal','模型与连接','任务模型、备用模型与后台预算'],
-    ['mobile','smartphone','手机连接','手机陪伴终端配对与网关'],
+    ['phone','smartphone','手机使用','ADB 设备、输入方式与操作范围'],
+    ['mobile','link-2','手机端连接','陪伴终端配对、网关与上报'],
     ['appearance','palette','外观与设置','主题、密度、圆角、字号与动效'],
   ]],
   ['人物与关系',[
@@ -5256,6 +5262,7 @@ function renderManage(){
     identity:renderIdentityPage,'identity-people':renderIdentityPeoplePage,'identity-groups':renderIdentityGroupsPage,
     'identity-access':renderIdentityAccessPage,'identity-feelings':renderIdentityFeelingsPage,
     contact:renderContactPage,memory:renderMemoryPage,models:renderModelsPage,maintenance:renderMaintenancePage,
+    phone:renderPhoneUsage,mobile:renderMobileConnection,
     learning:renderLearningPage,setup:renderSetupPage,host:renderHostPage,appearance:renderAppearancePage,data:renderData,
   };
   const renderer=renderers[manageTab]||renderHostPage;
@@ -5527,6 +5534,8 @@ function openDetailDialog(title,body){
 }
 
 const searchIndex=[
+  ['手机使用','ADB 设备、输入方式与操作范围','smartphone','manage','phone'],
+  ['手机端连接','陪伴终端配对、网关与上报','link-2','manage','mobile'],
   ['生活观察','日记、梦境、生活轨迹、状态与交互影响','scan-eye','home-section','observation'],['家具与能力','基础生活与拓展家具，启用状态和连接','armchair','home-section','furniture'],
   ['跨窗口与跨群递话','私聊与群聊目标、确认和成员权限','corner-up-right','manage','identity-access'],
   ['首页与小屋','生活总览、观察与家具能力','house','life','home'],['日记与生活','日记、睡眠、阅读与作息配置','notebook-pen','life','diary'],['关系网','只查看用户与群聊之间的连接关系','network','manage','identity'],['用户','用户目录、逐人资料与私聊默认权限','users-round','manage','identity-people'],['群聊','群聊目录、群内成员与成员线索','messages-square','manage','identity-groups'],['共同经历','本插件事实、原话与经历记录','orbit','manage','memory'],['作品与相册','原稿、照片与收藏','images','home-section','furniture'],['一起活动','共读、棋桌与通话','coffee','home-section','furniture'],['能力目录','可选拓展当前能不能用','blocks','home-section','furniture'],
@@ -5534,6 +5543,7 @@ const searchIndex=[
   ['开始使用','首次连接、选择对象与决定是否发送','rocket','manage','setup'],['人格处理','规范人格、创建人格与拟人优化','notebook-pen','manage','persona'],['外观与设置','主题、密度、圆角、字号与动效','palette','manage','appearance'],['主动联系','主动契机、联系节奏与免打扰','heart-handshake','manage','contact'],['事实与经历','本插件事实、原话与群词义','orbit','manage','memory'],['模型与连接','公共模型与任务路由','sliders-horizontal','manage','models'],['运行诊断','运行状态与排障','settings-2','manage','maintenance'],['便签','下次去书店，找一本植物随笔','sticky-note',null,'notes'],['窗边的一页','照片与相关经历','image',null,'photo-window'],['创作书架','Content 能力状态','library-big',null,'cap-content'],['现实触及','Reality 设备与授权','radio','manage','perception'],
 ];
 const configSearchLocations={
+  'device.phone':{next:'manage',tab:'phone',root:'#phoneAdbWorkspace'},
   quota:{next:'manage',tab:'output',root:'#imageControlWorkspace'},image_review:{next:'manage',tab:'output',root:'#imageControlWorkspace'},
   'image.output':{next:'manage',tab:'output',root:'#imageOutputWorkspace'},
   reaction:{next:'manage',tab:'expression',expressionModule:'expression-reaction',root:'#reactionConfigWorkspace'},
@@ -5799,7 +5809,7 @@ function renderSearch(){
     if(result.kind==='setting'){
       const {entry,location}=result;
       const pageLabels={all:'全部功能',home:'首页与小屋',state:'状态与日程',diary:'日记与生活',identity:'关系网','identity-people':'用户','identity-groups':'群聊','identity-access':'访问规则','identity-feelings':'关系与情感',memory:'事实与经历',understanding:'理解',contact:'主动联系',expression:'表达',governance:'自我',output:'产出',models:'模型与连接',perception:'感知',decision:'决策',action:'行动',learning:'学习与反思',host:'账号与会话',maintenance:'治理与维护',data:'资料与维护',setup:'开始使用',persona:'人格处理',appearance:'外观与设置'};
-      const context=['配置项',pageLabels[location.tab]||location.tab,
+      const context=['配置项',pageLabels[location.tab]||manageTabs.find(([tab])=>tab===location.tab)?.[2]||location.tab,
         entry.sectionTitle,entry.field].filter(Boolean).join(' · ');
       return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I('sliders-horizontal')}<span><strong>${highlightSearchText(entry.label,terms)}</strong><small>${highlightSearchText(context,terms)}</small></span></button>`;
     }
@@ -5913,6 +5923,10 @@ function openSearchSetting(result){
     if(location.contactView)document.querySelector(`#contactWorkspace [data-view="${location.contactView}"]`)?.click();
     if(entry.group==='conversation.presentation'){
       if(!location.understandingTab)window.CompanionReplyPage?.selectSection?.(entry.section,{scroll:false});
+    }
+    if(entry.group==='device.phone'){
+      const details=$('.phone-advanced');
+      if(details)details.open=true;
     }
     const section=location.understandingTab?'':location.focusSection!==undefined?location.focusSection
       :entry.sectionCount>1?entry.section:'';

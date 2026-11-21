@@ -552,7 +552,7 @@ test('expression modules render only their own navigation and panels after every
   h.page.setExpressionModule('expression-text');
   assert.match(h.slots.scope.innerHTML, /text-hero/);
   assert.match(h.slots.scope.innerHTML, /分段回复已关闭/);
-  assert.match(h.slots.scope.innerHTML, /分段示意/);
+  assert.match(h.slots.scope.innerHTML, /立即预览/);
   let html = h.slots.settings.innerHTML;
   assert.match(html, /data-wb-section="segment"/);
   assert.match(html, /data-wb-section="style"/);
@@ -1385,3 +1385,4 @@ test('text hero follows the segmentation draft', async () => {
   assert.match(h.slots.scope.innerHTML, /边生成边分段发送/);
   h.page.unmount();
 });
+

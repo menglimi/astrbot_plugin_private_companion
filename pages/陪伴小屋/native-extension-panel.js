@@ -125,7 +125,7 @@ window.CompanionNativeExtensionPanel = (() => {
       this.root = root; this.name = name; this.options = options;
       this.alive = true; this.ticket = 0; this.busy = false; this.dirty = false;
       this.mobileTokenNotice = "";
-      this.mobileOpen = new Set(["gateway"]);
+      this.mobileOpen = new Set(["gateway", "pairing"]);
       this.group = ""; this.query = ""; this.record = null; this.fields = [];
       /* 只挂一组时（手机连接页复用现实触及的 mobile 分组），不显示分组栏，
          否则同一份设置会出现两条导航。 */
@@ -162,7 +162,8 @@ window.CompanionNativeExtensionPanel = (() => {
       this.managementState = null;
       clearTimeout(this.statusTimer); this.statusTimer = null; this.statusReads = 0;
       const ticket = ++this.ticket;
-      this.root.innerHTML = `<div class="native-extension-empty" role="status"><span class="native-extension-loading"></span>正在读取${escape(names[this.name])}设置…</div>`;
+      const title = this.onlyGroup === "mobile" ? "手机端连接" : names[this.name];
+      this.root.innerHTML = `<div class="native-extension-empty" role="status"><span class="native-extension-loading"></span>正在读取${escape(title)}设置…</div>`;
       try {
         const result = await window.CompanionProduct.request("GET", "extensions");
         if (!this.current(ticket)) return;
@@ -216,6 +217,7 @@ window.CompanionNativeExtensionPanel = (() => {
       this.fields = []; this.instance = ++instance;
       this.groups = groupsFor(this.name, this.record.schema);
       if (this.onlyGroup) this.groups = this.groups.filter(group => group.id === this.onlyGroup);
+      else if (this.name === "reality") this.groups = this.groups.filter(group => group.id !== "mobile");
       if (!this.groups.some(group => group.id === this.group)) this.group = this.groups[0]?.id || "";
       const controls = this.groups.map(group => {
         const content = group.fields.map(([key, field]) => {
@@ -230,15 +232,27 @@ window.CompanionNativeExtensionPanel = (() => {
         return `<section class="native-extension-group" data-native-group-panel="${escape(group.id)}" ${group.id !== this.group ? "hidden" : ""}><h3>${escape(group.title)}</h3>${group.hint ? `<p class="native-extension-hint">${escape(group.hint)}</p>` : ""}${content}</section>`;
       }).join("");
       const mobileOnly = this.onlyGroup === "mobile";
-      const mobile = mobileOnly ? this.mobileConnectionCard() : "";
+      const mobile = mobileOnly ? this.mobileConnectionMarkup() : null;
       const focusAudio = this.name === "reality" && !mobileOnly && audioFocusPending;
       if (focusAudio) audioFocusPending = false;
       if (focusAudio) this.managementState = {...(this.managementState || {}), audioOpen:true};
-      const heading = mobileOnly ? `<div class="mobile-config-heading"><h3>连接配置</h3><p>网关、配对身份与终端权限</p></div>`
+      const heading = mobileOnly ? ""
         : `<header class="native-extension-head"><div><span class="native-extension-kicker">V2 内置能力</span><h3>${escape(names[this.name])}</h3><p>${escape(descriptions[this.name])}</p></div><div data-native-runtime></div></header><div class="native-extension-lifecycle" data-native-lifecycle></div>`;
+      const mobileLink = this.name === "reality" && !mobileOnly && this.record.schema.mobile
+        ? '<button class="button small native-extension-device-link" type="button" data-go="manage" data-manage="mobile"><i data-lucide="link-2" aria-hidden="true"></i>手机端连接</button>' : "";
       const management = !mobileOnly && ["reality", "live"].includes(this.name)
         ? '<div data-native-management></div>' : "";
-      this.root.innerHTML = `<div class="native-extension-panel${mobileOnly ? " is-mobile-connection" : ""}">${mobile}${heading}${management}<form data-native-form><label class="native-extension-search"><span class="sr-only">查找设置项</span><input type="search" placeholder="${this.onlyGroup ? "查找手机连接设置项" : "查找设置项"}" aria-label="${this.onlyGroup ? "查找手机连接设置项" : "查找" + escape(names[this.name]) + "设置项"}" data-native-search value="${escape(this.query)}"></label><div class="native-extension-workspace${this.onlyGroup ? " is-single" : ""}">${this.onlyGroup ? "" : `<nav class="native-extension-nav" aria-label="${escape(names[this.name])}设置分组">${this.groups.map(group => `<button type="button" data-native-group="${escape(group.id)}" aria-pressed="${group.id === this.group}">${escape(group.title)}</button>`).join("")}</nav>`}<div class="native-extension-settings">${controls}<p class="native-extension-no-results" hidden>没有匹配的设置项，换个关键词试试。</p></div></div><footer class="native-extension-savebar"><p role="status" aria-live="polite" data-native-notice></p><div><button class="button small" type="button" data-native-reload>重新读取</button><button class="button small primary" type="submit" data-native-save ${this.dirty ? "" : "disabled"}>保存并应用</button></div></footer></form></div>`;
+      const searchLabel = mobileOnly ? "查找手机端连接设置项" : `查找${names[this.name]}设置项`;
+      const search = `<label class="native-extension-search"><input type="search" placeholder="查找设置项" aria-label="${escape(searchLabel)}" data-native-search value="${escape(this.query)}"></label>`;
+      const navigation = this.onlyGroup ? "" : `<nav class="native-extension-nav" aria-label="${escape(names[this.name])}设置分组">${this.groups.map(group => `<button type="button" data-native-group="${escape(group.id)}" aria-pressed="${group.id === this.group}">${escape(group.title)}</button>`).join("")}</nav>`;
+      this.root.innerHTML = `<div class="native-extension-panel${mobileOnly ? " is-mobile-connection" : ""}">
+        ${mobile?.overview || ""}${heading}${mobileLink}${management}
+        <form data-native-form>
+          ${mobileOnly ? `<header class="mobile-config-heading"><h3>连接设置</h3>${search}</header>` : search}
+          <div class="native-extension-workspace${this.onlyGroup ? " is-single" : ""}">${navigation}<div class="native-extension-settings">${controls}<p class="native-extension-no-results" hidden>没有匹配的设置项，换个关键词试试。</p></div></div>
+          <footer class="native-extension-savebar"><p role="status" aria-live="polite" data-native-notice></p><div><button class="button small" type="button" data-native-reload>重新读取</button><button class="button small primary" type="submit" data-native-save ${this.dirty ? "" : "disabled"}>保存并应用</button></div></footer>
+        </form>${mobile?.reports || ""}</div>`;
+      window.lucide?.createIcons({nodes:this.root.querySelectorAll("[data-lucide]")});
       const managementRoot = this.root.querySelector("[data-native-management]");
       this.management = managementRoot ? window.CompanionNativeExtensionManagement?.mount(managementRoot, {
         extensionId:this.name, record:this.record, instance:this.instance,
@@ -272,7 +286,7 @@ window.CompanionNativeExtensionPanel = (() => {
           + `<div class="mobile-config-section-body">${body}</div></details>`;
       }).join("")}</div>`;
     }
-    mobileConnectionCard() {
+    mobileConnectionMarkup() {
       const mobile = this.record?.settings?.mobile || {};
       const runtimeMobile = this.record?.management?.configuration?.mobile || {};
       const statusMobile = {...mobile, ...runtimeMobile};
@@ -301,11 +315,12 @@ window.CompanionNativeExtensionPanel = (() => {
         : latestConnection ? [latestConnection.online ? "手机已配对" : "手机已配对 · 暂无心跳", latestConnection.online ? "ready" : "pending"]
         : activeSessions ? ["会话未匹配当前对象", "error"] : ["等待手机配对", "pending"];
       const issued = this.mobileTokenNotice && typeof this.mobileTokenNotice === "object" ? this.mobileTokenNotice : null;
-      const notice = issued ? (issued.running ? "网关已启动。请复制令牌，在手机端完成配对。" : "令牌已保存，但网关未能启动；请检查端口占用和模块状态。")
-        : configured ? latestConnection ? "当前手机会话有效。健康检查只表示网关可访问，不代表手机已配对。"
-          : activeSessions ? "检测到活动会话，但当前连接对象下没有可验证的设备记录；请核对手机与插件使用的私聊账号。"
-          : "网关可访问，但还没有有效手机会话。请在手机端完成配对；健康检查成功只代表网关在线。"
-        : "生成令牌会同时启用手机网关。";
+      const notice = issued ? (issued.running ? "网关已启动。请复制令牌，在手机端完成配对。" : "令牌已保存，网关启动失败。请检查端口占用和模块状态。")
+        : !configured ? "生成令牌会同时启用手机网关。"
+          : !running ? "网关尚未运行。"
+            : latestConnection ? "已生成配对令牌。轮换后，已配对的手机需要重新连接。"
+              : activeSessions ? "存在活动会话，请核对手机与插件使用的私聊账号。"
+                : "等待手机配对。健康检查成功只代表网关在线。";
       const token = issued?.token ? `<div class="mobile-pairing-token"><input type="text" readonly aria-label="本次生成的手机配对令牌" value="${escape(issued.token)}"><button class="button small" type="button" data-mobile-copy-token>复制令牌</button></div>` : "";
       const action = configured
         ? `<button class="button small" type="button" data-mobile-token-action="rotate">轮换配对令牌</button>`
@@ -327,7 +342,7 @@ window.CompanionNativeExtensionPanel = (() => {
       const telemetry = observation.telemetry || {};
       if (telemetry.available) recentItems.push({title:"健康摘要", body:telemetry.summary || "已收到健康数据", time:telemetry.received_at || telemetry.captured_at});
       recentItems.sort((a, b) => Number(b.time || 0) - Number(a.time || 0));
-      const recentMarkup = recentItems.length ? `<ol class="mobile-recent-list">${recentItems.map(item => `<li><div><strong>${escape(item.title)}</strong><p>${escape(item.body)}</p></div><time>${escape(formatTime(item.time))}</time></li>`).join("")}</ol>`
+      const recentMarkup = recentItems.length ? `<ul class="mobile-recent-list">${recentItems.map(item => `<li><div><strong>${escape(item.title)}</strong><p>${escape(item.body)}</p></div><time>${escape(formatTime(item.time))}</time></li>`).join("")}</ul>`
         : `<p class="mobile-recent-empty">尚未收到这台手机的近期上报。</p>`;
       const targetLabel = allowedUser ? `${coreTarget ? "核心管理员" : "指定用户"} · ${allowedUser}`
         : coreUser ? `核心管理员 · ${coreUser}` : "尚未确认核心管理员私聊";
@@ -335,51 +350,67 @@ window.CompanionNativeExtensionPanel = (() => {
         ? `${latestConnection.device_name || "Android 设备"} · ${latestConnection.online ? "在线" : "最近已离线"}`
         : activeSessions ? "检测到活动会话，但未匹配当前连接对象" : "尚无有效手机配对";
       const lastSeen = latestConnection ? formatTime(latestConnection.last_seen_at) : "尚无心跳";
-      const healthAddress = address === "填写电脑内网或组网地址" ? "填写可访问地址后检查 /health" : `${address}/health`;
-      return `<div class="mobile-connection-overview">
+      const healthAddress = address === "填写电脑内网或组网地址" ? "等待配置 /health 地址" : `${address.replace(/\/+$/, "")}/health`;
+      const overview = `<div class="mobile-connection-overview">
         <section class="mobile-gateway-card" aria-labelledby="mobileGatewayTitle">
           <header class="mobile-gateway-head">
-            <div><span class="native-extension-kicker">手机陪伴终端</span><h3 id="mobileGatewayTitle">连接基础信息</h3></div>
-            <span class="native-extension-status ${state[1]}">${escape(state[0])}</span>
+            <h3 id="mobileGatewayTitle">连接状态</h3>
+            <button class="button small" type="button" data-mobile-refresh><i data-lucide="refresh-cw" aria-hidden="true"></i>刷新状态</button>
           </header>
-          <dl class="mobile-gateway-facts">
-            <div><dt>连接地址</dt><dd>${escape(address)}</dd></div>
-            <div><dt>健康检查</dt><dd>${escape(healthAddress)}</dd></div>
-            <div><dt>监听端口</dt><dd>${escape(String(bound))}</dd></div>
+          <div class="mobile-gateway-state"><span class="native-extension-status ${state[1]}">${escape(state[0])}</span><p role="status" data-mobile-status-notice></p></div>
+          <dl class="mobile-gateway-facts mobile-gateway-status">
+            <div class="mobile-gateway-address"><dt>连接地址</dt><dd>${escape(address)}</dd></div>
             <div><dt>默认连接对象</dt><dd>${escape(targetLabel)}</dd></div>
             <div><dt>已配对终端</dt><dd>${escape(pairedDevice)}</dd></div>
             <div><dt>最近心跳</dt><dd>${escape(lastSeen)}</dd></div>
+            <div><dt>监听端口</dt><dd>${escape(String(bound))}</dd></div>
+            <div class="mobile-gateway-address"><dt>健康检查</dt><dd>${escape(healthAddress)}</dd></div>
           </dl>
-          <div class="mobile-gateway-actionbar"><div class="mobile-gateway-actions">${action}</div><p class="native-extension-hint" data-mobile-token-result role="status" aria-live="polite">${escape(notice)}</p></div>
+        </section>
+        <section class="mobile-pairing-card" aria-labelledby="mobilePairingTitle">
+          <h3 id="mobilePairingTitle">配对令牌</h3>
+          <p data-mobile-token-result role="status">${escape(notice)}</p>
           ${token}
+          <div class="mobile-gateway-actions">${action}</div>
           <div class="mobile-gateway-lifecycle" data-native-lifecycle></div>
         </section>
-        <section class="mobile-recent-card" aria-labelledby="mobileRecentTitle">
-          <header class="mobile-recent-head"><div><span class="native-extension-kicker">终端上报</span><h3 id="mobileRecentTitle">手机端最近信息</h3></div><button class="button small" type="button" data-mobile-refresh>刷新状态</button></header>
-          ${recentMarkup}
-        </section>
       </div>`;
+      const reports = `<section class="mobile-recent-card" aria-labelledby="mobileRecentTitle"><h3 id="mobileRecentTitle">最近上报</h3>${recentMarkup}</section>`;
+      return {overview, reports};
     }
     async refreshMobileStatus(button) {
       if (this.busy || this.actionBusy || !this.record) return;
       const ticket = this.ticket;
-      let edits;
-      try { edits = this.changes(this.collect()); }
-      catch (error) { this.notice(error.message, true); error.field?.focus(); return; }
-      button.disabled = true; button.textContent = "正在读取";
+      const restoreFocus = document.activeElement === button;
+      this.actionBusy = true; this.updateDirty();
+      button.disabled = true;
+      const feedback = report => {
+        const node = this.root.querySelector("[data-mobile-status-notice]");
+        if (node) node.textContent = report;
+      };
+      feedback("正在读取…");
       try {
         const result = await window.CompanionProduct.request("GET", "extensions");
         if (!this.current(ticket)) return;
         const record = result?.extensions?.[this.name];
         if (!validRecord(record)) throw {code:"native_settings_unavailable"};
+        const edits = this.changes(this.collect());
         this.record = record;
         this.draft = merge(clone(record.settings), edits);
         this.render();
-        this.notice("手机端状态已刷新。未保存的设置修改已保留。");
+        feedback("状态已刷新。");
+        if (restoreFocus && document.activeElement === document.body) this.root.querySelector("[data-mobile-refresh]")?.focus();
       } catch (error) {
-        if (this.current(ticket)) this.notice(errorText(error), true);
+        if (this.current(ticket)) {
+          feedback(error.field ? error.message : errorText(error));
+          error.field?.focus();
+        }
       } finally {
-        button.disabled = false; button.textContent = "刷新状态";
+        if (this.current(ticket)) {
+          this.actionBusy = false;
+          this.updateStatus(); this.updateDirty();
+          button.disabled = false;
+        }
       }
     }
     receiveManagement(record) {

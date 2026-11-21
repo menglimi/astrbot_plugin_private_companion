@@ -227,8 +227,10 @@
     try { window.localStorage?.setItem("companion-v2.hide-idle-users", String(hideIdleUsers)); } catch (_) { /* 页面桥可能禁用存储 */ }
   }
   function hasInteraction(person) {
-    return Boolean(person?.private_chat || person?.group_member
-      || number(person?.total?.msg_count) > 0
+    // A private/group route can exist with zero messages (the contact was
+    // discovered, configured or proposed), and that is exactly the "暂无来往"
+    // card. Interaction means an actual message, not the presence of a route.
+    return Boolean(number(person?.total?.msg_count) > 0
       || number(person?.private?.msg_count) > 0
       || Object.values(groupsOf(person)).some((item) => number(item?.msg_count) > 0));
   }

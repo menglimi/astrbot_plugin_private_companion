@@ -89,6 +89,19 @@ access_scope=same_device 的链接仅供运行 AstrBot 的电脑使用；public_
 EVIDENCE_SPEC = ToolSpec("turn.evidence", "读取本轮已认证发言的证据句柄，供记忆、日历、成长和关系提案使用。",
                         encode({"type": "object", "properties": {}, "additionalProperties": False}))
 
+PHONE_TASK_SPEC = ToolSpec(
+    "phone.task.start",
+    "登记一件角色稍后自己用手机完成的事。只登记，不立即执行；到点后由后台行动回合观察屏幕并逐步操作。"
+    "只在已通过 phone.json 启用手机通道的私聊可用；需要用户明确同意。",
+    encode({"type": "object", "properties": {
+        "goal": {"type": "string", "minLength": 1, "maxLength": 500,
+                 "description": "要完成的事，写成可验证的目标，例如：打开某应用并完成签到。"},
+        "delay_minutes": {"type": "integer", "minimum": 0, "maximum": 1440,
+                          "description": "多少分钟后开始第一步；0 表示下一个空闲回合。"},
+        "max_steps": {"type": "integer", "minimum": 1, "maximum": 6,
+                      "description": "最多允许几步操作，默认按手机配置。"},
+    }, "required": ["goal"], "additionalProperties": False}))
+
 
 _GROUP_ADMIN_DENIAL_REASONS = {
     "screen_scope_denied": "桌面截屏在群聊中只允许核心管理员使用，本次操作已拒绝。",
@@ -256,6 +269,9 @@ class CoreReplyToolSession:
                     if (spec.action.startswith(("memo.", "reminder.")) or spec.action == "operation.lookup") and policy.feature_access(context.actor, scope=context.scope,
                             action=spec.action, observed_at=app.tasks.now()).is_success:
                         offered.append(_OfferedTool(spec, "agenda"))
+            phone = getattr(app, "phone_actions", None)
+            if phone is not None and phone.available(context):
+                offered.append(_OfferedTool(PHONE_TASK_SPEC, "phone"))
             memory = getattr(tools, "memory", None)
             if memory is not None and not tools._memory_is_external():
                 offered.extend(_OfferedTool(spec, "memory") for spec in memory.catalog_for(context))
@@ -556,6 +572,8 @@ class CoreReplyToolSession:
                 result = execute_core_behavior(self, action, arguments, native_call_id(wrapper, action, arguments))
             elif offered.owner == "evidence":
                 result = await self.evidence()
+            elif offered.owner == "phone":
+                result = self._phone_task(arguments)
             elif offered.owner == "interaction":
                 result = await self.poke(arguments)
             elif offered.owner == "external":
@@ -659,6 +677,20 @@ class CoreReplyToolSession:
         except (ValueError, ValidationError):
             return encode({"state": "failed", "effect": "none", "code": "invalid_tool_arguments",
                            "retry_disposition": "input_invalid"})
+
+    def _phone_task(self, arguments):
+        """Register one due phone task; execution happens in the background loop."""
+        app, context = self.application, self.context
+        service = getattr(app, "phone_actions", None)
+        if service is None or not service.available(context):
+            raise TaskError("phone_disabled", "the phone channel is not enabled for this window")
+        goal = arguments.get("goal")
+        if not isinstance(goal, str) or not goal.strip():
+            raise TaskError("invalid_tool_arguments", "a phone task needs a goal")
+        document = service.create(context, goal,
+                                  delay_minutes=int(arguments.get("delay_minutes") or 0),
+                                  max_steps=arguments.get("max_steps"))
+        return {"state": "succeeded", "effect": "committed", "payload": document}
 
     def _read(self, owner, action, arguments):
         app, context = self.application, self.context

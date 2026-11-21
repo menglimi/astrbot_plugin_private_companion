@@ -1,7 +1,9 @@
 """Native generation/edit -> governed adoption -> local sender and restart."""
 
+import asyncio
 import base64
 from dataclasses import replace
+from datetime import timedelta
 import json
 from types import SimpleNamespace as NS
 import unittest
@@ -97,6 +99,106 @@ class NativeImageFlowTests(NativeImageFixture, HostFixture, unittest.IsolatedAsy
         self.assertNotIn("data:image/", str([tuple(r) for r in sources]))
         self.assertEqual(host.receive(self.event()).unwrap(), batch)
         self.assertEqual(len(self.sent), 1)
+
+    async def test_daily_outfit_generates_from_persona_agenda_and_weather_with_an_empty_wardrobe(self):
+        from companion_v2.agenda.planning import planning_profile
+        from companion_v2.configuration.registry import FieldRegistry
+        from companion_v2.model_gateway.routing import configuration_fields
+        from companion_v2.proactive.external_materials import WeatherSnapshot
+        from companion_v2.references.configuration import configuration_fields as reference_fields
+        from companion_v2.references.management import ReferenceMaterialManagement
+        from companion_v2.role_profile.configuration import target_for as profile_target
+        from companion_v2.role_work.state.management import StateManagement
+        from tests.test_calendar_planning import output as planned_event
+        from tests.test_role_state import calendar_data
+
+        class Weather:
+            async def fetch(self, location):
+                return WeatherSnapshot("open-meteo", location.name, NOW, 14, "小雨", None, 12, ())
+
+        self.grant(self.important, SCOPE, "extension.tool.invoke")
+        self.profiles += (planning_profile("primary", max_output_tokens=100),)
+        self.registry = FieldRegistry(version="outfit-flow", fields=configuration_fields(self.profiles))
+        host = await self.image_host(weather_port=Weather())
+        app = host.application
+        context = TaskContext(self.important, self.identity.resolve_role(SCOPE, observed_at=NOW).unwrap(),
+                              AudienceRef(SCOPE, (self.important.subject,)))
+        state = StateManagement(app, context)
+        config = state.status(self.core).unwrap()
+        state.command(self.core, {"action": "configure", "operation_key": "outfit-weather",
+            "edit_token": config["edit_token"], "role_edit_token": config["role_edit_token"], "changes": {
+                "planning_enabled": True,
+                "planning_weather_enabled": True,
+                "planning_weather_location": json.dumps({"name": "杭州"}, ensure_ascii=False),
+            }}).unwrap()
+        profile = app.messages.role_profile_context
+        target = profile_target(context)
+        profile.owner.write(target, profile.fields, changes={"role.profile.name": "澄汐"},
+                            reset=(), expected_revision=profile.owner.read(target, profile.fields).revision,
+                            observed_at=NOW)
+        persona = "你是澄汐，留着齐肩黑发，平时喜欢宽松便装。"
+        app.state_maintenance.bind(context, persona)
+        app.calendar_planning.next_checks[context.key] = NOW + timedelta(days=1)
+        app.calendar.command(context, identifier="outfit-user", action="create",
+            expected_revision=0, operation_key="outfit-user-agenda",
+            data=calendar_data(kind="user_report", title="用户自己的安排"))
+        settings = app.reference_settings
+        target, fields = settings.target(context), reference_fields()
+        settings.owner.write(target, fields,
+            changes={"photo.reference.daily_outfit_enabled": True}, reset=(),
+            expected_revision=settings.owner.read(target, fields).revision, observed_at=NOW)
+
+        manager = ReferenceMaterialManagement(app)
+        planner_started, plan_can_finish = asyncio.Event(), asyncio.Event()
+
+        async def plan_day(envelope):
+            planner_started.set()
+            await plan_can_finish.wait()
+            activity = planned_event(title="乘车去展馆", detail="要步行穿过室外广场")
+            return answered(json.dumps({"items": [activity]}, ensure_ascii=False))
+
+        self.model_behavior = plan_day
+        planner = app.calendar_planning
+        role_settings = app.role_state.settings(context)[0]
+        mode, slot, _ = planner.opportunity(context, role_settings, NOW)
+        planning_task = asyncio.create_task(planner.run(context, persona, mode=mode, slot=slot, automatic=True))
+        try:
+            await asyncio.wait_for(planner_started.wait(), timeout=self.wait_seconds)
+            app.daily_outfit.next_check = None
+            app.daily_outfit.advance()
+            self.assertEqual(manager.daily_outfit_photo(self.core, context, at=NOW)["state"], "empty")
+        finally:
+            plan_can_finish.set()
+            plan_result = await planning_task
+        self.assertEqual(plan_result["state"], "succeeded", plan_result)
+        app.daily_outfit.next_check = None
+        app.daily_outfit.advance()
+        await self.until(lambda: not app.daily_outfit.workers)
+        result = manager.daily_outfit_photo(self.core, context, at=NOW)
+        self.assertEqual(result["state"], "succeeded", result)
+        self.assertTrue(result["photo"]["thumbnail"].startswith("data:image/jpeg;base64,"))
+        self.assertEqual(result["photo"]["activities"], ["乘车去展馆"])
+        self.assertEqual(len(self.image_backend.calls), 1)
+        invocation, references = self.image_backend.calls[0]
+        self.assertFalse(references)
+        prompt = invocation.prompt
+        self.assertIn('"name":"澄汐"', prompt)
+        self.assertIn("齐肩黑发", prompt)
+        self.assertIn("步行穿过室外广场", prompt)
+        self.assertIn('"temperature_c":14', prompt)
+        self.assertIn('"condition":"小雨"', prompt)
+        self.assertNotIn("用户自己的安排", prompt)
+        self.assertEqual(app.messages.image_quota._used(context, "proactive", NOW), 1)
+        self.assertEqual(app.daily_outfit.request(context)["state"], "succeeded")
+        self.assertEqual(app.daily_outfit.status(context, at=NOW + timedelta(days=1))["state"], "empty")
+        self.assertEqual(len(self.image_backend.calls), 1)
+        request = manager.generate_daily_outfit_photo
+        operation = "outfit-photo-synthetic"
+        self.assertEqual(request(self.core, context, at=NOW, operation_key=operation)["state"], "created")
+        self.assertEqual(request(self.core, context, at=NOW, operation_key=operation)["state"], "created")
+        await self.until(lambda: not app.daily_outfit.workers)
+        self.assertEqual(request(self.core, context, at=NOW, operation_key=operation)["state"], "succeeded")
+        self.assertEqual(len(self.image_backend.calls), 2)
 
     def use_nai(self):
         from astrbot_host.native_extensions.image_native.output_routing import OutputRoutingBackend

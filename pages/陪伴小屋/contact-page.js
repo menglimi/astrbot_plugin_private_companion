@@ -690,7 +690,7 @@ window.CompanionContactPage = (() => {
           </select></label>
           <button type="button" class="ct-btn is-primary" data-test-recipient-save${disabled || !data.recipientDraft || data.recipientDraft === data.recipients.selected_target_id ? " disabled" : ""}>${data.recipientSaving ? "保存中…" : "保存收件人"}</button>`
         : rows.length === 1 ? `<span>测试收件人：<strong>${e(rows[0].label)}</strong>（唯一核心管理员，自动使用）</span>`
-        : '<span>暂无可用核心管理员私聊目标，请先在关系与权限中确认身份和具体私聊账号。</span>'}
+        : '<span>暂无可用核心管理员私聊目标。请用核心管理员账号私聊 bot（发送任意消息并收到回复），再点「重新读取」。</span>'}
       <label class="ct-switch ct-test-forward-switch">
         <input type="checkbox" data-test-allow-links${data.testAllowLinkedAccounts ? " checked" : ""}${disabled ? " disabled" : ""}>
         <span class="ct-switch-track"><i></i></span>

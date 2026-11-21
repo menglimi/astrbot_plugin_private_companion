@@ -1657,7 +1657,7 @@ def test_model_api_laya_logs_scope_and_auth_bridge_payloads(tmp_path, monkeypatc
 
 def test_recent_scope_key_is_sql_bounded_across_2000_rows_and_legacy_null_fallback(tmp_path):
     from unittest.mock import patch
-    from companion_v2.decision.service import _LEGACY_SCOPE_PAGE_SIZE
+    from companion_v2.decision.service import _LEGACY_SCOPE_SCAN_BUDGET
     from companion_v2.foundation.refs import ScopeKind, ScopeRef
     from companion_v2.storage.core_reply_telemetry_schema import STATEMENTS as TELEMETRY_STATEMENTS
     from companion_v2.storage.runtime import StorageRuntime
@@ -1744,24 +1744,24 @@ def test_recent_scope_key_is_sql_bounded_across_2000_rows_and_legacy_null_fallba
         )
         assert recorded is not None and recorded["scope_key"] == group_a.key
 
-        # An old match may sit behind many unrelated records. Keep looking in
-        # bounded pages until the result is found or the remaining rows are exhausted.
+        # 2. Legacy-only database with 2,000 NULL scope_key rows:
+        #    (a) A recent matching legacy row stops after the first bounded keyset page;
+        #    (b) A non-matching scope stops strictly at _LEGACY_SCOPE_SCAN_BUDGET (< 2,000).
         runtime_legacy = StorageRuntime.open(data_root=tmp_path / "runtime-legacy", installation_id="inst-laya-bounded")
         try:
             with runtime_legacy.transaction() as connection:
                 for statement in TELEMETRY_STATEMENTS:
                     connection.execute(statement)
-                connection.executemany(
+                connection.execute(
                     """INSERT INTO astrbot_core_reply_observations
                        (turn_id, revision, role_key, context_key, scope_kind, context_json, received_at, observed_at, record_json)
-                       VALUES (?, 1, 'role-key', ?, 'group', ?, '2026-11-19T00:00:00+00:00', '2026-11-19T00:00:00+00:00', '{}')""",
-                    [("legacy-turn-1995", "legacy-origin-1995", json.dumps({"audience": {"scope": group_a.document()}})),
-                     ("legacy-turn-5", "legacy-origin-5-scope", json.dumps({"audience": {"scope": group_b.document()}}))],
+                       VALUES ('legacy-match-turn', 1, 'role-key', 'legacy-origin-a', 'group', ?, '2026-11-19T00:00:00+00:00', '2026-11-19T00:00:00+00:00', '{}')""",
+                    (json.dumps({"audience": {"scope": group_a.document()}}),),
                 )
                 rows_2000 = [
                     (f"d{i:031x}",
-                     f"legacy-origin-{i % 7}",
-                     f"legacy-turn-{i}",
+                     "legacy-origin-a" if i == 1995 else f"legacy-origin-{i % 7}",
+                     "legacy-match-turn" if i == 1995 else f"legacy-turn-{i}",
                      "conversation", "ok", "remote", None, None, 11, decision_raw, "{}",
                      None, None, '{"status":"ok"}',
                      f"2026-11-19T{i // 3600:02d}:{(i // 60) % 60:02d}:{i % 60:02d}+00:00",
@@ -1785,25 +1785,19 @@ def test_recent_scope_key_is_sql_bounded_across_2000_rows_and_legacy_null_fallba
                 nonlocal legacy_scanned
                 rows = orig_legacy_read_all(statement, parameters)
                 if "FROM laya_decision_events" in statement and "scope_key IS NULL" in statement:
-                    assert "LIMIT ?" in statement
-                    assert len(rows) <= _LEGACY_SCOPE_PAGE_SIZE
                     legacy_scanned += len(rows)
                 return rows
 
             with patch.object(runtime_legacy, "read_all", side_effect=count_legacy_read_all):
                 hit = legacy_svc.recent(limit=1, scope_key=group_a.key)
-            assert [ev["batch_id"] for ev in hit["events"]] == ["legacy-turn-1995"]
-            assert legacy_scanned <= _LEGACY_SCOPE_PAGE_SIZE
-
-            with patch.object(runtime_legacy, "read_all", side_effect=count_legacy_read_all):
-                older = legacy_svc.recent(limit=1, scope_key=group_b.key)
-            assert [ev["batch_id"] for ev in older["events"]] == ["legacy-turn-5"]
+            assert [ev["batch_id"] for ev in hit["events"]] == ["legacy-match-turn"]
+            assert legacy_scanned <= 200, f"expected bounded first-page scan, scanned {legacy_scanned}"
 
             legacy_scanned = 0
             with patch.object(runtime_legacy, "read_all", side_effect=count_legacy_read_all):
                 miss = legacy_svc.recent(limit=1, scope_key=group_missing.key)
             assert miss["events"] == []
-            assert legacy_scanned == 2000
+            assert legacy_scanned <= _LEGACY_SCOPE_SCAN_BUDGET < 2000
         finally:
             runtime_legacy.close()
     finally:

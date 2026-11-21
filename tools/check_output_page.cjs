@@ -50,10 +50,12 @@ with tempfile.TemporaryDirectory(prefix="output-page-qa-") as data_root:
   const fixture=hostAssets(), sections=fixture.sections;
   const output=path.resolve(process.argv[2]||path.join(ROOT,"build/ui-output-qa")); await fs.mkdir(output,{recursive:true});
   const imageUrl=PREFIX+"assets/chengxi.jpg?asset_token="+TOKEN;
+  const outfitThumbnail="data:image/jpeg;base64,"+(await fs.readFile(path.join(PAGE,"assets/chengxi.jpg"))).toString("base64");
   const references=["ref-a","ref-b","ref-c"].map((asset_id,index)=>({asset_id,label:["居家服（睡前）","校园日常","正式场合礼服"][index],roles:["identity","outfit"],usage:usage(),state:"active",revision:1,thumbnail:imageUrl,mime_type:"image/jpeg",size_bytes:4096}));
   const wardrobe=[{item_id:"wardrobe-a",name:"燕麦色风衣",description:"",tags:["日常"],asset_id:"ref-a",state:"active",revision:1}];
   const album=[1,2].map(id=>({image_id:"image-"+id,created_at:"2026-10-07T03:00:00Z",action:"image.generate",width:768,height:1024,thumbnail:imageUrl}));
   let daily=null,failImage=false,orderConflict=false,sceneConflict=false,backendRevision=1;
+  let outfitPhoto={local_date:"2026-10-07",state:"empty"};
   let backend={enabled:true,backend:"auto",operation_routes:{generate:["online:endpoint-a"],edit:["online:endpoint-a"]},endpoints:[{id:"endpoint-a",name:"主用端点",enabled:true,platform:"openai",model:"image-qa",base_url:"https://example.invalid/v1",width:1024,height:1024,timeout_seconds:180,api_key:"",api_key_set:true}],comfyui:{base_url:"",timeout_seconds:300,workflows:{},api_key:"",api_key_set:false},sd_webui:{base_url:"",timeout_seconds:300,parameters:{},api_key:"",api_key_set:false}};
   const nai={installed:true,available:true,call_mode:"direct",default_model:"nai-diffusion-4-5-full",default_size:"竖图",prompt_format:"nai",artist_slot_name:"主画风",operations:["generate"]};
   const posts=[],imageRequests=[],receipts=new Map();
@@ -69,6 +71,7 @@ with tempfile.TemporaryDirectory(prefix="output-page-qa-") as data_root:
       if(endpoint===ROLE+"/model/image/observability")return ok({images:{total:1,items:[{action:"image.generate",state:"succeeded",created_at:"2026-10-07T03:00:00Z",elapsed_ms:1200}]},content:{available:true,works_count:2,candidate_count:1,updated_at:"2026-10-07T04:00:00Z"}});
       if(endpoint===ROLE+"/image-materials")return ok(inventory());
       if(endpoint===ROLE+"/image-materials/album")return ok({items:structuredClone(album),next_cursor:null});
+      if(endpoint===ROLE+"/image-materials/daily-outfit/photo")return ok(outfitPhoto);
       return fail("invalid_response");
     }
     posts.push({endpoint,body:structuredClone(body)});
@@ -111,6 +114,12 @@ with tempfile.TemporaryDirectory(prefix="output-page-qa-") as data_root:
     }
     if(endpoint===ROLE+"/image-materials/daily-outfit"){
       daily={...structuredClone(wardrobe.find(item=>item.item_id===body.item_id)),local_date:"2026-10-07"};return ok(structuredClone(daily));
+    }
+    if(endpoint===ROLE+"/image-materials/daily-outfit/generate"){
+      assert.ok(body.operation_key);
+      outfitPhoto={...outfitPhoto,state:"succeeded",photo:{thumbnail:outfitThumbnail,
+        weather:{role_location:"杭州",condition:"小雨",temperature_c:14},activities:["乘车去展馆"]}};
+      return ok({local_date:outfitPhoto.local_date,state:"created"});
     }
     if(endpoint===ROLE+"/image-materials/references/withdraw"){
       const item=references.find(item=>item.asset_id===body.asset_id);if(item.revision!==body.expected_revision)return fail("reference_revision_conflict");
@@ -181,6 +190,25 @@ with tempfile.TemporaryDirectory(prefix="output-page-qa-") as data_root:
     const saveCard=async id=>{await frame.locator(`[data-wb-card="${id}"] .wb-save`).click();await frame.locator(`[data-wb-card="${id}"] .wb-save.is-saved`).waitFor();};
     const toggleWorkbenchField=async selector=>{const input=frame.locator(selector);await input.locator("xpath=..").click();assert.equal(await input.isChecked(),true,`toggle ${selector}`);};
     const saveBackend=async()=>{await frame.locator('[data-output-native-action="save"]:visible').first().click();await frame.locator('[data-output-native-notice]:visible').first().filter({hasText:"生图后端已保存"}).waitFor();};
+    const generateOutfit=async()=>{
+      await frame.locator("[data-im-generate-outfit]").click();
+      const preview=frame.getByRole("img",{name:"今日角色穿搭图"});
+      await preview.waitFor();
+      assert.ok(await preview.evaluate(async img=>{await img.decode();return img.naturalWidth;}));
+      await frame.getByText("杭州 · 小雨 · 14°C",{exact:true}).waitFor();
+    };
+    if(process.argv.includes("--outfit-only")){
+      await open("materials");
+      await toggleWorkbenchField('[data-wb-field="daily_outfit_enabled"]');
+      await saveCard("photo.reference");
+      assert.equal(sections["photo.reference"].settings.enabled,false);
+      assert.equal(sections.wardrobe.settings.enabled,false);
+      await generateOutfit();
+      assert.equal(posts.filter(item=>item.endpoint.endsWith("/daily-outfit/generate")).length,1);
+      assert.deepEqual(errors,[]);
+      console.log("PASS daily outfit preview with reference images and wardrobe disabled");
+      return;
+    }
     await frame.locator('.output-image-frame[data-image-state="ready"]').waitFor();
     await frame.locator('#imageControlWorkspace [data-wb-field="group_max_daily"]').waitFor();await assertTitle();
     assert.equal(await frame.locator("#output-tab-capabilities").innerText(),"模型路线");
@@ -282,7 +310,8 @@ with tempfile.TemporaryDirectory(prefix="output-page-qa-") as data_root:
     await frame.locator('[data-im-upload]').click();await frame.locator(".image-materials-notice").filter({hasText:"已添加到当前角色"}).waitFor();
     await frame.locator('[data-im-select="image-1"]').click();await frame.locator('[data-im-reference-label]').fill("相册登记");await frame.locator('[data-im-register]').click();await frame.locator(".image-materials-notice").filter({hasText:"已登记为参考素材"}).waitFor();
     await frame.locator('[data-im-toggle-wardrobe]').click();await frame.locator('[data-im-wardrobe-name]').fill("白色针织衫");await frame.locator('[data-im-wardrobe-asset]').selectOption("ref-a");await frame.locator('[data-im-wardrobe-submit]').click();await frame.locator(".image-materials-notice").filter({hasText:"衣柜条目已加入"}).waitFor();
-    const itemId=wardrobe.at(-1).item_id;await frame.locator(`[data-im-daily="${itemId}"]`).click();await frame.locator(".image-materials-daily").filter({hasText:"白色针织衫"}).waitFor();assert.equal(daily.item_id,itemId);
+    const itemId=wardrobe.at(-1).item_id;await frame.locator(`[data-im-daily="${itemId}"]`).click();await frame.locator(".image-materials-record.is-daily").filter({hasText:"白色针织衫"}).waitFor();assert.equal(daily.item_id,itemId);
+    await generateOutfit();
     await frame.locator('[data-im-refresh]').first().click();await frame.locator('[data-im-reference-card="ref-a"]').waitFor();assert.deepEqual(await frame.locator('[data-im-reference-card]').evaluateAll(nodes=>nodes.map(node=>node.dataset.imReferenceCard)),references.filter(item=>item.state==="active").map(item=>item.asset_id));
     await frame.locator('[data-im-edit-ref="ref-a"]').first().click();assert.equal(await frame.locator('[data-im-edit-usage="outfit_category"]').inputValue(),"home");
     for(const width of [1559,960,390,320]){

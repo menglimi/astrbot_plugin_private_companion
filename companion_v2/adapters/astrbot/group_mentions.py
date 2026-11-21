@@ -71,7 +71,11 @@ def _official_original(event, identifiers):
     from astrbot.core.platform.sources.qqofficial.qqofficial_platform_adapter import QQOfficialPlatformAdapter
     parse_face = getattr(QQOfficialPlatformAdapter, "_parse_face_message", lambda text: text)
     plain = "".join(part.text for part in event.message_obj.message if component_kind(part) == "Plain")
-    if plain.strip() not in (parse_face(projected), parse_face(content.strip())):
+    # The host adapter may collapse the spaces around a removed At into a
+    # single blank; compare after whitespace normalization so a stale raw body
+    # is still rejected without losing a valid mention-only message.
+    normalized = lambda value: " ".join(parse_face(value).split())
+    if normalized(plain) not in (normalized(projected), normalized(content.strip())):
         return None
     restored = QQ_MENTION.sub(lambda match: SELF_MENTION
         if (match.group("short") or match.group("xml")) in identifiers else match.group(), content)

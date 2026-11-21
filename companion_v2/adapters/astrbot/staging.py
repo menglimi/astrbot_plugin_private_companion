@@ -49,6 +49,7 @@ from companion_v2.role_work.journal.self_review_service import self_review_profi
 from companion_v2.expression.style_service import expression_learning_profile
 from companion_v2.expression.review import expression_review_profile
 from companion_v2.screen.interpretation import screen_interpretation_profile
+from companion_v2.device.action_service import phone_profile
 from companion_v2.conversation.media.image_narration import image_narration_profile
 from companion_v2.conversation.media.video.narration import video_narration_profile
 from companion_v2.conversation.media.understanding import intake_settings as file_intake_settings
@@ -332,6 +333,7 @@ class AstrBotStagingSession:
                     expression_review_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
                     expression_review_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens, contact=True),
                     screen_interpretation_profile(profile.provider_id), *narration_profiles,
+                    phone_profile(profile.provider_id, max_output_tokens=min(1024, profile.max_output_tokens)),
                     *native_video_profiles) + self.writing_profiles + (self.reading_profile,) + authoring_profiles(
                         profile.provider_id, draft_tokens=profile.max_output_tokens)
         # The host budget is a reply budget; structural tasks register a larger default.

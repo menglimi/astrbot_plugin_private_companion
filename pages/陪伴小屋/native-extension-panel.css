@@ -79,62 +79,99 @@
 }
 /* 只挂一组时不画分组栏：设置项占满整行，避免同一页出现两条导航。 */
 .native-extension-workspace.is-single { grid-template-columns: minmax(0, 1fr); }
-.mobile-connection-page { display: grid; gap: var(--sp-4); min-width: 0; container-type: inline-size; container-name: mobile-page; }
-.mobile-connection-guide { border: 1px solid var(--t-line); border-radius: var(--r-sm); background: var(--t-surface-soft); }
-.mobile-connection-guide summary { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); cursor: pointer; padding: var(--sp-4); list-style: none; }
-.mobile-connection-guide summary::-webkit-details-marker { display: none; }
-.mobile-connection-guide summary > span { flex: 1; min-width: 0; }
-.mobile-connection-guide summary h2 { margin: 0; font-size: var(--fs-title); }
-.mobile-connection-guide summary small { display: block; margin-top: var(--sp-1); color: var(--t-text-soft); font-size: var(--fs-micro); font-weight: 400; }
-.mobile-connection-guide summary > i,
-.mobile-connection-guide summary > svg { flex: none; width: 18px; height: 18px; color: var(--t-text-faint); transition: transform .16s ease; }
-.mobile-connection-guide details[open] > summary > i,
-.mobile-connection-guide details[open] > summary > svg { transform: rotate(180deg); }
-.mobile-connection-guide-body { padding: 0 var(--sp-4) var(--sp-4); }
-.mobile-connection-guide ol { margin: 0; padding-left: 1.25rem; color: var(--t-text); line-height: 1.9; }
-.mobile-connection-guide p { margin: var(--sp-2) 0 0; color: var(--t-text-soft); font-size: var(--fs-body); line-height: 1.8; }
-.mobile-connection-settings { min-width: 0; }
-.mobile-gateway-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; }
-.mobile-gateway-status { min-width: 0; }
+.phone-usage-page { display: grid; gap: var(--sp-5); min-width: 0; container: phone-page / inline-size; }
+#homeShell:is([data-section="phone"], [data-section="mobile"]) .stage-region { display: none; }
+#homeShell:is([data-section="phone"], [data-section="mobile"]) .shell-panel-body { padding-bottom: var(--sp-4); scroll-padding-bottom: 0; }
+#homeShell[data-section="phone"] .wb-actions { position: static; margin-inline: 0; padding-inline: 0; }
+.phone-setup { display: grid; align-content: start; gap: var(--sp-4); max-width: 60rem; }
+.phone-setup [hidden] { display: none !important; }
+.phone-setup-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.phone-setup-head h3 { margin: 0; color: var(--ink); font-size: var(--fs-title); }
+.phone-setup-head span { color: var(--muted); font-size: var(--fs-tiny); flex: none; }
+.phone-setup-modes { display: flex; flex-wrap: wrap; gap: var(--sp-1); justify-self: start; padding: var(--sp-1); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--t-surface-soft); }
+.phone-setup-modes button { display: inline-flex; align-items: center; gap: var(--sp-2); min-height: 40px; padding: var(--sp-2) var(--sp-3); border: 1px solid transparent; border-radius: var(--r-xs); background: transparent; color: var(--muted); font: inherit; cursor: pointer; }
+.phone-setup-modes button[aria-pressed="true"] { color: var(--ink); background: var(--t-surface); border-color: var(--line); }
+.phone-setup-modes button:hover, .phone-wireless-option summary:hover, .phone-advanced summary:hover { color: var(--accent); }
+.phone-setup svg, .phone-advanced > summary svg { width: 1rem; height: 1rem; flex-shrink: 0; }
+.phone-setup-usb, .phone-setup-wireless { display: grid; justify-items: start; align-items: start; gap: var(--sp-3); }
+.phone-setup p { margin: 0; color: var(--secondary); font-size: var(--fs-body); line-height: 1.7; }
+.phone-debug-help { color: var(--muted); font-size: var(--fs-tiny); }
+.phone-debug-help summary { cursor: pointer; }
+.phone-debug-help p { margin-top: var(--sp-2); }
+.phone-wireless-option { width: 100%; padding-block: var(--sp-2); border-bottom: 1px solid var(--line); }
+.phone-wireless-option > summary, .phone-advanced > summary { display: flex; align-items: center; gap: var(--sp-2); min-height: 44px; color: var(--ink); cursor: pointer; list-style: none; }
+.phone-wireless-option > summary::-webkit-details-marker, .phone-advanced > summary::-webkit-details-marker { display: none; }
+.phone-wireless-option > summary::after, .phone-advanced > summary::after { content: ""; width: .45rem; height: .45rem; margin: 0 var(--sp-1) .18rem auto; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); }
+.phone-wireless-option[open] > summary::after, .phone-advanced[open] > summary::after { transform: rotate(-135deg); margin-bottom: -.18rem; }
+.phone-wireless-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-3); margin: var(--sp-2) 0 var(--sp-3); }
+.phone-wireless-form label { flex: 0 1 19rem; display: grid; min-width: 0; gap: var(--sp-1); color: var(--ink); font-size: var(--fs-tiny); }
+.phone-wireless-form label:has(input[name="code"]) { flex-basis: 9rem; }
+.phone-wireless-form input { box-sizing: border-box; width: 100%; min-height: 44px; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--t-surface); color: var(--ink); font: inherit; }
+.phone-wireless-form button { min-height: 44px; }
+.phone-setup :is(button, input, summary):focus-visible, .phone-advanced > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.phone-setup-results ul { margin: 0; padding: 0; list-style: none; }
+.phone-setup-results li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); min-width: 0; padding: var(--sp-3) 0; border-top: 1px solid var(--line); }
+.phone-setup-results li > div:not(.phone-found-action) { flex: 1 1 10rem; min-width: 0; }
+.phone-setup-results strong, .phone-setup-results small { display: block; overflow-wrap: anywhere; }
+.phone-setup-results small { color: var(--muted); font-size: var(--fs-micro); }
+.phone-found-icon { display: grid; flex: none; width: 32px; height: 32px; place-items: center; border-radius: var(--r-xs); color: var(--t-accent); background: var(--t-accent-quiet); }
+.phone-setup-notice:empty { display: none; }
+.phone-setup .phone-setup-notice.is-error { color: var(--t-status-error); }
+.phone-setup-download { justify-self: start; }
+.phone-advanced { min-width: 0; border-top: 1px solid var(--line); }
+.phone-advanced > summary { font-weight: 600; }
+.phone-advanced[open] > summary { margin-bottom: var(--sp-2); }
+.phone-usage-page [data-wb-group="master"] .wb-fields { grid-template-columns: minmax(0, 1fr); }
+@container phone-page (min-width: 780px) {
+  .phone-usage-page .wb-card-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: var(--sp-5); align-items: start; }
+  .phone-usage-page .wb-card-body > :not(.wb-group) { grid-column: 1 / -1; }
+  .phone-usage-page [data-wb-group="master"] { grid-row: span 2; }
+  .phone-usage-page [data-wb-group="typing"] { margin-top: 0; padding-top: 0; border-top: 0; }
+}
+.mobile-connection-page { min-width: 0; container: mobile-page / inline-size; }
+.is-mobile-connection { display: grid; gap: var(--sp-5); }
+.native-extension-device-link { margin: 0 0 var(--sp-3); }
+.mobile-connection-overview { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: var(--sp-5); align-items: start; padding-bottom: var(--sp-5); border-bottom: 1px solid var(--line); }
+.mobile-gateway-card, .mobile-pairing-card, .mobile-recent-card { display: grid; align-content: start; gap: var(--sp-3); min-width: 0; }
+.mobile-pairing-card { padding: var(--sp-4); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--t-surface-soft); }
+.mobile-gateway-head, .mobile-gateway-state, .mobile-config-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2) var(--sp-3); }
+.mobile-gateway-card h3, .mobile-pairing-card h3, .mobile-recent-card h3, .mobile-config-heading h3 { margin: 0; color: var(--ink); font-size: var(--fs-title); }
+.mobile-gateway-state p, .mobile-pairing-card p { margin: 0; color: var(--secondary); font-size: var(--fs-tiny); line-height: 1.65; overflow-wrap: anywhere; }
+.mobile-gateway-state p:empty { display: none; }
 .mobile-gateway-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3) var(--sp-4); margin: 0; }
 .mobile-gateway-facts > div { min-width: 0; padding-top: var(--sp-2); border-top: 1px solid var(--line); }
+.mobile-gateway-address { grid-column: 1 / -1; }
 .mobile-gateway-facts dt { color: var(--muted); font-size: var(--fs-micro); }
 .mobile-gateway-facts dd { margin: var(--sp-1) 0 0; color: var(--ink); font-size: var(--fs-tiny); overflow-wrap: anywhere; }
-.mobile-gateway-actionbar { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; }
 .mobile-gateway-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
-.mobile-gateway-actionbar [data-mobile-token-result] { flex: 1 1 16rem; }
 .mobile-pairing-token { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
 .mobile-pairing-token input { flex: 1; min-width: 0; padding: var(--sp-3); border: 1px solid var(--line); border-radius: var(--r-sm); color: var(--ink); background: var(--t-surface, var(--bg)); font-family: var(--numeric-font); font-size: var(--fs-micro); user-select: all; }
-.mobile-gateway-card [data-mobile-token-result] { overflow-wrap: anywhere; }
-.mobile-connection-overview { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(260px, .85fr); gap: var(--sp-4); margin-bottom: var(--sp-5); align-items: stretch; }
-.mobile-gateway-card, .mobile-recent-card { display: grid; align-content: start; gap: var(--sp-4); min-width: 0; padding: var(--sp-4); margin: 0; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--t-surface, var(--bg)); }
-.mobile-gateway-head h3, .mobile-recent-head h3, .mobile-config-heading h3 { margin: var(--sp-1) 0 0; color: var(--ink); font-size: var(--fs-title); }
-.mobile-gateway-card p, .mobile-recent-card p { margin: 0; color: var(--secondary); line-height: 1.7; }
-.mobile-gateway-lifecycle { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--sp-3); padding-top: var(--sp-3); border-top: 1px solid var(--line); }
-.mobile-gateway-lifecycle p { margin: 0; color: var(--muted); font-size: var(--fs-micro); }
-.mobile-gateway-lifecycle > div { display: flex; flex-wrap: wrap; gap: var(--sp-2); justify-content: flex-end; }
-.mobile-recent-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
-.mobile-recent-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.mobile-gateway-lifecycle { display: grid; gap: var(--sp-2); padding-top: var(--sp-3); border-top: 1px solid var(--line); }
+.mobile-gateway-lifecycle p { color: var(--muted); font-size: var(--fs-micro); }
+.mobile-gateway-lifecycle > div { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.mobile-recent-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--sp-5); margin: 0; padding: 0; list-style: none; }
 .mobile-recent-list li { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-3) 0; border-top: 1px solid var(--line); }
 .mobile-recent-list li > div { min-width: 0; }
 .mobile-recent-list strong { display: block; color: var(--ink); font-size: var(--fs-tiny); }
-.mobile-recent-list p { margin-top: 3px; color: var(--secondary); font-size: var(--fs-micro); overflow-wrap: anywhere; }
+.mobile-recent-list p { margin: 3px 0 0; color: var(--secondary); font-size: var(--fs-micro); line-height: 1.65; overflow-wrap: anywhere; }
 .mobile-recent-list time { flex: 0 0 auto; color: var(--muted); font-size: var(--fs-micro); }
-.mobile-recent-empty { padding: var(--sp-4) 0; border-top: 1px solid var(--line); color: var(--muted) !important; font-size: var(--fs-tiny); }
-.mobile-config-heading { margin: var(--sp-5) 0 var(--sp-3); padding-top: var(--sp-4); border-top: 1px solid var(--line); }
-.mobile-config-heading p { margin: var(--sp-1) 0 0; color: var(--muted); font-size: var(--fs-micro); }
-.is-mobile-connection .native-extension-search { margin-bottom: var(--sp-3); }
+.mobile-recent-empty { margin: 0; padding: var(--sp-3) 0; border-top: 1px solid var(--line); color: var(--muted); font-size: var(--fs-tiny); }
+.mobile-config-heading { margin-bottom: var(--sp-3); }
+.mobile-config-heading .native-extension-search { flex: 0 1 17rem; min-width: 0; margin: 0; }
 .is-mobile-connection .native-extension-group > h3 { display: none; }
-.mobile-config-sections { display: grid; gap: var(--sp-3); }
-.mobile-config-section { border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--t-surface); container-type: inline-size; container-name: mobile-config; }
+.is-mobile-connection .native-extension-savebar { position: static; margin: var(--sp-3) 0 0; padding-inline: 0; }
+.mobile-config-sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3); align-items: start; }
+.mobile-config-section { min-width: 0; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--t-surface); container: mobile-config / inline-size; }
+.mobile-config-section:not([data-mobile-config-section="gateway"], [data-mobile-config-section="pairing"]) { grid-column: 1 / -1; }
 .mobile-config-section > summary { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); cursor: pointer; padding: var(--sp-3) var(--sp-4); list-style: none; }
 .mobile-config-section > summary::-webkit-details-marker { display: none; }
+.mobile-config-section > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--r-sm); }
 .mobile-config-section > summary strong { display: block; color: var(--ink); font-size: var(--fs-body); font-weight: 600; }
 .mobile-config-section > summary small { display: block; margin-top: 2px; color: var(--muted); font-size: var(--fs-micro); font-weight: 400; line-height: 1.6; }
 .mobile-config-chevron { flex: none; width: .55rem; height: .55rem; margin: 0 .25rem .25rem 0; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(45deg); transition: transform .16s ease; }
 .mobile-config-section[open] .mobile-config-chevron { transform: rotate(-135deg); margin-bottom: 0; margin-top: .25rem; }
-.mobile-config-section-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: var(--sp-3) var(--sp-4); padding: 0 var(--sp-4) var(--sp-4); }
-.mobile-config-section-body > .native-extension-field { padding: var(--sp-3); border: 1px solid var(--t-line); border-radius: var(--r-sm); background: var(--t-surface-soft); }
+.mobile-config-section-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: var(--sp-4); padding: 0 var(--sp-4) var(--sp-4); }
+.mobile-config-section-body > .native-extension-field { margin: 0; }
 .mobile-config-section-body > .native-extension-field:has(textarea),
 .mobile-config-section-body > .native-extension-nested,
 .mobile-config-section-body > .native-extension-templates,
@@ -145,6 +182,13 @@
   .mobile-config-section-body { grid-template-columns: minmax(0, 1fr); }
   .mobile-config-section-body > .native-extension-field input:not([type="checkbox"]),
   .mobile-config-section-body > .native-extension-field select { max-width: none; }
+}
+@container mobile-page (max-width: 700px) {
+  .mobile-connection-overview, .mobile-config-sections, .mobile-recent-list { grid-template-columns: minmax(0, 1fr); }
+}
+@container phone-page (max-width: 520px) {
+  .phone-wireless-form { display: grid; width: 100%; }
+  .phone-wireless-form button { justify-self: start; }
 }
 .native-extension-nav {
   display: flex;
@@ -271,20 +315,6 @@
 .native-extension-savebar p { margin: 0; color: var(--muted); font-size: var(--fs-micro); line-height: 1.7; }
 .native-extension-savebar p.is-error { color: var(--t-status-error); }
 .native-extension-savebar > div { display: flex; gap: var(--sp-2); flex-shrink: 0; }
-@container mobile-page (max-width: 760px) {
-  .mobile-connection-overview { grid-template-columns: minmax(0, 1fr); }
-}
-@media (max-width: 900px) { .mobile-connection-overview { grid-template-columns: minmax(0, 1fr); } }
-@media (max-width: 760px) {
-  .mobile-config-section-body { grid-template-columns: minmax(0, 1fr); }
-  .mobile-config-section-body > .native-extension-field input:not([type="checkbox"]),
-  .mobile-config-section-body > .native-extension-field select { max-width: none; }
-}
-@media (max-width: 520px) {
-  .mobile-gateway-lifecycle { grid-template-columns: minmax(0, 1fr); }
-  .mobile-gateway-lifecycle > div { justify-content: flex-start; }
-  .mobile-recent-list li { flex-direction: column; gap: 3px; }
-}
 .native-extension-empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-3); padding: var(--sp-5) 0; line-height: 1.8; }
 .native-extension-empty p { margin: 0; color: var(--muted); }
 .native-extension-no-results { padding: var(--sp-5) 0; color: var(--muted); }
@@ -623,9 +653,6 @@
   .native-extension-savebar > div .button { flex: 1 1 0; }
   .native-management-qr { flex-direction: column; align-items: flex-start; }
   .native-management-bottom { flex-direction: column; align-items: flex-start; }
-  .mobile-gateway-facts { grid-template-columns: minmax(0, 1fr); }
-  .mobile-gateway-actionbar { align-items: stretch; flex-direction: column; }
-  .mobile-pairing-token { align-items: stretch; flex-direction: column; }
 }
 
 @media (max-width: 560px) {
@@ -650,9 +677,8 @@
   .native-extension-head { flex-direction: column; }
   .native-extension-status { align-self: flex-start; }
   .native-extension-savebar > div { flex-direction: column; }
+  .mobile-pairing-token { align-items: stretch; flex-direction: column; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .mobile-connection-guide summary > i,
-  .mobile-connection-guide summary > svg,
   .mobile-config-chevron { transition: none; }
 }
