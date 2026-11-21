@@ -63,6 +63,7 @@
 .section-chips{position:sticky;top:8px;z-index:20;display:flex;gap:calc(var(--sp-1) * 1.5);min-width:0;overflow-x:auto;
   padding:calc(var(--sp-1) * 1.5);margin:0 0 var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-md);
   background:var(--t-veil);backdrop-filter:blur(8px);scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent}
+@container self-journal (min-width:651px){.section-chips{flex-wrap:wrap;overflow-x:visible}}
 .section-chip{flex:none;display:inline-flex;align-items:center;gap:calc(var(--sp-1) * 1.5);min-height:34px;padding:0 var(--sp-3);
   border:1px solid transparent;border-radius:var(--r-pill);background:var(--t-surface);color:var(--t-text-soft);
   font:inherit;font-size:var(--fs-tiny);cursor:pointer;white-space:nowrap}
@@ -95,7 +96,10 @@
 .self-page .wb-journal .wb-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3)}
 .self-page .wb-journal .wb-field{display:grid;grid-template-columns:minmax(0,1fr);align-content:start;grid-column:auto;gap:var(--sp-1);
   min-width:0;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}
-.self-page .wb-journal .wb-field-main,.self-page .wb-journal .wb-control{min-width:0}
+.self-page .wb-journal .wb-field-main{grid-template-columns:minmax(0,1fr);gap:var(--sp-1);min-width:0}
+.self-page .wb-journal .wb-field-main>.wb-label{grid-column:1;grid-row:auto;min-width:0}
+.self-page .wb-journal .wb-field-main>.wb-control{grid-column:1;grid-row:auto;justify-self:stretch;justify-content:flex-start;width:100%;max-width:none;min-width:0}
+.self-page .wb-journal .wb-field-main>.wb-control>.wb-number{justify-content:flex-start}
 .self-page .wb-journal .wb-label{color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:650}
 .self-page .wb-journal .wb-field-side{grid-column:1;flex-wrap:wrap;justify-content:flex-start;padding:0;min-width:0}
 .self-page .wb-journal .wb-chip{max-width:100%;white-space:normal}
@@ -117,7 +121,7 @@
 .self-page .wb-journal .wb-identity-rows .wb-field{padding:0;border:0;background:transparent}
 .self-page .wb-journal .wb-identity-rows .wb-field-main{display:grid;grid-template-columns:76px minmax(0,1fr);gap:var(--sp-2);align-items:center}
 .self-page .wb-journal .wb-identity-rows .wb-label{margin:0;color:var(--t-text-faint);font-size:var(--fs-micro);font-weight:400}
-.self-page .wb-journal .wb-identity-rows .wb-field-side{padding-left:calc(76px + var(--sp-2))}
+.self-page .wb-journal .wb-identity-rows .wb-field-side{padding-left:calc(96px + var(--sp-4))}
 .self-page .wb-journal .wb-chipset{display:flex;flex-wrap:wrap;align-items:center;gap:calc(var(--sp-1) * 1.5)}
 .self-page .wb-journal .wb-chip-opts{display:contents}
 .self-page .wb-journal .wb-chipset input[type=text]{flex:1 1 90px;width:90px;min-width:0;min-height:28px;padding:3px calc(var(--sp-2) * 1.25);border:1px dashed var(--t-line);border-radius:var(--r-pill)}
@@ -248,7 +252,7 @@
   padding-top:var(--sp-5);border-top:1px solid var(--t-line)}
 .models-budget-section h2{margin:0;color:var(--t-text-strong);font-size:var(--fs-lead)}
 .models-budget-section p{margin:var(--sp-2) 0 0;color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.65}
-@media(max-width:650px){.models-budget-section{grid-template-columns:minmax(0,1fr);gap:var(--sp-3);padding-top:var(--sp-4)}}
+@media(max-width:760px){.models-budget-section{grid-template-columns:minmax(0,1fr);gap:var(--sp-3);padding-top:var(--sp-4)}}
 
 
 /* 整理资料对话框（role-profile-draft.js 渲染，样式保持原契约） */
@@ -483,15 +487,15 @@ body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
 
 
 /* 拟人优化：本地检查面板 */
-.humanize-page{display:grid;gap:14px}
-.humanize-intro .self-organizer-head p{margin:4px 0 0;color:var(--t-muted);font-size:var(--fs-body)}
-.humanize-results{padding:14px 16px;border:1px solid var(--t-line);border-radius:10px;background:var(--t-surface)}
-.humanize-empty{margin:0;color:var(--t-muted);font-size:var(--fs-body)}
-.humanize-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.humanize-page{display:grid;gap:var(--sp-3)}
+.humanize-intro .self-organizer-head p{margin:var(--sp-1) 0 0;color:var(--t-text-faint);font-size:var(--fs-body)}
+.humanize-results{padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
+.humanize-empty{margin:0;color:var(--t-text-faint);font-size:var(--fs-body)}
+.humanize-summary{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);margin-bottom:var(--sp-2)}
 .humanize-summary strong{font-size:var(--fs-title)}
 .humanize-summary span{color:var(--t-accent);font-size:var(--fs-body)}
-.humanize-list{margin:0;padding-left:20px;display:grid;gap:8px;color:var(--t-ink);font-size:var(--fs-body);line-height:1.65}
-.humanize-note{margin:12px 0 0;color:var(--t-muted);font-size:var(--fs-micro);line-height:1.6}
+.humanize-list{margin:0;padding-left:var(--sp-5);display:grid;gap:var(--sp-2);color:var(--t-text);font-size:var(--fs-body);line-height:1.65}
+.humanize-note{margin:var(--sp-3) 0 0;color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.6}
 
 /* 2026-11 视觉校准：自我页以一张安静的档案卡开场，信息层级向 7.1.8 的 hero 靠拢。 */
 .self-page{max-width:1180px;gap:var(--sp-5)}
@@ -517,13 +521,24 @@ body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
   .deck-tabs{max-width:none}
 }
 /* 自我页档案行：标签列略放宽，控件从统一左边界起排，避免长昵称/日期组被挤到右边缘。 */
-.self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:96px minmax(0,1fr);column-gap:var(--sp-4)}
-.self-page .wb-journal .wb-identity-rows .wb-control{justify-content:flex-start}
+.self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:96px minmax(0,1fr);column-gap:var(--sp-4);align-items:center}
+.self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-label{grid-column:1;grid-row:1}
+.self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-control{grid-column:2;grid-row:1;justify-self:stretch;justify-content:flex-start;width:100%;max-width:none}
 .self-page .wb-journal .wb-identity-rows .wb-chip-opts{gap:calc(var(--sp-1) * 1.5)}
 .self-page .wb-journal .wb-identity-rows .wb-date{width:100%}
-@media (max-width:720px){
+@container self-journal (max-width:740px){
+  .self-page .wb-journal .wb-identity-rows{grid-template-columns:minmax(0,1fr)}
   .self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:minmax(0,1fr);row-gap:var(--sp-1)}
-  .self-page .wb-journal .wb-identity-rows .wb-control{width:100%}
+  .self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-label{grid-column:1;grid-row:auto}
+  .self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-control{grid-column:1;grid-row:auto;width:100%}
+  .self-page .wb-journal .wb-identity-rows .wb-field-side{padding-left:0}
+}
+@media (max-width:720px){
+  .self-page .wb-journal .wb-identity-rows{grid-template-columns:minmax(0,1fr)}
+  .self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:minmax(0,1fr);row-gap:var(--sp-1)}
+  .self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-label{grid-column:1;grid-row:auto}
+  .self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-control{grid-column:1;grid-row:auto;width:100%}
+  .self-page .wb-journal .wb-identity-rows .wb-field-side{padding-left:0}
 }
 
 /* ===== 自我页 · 身份章节 2026-11-21 ===== */
@@ -545,6 +560,7 @@ body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
   color:var(--t-text-faint);font:650 var(--fs-micro)/1.4 var(--numeric-font);
   letter-spacing:.12em}
 .self-page .wb-journal .wb-identity-rows{gap:var(--sp-2) var(--sp-5)}
+.self-page .wb-journal .wb-identity-rows .wb-field:has(.wb-date),
 .self-page .wb-journal .wb-identity-rows [data-wb-row="birthday"],
 .self-page .wb-journal .wb-identity-rows [data-wb-row="species"]{grid-column:1/-1}
 .self-page .wb-journal .wb-identity-rows [data-wb-row="birthday"] .wb-date{flex-wrap:wrap}
@@ -553,10 +569,6 @@ body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
 /* 经历类文字单独成段。 */
 .self-page .wb-journal .wb-group[data-wb-group="identity"] .wb-field[data-wb-row="key_lore"]{
   margin-top:var(--sp-3);padding-top:var(--sp-4);border-top:1px dashed var(--t-line-firm)}
-.self-page .wb-journal .wb-group[data-wb-group="identity"] .wb-field[data-wb-row="key_lore"]::before{
-  content:"设定与经历";grid-column:1/-1;margin-bottom:var(--sp-1);
-  color:var(--t-text-faint);font:650 var(--fs-micro)/1.4 var(--numeric-font);
-  letter-spacing:.12em}
 .self-page .wb-journal .wb-group[data-wb-group="identity"] :is(
   [data-wb-row="key_lore"],[data-wb-row="identity"],[data-wb-row="character_extra"]) textarea{
   min-height:112px}
@@ -571,6 +583,10 @@ body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
 /* 生日是 .wb-date，工作台为日期控件统一把控件放到标签列；在身份行里要放回第二列。 */
 .self-page .wb-journal .wb-identity-rows .wb-field:has(.wb-date) .wb-field-main > .wb-control{
   grid-column:2;grid-row:1 / span 2;width:100%;max-width:none;justify-content:flex-start}
+@container self-journal (max-width:740px){
+  .self-page .wb-journal .wb-identity-rows .wb-field:has(.wb-date) .wb-field-main > .wb-control{
+    grid-column:1;grid-row:auto}
+}
 @media(max-width:720px){
   .self-page .wb-journal .wb-identity-rows .wb-field:has(.wb-date) .wb-field-main > .wb-control{
     grid-column:1;grid-row:auto}

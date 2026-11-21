@@ -12,7 +12,7 @@
 #expression-panel-expression-text .console-section{padding-top:0;border-top:0}
 
 .text-hero{display:block;
-  gap:var(--sp-4);padding:var(--sp-4) var(--sp-5);min-width:0;
+  padding:var(--sp-4) var(--sp-5);min-width:0;
   border:1px solid var(--t-line);border-radius:var(--r-md);
   background:radial-gradient(130% 150% at 0% 0%,
     color-mix(in srgb,var(--t-accent-quiet) 60%,transparent),transparent 58%),
@@ -63,17 +63,20 @@
 #replyWorkspace.expression-text-focus .wb-group>.wb-help{margin:0 0 var(--sp-2);color:var(--t-text-faint);
   font-size:var(--fs-micro);line-height:1.6}
 #replyWorkspace.expression-text-focus .wb-fields{display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:0 var(--sp-5);max-width:none}
+  grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr));gap:0 var(--sp-5);max-width:none}
 #replyWorkspace.expression-text-focus .wb-field{grid-template-columns:10px minmax(0,1fr);
   gap:var(--sp-1) var(--sp-2);padding:var(--sp-2) 0;
-  border-top:1px solid color-mix(in srgb,var(--t-line) 62%,transparent)}
+  border:0;border-radius:0;border-top:1px solid color-mix(in srgb,var(--t-line) 62%,transparent);
+  background:transparent}
 #replyWorkspace.expression-text-focus .wb-field:first-child{border-top:0;padding-top:2px}
 #replyWorkspace.expression-text-focus .wb-field>.wb-field-main{grid-column:2}
-#replyWorkspace.expression-text-focus .wb-field-main{grid-template-columns:minmax(0,1fr);gap:0}
-#replyWorkspace.expression-text-focus .wb-field-main>.wb-label{font-size:var(--fs-tiny);font-weight:600;line-height:1.5}
-#replyWorkspace.expression-text-focus .wb-field-main>.wb-help{font-size:var(--fs-micro);line-height:1.55}
-#replyWorkspace.expression-text-focus .wb-field-main>.wb-control{grid-column:1;grid-row:auto;
+#replyWorkspace.expression-text-focus .wb-field>.wb-field-side{grid-column:2;justify-content:flex-start;padding-top:0}
+#replyWorkspace.expression-text-focus .wb-fields>.wb-field>.wb-field-main{grid-template-columns:minmax(0,1fr);gap:0;justify-content:normal;align-items:start}
+#replyWorkspace.expression-text-focus .wb-fields>.wb-field>.wb-field-main>.wb-label{grid-column:1;grid-row:auto;min-width:0;font-size:var(--fs-tiny);font-weight:600;line-height:1.5}
+#replyWorkspace.expression-text-focus .wb-fields>.wb-field>.wb-field-main>.wb-help{grid-column:1;grid-row:auto;font-size:var(--fs-micro);line-height:1.55}
+#replyWorkspace.expression-text-focus .wb-fields>.wb-field>.wb-field-main>.wb-control{grid-column:1;grid-row:auto;
   justify-self:stretch;width:100%;max-width:none;margin-top:var(--sp-1);justify-content:flex-start}
+#replyWorkspace.expression-text-focus .wb-fields>.wb-field>.wb-field-main>.wb-control>.wb-number{justify-content:flex-start}
 #replyWorkspace.expression-text-focus .wb-control input,
 #replyWorkspace.expression-text-focus .wb-control select,
 #replyWorkspace.expression-text-focus .wb-control textarea{width:100%;max-width:none;min-height:34px;font-size:var(--fs-tiny)}
@@ -83,6 +86,7 @@
 #replyWorkspace.expression-text-focus .wb-field:has(textarea),
 #replyWorkspace.expression-text-focus .wb-field:has(.wb-word-editor),
 #replyWorkspace.expression-text-focus .wb-field:has(.wb-keywords),
+#replyWorkspace.expression-text-focus .wb-field:has(.wb-replacement-editor),
 #replyWorkspace.expression-text-focus .wb-field:has(.wb-chipset){grid-column:1/-1}
 #replyWorkspace.expression-text-focus .wb-actions{position:sticky;bottom:var(--sp-2);z-index:4;
   margin:var(--sp-2) 0 0;padding:var(--sp-2) var(--sp-3);
@@ -91,8 +95,12 @@
   backdrop-filter:blur(8px);box-shadow:var(--t-shadow)}
 
 @media(max-width:1080px){
-  .text-hero{grid-template-columns:minmax(0,1fr)}
   .text-hero-chips{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@container expression-modules (max-width:720px){
+  #replyWorkspace.expression-text-focus .wb-section-layout{grid-template-columns:minmax(0,1fr)}
+  #replyWorkspace.expression-text-focus .wb-section-sidebar{position:static;max-height:none}
+  #replyWorkspace.expression-text-focus .wb-fields{grid-template-columns:minmax(0,1fr)}
 }
 @media(max-width:900px){
   #replyWorkspace.expression-text-focus .wb-section-layout{grid-template-columns:minmax(0,1fr)}
@@ -108,17 +116,6 @@
   #replyWorkspace.expression-text-focus .wb-group{padding:var(--sp-2) var(--sp-3)!important}
 }
 
-/* 2026-11-20 的回复页布局修复用更高优先级把字段锁成「标签 + 控件」两栏；
-   分段页要上下结构，必须在同一优先级上覆盖回来。 */
-#replyWorkspace:not(.expression-voice-focus).expression-text-focus .wb-fields > .wb-field > .wb-field-main.wb-field-main{
-  grid-template-columns:minmax(0,1fr);justify-content:normal;align-items:start}
-
-#replyWorkspace:not(.expression-voice-focus).expression-text-focus .wb-fields{
-  grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
-#replyWorkspace:not(.expression-voice-focus).expression-text-focus .wb-fields > .wb-field > .wb-field-main.wb-field-main > .wb-control.wb-control{
-  justify-content:flex-start;justify-self:stretch;max-width:none;width:100%}
-
-
 /* QQ 气泡式分段示意：文段、引用、@、语音、表情包的位置都画出来。 */
 .text-hero-preview.is-chat{padding:var(--sp-2)}
 .qq-chat{display:grid;gap:var(--sp-2);min-width:0;padding:var(--sp-2);
@@ -126,7 +123,8 @@
 .qq-quote{width:88%;margin-left:auto;padding:var(--sp-2) var(--sp-3);
   border-left:3px solid var(--t-accent);border-radius:var(--r-xs);
   background:var(--t-surface);color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.55}
-.qq-quote p{display:block;margin:0;padding:0;background:none;grid-column:auto;color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.55}\n.qq-quote-tag{display:inline-block;margin-bottom:2px;color:var(--t-accent-ink);
+.qq-quote p{display:block;margin:0;padding:0;background:none;grid-column:auto;color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.55}
+.qq-quote-tag{display:inline-block;margin-bottom:2px;color:var(--t-accent-ink);
   font:650 var(--fs-micro)/1.4 var(--numeric-font);letter-spacing:.08em}
 .qq-row{display:flex;align-items:flex-start;justify-content:flex-end;gap:var(--sp-1);min-width:0}
 .qq-avatar{flex:none;display:grid;place-items:center;width:22px;height:22px;border-radius:50%;

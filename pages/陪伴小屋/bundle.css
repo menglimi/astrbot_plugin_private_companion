@@ -5522,7 +5522,7 @@ body.state-connected{min-width:320px}
 .expression-page-heading{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-5);padding:var(--sp-2) 0 0}.expression-page-heading h1{margin:0}
 .expression-page-heading-copy{min-width:0}.expression-kicker{margin:0 0 var(--sp-1);color:var(--t-accent-ink);font:600 var(--fs-micro)/1.4 var(--numeric-font);letter-spacing:.12em;text-transform:uppercase}.expression-page-heading h1{margin:0;color:var(--t-text-strong);font-size:clamp(calc(var(--fs-display) * 8 / 9),2.4vw,calc(var(--fs-hero) * 17 / 18));line-height:1.2;letter-spacing:-.02em}.expression-page-heading-copy>p:last-child{margin:var(--sp-2) 0 0;max-width:72ch;color:var(--t-text-soft);font-size:var(--fs-body);line-height:1.75}.expression-scope-badge{display:inline-flex;align-items:center;gap:var(--sp-2);flex:none;margin-top:var(--sp-2);padding:var(--sp-2) var(--sp-3);border:1px solid var(--t-line-firm);border-radius:var(--r-pill);background:var(--t-surface);color:var(--t-text-soft);font-size:var(--fs-tiny);white-space:nowrap}.expression-scope-badge i{width:7px;height:7px;border-radius:50%;background:var(--t-accent);box-shadow:0 0 0 3px var(--t-accent-quiet)}
 .expression-module-nav{position:static;display:flex;align-items:stretch;gap:var(--sp-1);padding:var(--sp-1);border:1px solid var(--t-line);border-radius:var(--r-md);background:color-mix(in srgb,var(--t-surface) 94%,transparent);box-shadow:var(--t-shadow);overflow:auto;scrollbar-width:thin}.expression-module-nav button{justify-content:flex-start;flex:1 0 130px;min-height:42px;border:1px solid transparent;border-radius:var(--r-sm);font-size:var(--fs-tiny);font-weight:600}.expression-module-nav button[aria-selected="true"]{border-color:color-mix(in srgb,var(--t-accent) 28%,var(--t-line));background:var(--t-accent-quiet);box-shadow:0 1px 2px color-mix(in srgb,var(--t-accent) 12%,transparent)}.expression-module-nav button svg{color:var(--t-accent)}
-.expression-module-panels{min-width:0;background:transparent;container-name:expression-modules;container-type:inline-size}.expression-module-panel>.console-section{margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}.expression-module-panel>.console-section>.console-section-head{padding:0 0 var(--sp-4);border-bottom:1px solid var(--t-line)}.expression-module-panel>.console-section>.console-section-head h2{font-size:var(--fs-head);letter-spacing:-.01em}.expression-module-panel>.console-section>.console-section-body{padding:var(--sp-4) 0 0}.expression-module-panel[hidden]{display:none}
+.expression-module-panels{min-width:0;background:transparent;container-name:expression-modules;container-type:inline-size}.expression-module-panel>.console-section{margin:0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}.expression-module-panel>.console-section>.console-section-head{display:none}.expression-module-panel>.console-section>.console-section-body{padding:0}.expression-module-panel[hidden]{display:none}
 .expression-text-workspace,.expression-voice-workspace,.expression-platform-workspace,.expression-reaction-workspace,.expression-group-workspace{min-width:0}.expression-text-workspace>[data-go],.expression-platform-workspace>[data-go],.expression-text-workspace>.expression-route-button,.expression-platform-workspace>.expression-route-button{margin-top:var(--sp-4)}
 
 /* 文字 / 语音页：左侧工作台与右侧预览保持同一滚动上下文。
@@ -5538,55 +5538,45 @@ body.state-connected{min-width:320px}
 .reply-preview-modal{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:var(--sp-5)}.reply-preview-modal[hidden]{display:none}.reply-preview-modal-scrim{position:absolute;inset:0;background:var(--scrim);backdrop-filter:blur(4px)}.reply-preview-modal-card{position:relative;z-index:1;width:min(680px,100%);max-height:min(88vh,820px);overflow:auto;border:1px solid var(--t-line-firm);border-radius:var(--r-lg);background:var(--t-surface);box-shadow:var(--t-shadow-lift)}.reply-preview-modal-card>header{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--sp-3);padding:var(--sp-5) var(--sp-5) var(--sp-3);border-bottom:1px solid var(--t-line)}.reply-preview-modal-card h3{margin:0;font-size:var(--fs-head)}.reply-preview-modal-body{display:grid;gap:var(--sp-4);padding:var(--sp-5)}.reply-preview-modal-body fieldset{display:grid;gap:var(--sp-2);padding:0;border:0}.reply-preview-modal-body legend{margin-bottom:var(--sp-1);color:var(--t-text-strong);font-size:var(--fs-lead);font-weight:650}.reply-preview-modal-body small{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.6}.reply-preview-modal-segmented{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px;padding:3px;border-radius:var(--r-sm);background:var(--t-surface-sunken)}.reply-preview-modal-segmented button{min-height:38px;border:1px solid transparent;border-radius:var(--r-xs);background:transparent;color:var(--t-text-soft);font:inherit;cursor:pointer}.reply-preview-modal-segmented button:hover{color:var(--t-text-strong)}.reply-preview-modal-segmented button.is-selected{border-color:var(--t-accent);background:var(--t-surface);color:var(--t-accent-ink);font-weight:650}.reply-preview-modal-segmented button:focus-visible,.reply-preview-option select:focus-visible,.reply-preview-modal-switch input:focus-visible{outline:none;box-shadow:var(--focus-ring)}.reply-preview-option{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);min-height:48px;padding:var(--sp-2) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft);color:var(--t-text)}.reply-preview-option select{min-width:150px;padding:var(--sp-1) var(--sp-2);border:1px solid var(--t-line-firm);border-radius:var(--r-xs);background:var(--t-surface);color:var(--t-text);font:inherit}.reply-preview-modal-lock{display:flex;align-items:center;gap:var(--sp-2);margin:0;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-body)}.reply-preview-modal-lock svg{width:16px;height:16px;flex:none}.reply-preview-modal-switch{display:flex;align-items:center;gap:var(--sp-2);color:var(--t-text);font-size:var(--fs-body)}.reply-preview-modal-switch input{width:17px;height:17px;accent-color:var(--t-accent)}
 
 /* 工作台调整：设计稿用温和的输入卡片和少量分隔线，层轨继续保留以说明继承来源。 */
-.expression-page .wb-card-head{margin-bottom:var(--sp-4)}.expression-page .wb-card-copy h3{font-size:var(--fs-title)}.expression-page .wb-card-copy p{font-size:var(--fs-tiny)}.expression-page .wb-section-layout{grid-template-columns:minmax(185px,230px) minmax(0,1fr);gap:var(--sp-5)}.expression-page .wb-section-sidebar{top:var(--sp-3);padding:var(--sp-3);border-color:var(--t-line);border-radius:var(--r-md);background:var(--expression-panel-soft)}.expression-page .wb-section-nav-head{padding:var(--sp-1) var(--sp-1) var(--sp-3)}.expression-page .wb-section-nav-note{font-size:var(--fs-micro)}.expression-page .wb-section-tab{min-height:58px;border-radius:var(--r-sm)}.expression-page .wb-section-tab[aria-selected="true"]{border-color:color-mix(in srgb,var(--t-accent) 30%,var(--t-line));background:var(--t-accent-quiet)}.expression-page .wb-fields{gap:var(--sp-3)}.expression-page .wb-field{padding:var(--sp-3) var(--sp-2) var(--sp-3) 0;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}.expression-page .wb-field+.wb-field{margin-top:var(--sp-2)}.expression-page .wb-field-main{padding-right:var(--sp-2)}.expression-page .wb-group+.wb-group{margin-top:var(--sp-5);padding-top:var(--sp-5)}.expression-page .wb-group-head{margin-left:0;font-size:var(--fs-lead)}.expression-page .wb-control input[type=number],.expression-page .wb-control input[type=text],.expression-page .wb-control input[type=time],.expression-page .wb-control select,.expression-page .wb-control textarea{background:var(--t-surface);border-color:var(--t-line-firm)}.expression-page .wb-segmented{background:var(--t-surface-sunken);border-radius:var(--r-sm)}.expression-page .wb-actions{margin-top:var(--sp-5);padding-top:var(--sp-4);border-top:1px solid var(--t-line)}.expression-page .wb-save{min-width:118px;border-radius:var(--r-sm)}
+.expression-page .wb-card-head{margin-bottom:var(--sp-4)}.expression-page .wb-card-copy h3{font-size:var(--fs-title)}.expression-page .wb-card-copy p{font-size:var(--fs-tiny)}.expression-page .wb-section-layout{grid-template-columns:minmax(185px,230px) minmax(0,1fr);gap:var(--sp-5)}.expression-page .wb-section-sidebar{top:var(--sp-3);padding:var(--sp-3);border-color:var(--t-line);border-radius:var(--r-md);background:var(--expression-panel-soft)}.expression-page .wb-section-nav-head{padding:var(--sp-1) var(--sp-1) var(--sp-3)}.expression-page .wb-section-nav-note{font-size:var(--fs-micro)}.expression-page .wb-section-tab{min-height:58px;border-radius:var(--r-sm)}.expression-page .wb-section-tab[aria-selected="true"]{border-color:color-mix(in srgb,var(--t-accent) 30%,var(--t-line));background:var(--t-accent-quiet)}.expression-page .wb-fields{gap:var(--sp-3)}.expression-page .wb-field{padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}.expression-page .wb-field-main{padding-right:0}.expression-page .wb-group+.wb-group{margin-top:var(--sp-5);padding-top:var(--sp-5)}.expression-page .wb-group-head{margin-left:0;font-size:var(--fs-lead)}.expression-page .wb-control input[type=number],.expression-page .wb-control input[type=text],.expression-page .wb-control input[type=time],.expression-page .wb-control select,.expression-page .wb-control textarea{background:var(--t-surface);border-color:var(--t-line-firm)}.expression-page .wb-segmented{background:var(--t-surface-sunken);border-radius:var(--r-sm)}.expression-page .wb-actions{margin-top:var(--sp-5);padding-top:var(--sp-4);border-top:1px solid var(--t-line)}.expression-page .wb-save{min-width:118px;border-radius:var(--r-sm)}
 
 /* 语音页：把对象设置与全局默认值叠成工作区，使用完整工作区宽度。
    分段预览在语音页不渲染（reply-page.js 的 previewEnabled 对语音返回 false），
    所以模板必须是单列，预览槽位也要真正隐藏，否则右侧会留一条空列。 */
 #replyWorkspace.expression-voice-focus{grid-template-columns:minmax(0,1fr)}#replyWorkspace.expression-voice-focus .wb-section-layout{grid-template-columns:minmax(0,1fr);gap:0}#replyWorkspace.expression-voice-focus .wb-section-sidebar{display:none}#replyWorkspace.expression-voice-focus [data-wb-section-panel]:not([data-wb-section-panel="voice"]){display:none}#replyWorkspace.expression-voice-focus>[data-reply-part="preview"]{display:none}.expression-voice-workspace{display:grid;gap:var(--sp-5)}.expression-voice-workspace .host-options-panel{margin-top:0;padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--expression-panel-soft)}.expression-voice-workspace .host-options-heading h3{font-size:var(--fs-title)}
-/* 回复工作台默认把字段锁在 1040px 单列（workbench.css 在本文件之后加载）。
-   文字页整宽时这会把卡片右侧空出一大块、每行控件也缩在左边；改成随宽度
-   自动分栏。语音页有自己的紧凑多栏版式（见 55 行附近的 voice 段），这里不接管。 */
-#replyWorkspace:not(.expression-voice-focus) .wb-fields.wb-fields{max-width:none;grid-template-columns:repeat(auto-fit,minmax(min(700px,100%),1fr))}
-/* 文字页字段回到「标签在左、控件在行尾、长控件整行」的版式。
-   ui-field-align.css 把控件统一压成 320px 并左对齐（justify-content:start），
-   开关于是挤在标签旁边、分段标记词这类长控件只剩半截；这里用提高一级的优先级
-   还原 workbench.css 的原意。重复类名只为压过那张后加载的表。 */
-#replyWorkspace:not(.expression-voice-focus) .wb-fields>.wb-field>.wb-field-main.wb-field-main{grid-template-columns:minmax(12em,1fr) minmax(180px,360px);justify-content:normal}
-#replyWorkspace:not(.expression-voice-focus) .wb-fields>.wb-field>.wb-field-main.wb-field-main>.wb-control.wb-control{justify-self:stretch;justify-content:flex-end;max-width:420px;width:100%}
-#replyWorkspace:not(.expression-voice-focus) .wb-fields>.wb-field:has(textarea)>.wb-field-main.wb-field-main,
-#replyWorkspace:not(.expression-voice-focus) .wb-fields>.wb-field:has(.wb-word-editor)>.wb-field-main.wb-field-main,
-#replyWorkspace:not(.expression-voice-focus) .wb-fields>.wb-field:has(.wb-keywords)>.wb-field-main.wb-field-main,
-#replyWorkspace:not(.expression-voice-focus) .wb-fields>.wb-field:has(.wb-source-picker)>.wb-field-main.wb-field-main,
-#replyWorkspace:not(.expression-voice-focus) .wb-fields>.wb-field:has(.wb-order-editor)>.wb-field-main.wb-field-main,
-#replyWorkspace:not(.expression-voice-focus) .wb-fields>.wb-field:has(.wb-date)>.wb-field-main.wb-field-main{grid-template-columns:minmax(0,1fr)}
-#replyWorkspace:not(.expression-voice-focus) .wb-fields>.wb-field:has(textarea)>.wb-field-main.wb-field-main>.wb-control.wb-control,
-#replyWorkspace:not(.expression-voice-focus) .wb-fields>.wb-field:has(.wb-word-editor)>.wb-field-main.wb-field-main>.wb-control.wb-control,
-#replyWorkspace:not(.expression-voice-focus) .wb-fields>.wb-field:has(.wb-keywords)>.wb-field-main.wb-field-main>.wb-control.wb-control,
-#replyWorkspace:not(.expression-voice-focus) .wb-fields>.wb-field:has(.wb-source-picker)>.wb-field-main.wb-field-main>.wb-control.wb-control,
-#replyWorkspace:not(.expression-voice-focus) .wb-fields>.wb-field:has(.wb-order-editor)>.wb-field-main.wb-field-main>.wb-control.wb-control,
-#replyWorkspace:not(.expression-voice-focus) .wb-fields>.wb-field:has(.wb-date)>.wb-field-main.wb-field-main>.wb-control.wb-control{grid-column:1;grid-row:auto;justify-self:stretch;justify-content:flex-start;max-width:none}
-/* 卡片内垂直居中：两列网格会把同一行的卡片拉成等高，内容顶对齐时矮卡片上方
-   会空一截、开关看着像浮在角上。字段主体、标签与控件都回到行内居中。 */
-#replyWorkspace .wb-fields>.wb-field.wb-field{align-items:center}
-#replyWorkspace .wb-fields>.wb-field>.wb-field-main.wb-field-main{align-items:center;align-content:center}
-#replyWorkspace .wb-fields>.wb-field>.wb-field-main.wb-field-main>.wb-label.wb-label{align-self:center}
-#replyWorkspace .wb-fields>.wb-field>.wb-field-main.wb-field-main>.wb-control.wb-control{align-self:center}
-/* 平台页：主配置与右侧跨页入口并排；实际交互仍走原来的真实端点。 */
-#replyWorkspace.expression-platform-focus{display:block}#replyWorkspace.expression-platform-focus>[data-reply-part="preview"]{display:none}#replyWorkspace.expression-platform-focus .wb-section-layout{grid-template-columns:minmax(0,1fr);gap:0}#replyWorkspace.expression-platform-focus .wb-section-sidebar{display:none}.expression-platform-workspace{display:grid;grid-template-columns:minmax(0,1fr) minmax(250px,.36fr);gap:var(--sp-5);align-items:start}.expression-platform-workspace>#expressionPlatformReplyHost{grid-column:1;min-width:0}.expression-platform-workspace>#replyWorkspace{grid-column:1}.expression-platform-workspace>#pokePolicyWorkspace{grid-column:2;grid-row:1}.expression-platform-workspace>.expression-route-button,.expression-platform-workspace>[data-go]{grid-column:2}.expression-platform-workspace>.expression-route-button{width:100%;margin:0}.expression-platform-workspace .host-options-panel{padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--expression-panel-soft)}
 
-/* 表情检索配置：宽屏排成两列字段卡，避免单列行拉满整页后留下大片空白。 */
-@media (min-width:1180px){
+/* 常规回复/平台动作工作台直接复用 workbench.css 的容器两行结构（标题 ↔ 控件 + 通栏说明），
+   不再使用重复类名强行压窄或锁死桌面两栏，避免 1440px 溢出和移动端错位。 */
+#replyWorkspace:not(.expression-voice-focus):not(.expression-text-focus) .wb-fields{max-width:none;grid-template-columns:minmax(0,1fr)}
+
+/* 平台页：超宽容器主配置与右侧跨页入口并排；在 AstrBot 双侧栏（<=1080px 容器）下统一纵排，
+   且显式复位 grid-row:auto 防止 #pokePolicyWorkspace 倒挂到主配置上方。 */
+#replyWorkspace.expression-platform-focus{display:block}#replyWorkspace.expression-platform-focus>[data-reply-part="preview"]{display:none}#replyWorkspace.expression-platform-focus .wb-section-layout{grid-template-columns:minmax(150px,200px) minmax(0,1fr);gap:var(--sp-4)}#replyWorkspace.expression-platform-focus .wb-section-sidebar{display:block}.expression-platform-workspace{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,.38fr);gap:var(--sp-5);align-items:start}.expression-platform-workspace>#expressionPlatformReplyHost{grid-column:1;min-width:0}.expression-platform-workspace>#replyWorkspace{grid-column:1}.expression-platform-workspace>#pokePolicyWorkspace{grid-column:2;grid-row:1;min-width:0}.expression-platform-workspace>.expression-route-button,.expression-platform-workspace>[data-go]{grid-column:2}.expression-platform-workspace>.expression-route-button{width:100%;margin:0}.expression-platform-workspace .host-options-panel{padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--expression-panel-soft)}
+
+/* 表情检索配置：基于容器宽度（>=720px，覆盖 1280px 与 1440px 桌面）排成两列字段卡，
+   开关行「标题 ↔ 开关 + 通栏说明」，输入行「标题 → 通栏说明 → 全宽控件」，彻底消除窄竖栏与右侧空洞。 */
+.expression-reaction-workspace>#reactionConfigWorkspace .wb-field{padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
+@container expression-modules (min-width:720px){
   .expression-reaction-workspace>#reactionConfigWorkspace .wb-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3);max-width:none}
-  .expression-reaction-workspace>#reactionConfigWorkspace .wb-field{padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
-  .expression-reaction-workspace>#reactionConfigWorkspace .wb-field+.wb-field{margin-top:0}
-  .expression-reaction-workspace>#reactionConfigWorkspace .wb-field-main{grid-template-columns:minmax(8em,1fr) minmax(150px,.8fr);gap:var(--sp-2) var(--sp-3)}
+  .expression-reaction-workspace>#reactionConfigWorkspace .wb-field-main{grid-template-columns:minmax(8em,1fr) auto;gap:var(--sp-1) var(--sp-3)}
+  .expression-reaction-workspace>#reactionConfigWorkspace .wb-field:has(.wb-switch)>.wb-field-main>.wb-control{grid-column:2;grid-row:1;justify-self:end;justify-content:flex-end;width:auto;max-width:none}
+  .expression-reaction-workspace>#reactionConfigWorkspace .wb-field:not(:has(.wb-switch))>.wb-field-main{grid-template-columns:minmax(0,1fr)}
+  .expression-reaction-workspace>#reactionConfigWorkspace .wb-field:not(:has(.wb-switch))>.wb-field-main>.wb-label{grid-column:1;grid-row:auto}
+  .expression-reaction-workspace>#reactionConfigWorkspace .wb-field:not(:has(.wb-switch))>.wb-field-main>.wb-help{grid-column:1;grid-row:auto}
+  .expression-reaction-workspace>#reactionConfigWorkspace .wb-field:not(:has(.wb-switch))>.wb-field-main>.wb-control{grid-column:1;grid-row:auto;justify-self:stretch;justify-content:flex-start;width:100%;max-width:none;margin-top:var(--sp-1)}
+  .expression-reaction-workspace>#reactionConfigWorkspace .wb-field:not(:has(.wb-switch))>.wb-field-main>.wb-control>.wb-number{justify-content:flex-start}
 }
 
 /* 表情库：配置卡、搜索卡、素材网格和详情编辑器分层。 */
 .expression-reaction-workspace{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-5)}.expression-reaction-workspace>#reactionConfigWorkspace{padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--expression-panel-soft)}.expression-reaction-workspace .semantic-section{margin-top:var(--sp-4);padding-top:var(--sp-4);border-top-color:var(--t-line)}.expression-reaction-workspace .semantic-flags{grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-2)}.expression-reaction-workspace .semantic-providers{grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-3)}.expression-reaction-workspace .semantic-collection-summary{padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}.expression-reaction-workspace .semantic-toolbar{padding:var(--sp-2) 0;border-top:1px solid var(--t-line);border-bottom:1px solid var(--t-line)}.expression-reaction-workspace .semantic-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:var(--sp-3);border:0}.expression-reaction-workspace .semantic-row{display:grid;align-content:start;gap:var(--sp-2);min-height:130px;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);box-shadow:0 1px 4px color-mix(in srgb,var(--t-accent) 5%,transparent)}.expression-reaction-workspace .semantic-row strong{font-size:var(--fs-lead)}.expression-reaction-workspace .semantic-row p{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:var(--fs-tiny)}.expression-reaction-workspace .semantic-row small{font-size:var(--fs-micro)}.expression-reaction-workspace .semantic-row .button{justify-self:start}.expression-reaction-workspace .semantic-editor{position:fixed;z-index:80;top:50%;left:50%;width:min(520px,calc(100vw - 32px));max-height:86vh;overflow:auto;transform:translate(-50%,-50%);margin:0;padding:var(--sp-5);border:1px solid var(--t-accent);border-radius:var(--r-lg);background:var(--t-surface);box-shadow:var(--t-shadow-lift)}
 
-@media(max-width:1100px){#replyWorkspace{grid-template-columns:minmax(0,1fr)}.expression-platform-workspace{grid-template-columns:minmax(0,1fr)}.expression-platform-workspace>#pokePolicyWorkspace,.expression-platform-workspace>.expression-route-button,.expression-platform-workspace>[data-go]{grid-column:1}.expression-reaction-workspace .semantic-providers{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@container expression-modules (max-width:1080px){
+  .expression-platform-workspace{grid-template-columns:minmax(0,1fr)}
+  .expression-platform-workspace>#pokePolicyWorkspace,
+  .expression-platform-workspace>.expression-route-button,
+  .expression-platform-workspace>[data-go]{grid-column:1;grid-row:auto}
+}
+@media(max-width:1100px){#replyWorkspace{grid-template-columns:minmax(0,1fr)}.expression-platform-workspace{grid-template-columns:minmax(0,1fr)}.expression-platform-workspace>#pokePolicyWorkspace,.expression-platform-workspace>.expression-route-button,.expression-platform-workspace>[data-go]{grid-column:1;grid-row:auto}.expression-reaction-workspace .semantic-providers{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:760px){.expression-page{padding-inline:var(--sp-2)}.expression-page-heading{display:grid;gap:var(--sp-2)}.expression-scope-badge{justify-self:start;margin-top:0}.expression-module-nav{border-radius:var(--r-sm)}.expression-module-nav button{flex-basis:112px}.expression-module-panel>.console-section{padding:0;border-radius:0}.expression-module-panel>.console-section>.console-section-body{padding-top:var(--sp-3)}#replyWorkspace{grid-template-columns:minmax(0,1fr)}.reply-preview{position:static;max-height:none;overflow:visible}.reply-preview-state-grid{grid-template-columns:1fr}.reply-preview-summary{grid-template-columns:1fr}.reply-preview-head-actions{width:100%}.reply-preview-head-actions .button{flex:1}.reply-preview-modal{padding:var(--sp-2)}.reply-preview-modal-card>header,.reply-preview-modal-body{padding:var(--sp-4)}.reply-preview-modal-segmented{grid-template-columns:1fr}.reply-preview-option{align-items:flex-start;flex-direction:column}.reply-preview-option select{width:100%}.expression-page .wb-section-layout{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}.expression-page .wb-section-sidebar{position:static;max-height:none}.expression-page .wb-section-nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow:visible}.expression-page .wb-section-tab{width:auto;min-height:54px}.expression-reaction-workspace .semantic-flags,.expression-reaction-workspace .semantic-providers{grid-template-columns:minmax(0,1fr)}.expression-reaction-workspace .semantic-list{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}}
 @media(max-width:420px){.expression-page-heading h1{font-size:var(--fs-head)}.expression-page .wb-section-nav{grid-template-columns:minmax(0,1fr)}.reply-preview-inputs{padding:var(--sp-2)}.reply-preview-examples .button{flex:1}.expression-route-button{width:100%;margin-right:0}}
 @media(prefers-reduced-motion:reduce){.expression-page *,.expression-page *::before,.expression-page *::after{animation-duration:0s!important;transition-duration:0s!important}.reply-preview-modal-scrim{backdrop-filter:none}}
@@ -5653,34 +5643,15 @@ body.state-connected{min-width:320px}
   .expression-platform-workspace>[data-go]{grid-column:1;grid-row:auto}
   .expression-module-panels .wb-section-layout{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}
   .expression-module-panels .wb-section-sidebar{position:static;top:auto;max-height:none;overflow:visible}
-  #replyWorkspace.expression-platform-focus .wb-section-layout{grid-template-columns:minmax(0,1fr);gap:0}
-  #replyWorkspace.expression-platform-focus .wb-section-sidebar{display:none}
+  /* 平台页有「引用与消息组件 / 发送前检查」两节，窄容器改为顶部横向标签，不可隐藏侧栏导致检查项不可达。 */
+  #replyWorkspace.expression-platform-focus .wb-section-layout{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}
+  #replyWorkspace.expression-platform-focus .wb-section-sidebar{display:block;position:static;top:auto;max-height:none;overflow:visible}
   .expression-module-panels .wb-section-nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow:visible}
   .expression-module-panels .wb-section-tab{width:auto;min-width:0;min-height:50px}
   .expression-reaction-workspace .semantic-flags,
   .expression-reaction-workspace .semantic-providers{grid-template-columns:minmax(0,1fr)}
   .expression-reaction-workspace .semantic-list{grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr))}
 }
-
-/* 无层轨字段（journal / 精简卡片）没有左侧 12px 轨道；如果仍按三列排，
-   main 会落在第一列，标题被压成一字一行。 */
-.wb-field:not(:has(.wb-rail)){grid-template-columns:minmax(0,1fr) auto}
-.wb-field:not(:has(.wb-rail))>.wb-field-main{grid-column:1;min-width:0}
-.wb-field-main>.wb-label{min-width:0;overflow-wrap:break-word}
-#replyWorkspace .wb-field{display:grid;grid-template-columns:12px minmax(0,1fr) 64px}
-#replyWorkspace .wb-field:not(:has(.wb-rail)){grid-template-columns:minmax(0,1fr) auto}
-#replyWorkspace .wb-field>.wb-field-main{grid-column:2;min-width:0}
-#replyWorkspace .wb-field:not(:has(.wb-rail))>.wb-field-main{grid-column:1}
-@media(max-width:760px){
-  #replyWorkspace .wb-field,
-  #replyWorkspace .wb-field:not(:has(.wb-rail)){grid-template-columns:auto minmax(0,1fr)}
-  #replyWorkspace .wb-field>.wb-field-main{grid-column:2}
-  #replyWorkspace .wb-field-main{grid-template-columns:minmax(0,1fr)}
-}
-
-
-
-/* layout-fix-20261120 */
 
 /* host-options.css */
 .host-options-panel {
@@ -5805,7 +5776,7 @@ body.state-connected{min-width:320px}
 /* 统一配置工作台：层轨显示继承链，字段与保存动作的范围详情按需展开。 */
 .wb{display:flex;flex-direction:column;gap:var(--sp-5);min-width:0}
 /* 外层已有分区标题；工作台只保留结构，提示允许越过卡片边界。 */
-.wb-card{overflow:visible}
+.wb-card{overflow:visible;min-width:0;container:wb-card / inline-size}
 .wb-card-head{
   display:flex;align-items:baseline;justify-content:space-between;
   gap:var(--sp-3);flex-wrap:wrap;margin:0 0 var(--sp-3);
@@ -5813,10 +5784,11 @@ body.state-connected{min-width:320px}
 .wb-card-copy{min-width:0}
 .wb-card-copy h3{color:var(--t-text-strong);font-size:var(--fs-body);font-weight:600;margin:0}
 .wb-card-copy p{color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.7;margin:var(--sp-1) 0 0;max-width:62ch}
-.wb-card-body{padding:0}
+.wb-card-body{padding:0;min-width:0}
 
 /* === 逻辑段落：一张卡内分几块（分段 / 拟人 / 语音…） ===
    段落只影响阅读顺序，整张卡仍共用一个编辑令牌与一次保存。 */
+.wb-group{min-width:0;container:wb-group / inline-size}
 .wb-group+.wb-group{margin-top:var(--sp-4);padding-top:var(--sp-4);border-top:1px solid var(--t-line)}
 .wb-group-head{
   display:flex;align-items:baseline;gap:var(--sp-2);flex-wrap:wrap;
@@ -5860,25 +5832,30 @@ body.state-connected{min-width:320px}
 @keyframes wb-section-enter{from{opacity:.55;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 
 /* === 字段行 === */
-/* 字段按可用宽度自动分列：宽页两列，对话框/侧栏这类窄容器自然回落单列。
-   下限 560px = 12em 标签 + 320px 控件 + 间距；再窄标签就会被折成两行。
-   长控件（多行文本、关键词、顺序编辑器）整幅通栏。 */
+/* 字段按容器实际宽度自动分列：在 AstrBot 双侧栏约 880–912px 内容区里可舒适地排成两列，
+   窄面板、带内侧栏的工作区或移动端自动回落单列。长控件（多行文本、词条、替换规则、
+   知识源、发送顺序、日期、标签、台词）整幅通栏。空的恢复继承槽位自动折叠，不占右侧留白。 */
 .wb-fields{
-  display:grid;grid-template-columns:repeat(auto-fit,minmax(560px,1fr));
-  align-items:start;gap:0 var(--sp-6);
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));
+  align-items:stretch;gap:0 var(--sp-5);min-width:0;
 }
 .wb-field{
-  display:grid;grid-template-columns:auto minmax(0,1fr) auto;
-  align-items:start;gap:var(--sp-3);
-  padding:var(--sp-2) var(--sp-2) var(--sp-2) 0;border-bottom:1px solid var(--t-line);
-  min-width:0;
+  display:grid;grid-template-columns:12px minmax(0,1fr);
+  align-items:start;gap:var(--sp-2) var(--sp-3);
+  padding:var(--sp-3) var(--sp-2) var(--sp-3) 0;border-bottom:1px solid var(--t-line);
+  min-width:0;container:wb-field / inline-size;
 }
-/* 长控件不被挤进窄列：多行文本、关键词药丸、发送顺序编辑器整幅通栏。 */
+.wb-field:where(:has(>.wb-field-side:not(:empty))){grid-template-columns:12px minmax(0,1fr) auto}
+/* 长控件不被挤进窄列：多行文本、词条、替换规则、知识源、顺序编辑器、日期、标签、台词整幅通栏。 */
 .wb-field:has(textarea),
 .wb-field:has(.wb-word-editor),
 .wb-field:has(.wb-keywords),
+.wb-field:has(.wb-replacement-editor),
 .wb-field:has(.wb-source-picker),
-.wb-field:has(.wb-order-editor){grid-column:1/-1}
+.wb-field:has(.wb-order-editor),
+.wb-field:has(.wb-date),
+.wb-field:has(.wb-tagset),
+.wb-field:has(.wb-quotes){grid-column:1/-1}
 .wb-field.is-inherited{background:linear-gradient(90deg,var(--t-surface-soft) 0%,transparent 62%)}
 
 /* --- 层轨：四段色块，实际生效层亮起 --- */
@@ -5929,19 +5906,20 @@ body.state-connected{min-width:320px}
   padding:0;border:0;background:transparent;color:var(--t-text-faint);font:inherit;cursor:pointer;border-radius:50%}
 .wb-context-toggle:focus-visible{outline:2px solid var(--t-accent);outline-offset:2px;color:var(--t-text)}
 .wb-context-tip{position:fixed;inset:auto;margin:0;z-index:80;box-sizing:border-box;
-  width:max-content;max-width:min(320px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow:auto;padding:10px 12px;
-  background:var(--t-surface);color:var(--t-text);border:1px solid var(--t-line-firm);border-radius:var(--r-sm,8px);
-  box-shadow:0 6px 22px #0002;font-size:var(--fs-tiny,12px);line-height:1.65;white-space:pre-line;overflow-wrap:anywhere;text-align:start}
+  width:max-content;max-width:min(320px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow:auto;padding:var(--sp-2) var(--sp-3);
+  background:var(--t-surface);color:var(--t-text);border:1px solid var(--t-line-firm);border-radius:var(--r-sm);
+  box-shadow:0 6px 22px #0002;font-size:var(--fs-tiny);line-height:1.65;white-space:pre-line;overflow-wrap:anywhere;text-align:start}
 .wb-context-tip:not(:popover-open){display:none}
-.wb-save-context{display:inline-flex;align-items:center;gap:4px}
+.wb-save-context{display:inline-flex;align-items:center;gap:var(--sp-1)}
 
 /* --- 字段主体 --- */
-.wb-field-main{min-width:0;display:flex;flex-direction:column;gap:var(--sp-2)}
+.wb-field-main{min-width:0}
 .wb-label{
   display:flex;align-items:baseline;gap:var(--sp-2);flex-wrap:wrap;
-  color:var(--t-text);font-size:var(--fs-body);font-weight:500;
+  color:var(--t-text);font-size:var(--fs-body);font-weight:600;
+  letter-spacing:.01em;line-height:1.45;min-width:0;overflow-wrap:break-word;
 }
-.wb-help{color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.7;margin:0}
+.wb-help{color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.65;margin:0;overflow-wrap:anywhere}
 
 .wb-control{min-width:0}
 .wb-control input[type=number],
@@ -5981,7 +5959,7 @@ body.state-connected{min-width:320px}
 }
 /* 带单位/边界的数字输入：数字框按内容取宽，范围提示紧挨着它，
    不再把输入框拉伸到整幅宽再让范围飘到最右边。 */
-.wb-number{display:flex;align-items:center;gap:var(--sp-2);min-width:0;flex-wrap:wrap}
+.wb-number{display:flex;align-items:center;justify-content:flex-end;gap:var(--sp-2);min-width:0;flex-wrap:wrap}
 .wb-number input{flex:0 1 148px;min-width:104px}
 .wb-unit{flex:none;color:var(--t-text-faint);font-size:var(--fs-tiny);white-space:nowrap}
 .wb-range{flex:none;color:var(--t-text-faint);font-size:var(--fs-micro);font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -6178,7 +6156,7 @@ body.state-connected{min-width:320px}
 
 /* 进度环：按钮内部的 SVG，未保存时不存在 */
 .wb-save .wb-ring{
-  position:absolute;right:14px;top:50%;width:16px;height:16px;margin-top:-var(--sp-2);
+  position:absolute;right:14px;top:50%;width:16px;height:16px;margin-top:calc(var(--sp-2) * -1);
   opacity:0;transition:opacity var(--dur) ease;
 }
 .wb-save.is-busy .wb-ring{opacity:1}
@@ -6333,6 +6311,17 @@ body.state-connected{min-width:320px}
   .wb-section-tab>svg{display:none}
   .wb-section-index{width:21px;height:21px}
 }
+@container wb-card (max-width:720px){
+  .wb-section-layout{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}
+  .wb-section-sidebar{position:static;max-height:none;overflow:visible;padding:var(--sp-2)}
+  .wb-section-nav-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);padding:var(--sp-1) var(--sp-2) var(--sp-2)}
+  .wb-section-nav-note{margin:0;text-align:right}
+  .wb-section-nav{flex-direction:row;overflow-x:auto;padding:2px 1px var(--sp-1);scrollbar-width:thin}
+  .wb-section-tab{grid-template-columns:20px minmax(0,1fr);flex:0 0 auto;width:min(190px,64vw);min-height:48px}
+  .wb-section-tab-copy strong{white-space:normal}
+  .wb-section-tab>svg{display:none}
+  .wb-section-index{width:21px;height:21px}
+}
 @media(max-width:760px){
   .wb-replacement-form{grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
   .wb-replacement-form .wb-keyword-add{grid-column:1/-1}
@@ -6341,9 +6330,6 @@ body.state-connected{min-width:320px}
   .wb-segmented{width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
   /* 窄屏回落单列：两列会把标签与数字框挤到换行，反而更难读。 */
   .wb-fields{grid-template-columns:minmax(0,1fr);gap:0}
-  .wb-field{grid-template-columns:auto minmax(0,1fr);gap:var(--sp-2)}
-  .wb-field-side{grid-column:2;justify-content:flex-start;padding-top:0}
-  .wb-reset{opacity:1}
   .wb-actions>.wb-save{flex:1}
   .wb-actions-note{margin-left:0;flex-basis:100%}
   .wb-card-body{padding:var(--sp-4)}
@@ -6354,10 +6340,6 @@ body.state-connected{min-width:320px}
 /* === 轻结构文本控件（自我页）：生日 / 词条快选 / 词条小片 / 台词气泡 ===
    四种的真源都是 data-wb-field 那一个控件；这里只画辅助件。
    词条快选不进通栏列表：性别/种族这类单值字段要和相邻短字段成对。 */
-词条快选不进通栏列表：性别/种族这类单值字段要和相邻短字段成对。*/
-.wb-field:has(.wb-quotes),
-.wb-field:has(.wb-tagset),
-.wb-field:has(.wb-date){grid-column:1/-1}
 .wb-date{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;min-width:0}
 .wb-date-solar[hidden],.wb-date-lunar[hidden]{display:none!important}
 .wb-date-text{box-sizing:border-box;flex:1 1 240px;min-width:min(200px,100%);max-width:100%;min-height:38px;
@@ -6441,64 +6423,127 @@ body.state-connected{min-width:320px}
   .wb-tag-form input[type=text]{min-width:0}
 }
 
-/* 配置项标题在左、控件在右；范围提示附在标题旁。
-   右侧固定留出「恢复继承」槽位：只有被覆盖的行有按钮，按 auto 排会让同一列
-   的控件右边缘相差一个按钮宽，看上去一左一右。空槽也保留，所有控件共用一条右边缘。 */
-.wb-field{grid-template-columns:12px minmax(0,1fr) 64px;align-items:center;
-  gap:var(--sp-2) var(--sp-4);padding:14px var(--sp-2) 14px 0}
-/* 层轨占据首列，主体与恢复继承动作分别排列。 */
-.wb-field>.wb-field-main{grid-column:2}
-@media (min-width:721px){
-  .wb-field>.wb-field-side{grid-column:3}
-}
-/* 自我页的 journal 是单列卡片，不能沿用工作台的第 2 列。 */
+/* === 容器驱动的两行字段架构 ===
+   第 1 行：标题在左（保留自然阅读宽），控件贴右对齐；
+   第 2 行：说明整行通栏铺开（零 12em 竖排挤压，零控件下方大块留白）；
+   空的 .wb-field-side 折叠不占位；有恢复继承按钮时按需占第 3 列或在窄容器折到下一行。 */
+.wb-field>.wb-field-main{grid-column:2;min-width:0}
+.wb-field>.wb-field-side{grid-column:3;min-width:0}
+.wb-field>.wb-field-side:empty{display:none}
+.wb-field:where(:not(:has(>.wb-rail))){grid-template-columns:minmax(0,1fr)}
+.wb-field:where(:not(:has(>.wb-rail)):has(>.wb-field-side:not(:empty))){grid-template-columns:minmax(0,1fr) auto}
+.wb-field:where(:not(:has(>.wb-rail)))>.wb-field-main{grid-column:1}
+.wb-field:where(:not(:has(>.wb-rail)))>.wb-field-side{grid-column:2}
+
+/* journal 不画层轨，主体与操作均落单列，空槽自动折叠。 */
 .self-page .wb-journal .wb-field>.wb-field-main{grid-column:1}
-/* journal 不画层轨，字段行却仍按三列排：主体落在 12px 的层轨列里，只能按
-   内容撑开，控件右边缘比行边缘缩进 40px，还随控件类型各不相同。改成单列。 */
 .wb-journal .wb-field{grid-template-columns:minmax(0,1fr);padding-right:0}
 .wb-journal .wb-field>.wb-field-main{grid-column:1}
 .wb-journal .wb-field-side{grid-column:1;padding-left:0}
 .wb-journal .wb-field-side:empty{display:none}
-/* 回复页是常驻预览 + 六十多个字段的单独版式，保持原来的单列密度。 */
+
+/* 回复页是常驻预览 + 多模块表单的单独版式，默认单列密度。 */
 #replyWorkspace .wb-fields{grid-template-columns:minmax(0,1fr);max-width:1040px}
-.wb-field-main{display:grid;grid-template-columns:minmax(12em,1fr) minmax(180px,360px);
-  align-items:center;column-gap:var(--sp-5);row-gap:var(--sp-1)}
-.wb-field-main>.wb-label{grid-column:1;grid-row:1;align-self:end}
-.wb-field-main>.wb-help{grid-column:1;grid-row:2;align-self:start}
-.wb-field-main>.wb-control{grid-column:2;grid-row:1 / span 2;justify-self:stretch;
-  display:flex;align-items:center;justify-content:flex-end;min-width:0;max-width:420px;width:100%}
+
+.wb-field-main{
+  display:grid;grid-template-columns:minmax(12em,1fr) auto;
+  align-items:center;column-gap:var(--sp-4);row-gap:var(--sp-1);min-width:0;
+}
+.wb-field-main>.wb-label{grid-column:1;grid-row:1;align-self:center;min-width:0}
+.wb-field-main>.wb-help{grid-column:1/-1;grid-row:2;align-self:start;max-width:none}
+.wb-field-main>.wb-control{
+  grid-column:2;grid-row:1;align-self:center;justify-self:end;
+  display:flex;align-items:center;justify-content:flex-end;
+  min-width:0;max-width:min(340px,50cqi);
+}
 .wb-field-main>.wb-field-error{grid-column:1/-1;grid-row:3}
-.wb-field:has(textarea),.wb-field:has(.wb-word-editor),.wb-field:has(.wb-keywords),
-.wb-field:has(.wb-source-picker),.wb-field:has(.wb-order-editor),.wb-field:has(.wb-date){align-items:start}
-.wb-field:has(textarea) .wb-field-main,.wb-field:has(.wb-word-editor) .wb-field-main,
-.wb-field:has(.wb-keywords) .wb-field-main,.wb-field:has(.wb-source-picker) .wb-field-main,
-.wb-field:has(.wb-order-editor) .wb-field-main,.wb-field:has(.wb-date) .wb-field-main{grid-template-columns:minmax(0,1fr)}
-#replyWorkspace .wb-field-main{grid-template-columns:minmax(12em,1fr) minmax(180px,360px)}
+.wb-field-main>.wb-control:where(:has(>input[type=text],>select)){width:min(280px,46cqi)}
+.wb-field-main>.wb-control:where(:has(>input[type=time])){width:min(180px,40cqi)}
+.wb-field-main>.wb-control:where(:has(>input[type=number])){width:min(160px,40cqi)}
+
+#replyWorkspace .wb-field-main{grid-template-columns:minmax(12em,1fr) auto}
 #replyWorkspace .wb-field-main>.wb-label{min-width:12em}
-#replyWorkspace .wb-field:has(textarea) .wb-field-main,
-#replyWorkspace .wb-field:has(.wb-word-editor) .wb-field-main,
-#replyWorkspace .wb-field:has(.wb-keywords) .wb-field-main,
-#replyWorkspace .wb-field:has(.wb-source-picker) .wb-field-main,
-#replyWorkspace .wb-field:has(.wb-order-editor) .wb-field-main,
-#replyWorkspace .wb-field:has(.wb-date) .wb-field-main{grid-template-columns:minmax(0,1fr)}
-.wb-field:has(textarea) .wb-field-main>.wb-control,.wb-field:has(.wb-word-editor) .wb-field-main>.wb-control,
-.wb-field:has(.wb-keywords) .wb-field-main>.wb-control,.wb-field:has(.wb-source-picker) .wb-field-main>.wb-control,
-.wb-field:has(.wb-order-editor) .wb-field-main>.wb-control,.wb-field:has(.wb-date) .wb-field-main>.wb-control{
-  grid-column:1;grid-row:auto;justify-self:stretch;max-width:none;justify-content:flex-start}
+
+/* 复杂长控件统一采用全宽上下结构（:where 保持低优先级，不与页面专有规则争抢）。 */
+:where(.wb-field:has(textarea,.wb-word-editor,.wb-keywords,.wb-replacement-editor,.wb-source-picker,.wb-order-editor,.wb-date,.wb-tagset,.wb-quotes,.wb-chipset))>.wb-field-main,
+#replyWorkspace :where(.wb-field:has(textarea,.wb-word-editor,.wb-keywords,.wb-replacement-editor,.wb-source-picker,.wb-order-editor,.wb-date,.wb-tagset,.wb-quotes,.wb-chipset))>.wb-field-main{
+  grid-template-columns:minmax(0,1fr);
+}
+:where(.wb-field:has(textarea,.wb-word-editor,.wb-keywords,.wb-replacement-editor,.wb-source-picker,.wb-order-editor,.wb-date,.wb-tagset,.wb-quotes,.wb-chipset))>.wb-field-main>.wb-label{
+  grid-column:1;grid-row:auto;min-width:0;
+}
+:where(.wb-field:has(textarea,.wb-word-editor,.wb-keywords,.wb-replacement-editor,.wb-source-picker,.wb-order-editor,.wb-date,.wb-tagset,.wb-quotes,.wb-chipset))>.wb-field-main>.wb-help{
+  grid-column:1;grid-row:auto;
+}
+:where(.wb-field:has(textarea,.wb-word-editor,.wb-keywords,.wb-replacement-editor,.wb-source-picker,.wb-order-editor,.wb-date,.wb-tagset,.wb-quotes,.wb-chipset))>.wb-field-main>.wb-control{
+  grid-column:1;grid-row:auto;justify-self:stretch;justify-content:flex-start;
+  width:100%;max-width:none;margin-top:var(--sp-1);
+}
+:where(.wb-field:has(textarea,.wb-word-editor,.wb-keywords,.wb-replacement-editor,.wb-source-picker,.wb-order-editor,.wb-date,.wb-tagset,.wb-quotes,.wb-chipset))>.wb-field-main>.wb-field-error{
+  grid-column:1;grid-row:auto;
+}
+:where(.wb-field:has(textarea,.wb-word-editor,.wb-keywords,.wb-replacement-editor,.wb-source-picker,.wb-order-editor,.wb-date,.wb-tagset,.wb-quotes,.wb-chipset))>.wb-field-main>.wb-control>*{
+  width:100%;max-width:none;
+}
+
 .wb-field:hover{background:color-mix(in srgb,var(--t-surface-soft) 68%,transparent)}
-.wb-field:has(textarea):hover,.wb-field:has(.wb-word-editor):hover,.wb-field:has(.wb-date):hover{background:transparent}
-.wb-label{font-size:var(--fs-body);font-weight:600;letter-spacing:.01em;line-height:1.45}
-.wb-help{max-width:62ch;font-size:var(--fs-tiny);line-height:1.65}
-.wb-control input[type=number],.wb-control input[type=text],.wb-control input[type=time],.wb-control select{max-width:none;width:100%}
-.wb-field:has(textarea) .wb-control>*,.wb-field:has(.wb-word-editor) .wb-control>*{width:100%}
-@media (max-width:720px){
-  .wb-field{grid-template-columns:10px minmax(0,1fr);align-items:start}
-  .wb-field-main{grid-template-columns:minmax(0,1fr)}
-  .wb-field-main>.wb-control{grid-column:1;grid-row:auto;justify-self:stretch;max-width:none}
-  .wb-control{justify-content:flex-start}
+.wb-field:has(textarea):hover,.wb-field:has(.wb-word-editor):hover,.wb-field:has(.wb-replacement-editor):hover,.wb-field:has(.wb-date):hover{background:transparent}
+
+/* 窄容器（如两列卡片内约 380–450px 宽的字段或窄屏）：
+   - 开关保持紧凑的「标题 ↔ 开关」一行 + 通栏说明；
+   - 数字、下拉、文本等输入自动折成「标题 → 通栏说明 → 全宽控件」，不再挤压说明文字。 */
+@container wb-field (max-width:499px){
+  :where(.wb-field:has(.wb-switch))>.wb-field-main{
+    grid-template-columns:minmax(8em,1fr) auto;column-gap:var(--sp-3);
+  }
+  :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main,
+  #replyWorkspace :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main{
+    grid-template-columns:minmax(0,1fr);
+  }
+  :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main>.wb-label,
+  #replyWorkspace :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main>.wb-label{
+    grid-column:1;grid-row:auto;min-width:0;
+  }
+  :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main>.wb-help{grid-column:1;grid-row:auto}
+  :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main>.wb-control{
+    grid-column:1;grid-row:auto;justify-self:stretch;justify-content:flex-start;
+    width:100%;max-width:none;margin-top:var(--sp-1);
+  }
+  :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main>.wb-control>.wb-number{justify-content:flex-start}
+  :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main>.wb-field-error{grid-column:1;grid-row:auto}
+  .wb-field>.wb-field-side{grid-column:2;justify-content:flex-start;padding-top:0}
+  .wb-field:where(:not(:has(>.wb-rail)))>.wb-field-side{grid-column:1}
+  .wb-reset{opacity:1}
+}
+@container wb-group (max-width:520px){
+  .wb-field:where(:has(>.wb-field-side:not(:empty))){grid-template-columns:12px minmax(0,1fr)}
+  .wb-field:where(:not(:has(>.wb-rail)):has(>.wb-field-side:not(:empty))){grid-template-columns:minmax(0,1fr)}
+  .wb-field>.wb-field-side{grid-column:2;justify-content:flex-start;padding-top:0}
+  .wb-field:where(:not(:has(>.wb-rail)))>.wb-field-side{grid-column:1}
+  .wb-reset{opacity:1}
 }
 @media (max-width:760px){
+  .wb-field,.wb-field:where(:has(>.wb-field-side:not(:empty))){grid-template-columns:10px minmax(0,1fr);gap:var(--sp-2);align-items:start}
+  .wb-field:where(:not(:has(>.wb-rail))),
+  .wb-field:where(:not(:has(>.wb-rail)):has(>.wb-field-side:not(:empty))){grid-template-columns:minmax(0,1fr)}
+  .wb-field>.wb-field-side{grid-column:2;justify-content:flex-start;padding-top:0}
+  .wb-field:where(:not(:has(>.wb-rail)))>.wb-field-side{grid-column:1}
+  .wb-reset{opacity:1}
   .wb-control .wb-segmented-option span{width:100%}
+}
+@media (max-width:720px){
+  :where(.wb-field:has(.wb-switch))>.wb-field-main{grid-template-columns:minmax(8em,1fr) auto;column-gap:var(--sp-3)}
+  :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main,
+  #replyWorkspace :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main{grid-template-columns:minmax(0,1fr)}
+  :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main>.wb-label,
+  #replyWorkspace :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main>.wb-label{grid-column:1;grid-row:auto;min-width:0}
+  :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main>.wb-help{grid-column:1;grid-row:auto}
+  :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main>.wb-control{
+    grid-column:1;grid-row:auto;justify-self:stretch;justify-content:flex-start;
+    width:100%;max-width:none;margin-top:var(--sp-1);
+  }
+  :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main>.wb-control>.wb-number{justify-content:flex-start}
+  :where(.wb-field:not(:has(.wb-switch)))>.wb-field-main>.wb-field-error{grid-column:1;grid-row:auto}
 }
 
 /* console.css */
@@ -6755,21 +6800,23 @@ body.state-connected{min-width:320px}
 #replyWorkspace.expression-voice-focus .wb-group>.wb-help{margin:0 0 var(--sp-1);max-width:64ch;
   color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.6}
 #replyWorkspace.expression-voice-focus .wb-fields{display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+  grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));
   gap:0 var(--sp-5);max-width:none}
 #replyWorkspace.expression-voice-focus .wb-field{grid-template-columns:10px minmax(0,1fr);
   gap:var(--sp-1) var(--sp-2);padding:var(--sp-2) 0;
-  border-top:1px solid color-mix(in srgb,var(--t-line) 62%,transparent)}
+  border:0;border-radius:0;border-top:1px solid color-mix(in srgb,var(--t-line) 62%,transparent);
+  background:transparent}
 #replyWorkspace.expression-voice-focus .wb-field:first-child{border-top:0;padding-top:2px}
 #replyWorkspace.expression-voice-focus .wb-field>.wb-field-main{grid-column:2}
-#replyWorkspace.expression-voice-focus .wb-field-main{grid-template-columns:minmax(0,1fr);gap:0}
-#replyWorkspace.expression-voice-focus .wb-field-main>.wb-label{font-size:var(--fs-tiny);
+#replyWorkspace.expression-voice-focus .wb-field>.wb-field-side{grid-column:2;justify-content:flex-start;padding-top:0}
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main{grid-template-columns:minmax(0,1fr);gap:0;justify-content:normal;align-items:start}
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-label{grid-column:1;grid-row:auto;min-width:0;font-size:var(--fs-tiny);
   font-weight:600;line-height:1.5}
-#replyWorkspace.expression-voice-focus .wb-field-main>.wb-help{
-  display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:1;
-  font-size:var(--fs-micro);line-height:1.55}
-#replyWorkspace.expression-voice-focus .wb-field-main>.wb-control{grid-column:1;grid-row:auto;
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-help{grid-column:1;grid-row:auto;
+  max-width:none;font-size:var(--fs-micro);line-height:1.6}
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-control{grid-column:1;grid-row:auto;
   justify-self:stretch;width:100%;max-width:none;margin-top:var(--sp-1);justify-content:flex-start}
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-control>.wb-number{justify-content:flex-start}
 #replyWorkspace.expression-voice-focus .wb-control input,
 #replyWorkspace.expression-voice-focus .wb-control select,
 #replyWorkspace.expression-voice-focus .wb-control textarea{width:100%;max-width:none;
@@ -6782,12 +6829,18 @@ body.state-connected{min-width:320px}
 #replyWorkspace.expression-voice-focus .wb-field:has(.wb-keywords){grid-column:1/-1}
 #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_channels"] .wb-fields{
   grid-template-columns:repeat(3,minmax(0,1fr))}
-#replyWorkspace.expression-voice-focus .wb-actions{position:sticky;bottom:var(--sp-2);z-index:4;
+#replyWorkspace.expression-voice-focus .wb-actions{grid-column:1/-1;position:sticky;bottom:var(--sp-2);z-index:4;
   margin:var(--sp-1) 0 0;padding:var(--sp-2) var(--sp-3);
   border:1px solid var(--t-line);border-radius:var(--r-sm);
   background:color-mix(in srgb,var(--t-surface-raised) 92%,transparent);
   backdrop-filter:blur(8px);box-shadow:var(--t-shadow)}
 
+@container expression-modules (max-width:760px){
+  .voice-hero{grid-template-columns:minmax(0,1fr)}
+  .voice-hero-chips{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #replyWorkspace.expression-voice-focus .wb-card-body{grid-template-columns:minmax(0,1fr)}
+  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group]{grid-column:1;grid-row:auto}
+}
 @media(max-width:1080px){
   .voice-hero{grid-template-columns:minmax(0,1fr)}
   .voice-hero-chips{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -6796,36 +6849,21 @@ body.state-connected{min-width:320px}
   #replyWorkspace.expression-voice-focus .wb-card-body{grid-template-columns:minmax(0,1fr)}
   #replyWorkspace.expression-voice-focus .wb-group[data-wb-group]{grid-column:1;grid-row:auto}
 }
-@media(max-width:560px){
-  #replyWorkspace.expression-voice-focus .wb-fields,
-  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_channels"] .wb-fields{
-    grid-template-columns:minmax(0,1fr)}
-}
-@media(max-width:560px){
-  .voice-hero{padding:var(--sp-3)}
-  .voice-hero-actions .button{flex:1 1 100%;justify-content:center}
-}
-@media(prefers-reduced-motion:reduce){
-  .voice-wave i{transition:none}
-}
-
-@media(max-width:900px){
-  #replyWorkspace.expression-voice-focus .wb-field-main>.wb-help{-webkit-line-clamp:2}
-}
-
-
-
-
-
-
 @media(max-width:760px){
   /* 手机上常驻底部保存条会遮住字段，改成随内容排在最后。 */
   #replyWorkspace.expression-voice-focus .wb-actions{position:static;bottom:auto}
 }
 @media(max-width:560px){
+  #replyWorkspace.expression-voice-focus .wb-fields,
+  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_channels"] .wb-fields{
+    grid-template-columns:minmax(0,1fr)}
   #replyWorkspace.expression-voice-focus .wb-group{padding:var(--sp-2) var(--sp-3)!important}
   #replyWorkspace.expression-voice-focus .wb-control textarea{min-height:48px}
   .voice-hero{padding:var(--sp-3)}
+  .voice-hero-actions .button{flex:1 1 100%;justify-content:center}
+}
+@media(prefers-reduced-motion:reduce){
+  .voice-wave i{transition:none}
 }
 
 
@@ -6870,7 +6908,7 @@ body.state-connected{min-width:320px}
 #expression-panel-expression-text .console-section{padding-top:0;border-top:0}
 
 .text-hero{display:block;
-  gap:var(--sp-4);padding:var(--sp-4) var(--sp-5);min-width:0;
+  padding:var(--sp-4) var(--sp-5);min-width:0;
   border:1px solid var(--t-line);border-radius:var(--r-md);
   background:radial-gradient(130% 150% at 0% 0%,
     color-mix(in srgb,var(--t-accent-quiet) 60%,transparent),transparent 58%),
@@ -6921,17 +6959,20 @@ body.state-connected{min-width:320px}
 #replyWorkspace.expression-text-focus .wb-group>.wb-help{margin:0 0 var(--sp-2);color:var(--t-text-faint);
   font-size:var(--fs-micro);line-height:1.6}
 #replyWorkspace.expression-text-focus .wb-fields{display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:0 var(--sp-5);max-width:none}
+  grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr));gap:0 var(--sp-5);max-width:none}
 #replyWorkspace.expression-text-focus .wb-field{grid-template-columns:10px minmax(0,1fr);
   gap:var(--sp-1) var(--sp-2);padding:var(--sp-2) 0;
-  border-top:1px solid color-mix(in srgb,var(--t-line) 62%,transparent)}
+  border:0;border-radius:0;border-top:1px solid color-mix(in srgb,var(--t-line) 62%,transparent);
+  background:transparent}
 #replyWorkspace.expression-text-focus .wb-field:first-child{border-top:0;padding-top:2px}
 #replyWorkspace.expression-text-focus .wb-field>.wb-field-main{grid-column:2}
-#replyWorkspace.expression-text-focus .wb-field-main{grid-template-columns:minmax(0,1fr);gap:0}
-#replyWorkspace.expression-text-focus .wb-field-main>.wb-label{font-size:var(--fs-tiny);font-weight:600;line-height:1.5}
-#replyWorkspace.expression-text-focus .wb-field-main>.wb-help{font-size:var(--fs-micro);line-height:1.55}
-#replyWorkspace.expression-text-focus .wb-field-main>.wb-control{grid-column:1;grid-row:auto;
+#replyWorkspace.expression-text-focus .wb-field>.wb-field-side{grid-column:2;justify-content:flex-start;padding-top:0}
+#replyWorkspace.expression-text-focus .wb-fields>.wb-field>.wb-field-main{grid-template-columns:minmax(0,1fr);gap:0;justify-content:normal;align-items:start}
+#replyWorkspace.expression-text-focus .wb-fields>.wb-field>.wb-field-main>.wb-label{grid-column:1;grid-row:auto;min-width:0;font-size:var(--fs-tiny);font-weight:600;line-height:1.5}
+#replyWorkspace.expression-text-focus .wb-fields>.wb-field>.wb-field-main>.wb-help{grid-column:1;grid-row:auto;font-size:var(--fs-micro);line-height:1.55}
+#replyWorkspace.expression-text-focus .wb-fields>.wb-field>.wb-field-main>.wb-control{grid-column:1;grid-row:auto;
   justify-self:stretch;width:100%;max-width:none;margin-top:var(--sp-1);justify-content:flex-start}
+#replyWorkspace.expression-text-focus .wb-fields>.wb-field>.wb-field-main>.wb-control>.wb-number{justify-content:flex-start}
 #replyWorkspace.expression-text-focus .wb-control input,
 #replyWorkspace.expression-text-focus .wb-control select,
 #replyWorkspace.expression-text-focus .wb-control textarea{width:100%;max-width:none;min-height:34px;font-size:var(--fs-tiny)}
@@ -6941,6 +6982,7 @@ body.state-connected{min-width:320px}
 #replyWorkspace.expression-text-focus .wb-field:has(textarea),
 #replyWorkspace.expression-text-focus .wb-field:has(.wb-word-editor),
 #replyWorkspace.expression-text-focus .wb-field:has(.wb-keywords),
+#replyWorkspace.expression-text-focus .wb-field:has(.wb-replacement-editor),
 #replyWorkspace.expression-text-focus .wb-field:has(.wb-chipset){grid-column:1/-1}
 #replyWorkspace.expression-text-focus .wb-actions{position:sticky;bottom:var(--sp-2);z-index:4;
   margin:var(--sp-2) 0 0;padding:var(--sp-2) var(--sp-3);
@@ -6949,8 +6991,12 @@ body.state-connected{min-width:320px}
   backdrop-filter:blur(8px);box-shadow:var(--t-shadow)}
 
 @media(max-width:1080px){
-  .text-hero{grid-template-columns:minmax(0,1fr)}
   .text-hero-chips{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@container expression-modules (max-width:720px){
+  #replyWorkspace.expression-text-focus .wb-section-layout{grid-template-columns:minmax(0,1fr)}
+  #replyWorkspace.expression-text-focus .wb-section-sidebar{position:static;max-height:none}
+  #replyWorkspace.expression-text-focus .wb-fields{grid-template-columns:minmax(0,1fr)}
 }
 @media(max-width:900px){
   #replyWorkspace.expression-text-focus .wb-section-layout{grid-template-columns:minmax(0,1fr)}
@@ -6966,17 +7012,6 @@ body.state-connected{min-width:320px}
   #replyWorkspace.expression-text-focus .wb-group{padding:var(--sp-2) var(--sp-3)!important}
 }
 
-/* 2026-11-20 的回复页布局修复用更高优先级把字段锁成「标签 + 控件」两栏；
-   分段页要上下结构，必须在同一优先级上覆盖回来。 */
-#replyWorkspace:not(.expression-voice-focus).expression-text-focus .wb-fields > .wb-field > .wb-field-main.wb-field-main{
-  grid-template-columns:minmax(0,1fr);justify-content:normal;align-items:start}
-
-#replyWorkspace:not(.expression-voice-focus).expression-text-focus .wb-fields{
-  grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
-#replyWorkspace:not(.expression-voice-focus).expression-text-focus .wb-fields > .wb-field > .wb-field-main.wb-field-main > .wb-control.wb-control{
-  justify-content:flex-start;justify-self:stretch;max-width:none;width:100%}
-
-
 /* QQ 气泡式分段示意：文段、引用、@、语音、表情包的位置都画出来。 */
 .text-hero-preview.is-chat{padding:var(--sp-2)}
 .qq-chat{display:grid;gap:var(--sp-2);min-width:0;padding:var(--sp-2);
@@ -6984,7 +7019,8 @@ body.state-connected{min-width:320px}
 .qq-quote{width:88%;margin-left:auto;padding:var(--sp-2) var(--sp-3);
   border-left:3px solid var(--t-accent);border-radius:var(--r-xs);
   background:var(--t-surface);color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.55}
-.qq-quote p{display:block;margin:0;padding:0;background:none;grid-column:auto;color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.55}\n.qq-quote-tag{display:inline-block;margin-bottom:2px;color:var(--t-accent-ink);
+.qq-quote p{display:block;margin:0;padding:0;background:none;grid-column:auto;color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.55}
+.qq-quote-tag{display:inline-block;margin-bottom:2px;color:var(--t-accent-ink);
   font:650 var(--fs-micro)/1.4 var(--numeric-font);letter-spacing:.08em}
 .qq-row{display:flex;align-items:flex-start;justify-content:flex-end;gap:var(--sp-1);min-width:0}
 .qq-avatar{flex:none;display:grid;place-items:center;width:22px;height:22px;border-radius:50%;
@@ -7481,13 +7517,13 @@ body.state-connected{min-width:320px}
 @media(max-width:620px){.output-works [data-output-works-list]{grid-template-columns:1fr}}
 
 /* decision-page.css */
-.decision-page{display:grid;gap:var(--sp-4);min-width:0;color:var(--t-text)}
+.decision-page{display:grid;gap:var(--sp-4);min-width:0;color:var(--t-text);container:decision-page / inline-size}
 .decision-workspace{min-width:0}
 .decision-page [hidden],
 .decision-panel[hidden],
 .decision-editors [hidden]{display:none!important}
-.decision-tabs{display:flex;align-items:center;gap:var(--sp-1);min-width:0;padding:calc(var(--sp-1) * 1.25);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
-.decision-tab-list{display:flex;align-items:center;gap:var(--sp-1);min-width:0}
+.decision-tabs{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-1);min-width:0;padding:calc(var(--sp-1) * 1.25);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
+.decision-tab-list{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-1);min-width:0}
 .decision-tab{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);min-width:0;min-height:38px;padding:var(--sp-2) var(--sp-3);border:1px solid transparent;border-radius:calc(var(--r-xs) * 1.2);background:transparent;color:var(--t-text-soft);font:inherit;white-space:nowrap;cursor:pointer;transition:background var(--dur-fast) ease,border-color var(--dur-fast) ease,color var(--dur-fast) ease}
 .decision-tab:hover{background:var(--t-surface-soft);color:var(--t-text-strong)}
 .decision-tab.is-active{border-color:var(--t-accent-solid);background:var(--t-accent-solid);color:var(--t-on-solid)}
@@ -7537,34 +7573,55 @@ body.state-connected{min-width:320px}
 .decision-shortcuts b,.decision-domain-link b{color:var(--t-text-strong);font-size:var(--fs-body)}
 .decision-shortcuts small,.decision-domain-link small{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.45}
 .decision-shortcuts svg,.decision-domain-link svg{width:16px;height:16px;flex:none;color:var(--t-accent)}
+
+/* 决策配置卡片：桌面两列等高卡片；单组或奇数尾组整行通栏，避免右半空洞。
+   行内字段由 workbench.css 的 @container 两行结构自动排版：开关左右对齐、说明通栏、
+   数值/下拉在窄卡片内平滑折行，不出现 12em 窄列或右侧大块空白。 */
 .decision-editors{gap:var(--sp-4)}
 .decision-editors .wb{gap:var(--sp-3)}
 .decision-editors .wb-card-head{display:none}
 .decision-editors .wb-rail-legend{display:none}
 .decision-editors .wb-card-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch;gap:var(--sp-3);min-width:0}
+.decision-editors .wb-card-body>.wb-group:only-of-type,
+.decision-editors .wb-card-body>.wb-group:last-of-type:nth-of-type(odd){grid-column:1/-1}
 .decision-editors .wb-group{min-width:0;height:100%;margin:0;padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
 .decision-editors .wb-group+.wb-group{margin:0;padding:var(--sp-4);border:1px solid var(--t-line)}
 .decision-editors .wb-group-head{margin:0 0 var(--sp-3);padding-bottom:var(--sp-3);border-bottom:1px solid var(--t-line);font-size:var(--fs-lead)}
 .decision-editors .wb-fields{grid-template-columns:minmax(0,1fr);gap:0}
+@container wb-group (min-width:740px){
+  .decision-editors .wb-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:0 var(--sp-5)}
+}
+@container wb-card (max-width:739px){
+  .decision-editors .wb-card-body{grid-template-columns:minmax(0,1fr)}
+}
 .decision-editors .wb-field{grid-template-columns:10px minmax(0,1fr);gap:var(--sp-2);padding:var(--sp-2) 0}
+.decision-editors .wb-field:last-child{border-bottom:0;padding-bottom:0}
 .decision-editors .wb-field-main{min-width:0}
-.decision-editors .wb-field-side{grid-column:2;justify-content:flex-start}
+.decision-editors .wb-field-side{grid-column:2;justify-content:flex-start;padding-top:0}
 .decision-editors .wb-control input[type=number],.decision-editors .wb-control input[type=text],.decision-editors .wb-control select,.decision-editors .wb-control textarea{max-width:100%;background:var(--t-surface-soft);border-color:var(--t-line-firm)}
 .decision-editors .wb-actions{grid-column:1/-1;flex-wrap:wrap;margin-top:0;padding-top:var(--sp-3);border-top:1px solid var(--t-line)}
 .decision-joke-heading{display:flex;align-items:baseline;gap:var(--sp-2);margin-bottom:calc(var(--sp-2) * -1)}
 .decision-joke-heading>span{color:var(--t-accent-ink);font-size:var(--fs-micro);font-weight:700}
 .decision-joke-heading h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-lead)}
 .decision-domain-link{width:100%}
+.decision-empty{display:grid;gap:var(--sp-2);justify-items:start;min-width:0;padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-text-soft)}
+.decision-empty strong{color:var(--t-text-strong);font-size:var(--fs-body);font-weight:600}
+.decision-empty p{margin:0;color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.7}
 
 @media(max-width:1180px){
-  .decision-stats{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .decision-stats:not(.decision-stats-four){grid-template-columns:repeat(3,minmax(0,1fr))}
   .decision-chain-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .decision-shortcuts{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .decision-editors .wb-card-body{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@container decision-page (min-width:720px){
+  .decision-stats.decision-stats-four{grid-template-columns:repeat(4,minmax(0,1fr))}
+}
+@container decision-page (max-width:719px){
+  .decision-stats.decision-stats-four{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media(max-width:760px){
   .decision-tabs{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-1);overflow:visible}
-  .decision-tab-list{min-width:0;overflow-x:auto;overflow-y:hidden;padding:var(--sp-1) 1px;scrollbar-width:thin}
+  .decision-tab-list{min-width:0;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;padding:var(--sp-1) 1px;scrollbar-width:thin}
   .decision-tab{flex:none;padding-inline:var(--sp-2)}
   .decision-current{position:static;justify-self:end;max-width:100%;margin:0;white-space:normal;text-align:right}
   .decision-stats,.decision-stats-four,.decision-stats-three{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -7584,52 +7641,54 @@ body.state-connected{min-width:320px}
   .decision-page *{scroll-behavior:auto;animation:none;transition:none}
 }
 
-/* 防骚扰：设置表单与黑名单目录 */
-.guard-panel{display:flex;flex-direction:column;gap:var(--sp-3)}
-.guard-settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:var(--sp-2);align-items:end}
-.guard-settings label{display:flex;flex-direction:column;gap:var(--sp-1);font-size:var(--fs-tiny);color:var(--muted)}
-.guard-settings label.guard-switch{flex-direction:row;align-items:center;gap:var(--sp-1)}
+/* 防骚扰：阈值规则卡、处置表单与黑名单目录 */
+.guard-panel{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0}
+.guard-topbar{display:flex;gap:var(--sp-3);align-items:center;justify-content:space-between;flex-wrap:wrap;min-width:0}
+.guard-topbar .section-chips{position:static;margin:0}
+.guard-master{display:inline-flex;align-items:center;gap:var(--sp-2);font-size:var(--fs-tiny);color:var(--t-text-strong);font-weight:600;cursor:pointer}
+.guard-body{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0}
+.guard-settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(210px,100%),1fr));gap:var(--sp-3);align-items:end;min-width:0;padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
+.guard-settings label{display:flex;flex-direction:column;gap:var(--sp-1);min-width:0;font-size:var(--fs-tiny);color:var(--t-text-soft)}
 .guard-settings label.guard-wide{grid-column:1/-1}
-.guard-settings input[type=number],.guard-settings textarea{width:100%}
-.guard-directory{border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden}
-.guard-heading{display:flex;justify-content:space-between;align-items:center;padding:var(--sp-2) var(--sp-3)}
-.guard-heading h3{margin:0;font-size:var(--fs-lead)}
-.guard-table{width:100%;border-collapse:collapse;font-size:var(--fs-tiny)}
-.guard-table th,.guard-table td{text-align:left;padding:var(--sp-2) var(--sp-3);border-top:1px solid var(--line);vertical-align:top}
-.guard-table td small{display:block;color:var(--muted);overflow-wrap:anywhere}
-.guard-table code{overflow-wrap:anywhere}
-.decision-empty-row{color:var(--muted);text-align:center}
-
-.guard-panel{display:flex;flex-direction:column;gap:var(--sp-3)}
-.guard-topbar{display:flex;gap:var(--sp-3);align-items:center;justify-content:space-between;flex-wrap:wrap}
-.guard-master{display:flex;align-items:center;gap:var(--sp-1);font-size:var(--fs-tiny)}
-.guard-body{display:flex;flex-direction:column;gap:var(--sp-3)}
-.guard-settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:var(--sp-2);align-items:end}
-.guard-settings label{display:flex;flex-direction:column;gap:var(--sp-1);font-size:var(--fs-tiny);color:var(--muted)}
-.guard-settings label.guard-wide{grid-column:1/-1}
-.guard-settings label.guard-check{flex-direction:row;align-items:center;gap:var(--sp-1)}
-.guard-settings input,.guard-settings textarea,.guard-settings select{width:100%}
-.guard-signals{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:var(--sp-2)}
-.guard-signal{border:1px solid var(--line);border-radius:var(--r-sm);padding:var(--sp-2);display:flex;flex-direction:column;gap:var(--sp-1)}
-.guard-signal small{color:var(--muted)}
-.guard-signal-params{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-1)}
-.guard-directory{border:1px solid var(--line);border-radius:var(--r-sm);overflow:hidden}
-.guard-heading{display:flex;justify-content:space-between;align-items:center;padding:var(--sp-2) var(--sp-3)}
-.guard-heading h3{margin:0;font-size:var(--fs-lead)}
-.guard-table{width:100%;border-collapse:collapse;font-size:var(--fs-tiny)}
-.guard-table th,.guard-table td{text-align:left;padding:var(--sp-2) var(--sp-3);border-top:1px solid var(--line);vertical-align:top}
-.guard-table td small{display:block;color:var(--muted);overflow-wrap:anywhere}
+.guard-settings label.guard-check{flex-direction:row;align-items:center;gap:var(--sp-2);min-height:36px;color:var(--t-text);cursor:pointer}
+.guard-signals{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(250px,100%),1fr));gap:var(--sp-3);min-width:0}
+.guard-signal{display:flex;flex-direction:column;gap:var(--sp-2);min-width:0;overflow:hidden;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
+.guard-signal .guard-check{display:flex;align-items:center;gap:var(--sp-2);min-width:0;color:var(--t-text-strong);font-size:var(--fs-body);font-weight:600;cursor:pointer}
+.guard-signal small{color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.55;overflow-wrap:anywhere}
+.guard-signal-params{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2);margin-top:auto;min-width:0}
+.guard-signal-params label{display:grid;gap:var(--sp-1);min-width:0;color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.4}
+.guard-master input[type=checkbox],
+.guard-settings label.guard-check input[type=checkbox],
+.guard-signal .guard-check input[type=checkbox]{flex:none;width:16px;height:16px;margin:0;accent-color:var(--t-accent)}
+.guard-signal-params input,
+.guard-settings :is(input:not([type=checkbox]),select,textarea),
+.guard-json{box-sizing:border-box;width:100%;min-width:0;max-width:100%;min-height:36px;padding:var(--sp-1) var(--sp-2);border:1px solid var(--t-line-firm);border-radius:var(--r-xs);background:var(--t-surface-soft);color:var(--t-text);font:inherit;font-size:var(--fs-tiny);font-variant-numeric:tabular-nums}
+.guard-signal-params input:focus-visible,
+.guard-settings :is(input:not([type=checkbox]),select,textarea):focus-visible,
+.guard-json:focus-visible{outline:none;border-color:var(--t-accent);box-shadow:var(--focus-ring)}
+.guard-settings textarea,.guard-json{min-height:76px;resize:vertical;line-height:1.65}
+.guard-directory{border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);overflow-x:auto;scrollbar-width:thin}
+.guard-heading{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-2);padding:var(--sp-3);color:var(--t-text-faint);font-size:var(--fs-tiny)}
+.guard-heading h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-lead)}
+.guard-table{width:100%;min-width:540px;border-collapse:collapse;font-size:var(--fs-tiny)}
+.guard-table th,.guard-table td{text-align:left;padding:var(--sp-2) var(--sp-3);border-top:1px solid var(--t-line);vertical-align:top}
+.guard-table th{color:var(--t-text-soft);font-weight:600;white-space:nowrap}
+.guard-table td small{display:block;color:var(--t-text-faint);overflow-wrap:anywhere}
 .guard-table code{overflow-wrap:anywhere}
 .guard-actions{display:flex;flex-wrap:wrap;gap:var(--sp-1)}
-.guard-tag{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:0 var(--sp-1);margin-right:var(--sp-1);font-size:var(--fs-micro)}
-.guard-audit ol{margin:0;padding:var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-5);font-size:var(--fs-tiny)}
+.guard-tag{display:inline-block;border:1px solid var(--t-line);border-radius:var(--r-pill);padding:0 var(--sp-2);margin-right:var(--sp-1);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-micro)}
+.guard-audit{border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
+.guard-audit ol{margin:0;padding:var(--sp-2) var(--sp-3) var(--sp-3) var(--sp-5);font-size:var(--fs-tiny)}
 .guard-audit li{display:flex;gap:var(--sp-1);flex-wrap:wrap;margin-bottom:var(--sp-1)}
-.guard-audit small{color:var(--muted)}
+.guard-audit small{color:var(--t-text-faint)}
 .guard-manual{align-items:end}
-.guard-transfer{display:flex;gap:var(--sp-2);align-items:center}
-.guard-json{width:100%;font-family:var(--mono,monospace);font-size:var(--fs-micro)}
-.guard-footer{display:flex;gap:var(--sp-2);align-items:center}
-.decision-empty-row{color:var(--muted);text-align:center}
+.guard-transfer{display:flex;flex-wrap:wrap;gap:var(--sp-2);align-items:center;padding:var(--sp-3)}
+.guard-json{font-family:var(--numeric-font);font-size:var(--fs-micro)}
+.guard-footer{display:flex;flex-wrap:wrap;gap:var(--sp-2);align-items:center}
+@media (min-width:761px){
+  #homeShell[data-away="true"] .guard-footer{padding-right:calc(var(--shell-pip-w, 0px) + var(--sp-4))}
+}
+.decision-empty-row{color:var(--t-text-faint);text-align:center}
 
 /* action-page.css */
 .action-page{
@@ -8224,22 +8283,25 @@ body.reduce-motion .action-page *::after{animation:none!important;transition-dur
  * 单行高度、标签带说明、右侧一个动作。 */
 .home-rows{display:flex;flex-direction:column}
 .home-row{
-  display:flex;align-items:center;gap:var(--sp-3);
+  display:flex;align-items:flex-start;gap:var(--sp-3) var(--sp-4);
   padding:var(--sp-3) 0;border-bottom:1px solid var(--t-line);min-width:0;
 }
 .home-row:last-child{border-bottom:0}
 .home-row-icon{
-  flex:none;display:grid;place-items:center;width:20px;height:20px;
+  flex:none;display:grid;place-items:center;width:20px;height:20px;margin-top:2px;
   color:var(--t-text-faint);
 }
 .home-row-icon svg{width:16px;height:16px}
 .home-row-main{flex:1;min-width:0}
 .home-row-main strong{display:block;color:var(--t-text);font-size:var(--fs-body);font-weight:500}
 .home-row-main small{
-  display:block;color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.6;
-  margin-top:3px;max-width:62ch;
+  display:block;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.75;
+  margin-top:3px;max-width:none;overflow-wrap:anywhere;
 }
-.home-row-value{flex:none;color:var(--t-text-soft);font-size:var(--fs-body);text-align:right}
+.home-row-value{
+  flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:var(--sp-1);
+  color:var(--t-text-soft);font-size:var(--fs-body);text-align:right;white-space:nowrap;
+}
 .home-row-value b{display:block;color:var(--t-text-strong);font-size:var(--fs-lead);font-weight:600;line-height:1.3}
 .home-row-value small{color:var(--t-text-faint);font-size:var(--fs-micro)}
 
@@ -8262,7 +8324,7 @@ body.reduce-motion .action-page *::after{animation:none!important;transition-dur
   font-size:var(--fs-tiny);line-height:1.85;
 }
 .home-empty{
-  display:flex;flex-direction:column;gap:var(--sp-3);
+  display:flex;flex-direction:column;align-items:flex-start;gap:var(--sp-3);
   padding:var(--sp-4) 0;color:var(--t-text-soft);font-size:var(--fs-body);
 }
 .home-empty strong{color:var(--t-text-strong);font-size:var(--fs-body);font-weight:500}
@@ -8483,7 +8545,7 @@ body.reduce-motion .action-page *::after{animation:none!important;transition-dur
 .home-side-caption{margin:var(--sp-3) 0 0;font-size:var(--fs-micro);line-height:1.65;color:var(--t-text-soft);overflow-wrap:anywhere}
 .home-agenda-current{margin:0 0 var(--sp-3);font-size:var(--fs-tiny);line-height:1.7;color:var(--t-text-soft)}
 .home-agenda-current time{font-variant-numeric:tabular-nums;color:var(--t-text-strong);font-weight:600}
-.home-agenda-current-gap{display:flex;align-items:baseline;gap:var(--sp-2);flex-wrap:wrap;margin:-var(--sp-2) 0 var(--sp-3);font-size:var(--fs-micro);line-height:1.65;color:var(--t-text-soft)}
+.home-agenda-current-gap{display:flex;align-items:baseline;gap:var(--sp-2);flex-wrap:wrap;margin:calc(var(--sp-2) * -1) 0 var(--sp-3);font-size:var(--fs-micro);line-height:1.65;color:var(--t-text-soft)}
 .home-agenda-current-gap time{font-variant-numeric:tabular-nums;color:var(--t-accent-ink);font-weight:700}
 .home-agenda-current-gap strong{color:var(--t-accent-ink);font-weight:600}
 .home-agenda-overview{margin:0 0 var(--sp-3);padding:0 0 var(--sp-3);border-bottom:1px solid var(--t-line)}
@@ -11959,7 +12021,7 @@ body.room-editing .product-scope{display:none}
 .hw-health-switches .hw-health-check{margin:0;white-space:nowrap}
 
 /* understanding-page.css */
-.understanding-page{display:grid;gap:var(--sp-4);min-width:0;color:var(--t-text)}
+.understanding-page{display:grid;gap:var(--sp-4);min-width:0;color:var(--t-text);container:understanding-page / inline-size}
 .understanding-tabs{position:sticky;top:var(--sp-2);z-index:5;display:flex;align-items:center;gap:var(--sp-1);min-width:0;overflow-x:auto;padding:var(--sp-1);border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface);scrollbar-width:thin}
 .understanding-tabs button{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);flex:none;min-height:40px;padding:var(--sp-2) var(--sp-3);border:0;border-radius:var(--r-2xs);background:transparent;color:var(--t-text-soft);font:inherit;white-space:nowrap;cursor:pointer}
 .understanding-tabs button svg{width:16px;height:16px}
@@ -11969,8 +12031,9 @@ body.room-editing .product-scope{display:none}
 .understanding-tabs-scope{margin-left:auto;padding:var(--sp-1) var(--sp-2);border-radius:var(--r-2xs);background:var(--t-accent-quiet);color:var(--t-accent-ink);font-size:var(--fs-tiny);white-space:nowrap}
 .understanding-panel{display:grid;gap:var(--sp-4);min-width:0}
 .understanding-panel[hidden]{display:none}
+/* 总览 / 图片 / 文件 / 网页均有 4 张指标卡，仅视频与合并转发为 3 张卡，按实际卡数排满整行，不再出现 3+1 孤儿卡。 */
 .understanding-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--sp-3);min-width:0}
-.understanding-panel:not([data-understanding-panel=overview]) .understanding-stats{grid-template-columns:repeat(3,minmax(0,1fr))}
+.understanding-panel:is([data-understanding-panel=video],[data-understanding-panel=forwards]) .understanding-stats{grid-template-columns:repeat(3,minmax(0,1fr))}
 .understanding-stat{display:grid;align-content:start;gap:var(--sp-1);min-width:0;min-height:104px;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface)}
 .understanding-stat>span{overflow-wrap:anywhere;color:var(--t-text-faint);font-size:var(--fs-tiny)}
 .understanding-stat>strong{overflow-wrap:anywhere;color:var(--t-text-strong);font-size:var(--fs-lead);line-height:1.25;font-weight:700}
@@ -11996,11 +12059,24 @@ body.room-editing .product-scope{display:none}
 .understanding-editor-workspace .wb-section-layout{display:block}
 .understanding-editor-workspace .wb-section-sidebar{display:none}
 .understanding-editor-workspace .wb-section-panel{padding:0}
+/* 网页理解独立使用 #webUnderstandingWorkspace，不显示共享媒体工作台（避免回退渲染出总览的 6 项许可开关）。 */
+.understanding-panel[data-understanding-panel=web] #contextImageWorkspace{display:none}
+/* 总览 · 角色级理解许可：6 项私聊/群聊开关按「图片 / 视频 / 文件」三行两列成对排列。 */
+.understanding-permissions [data-wb-group="media_permissions"] .wb-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2) var(--sp-4)}
+.understanding-permissions [data-wb-group="media_permissions"] .wb-field{align-items:center;padding:var(--sp-2) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}
+.understanding-permissions [data-wb-group="media_permissions"] .wb-field-main{grid-template-columns:minmax(8em,1fr) auto;align-items:center;column-gap:var(--sp-3)}
+.understanding-permissions [data-wb-group="media_permissions"] .wb-field-main>.wb-control{grid-column:2;grid-row:1;justify-self:end;justify-content:flex-end;width:auto;max-width:none}
 .understanding-forward-workspace,.understanding-panel>[data-understanding-editor-slot]{min-width:0}
 .understanding-forward-workspace .host-options-panel{border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface);box-shadow:none}
 .understanding-forward-workspace .host-options-heading p,.understanding-forward-workspace .host-options-copy small{color:var(--t-text-faint)}
-@media(max-width:900px){.understanding-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-shortcuts{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:1/-1}}
-@media(max-width:560px){.understanding-page{gap:var(--sp-3)}.understanding-tabs{position:static}.understanding-tabs-scope{display:none}.understanding-stats,.understanding-panel:not([data-understanding-panel=overview]) .understanding-stats{grid-template-columns:minmax(0,1fr)}.understanding-stat{min-height:80px}.understanding-shortcuts,.understanding-shortcuts-two{grid-template-columns:minmax(0,1fr)}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:auto}.understanding-permissions{padding:var(--sp-3)}.understanding-panel-heading{align-items:flex-start}.understanding-scope-badge{white-space:normal;text-align:right}}
+@container understanding-page (max-width:720px){
+  .understanding-stats,.understanding-panel:is([data-understanding-panel=video],[data-understanding-panel=forwards]) .understanding-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@container understanding-page (max-width:600px){
+  .understanding-permissions [data-wb-group="media_permissions"] .wb-fields{grid-template-columns:minmax(0,1fr)}
+}
+@media(max-width:900px){.understanding-stats,.understanding-panel:is([data-understanding-panel=video],[data-understanding-panel=forwards]) .understanding-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-shortcuts{grid-template-columns:repeat(2,minmax(0,1fr))}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:1/-1}}
+@media(max-width:560px){.understanding-page{gap:var(--sp-3)}.understanding-tabs{position:static}.understanding-tabs-scope{display:none}.understanding-stats,.understanding-panel:is([data-understanding-panel=video],[data-understanding-panel=forwards]) .understanding-stats{grid-template-columns:minmax(0,1fr)}.understanding-stat{min-height:80px}.understanding-shortcuts,.understanding-shortcuts-two{grid-template-columns:minmax(0,1fr)}.understanding-shortcuts>*:last-child:nth-child(odd){grid-column:auto}.understanding-permissions{padding:var(--sp-3)}.understanding-permissions [data-wb-group="media_permissions"] .wb-fields{grid-template-columns:minmax(0,1fr)}.understanding-panel-heading{align-items:flex-start}.understanding-scope-badge{white-space:normal;text-align:right}}
 @media(prefers-reduced-motion:reduce){.understanding-tabs button,.understanding-shortcut{scroll-behavior:auto;transition:none}}
 
 /* setup-guide.css */
@@ -19274,6 +19350,7 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
 .section-chips{position:sticky;top:8px;z-index:20;display:flex;gap:calc(var(--sp-1) * 1.5);min-width:0;overflow-x:auto;
   padding:calc(var(--sp-1) * 1.5);margin:0 0 var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-md);
   background:var(--t-veil);backdrop-filter:blur(8px);scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent}
+@container self-journal (min-width:651px){.section-chips{flex-wrap:wrap;overflow-x:visible}}
 .section-chip{flex:none;display:inline-flex;align-items:center;gap:calc(var(--sp-1) * 1.5);min-height:34px;padding:0 var(--sp-3);
   border:1px solid transparent;border-radius:var(--r-pill);background:var(--t-surface);color:var(--t-text-soft);
   font:inherit;font-size:var(--fs-tiny);cursor:pointer;white-space:nowrap}
@@ -19306,7 +19383,10 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
 .self-page .wb-journal .wb-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3)}
 .self-page .wb-journal .wb-field{display:grid;grid-template-columns:minmax(0,1fr);align-content:start;grid-column:auto;gap:var(--sp-1);
   min-width:0;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}
-.self-page .wb-journal .wb-field-main,.self-page .wb-journal .wb-control{min-width:0}
+.self-page .wb-journal .wb-field-main{grid-template-columns:minmax(0,1fr);gap:var(--sp-1);min-width:0}
+.self-page .wb-journal .wb-field-main>.wb-label{grid-column:1;grid-row:auto;min-width:0}
+.self-page .wb-journal .wb-field-main>.wb-control{grid-column:1;grid-row:auto;justify-self:stretch;justify-content:flex-start;width:100%;max-width:none;min-width:0}
+.self-page .wb-journal .wb-field-main>.wb-control>.wb-number{justify-content:flex-start}
 .self-page .wb-journal .wb-label{color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:650}
 .self-page .wb-journal .wb-field-side{grid-column:1;flex-wrap:wrap;justify-content:flex-start;padding:0;min-width:0}
 .self-page .wb-journal .wb-chip{max-width:100%;white-space:normal}
@@ -19328,7 +19408,7 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
 .self-page .wb-journal .wb-identity-rows .wb-field{padding:0;border:0;background:transparent}
 .self-page .wb-journal .wb-identity-rows .wb-field-main{display:grid;grid-template-columns:76px minmax(0,1fr);gap:var(--sp-2);align-items:center}
 .self-page .wb-journal .wb-identity-rows .wb-label{margin:0;color:var(--t-text-faint);font-size:var(--fs-micro);font-weight:400}
-.self-page .wb-journal .wb-identity-rows .wb-field-side{padding-left:calc(76px + var(--sp-2))}
+.self-page .wb-journal .wb-identity-rows .wb-field-side{padding-left:calc(96px + var(--sp-4))}
 .self-page .wb-journal .wb-chipset{display:flex;flex-wrap:wrap;align-items:center;gap:calc(var(--sp-1) * 1.5)}
 .self-page .wb-journal .wb-chip-opts{display:contents}
 .self-page .wb-journal .wb-chipset input[type=text]{flex:1 1 90px;width:90px;min-width:0;min-height:28px;padding:3px calc(var(--sp-2) * 1.25);border:1px dashed var(--t-line);border-radius:var(--r-pill)}
@@ -19459,7 +19539,7 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
   padding-top:var(--sp-5);border-top:1px solid var(--t-line)}
 .models-budget-section h2{margin:0;color:var(--t-text-strong);font-size:var(--fs-lead)}
 .models-budget-section p{margin:var(--sp-2) 0 0;color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.65}
-@media(max-width:650px){.models-budget-section{grid-template-columns:minmax(0,1fr);gap:var(--sp-3);padding-top:var(--sp-4)}}
+@media(max-width:760px){.models-budget-section{grid-template-columns:minmax(0,1fr);gap:var(--sp-3);padding-top:var(--sp-4)}}
 
 
 /* 整理资料对话框（role-profile-draft.js 渲染，样式保持原契约） */
@@ -19694,15 +19774,15 @@ body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
 
 
 /* 拟人优化：本地检查面板 */
-.humanize-page{display:grid;gap:14px}
-.humanize-intro .self-organizer-head p{margin:4px 0 0;color:var(--t-muted);font-size:var(--fs-body)}
-.humanize-results{padding:14px 16px;border:1px solid var(--t-line);border-radius:10px;background:var(--t-surface)}
-.humanize-empty{margin:0;color:var(--t-muted);font-size:var(--fs-body)}
-.humanize-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.humanize-page{display:grid;gap:var(--sp-3)}
+.humanize-intro .self-organizer-head p{margin:var(--sp-1) 0 0;color:var(--t-text-faint);font-size:var(--fs-body)}
+.humanize-results{padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface)}
+.humanize-empty{margin:0;color:var(--t-text-faint);font-size:var(--fs-body)}
+.humanize-summary{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);margin-bottom:var(--sp-2)}
 .humanize-summary strong{font-size:var(--fs-title)}
 .humanize-summary span{color:var(--t-accent);font-size:var(--fs-body)}
-.humanize-list{margin:0;padding-left:20px;display:grid;gap:8px;color:var(--t-ink);font-size:var(--fs-body);line-height:1.65}
-.humanize-note{margin:12px 0 0;color:var(--t-muted);font-size:var(--fs-micro);line-height:1.6}
+.humanize-list{margin:0;padding-left:var(--sp-5);display:grid;gap:var(--sp-2);color:var(--t-text);font-size:var(--fs-body);line-height:1.65}
+.humanize-note{margin:var(--sp-3) 0 0;color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.6}
 
 /* 2026-11 视觉校准：自我页以一张安静的档案卡开场，信息层级向 7.1.8 的 hero 靠拢。 */
 .self-page{max-width:1180px;gap:var(--sp-5)}
@@ -19728,13 +19808,24 @@ body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
   .deck-tabs{max-width:none}
 }
 /* 自我页档案行：标签列略放宽，控件从统一左边界起排，避免长昵称/日期组被挤到右边缘。 */
-.self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:96px minmax(0,1fr);column-gap:var(--sp-4)}
-.self-page .wb-journal .wb-identity-rows .wb-control{justify-content:flex-start}
+.self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:96px minmax(0,1fr);column-gap:var(--sp-4);align-items:center}
+.self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-label{grid-column:1;grid-row:1}
+.self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-control{grid-column:2;grid-row:1;justify-self:stretch;justify-content:flex-start;width:100%;max-width:none}
 .self-page .wb-journal .wb-identity-rows .wb-chip-opts{gap:calc(var(--sp-1) * 1.5)}
 .self-page .wb-journal .wb-identity-rows .wb-date{width:100%}
-@media (max-width:720px){
+@container self-journal (max-width:740px){
+  .self-page .wb-journal .wb-identity-rows{grid-template-columns:minmax(0,1fr)}
   .self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:minmax(0,1fr);row-gap:var(--sp-1)}
-  .self-page .wb-journal .wb-identity-rows .wb-control{width:100%}
+  .self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-label{grid-column:1;grid-row:auto}
+  .self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-control{grid-column:1;grid-row:auto;width:100%}
+  .self-page .wb-journal .wb-identity-rows .wb-field-side{padding-left:0}
+}
+@media (max-width:720px){
+  .self-page .wb-journal .wb-identity-rows{grid-template-columns:minmax(0,1fr)}
+  .self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:minmax(0,1fr);row-gap:var(--sp-1)}
+  .self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-label{grid-column:1;grid-row:auto}
+  .self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-control{grid-column:1;grid-row:auto;width:100%}
+  .self-page .wb-journal .wb-identity-rows .wb-field-side{padding-left:0}
 }
 
 /* ===== 自我页 · 身份章节 2026-11-21 ===== */
@@ -19756,6 +19847,7 @@ body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
   color:var(--t-text-faint);font:650 var(--fs-micro)/1.4 var(--numeric-font);
   letter-spacing:.12em}
 .self-page .wb-journal .wb-identity-rows{gap:var(--sp-2) var(--sp-5)}
+.self-page .wb-journal .wb-identity-rows .wb-field:has(.wb-date),
 .self-page .wb-journal .wb-identity-rows [data-wb-row="birthday"],
 .self-page .wb-journal .wb-identity-rows [data-wb-row="species"]{grid-column:1/-1}
 .self-page .wb-journal .wb-identity-rows [data-wb-row="birthday"] .wb-date{flex-wrap:wrap}
@@ -19764,10 +19856,6 @@ body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
 /* 经历类文字单独成段。 */
 .self-page .wb-journal .wb-group[data-wb-group="identity"] .wb-field[data-wb-row="key_lore"]{
   margin-top:var(--sp-3);padding-top:var(--sp-4);border-top:1px dashed var(--t-line-firm)}
-.self-page .wb-journal .wb-group[data-wb-group="identity"] .wb-field[data-wb-row="key_lore"]::before{
-  content:"设定与经历";grid-column:1/-1;margin-bottom:var(--sp-1);
-  color:var(--t-text-faint);font:650 var(--fs-micro)/1.4 var(--numeric-font);
-  letter-spacing:.12em}
 .self-page .wb-journal .wb-group[data-wb-group="identity"] :is(
   [data-wb-row="key_lore"],[data-wb-row="identity"],[data-wb-row="character_extra"]) textarea{
   min-height:112px}
@@ -19782,6 +19870,10 @@ body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
 /* 生日是 .wb-date，工作台为日期控件统一把控件放到标签列；在身份行里要放回第二列。 */
 .self-page .wb-journal .wb-identity-rows .wb-field:has(.wb-date) .wb-field-main > .wb-control{
   grid-column:2;grid-row:1 / span 2;width:100%;max-width:none;justify-content:flex-start}
+@container self-journal (max-width:740px){
+  .self-page .wb-journal .wb-identity-rows .wb-field:has(.wb-date) .wb-field-main > .wb-control{
+    grid-column:1;grid-row:auto}
+}
 @media(max-width:720px){
   .self-page .wb-journal .wb-identity-rows .wb-field:has(.wb-date) .wb-field-main > .wb-control{
     grid-column:1;grid-row:auto}
@@ -20126,16 +20218,13 @@ body.reduce-motion :is(#detailDialog, #searchDialog, #navigationDialog)::backdro
 /* learning-policy.css */
 /* 角色策略页（学习与反思 → 角色策略）。
  *
- * 这一页只有两个配置编辑器：技能领域、表达学习策略；线上都用 journal 形态
- * 渲染（分区平铺、没有侧栏）。工作台的默认形态是「1040px 单列表单贴在面板
- * 左边」，在 1600+ 的窗口里右半页全是空白，字段也一行一个。这里把整页收成
- * 一条居中的 1480 栏，两个编辑器各自成卡，字段两列排布：开关、下拉、数字这类
- * 短字段两两成对，技能清单这类长控件仍通栏。
- *
- * 只在本页生效：.learning-policy-workspaces 是策略页独有的容器。用 :has()
- * 认出策略页，不必在 app.js 里再加一个页面状态类。 */
+ * 两个配置编辑器（技能领域、表达学习策略）各自成卡，以容器宽度决定两列或单列排布：
+ * 在 AstrBot 双侧栏（~904–912px）及更宽桌面下，短字段两两成对，长控件自动整行通栏；
+ * 字段内排版直接复用 workbench.css 的容器两行结构（开关左右对齐、说明通栏、
+ * 窄列数字/下拉自然折行），不再写死 320px 列宽导致中屏溢出或 <=1280px 右侧空洞。 */
 
 .learning-hub:has(.learning-policy-workspaces){max-width:1480px;margin-inline:auto;width:100%}
+.learning-policy-workspaces{min-width:0;container:learning-policy / inline-size}
 
 /* 两张设置卡：标题、字段、保存条收进同一块卡，保存范围的边界一眼可见。 */
 .learning-policy-workspaces .config-editors{
@@ -20147,37 +20236,29 @@ body.reduce-motion :is(#detailDialog, #searchDialog, #navigationDialog)::backdro
 }
 .learning-policy-workspaces .wb-card-copy h3{font-size:var(--fs-lead)}
 
-/* 字段两列：工作台默认的单列 1040px 上限在宽屏下把表单拉成一长条。
-   沟留 30px，左列控件与右列标签之间才有清晰的分界。 */
+/* 默认单列，容器宽 >=720px 时排成对称两列（覆盖 1280px 与 1440px 桌面）。 */
 .learning-policy-workspaces .wb-fields{
   max-width:none;
-  grid-template-columns:repeat(2,minmax(0,1fr));
+  grid-template-columns:minmax(0,1fr);
   align-items:stretch;
-  gap:0 var(--sp-6);
+  gap:0;
 }
-/* 同一行的两格等高，字段分隔线才对得齐；文字仍从格子上沿开始。 */
-.learning-policy-workspaces .wb-field{align-items:start}
+@container learning-policy (min-width:720px){
+  .learning-policy-workspaces .wb-fields{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:0 var(--sp-6);
+  }
+}
 
-/* journal 里没有层轨节点，但字段行仍留着 12px 空列和 8px 右内边距，
-   控件因此比行的右边缘缩进 40 多像素——两列的控件右边缘看着歪。
-   这一页把空列去掉、右内边距归零，控件与分隔线同一条右边缘。 */
+/* journal 无层轨：主体铺满单列，空槽自动折叠，控件与分隔线对齐同一条右边缘。 */
 .learning-policy-workspaces .wb-field{
+  align-items:start;
   grid-template-columns:minmax(0,1fr);
   padding-right:0;
 }
 .learning-policy-workspaces .wb-field>.wb-field-main{grid-column:1}
 .learning-policy-workspaces .wb-field-side{grid-column:1;padding-left:0}
-/* 恢复继承按钮只在继承字段出现，空槽不占行高。 */
 .learning-policy-workspaces .wb-field-side:empty{display:none}
-
-/* 控件列固定 320：不同控件（下拉/数字/开关）右边缘才对得齐，
-   标签也有足够宽度，长标签不会把 ⓘ 挤到下一行。 */
-.learning-policy-workspaces .wb-field-main{grid-template-columns:minmax(12em,1fr) 320px}
-
-/* 数字控件的宽度原本随「范围提示」文字长短浮动（1–16 与 0–1 不是同一宽度），
-   同一列里输入框左边缘因此参差。固定块宽后，输入框左右边缘都成一条线。 */
-.learning-policy-workspaces .wb-number{width:180px;justify-content:flex-start}
-.learning-policy-workspaces .wb-number input{flex:0 0 148px;width:148px}
 
 /* 分区标题与字段左边缘对齐（工作台默认缩进 8px）。 */
 .learning-policy-workspaces .wb-group-head{margin-left:0}
@@ -20191,18 +20272,6 @@ body.reduce-motion :is(#detailDialog, #searchDialog, #navigationDialog)::backdro
   border-radius:0 0 var(--r-md) var(--r-md);
 }
 
-/* 中窄屏：两列会把标签和控件挤成上行下行。单列后标签放到控件上方，
-   不再让标签留在最左、控件甩到最右，中间空出一大片。 */
-@media(max-width:1280px){
-  .learning-policy-workspaces .wb-fields{grid-template-columns:minmax(0,1fr)}
-  .learning-policy-workspaces .wb-field-main{grid-template-columns:minmax(0,1fr);row-gap:var(--sp-1)}
-  .learning-policy-workspaces .wb-field-main>.wb-control{
-    grid-column:1;grid-row:auto;justify-self:start;
-    width:100%;max-width:360px;justify-content:flex-start;
-  }
-  .learning-policy-workspaces .wb-field:has(textarea) .wb-field-main>.wb-control,
-  .learning-policy-workspaces .wb-field:has(.wb-word-editor) .wb-field-main>.wb-control{max-width:none}
-}
 @media(max-width:860px){
   .learning-policy-workspaces .config-editors{padding:var(--sp-3)}
   .learning-policy-workspaces .wb-actions{

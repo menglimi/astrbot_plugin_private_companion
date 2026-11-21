@@ -97,7 +97,7 @@
        其中相对地址；只有确认官方配置未开启性能模式后才由 performance-gate.js
        激活，低配置设备不会下载 3D 体素包和整套工作区脚本。 -->
   <template id="companion-full-assets">
-    <link rel="stylesheet" href="bundle.css?v=4df37bb25e033793">
+    <link rel="stylesheet" href="bundle.css?v=5f581a289e2c86cd">
 
 
 
@@ -171,6 +171,7 @@
     <script defer src="screen-observation.js?v=screen-retained-20261014"></script>
     <script defer src="screen-access.js?v=screen-retained-20261014"></script>
     <link rel="stylesheet" href="qzone-images.css?v=20261110-2">
+    <link rel="stylesheet" href="ui-field-align.css?v=layout6-20261121">
     <script defer src="config-port-page.js?v=storage-layout-20261120"></script>
     <!-- app.js 先于 room-editor.js：体素在首屏就挂载，此时 room-editor 的
          顶层函数还不存在，mountStage 里的两处回调因此必须惰性解析（见
@@ -259,7 +260,7 @@
         })();
     </script>
   </template>
-  <script defer src="performance-gate.js?v=performance-mode-20261027"></script>
+  <script defer src="performance-gate.js?v=stylesheet-order-20261121"></script>
 
   <!-- 配置控制台外壳。
        console.css 定义 .console / .console-section / .console-section-head /
@@ -330,7 +331,6 @@
   <!-- 忆忆策略位于忆忆页的独立视图。 -->
   <!-- 备份与还原：后端 backup_api.py 有六条真实路由，而这一页此前没有任何
        入口加载它——资料与维护页的挂载点永远停在「正在读取快照列表…」。 -->
-  <link rel="stylesheet" href="ui-field-align.css?v=layout4-20261121">
 </head>
 <body>
   <!-- 启动幕：首屏闸门（tokens.css 的 data-room-ready）在体素包解析完之前
@@ -418,9 +418,9 @@
     <div class="confirmation-actions"><button id="confirmationCancel" class="button small" type="button">取消</button><button id="confirmationAccept" class="button primary small" type="button">确认</button><button id="confirmationSave" class="button primary small" type="button" hidden>保存并切换</button></div>
   </dialog>
   <dialog id="searchDialog" class="search-dialog" aria-label="搜索功能与设置">
-    <div class="search-field"><i data-lucide="search" aria-hidden="true"></i><input id="globalSearch" type="search" placeholder="搜索设置名称、用途或字段键…" aria-label="搜索功能与设置" aria-controls="searchResults" aria-autocomplete="list" autocomplete="off"><button class="icon-button" data-clear-search aria-label="清除搜索" hidden><i data-lucide="x"></i></button><button class="icon-button" data-close-search aria-label="关闭搜索"><i data-lucide="x"></i></button></div>
+    <div class="search-field"><i data-lucide="search" aria-hidden="true"></i><input id="globalSearch" type="search" placeholder="搜索设置名称、用途或字段键…" aria-label="搜索功能与设置" aria-controls="searchResults" aria-autocomplete="list" autocomplete="off"><button class="button small search-clear" type="button" data-clear-search aria-label="清除搜索" hidden>清空</button><button class="icon-button" type="button" data-close-search aria-label="关闭搜索"><i data-lucide="x"></i></button></div>
     <div class="search-controls"><div id="searchScope" class="search-scope" role="group" aria-label="搜索范围"><button type="button" data-search-filter="all" aria-pressed="true">全部<span data-search-filter-count></span></button><button type="button" data-search-filter="settings" aria-pressed="false">配置项<span data-search-filter-count></span></button><button type="button" data-search-filter="pages" aria-pressed="false">页面<span data-search-filter-count></span></button></div><span id="searchCount" class="search-count" role="status" aria-live="polite"></span></div>
-    <div id="searchResults" class="search-results" role="listbox" aria-label="搜索结果"></div><div class="search-hint"><span>↑ ↓ 选择 · Enter 打开</span><kbd>Esc</kbd> 关闭</div>
+    <div id="searchResults" class="search-results" role="listbox" aria-label="搜索结果"></div><div class="search-hint"><span>↑ ↓ 选择 · Enter 打开</span><span class="search-hint-esc"><kbd>Esc</kbd> 关闭</span></div>
   </dialog>
   <dialog id="navigationDialog" class="navigation-dialog" aria-labelledby="navigationTitle">
     <header class="navigation-dialog-head"><h1 id="navigationTitle">全部功能</h1><button class="icon-button" data-close-navigation aria-label="关闭导航"><i data-lucide="x"></i></button></header>

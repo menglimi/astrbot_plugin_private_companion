@@ -161,10 +161,9 @@ test("首页分区与家具清单维持分隔线", () => {
     ".home-item 又画成卡片了：家具目录是清单行，不是卡");
 });
 
-test("首页说明限宽，不会拉成通栏", () => {
+test("首页说明限宽，而日记与梦境正文完整铺满行宽", () => {
   const source = withoutComments(read("home.css"));
-  for (const name of ["home-band-note", "home-row-main small", "home-note"]) {
-    const key = name.includes(" ") ? name.split(" ")[0] : name;
+  for (const key of ["home-band-note", "home-note"]) {
     const rule = source.match(new RegExp("\\." + key + "([^{}]*)\\{([\\s\\S]*?)\\}"));
     assert.ok(rule, `home.css 里找不到 .${key}`);
     const all = [...source.matchAll(new RegExp("\\." + key + "([^{}]*)\\{([^}]*)\\}", "g"))]
@@ -172,6 +171,11 @@ test("首页说明限宽，不会拉成通栏", () => {
     assert.match(all, /max-width:\s*\d+ch/,
       `.${key} 没有限宽：说明会拉成通栏，读起来一眼看不到头`);
   }
+  const rowSmall = source.match(/\.home-row-main\s+small\s*\{([^}]*)\}/);
+  assert.ok(rowSmall, "home.css 里找不到 .home-row-main small");
+  assert.match(rowSmall[1], /max-width:\s*none/,
+    ".home-row-main small 不应再被 62ch 截断，否则中文日记与梦境正文只占半行");
+  assert.doesNotMatch(rowSmall[1], /max-width:\s*62ch/);
 });
 
 test("directory 表里没有写死的示例状态", () => {
