@@ -1668,11 +1668,44 @@ window.CompanionContactPage = (() => {
         <strong>${e(TEST_STAGE_STATES[item.state] || item.state)}</strong>${item.detail ? `<small>${e(item.detail)}</small>` : ""}</li>`).join("")}</ol>
     </section>`;
   }
+  function contactPricingPreference(result) {
+    if (result?.pricing && typeof result.pricing === "object") {
+      const rate = Number(result.pricing.usd_cny_rate);
+      return {
+        currency: result.pricing.display_currency === "USD" ? "USD" : "CNY",
+        rate: Number.isFinite(rate) && rate >= 1 && rate <= 100 ? rate : 7.2,
+      };
+    }
+    try {
+      const raw = localStorage.getItem("companion-pricing-display.v1");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const rate = Number(parsed?.usd_cny_rate);
+        if (parsed && ["CNY", "USD"].includes(parsed.currency)) {
+          return {currency: parsed.currency, rate: Number.isFinite(rate) && rate >= 1 && rate <= 100 ? rate : 7.2};
+        }
+      }
+    } catch {}
+    return {currency: "USD", rate: 7.2};
+  }
+  function formatContactCost(value, result, {prefix = ""} = {}) {
+    if (value == null || !Number.isFinite(Number(value))) return "未设单价";
+    const {currency, rate} = contactPricingPreference(result);
+    const usd = Number(value) / 1000000;
+    const amount = currency === "CNY" ? usd * rate : usd;
+    const symbol = currency === "CNY" ? "¥" : "US$";
+    const abs = Math.abs(amount);
+    const formatted = abs === 0 ? `${symbol}0.00`
+      : abs >= 1 ? `${symbol}${amount.toFixed(2)}`
+      : abs >= 0.0001 ? `${symbol}${amount.toFixed(4)}`
+      : `${symbol}${amount.toFixed(6)}`;
+    return prefix ? `${prefix}${formatted}` : formatted;
+  }
   function testMetricsMarkup(result) {
     const metrics = result.stage_metrics;
     const model = metrics?.model;
     const delivery = metrics?.delivery;
-    const fmtCost = (value) => value == null ? "费用未返回" : `成本 $${(Number(value) / 1000000).toFixed(6)}`;
+    const fmtCost = (value) => formatContactCost(value, result, {prefix: "成本 "});
     const stageLines = [];
     if (model && Number.isFinite(Number(model.provider_calls))) {
       const latency = Number.isFinite(Number(model.avg_latency_ms)) ? ` · 平均 ${Number(model.avg_latency_ms)} ms` : "";
@@ -1702,7 +1735,7 @@ window.CompanionContactPage = (() => {
     const sessionModel = summary?.model?.session;
     const quotaLine = (label, decision, contact, usage) => {
       if (!decision || !contact || !usage) return "";
-      const cost = usage.cost_microusd == null ? "费用未返回" : `$${(Number(usage.cost_microusd) / 1000000).toFixed(6)}`;
+      const cost = formatContactCost(usage.cost_microusd, result);
       return `${label}：主动模型决策已调用 ${Number(decision.calls ?? decision.used ?? 0)} 次（待处理 ${Number(decision.pending || 0)}，仅统计）；实际联系已确认发送 ${Number(contact.delivered)} 条（每日上限占用 ${Number(contact.occupied ?? contact.used)}/${Number(contact.limit)}，待确认 ${Number(contact.unresolved)}）；主动生成/复核 Provider 调用 ${Number(usage.calls)} 次、${Number(usage.tokens)} Tokens、${cost}`;
     };
     const quotaDay = sessionDecision?.date || sessionDelivery?.date || sessionModel?.date || summary?.date;
