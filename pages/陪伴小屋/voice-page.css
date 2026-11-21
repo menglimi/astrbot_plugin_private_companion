@@ -84,21 +84,23 @@
 #replyWorkspace.expression-voice-focus .wb-group>.wb-help{margin:0 0 var(--sp-1);max-width:64ch;
   color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.6}
 #replyWorkspace.expression-voice-focus .wb-fields{display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+  grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));
   gap:0 var(--sp-5);max-width:none}
 #replyWorkspace.expression-voice-focus .wb-field{grid-template-columns:10px minmax(0,1fr);
   gap:var(--sp-1) var(--sp-2);padding:var(--sp-2) 0;
-  border-top:1px solid color-mix(in srgb,var(--t-line) 62%,transparent)}
+  border:0;border-radius:0;border-top:1px solid color-mix(in srgb,var(--t-line) 62%,transparent);
+  background:transparent}
 #replyWorkspace.expression-voice-focus .wb-field:first-child{border-top:0;padding-top:2px}
 #replyWorkspace.expression-voice-focus .wb-field>.wb-field-main{grid-column:2}
-#replyWorkspace.expression-voice-focus .wb-field-main{grid-template-columns:minmax(0,1fr);gap:0}
-#replyWorkspace.expression-voice-focus .wb-field-main>.wb-label{font-size:var(--fs-tiny);
+#replyWorkspace.expression-voice-focus .wb-field>.wb-field-side{grid-column:2;justify-content:flex-start;padding-top:0}
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main{grid-template-columns:minmax(0,1fr);gap:0;justify-content:normal;align-items:start}
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-label{grid-column:1;grid-row:auto;min-width:0;font-size:var(--fs-tiny);
   font-weight:600;line-height:1.5}
-#replyWorkspace.expression-voice-focus .wb-field-main>.wb-help{
-  display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:1;
-  font-size:var(--fs-micro);line-height:1.55}
-#replyWorkspace.expression-voice-focus .wb-field-main>.wb-control{grid-column:1;grid-row:auto;
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-help{grid-column:1;grid-row:auto;
+  max-width:none;font-size:var(--fs-micro);line-height:1.6}
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-control{grid-column:1;grid-row:auto;
   justify-self:stretch;width:100%;max-width:none;margin-top:var(--sp-1);justify-content:flex-start}
+#replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main>.wb-control>.wb-number{justify-content:flex-start}
 #replyWorkspace.expression-voice-focus .wb-control input,
 #replyWorkspace.expression-voice-focus .wb-control select,
 #replyWorkspace.expression-voice-focus .wb-control textarea{width:100%;max-width:none;
@@ -111,12 +113,18 @@
 #replyWorkspace.expression-voice-focus .wb-field:has(.wb-keywords){grid-column:1/-1}
 #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_channels"] .wb-fields{
   grid-template-columns:repeat(3,minmax(0,1fr))}
-#replyWorkspace.expression-voice-focus .wb-actions{position:sticky;bottom:var(--sp-2);z-index:4;
+#replyWorkspace.expression-voice-focus .wb-actions{grid-column:1/-1;position:sticky;bottom:var(--sp-2);z-index:4;
   margin:var(--sp-1) 0 0;padding:var(--sp-2) var(--sp-3);
   border:1px solid var(--t-line);border-radius:var(--r-sm);
   background:color-mix(in srgb,var(--t-surface-raised) 92%,transparent);
   backdrop-filter:blur(8px);box-shadow:var(--t-shadow)}
 
+@container expression-modules (max-width:760px){
+  .voice-hero{grid-template-columns:minmax(0,1fr)}
+  .voice-hero-chips{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #replyWorkspace.expression-voice-focus .wb-card-body{grid-template-columns:minmax(0,1fr)}
+  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group]{grid-column:1;grid-row:auto}
+}
 @media(max-width:1080px){
   .voice-hero{grid-template-columns:minmax(0,1fr)}
   .voice-hero-chips{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -125,36 +133,21 @@
   #replyWorkspace.expression-voice-focus .wb-card-body{grid-template-columns:minmax(0,1fr)}
   #replyWorkspace.expression-voice-focus .wb-group[data-wb-group]{grid-column:1;grid-row:auto}
 }
-@media(max-width:560px){
-  #replyWorkspace.expression-voice-focus .wb-fields,
-  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_channels"] .wb-fields{
-    grid-template-columns:minmax(0,1fr)}
-}
-@media(max-width:560px){
-  .voice-hero{padding:var(--sp-3)}
-  .voice-hero-actions .button{flex:1 1 100%;justify-content:center}
-}
-@media(prefers-reduced-motion:reduce){
-  .voice-wave i{transition:none}
-}
-
-@media(max-width:900px){
-  #replyWorkspace.expression-voice-focus .wb-field-main>.wb-help{-webkit-line-clamp:2}
-}
-
-
-
-
-
-
 @media(max-width:760px){
   /* 手机上常驻底部保存条会遮住字段，改成随内容排在最后。 */
   #replyWorkspace.expression-voice-focus .wb-actions{position:static;bottom:auto}
 }
 @media(max-width:560px){
+  #replyWorkspace.expression-voice-focus .wb-fields,
+  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_channels"] .wb-fields{
+    grid-template-columns:minmax(0,1fr)}
   #replyWorkspace.expression-voice-focus .wb-group{padding:var(--sp-2) var(--sp-3)!important}
   #replyWorkspace.expression-voice-focus .wb-control textarea{min-height:48px}
   .voice-hero{padding:var(--sp-3)}
+  .voice-hero-actions .button{flex:1 1 100%;justify-content:center}
+}
+@media(prefers-reduced-motion:reduce){
+  .voice-wave i{transition:none}
 }
 
 

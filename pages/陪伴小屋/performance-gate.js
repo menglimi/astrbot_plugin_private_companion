@@ -151,6 +151,7 @@
     };
 
     const nodes = Array.from(template.content.childNodes, (node) => node.cloneNode(true));
+    const host = template.parentNode || document.head;
     for (const node of nodes) {
       if (node.nodeType !== 1) continue;
       if (node.tagName === "LINK" && node.getAttribute("rel") === "stylesheet") {
@@ -171,7 +172,13 @@
         node.async = false;
         node.defer = false;
       }
-      document.head.appendChild(node);
+      /* Insert in-place before the <template> so dynamically activated styles
+         preserve authored cascade order relative to any trailing static links. */
+      if (host && typeof host.insertBefore === "function" && template.parentNode === host) {
+        host.insertBefore(node, template);
+      } else {
+        document.head.appendChild(node);
+      }
     }
 
     if (pendingStyles === 0) release();
