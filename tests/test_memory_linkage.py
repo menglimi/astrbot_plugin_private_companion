@@ -287,9 +287,8 @@ class JournalMemoryPushTests(MemoryPluginDeclaration, HostFixture, unittest.Isol
 
         self.assertEqual((task.state, task.effect), ("succeeded", "committed"))
         call = bridge.only("record_persona_life")
-        self.assertIn("今天读到第三章。", call["content"])
-        self.assertIn("2026-09-21", call["content"])
-        self.assertIn("随记", call["content"])
+        self.assertEqual(call["content"], "我在 2026-09-21 写下了日记（随记）："
+                         "今天读到第三章。\n\n有个问题还没想通。")
         entry = self.stored()
         self.assertEqual(call["kwargs"]["memory_id"], self.expected_diary_identity(entry.reference.key, entry.reference.revision))
         self.assertEqual(call["kwargs"]["source_plugin"], PUSH_SOURCE_PLUGIN)
@@ -317,8 +316,8 @@ class JournalMemoryPushTests(MemoryPluginDeclaration, HostFixture, unittest.Isol
         self.assertEqual([call["method"] for call in bridge.calls],
                          ["record_persona_life", "record_persona_life"])
         dream = bridge.calls[-1]
-        self.assertIn("窄楼梯", dream["content"])
-        self.assertIn("醒来还觉得轻松。", dream["content"])
+        self.assertEqual(dream["content"], "我在 2026-09-21 做了一个梦。"
+                         "梦里记得的部分：我记得一段通向云里的窄楼梯。醒来只剩这些余韵：醒来还觉得轻松。")
         self.assertEqual(dream["kwargs"]["metadata"]["journal_kind"], "dream")
         self.assertEqual(dream["kwargs"]["session_id"], "private_companion_v2:journal:dream")
         self.assertEqual(dream["kwargs"]["tags"], ["journal", "dream", "persona_life"])
@@ -431,7 +430,7 @@ class ProactiveMemoryPushTests(MemoryPluginDeclaration, ContactFixture, unittest
 
         self.assertEqual((task.state, task.effect), ("succeeded", "committed"))
         call = bridge.only("record_proactive_message")
-        self.assertIn(self.visible(), call["content"])
+        self.assertEqual(call["content"], f"我主动说过：{self.visible()}")
         self.assertEqual(call["kwargs"]["memory_id"],
                          push_memory_id(PUSH_PROACTIVE_MESSAGE, "proactive", self.contact_id(app)))
         self.assertEqual(call["kwargs"]["source_plugin"], PUSH_SOURCE_PLUGIN)
