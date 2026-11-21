@@ -64,11 +64,11 @@ _TOOL_CALL_PROTOCOL_START = re.compile(
 _TOOL_CALL_PROTOCOL_BLANKS = re.compile(r"\n{3,}")
 # Some providers expose free-form reasoning as plain text with no XML wrapper.
 # DeepSeek V4-style drafts have the shape "th...end<visible text>" after the
-# first visible paragraph.  Anchor on the draft start (`th` + CJK) and on
-# `end` followed by CJK/newline so ordinary English prose is untouched.
+# first visible paragraph. Require a provider marker or a quoted user recap,
+# and match a standalone `end` marker before the visible response.
 _BARE_DRAFT_BLOCK = re.compile(
-    r"(?ms)^[ \t]*(?:th(?=[\u4e00-\u9fff])|(?=用户(?:说|问)|「))"
-    r"[\s\S]*?end(?![A-Za-z])(?=[ \t]*(?:[\u4e00-\u9fff]|\n|$))"
+    r"(?m)^[ \t]*(?:th(?=[\u4e00-\u9fff])|(?=用户(?:说|问)[：: \t]*[「『“]))"
+    r"[\s\S]*?(?<![A-Za-z0-9_])end(?![A-Za-z0-9_])(?=[ \t]*(?:[\u4e00-\u9fff]|\r?$))"
 )
 _PAIRS = {"(": ")", "[": "]", "{": "}", "（": "）", "【": "】", "《": "》",
           "〈": "〉", "「": "」", "『": "』", "“": "”", "‘": "’", '"': '"'}
@@ -568,7 +568,10 @@ def unwrap_text_emit_calls(text):
 def strip_internal_expression_protocol(text):
     """Remove internal control blocks and unparsed tool-call syntax."""
     if type(text) is str and "end" in text:
-        text = _BARE_DRAFT_BLOCK.sub("", text)
+        literals = tuple(match.span() for match in _CONTROL_CODE_SPAN_PATTERN.finditer(text))
+        text = _BARE_DRAFT_BLOCK.sub(
+            lambda match: match[0] if any(start < match.end() and match.start() < end
+                                        for start, end in literals) else "", text)
     return strip_tool_call_protocol(strip_paired_control_blocks(unwrap_text_emit_calls(text)))
 
 

@@ -308,7 +308,8 @@ def prepare_core_reply_event(
             from .core_reply_idempotency import (record_core_reply_delivery,
                                                   should_drop_core_reply_duplicate)
             result = None
-            for part in native_reply_messages(event, message):
+            outbound_parts = native_reply_messages(event, message)
+            for part in outbound_parts:
                 # A repeat right after an accepted body is the same delivery twice.
                 # Only this guarded native loop is compared: send_streaming paths
                 # that do not re-enter it (native streaming bubbles) are not seen.
@@ -353,6 +354,49 @@ def prepare_core_reply_event(
                     observe_core_reaction_returned(event, part, submit=state.get("media_submit"))
                 except Exception:
                     pass
+            # In the default separate-after mode, the text has already been
+            # accepted by the platform.  Retrieve the optional image only now,
+            # then deliver it as its own native message so retrieval latency
+            # cannot delay the final text segment.
+            if any(sent_core_text(part).strip() for part in outbound_parts):
+                from .core_reply_reaction_delivery import prepare_deferred_core_reaction_image
+                attachment = await prepare_deferred_core_reaction_image(
+                    event, authorize=authorize_delivery)
+                if attachment is not None:
+                    part = attachment
+                    try:
+                        await authorize_delivery()
+                        wire = await native_wire_message(event, part)
+                        assert_core_reply_connection(event)
+                    except BaseException:
+                        release_pending_voice_claim(event)
+                        raise
+                    state["send_attempts"] += 1
+                    notify_delivery("started")
+                    from .core_reply_behavior import observe_core_behavior_delivery
+                    observe_core_behavior_delivery(event, part, "started")
+                    try:
+                        result = await state["_original_send"](wire, *args, **kwargs)
+                    except BaseException:
+                        state["send_unknown"] += 1
+                        notify_delivery("unknown")
+                        observe_core_behavior_delivery(event, part, "unknown")
+                        raise
+                    if result is False:
+                        release_pending_voice_claim(event)
+                        state["send_failed"] += 1
+                        notify_delivery("failed")
+                        observe_core_behavior_delivery(event, part, "failed")
+                        raise TaskError("core_reply_platform_unavailable", "the platform did not accept this reply")
+                    state["send_returns"] += 1
+                    record_core_reply_delivery(event, part)
+                    notify_delivery("returned")
+                    observe_core_behavior_delivery(event, part, "returned")
+                    try:
+                        from .core_reply_reaction_delivery import observe_core_reaction_returned
+                        observe_core_reaction_returned(event, part, submit=state.get("media_submit"))
+                    except Exception:
+                        pass
             return result
 
         def notify_delivery(stage: str) -> None:
