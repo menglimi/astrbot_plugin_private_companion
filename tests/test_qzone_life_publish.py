@@ -733,7 +733,7 @@ class MultiHostPublisherTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transport.sent, [])
         self.assertEqual(app.qzone.state(ctx_a).publish_count, 0)
 
-    async def test_action_blocked_logs_redacted_reason_and_defers_to_normal_interval_without_30min_loop(self):
+    async def test_action_blocked_logs_known_duplicate_reason_and_defers_to_normal_interval(self):
         transport = FakeTransport()
         with patch("astrbot_host.multi_controller.build_qzone_transport", return_value=transport):
             app = await self.start_host()
@@ -764,8 +764,8 @@ class MultiHostPublisherTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(after_30m, {"reason": "interval"})
             self.assertEqual(chat.await_count, 1)
 
-        # Verify secret-like tokens in TaskError reasons are redacted in warning logs.
-        secret_err = TaskError("qzone_action_blocked", "策略拒绝 p_skey=super_secret_cookie_12345 详情")
+        # Unknown TaskError text can contain multi-part credentials.
+        secret_err = TaskError("qzone_action_blocked", "Authorization: Bearer test-token Cookie: a=test-cookie")
         later_6h = at + timedelta(hours=6)
         with patch.object(self.native.provider, "text_chat",
                           AsyncMock(return_value=NS(completion_text="全新一条毫不相关的傍晚散步记录。"))), \
@@ -774,8 +774,10 @@ class MultiHostPublisherTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
                 blocked2 = await publisher.tick(now=later_6h)
         self.assertEqual(blocked2, {"reason": "publish_failed", "code": "qzone_action_blocked"})
         log_text2 = "\n".join(captured2.output)
-        self.assertIn("reason=策略拒绝 [redacted] 详情", log_text2)
-        self.assertNotIn("super_secret_cookie_12345", log_text2)
+        self.assertIn("code=qzone_action_blocked", log_text2)
+        self.assertNotIn("reason=", log_text2)
+        self.assertNotIn("test-token", log_text2)
+        self.assertNotIn("test-cookie", log_text2)
         self.assertNotIn(life_publish.RETRY_KEY, app.qzone.state(context).last_action_at)
 
         # Transient qzone_operation_failed still uses short retry_wait (30m) and retries cleanly.

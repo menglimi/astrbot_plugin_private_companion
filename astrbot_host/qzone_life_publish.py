@@ -24,7 +24,6 @@ from datetime import timedelta
 import json
 import logging
 import random
-import re
 
 from companion_v2.capabilities.models import CapabilityDesiredState
 from companion_v2.execution.models import TaskError, stamp
@@ -48,9 +47,7 @@ _UNKNOWN_DELIVERY_CODES = frozenset({
 _SHORT_RETRY_PUBLISH_CODES = frozenset({
     "qzone_operation_failed", "qzone_credential_missing", "qzone_publish_failed",
 })
-_SECRET_TOKEN_RE = re.compile(
-    r"(?i)(?:p_skey|skey|pt4_token|qzonetoken|g_tk|cookie|authorization|bearer|token|password|secret)\s*[:=]\s*\S+"
-)
+_DUPLICATE_PUBLISH_REASONS = frozenset({"这条说说和刚发过的重复", "这条说说和刚发过的太像"})
 _REASON_PRIORITY = {
     "published": 0,
     "publish_failed": 1,
@@ -68,19 +65,6 @@ _REASON_PRIORITY = {
     "qzone_unavailable": 7,
     "host_not_running": 7,
 }
-
-
-def _safe_error_reason(error, *, limit=120):
-    """Return a bounded, secret-redacted diagnostic reason for TaskError logs."""
-    if not isinstance(error, TaskError):
-        return ""
-    text = " ".join(str(error or "").split())
-    if not text:
-        return ""
-    text = _SECRET_TOKEN_RE.sub("[redacted]", text)
-    if len(text) > limit:
-        return text[:limit - 1] + "…"
-    return text
 
 
 class QzoneLifePublisher:
@@ -208,8 +192,8 @@ class QzoneLifePublisher:
                 operation_key=life_publish.operation_key(owner, decision.day, at))
         except Exception as error:  # noqa: BLE001 - publish reports its own codes; log and space the retry
             code = getattr(error, "code", "qzone_publish_failed")
-            reason_text = _safe_error_reason(error)
-            if reason_text:
+            reason_text = str(error) if isinstance(error, TaskError) and code == "qzone_action_blocked" else ""
+            if reason_text in _DUPLICATE_PUBLISH_REASONS:
                 logger.warning("[CompanionV2] 生活说说发布未完成 code=%s error_type=%s reason=%s",
                                code, type(error).__name__, reason_text)
             else:
