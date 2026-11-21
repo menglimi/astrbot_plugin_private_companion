@@ -362,7 +362,7 @@ class ReferenceMaterialManagement:
             cursor = next_cursor
 
     def open_album_folder(self, operator, context, *, at, role_id=None):
-        self._admit(operator, context, at)
+        owner = self._admit(operator, context, at)
         from pathlib import Path
         root = Path(self.runtime.data_root).resolve()
         if not root.is_dir():
@@ -373,7 +373,7 @@ class ReferenceMaterialManagement:
                 raise TaskError("generated_album_folder_unavailable", "the requested role identifier is invalid")
             if not role_id.strip():
                 effective_role_id = None
-            elif bound_role and role_id != bound_role:
+            elif role_id != bound_role:
                 raise TaskError("reference_target_changed", "the requested role does not match the active role context")
             else:
                 effective_role_id = role_id
@@ -381,7 +381,7 @@ class ReferenceMaterialManagement:
             effective_role_id = bound_role if isinstance(bound_role, str) and bound_role.strip() else None
         try:
             entries = self._iter_album_items(context, at) if effective_role_id is not None else ()
-            synced = sync_generated_album_folder(root, entries, role_id=effective_role_id)
+            synced = sync_generated_album_folder(root, entries, role_id=effective_role_id, owner=owner)
         except (OSError, ValueError) as error:
             raise TaskError("generated_album_folder_unavailable", "the generated album folder could not be prepared") from error
         target = Path(synced["path"])

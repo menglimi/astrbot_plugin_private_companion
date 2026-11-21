@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import errno
 import hashlib
 import io
 import os
@@ -151,8 +150,8 @@ class GeneratedAlbumStorageUnitTests(unittest.TestCase):
         self.assertEqual(name_edit, f"20261012-043045-edit-{album_short_id('generated-image:inv-2:0')}.jpg")
         self.assertRegex(name_mask, r"^20261012-040506-mask_edit-[0-9a-f]{12}\.webp$")
 
-    def test_hardlink_from_conversation_images_keeps_immutable_source_untouched(self):
-        with tempfile.TemporaryDirectory(prefix="companion-v2-album-link-") as temporary:
+    def test_editing_or_deleting_an_album_copy_preserves_the_original(self):
+        with tempfile.TemporaryDirectory(prefix="companion-v2-album-copy-") as temporary:
             data_root = Path(temporary)
             png = _image_bytes("#2b6cb0", fmt="PNG")
             store_image(data_root, png, mime_type="image/png")
@@ -173,10 +172,14 @@ class GeneratedAlbumStorageUnitTests(unittest.TestCase):
             materialized = files[0]
             self.assertRegex(materialized.name, r"^20261012-040506-generate-[0-9a-f]{12}\.png$")
             self.assertEqual(materialized.read_bytes(), png)
-            self.assertTrue(os.path.samefile(source_file, materialized))
-            self.assertGreaterEqual(source_file.stat().st_nlink, 2)
+            self.assertFalse(os.path.samefile(source_file, materialized))
 
-            # Removing the materialized mirror link never mutates or deletes the immutable store.
+            edited = _image_bytes("#bb1122")
+            materialized.write_bytes(edited)
+            self.assertEqual(source_file.read_bytes(), before_bytes)
+            same = sync_generated_album_folder(data_root, [entry], role_id="kazusa")
+            self.assertEqual(same["synced_count"], 0)
+            self.assertEqual(materialized.read_bytes(), edited)
             materialized.unlink()
             self.assertTrue(source_file.is_file())
             self.assertEqual(source_file.read_bytes(), before_bytes)
@@ -185,31 +188,26 @@ class GeneratedAlbumStorageUnitTests(unittest.TestCase):
             resynced = sync_generated_album_folder(data_root, [entry], role_id="kazusa")
             self.assertEqual(resynced["synced_count"], 1)
             self.assertEqual(resynced["total_count"], 1)
-            self.assertTrue(os.path.samefile(source_file, next(album_dir.iterdir())))
+            self.assertEqual(next(album_dir.iterdir()).read_bytes(), png)
 
-    def test_blob_payload_and_cross_device_os_link_fallback_use_atomic_write(self):
-        with tempfile.TemporaryDirectory(prefix="companion-v2-album-fallback-") as temporary:
+    def test_blob_and_file_backed_payloads_use_atomic_write(self):
+        with tempfile.TemporaryDirectory(prefix="companion-v2-album-write-") as temporary:
             data_root = Path(temporary)
             blob_jpg = _image_bytes("#c53030", fmt="JPEG")
-            linked_png = _image_bytes("#2f855a", fmt="PNG")
-            store_image(data_root, linked_png, mime_type="image/png")
-            source_png = image_root(data_root) / (hashlib.sha256(linked_png).hexdigest() + ".png")
+            stored_png = _image_bytes("#2f855a", fmt="PNG")
+            store_image(data_root, stored_png, mime_type="image/png")
+            source_png = image_root(data_root) / (hashlib.sha256(stored_png).hexdigest() + ".png")
 
             blob_entry = _album_entry(
                 "generated-image:inv-blob:0", blob_jpg,
                 action="image.edit", mime_type="image/jpeg",
             )
-            cross_fs_entry = _album_entry(
-                "generated-image:inv-exdev:0", linked_png,
+            stored_entry = _album_entry(
+                "generated-image:inv-stored:0", stored_png,
                 action="image.generate", mime_type="image/png",
             )
 
-            # Simulate cross-volume EXDEV on os.link: both entries must still materialize atomically.
-            with patch(
-                "companion_v2.storage.generated_album.os.link",
-                side_effect=OSError(errno.EXDEV, "Invalid cross-device link"),
-            ):
-                result = sync_generated_album_folder(data_root, [blob_entry, cross_fs_entry], role_id="role-a")
+            result = sync_generated_album_folder(data_root, [blob_entry, stored_entry], role_id="role-a")
 
             album_dir = Path(result["path"])
             self.assertEqual(result["synced_count"], 2)
@@ -220,10 +218,10 @@ class GeneratedAlbumStorageUnitTests(unittest.TestCase):
             self.assertFalse(any(p.name.startswith(".album-") for p in files))
             by_ext = {p.suffix: p.read_bytes() for p in files}
             self.assertEqual(by_ext[".jpg"], blob_jpg)
-            self.assertEqual(by_ext[".png"], linked_png)
+            self.assertEqual(by_ext[".png"], stored_png)
             # Immutable store was neither mutated nor polluted with the BLOB image.
             self.assertEqual(list(image_root(data_root).iterdir()), [source_png])
-            self.assertEqual(source_png.read_bytes(), linked_png)
+            self.assertEqual(source_png.read_bytes(), stored_png)
 
     def test_incremental_idempotency_skips_already_materialized_short_ids(self):
         with tempfile.TemporaryDirectory(prefix="companion-v2-album-idem-") as temporary:
@@ -240,11 +238,8 @@ class GeneratedAlbumStorageUnitTests(unittest.TestCase):
             first = sync_generated_album_folder(data_root, [e1, e2], role_id="role-a")
             self.assertEqual((first["synced_count"], first["total_count"]), (2, 2))
 
-            # Second sync must skip both by <short_id> without invoking link or atomic write.
+            # Second sync skips existing copies.
             with patch(
-                "companion_v2.storage.generated_album.os.link",
-                side_effect=AssertionError("os.link should not be called on already-synced items"),
-            ), patch(
                 "companion_v2.storage.generated_album.tempfile.mkstemp",
                 side_effect=AssertionError("mkstemp should not be called on already-synced items"),
             ):
@@ -264,7 +259,7 @@ class GeneratedAlbumStorageUnitTests(unittest.TestCase):
                     role_album_dir(data_root, "role-a")
                 with self.assertRaises(ValueError):
                     materialize_album_image(
-                        data_root, data_root, filename="test.png", content=_image_bytes("#000000"),
+                        data_root, filename="test.png", content=_image_bytes("#000000"),
                     )
 
 
@@ -334,7 +329,7 @@ class ReferenceManagementOpenAlbumFolderTests(unittest.TestCase):
                 first = manager.open_album_folder(SimpleNamespace(), context, at="2026-10-12T05:00:00+00:00")
                 second = manager.open_album_folder(SimpleNamespace(), context, at="2026-10-12T05:01:00+00:00")
 
-            expected_dir = (data_root.resolve() / "media" / "generated-album" / "kazusa")
+            expected_dir = role_album_dir(data_root, "kazusa", owner="owner-1")
             self.assertEqual(first["path"], str(expected_dir))
             self.assertTrue(first["opened"])
             self.assertEqual(first["synced_count"], 2)
@@ -350,9 +345,17 @@ class ReferenceManagementOpenAlbumFolderTests(unittest.TestCase):
 
             materialized = sorted(expected_dir.iterdir(), key=lambda p: p.name)
             self.assertEqual(len(materialized), 2)
-            self.assertTrue(any(os.path.samefile(source_marker, path) for path in materialized))
+            self.assertTrue(any(path.suffix == ".png" and path.read_bytes() == marker_png for path in materialized))
+            self.assertFalse(any(os.path.samefile(source_marker, path) for path in materialized))
             self.assertTrue(any(path.suffix == ".jpg" and path.read_bytes() == blob_jpg for path in materialized))
             self.assertFalse(any(album_short_id("generated-image:inv-h:0") in path.name for path in materialized))
+
+            manager._admit = lambda operator, context, at: "owner-2"
+            generated_images.page_map = {None: {"items": (), "next_cursor": None}}
+            with patch(f"companion_v2.references.management.{launcher_attr}", side_effect=fake_launch):
+                separate = manager.open_album_folder(SimpleNamespace(), context, at="2026-10-12T05:00:00+00:00")
+            self.assertNotEqual(separate["path"], first["path"])
+            self.assertEqual(list(Path(separate["path"]).iterdir()), [])
 
     def test_open_album_folder_guards_hostile_role_mismatch_and_root_compat(self):
         with tempfile.TemporaryDirectory(prefix="companion-v2-mgmt-guard-") as temporary:
@@ -437,6 +440,7 @@ from PIL import Image
 from astrbot.api.web import PluginMultiDict
 from companion_v2.conversation.media.generated import GeneratedAlbumImage
 from companion_v2.conversation.media.models import ImageDescriptor
+from companion_v2.storage.generated_album import role_album_dir
 from companion_v2.storage.image_payloads import image_root, store_image
 from tests.multi_host_support import MultiFixture
 
@@ -513,8 +517,8 @@ class OpenFolderRouteTest(MultiFixture, unittest.IsolatedAsyncioTestCase):
                 first_res = await call(first + "/album/open-folder", {})
                 self.assertEqual(first_res["status"], "ok", first_res)
                 payload = first_res["data"]
-                from companion_v2.storage.generated_album import safe_role_slug
-                expected_dir = data_root / "media" / "generated-album" / safe_role_slug(active_role_id)
+                active_context = self.controller.authority.context("first", "role-a")
+                expected_dir = role_album_dir(data_root, active_role_id, owner=app.references.owner(active_context))
                 self.assertEqual(Path(payload["path"]), expected_dir)
                 self.assertNotEqual(Path(payload["path"]), data_root)
                 self.assertTrue(payload["opened"])
@@ -524,7 +528,8 @@ class OpenFolderRouteTest(MultiFixture, unittest.IsolatedAsyncioTestCase):
 
                 files = sorted(expected_dir.iterdir(), key=lambda p: p.name)
                 self.assertEqual(len(files), 2)
-                self.assertTrue(any(os.path.samefile(source_file, p) for p in files))
+                self.assertTrue(any(p.suffix == ".png" and p.read_bytes() == marker_png for p in files))
+                self.assertFalse(any(os.path.samefile(source_file, p) for p in files))
                 self.assertTrue(any(p.suffix == ".jpg" and p.read_bytes() == blob_jpg for p in files))
                 self.assertEqual(source_file.read_bytes(), marker_png)
 
@@ -576,7 +581,7 @@ from pathlib import Path
 from unittest.mock import patch
 from astrbot_host.management_identity import dashboard_operator
 from companion_v2.references.management import ReferenceMaterialManagement
-from companion_v2.storage.generated_album import safe_role_slug
+from companion_v2.storage.generated_album import role_album_dir
 from companion_v2.storage.image_payloads import MARKER_PREFIX, image_root, is_marker, load_image
 from tests.test_conversation_images import image_bytes
 from tests.test_core_reply_images import CoreReplyImagesTests
@@ -636,8 +641,8 @@ class RealNativeAlbumFolderTest(CoreReplyImagesTests):
             first = manager.open_album_folder(operator, self.context, at=self.clock.now())
             second = manager.open_album_folder(operator, self.context, at=self.clock.now())
 
-        role_slug = safe_role_slug(self.context.role_binding.role.subject_id)
-        expected_dir = data_root / "media" / "generated-album" / role_slug
+        expected_dir = role_album_dir(data_root, self.context.role_binding.role.subject_id,
+                                      owner=self.app.references.owner(self.context))
         self.assertEqual(Path(first["path"]), expected_dir)
         self.assertEqual(first["synced_count"], 2)
         self.assertEqual(first["total_count"], 2)
@@ -650,8 +655,7 @@ class RealNativeAlbumFolderTest(CoreReplyImagesTests):
         by_bytes = {p.read_bytes(): p for p in materialized}
         self.assertIn(red_bytes, by_bytes)
         self.assertIn(blue_bytes, by_bytes)
-        # Marker-backed red PNG is hardlinked; legacy BLOB blue PNG is atomically extracted.
-        self.assertTrue(os.path.samefile(red_source, by_bytes[red_bytes]))
+        self.assertFalse(os.path.samefile(red_source, by_bytes[red_bytes]))
         self.assertIn("-generate-", by_bytes[red_bytes].name)
         self.assertIn("-edit-", by_bytes[blue_bytes].name)
         # Immutable hash store and native_image.sqlite3 were not mutated.

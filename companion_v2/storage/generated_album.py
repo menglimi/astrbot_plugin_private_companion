@@ -2,9 +2,8 @@
 
 The immutable content-addressed hash store under ``media/conversation-images/``
 and SQLite payload rows remain the canonical source of truth and are never
-mutated or deleted.  This module maintains an incremental, browsable folder
-under ``media/generated-album/<safe_role_slug>/`` using same-volume hardlinks
-when possible and atomic temp-file writes otherwise.
+mutated or deleted. This module maintains an incremental, browsable folder
+under ``media/generated-album/`` with independently editable copies.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from pathlib import Path
 import re
 import tempfile
 
-from .image_payloads import image_extension, stored_image_path
+from .image_payloads import image_extension
 
 
 GENERATED_ALBUM_DIRNAME = "generated-album"
@@ -67,7 +66,7 @@ def generated_album_root(data_root: Path) -> Path:
     return resolved
 
 
-def role_album_dir(data_root: Path, role_id: str | None = None) -> Path:
+def role_album_dir(data_root: Path, role_id: str | None = None, *, owner: str | None = None) -> Path:
     """Resolve the role-scoped generated album directory with strict traversal guards."""
     base = generated_album_root(data_root)
     if role_id is None:
@@ -77,6 +76,9 @@ def role_album_dir(data_root: Path, role_id: str | None = None) -> Path:
     if not role_id.strip():
         return base
     slug = safe_role_slug(role_id)
+    if owner is not None:
+        owner_suffix = hashlib.sha256(owner.encode("utf-8")).hexdigest()[:12]
+        slug = f"{slug}-{owner_suffix}"
     candidate = base / slug
     if candidate.is_symlink():
         raise ValueError("generated album role folder cannot be a symlink")
@@ -154,20 +156,12 @@ def _existing_short_ids(album_dir: Path) -> set[str]:
 
 
 def materialize_album_image(
-    data_root: Path,
     album_dir: Path,
     *,
     filename: str,
     content: bytes,
-    mime_type: str = "",
 ) -> bool:
-    """Materialize one generated album image into ``album_dir``.
-
-    Uses a same-volume hardlink from ``media/conversation-images/`` when
-    available so no extra disk blocks are consumed; falls back to an atomic
-    temp-file write + ``os.replace`` for SQLite BLOBs or cross-device volumes.
-    Returns ``True`` if a new file was materialized, ``False`` if already there.
-    """
+    """Atomically write an independent copy if the album file is missing."""
     if not isinstance(content, bytes) or not content:
         raise ValueError("album image content must be non-empty bytes")
     if not isinstance(filename, str) or not filename or "/" in filename or "\\" in filename or filename in {".", ".."}:
@@ -181,22 +175,14 @@ def materialize_album_image(
     if target.exists():
         return False
 
-    source = stored_image_path(data_root, content, mime_type=mime_type)
-    if source is not None:
-        try:
-            os.link(source, target)
-            return True
-        except FileExistsError:
-            return False
-        except (OSError, AttributeError, NotImplementedError):
-            pass
-
     handle, temporary = tempfile.mkstemp(prefix=".album-", suffix=".tmp", dir=base)
     try:
         with os.fdopen(handle, "wb") as stream:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
+        if target.exists() or target.is_symlink():
+            return False
         os.replace(temporary, target)
     finally:
         if os.path.exists(temporary):
@@ -209,10 +195,11 @@ def sync_generated_album_folder(
     entries=(),
     *,
     role_id: str | None = None,
+    owner: str | None = None,
 ) -> dict:
     """Incrementally materialize missing generated album entries for one role."""
     base = generated_album_root(data_root)
-    target = role_album_dir(data_root, role_id)
+    target = role_album_dir(data_root, role_id, owner=owner)
     target.mkdir(parents=True, exist_ok=True)
     # Re-verify containment after directory creation in case of symlink swaps.
     resolved_target = target.resolve()
@@ -244,11 +231,9 @@ def sync_generated_album_folder(
             mime_type=mime_type,
         )
         if materialize_album_image(
-            data_root,
             resolved_target,
             filename=filename,
             content=content,
-            mime_type=mime_type,
         ):
             synced_count += 1
         existing.add(short_id)
