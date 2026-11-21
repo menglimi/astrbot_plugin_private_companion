@@ -69,7 +69,9 @@ MIGRATED = ("text-page.css", "voice-page.css", "memory-page.css", "learning-page
             "native-extension-panel.css", "confirmation-dialog.css",
             "workspace-loading.css",
             # 2026-10-24：旧版资料迁入的配置对照表随页面重构迁入尺度令牌。
-            "migration-config-table.css")
+            "migration-config-table.css",
+            # 2026-11-21：Pricing v2 计价工作台全部使用尺度与主题语义令牌。
+            "pricing-workbench.css")
 # 仍在使用自有尺度的页面：只统计，不判定（逐步迁移）。
 # 2026-10-02：`shell.css` 迁入后这里是空的——`pages/陪伴小屋/*.css` 全部走尺度令牌。
 #
