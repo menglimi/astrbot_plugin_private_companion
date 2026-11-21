@@ -1786,7 +1786,7 @@ class ProactiveContacts:
         scope = context.scope
         record = MemoryPushRecord(
             memory_id=push_memory_id(PUSH_PROACTIVE_MESSAGE, "proactive", contact_id),
-            content=f"Bot 主动联系对方时说：{body}",
+            content=f"我主动说过：{body}",
             kind=PUSH_PROACTIVE_MESSAGE,
             scope=_push_scope(scope.kind),
             # V2 的核心没有平台会话 id，只有 ScopeRef；用 V2 自己的稳定命名空间，
