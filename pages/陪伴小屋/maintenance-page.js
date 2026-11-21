@@ -33,7 +33,8 @@ window.CompanionMaintenancePage = (() => {
     }).format(date);
   };
   const taskName = value => ({
-    "conversation.reply": "对话回复", "proactive.plan": "主动联系规划", "proactive.compose": "主动联系写作",
+    "conversation.reply": "对话回复", "conversation.poke_reply": "戳一戳回复",
+    "proactive.plan": "主动联系规划", "proactive.compose": "主动联系写作",
     "conversation.astrbot_core": "AstrBot 核心对话",
     "proactive.judge": "主动联系复核", "memory.reflect": "事实整理",
     "role.state.maintain": "角色状态", "calendar.plan": "日程规划",
@@ -45,7 +46,7 @@ window.CompanionMaintenancePage = (() => {
     "content.authoring.draft": "内容起草", "conversation.context_image_caption": "图片摘要",
     "conversation.image_narration": "当前图片转述", "conversation.video_narration": "原生视频转述",
     "conversation.image_review": "图片审核", "image_review": "图片审核", "screen.interpretation": "屏幕理解",
-    "screen.peek": "屏幕速览", "role.state.maintenance": "状态维护",
+    "screen.peek": "屏幕速览", "reality.text": "现实提醒文案", "role.state.maintenance": "状态维护",
     "role.calendar.plan": "日历规划", "memory.reflection": "整理与反思",
     "conversation.group.review": "群聊审核",
     "reality_touch_camera": "摄像头视觉分析",
@@ -56,12 +57,13 @@ window.CompanionMaintenancePage = (() => {
   })[value] || "其他模型任务";
   const promptTaskGroups = [
     ["对话", [["conversation.reply", "对话回复", "AstrBot 核心回复的 V2 附加提示"],
+      ["conversation.poke_reply", "戳一戳回复", "收到戳一戳时生成简短自然的回应"],
       ["conversation.image_narration", "当前图片转述", "为本轮已授权图片生成简短文字描述"],
       ["conversation.video_narration", "原生视频转述", "将原视频交给支持视频输入的模型直接理解"]]],
     ["主动与整理", [["proactive.plan", "主动联系规划", "双阶段模式下判断时机与切口"], ["proactive.compose", "主动联系写作", "生成主动联系正文"], ["proactive.judge", "主动联系复核", "复核是否符合当前人格与来源"], ["memory.reflect", "事实整理", "从已授权素材整理认识"]]],
     ["生活与成长", [["calendar.plan", "日程规划", "基于已有目标规划下一步"], ["role.state.maintain", "角色状态", "维护角色的连续生活状态"], ["role.reading.consume", "阅读理解", "阅读实际提供的原文"], ["role.growth.progress", "成长进展", "根据已完成确认提出进展"], ["role.self_review", "自我复盘", "回看已完成的角色生活记录"], ["role.expression.learn", "表达学习", "从已授权表达样本提炼风格"]]],
     ["私人书写", [["role.journal.diary", "日记", "保存私人书写"], ["role.journal.dream", "梦境", "保存梦境记录"], ["role.journal.derive", "书写整理", "整理已有文字素材"], ["role.journal.select", "素材选择", "选择本次书写素材"]]],
-    ["视觉与媒体", [["conversation.context_image_caption", "图片摘要", "从已授权图片提取可见事实"], ["image_review", "图片审核", "按合同检查图片内容"], ["conversation.image_review", "图片审核", "按合同检查图片内容"], ["screen.interpretation", "屏幕理解", "理解已授权屏幕画面"], ["screen.peek", "屏幕速览", "对已授权屏幕进行短摘要"]]],
+    ["视觉与媒体", [["conversation.context_image_caption", "图片摘要", "从已授权图片提取可见事实"], ["image_review", "图片审核", "按合同检查图片内容"], ["conversation.image_review", "图片审核", "按合同检查图片内容"], ["screen.interpretation", "屏幕理解", "理解已授权屏幕画面"], ["screen.peek", "屏幕速览", "对已授权屏幕进行短摘要"], ["reality.text", "现实提醒文案", "现实提醒、唤醒回执和短回复的文字生成"]]],
     ["内容工作", [["content.authoring.draft", "内容起草", "根据已提供素材起草内容"]]],
   ];
   const promptTaskNames = new Map(promptTaskGroups.flatMap(([group, items]) => items.map(([kind, label, description]) => [kind, {group, label, description}])));
