@@ -38,9 +38,10 @@ from companion_v2.storage.schema import (
     MIGRATION_V65_TO_V66_FINGERPRINT, MIGRATION_V65_TO_V66_ID, SCHEMA_VERSION_V66,
     MIGRATION_V66_TO_V67_FINGERPRINT, MIGRATION_V66_TO_V67_ID, SCHEMA_VERSION_V67,
     MIGRATION_V67_TO_V68_FINGERPRINT, MIGRATION_V67_TO_V68_ID, SCHEMA_VERSION_V68,
+    MIGRATION_V68_TO_V69_FINGERPRINT, MIGRATION_V68_TO_V69_ID, SCHEMA_VERSION_V69,
     migration_count,
 )
-from tests.execution_support import remove_v21, remove_v22, remove_v31, remove_v32, remove_v33, remove_v34, remove_v35, remove_v36, remove_v52, remove_v53, remove_v55, remove_v57, remove_v58, remove_v59, remove_v60, remove_v61, remove_v62, remove_v63, remove_v64, remove_v65, remove_v66, remove_v67, remove_v68
+from tests.execution_support import remove_v21, remove_v22, remove_v31, remove_v32, remove_v33, remove_v34, remove_v35, remove_v36, remove_v52, remove_v53, remove_v55, remove_v57, remove_v58, remove_v59, remove_v60, remove_v61, remove_v62, remove_v63, remove_v64, remove_v65, remove_v66, remove_v67, remove_v68, remove_v69
 
 
 class StorageMigrationTests(unittest.TestCase):
@@ -570,7 +571,62 @@ class StorageMigrationTests(unittest.TestCase):
         for _ in range(2):
             upgraded = self.open_runtime()
             self.assertEqual(upgraded.read_one(
-                "SELECT value FROM runtime_metadata WHERE key = 'schema_version'", ())["value"], SCHEMA_VERSION_V68)
+                "SELECT value FROM runtime_metadata WHERE key = 'schema_version'", ())["value"], SCHEMA_VERSION)
+            records.append(tuple(tuple(row) for row in upgraded.read_all(
+                "SELECT * FROM schema_migrations ORDER BY migration_id", ())))
+            upgraded.close()
+        self.assertEqual(records[0], records[1])
+        self.assertEqual(len(records[0]), migration_count())
+
+    def test_v68_upgrade_adds_laya_scope_key_column_and_index(self):
+        runtime = self.open_runtime()
+        with runtime.transaction() as connection:
+            connection.executemany("""INSERT INTO laya_decision_events
+                (event_id, origin_key, source, status, mode, enabled_fields_json, observed_at, processing_json)
+                VALUES (?, 'legacy-origin', 'conversation', 'ok', 'remote', '{}', '2026-11-20T00:00:00+00:00', ?)""",
+                [("a" * 32, None), ("b" * 32, '{"scope":{"scope_key":"scope-a"}}')])
+        runtime.close()
+        with closing(sqlite3.connect(self.database)) as connection:
+            remove_v69(connection)
+            connection.execute("UPDATE runtime_metadata SET value = ? WHERE key = 'schema_version'",
+                               (SCHEMA_VERSION_V68,))
+            connection.commit()
+
+        upgraded = self.open_runtime()
+        migration = upgraded.read_one("SELECT * FROM schema_migrations WHERE migration_id = ?",
+                                      (MIGRATION_V68_TO_V69_ID,))
+        self.assertEqual((migration["from_version"], migration["to_version"], migration["fingerprint"]),
+                         (SCHEMA_VERSION_V68, SCHEMA_VERSION_V69, MIGRATION_V68_TO_V69_FINGERPRINT))
+        columns = {row["name"] for row in upgraded.read_all("PRAGMA table_info(laya_decision_events)", ())}
+        self.assertIn("scope_key", columns)
+        legacy = upgraded.read_one("SELECT scope_key FROM laya_decision_events WHERE event_id = ?", ("a" * 32,))
+        self.assertIsNone(legacy["scope_key"])
+        scoped = upgraded.read_one("SELECT scope_key FROM laya_decision_events WHERE event_id = ?", ("b" * 32,))
+        self.assertEqual(scoped["scope_key"], "scope-a")
+        names = {row["name"] for row in upgraded.read_all(
+            "SELECT name FROM sqlite_master WHERE type = 'index'", ())}
+        self.assertIn("laya_decision_events_scope_recent_idx", names)
+        plan = " | ".join(row["detail"] for row in upgraded.read_all(
+            "EXPLAIN QUERY PLAN SELECT event_id FROM laya_decision_events "
+            "WHERE scope_key = ? ORDER BY observed_at DESC, rowid DESC LIMIT ?",
+            ("scope-a", 1)))
+        self.assertIn("laya_decision_events_scope_recent_idx", plan)
+        self.assertNotIn("SCAN laya_decision_events", plan)
+        self.assertNotIn("TEMP B-TREE", plan)
+        upgraded.close()
+
+    def test_v69_upgrade_is_idempotent_on_repeated_open(self):
+        self.open_runtime().close()
+        with closing(sqlite3.connect(self.database)) as connection:
+            remove_v69(connection)
+            connection.execute("UPDATE runtime_metadata SET value = ? WHERE key = 'schema_version'",
+                               (SCHEMA_VERSION_V68,))
+            connection.commit()
+        records = []
+        for _ in range(2):
+            upgraded = self.open_runtime()
+            self.assertEqual(upgraded.read_one(
+                "SELECT value FROM runtime_metadata WHERE key = 'schema_version'", ())["value"], SCHEMA_VERSION_V69)
             records.append(tuple(tuple(row) for row in upgraded.read_all(
                 "SELECT * FROM schema_migrations ORDER BY migration_id", ())))
             upgraded.close()
