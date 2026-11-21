@@ -1,4 +1,4 @@
-﻿/* 状态与日程的边界：计划不能冒充执行，缺失数据不能补成生活事实。 */
+/* 状态与日程的边界：计划不能冒充执行，缺失数据不能补成生活事实。 */
 "use strict";
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -121,6 +121,17 @@ test("节目单把安排标题和说明放在时间之前，短空档不占主�
   assert.match(html,/读完这一章/);
   assert.doesNotMatch(html,/30分钟/,"短空档不应占主列表");
   assert.doesNotMatch(html,/今天已结束/);
+});
+
+test("今日时间线按时间升序显示，即使接口返回倒序", () => {
+  const state=status([
+    event("晚上安排","2026-09-30T15:50:00Z","2026-09-30T16:20:00Z"),
+    event("下午安排","2026-09-30T12:00:00Z","2026-09-30T12:30:00Z"),
+    event("傍晚安排","2026-09-30T09:20:00Z","2026-09-30T09:50:00Z"),
+  ]);
+  const html=renderSchedule({now,state,life:life([])});
+  assert(html.indexOf("傍晚安排")<html.indexOf("下午安排"));
+  assert(html.indexOf("下午安排")<html.indexOf("晚上安排"));
 });
 
 test("共享睡眠以确认标记睡眠中，跨日计划有日期，并说明缺少执行窗口", () => {

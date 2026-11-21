@@ -66,6 +66,15 @@ class RoleStateRecords(VersionedRecords):
 
     def shared_source(self, context, reference):
         """A certificate grants only the body's projection, never raw source text."""
+        if reference.owner not in {"role.state", "role.state.cycle"}:
+            return False
+        from companion_v2.identity_policy.private_domain import source_ref
+        current = super().get(context, "current")
+        if current is not None and any(
+            reference in tuple(source_ref(s) for s in current.get(field, ()))
+            for field in ("sources", "cycle_sources")
+        ):
+            return True
         rows = self.runtime.read_all("""SELECT record_json FROM role_state_history
             WHERE owner_key = ? AND record_id = 'current'
               AND (json_extract(record_json, '$.sources[0].source_id') = ?
@@ -74,9 +83,6 @@ class RoleStateRecords(VersionedRecords):
             (self.owner_key(context), reference.source_id, reference.source_id))
         if not rows:
             return False
-        from companion_v2.identity_policy.private_domain import source_ref
         record = json.loads(rows[0]["record_json"])
-        if reference.owner not in {"role.state", "role.state.cycle"}:
-            return False
         return any(reference in tuple(source_ref(s) for s in record.get(field, ()))
                    for field in ("sources", "cycle_sources"))

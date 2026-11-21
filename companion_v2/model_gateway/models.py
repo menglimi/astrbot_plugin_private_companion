@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import inspect
 import json
+import re
 from typing import Awaitable, Callable
 
 from companion_v2.conversation.foreground import ModelDraft, PromptRequest
@@ -18,6 +19,8 @@ from .response_diagnostics import ResponseDiagnostics
 
 MAX_TOOL_CATALOG = 64
 MAX_MODEL_OUTPUT_TOKENS = 65_536
+_HEX64 = re.compile(r"\A[0-9a-f]{64}\Z")
+_EMPTY_AVAILABILITY_HASH = digest({"deferred": [], "unavailable": []})
 
 # A model call whose provider never returned a usage receipt would otherwise keep
 # its ceiling in ``held_tokens`` for the lifetime of the installation. The
@@ -336,7 +339,7 @@ class CacheSignature:
         if not self.context_multiset_hash:
             object.__setattr__(self, "context_multiset_hash", digest(sorted(self.context_hashes)))
         if not self.context_availability_hash:
-            object.__setattr__(self, "context_availability_hash", digest({"deferred": [], "unavailable": []}))
+            object.__setattr__(self, "context_availability_hash", _EMPTY_AVAILABILITY_HASH)
         if self.context_material_count == -1:
             object.__setattr__(self, "context_material_count", len(self.context_hashes))
         if (type(self.system_parts) is not tuple or len(self.system_parts) > 32
@@ -353,8 +356,7 @@ class CacheSignature:
                   self.message_count, self.system_message_count, self.system_chars,
                   self.system_bytes, self.tool_count, self.tool_bytes, self.image_count,
                   self.audio_count, self.video_count)
-        if (any(type(value) is not str or len(value) != 64
-                or any(char not in "0123456789abcdef" for char in value) for value in hashes)
+        if (any(type(value) is not str or _HEX64.match(value) is None for value in hashes)
                 or any(type(value) is not int or not 0 <= value <= 2**31 - 1 for value in counts)
                 or type(self.context_observed) is not bool
                 or type(self.estimates_observed) is not bool

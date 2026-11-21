@@ -195,6 +195,8 @@ class SourceRepository:
                     encode_timestamp(observed_at),
                 ),
             )
+            from .dependencies import invalidate_batch
+            invalidate_batch(self._runtime, source_key=_source_key(record.reference))
         return Outcome.success(record)
 
     def revoke(
@@ -245,6 +247,8 @@ class SourceRepository:
                     expected_governance_revision,
                 ),
             )
+            from .dependencies import invalidate_batch
+            invalidate_batch(self._runtime, clear_all=True)
         return Outcome.success(
             replace(
                 current,

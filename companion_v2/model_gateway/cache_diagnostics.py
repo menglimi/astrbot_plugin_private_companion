@@ -23,6 +23,7 @@ _CHANGE_SEVERITY = {
     "context_availability_change": "low",
 }
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2}
+_EMPTY_AVAILABILITY_HASH = digest({"deferred": [], "unavailable": []})
 
 
 def event_severity(changes):
@@ -218,10 +219,9 @@ def signature_for_payload(model, messages, tools) -> CacheSignature:
     )
 
 
-def checked_signature(raw):
-    """Read one persisted signature defensively; malformed rows are ignored."""
+def checked_signature_record(value):
+    """Validate and construct one CacheSignature from an already-parsed dict."""
     try:
-        value = json.loads(raw)
         if (type(value) is not dict or type(value.get("version")) is not int
                 or value["version"] not in (1, 2, 3, 4, 5)):
             return None
@@ -234,8 +234,10 @@ def checked_signature(raw):
             model_hash=value["model_hash"], system_hash=value["system_hash"],
             system_parts=tuple(value["system_parts"]), tools_hash=value["tools_hash"],
             tool_parts=tuple(value["tool_parts"]),
-            context_sequence_hash=value.get("context_sequence_hash", digest(context_hashes)),
-            context_multiset_hash=value.get("context_multiset_hash", digest(sorted(context_hashes))),
+            context_sequence_hash=(value["context_sequence_hash"] if "context_sequence_hash" in value
+                                   else digest(context_hashes)),
+            context_multiset_hash=(value["context_multiset_hash"] if "context_multiset_hash" in value
+                                   else digest(sorted(context_hashes))),
             context_hashes=context_hashes,
             context_material_count=value.get("context_material_count", len(context_hashes)),
             context_chars=value.get("context_chars", 0), context_bytes=value["context_bytes"],
@@ -250,7 +252,8 @@ def checked_signature(raw):
             request_estimate_observed=version >= 4 and value.get("request_estimate_observed") is True,
             request_est_tokens=value.get("request_est_tokens", 0),
             context_availability_observed=version >= 4 and value.get("context_availability_observed") is True,
-            context_availability_hash=value.get("context_availability_hash", digest({"deferred": [], "unavailable": []})),
+            context_availability_hash=(value["context_availability_hash"] if "context_availability_hash" in value
+                                       else _EMPTY_AVAILABILITY_HASH),
             deferred_material_count=value.get("deferred_material_count", 0),
             unavailable_material_count=value.get("unavailable_material_count", 0),
             request_stats_observed=version >= 2 and value.get("request_stats_observed") is True,
@@ -260,8 +263,17 @@ def checked_signature(raw):
             image_count=value.get("image_count", 0), audio_count=value.get("audio_count", 0),
             video_count=value.get("video_count", 0),
         )
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+    except (KeyError, TypeError, ValueError):
         return None
+
+
+def checked_signature(raw):
+    """Read one persisted signature defensively; malformed rows are ignored."""
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return checked_signature_record(value)
 
 
 def signature_snapshot(signature: CacheSignature) -> dict:

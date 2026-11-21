@@ -64,6 +64,8 @@ class CoreReplySentHistoryTests(ContactScheduleFixture, unittest.IsolatedAsyncio
         self.assertIn("要不要一起下一局五子棋？", prompt.context_instruction)
         self.assertIn("最近仍未结束的话头或具体邀请", prompt.context_instruction)
         self.assertIn("游戏、一起活动或通话工具", prompt.context_instruction)
+        self.assertIn("主动消息不是对某条更早用户消息的回复", prompt.context_instruction)
+        self.assertIn("不要把上一条尚未被逐字回应的用户消息补答进来", prompt.context_instruction)
         self.assertNotIn("五子棋", prompt.stable_instruction)
         sent = next(section for section in prompt.context_blocks
                     if section.get("title") == "本窗口已发送的主动消息与提醒")

@@ -49,14 +49,15 @@ class MemoryProviderRegistration:
 class ExternalMemoryProviderRegistry:
     """Callbacks are leased to one live Star instance and one host lifetime."""
 
-    def __init__(self, context, *, host_active=lambda: True, owner=None):
+    def __init__(self, context, *, host_active=lambda: True, owner=None, install=True):
         self.context = context
         self._host_active = host_active
         self._entries = {}
         self._read_leases = {}
         self._closed = False
         self.owner = owner
-        setattr(context, REGISTRY_ATTRIBUTE, self)
+        if install:
+            setattr(context, REGISTRY_ATTRIBUTE, self)
 
     def register(self, provider_id, *, plugin, read=None, write=None, summary=None,
                  display_name="", priority=0, handles_model_memory=False,
@@ -209,7 +210,7 @@ class ExternalMemoryProviderRegistry:
             delattr(self.context, REGISTRY_ATTRIBUTE)
 
 
-def shared_memory_provider_registry(context, *, host_active=lambda: True, owner=None):
+def shared_memory_provider_registry(context, *, host_active=lambda: True, owner=None, claim=True):
     """Return the one live registry for this host context, creating it if needed.
 
     The public facade is constructed more than once on the same AstrBot context
@@ -222,12 +223,28 @@ def shared_memory_provider_registry(context, *, host_active=lambda: True, owner=
     ``owner`` is the controller that owns the registry. A registry from another
     owner is a previous host lifetime: after a reload the new controller must
     not reuse it, or the old instance's shutdown would close the new one.
+
+    ``claim`` controls whether an active non-owning controller may displace an
+    already-installed live registry owned by another active controller. Active
+    host startup passes ``claim=True``; lazy or secondary facades pass
+    ``claim=False`` so an older controller that is still draining during a hot
+    reload receives an uninstalled registry instead of replacing the newer
+    host's active providers.
     """
+    try:
+        active = bool(host_active())
+    except Exception:
+        active = False
+    if not active:
+        return ExternalMemoryProviderRegistry(context, host_active=host_active, owner=owner, install=False)
     existing = memory_provider_registry(context)
-    if (isinstance(existing, ExternalMemoryProviderRegistry)
-            and not existing.closed and existing.host_active()
-            and (owner is None or existing.owner is owner)):
-        return existing
+    existing_live = (isinstance(existing, ExternalMemoryProviderRegistry)
+                     and not existing.closed and existing.host_active())
+    if existing_live:
+        if owner is None or existing.owner is owner:
+            return existing
+        if not claim:
+            return ExternalMemoryProviderRegistry(context, host_active=host_active, owner=owner, install=False)
     return ExternalMemoryProviderRegistry(context, host_active=host_active, owner=owner)
 
 

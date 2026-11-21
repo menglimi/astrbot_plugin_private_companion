@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 window.CompanionMaintenancePage = (() => {
   const PREFIX = "/astrbot_plugin_private_companion";
   const MEMORY_SAMPLE_INTERVAL_MS = 10000;
@@ -927,13 +927,16 @@ window.CompanionMaintenancePage = (() => {
 
   async function configRequest(method, suffix = "", body = null, query = null) {
     const product = window.CompanionProduct;
-    if (typeof product?.request === "function") {
-      const endpoint = configEndpoint();
-      return method === "GET"
-        ? product.request("GET", endpoint, query || undefined)
-        : product.request("POST", endpoint + suffix, body || {});
-    }
+    /* CompanionProduct.request uses the same plugin-relative endpoint contract
+       as the bridge.  configEndpoint() is the absolute catalog value, so it
+       must be shortened before it reaches product.request; otherwise the host
+       receives the plugin name twice and rejects it. */
     const path = configPath();
+    if (typeof product?.request === "function") {
+      return method === "GET"
+        ? product.request("GET", path, query || undefined)
+        : product.request("POST", path + suffix, body || {});
+    }
     if (method === "GET") {
       const queryText = Object.entries(query || {})
         .map(([key, value]) => encodeURIComponent(key) + "=" + encodeURIComponent(String(value)))

@@ -1,9 +1,13 @@
 "use strict";
 window.CompanionLearningReviewPage = (() => {
   const PREFIX = "/astrbot_plugin_private_companion/";
-  const DIMENSION = {sentence_rhythm:"句长节奏",emoji:"表情符号",punctuation:"标点",directness:"直接程度",diction:"用词",formatting:"排版",other:"其他"};
-  const KIND = {growth:"进展核实",style:"风格采纳",self:"用户确认"};
-  const ACTION = {accept:"确认申报",reject:"驳回",adopt:"采纳规则"};
+  const ACTION = {accept:"确认申报",reject:"驳回",adopt:"采纳建议"};
+  const CHANNEL = {private:"私聊",group:"群聊",proactive:"主动消息",qzone:"QQ 空间",tts:"语音"};
+  const RELATIONSHIP = {stranger:"陌生",familiar:"熟悉",close:"亲近",any:"不限"};
+  const EMOTION = {normal:"常态",positive:"积极",low:"低落",guarded:"谨慎",any:"不限"};
+  const INTENT = {acknowledgement:"确认接话",question:"提问",request:"请求",help:"求助",comfort:"安慰",
+    play:"玩笑",tease:"打趣",intimacy:"亲昵",boundary:"边界",emotion:"情绪表达",casual:"闲聊",
+    proactive:"主动联系",any:"不限"};
   const ERRORS = {growth_view_stale:"记录已变化，请重新读取。",growth_progress_decided:"这条进展已经处理。",
     expression_view_stale:"候选已变化，请重新读取。",expression_decided:"这条规则已经处理。",
     self_review_view_stale:"指导已变化，请重新读取。",self_review_decided:"这条指导已经处理。",
@@ -159,8 +163,52 @@ window.CompanionLearningReviewPage = (() => {
   function selectedItem() { return data?.items.find(item => keyFor(item) === data.selected) || null; }
   function title(item) {
     if (item._type === "growth") return item.growth_title || "目标已不可读取";
-    if (item._type === "style") return item.proposal || item.observation || "表达候选";
+    if (item._type === "style") {
+      const pattern = typeof item.expression?.pattern === "string" ? item.expression.pattern.trim() : "";
+      if (pattern && !/^[-_—\s[\]()（）]+$/.test(pattern)) return pattern;
+      return item.proposal || item.observation || "表达候选";
+    }
     return item.observation || "需要确认的指导";
+  }
+  function typeFor(item) {
+    if (item._type === "growth") return "进度核实";
+    if (item._type === "self") return "摘要";
+    if (item.expression?.kind === "grammar") return "语法句式";
+    if (item.dimension === "sentence_rhythm") return "局部节奏";
+    return "情境表达";
+  }
+  function sourceKindLabel(item) {
+    return item.source_kind === "shared_pack" ? "分享包"
+      : item.source_kind === "legacy_expression" ? "旧版表达"
+        : item.source_kind === "conversation_input" ? "学习记录" : "角色表达";
+  }
+  function subtitleFor(item) {
+    if (item._type === "style") return item.expression?.situation || item.observation || "";
+    if (item._type === "growth") return "成长记录中提出的进展，等待你核实";
+    return "每日复盘中整理出的建议，等待你确认";
+  }
+  function quoteFor(item) {
+    if (item._type === "growth") return item.progress_note || "";
+    if (item._type === "style") return item.proposal || item.observation || "";
+    return item.next_action || "";
+  }
+  function conditionChips(item) {
+    const applicability = item.applicability;
+    if (!applicability || typeof applicability !== "object") return [];
+    const values = value => (Array.isArray(value) ? value : []).filter(entry => typeof entry === "string" && entry);
+    const labels = (entries, map) => entries.map(entry => map[entry] || entry).join("、");
+    const chips = [];
+    const channels = values(applicability.channels);
+    if (channels.length) chips.push(["频道", labels(channels, CHANNEL)]);
+    const relationships = values(applicability.relationship_stages);
+    if (relationships.length) chips.push(["关系", labels(relationships, RELATIONSHIP)]);
+    const emotions = values(applicability.emotion_gates);
+    if (emotions.length) chips.push(["情绪", labels(emotions, EMOTION)]);
+    const intent = typeof applicability.intent === "string" ? applicability.intent : "";
+    if (intent) chips.push(["意图", INTENT[intent] || intent]);
+    const keywords = values(applicability.keywords);
+    if (keywords.length) chips.push(["关键词", keywords.join("、")]);
+    return chips;
   }
   function evidence(item) {
     if (Array.isArray(item.evidence)) return item.evidence;
@@ -180,53 +228,94 @@ window.CompanionLearningReviewPage = (() => {
     const visible = data.items.filter(item => data.filter === "all" || item._type === data.filter);
     if(!visible.some(item=>keyFor(item)===data.selected))data.selected=visible[0]?._key||"";
     const current = selectedItem();
+    const currentIndex = current ? visible.findIndex(item => keyFor(item) === keyFor(current)) : -1;
+    const position = currentIndex + 1;
     const counts = {all:data.items.length,growth:data.items.filter(item=>item._type==="growth").length,
       style:data.items.filter(item=>item._type==="style").length,self:data.items.filter(item=>item._type==="self").length};
-    const list = visible.length ? visible.map(item => `<div class="lh-review-row-wrap">
-      <input type="checkbox" data-review-check="${e(keyFor(item))}" aria-label="选择${e(title(item))}"${data.checked.has(keyFor(item))?" checked":""}${data.writing?" disabled":""}>
+    const selectedVisible=visible.filter(item=>data.checked.has(keyFor(item)));
+    const bulkAccept=selectedVisible.filter(item=>actions(item).includes(item._type==="style"?"adopt":"accept")).length;
+    const bulkReject=selectedVisible.filter(item=>actions(item).includes("reject")).length;
+    const list = visible.length ? visible.map((item,index) => `<div class="lh-review-row-wrap${keyFor(item)===data.selected?" is-selected":""}">
+      <span class="lh-review-index">${String(index+1).padStart(2,"0")}</span>
       <button type="button" class="lh-review-row${keyFor(item)===data.selected?" is-selected":""}"
       data-review-select="${e(keyFor(item))}" aria-pressed="${keyFor(item)===data.selected}">
-      <span class="lh-review-type is-${item._type}">${KIND[item._type]}</span><span class="lh-review-row-copy"><strong>${e(title(item))}</strong>
-      <small>记录归属 · ${e(item._source.label)} · ${e(when(item.created_at))}</small></span><i data-lucide="chevron-right" aria-hidden="true"></i></button></div>`).join("")
+      <span class="lh-review-type is-${item._type}">${typeFor(item)}</span><span class="lh-review-row-copy"><strong>${e(title(item))}</strong>
+      <small>记录归属 · ${e(item._source.label)} · ${e(when(item.created_at))}</small></span></button>
+      <input class="lh-review-check" type="checkbox" data-review-check="${e(keyFor(item))}" aria-label="选择${e(title(item))}"${data.checked.has(keyFor(item))?" checked":""}${data.writing?" disabled":""}></div>`).join("")
       : `<div class="lh-review-empty">${data.loading?"正在读取…":"没有待处理记录"}</div>`;
     let detail = `<div class="lh-review-detail-empty">选择一条记录</div>`;
     if (current) {
-      const body = current._type === "growth" ? current.progress_note
-        : current._type === "style" ? current.observation : current.next_action;
       const proof = evidence(current);
-      const detailActions = actions(current).map(action => `<button type="button" class="lh-command${action==="accept"||action==="adopt"?" is-primary":""}"
-        data-review-stage="${e(action)}" data-review-key="${e(keyFor(current))}" ${data.writing?"disabled":""}>${labelAction(current,action)}</button>`).join("");
+      const conditions = conditionChips(current);
+      const quote = quoteFor(current);
+      const avoid = current._type === "style" && current.expression?.avoid ? current.expression.avoid : "";
       const confirmation = data.confirming?.key === keyFor(current)
         ? `<div class="lh-review-confirm" role="alertdialog"><span>确认${e(labelAction(current,data.confirming.action))}？</span>
           <button type="button" data-review-confirm="yes"${data.writing?" disabled":""}>确认</button><button type="button" data-review-confirm="no">取消</button></div>` : "";
-      detail = `<article class="lh-review-detail"><header><span class="lh-review-type is-${current._type}">${KIND[current._type]}</span>
-        <span>记录归属 · ${e(current._source.label)}</span><strong>${e(title(current))}</strong></header>
-        ${body?`<section class="lh-review-observation"><small>${current._type==="growth"?"申报进展":current._type==="style"?"观察":"建议"}</small><p>${e(body)}</p></section>`:""}
-        ${current._type==="style"&&current.dimension?`<p class="lh-review-meta">${e(DIMENSION[current.dimension]||current.dimension)} · ${(Number(current.confidence||0)*100).toFixed(0)}%</p>`:""}
+      const detailActions = [...actions(current)].sort((left,right)=>(left==="reject"?0:1)-(right==="reject"?0:1))
+        .map(action => action === "reject"
+          ? `<button type="button" class="lh-review-reject" data-review-stage="reject" data-review-key="${e(keyFor(current))}" ${data.writing?"disabled":""}>${labelAction(current,action)}</button>`
+          : `<button type="button" class="lh-command is-primary"
+          data-review-stage="${e(action)}" data-review-key="${e(keyFor(current))}" ${data.writing?"disabled":""}>${labelAction(current,action)}</button>`).join("");
+      const metaBits = [];
+      if (current.last_injected_at) metaBits.push(`最近注入 ${when(current.last_injected_at)}`);
+      if (current.decided_at) metaBits.push(`决定于 ${when(current.decided_at)}`);
+      if (Number(current.injections) > 0) metaBits.push(`注入 ${Number(current.injections)} 次`);
+      const meta = metaBits.join(" · ");
+      const source = current._source.label;
+      const canNext = currentIndex >= 0 && currentIndex < visible.length - 1;
+      detail = `<article class="lh-review-detail">
+        <header class="lh-review-detail-head">
+          <div class="lh-review-detail-chips"><span class="lh-review-chip is-pending"><i></i>待批阅</span>
+            <span class="lh-review-chip">${e(sourceKindLabel(current))}</span>
+            <span class="lh-review-chip is-type">${typeFor(current)}</span></div>
+          <span class="lh-review-position">第 ${String(position).padStart(2,"0")} / ${String(visible.length).padStart(2,"0")} 条</span>
+        </header>
+        <dl class="lh-review-meta-grid">
+          <div><dt>记录来源</dt><dd>${e(sourceKindLabel(current))}</dd></div>
+          <div><dt>归属</dt><dd>${e(source)}</dd></div>
+          <div><dt>记录于</dt><dd>${e(when(current.created_at))}</dd></div>
+        </dl>
+        <div class="lh-review-detail-title"><h2>${e(title(current))}</h2>${subtitleFor(current)?`<p>${e(subtitleFor(current))}</p>`:""}</div>
+        ${quote?`<blockquote class="lh-review-quote"><p>${e(quote)}</p></blockquote>`:""}
+        ${avoid?`<div class="lh-review-avoid"><span>何时不用</span><p>${e(avoid)}</p></div>`:""}
+        ${conditions.length?`<div class="lh-review-conditions"><span>适用条件</span><div>${conditions.map(([label,value])=>`<span class="lh-review-condition"><em>${label}</em>${e(value)}</span>`).join("")}</div></div>`:""}
         ${current._type==="style"&&current.source_kind==="shared_pack"?`<p class="lh-review-meta">分享包 · ${e(current.source_title||"导入规则")}</p>`:""}
         ${current._type==="style"&&(current.positive_feedback||current.negative_feedback)?`<p class="lh-review-meta">明确反馈 · 认可 ${e(current.positive_feedback||0)} / 不喜欢 ${e(current.negative_feedback||0)}</p>`:""}
         ${current._type==="style"&&current.review_reason?`<p class="lh-review-feedback-reason">${e(current.review_reason)}</p>`:""}
         ${current.unavailable_reason?`<p class="lh-review-unavailable">依据已不可读取，只能驳回。</p>`:""}
-        ${proof.length?`<details class="lh-review-evidence" open><summary>本轮依据 · ${proof.length}</summary><ol>${proof.map(text=>`<li>${e(text)}</li>`).join("")}</ol></details>`:""}
-        <footer>${detailActions}</footer>${confirmation}</article>`;
+        ${proof.length?`<details class="lh-review-evidence" open><summary>依据 · ${proof.length} 条</summary><ol>${proof.map(text=>`<li>${e(text)}</li>`).join("")}</ol></details>`:""}
+        <footer class="lh-review-detail-foot">
+          <div class="lh-review-detail-meta">${e(meta)}</div>
+          <div class="lh-review-detail-actions">
+            <button type="button" class="lh-review-next" data-review-next${canNext?"":" disabled"}><kbd>J</kbd> 下一条</button>
+            <button type="button" class="lh-review-skip" data-review-skip${canNext?"":" disabled"}>略过</button>
+            ${detailActions}
+          </div>
+        </footer>
+        ${confirmation}</article>`;
     }
-    const selectedVisible=visible.filter(item=>data.checked.has(keyFor(item)));
-    const bulkAccept=selectedVisible.filter(item=>actions(item).includes(item._type==="style"?"adopt":"accept")).length;
-    const bulkReject=selectedVisible.filter(item=>actions(item).includes("reject")).length;
     const bulkConfirm=data.confirming?.bulk?`<div class="lh-review-confirm lh-review-bulk-confirm" role="alertdialog">
       <span>确认${data.confirming.action==="accept"?"通过":"拒绝"} ${data.confirming.action==="accept"?bulkAccept:bulkReject} 条记录？</span>
       <button type="button" data-review-confirm="yes"${data.writing?" disabled":""}>确认</button><button type="button" data-review-confirm="no">取消</button></div>`:"";
-    root.innerHTML = `<div class="lh-review-head"><div class="lh-review-filters" role="group" aria-label="审阅类型">
-      ${[["all","全部"],["growth","进展核实"],["style","风格采纳"],["self","用户确认"]].map(([id,label])=>
-        `<button type="button" data-review-filter="${id}" aria-pressed="${data.filter===id}">${label}<span>${counts[id]}</span></button>`).join("")}</div>
-      <button type="button" class="lh-refresh" data-review-refresh aria-label="重新读取" title="重新读取" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></div>
-      <div class="lh-review-bulk"><label><input type="checkbox" data-review-check-all${visible.length&&selectedVisible.length===visible.length?" checked":""}${!visible.length||data.writing?" disabled":""}>全选当前结果</label>
-        <span>已选 ${selectedVisible.length}</span><button type="button" data-review-bulk="accept"${!bulkAccept||data.writing?" disabled":""}>批量通过${bulkAccept?` · ${bulkAccept}`:""}</button>
-        <button type="button" data-review-bulk="reject"${!bulkReject||data.writing?" disabled":""}>批量拒绝${bulkReject?` · ${bulkReject}`:""}</button></div>
+    root.innerHTML = `<div class="lh-review-page-head"><div class="lh-review-page-title">
+        <p class="lh-review-breadcrumb"><a href="#manage/learning/overview">学习与反思</a> <span>/</span> 审阅</p><h1>审阅中心</h1>
+        <p class="lh-review-subtitle">它把陪伴里学到的分寸写成手稿，等你逐条批注。</p></div>
+      <button type="button" class="lh-review-refresh" data-review-refresh aria-label="重新读取" title="重新读取" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw" aria-hidden="true"></i><span>刷新</span></button></div>
+      <div class="lh-review-toolbar"><div class="lh-review-filters" role="group" aria-label="审阅类型">
+        ${[["all","全部"],["growth","进度模式"],["style","风格采拈"],["self","用户认知"]].map(([id,label])=>
+          `<button type="button" data-review-filter="${id}" aria-pressed="${data.filter===id}">${label}<span>${counts[id]}</span></button>`).join("")}</div>
+        <div class="lh-review-selection"><label class="lh-review-select-all"><input type="checkbox" data-review-check-all${visible.length&&selectedVisible.length===visible.length?" checked":""}${!visible.length||data.writing?" disabled":""}>全选</label>
+          <span>已选 ${selectedVisible.length}</span><button type="button" data-review-bulk="accept"${!bulkAccept||data.writing?" disabled":""}>批量采纳</button>
+          ${bulkReject?`<button type="button" class="lh-review-bulk-reject" data-review-bulk="reject"${data.writing?" disabled":""}>驳回 · ${bulkReject}</button>`:""}</div></div>
       ${data.notice?`<p class="lh-inline-status ${data.error?"is-error":""}" role="status">${e(data.notice)}</p>`:""}
       ${data.errors?`<p class="lh-inline-status" role="status">部分记录归属暂时无法读取</p>`:""}
-      ${bulkConfirm}<div class="lh-review-layout"><section class="lh-review-queue"><header><h3>待裁决</h3><span>${visible.length}</span></header>${list}
-      ${pages.some(page=>page.next)?`<button type="button" class="lh-command" data-review-more${data.loading||data.writing?" disabled":""}>加载更多</button>`:""}</section>${detail}</div>`;
+      ${bulkConfirm}<div class="lh-review-layout"><section class="lh-review-queue">
+        <header class="lh-review-queue-head"><div><h3>待批阅</h3><p>按记录时间排列 · 逐条读，逐条定</p></div><span>${visible.length} / ${data.items.length}</span></header>
+        <div class="lh-review-queue-list">${list}</div>
+        <footer class="lh-review-queue-foot"><span>显示 ${visible.length} / ${data.items.length} 条 · 向下滚动继续</span>
+          ${pages.some(page=>page.next)?`<button type="button" class="lh-command" data-review-more${data.loading||data.writing?" disabled":""}>加载更多</button>`:""}</footer></section>
+        ${detail}</div>`;
     window.lucide?.createIcons({attrs:{"aria-hidden":"true"}});
   }
 
@@ -311,12 +400,29 @@ window.CompanionLearningReviewPage = (() => {
     data.error=!!failed;render();
   }
 
+  function selectNext() {
+    if (!data) return;
+    const visible = data.items.filter(item => data.filter === "all" || item._type === data.filter);
+    const index = visible.findIndex(item => keyFor(item) === data.selected);
+    if (index < 0 || index >= visible.length - 1) return;
+    data.selected = keyFor(visible[index + 1]);
+    data.confirming = null;
+    render();
+  }
+  function onKeydown(event) {
+    if (!data || data.writing || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (String(event.key || "").toLowerCase() !== "j") return;
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(event.target?.tagName)) return;
+    event.preventDefault();
+    selectNext();
+  }
   function onClick(event) {
     if(!data||data.writing)return;
     const filter = event.target.closest("[data-review-filter]");
     if (filter) { data.filter=filter.dataset.reviewFilter; data.confirming=null; render(); return; }
     if (event.target.closest("[data-review-refresh]")) { void read(ticket, "refresh"); return; }
     if (event.target.closest("[data-review-more]")) { void read(ticket, "append"); return; }
+    if (event.target.closest("[data-review-next]") || event.target.closest("[data-review-skip]")) { selectNext(); return; }
     const bulk=event.target.closest("[data-review-bulk]");
     if(bulk){const action=bulk.dataset.reviewBulk;data.confirming={bulk:true,action};render();return;}
     const select = event.target.closest("[data-review-select]");
@@ -342,11 +448,11 @@ window.CompanionLearningReviewPage = (() => {
   }
   function mount(host, options = {}) {
     unmount(); root=host; sources=Array.isArray(options.sources)?options.sources:[];
-    root?.addEventListener("click",onClick);root?.addEventListener("change",onChange);
+    root?.addEventListener("click",onClick);root?.addEventListener("change",onChange);root?.addEventListener("keydown",onKeydown);
     data={loading:false,writing:false,items:[],selected:"",checked:new Set(),filter:"all",notice:"",confirming:null,errors:0};
     const current=++ticket;
     if (sources.length) void read(current); else render();
   }
-  function unmount() { ticket++;readTicket++; root?.removeEventListener("click",onClick);root?.removeEventListener("change",onChange);root=null;sources=[];pages=[];data=null; }
+  function unmount() { ticket++;readTicket++; root?.removeEventListener("click",onClick);root?.removeEventListener("change",onChange);root?.removeEventListener("keydown",onKeydown);root=null;sources=[];pages=[];data=null; }
   return {mount,unmount,get state(){return data;}};
 })();

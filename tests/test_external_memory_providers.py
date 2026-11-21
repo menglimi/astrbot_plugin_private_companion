@@ -322,6 +322,142 @@ class ExternalMemoryHostTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(replacement_registry._closed)
         self.assertEqual(replacement_registry.snapshot()[0]["provider_id"], "replacement")
 
+    async def test_new_controller_replaces_unclosed_previous_generation_registry(self):
+        from astrbot_host.integration_registry import UnifiedCompanionExtensionAPI
+
+        class LegacyRegistry:
+            _closed = False
+
+            def register(self, provider_id, *, plugin, read=None, write=None, summary=None,
+                         display_name="", priority=0, handles_model_memory=False,
+                         is_active=None, timeout_seconds=5.0):
+                raise AssertionError("legacy registry without linked_memory_read must not be reused")
+
+        legacy = LegacyRegistry()
+        self.controller.context._private_companion_memory_providers = legacy
+
+        fresh_api = UnifiedCompanionExtensionAPI(self.controller)
+        self.addCleanup(fresh_api.close_memory_providers)
+        fresh_registry = memory_provider_registry(self.controller.context)
+        self.assertIsNot(fresh_registry, legacy)
+        self.assertIsInstance(fresh_registry, ExternalMemoryProviderRegistry)
+        token = fresh_api.register_memory_provider(
+            "third_party", plugin=self.plugin, read=self.read, linked_memory_read=True,
+        )
+        self.assertTrue(token)
+        self.assertTrue(fresh_api.list_memory_providers()[0]["linked_memory_read"])
+
+    async def test_new_controller_replaces_unclosed_registry_from_previous_controller(self):
+        from astrbot_host.integration_registry import UnifiedCompanionExtensionAPI
+
+        previous_controller = NS(context=self.controller.context, _terminated=False)
+        previous_api = UnifiedCompanionExtensionAPI(previous_controller, claim=True)
+        previous_registry = previous_api._memory_providers
+
+        current_api = UnifiedCompanionExtensionAPI(self.controller, claim=True)
+        self.addCleanup(current_api.close_memory_providers)
+        current_registry = current_api._memory_providers
+
+        self.assertIsNot(current_registry, previous_registry)
+        self.assertIs(memory_provider_registry(self.controller.context), current_registry)
+        current_api.register_memory_provider("current", plugin=self.plugin, read=self.read)
+        previous_api.close_memory_providers()
+        self.assertIs(memory_provider_registry(self.controller.context), current_registry)
+        self.assertFalse(current_registry.closed)
+
+    async def test_terminated_old_facade_query_and_late_unregister_do_not_affect_current_providers(self):
+        from astrbot_host.integration_registry import UnifiedCompanionExtensionAPI
+
+        previous_controller = NS(context=self.controller.context, _terminated=False)
+        previous_api = UnifiedCompanionExtensionAPI(previous_controller, claim=True)
+        old_token = previous_api.register_memory_provider("previous", plugin=self.plugin, read=self.read)
+
+        current_api = UnifiedCompanionExtensionAPI(self.controller, claim=True)
+        self.addCleanup(current_api.close_memory_providers)
+        current_registry = current_api._memory_providers
+        current_token = current_api.register_memory_provider("current", plugin=self.plugin, read=self.read)
+
+        previous_controller._terminated = True
+        previous_api.close_memory_providers()
+
+        self.assertEqual(previous_api.list_memory_providers(), [])
+        self.assertIs(memory_provider_registry(self.controller.context), current_registry)
+        self.assertEqual([item["provider_id"] for item in current_api.list_memory_providers()], ["current"])
+
+        self.assertFalse(previous_api.unregister_memory_provider(old_token))
+        self.assertFalse(previous_api.unregister_memory_provider(current_token))
+        self.assertIs(memory_provider_registry(self.controller.context), current_registry)
+        self.assertEqual([item["provider_id"] for item in current_api.list_memory_providers()], ["current"])
+        prepared = await self.prepared("external-stale-query-unregister")
+        self.assertIn("你喜欢听雨声。", prepared["prompt_instruction"])
+
+    async def test_unclosed_stale_facade_cannot_replace_or_mutate_current_registry(self):
+        from astrbot_host.integration_registry import UnifiedCompanionExtensionAPI
+
+        previous_controller = NS(context=self.controller.context, _terminated=False)
+        previous_api = UnifiedCompanionExtensionAPI(previous_controller, claim=True)
+        old_token = previous_api.register_memory_provider("previous", plugin=self.plugin, read=self.read)
+
+        current_api = UnifiedCompanionExtensionAPI(self.controller, claim=True)
+        self.addCleanup(current_api.close_memory_providers)
+        current_registry = current_api._memory_providers
+        current_token = current_api.register_memory_provider("current", plugin=self.plugin, read=self.read)
+
+        stale_snapshot = previous_api.list_memory_providers()
+        self.assertEqual([(item["provider_id"], item["active"]) for item in stale_snapshot], [("previous", False)])
+        self.assertIs(memory_provider_registry(self.controller.context), current_registry)
+        self.assertFalse(previous_api.unregister_memory_provider(current_token))
+        self.assertTrue(previous_api.unregister_memory_provider(old_token))
+        with self.assertRaises(ValueError):
+            previous_api.register_memory_provider("rogue", plugin=self.plugin, read=self.read)
+
+        terminated_facade = UnifiedCompanionExtensionAPI(NS(context=self.controller.context, _terminated=True))
+        self.assertEqual(terminated_facade.list_memory_providers(), [])
+        self.assertIs(memory_provider_registry(self.controller.context), current_registry)
+        self.assertEqual([item["provider_id"] for item in current_api.list_memory_providers()], ["current"])
+
+    async def test_unterminated_old_controller_lazy_v2_api_and_facade_do_not_displace_current_registry(self):
+        from astrbot_host.integration_registry import UnifiedCompanionExtensionAPI
+        from astrbot_host.native_extensions.service import NativeService
+
+        # Newer host owner=B installs and registers the active "current" provider.
+        current_api = UnifiedCompanionExtensionAPI(self.controller, claim=True)
+        self.addCleanup(current_api.close_memory_providers)
+        current_registry = current_api._memory_providers
+        current_token = current_api.register_memory_provider("current", plugin=self.plugin, read=self.read)
+
+        # Current owner's NativeService.v2_api() still shares owner=B's live registry.
+        current_service = NativeService()
+        current_service.controller = self.controller
+        self.assertIs(current_service.v2_api()._memory_providers, current_registry)
+
+        # Older controller owner=A (still _terminated=False during hot-reload) lazily
+        # constructs facades via NativeService.v2_api() and UnifiedCompanionExtensionAPI().
+        old_controller = NS(context=self.controller.context, _terminated=False)
+        old_service = NativeService()
+        old_service.controller = old_controller
+        lazy_v2_api = old_service.v2_api()
+        lazy_facade = UnifiedCompanionExtensionAPI(old_controller)
+
+        for stale in (lazy_v2_api, lazy_facade):
+            self.assertIsNot(stale._memory_providers, current_registry)
+            self.assertEqual(stale.list_memory_providers(), [])
+            self.assertFalse(stale.unregister_memory_provider(current_token))
+            with self.assertRaises(ValueError):
+                stale.register_memory_provider("rogue", plugin=self.plugin, read=self.read)
+            stale.close_memory_providers()
+
+        # owner=B's registry and "current" provider remain active and fully functional.
+        self.assertIs(memory_provider_registry(self.controller.context), current_registry)
+        self.assertFalse(current_registry.closed)
+        self.assertEqual(
+            [(item["provider_id"], item["active"]) for item in current_api.list_memory_providers()],
+            [("current", True)],
+        )
+        prepared = await self.prepared("external-lazy-facade-race")
+        self.assertIn("你喜欢听雨声。", prepared["prompt_instruction"])
+        self.assertEqual(len(self.reads), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

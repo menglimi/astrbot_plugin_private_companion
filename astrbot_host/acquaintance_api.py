@@ -12,7 +12,7 @@ from time import perf_counter
 from astrbot.api.web import request
 
 from companion_v2.adapters.astrbot.native import native_client_connected, route_id
-from companion_v2.execution.models import TaskContext, TaskError, digest, require
+from companion_v2.execution.models import TaskContext, TaskError, digest, encode, require, stamp
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import AudienceRef, ScopeKind, ScopeRef
 from companion_v2.identity_policy.management import (
@@ -53,6 +53,8 @@ OPEN_LOOPS_PATH = PREFIX + "/open-loops"
 STRANGERS_PATH = PREFIX + "/strangers"
 STRANGER_TARGET_PATH = PREFIX + "/stranger-target"
 STRANGER_REMOVE_PATH = PREFIX + "/stranger-remove"
+STRANGER_BLOCK_PATH = PREFIX + "/stranger-block"
+STRANGER_UNBLOCK_PATH = PREFIX + "/stranger-unblock"
 MAX_AUTHORIZATION_BODY = 8192
 MAX_STRANGER_ROWS = 100
 logger = logging.getLogger(__name__)
@@ -431,7 +433,11 @@ class AcquaintanceWebAPI:
                 (STRANGER_TARGET_PATH, self.add_stranger_target, ["POST"],
                  "Allow one refused account as one exact private target of its receiving account"),
                 (STRANGER_REMOVE_PATH, self.remove_stranger, ["POST"],
-                 "Remove one refused-account record without touching any target or grant")]
+                 "Remove one refused-account record without touching any target or grant"),
+                (STRANGER_BLOCK_PATH, self.block_stranger, ["POST"],
+                 "Mute one refused account: stop the fixed reply, keep its contact record"),
+                (STRANGER_UNBLOCK_PATH, self.unblock_stranger, ["POST"],
+                 "Lift one refused account's mute without touching any target or grant")]
 
     def _settings(self):
         settings = self.controller.settings
@@ -686,7 +692,7 @@ class AcquaintanceWebAPI:
         exact target or a wildcard for that account, so the page can offer one
         narrow, fixed-receiver action without keeping a second copy of grants.
         """
-        from .stranger_notice import CONTACT_KIND
+        from .stranger_notice import BLOCK_KIND, CONTACT_KIND, stranger_block_view_id
         from .web_api import outcome_response
         controller = self.controller
         try:
@@ -695,6 +701,8 @@ class AcquaintanceWebAPI:
                 rows = controller.runtime.read_all(
                     "SELECT document_json FROM memory_views WHERE kind = ? "
                     "ORDER BY updated_at DESC LIMIT ?", (CONTACT_KIND, MAX_STRANGER_ROWS))
+                muted = {row["view_id"] for row in controller.runtime.read_all(
+                    "SELECT view_id FROM memory_views WHERE kind = ?", (BLOCK_KIND,))}
                 try:
                     settings = self._settings()
                 except (TaskError, HostControlError):
@@ -712,8 +720,10 @@ class AcquaintanceWebAPI:
                     item = {key: document.get(key) for key in (
                         "platform_id", "login", "peer", "first_seen_at", "last_seen_at",
                         "attempts", "last_outcome")}
+                    route = _stranger_route(document)
+                    item["blocked"] = route is not None and stranger_block_view_id(*route) in muted
                     item["target_state"], item["target_id"] = _stranger_target(
-                        controller, settings, _stranger_route(document))
+                        controller, settings, route)
                     items.append(item)
                 return outcome_response(Outcome.success({"items": items}))
         except TaskError as error:
@@ -825,6 +835,72 @@ class AcquaintanceWebAPI:
         except (ValueError, TypeError, UnicodeError, RecursionError):
             return outcome_response(Outcome.failed("stranger_remove_request_invalid",
                                                    "the remove command is not valid JSON"))
+
+    async def _stranger_command(self, code):
+        """Parse the one exact {platform_id, login, peer} record command."""
+        raw = await request.body()
+        if len(raw) > MAX_AUTHORIZATION_BODY or request.query:
+            raise TaskError(code, "the command requires one bounded JSON body")
+        try:
+            command = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, ValueError):
+            raise TaskError(code, "the command is not valid JSON") from None
+        if type(command) is not dict or set(command) != {"platform_id", "login", "peer"}:
+            raise TaskError(code, "the command requires the record's platform, receiving account and sender")
+        platform_id = command["platform_id"]
+        if type(platform_id) is not str or not platform_id or ":" in platform_id:
+            raise TaskError(code, "the platform instance is not a valid route identifier")
+        try:
+            return platform_id, route_id(command["login"]), route_id(command["peer"])
+        except (TypeError, ValueError):
+            raise TaskError(code, "the receiving account and sender must be route identifiers") from None
+
+    async def block_stranger(self):
+        """Mute one rejected account: stop the fixed reply, keep the contact record."""
+        from .stranger_notice import BLOCK_KIND, stranger_block_view_id
+        from .web_api import outcome_response
+        controller = self.controller
+        code = "stranger_block_request_invalid"
+        try:
+            platform_id, login, peer = await self._stranger_command(code)
+            at = controller.now()
+            view_id = stranger_block_view_id(platform_id, login, peer)
+            document = {"version": 1, "platform_id": platform_id, "login": login, "peer": peer,
+                        "blocked_at": stamp(at)}
+            async with controller._control_lock:
+                await self._operator()
+                with controller.runtime.transaction() as connection:
+                    row = connection.execute(
+                        "SELECT revision FROM memory_views WHERE view_id = ? AND kind = ?",
+                        (view_id, BLOCK_KIND)).fetchone()
+                    connection.execute(
+                        "INSERT INTO memory_views VALUES (?, ?, ?, ?, 'active', ?, ?, ?) "
+                        "ON CONFLICT(view_id) DO UPDATE SET revision = excluded.revision, "
+                        "document_json = excluded.document_json, updated_at = excluded.updated_at",
+                        (view_id, view_id, BLOCK_KIND, (row["revision"] + 1) if row else 1,
+                         encode(document), encode({"owner": "relationship.stranger_block"}), stamp(at)))
+            return outcome_response(Outcome.success({"blocked": True}))
+        except (TaskError, HostControlError) as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+
+    async def unblock_stranger(self):
+        """Lift one mute; never touch targets, grants or the contact ledger."""
+        from .stranger_notice import BLOCK_KIND, stranger_block_view_id
+        from .web_api import outcome_response
+        controller = self.controller
+        code = "stranger_unblock_request_invalid"
+        try:
+            platform_id, login, peer = await self._stranger_command(code)
+            view_id = stranger_block_view_id(platform_id, login, peer)
+            async with controller._control_lock:
+                await self._operator()
+                with controller.runtime.transaction() as connection:
+                    removed = connection.execute(
+                        "DELETE FROM memory_views WHERE view_id = ? AND kind = ?",
+                        (view_id, BLOCK_KIND)).rowcount
+            return outcome_response(Outcome.success({"blocked": False, "removed": bool(removed)}))
+        except (TaskError, HostControlError) as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
 
     async def authorization(self):
         """Read the real state of every capability one person holds."""

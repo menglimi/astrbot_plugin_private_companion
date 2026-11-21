@@ -289,7 +289,7 @@ class RuntimeLockWindowTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-def _install_astrbot_stubs():
+def _astrbot_stubs():
     """Minimal synthetic seams so ``backup_api`` can be imported without the SDK.
 
     ``astrbot_host/backup_api.py`` imports ``astrbot.api.web.request`` and resolves
@@ -313,22 +313,18 @@ def _install_astrbot_stubs():
         return {"status": "ok", "message": message, "data": result.unwrap()}
 
     host_web_api.outcome_response = outcome_response
-    sys.modules.update({"astrbot": astrbot, "astrbot.api": astrbot_api,
-                        "astrbot.api.web": astrbot_web, "astrbot_host.web_api": host_web_api})
-    return request
+    return request, {"astrbot": astrbot, "astrbot.api": astrbot_api,
+                     "astrbot.api.web": astrbot_web, "astrbot_host.web_api": host_web_api}
 
 
 class DashboardRouteTests(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.request = _install_astrbot_stubs()
+        cls.request, stubs = _astrbot_stubs()
+        cls.enterClassContext(patch.dict(sys.modules, stubs))
         import astrbot_host.backup_api as backup_api
+        cls.enterClassContext(patch.object(backup_api, "request", cls.request))
         cls.backup_api = backup_api
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        for name in ("astrbot", "astrbot.api", "astrbot.api.web", "astrbot_host.web_api"):
-            sys.modules.pop(name, None)
 
     def controller(self, runtime):
         return types.SimpleNamespace(

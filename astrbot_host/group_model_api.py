@@ -8,6 +8,7 @@ from astrbot.api.web import request
 from companion_v2.configuration.models import ConfigurationError
 from companion_v2.decision import LayaDecisionService, LayaSettingsStore
 from companion_v2.decision.client import LayaClientError
+from companion_v2.decision.service import safe_laya_client_error_reason
 from companion_v2.decision.store import LayaSettingsError
 from companion_v2.execution.models import TaskError, digest, require
 from companion_v2.foundation.outcome import Outcome
@@ -40,9 +41,21 @@ class GroupModelWebAPI:
             raise TaskError("model_request_invalid", "model routes do not accept target overrides")
         operator, manager, _ = await self._prepare("role")
         require(manager.authorize(operator))
+        return operator, manager
 
-    def _laya_service(self):
+    def _laya_service(self, manager=None):
+        application = getattr(manager, "application", None)
+        context = getattr(manager, "context", None)
+        session = getattr(self.controller, "session", None) or getattr(self.controller, "last_session", None)
+        runtime = (getattr(application, "runtime", None)
+                   or getattr(getattr(session, "application", None), "runtime", None)
+                   or getattr(self.controller, "runtime", None))
+        scope = getattr(context, "scope", None)
+        raw_scope_key = getattr(scope, "key", None) if scope is not None else None
+        scope_key = raw_scope_key() if callable(raw_scope_key) else raw_scope_key
+        origin_key = getattr(context, "key", None) or scope_key
         return LayaDecisionService(LayaSettingsStore(Path(self.controller.data_root)),
+                                   runtime=runtime, origin_key=origin_key, scope=scope,
                                    client_factory=LayaDecisionClient)
 
     @staticmethod
@@ -50,11 +63,26 @@ class GroupModelWebAPI:
         return outcome_response(Outcome.failed(getattr(error, "code", "laya_unavailable"),
                                                str(getattr(error, "reason", error))))
 
+    @staticmethod
+    def _laya_client_failure(error, service=None):
+        """Build an ok-enveloped failure payload so the host bridge keeps safe reasons."""
+        api_key = ""
+        if service is not None:
+            try:
+                api_key = str(service.store.raw().get("api_key") or "")
+            except Exception:
+                api_key = ""
+        return {
+            "status": "failed",
+            "code": getattr(error, "code", "laya_unavailable"),
+            "reason": safe_laya_client_error_reason(error, api_key=api_key),
+        }
+
     async def laya_status(self):
         try:
             async with self.controller._control_lock:
-                await self._laya_authorized()
-                return outcome_response(Outcome.success(self._laya_service().status()))
+                _operator, manager = await self._laya_authorized()
+                return outcome_response(Outcome.success(self._laya_service(manager).status()))
         except (TaskError, LayaSettingsError, OSError, ValueError) as error:
             return self._laya_failure(error)
 
@@ -64,8 +92,8 @@ class GroupModelWebAPI:
             if type(data["changes"]) is not dict:
                 raise ValueError("invalid Laya changes")
             async with self.controller._control_lock:
-                await self._laya_authorized()
-                service = self._laya_service()
+                _operator, manager = await self._laya_authorized()
+                service = self._laya_service(manager)
                 service.save(data["revision"], data["changes"])
                 return outcome_response(Outcome.success(service.status()))
         except (TaskError, LayaSettingsError, ValueError, TypeError, KeyError, UnicodeError,
@@ -75,36 +103,49 @@ class GroupModelWebAPI:
     async def laya_logs(self):
         try:
             async with self.controller._control_lock:
-                await self._laya_authorized()
-                return outcome_response(Outcome.success({"events": [], "available": False}))
-        except TaskError as error:
+                _operator, manager = await self._laya_authorized()
+                service = self._laya_service(manager)
+                scope = getattr(getattr(manager, "context", None), "scope", None)
+                raw_key = getattr(scope, "key", None) if scope is not None else None
+                scope_key = raw_key() if callable(raw_key) else raw_key
+                if service.runtime is None or not scope_key:
+                    return outcome_response(Outcome.success({"events": [], "available": False}))
+                events = service.recent(scope_key=scope_key)["events"]
+                return outcome_response(Outcome.success({"events": events, "available": True, "scope_kind": "group"}))
+        except (TaskError, LayaSettingsError, OSError, ValueError) as error:
             return self._laya_failure(error)
 
     async def laya_test(self):
+        service = None
         try:
             _document(await request.body(), set(), limit=1024)
             async with self.controller._control_lock:
-                await self._laya_authorized()
-                service = self._laya_service()
+                _operator, manager = await self._laya_authorized()
+                service = self._laya_service(manager)
                 service.set_trace(source="probe")
             async with self._laya_lock:
                 return outcome_response(Outcome.success(await service.test()))
-        except (TaskError, LayaSettingsError, LayaClientError, OSError, ValueError, TypeError,
+        except LayaClientError as error:
+            return outcome_response(Outcome.success(self._laya_client_failure(error, service)))
+        except (TaskError, LayaSettingsError, OSError, ValueError, TypeError,
                 KeyError, UnicodeError, RecursionError, OverflowError) as error:
             return self._laya_failure(error)
 
     async def laya_decide(self):
+        service = None
         try:
             data = _document(await request.body(), {"facts"}, limit=32000)
             if type(data["facts"]) is not dict:
                 raise ValueError("facts must be an object")
             async with self.controller._control_lock:
-                await self._laya_authorized()
-                service = self._laya_service()
+                _operator, manager = await self._laya_authorized()
+                service = self._laya_service(manager)
                 service.set_trace(source="dashboard_preview")
             async with self._laya_lock:
                 return outcome_response(Outcome.success(await service.decide(data["facts"])))
-        except (TaskError, LayaSettingsError, LayaClientError, OSError, ValueError, TypeError,
+        except LayaClientError as error:
+            return outcome_response(Outcome.success(self._laya_client_failure(error, service)))
+        except (TaskError, LayaSettingsError, OSError, ValueError, TypeError,
                 KeyError, UnicodeError, RecursionError, OverflowError) as error:
             return self._laya_failure(error)
 

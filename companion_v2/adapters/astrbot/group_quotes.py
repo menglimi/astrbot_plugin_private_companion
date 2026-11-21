@@ -7,7 +7,7 @@ from companion_v2.conversation.quotes.models import message_number
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.refs import ScopeKind
 from .history import extract_history_messages
-from .native import native_id
+from .native import account_number, native_id
 from .quote_content import capture_quote_content
 
 

@@ -17,6 +17,7 @@ from companion_v2.conversation.media.models import MAX_REFERENCE_IMAGES
 from companion_v2.conversation.reply_management import ReplyManagement
 from companion_v2.decision import LayaDecisionService, LayaSettingsStore
 from companion_v2.decision.client import LayaClientError
+from companion_v2.decision.service import safe_laya_client_error_reason
 from companion_v2.decision.store import LayaSettingsError
 from companion_v2.execution.models import TaskError, digest, require
 from companion_v2.foundation.outcome import Outcome
@@ -455,16 +456,23 @@ class ModelWebAPI:
             return outcome_response(Outcome.failed("model_catalog_unavailable", "AstrBot provider list is unavailable"))
 
     def _authorized(self, *, layer="role", include_status=False, authorize=True,
-                    session=None, runtime=None):
+                    session=None, runtime=None, allow_query_keys=()):
         controller = self.controller
         username = request.username
         if type(username) is not str or not username.strip() or username.startswith("api_key:"):
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
         if layer not in ("role", "window"):
             raise TaskError("model_request_invalid", "select role defaults or this conversation window")
-        if request.query and (set(request.query.keys()) != {"layer"} or request.query.get("layer") != layer
-                or callable(getattr(request.query, "getlist", None)) and len(request.query.getlist("layer")) != 1):
-            raise TaskError("model_request_invalid", "model routes do not accept target overrides")
+        if request.query:
+            if allow_query_keys:
+                allowed = set(allow_query_keys)
+                if (set(request.query.keys()) - allowed
+                        or (callable(getattr(request.query, "getlist", None))
+                            and any(len(request.query.getlist(key)) != 1 for key in request.query.keys()))):
+                    raise TaskError("model_request_invalid", "model routes do not accept target overrides")
+            elif (set(request.query.keys()) != {"layer"} or request.query.get("layer") != layer
+                  or callable(getattr(request.query, "getlist", None)) and len(request.query.getlist("layer")) != 1):
+                raise TaskError("model_request_invalid", "model routes do not accept target overrides")
         if controller._terminated:
             raise TaskError("staging_host_terminated", "plugin is stopped")
         session = session if session is not None else (controller.session or controller.last_session)
@@ -699,8 +707,10 @@ class ModelWebAPI:
         target = getattr(getattr(session, "profile", None), "target", None)
         runtime = getattr(application, "runtime", None) or getattr(self.controller, "runtime", None)
         origin_key = getattr(target, "key", None)
+        scope = getattr(getattr(target, "audience", None), "scope", None) or getattr(target, "scope", None)
         return LayaDecisionService(LayaSettingsStore(root),
-                                   runtime=runtime, origin_key=origin_key, client_factory=LayaDecisionClient)
+                                   runtime=runtime, origin_key=origin_key, scope=scope,
+                                   client_factory=LayaDecisionClient)
 
     def _search_settings_store(self):
         return SearchSettingsStore(Path(getattr(self.controller, "data_root", Path.cwd())))
@@ -748,6 +758,21 @@ class ModelWebAPI:
     def _laya_error(error):
         return getattr(error, "code", "laya_unavailable"), str(getattr(error, "reason", error))
 
+    @staticmethod
+    def _laya_client_failure(error, service=None):
+        """Build an ok-enveloped failure payload so the host bridge keeps safe reasons."""
+        api_key = ""
+        if service is not None:
+            try:
+                api_key = str(service.store.raw().get("api_key") or "")
+            except Exception:
+                api_key = ""
+        return {
+            "status": "failed",
+            "code": getattr(error, "code", "laya_unavailable"),
+            "reason": safe_laya_client_error_reason(error, api_key=api_key),
+        }
+
     async def laya_status(self):
         try:
             async with self.controller._control_lock:
@@ -779,8 +804,15 @@ class ModelWebAPI:
     async def laya_logs(self):
         try:
             async with self.controller._control_lock:
-                self._authorized()
-                return self._response(Outcome.success(self._laya_service().recent()))
+                self._authorized(allow_query_keys={"scope"})
+                query = request.query or {}
+                scope = query.get("scope", "all")
+                if scope not in ("all", "current"):
+                    raise TaskError("model_request_invalid", "invalid Laya log scope")
+                service = self._laya_service()
+                data = service.recent() if scope == "current" else service.recent(all_origins=True)
+                data["scope"] = scope
+                return self._response(Outcome.success(data))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
         except (LayaSettingsError, OSError, ValueError) as error:
@@ -788,6 +820,7 @@ class ModelWebAPI:
             return self._response(Outcome.failed(code, reason))
 
     async def laya_test(self):
+        service = None
         try:
             _document(await request.body(), set(), limit=1024)
             async with self.controller._control_lock:
@@ -797,14 +830,17 @@ class ModelWebAPI:
             async with self._laya_lock:
                 result = await service.test()
             return self._response(Outcome.success(result))
+        except LayaClientError as error:
+            return self._response(Outcome.success(self._laya_client_failure(error, service)))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
-        except (LayaSettingsError, LayaClientError, OSError, ValueError, TypeError,
+        except (LayaSettingsError, OSError, ValueError, TypeError,
                 KeyError, UnicodeError, RecursionError, OverflowError) as error:
             code, reason = self._laya_error(error)
             return self._response(Outcome.failed(code, reason))
 
     async def laya_decide(self):
+        service = None
         try:
             data = _document(await request.body(), {"facts"}, limit=32000)
             if type(data["facts"]) is not dict:
@@ -816,9 +852,11 @@ class ModelWebAPI:
             async with self._laya_lock:
                 result = await service.decide(data["facts"])
             return self._response(Outcome.success(result))
+        except LayaClientError as error:
+            return self._response(Outcome.success(self._laya_client_failure(error, service)))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
-        except (LayaSettingsError, LayaClientError, OSError, ValueError, TypeError,
+        except (LayaSettingsError, OSError, ValueError, TypeError,
                 KeyError, UnicodeError, RecursionError, OverflowError) as error:
             code, reason = self._laya_error(error)
             return self._response(Outcome.failed(code, reason))

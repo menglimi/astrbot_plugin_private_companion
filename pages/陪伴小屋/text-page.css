@@ -1,0 +1,161 @@
+﻿/* 分段回复页 2026-11-21：状态头 + 分段示意 + 紧凑字段网格。
+   与语音页同一套阅读节奏，但保留左侧分区导航和下方分段预览。 */
+
+#replyWorkspace.expression-text-focus{display:block;min-width:0}
+#replyWorkspace.expression-text-focus>[data-reply-part="scope"]{
+  margin:0 0 var(--sp-3);padding:0;border:0;background:transparent;
+  font-size:inherit;line-height:inherit;color:inherit}
+
+/* 页面 h1 已经写着「文字风格与分段」，分区标题不再重复。 */
+#expression-panel-expression-text .console-section-head{display:none}
+#expression-panel-expression-text .console-section-body{padding-top:0}
+#expression-panel-expression-text .console-section{padding-top:0;border-top:0}
+
+.text-hero{display:block;
+  gap:var(--sp-4);padding:var(--sp-4) var(--sp-5);min-width:0;
+  border:1px solid var(--t-line);border-radius:var(--r-md);
+  background:radial-gradient(130% 150% at 0% 0%,
+    color-mix(in srgb,var(--t-accent-quiet) 60%,transparent),transparent 58%),
+    var(--t-surface-raised)}
+.text-hero.is-off .text-hero-preview{opacity:.7}
+.text-hero-copy{display:grid;align-content:start;gap:var(--sp-2);min-width:0}
+.text-hero-kicker{margin:0;color:var(--t-accent-ink);font:650 var(--fs-micro)/1.4 var(--numeric-font);
+  letter-spacing:.14em;text-transform:uppercase}
+.text-hero h2{margin:0;color:var(--t-text-strong);font-size:var(--fs-head);line-height:1.3}
+.text-hero-lede{margin:0;max-width:60ch;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.75}
+.text-hero-chips{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--sp-2);margin-top:var(--sp-1)}
+.text-chip{display:grid;gap:2px;min-width:0;padding:var(--sp-2);
+  border:1px solid var(--t-line);border-radius:var(--r-xs);
+  background:color-mix(in srgb,var(--t-surface) 78%,transparent)}
+.text-chip small{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.5}
+.text-chip strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:600;line-height:1.5}
+.text-hero-actions{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin-top:var(--sp-1)}
+.text-hero-actions .button{display:inline-flex;align-items:center;gap:var(--sp-1)}
+.text-hero-actions svg{width:14px;height:14px}
+.text-hero-hint{margin:0;color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.6}
+
+.text-hero-preview{display:grid;align-content:start;gap:var(--sp-2);min-width:0;
+  padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);
+  background:var(--t-surface);box-shadow:var(--t-shadow)}
+.text-hero-preview>header{display:flex;align-items:center;justify-content:space-between;
+  gap:var(--sp-2);color:var(--t-text-faint);font-size:var(--fs-micro)}
+.text-hero-preview>header strong{color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:600}
+.text-hero-preview p{display:grid;grid-template-columns:22px minmax(0,1fr);gap:var(--sp-2);
+  align-items:start;margin:0;padding:var(--sp-2) var(--sp-3);border-radius:var(--r-sm);
+  background:var(--t-surface-soft);color:var(--t-text);font-size:var(--fs-tiny);line-height:1.65}
+.text-hero-preview p.is-muted{opacity:.62}
+.text-hero-preview p i{display:grid;place-items:center;width:22px;height:22px;border-radius:50%;
+  background:var(--t-accent-quiet);color:var(--t-accent-ink);font:650 var(--fs-micro)/1 var(--numeric-font);
+  font-style:normal}
+
+/* 字段：一列说明 + 一列控件改成紧凑的上下结构，文字类字段整行。 */
+#replyWorkspace.expression-text-focus .wb-card{border:0;background:transparent;overflow:visible}
+#replyWorkspace.expression-text-focus .wb-card-head{display:none}
+#replyWorkspace.expression-text-focus .wb-section-layout{grid-template-columns:minmax(160px,200px) minmax(0,1fr);
+  gap:var(--sp-4)}
+#replyWorkspace.expression-text-focus .wb-section-sidebar{position:sticky;top:var(--sp-4);align-self:start}
+#replyWorkspace.expression-text-focus .wb-section-panel{min-width:0}
+#replyWorkspace.expression-text-focus .wb-group{padding:var(--sp-3) var(--sp-4)!important;
+  border:1px solid var(--t-line)!important;border-radius:var(--r-md);background:var(--t-surface)}
+#replyWorkspace.expression-text-focus .wb-group-head{margin:0 0 var(--sp-1);color:var(--t-text-strong);
+  font-size:var(--fs-body);font-weight:650}
+#replyWorkspace.expression-text-focus .wb-group>.wb-help{margin:0 0 var(--sp-2);color:var(--t-text-faint);
+  font-size:var(--fs-micro);line-height:1.6}
+#replyWorkspace.expression-text-focus .wb-fields{display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:0 var(--sp-5);max-width:none}
+#replyWorkspace.expression-text-focus .wb-field{grid-template-columns:10px minmax(0,1fr);
+  gap:var(--sp-1) var(--sp-2);padding:var(--sp-2) 0;
+  border-top:1px solid color-mix(in srgb,var(--t-line) 62%,transparent)}
+#replyWorkspace.expression-text-focus .wb-field:first-child{border-top:0;padding-top:2px}
+#replyWorkspace.expression-text-focus .wb-field>.wb-field-main{grid-column:2}
+#replyWorkspace.expression-text-focus .wb-field-main{grid-template-columns:minmax(0,1fr);gap:0}
+#replyWorkspace.expression-text-focus .wb-field-main>.wb-label{font-size:var(--fs-tiny);font-weight:600;line-height:1.5}
+#replyWorkspace.expression-text-focus .wb-field-main>.wb-help{font-size:var(--fs-micro);line-height:1.55}
+#replyWorkspace.expression-text-focus .wb-field-main>.wb-control{grid-column:1;grid-row:auto;
+  justify-self:stretch;width:100%;max-width:none;margin-top:var(--sp-1);justify-content:flex-start}
+#replyWorkspace.expression-text-focus .wb-control input,
+#replyWorkspace.expression-text-focus .wb-control select,
+#replyWorkspace.expression-text-focus .wb-control textarea{width:100%;max-width:none;min-height:34px;font-size:var(--fs-tiny)}
+#replyWorkspace.expression-text-focus .wb-control textarea{min-height:72px;line-height:1.7}
+#replyWorkspace.expression-text-focus .wb-field:hover,
+#replyWorkspace.expression-text-focus .wb-field.is-inherited{background:transparent}
+#replyWorkspace.expression-text-focus .wb-field:has(textarea),
+#replyWorkspace.expression-text-focus .wb-field:has(.wb-word-editor),
+#replyWorkspace.expression-text-focus .wb-field:has(.wb-keywords),
+#replyWorkspace.expression-text-focus .wb-field:has(.wb-chipset){grid-column:1/-1}
+#replyWorkspace.expression-text-focus .wb-actions{position:sticky;bottom:var(--sp-2);z-index:4;
+  margin:var(--sp-2) 0 0;padding:var(--sp-2) var(--sp-3);
+  border:1px solid var(--t-line);border-radius:var(--r-sm);
+  background:color-mix(in srgb,var(--t-surface-raised) 92%,transparent);
+  backdrop-filter:blur(8px);box-shadow:var(--t-shadow)}
+
+@media(max-width:1080px){
+  .text-hero{grid-template-columns:minmax(0,1fr)}
+  .text-hero-chips{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:900px){
+  #replyWorkspace.expression-text-focus .wb-section-layout{grid-template-columns:minmax(0,1fr)}
+  #replyWorkspace.expression-text-focus .wb-section-sidebar{position:static;max-height:none}
+  #replyWorkspace.expression-text-focus .wb-fields{grid-template-columns:minmax(0,1fr)}
+}
+@media(max-width:760px){
+  #replyWorkspace.expression-text-focus .wb-actions{position:static;bottom:auto}
+}
+@media(max-width:560px){
+  .text-hero{padding:var(--sp-3)}
+  .text-hero-actions .button{flex:1 1 100%;justify-content:center}
+  #replyWorkspace.expression-text-focus .wb-group{padding:var(--sp-2) var(--sp-3)!important}
+}
+
+/* 2026-11-20 的回复页布局修复用更高优先级把字段锁成「标签 + 控件」两栏；
+   分段页要上下结构，必须在同一优先级上覆盖回来。 */
+#replyWorkspace:not(.expression-voice-focus).expression-text-focus .wb-fields > .wb-field > .wb-field-main.wb-field-main{
+  grid-template-columns:minmax(0,1fr);justify-content:normal;align-items:start}
+
+#replyWorkspace:not(.expression-voice-focus).expression-text-focus .wb-fields{
+  grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+#replyWorkspace:not(.expression-voice-focus).expression-text-focus .wb-fields > .wb-field > .wb-field-main.wb-field-main > .wb-control.wb-control{
+  justify-content:flex-start;justify-self:stretch;max-width:none;width:100%}
+
+
+/* QQ 气泡式分段示意：文段、引用、@、语音、表情包的位置都画出来。 */
+.text-hero-preview.is-chat{padding:var(--sp-2)}
+.qq-chat{display:grid;gap:var(--sp-2);min-width:0;padding:var(--sp-2);
+  border-radius:var(--r-sm);background:var(--t-surface-soft)}
+.qq-quote{width:88%;margin-left:auto;padding:var(--sp-2) var(--sp-3);
+  border-left:3px solid var(--t-accent);border-radius:var(--r-xs);
+  background:var(--t-surface);color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.55}
+.qq-quote p{display:block;margin:0;padding:0;background:none;grid-column:auto;color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.55}\n.qq-quote-tag{display:inline-block;margin-bottom:2px;color:var(--t-accent-ink);
+  font:650 var(--fs-micro)/1.4 var(--numeric-font);letter-spacing:.08em}
+.qq-row{display:flex;align-items:flex-start;justify-content:flex-end;gap:var(--sp-1);min-width:0}
+.qq-avatar{flex:none;display:grid;place-items:center;width:22px;height:22px;border-radius:50%;
+  background:var(--t-accent-quiet);color:var(--t-accent-ink);
+  font:650 var(--fs-micro)/1 var(--numeric-font)}
+.qq-bubble{position:relative;max-width:calc(100% - 30px);padding:var(--sp-2) var(--sp-3);
+  border-radius:var(--r-md) var(--r-2xs) var(--r-md) var(--r-md);
+  background:var(--t-surface);box-shadow:0 2px 8px -6px color-mix(in srgb,var(--t-text-strong) 40%,transparent)}
+.qq-bubble::after{content:"";position:absolute;top:9px;right:-4px;width:8px;height:8px;
+  background:var(--t-surface);transform:rotate(45deg);border-radius:1px}
+.qq-bubble p{display:block;margin:0;padding:0;background:none;color:var(--t-text);
+  font-size:var(--fs-tiny);line-height:1.6}
+.qq-at{color:var(--t-accent-ink);font-weight:650;white-space:nowrap}
+.qq-media{display:flex;align-items:center;gap:var(--sp-2);max-width:calc(100% - 30px)}
+.qq-voice{display:inline-flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);
+  border-radius:var(--r-pill);background:var(--t-surface);
+  color:var(--t-accent-ink);font-size:var(--fs-micro);font-weight:600;
+  box-shadow:0 2px 8px -6px color-mix(in srgb,var(--t-text-strong) 40%,transparent)}
+.qq-wave{width:26px;height:12px;
+  background:repeating-linear-gradient(90deg,var(--t-accent) 0 2px,transparent 2px 5px);
+  border-radius:2px}
+.qq-sticker{display:grid;place-items:center;width:54px;height:54px;border-radius:var(--r-sm);
+  background:var(--t-surface);font-size:var(--fs-head);line-height:1;
+  box-shadow:0 2px 8px -6px color-mix(in srgb,var(--t-text-strong) 40%,transparent)}
+.qq-legend{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-1) var(--sp-3);
+  margin-top:var(--sp-1);padding-top:var(--sp-2);border-top:1px dashed var(--t-line-firm)}
+.qq-legend span{display:flex;align-items:center;gap:var(--sp-1);min-width:0;
+  color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.5}
+.qq-legend b{color:var(--t-text-soft);font-weight:650}
+
+/* 分段页的预览按原顺序放在配置下方，不沿用回复页「有预览就两栏」的布局。 */
+#replyWorkspace.expression-text-focus:has(> [data-reply-part="preview"]:not([hidden])){display:block}

@@ -21,18 +21,40 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from datetime import timedelta
+import json
 import logging
 import random
 
-from companion_v2.execution.models import stamp
-from companion_v2.foundation.refs import RoleOwnerRef
+from companion_v2.execution.models import TaskError, stamp
+from companion_v2.foundation.refs import RoleOwnerRef, ScopeRef
 from companion_v2.qzone import life_publish
+from companion_v2.qzone.capability import (EXTENSION as QZONE_EXTENSION,
+                                          PUBLISH_ACTION as QZONE_PUBLISH_ACTION)
 from companion_v2.qzone.service import local_day, owner_key
 
 logger = logging.getLogger(__name__)
 
 CHECK_SECONDS = 900
 DRAFT_TIMEOUT_SECONDS = 120
+_QUIET_REASONS = frozenset({
+    "host_not_running", "qzone_unavailable", "life_publish_disabled",
+    "publish_disabled", "qzone_disabled", "interval", "probability_miss",
+})
+_REASON_PRIORITY = {
+    "published": 0,
+    "publish_failed": 1,
+    "draft_failed": 2,
+    "draft_unavailable": 2,
+    "qzone_unauthorized": 3,
+    "qzone_settings_unavailable": 3,
+    "daily_limit": 4,
+    "retry_wait": 4,
+    "probability_miss": 5,
+    "interval": 5,
+    "life_publish_disabled": 6,
+    "publish_disabled": 6,
+    "qzone_disabled": 6,
+}
 
 
 class QzoneLifePublisher:
@@ -76,9 +98,7 @@ class QzoneLifePublisher:
 
     async def tick(self, now=None):
         result = await self._tick(now)
-        if result.get("reason") not in ("host_not_running", "qzone_unavailable",
-                                        "life_publish_disabled", "publish_disabled",
-                                        "qzone_disabled", "interval", "probability_miss"):
+        if result.get("reason") not in _QUIET_REASONS:
             logger.info("[CompanionV2] 生活说说检查 reason=%s", result.get("reason"))
         return result
 
@@ -89,10 +109,22 @@ class QzoneLifePublisher:
             return {"reason": "host_not_running"}
         application = session.application
         service = getattr(application, "qzone", None)
-        context = getattr(getattr(session, "profile", None), "target", None)
-        if service is None or context is None:
+        if service is None:
             return {"reason": "qzone_unavailable"}
         at = now or controller.now()
+        contexts = self._target_contexts(session, at)
+        candidates = self._select_contexts_by_owner(service, contexts)
+        if not candidates:
+            return {"reason": "qzone_unavailable"}
+        results = []
+        for context, authorized in candidates:
+            results.append(await self._tick_context(
+                session, application, service, context, at, authorized=authorized))
+        if len(results) == 1:
+            return results[0]
+        return min(results, key=lambda item: _REASON_PRIORITY.get(item.get("reason"), 99))
+
+    async def _tick_context(self, session, application, service, context, at, *, authorized=None):
         try:
             settings = application.qzone_settings.read(context, at)
         except Exception:  # noqa: BLE001 - an unreadable Zone config is a no-op, not a crash
@@ -101,6 +133,8 @@ class QzoneLifePublisher:
         decision = life_publish.decide(settings, state, now=at)
         if not decision.due:
             return {"reason": decision.reason}
+        if authorized is False:
+            return {"reason": "qzone_unauthorized"}
         if not life_publish.should_attempt(settings, self.draw()):
             return {"reason": "probability_miss"}
         # Record the attempt before the model call: a crash or a failed publish
@@ -133,6 +167,129 @@ class QzoneLifePublisher:
         return {"reason": "published", "status": result.get("status"),
                 "operation_id": result.get("operation_id")}
 
+    # ---- target resolution ---------------------------------------------
+
+    @classmethod
+    def _target_contexts(cls, session, at):
+        """Resolve active task contexts from single-host or multi-host sessions."""
+        profile_target = getattr(getattr(session, "profile", None), "target", None)
+        if profile_target is not None:
+            return (profile_target,)
+        authority = getattr(session, "authority", None)
+        settings = getattr(session, "settings", None)
+        if authority is None or settings is None:
+            return ()
+        return cls._resolve_multi_contexts(session, authority, settings, at)
+
+    @classmethod
+    def _resolve_multi_contexts(cls, session, authority, settings, at):
+        targets = []
+        seen_targets = set()
+        candidates = [
+            *(getattr(settings, "primary_targets", ()) or ()),
+            *(getattr(settings, "targets", ()) or ()),
+        ]
+        prepared = getattr(session, "_prepared_wildcard_private_targets", None)
+        if callable(prepared):
+            candidates.extend(prepared() or ())
+        for target in candidates:
+            target_id = getattr(target, "target_id", "")
+            participant_id = getattr(target, "participant_id", "*")
+            if (not target_id or getattr(target, "group_id", None) is not None
+                    or participant_id == "*" or target_id in seen_targets):
+                continue
+            seen_targets.add(target_id)
+            targets.append(target)
+
+        canonical = getattr(settings, "canonical_role_id", None)
+        personas = getattr(settings, "personas", ()) or ()
+        contexts = []
+        for target in targets:
+            bot_roles = cls._bot_role_ids(personas, target.bot_id, canonical)
+            active_role = cls._active_role_id(authority, target.target_id, at, canonical)
+            if active_role and (not bot_roles or active_role in bot_roles):
+                role_ids = (active_role,)
+            else:
+                role_ids = bot_roles
+            for role_id in role_ids:
+                context = cls._authority_context(authority, target.target_id, role_id)
+                if context is not None:
+                    contexts.append(context)
+        return tuple(contexts)
+
+    @staticmethod
+    def _bot_role_ids(personas, bot_id, canonical):
+        roles = []
+        seen = set()
+        for persona in personas:
+            if getattr(persona, "bot_id", None) != bot_id:
+                continue
+            raw_role = getattr(persona, "role_id", "")
+            role_id = canonical(raw_role) if callable(canonical) and raw_role else raw_role
+            if role_id and role_id not in seen:
+                seen.add(role_id)
+                roles.append(role_id)
+        return tuple(roles)
+
+    @staticmethod
+    def _active_role_id(authority, target_id, at, canonical):
+        try:
+            stored = authority.read("host.multi.active:" + target_id)
+            if not stored:
+                return ""
+            document = json.loads(stored) if isinstance(stored, str) else stored
+            scope = ScopeRef.restore(document)
+            resolution = authority.personas.resolve(scope, observed_at=at)
+            if resolution.failure is not None:
+                return ""
+            role_id = resolution.unwrap().binding.role.subject_id
+            return canonical(role_id) if callable(canonical) else role_id
+        except (TaskError, ValueError, KeyError, TypeError):
+            return ""
+
+    @staticmethod
+    def _authority_context(authority, target_id, role_id):
+        try:
+            return authority.context(target_id, role_id)
+        except (TaskError, ValueError, KeyError, TypeError):
+            return None
+
+    @classmethod
+    def _select_contexts_by_owner(cls, service, contexts):
+        """Deduplicate candidate windows per role owner, preferring authorized ones."""
+        selected = {}
+        for context in contexts:
+            key = owner_key(context)
+            authorized = cls._is_publish_authorized(service, context)
+            previous = selected.get(key)
+            if previous is None or (previous[1] is False and authorized is not False):
+                selected[key] = (context, authorized)
+        return tuple(selected.values())
+
+    @staticmethod
+    def _is_publish_authorized(service, context):
+        capabilities = getattr(service, "capabilities", None)
+        if capabilities is None:
+            return None
+        require_role = getattr(capabilities, "require_role_enabled", None)
+        authorize = getattr(capabilities, "authorize", None)
+        if not callable(require_role) or not callable(authorize):
+            return None
+        role_ok = require_role(
+            extension_id=QZONE_EXTENSION,
+            role=context.role_binding.role,
+            bot_id=context.scope.bot_id,
+        )
+        if not getattr(role_ok, "is_success", False):
+            return False
+        auth_ok = authorize(
+            extension_id=QZONE_EXTENSION,
+            capability_id=QZONE_PUBLISH_ACTION,
+            subject=context.actor.subject,
+            scope=context.scope,
+        )
+        return bool(getattr(auth_ok, "is_success", False))
+
     @staticmethod
     def _schedule_retry(service, context, state, at, settings, *, unknown=False):
         try:
@@ -157,12 +314,11 @@ class QzoneLifePublisher:
         from companion_v2.role_work.journal.models import JournalKind
 
         controller = self.controller
-        common = getattr(getattr(controller, "settings", None), "common", None)
-        provider_id = str(getattr(common, "provider_id", "") or "").strip()
+        provider_id = self._provider_id(controller, session)
         provider = controller.context.get_provider_by_id(provider_id) if provider_id else None
         if provider is None or not callable(getattr(provider, "text_chat", None)):
             raise RuntimeError("text provider unavailable")
-        profile = self._profile(session)
+        profile = self._profile(session, context)
         diary = self._latest_diary(session, context, at, JournalKind)
         request = life_publish.build_request(
             profile, diary, now=at, style=settings.get("life_publish_style_prompt", ""))
@@ -173,10 +329,22 @@ class QzoneLifePublisher:
         return life_publish.parse_draft(getattr(response, "completion_text", response))
 
     @staticmethod
-    def _profile(session):
+    def _provider_id(controller, session):
+        from astrbot_host.persona_workshop_api import _session_provider_id
+
+        for source in (session, controller):
+            if source is None:
+                continue
+            found = _session_provider_id(source)
+            if found:
+                return found
+        return ""
+
+    @staticmethod
+    def _profile(session, context=None):
         try:
             from astrbot_host.persona_workshop_api import current_role_profile
-            return current_role_profile(session.runtime, session)
+            return current_role_profile(session.runtime, session, context=context)
         except Exception:  # noqa: BLE001 - drafting can proceed on the diary alone
             return {}
 

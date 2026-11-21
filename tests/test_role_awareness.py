@@ -295,7 +295,7 @@ class RoleAwarenessTests(unittest.TestCase):
     def test_core_reply_section_renders_private_activity(self):
         self.record_group()
         messages = type("Messages", (), {"cross_window_context": self.prompt})()
-        section = _cross_window_section(messages, self.private, NOW)
+        section = _cross_window_section(messages, self.private, NOW).render()
         self.assertIn("【跨窗口在场】", section)
         self.assertIn("cross_window_awareness", section)
         self.assertIn("明天谁有空", json.loads(json.dumps(section, ensure_ascii=False)))
@@ -304,7 +304,7 @@ class RoleAwarenessTests(unittest.TestCase):
         self.acquaintance.private = True
         self.record_private()
         messages = type("Messages", (), {"cross_window_context": self.prompt})()
-        section = _cross_window_section(messages, self.group, NOW)
+        section = _cross_window_section(messages, self.group, NOW).render()
         payload = json.loads(section.split("\n")[-1])
         self.assertEqual(payload[0]["content"], {"private_contact": True})
         self.assertNotIn("先别告诉群里", section)

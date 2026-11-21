@@ -72,15 +72,29 @@ window.CompanionStoragePage = (() => {
           <div class="option-row"><div>启用自动备份<small>最近完整快照到期或不存在时自动新建，目录和保留策略与手动备份共用。</small></div>
             <button class="switch" type="button" role="switch" aria-checked="${state.form.auto_backup_enabled}"
               aria-label="启用自动备份" data-storage-auto-toggle${state.busy ? " disabled" : ""}></button></div>
-          <fieldset class="storage-retention"><label>每隔<input name="auto_backup_interval_minutes" type="number" min="1" max="43200" step="1" required value="${text(state.form.auto_backup_interval_minutes)}">分钟</label>
-            <small>默认 1440 分钟；手动快照也计入间隔。删除最后一份后仍会自动补建，如需清空请先关闭自动备份。</small>
-          </fieldset></section>
-        <section class="storage-panel"><h4>备份清理策略</h4><fieldset class="storage-retention"><label>每个运行档最多保留<input name="retention_count" type="number" min="1" max="200" step="1" value="${text(state.form.retention_count)}">份</label><label>保留最近<input name="retention_days" type="number" min="1" max="3650" step="1" value="${text(state.form.retention_days)}">天</label><small>新建快照时自动清理，始终保留最新一份。</small></fieldset>
-          ${cleanup}${futureNotice}<div class="storage-actions"><button class="button primary small" type="submit"${state.busy ? " disabled" : ""}>保存存储设置</button><button class="button small" type="button" data-storage-refresh${state.busy ? " disabled" : ""}>重新读取</button></div>
+          <fieldset class="storage-retention">
+            <div class="storage-retention-fields"><label>每隔<input name="auto_backup_interval_minutes" type="number" min="1" max="43200" step="1" required value="${text(state.form.auto_backup_interval_minutes)}">分钟</label></div>
+            <small>默认 1440 分钟。手动快照也计入间隔。删除最后一份后会自动补建。</small>
+          </fieldset>
         </section>
-        <section class="storage-panel"><h4>运行缓存</h4>
-          <p class="storage-cache-note">图片转述、失败冷却和诊断报告都可以随时重建；清理只释放当前进程里的缓存，不会删除对话、记忆、日记或已发送的图片。</p>
-          <div class="storage-actions"><button class="button small" type="button" data-storage-cache-clear${state.busy ? " disabled" : ""}>清理运行缓存</button></div>
+        <section class="storage-panel storage-policy"><h4>备份清理策略</h4>
+          <fieldset class="storage-retention">
+            <div class="storage-retention-fields">
+              <label>每个运行档最多保留<input name="retention_count" type="number" min="1" max="200" step="1" value="${text(state.form.retention_count)}">份</label>
+              <label>保留最近<input name="retention_days" type="number" min="1" max="3650" step="1" value="${text(state.form.retention_days)}">天</label>
+            </div>
+            <div class="storage-retention-aside"><small>新建快照时自动清理，始终保留最新一份。</small>${cleanup}${futureNotice}</div>
+          </fieldset>
+          <div class="storage-actions storage-form-actions">
+            <button class="button primary small" type="submit"${state.busy ? " disabled" : ""}>保存存储设置</button>
+            <button class="button small" type="button" data-storage-refresh${state.busy ? " disabled" : ""}>重新读取</button>
+          </div>
+        </section>
+        <section class="storage-panel storage-cache-panel"><h4>运行缓存</h4>
+          <div class="storage-cache-row">
+            <p class="storage-cache-note">图片转述、失败冷却和诊断报告都可以随时重建；清理只释放当前进程里的缓存，不会删除对话、记忆、日记或已发送的图片。</p>
+            <div class="storage-actions"><button class="button small" type="button" data-storage-cache-clear${state.busy ? " disabled" : ""}>清理运行缓存</button></div>
+          </div>
         </section>
       </form>
       ${message}

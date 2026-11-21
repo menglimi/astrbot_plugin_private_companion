@@ -15,7 +15,7 @@ from companion_v2.capabilities.models import CapabilityDesiredState
 from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.adapters.astrbot.memory_providers import (
-    ExternalMemoryProviderRegistry, PROVIDER_API_VERSION, memory_provider_registry)
+    PROVIDER_API_VERSION, shared_memory_provider_registry)
 from companion_v2.diagnostics.readonly_status import read_p6_readonly_status
 from .memory_page_api import MemoryPageAPI
 from .integration_catalog import BUNDLED_EXTENSIONS, EXTERNAL_PROVIDERS
@@ -225,7 +225,7 @@ class UnifiedCompanionExtensionAPI:
     api_version = "companion.product.v1"
     memory_provider_api_version = PROVIDER_API_VERSION
 
-    def __init__(self, controller):
+    def __init__(self, controller, *, claim=False):
         self.controller = controller
         self._memory_page = MemoryPageAPI(controller)
         from .mobile_together import MobileTogetherBridge
@@ -236,15 +236,17 @@ class UnifiedCompanionExtensionAPI:
         from .native_extensions.reality.host_delivery import RealityHostDelivery
         self._reality_context = RealityHostContext(controller, self._mobile_together)
         self._reality_delivery = RealityHostDelivery(self._reality_context)
-        self._memory_providers = self._memory_provider_registry()
-
-    def _memory_provider_registry(self):
-        """Resolve the context-shared registry used by all facades on this host."""
-        registry = memory_provider_registry(self.controller.context)
-        if registry is None or getattr(registry, "_closed", False):
-            registry = ExternalMemoryProviderRegistry(self.controller.context,
-                host_active=lambda: not getattr(self.controller, "_terminated", False))
-        return registry
+        # Only active host startup should claim and replace a live registry owned
+        # by another controller (claim=True). Lazy or secondary facades default to
+        # claim=False, and later register/unregister/list/close calls stay bound to
+        # this instance so a stale or draining controller never overwrites a newer
+        # host's active registry.
+        self._memory_providers = shared_memory_provider_registry(
+            self.controller.context,
+            host_active=lambda: not getattr(self.controller, "_terminated", False),
+            owner=self.controller,
+            claim=claim,
+        )
 
     def register_memory_provider(self, provider_id, *, plugin, read=None, write=None, summary=None,
                                  display_name="", priority=0, handles_model_memory=False,
@@ -252,16 +254,16 @@ class UnifiedCompanionExtensionAPI:
         """Register callbacks owned by a live Star; return an opaque removal token."""
         if getattr(self.controller, "_terminated", False):
             raise ValueError("memory provider host is stopped")
-        return self._memory_provider_registry().register(provider_id, plugin=plugin, read=read,
+        return self._memory_providers.register(provider_id, plugin=plugin, read=read,
             write=write, summary=summary, display_name=display_name, priority=priority,
             handles_model_memory=handles_model_memory, is_active=is_active, timeout_seconds=timeout_seconds,
             linked_memory_read=linked_memory_read)
 
     def unregister_memory_provider(self, registration_id):
-        return self._memory_provider_registry().unregister(registration_id)
+        return self._memory_providers.unregister(registration_id)
 
     def list_memory_providers(self):
-        return self._memory_provider_registry().snapshot()
+        return self._memory_providers.snapshot()
 
     def close_memory_providers(self):
         # A stale facade may shut down after a replacement registry is installed.

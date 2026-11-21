@@ -88,19 +88,41 @@ def context_rows(runtime, *, kind=None, open_only=False):
     """
     if not turns_available(runtime):
         return ()
-    where = "WHERE "
-    parameters: tuple[object, ...] = ()
     if open_only:
         phases = ", ".join(f"'{state}'" for state in OPEN_TURN_STATES)
-        where += f"n.generation_state IN ({phases}) AND "
+        where = f"WHERE n.generation_state IN ({phases}) AND "
+        parameters: tuple[object, ...] = ()
+        if kind:
+            where += "json_extract(n.context_json, '$.audience.scope.kind') = ? AND "
+            parameters = (kind,)
+        rows = runtime.read_all("SELECT n.* FROM conversation_native_turns n " + where + """
+            NOT EXISTS (SELECT 1 FROM conversation_native_turns newer
+                WHERE newer.context_key = n.context_key
+                AND (newer.observed_at, newer.rowid) > (n.observed_at, n.rowid))
+            ORDER BY n.observed_at DESC, n.rowid DESC""", parameters)
+        return tuple(project(row) for row in rows)
+    # Full latest-turn-per-context reads (e.g. expression review over groups)
+    # jump across distinct context_keys via a loose index scan on
+    # conversation_native_turn_context_recent_idx instead of scanning the full
+    # table and its large role_instruction/context_json blobs.
+    kind_filter = ""
+    parameters = ()
     if kind:
-        where += "json_extract(n.context_json, '$.audience.scope.kind') = ? AND "
+        kind_filter = " AND json_extract(n.context_json, '$.audience.scope.kind') = ?"
         parameters = (kind,)
-    rows = runtime.read_all("SELECT n.* FROM conversation_native_turns n " + where + """
-        NOT EXISTS (SELECT 1 FROM conversation_native_turns newer
-            WHERE newer.context_key = n.context_key
-            AND (newer.observed_at > n.observed_at OR newer.observed_at = n.observed_at AND newer.rowid > n.rowid))
-        ORDER BY n.observed_at DESC, n.rowid DESC""", parameters)
+    rows = runtime.read_all("""WITH RECURSIVE keys(k) AS (
+            SELECT MIN(context_key) FROM conversation_native_turns
+            UNION ALL
+            SELECT (SELECT MIN(t.context_key) FROM conversation_native_turns t WHERE t.context_key > keys.k)
+            FROM keys WHERE keys.k IS NOT NULL
+        )
+        SELECT n.* FROM conversation_native_turns n
+        WHERE n.rowid IN (
+            SELECT (SELECT t.rowid FROM conversation_native_turns t
+                    WHERE t.context_key = keys.k
+                    ORDER BY t.observed_at DESC, t.rowid DESC LIMIT 1)
+            FROM keys WHERE keys.k IS NOT NULL
+        )""" + kind_filter + " ORDER BY n.observed_at DESC, n.rowid DESC", parameters)
     return tuple(project(row) for row in rows)
 
 

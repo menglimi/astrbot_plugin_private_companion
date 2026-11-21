@@ -100,12 +100,12 @@ class SelfReviewListTests(unittest.TestCase):
 
     def build_management(self):
         app = SimpleNamespace(runtime=self.runtime, role_self_review_evidence=FakeEvidence(),
-                              role_self_review=None, notify=lambda: None,
+                              notify=lambda: None,
                               role_growth=SimpleNamespace(runtime=self.runtime))
         from companion_v2.role_work.journal.self_review_service import SelfReviewService
         service = SelfReviewService(self.runtime)
         service.app = app
-        app.role_self_review = service
+        app.self_review = service
         management = SelfReviewManagement(app)
         # Authorization and the clock are not what these contracts cover.
         management.management._authorize = lambda operator, context, at: (OWNER, 4)
@@ -424,4 +424,3 @@ class SelfReviewListTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

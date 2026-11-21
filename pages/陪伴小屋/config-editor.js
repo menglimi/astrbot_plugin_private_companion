@@ -1,4 +1,4 @@
-/* 配置工作台的薄适配层。
+﻿/* 配置工作台的薄适配层。
    本文件此前自带整套字段渲染、草稿存储与幂等重试；这些现在归
    workbench-page.js 统一负责。这里只保留「分区 → 标题/说明/字段顺序/文案」
    的声明，以及各分区的错误映射。
@@ -736,10 +736,10 @@ window.CompanionConfigEditors = (() => {
       },
       choices: {schedule_influence_strength: {0: "不影响", 1: "轻微参考", 2: "留出练习时间",
                                               3: "优先安排相关活动"}},
-      order: ["enabled", "custom_skills", "schedule_influence_strength"],
+      order: ["enabled", "schedule_influence_strength", "custom_skills"],
       sections: [
         {id: "shared", title: "角色技能领域",
-         fields: ["enabled", "custom_skills", "schedule_influence_strength"]},
+         fields: ["enabled", "schedule_influence_strength", "custom_skills"]},
       ],
     },
     role_profile: {
@@ -872,7 +872,7 @@ window.CompanionConfigEditors = (() => {
       scopeNote: "当前角色 · 所有会话共享",
       onStatus: updateRoleProfileSummary,
       sections: [
-        {id: "identity", title: "基础身份", help: "姓名、种族、生日、年龄感、职业、关键经历与补充。", fields: ["name", "gender", "birthday", "age", "species", "occupation", "key_lore", "identity", "character_extra", "avatar_data_url"]},
+        {id: "identity", title: "基础身份", help: "姓名、种族、生日、年龄感、职业、关键经历与补充。", fields: ["name", "gender", "birthday", "age", "occupation", "species", "key_lore", "identity", "character_extra", "avatar_data_url"]},
         {id: "appearance", title: "外貌与识别", help: "发型、瞳色、服饰和能稳定辨认角色的线索。", fields: ["appearance_points", "hair", "eyes", "clothing", "image_identity_hint", "appearance"]},
         {id: "personality", title: "性格与日常", help: "性格底色、日常习惯和角色做事的稳定倾向。", fields: ["personality", "daily_habits"]},
         {id: "voice", title: "口吻与反应", help: "用自称、情绪表达、典型反应和示例台词写出角色说话的感觉。", fields: ["voice_examples", "signature_phrases", "first_person", "speech_style", "emotional_style", "social_distance", "reaction_patterns"]},
@@ -2096,3 +2096,5 @@ window.CompanionConfigEditors = (() => {
 
   return {create, spec, searchEntries, errors, endpointFor};
 })();
+
+

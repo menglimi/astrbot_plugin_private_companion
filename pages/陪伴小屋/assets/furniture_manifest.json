@@ -1,0 +1,69 @@
+[
+  {
+    "id": "desk",
+    "name": "日记书桌",
+    "model": "desk.vox",
+    "capability": "life.diary",
+    "station": "desk",
+    "tab": "diary",
+    "icon": "notebook-pen"
+  },
+  {
+    "id": "calendar",
+    "name": "生活挂历",
+    "model": "calendar.vox",
+    "capability": "state.planning",
+    "station": "calendar",
+    "tab": "state",
+    "icon": "calendar-days"
+  },
+  {
+    "id": "shelf",
+    "name": "创作书架",
+    "model": "shelf.vox",
+    "capability": "content.authoring",
+    "station": "shelf",
+    "tab": null,
+    "detail": "authoring",
+    "icon": "library-big"
+  },
+  {
+    "id": "bed",
+    "name": "睡眠与梦境",
+    "model": "bed.vox",
+    "capability": "role.life",
+    "station": "bed",
+    "tab": "sleep",
+    "icon": "bed-double"
+  },
+  {
+    "id": "radio",
+    "name": "见闻电台",
+    "model": "radio.vox",
+    "capability": "conversation.news",
+    "station": "radio",
+    "tab": null,
+    "detail": "news",
+    "icon": "radio"
+  },
+  {
+    "id": "garden",
+    "name": "成长花架",
+    "model": "garden.vox",
+    "capability": "role.growth",
+    "station": "garden",
+    "tab": null,
+    "detail": "growth",
+    "icon": "sprout"
+  },
+  {
+    "id": "wardrobe",
+    "name": "衣柜陈设",
+    "model": "wardrobe.vox",
+    "capability": "wardrobe",
+    "station": "wardrobe",
+    "tab": null,
+    "detail": "wardrobe",
+    "icon": "door-open"
+  }
+]
