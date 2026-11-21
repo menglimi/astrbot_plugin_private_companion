@@ -986,8 +986,6 @@ class ConversationMessages:
     def request(self, run, *, include_tools=True):
         run.validate()
         at = self.tasks.now()
-        if include_tools:
-            self._prepare_daily_outfit(run, at)
         with self.runtime.read_snapshot():
             run.validate()
             row = self.batch(run.task.spec.request_ref)
@@ -1049,26 +1047,6 @@ class ConversationMessages:
         except (TypeError, ValueError, AttributeError, KeyError):
             return False
         return True
-
-    def _prepare_daily_outfit(self, run, at):
-        if (self.reference_materials is None or self.tools is None
-                or run.task.spec.context.scope.kind is not ScopeKind.PRIVATE):
-            return
-        context = run.task.spec.context
-        try:
-            if not any(tool.action == "image.edit" for tool in
-                       self.tools.catalog_for(context, run.task.spec.request_ref)):
-                return
-            row = self.batch(run.task.spec.request_ref)
-            saved = json.loads(row["contributions_json"])
-            perception = saved.get("perception") if isinstance(saved, dict) else None
-            timezone_name = (validate_perception_snapshot(perception["settings"])["calendar_timezone"]
-                             if perception is not None else self.timezone_name)
-            from zoneinfo import ZoneInfo
-            local_date = at.astimezone(ZoneInfo(timezone_name)).date().isoformat()
-            self.reference_materials.prepare_daily_outfit(context, local_date=local_date)
-        except TaskError:
-            return
 
     def journal_inputs(self, context: TaskContext, *, limit=50, after_id=None) -> JournalConversationInputPage:
         """Read one authorized page of active, accepted inbound messages for private writing."""

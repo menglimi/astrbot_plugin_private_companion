@@ -47,6 +47,9 @@ DEFAULT_ACTIONS = (
     )),
     ActionDefinition("memo.create", ("memo",), shareable=False),
     ActionDefinition("memo.list", ("memo",), shareable=False, private_owner_without_grant=True),
+    # Device actions belong to the private window's own owner; a configured
+    # phone.json is the second switch, and the supervisor rechecks this action.
+    ActionDefinition("phone.act", ("phone",), shareable=False, private_owner_without_grant=True),
     *(ActionDefinition(f"reminder.{action}", ("reminder",)) for action in (
         "read", "cancel", "reschedule", "deliver",
     )),

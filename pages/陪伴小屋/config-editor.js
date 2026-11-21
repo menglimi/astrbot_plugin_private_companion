@@ -1,4 +1,4 @@
-﻿/* 配置工作台的薄适配层。
+/* 配置工作台的薄适配层。
    本文件此前自带整套字段渲染、草稿存储与幂等重试；这些现在归
    workbench-page.js 统一负责。这里只保留「分区 → 标题/说明/字段顺序/文案」
    的声明，以及各分区的错误映射。
@@ -935,6 +935,7 @@ window.CompanionConfigEditors = (() => {
         source_limit: "最多读取来源数",
         candidate_char_budget: "单轮候选字符预算",
         inject_enabled: "在对话中引用所选资料",
+        official_in_core: "核心回复也由 V2 检索官方知识库",
         inject_max_entries: "每轮最多引用条数",
         inject_max_chars: "每轮引用字符上限",
         member_recognition_enabled: "启用成员资料注入",
@@ -946,6 +947,7 @@ window.CompanionConfigEditors = (() => {
         import_enabled: "默认关闭。启动或刷新时按安装层配置从相对路径自动导入世界书 JSON（相对 AstrBot 数据目录）；不影响下方勾选的 AstrBot 官方知识库。",
         import_paths: "相对 AstrBot 数据目录的世界书 JSON 文件或目录路径，多项可用换行、逗号或分号分隔；仅在开启「自动导入本地世界书」时读取。",
         inject_enabled: "在对话中检索并注入已选世界知识与官方知识库片段的总开关；关闭后不向回复上下文注入知识背景。",
+        official_in_core: "默认关闭：官方知识库交给 AstrBot 自己的检索。AstrBot 检索拿不到结果、或回复没有引用知识库时打开；V2 会用用户原话直接检索所选知识库并注入，可能与 AstrBot 的结果重复。",
         member_recognition_enabled: "按当前发言者账号，或本轮提及的唯一名称，选取已有成员资料供回复参考。",
         member_match_aliases: "注入成员相处资料时，是否同时按消息里提到的唯一别名或昵称匹配成员；关闭后只按当前发言者账号匹配。",
         member_clue_chars: "本轮所有成员资料合计的字数上限。",
@@ -953,14 +955,15 @@ window.CompanionConfigEditors = (() => {
       inputs: {source_ids: "source-checklist"},
       catalogs: {source_ids: (status) => status?.knowledge_sources || []},
       order: ["source_ids", "entry_limit", "entry_char_limit", "source_limit",
-              "candidate_char_budget", "inject_enabled", "inject_max_entries",
+              "candidate_char_budget", "inject_enabled", "official_in_core",
+              "inject_max_entries",
               "inject_max_chars", "member_recognition_enabled", "member_match_aliases",
               "member_inject_limit", "member_clue_chars"],
       sections: [
         {id: "import", title: "AstrBot 官方知识库", fields: ["source_ids", "entry_limit", "entry_char_limit",
                   "source_limit", "candidate_char_budget"]},
         {id: "inject", title: "在对话中引用", fields: [
-          "inject_enabled", "inject_max_entries", "inject_max_chars"]},
+          "inject_enabled", "official_in_core", "inject_max_entries", "inject_max_chars"]},
         {id: "members", title: "成员相处资料",
          fields: ["member_recognition_enabled", "member_match_aliases", "member_inject_limit",
                   "member_clue_chars"]},
@@ -1173,22 +1176,59 @@ window.CompanionConfigEditors = (() => {
       labels: {
         enabled: "启用参考图",
         group_enabled: "允许群聊使用参考图",
-        daily_outfit_enabled: "启用每日穿搭",
-        daily_outfit_rotation_days: "同一套穿搭的轮换间隔（天）",
+        daily_outfit_enabled: "启用每日穿搭图",
+        daily_outfit_rotation_days: "衣柜候选轮换间隔（天）",
       },
       helps: {
         enabled: "关闭后参考图既不能读取也不能新登记；已登记的素材保留，撤回仍然可用。",
         group_enabled: "单独控制本角色的已登记参考图能否用于群聊；默认关闭，私聊使用不受它影响。",
-        daily_outfit_enabled: "同意使用参考图，不等于同意每天都出一张穿搭图，所以这里是独立开关。",
-        daily_outfit_rotation_days: "同一套衣服再次出现前至少要间隔多少天。",
+        daily_outfit_enabled: "根据角色设定、当天日程和已配置的天气生成穿搭图，需要可用的 Image 生图路线。",
+        daily_outfit_rotation_days: "选取衣柜参考时优先避开这段时间内选过的衣物。",
       },
       choices: {},
       order: ["enabled", "group_enabled", "daily_outfit_enabled", "daily_outfit_rotation_days"],
       sections: [
-        {id: "switches", title: "能力开关", help: "参考图总闸、群聊使用和每日穿搭分别控制；群聊默认不读取角色参考素材。",
+        {id: "switches", title: "能力开关", help: "每日穿搭图有独立开关，生成时可选用角色参考图。",
          fields: ["enabled", "group_enabled", "daily_outfit_enabled"]},
-        {id: "rotation", title: "轮换", help: "只影响同款出现的间隔，不改变已登记素材。",
+        {id: "rotation", title: "轮换",
          fields: ["daily_outfit_rotation_days"]},
+      ],
+    },
+    "device.phone": {
+      title: "ADB 操作设置",
+      labels: {
+        enabled: "允许角色操作手机",
+        adb_path: "adb 可执行文件路径",
+        serial: "目标设备序列号",
+        connect: "无线调试地址（host:port）",
+        max_steps: "单个任务最多步数",
+        unicode_input: "中文输入方式",
+        ime_restore_seconds: "输入法切回延迟（秒）",
+        allowed_actions: "允许的动作（逗号分隔）",
+        allowed_subjects: "允许使用的对象（逗号分隔）",
+      },
+      helps: {
+        enabled: "关闭后，角色停止新建和启动手机操作任务。",
+        adb_path: "留空时依次查 ANDROID_HOME、ANDROID_SDK_ROOT、Windows 默认 SDK 目录和 PATH。",
+        serial: "同时连接多台设备时必须填；只连一台可留空。",
+        connect: "Android 无线调试页面显示的 IP 地址和端口。",
+        max_steps: "单个任务最多走几步。步数越多越慢，也越容易在界面变化时走偏。",
+        unicode_input: "关闭时只接受可打印 ASCII；中文/emoji 需要手机端安装并启用 ADBKeyboard。",
+        ime_restore_seconds: "打完中文后延迟这么久再切回原输入法；立刻切回会丢字。",
+        allowed_actions: "只能使用这些动作；done 和 fail 必须保留。force_stop 默认不在这里，需要时再显式加入。",
+        allowed_subjects: "留空表示所有能私聊这个角色的对象都可以使用；建议填写你自己的 subject id。",
+      },
+      choices: {
+        unicode_input: {off: "关闭（仅 ASCII）", adbkeyboard: "ADBKeyboard"},
+      },
+      inputs: {adb_path: "line", serial: "line", connect: "line"},
+      rows: {allowed_actions: 2, allowed_subjects: 2},
+      order: ["enabled", "adb_path", "serial", "connect", "max_steps",
+        "unicode_input", "ime_restore_seconds", "allowed_actions", "allowed_subjects"],
+      sections: [
+        {id: "master", title: "操作设备", fields: ["enabled", "adb_path", "serial", "connect"]},
+        {id: "typing", title: "输入与任务步数", fields: ["unicode_input", "ime_restore_seconds", "max_steps"]},
+        {id: "scope", title: "操作授权", fields: ["allowed_actions", "allowed_subjects"]},
       ],
     },
     group_participation: {

@@ -168,13 +168,13 @@ class ReferenceMaterialManagement:
         }
 
     @staticmethod
-    def _thumbnail(payload, *, byte_limit):
+    def _thumbnail(payload, *, byte_limit, size=256):
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(BytesIO(payload)) as source:
                 source.load()
                 preview = ImageOps.exif_transpose(source)
-                preview.thumbnail((256, 256), Image.Resampling.LANCZOS)
+                preview.thumbnail((size, size), Image.Resampling.LANCZOS)
                 rgba = preview.convert("RGBA")
                 canvas = Image.new("RGB", rgba.size, "#f3f4f4")
                 canvas.paste(rgba, mask=rgba.getchannel("A"))
@@ -548,3 +548,12 @@ class ReferenceMaterialManagement:
         selected = self.repository.select_daily_item(owner, local_date, item_id, created_at=at)
         return {"local_date": local_date, "item_id": selected.item_id, "name": selected.name,
                 "asset_id": selected.asset_id, "revision": selected.revision}
+
+    def daily_outfit_photo(self, operator, context, *, at):
+        self._admit(operator, context, at)
+        return self.application.daily_outfit.status(context, at=at,
+            preview=lambda content: self._thumbnail(content, byte_limit=THUMBNAIL_BYTES, size=512))
+
+    def generate_daily_outfit_photo(self, operator, context, *, at, operation_key):
+        self._admit(operator, context, at)
+        return self.application.daily_outfit.request(context, operation_key=self._operation_key(operation_key))

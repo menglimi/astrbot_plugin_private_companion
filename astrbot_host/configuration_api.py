@@ -32,7 +32,7 @@ from companion_v2.configuration.management import (AcquaintanceManagement, BusyG
                                                    RoleProfileManagement,
                                                    RelationshipProfileManagement,
                                                    SystemPromptManagement,
-                                                   QzoneManagement,
+                                                   QzoneManagement, PhoneManagement,
                                                    RelayManagement,
                                                    ScreenManagement, WardrobeManagement)
 from companion_v2.configuration.models import ConfigurationError
@@ -59,6 +59,7 @@ SECTIONS = {"quota": ImageQuotaManagement, "image_review": ImageReviewManagement
             "relay": RelayManagement,
             # QQ 空间拓展的角色级开关与节流；安装与逐会话同意不在这里，归能力安装路由。
             "qzone": QzoneManagement,
+            "device.phone": PhoneManagement,
             "person": AcquaintanceManagement,
             # Known users use role defaults; unbound accounts use installation settings.
             "private_access": PrivateAccessManagement,
@@ -112,7 +113,39 @@ class ConfigurationWebAPI:
         if "group_participation" in self.sections:
             routes.extend([(PREFIX + "/behavior", self.behavior_status, ["GET"], "Read role-owned group habits"),
                            (PREFIX + "/behavior/command", self.behavior_command, ["POST"], "Review one learned group habit")])
+        if "device.phone" in self.sections:
+            routes.append((PREFIX + "/phone-connection", self.phone_connection, ["POST"], "Set up an Android phone for this role"))
         return routes
+
+    async def phone_connection(self):
+        from .web_api import outcome_response
+        try:
+            username = request.username
+            if type(username) is not str or not username.strip() or username.startswith("api_key:"):
+                raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
+            raw = await request.body()
+            if request.query or len(raw) > 2048:
+                raise ValueError("invalid phone connection request")
+            data = _document(raw, expected={"action"}, optional=("address", "code", "serial", "edit_token", "operation_key"))
+            controller = self.controller
+            if controller._terminated:
+                raise TaskError("staging_host_terminated", "plugin is stopped")
+            session, runtime = controller.session or controller.last_session, controller.runtime
+            if session is None or runtime is None:
+                raise TaskError("staging_not_initialized", "load the V2 profile first")
+            context = await self._management_context(controller, session, "", "")
+
+            def connect():
+                operator = dashboard_operator(runtime, username, at=controller.now())
+                return PhoneManagement(session.application, context).connection(operator, data)
+
+            return outcome_response(await asyncio.to_thread(connect))
+        except (TaskError, ConfigurationError) as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("configuration_storage_unavailable", "the configuration store is not available"))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+            return outcome_response(Outcome.failed("device_phone_connection_invalid", "invalid UTF-8 phone connection request"))
 
     async def _run_behavior(self, *, command=False):
         from companion_v2.conversation.behavior.management import BehaviorManagement

@@ -180,7 +180,7 @@ def _knowledge_materials(messages, context, native_input, at, *, members=False):
     if members:
         clue = owner.member_contribution(context, **arguments)
         return (clue,) if clue is not None else ()
-    return owner.background_contributions(context, include_official=False, **arguments)
+    return owner.core_background_contributions(context, **arguments)
 
 
 def _memory_materials(owner, context, native_input, at, timezone_name):

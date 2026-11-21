@@ -370,7 +370,7 @@ class PromptRequest:
             raise ReferenceValidationError("native video input requires a captured original video")
         if self.response_format not in ("text", "json_object", "json_schema"):
             raise ReferenceValidationError("unsupported structured response mode")
-        if self.response_format != "text" and self.output_format not in ("memory_reflection", "content_authoring", "role_expression_learning", "role_expression_review", "role_state", "calendar_planning", "role_self_review"):
+        if self.response_format != "text" and self.output_format not in ("memory_reflection", "content_authoring", "role_expression_learning", "role_expression_review", "role_state", "calendar_planning", "role_self_review", "phone_action"):
             raise ReferenceValidationError("structured response mode requires its task owner")
         if self.response_schema_json is not None:
             if not isinstance(self.response_schema_json, str) or len(self.response_schema_json) > 32768:
@@ -379,7 +379,7 @@ class PromptRequest:
                 raise ReferenceValidationError("response schema requires an object")
         if self.response_format == "json_schema" and self.response_schema_json is None:
             raise ReferenceValidationError("strict structured response requires a schema")
-        if self.output_format not in ("conversation", "journal", "journal_derivatives", "journal_selection", "role_reading", "role_state", "memory_reflection", "content_authoring", "proactive_plan", "proactive_contact", "calendar_planning", "role_growth_progress", "role_self_review", "image_review", "screen_interpretation", "role_expression_learning", "role_expression_review"):
+        if self.output_format not in ("conversation", "journal", "journal_derivatives", "journal_selection", "role_reading", "role_state", "memory_reflection", "content_authoring", "proactive_plan", "proactive_contact", "calendar_planning", "role_growth_progress", "role_self_review", "image_review", "screen_interpretation", "role_expression_learning", "role_expression_review", "phone_action"):
 
             raise ReferenceValidationError("prompt output format must be host-selected")
         if self.role_binding.scope != self.event.scope:

@@ -47,6 +47,7 @@ _HTTP_REASON_RE = re.compile(r"^Laya HTTP ([1-5][0-9]{2})(?:[：:\s·]+(.*))?$",
 _AUTH_FALLBACK_RE = re.compile(r"^判断服务(?:拒绝访问|鉴权失败)（HTTP ([1-5][0-9]{2})）。$")
 _OBSERVATION_BATCH_CHUNK = 400
 _LEGACY_SCOPE_PAGE_SIZE = 200
+_LEGACY_SCOPE_SCAN_BUDGET = 1000
 
 
 def _sanitize_auth_text(text: object, *, api_key: str = "") -> str:
@@ -612,8 +613,8 @@ class LayaDecisionService:
         indexed_keys = [(row["observed_at"], int(row["_rowid"])) for row in indexed_rows]
         cutoff = _top_k_cutoff(indexed_keys, [], limit)
 
-        # Unindexed rows may still be attributable through observations. Page
-        # until the remaining rows are older than the last result we can return.
+        # Older unindexed events may still be attributable through observations.
+        # Bound the fallback for large histories and stop below the top-k cutoff.
         legacy_matched_ids: list[str] = []
         legacy_matched_keys: list[tuple[str, int]] = []
         by_batch: dict[str, dict] = {}
@@ -622,9 +623,11 @@ class LayaDecisionService:
         checked_origins: set[str] = set()
         observations_available: bool | None = None
         cursor: tuple[str, int] | None = None
+        scanned = 0
         page_size = min(_LEGACY_SCOPE_PAGE_SIZE, max(limit * 4, 50))
 
-        while True:
+        while scanned < _LEGACY_SCOPE_SCAN_BUDGET:
+            batch_limit = min(page_size, _LEGACY_SCOPE_SCAN_BUDGET - scanned)
             where = ["scope_key IS NULL"]
             parameters = []
             if cursor is not None:
@@ -637,10 +640,11 @@ class LayaDecisionService:
                 "SELECT rowid AS _rowid, event_id, origin_key, batch_id, processing_json, observed_at "
                 "FROM laya_decision_events WHERE " + " AND ".join(where) +
                 " ORDER BY observed_at DESC, rowid DESC LIMIT ?",
-                (*parameters, page_size),
+                (*parameters, batch_limit),
             )
             if not page:
                 break
+            scanned += len(page)
             unresolved_batches = set()
             unresolved_origins = set()
             pre_scopes = []
@@ -680,7 +684,7 @@ class LayaDecisionService:
                     cutoff = _top_k_cutoff(indexed_keys, legacy_matched_keys, limit)
                     if len(legacy_matched_ids) >= limit:
                         break
-            if reached_cutoff or len(legacy_matched_ids) >= limit or len(page) < page_size:
+            if reached_cutoff or len(legacy_matched_ids) >= limit or len(page) < batch_limit:
                 break
             cursor = (page[-1]["observed_at"], int(page[-1]["_rowid"]))
             if cutoff is not None and cursor <= cutoff:

@@ -357,6 +357,16 @@ FORWARD_COMPATIBLE_SCHEMA_VERSIONS = frozenset({
     "companion-v2.storage.v71",
 })
 
+# The early local builds used these same version numbers before the upstream
+# scope backfill was finalized. Keep existing migration records intact.
+_V69_LOCAL_INDEX_ONLY_FINGERPRINT = "f582d1f16d10927f376cd977bb60cd915c6bd7eb3ee5169df5effeafb7bfdb03"
+_EARLY_V70_MIGRATIONS = (
+    (MIGRATION_V68_TO_V69_ID, SCHEMA_VERSION_V68, SCHEMA_VERSION_V69,
+     "18d7f090a08f774f9d3fdbfddc0afe891bb756d71d461a9655fad30cf881b455"),
+    ("companion-v2.storage.v69-to-v70", SCHEMA_VERSION_V69, "companion-v2.storage.v70",
+     "217928112622d21f5cfb55b084a8050782a5a14b93e4c8062b1efa677ba56ebd"),
+)
+
 
 class StorageRuntime:
     """Own the V2 database connection; repositories never open their own connection."""
@@ -1736,6 +1746,7 @@ class StorageRuntime:
             forward_compatible = version != SCHEMA_VERSION and version in FORWARD_COMPATIBLE_SCHEMA_VERSIONS
             if version != SCHEMA_VERSION and not forward_compatible:
                 raise StorageOpenError("V2 data root has an incompatible schema version")
+            early_v70 = version == "companion-v2.storage.v70" and self._prepare_early_v70_laya_schema(connection)
             missing = V69_REQUIRED_TABLES.difference(existing_tables)
             if missing:
                 raise StorageOpenError("V2 data root is missing required schema objects")
@@ -1813,7 +1824,22 @@ class StorageRuntime:
             self._validate_v66_migration_record(connection)
             self._validate_v67_migration_record(connection)
             self._validate_v68_migration_record(connection)
-            self._validate_v69_migration_record(connection)
+            if not early_v70:
+                self._validate_v69_migration_record(connection)
+
+    @staticmethod
+    def _prepare_early_v70_laya_schema(connection):
+        records = tuple(tuple(row) for row in connection.execute(
+            "SELECT migration_id, from_version, to_version, fingerprint FROM schema_migrations "
+            "WHERE migration_id IN (?, ?) ORDER BY migration_id",
+            tuple(record[0] for record in _EARLY_V70_MIGRATIONS)))
+        if records != _EARLY_V70_MIGRATIONS:
+            return False
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(laya_decision_events)")}
+        if "scope_key" not in columns:
+            for statement in V69_MIGRATION_STATEMENTS:
+                connection.execute(statement)
+        return True
 
     def _migrate_v53_to_v54(self, connection):
         for statement in V54_MIGRATION_STATEMENTS:
@@ -2148,7 +2174,8 @@ class StorageRuntime:
         row = connection.execute("SELECT * FROM schema_migrations WHERE migration_id = ?",
                                  (MIGRATION_V68_TO_V69_ID,)).fetchone()
         if row is None or (row["from_version"] != SCHEMA_VERSION_V68 or row["to_version"] != SCHEMA_VERSION_V69
-                           or row["fingerprint"] != MIGRATION_V68_TO_V69_FINGERPRINT):
+                           or row["fingerprint"] not in (MIGRATION_V68_TO_V69_FINGERPRINT,
+                                                         _V69_LOCAL_INDEX_ONLY_FINGERPRINT)):
             raise StorageOpenError("V2 data root has an untrusted v69 migration record")
 
     def _migrate_v52_to_v53(self, connection):

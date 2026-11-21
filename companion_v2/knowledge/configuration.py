@@ -37,6 +37,7 @@ LAYERS = (ConfigLayer.INSTALLATION, ConfigLayer.ROLE, ConfigLayer.WINDOW)
 BOOLEAN_FIELDS = (
     "import_enabled",
     "inject_enabled",
+    "official_in_core",
     "member_recognition_enabled",
     "member_match_aliases",
 )
@@ -49,6 +50,10 @@ DEFAULTS = {
     "source_limit": 16,
     "candidate_char_budget": 60000,
     "inject_enabled": True,
+    # Official AstrBot KBs are normally left to AstrBot's own retrieval.  This
+    # opt-in lets V2 retrieve them with the user's actual message when that path
+    # is unavailable or returns nothing.
+    "official_in_core": False,
     "inject_max_entries": 8,
     "inject_max_chars": 6000,
     "member_recognition_enabled": False,
@@ -108,6 +113,7 @@ class KnowledgeSettings:
     source_limit: int
     candidate_char_budget: int
     inject_enabled: bool
+    official_in_core: bool
     inject_max_entries: int
     inject_max_chars: int
     member_recognition_enabled: bool

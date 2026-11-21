@@ -615,6 +615,40 @@ class StorageMigrationTests(unittest.TestCase):
         self.assertNotIn("TEMP B-TREE", plan)
         upgraded.close()
 
+    def test_early_v70_adds_laya_scope_index_without_rewriting_migration_records(self):
+        self.open_runtime().close()
+        early_v70 = "companion-v2.storage.v70"
+        records = (
+            (MIGRATION_V68_TO_V69_ID, SCHEMA_VERSION_V68, SCHEMA_VERSION_V69,
+             "18d7f090a08f774f9d3fdbfddc0afe891bb756d71d461a9655fad30cf881b455", "2026-11-20T00:00:00+00:00"),
+            ("companion-v2.storage.v69-to-v70", SCHEMA_VERSION_V69, early_v70,
+             "217928112622d21f5cfb55b084a8050782a5a14b93e4c8062b1efa677ba56ebd", "2026-11-20T00:00:00+00:00"),
+        )
+        with closing(sqlite3.connect(self.database)) as connection:
+            remove_v69(connection)
+            connection.executemany("INSERT INTO schema_migrations VALUES (?, ?, ?, ?, ?)", records)
+            connection.execute("UPDATE runtime_metadata SET value = ? WHERE key = 'schema_version'", (early_v70,))
+            connection.execute("""INSERT INTO laya_decision_events
+                (event_id, origin_key, source, status, mode, enabled_fields_json, observed_at, processing_json)
+                VALUES (?, 'legacy-origin', 'conversation', 'ok', 'remote', '{}', '2026-11-20T00:00:00+00:00', ?)""",
+                ("b" * 32, '{"scope":{"scope_key":"scope-a"}}'))
+            connection.commit()
+
+        for _ in range(2):
+            upgraded = self.open_runtime()
+            try:
+                self.assertEqual(upgraded.read_one(
+                    "SELECT value FROM runtime_metadata WHERE key = 'schema_version'", ())[0], early_v70)
+                self.assertEqual(upgraded.read_one(
+                    "SELECT scope_key FROM laya_decision_events WHERE event_id = ?", ("b" * 32,))[0], "scope-a")
+                self.assertEqual(tuple(tuple(row) for row in upgraded.read_all(
+                    "SELECT * FROM schema_migrations WHERE migration_id IN (?, ?) ORDER BY migration_id",
+                    tuple(record[0] for record in records))), records)
+                self.assertIn("laya_decision_events_scope_recent_idx", {row["name"] for row in upgraded.read_all(
+                    "PRAGMA index_list(laya_decision_events)", ())})
+            finally:
+                upgraded.close()
+
     def test_v69_upgrade_is_idempotent_on_repeated_open(self):
         self.open_runtime().close()
         with closing(sqlite3.connect(self.database)) as connection:

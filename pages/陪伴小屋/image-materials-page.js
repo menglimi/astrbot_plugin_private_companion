@@ -28,6 +28,9 @@ window.CompanionImageMaterialsPage = (() => {
     generated_album_thumbnail_invalid: "这张产出图暂时无法预览，请刷新相册。",
     photo_reference_disabled: "参考图功能当前关闭，请先在上方配置中开启。",
     daily_outfit_disabled: "每日穿搭当前关闭，请先在参考素材配置中开启。",
+    daily_outfit_image_unavailable: "当前角色没有可用的 Image 生图路线。",
+    image_quota_closed: "主动生图额度已关闭。",
+    image_quota_exhausted: "今日主动生图额度已用完。",
     wardrobe_disabled: "衣柜当前关闭，请先在上方配置中开启。",
     reference_operation_invalid: "这次登记没有生成有效的操作编号，请重新提交。",
     reference_operation_conflict: "这张图的登记编号已经对应了另一组资料，请重新选择后提交。",
@@ -58,6 +61,7 @@ window.CompanionImageMaterialsPage = (() => {
   const state = {
     root: null, scope: "", ticket: 0, abort: null,
     inventory: null, inventoryLoading: false, inventoryError: "",
+    outfitPhoto: null, outfitError: "", outfitTimer: null, outfitOperation: "",
     album: [], albumCursor: null, albumLoaded: false, albumLoading: false, albumError: "",
     selectedImage: "", selectedRoles: new Set(["identity"]), referenceLabel: "", referenceKey: "",
     uploadFile: null, uploadDataUrl: "", uploadLabel: "", uploadRoles: new Set(["identity"]), uploadKey: "",
@@ -337,14 +341,81 @@ window.CompanionImageMaterialsPage = (() => {
   function renderWardrobeList() {
     const records = state.inventory?.wardrobe || [];
     const daily = state.inventory?.daily_outfit;
-    const dailyText = daily ? `今天选择：${daily.name || "未命名衣物"}` : "今天还没有选择穿搭";
-    const dailyNote = dailyEnabled() ? dailyText : "每日穿搭未开启";
-    if (!records.length) return `<div class="image-materials-daily"><strong>${esc(dailyNote)}</strong></div>${statusCard("衣柜还是空的", "新增一件衣物后，可以在这里选择每日穿搭。", "empty")}`;
-    return `<div class="image-materials-daily"><strong>${esc(dailyNote)}</strong></div><ul class="image-materials-record-list image-materials-wardrobe-list">${records.map(item => {
+    if (!records.length) return statusCard("衣柜还是空的", "", "empty");
+    return `<ul class="image-materials-record-list image-materials-wardrobe-list">${records.map(item => {
       const active = item.state === "active";
       const selected = daily?.item_id === item.item_id;
-      return `<li class="image-materials-record ${active ? "" : "is-withdrawn"}${selected ? " is-daily" : ""}"><div><strong>${esc(item.name || "未命名衣物")}</strong><span>${esc((item.tags || []).join("、") || item.description || "未填写描述")}${item.asset_id ? " · 已关联图片" : ""}</span></div><div class="image-materials-record-action">${active && dailyEnabled() ? `<button type="button" class="button small ${selected ? "" : "primary"}" data-im-daily="${esc(item.item_id)}" ${writesLocked() ? "disabled" : ""}>${state.action === "daily-" + item.item_id ? "正在选择…" : selected ? "今日穿搭" : "设为今日"}</button>` : ""}${active ? `<button type="button" class="button small danger" data-im-withdraw-wardrobe="${esc(item.item_id)}" ${writesLocked() ? "disabled" : ""}>撤回</button>` : ""}${!active ? "<em>已撤回</em>" : ""}</div></li>`;
+      return `<li class="image-materials-record ${active ? "" : "is-withdrawn"}${selected ? " is-daily" : ""}"><div><strong>${esc(item.name || "未命名衣物")}</strong><span>${esc((item.tags || []).join("、") || item.description || "未填写描述")}${item.asset_id ? " · 已关联图片" : ""}</span></div><div class="image-materials-record-action">${active && dailyEnabled() ? `<button type="button" class="button small" data-im-daily="${esc(item.item_id)}" ${writesLocked() || selected ? "disabled" : ""}>${state.action === "daily-" + item.item_id ? "正在选择…" : selected ? "今日参考" : "设为今日参考"}</button>` : ""}${active ? `<button type="button" class="button small danger" data-im-withdraw-wardrobe="${esc(item.item_id)}" ${writesLocked() ? "disabled" : ""}>撤回</button>` : ""}${!active ? "<em>已撤回</em>" : ""}</div></li>`;
     }).join("")}</ul>`;
+  }
+
+  const outfitInProgress = value => ["created", "admitted", "running", "retry_scheduled", "cancelling"].includes(value?.state);
+
+  function renderOutfitPhoto() {
+    const value = state.outfitPhoto, photo = value?.photo;
+    const enabled = referenceSettings()?.daily_outfit_enabled === true;
+    const working = state.action === "generate-outfit" || outfitInProgress(value);
+    const thumbnail = typeof photo?.thumbnail === "string" && photo.thumbnail.startsWith("data:image/jpeg;base64,")
+      ? photo.thumbnail : "";
+    const status = state.outfitError || (working ? "正在生成穿搭图…" : !state.inventory ? "正在读取设置…"
+      : !enabled ? "每日穿搭图已关闭" : !value ? "正在读取今日穿搭…"
+        : value.state === "uncertain" ? "上次生图结果待确认" : ["failed", "expired", "cancelled", "dead_letter"].includes(value.state)
+          ? ERRORS[value.code] || "这次穿搭图没有生成" : thumbnail ? "" : photo ? "今日穿搭图暂不可预览" : "今天还没有穿搭图");
+    const weather = photo?.weather;
+    const weatherText = weather ? [weather.role_location, weather.condition, `${weather.temperature_c}°C`].join(" · ") : "";
+    return `<header class="image-materials-section-head"><h4>每日穿搭图</h4>
+      <button type="button" class="button small primary" data-im-generate-outfit ${!enabled || !value || working || state.action ? "disabled" : ""}>
+        <i data-lucide="${thumbnail ? "refresh-cw" : "image-plus"}" aria-hidden="true"></i>${thumbnail ? "重新生成" : "生成今日穿搭"}</button></header>
+      ${thumbnail ? `<div class="image-materials-outfit-body"><img src="${esc(thumbnail)}" alt="今日角色穿搭图"><dl>
+        <div><dt>日期</dt><dd>${esc(value.local_date)}</dd></div>
+        ${weatherText ? `<div><dt>天气</dt><dd>${esc(weatherText)}</dd></div>` : ""}
+        ${photo.activities?.length ? `<div><dt>当日安排</dt><dd>${esc(photo.activities.join("、"))}</dd></div>` : ""}
+      </dl></div>` : ""}
+      <p role="status" class="image-materials-outfit-status" ${status ? "" : "hidden"}>${esc(status)}</p>`;
+  }
+
+  function paintOutfitPhoto() {
+    const root = state.root?.querySelector("[data-im-outfit-photo]");
+    if (root) {
+      root.innerHTML = renderOutfitPhoto();
+      window.lucide?.createIcons?.({nodes: root.querySelectorAll("[data-lucide]")});
+    }
+  }
+
+  async function loadOutfitPhoto(ticket) {
+    if (!live(ticket)) return;
+    clearTimeout(state.outfitTimer);
+    try {
+      const value = await request("GET", apiPath("/daily-outfit/photo"));
+      if (!live(ticket)) return;
+      if (typeof value.state !== "string" || typeof value.local_date !== "string") throw makeError("invalid_response");
+      state.outfitPhoto = value; state.outfitError = "";
+      if (outfitInProgress(value)) state.outfitTimer = setTimeout(() => loadOutfitPhoto(ticket), 2200);
+    } catch (error) {
+      if (live(ticket)) {
+        state.outfitError = errorText(error, "今日穿搭图暂不可读。");
+        if (outfitInProgress(state.outfitPhoto)) state.outfitTimer = setTimeout(() => loadOutfitPhoto(ticket), 4000);
+      }
+    }
+    if (live(ticket)) paintOutfitPhoto();
+  }
+
+  async function generateOutfitPhoto() {
+    if (!referenceSettings()?.daily_outfit_enabled || state.action || outfitInProgress(state.outfitPhoto)) return;
+    const ticket = state.ticket;
+    state.outfitOperation ||= operationKey("outfit-photo");
+    state.action = "generate-outfit"; state.outfitError = ""; render();
+    try {
+      await request("POST", apiPath("/daily-outfit/generate"), {operation_key: state.outfitOperation});
+      if (live(ticket)) {
+        state.outfitOperation = "";
+        await loadOutfitPhoto(ticket);
+      }
+    } catch (error) {
+      if (live(ticket)) state.outfitError = errorText(error, "穿搭图未能开始生成，请重试。");
+    } finally {
+      if (live(ticket)) { state.action = ""; render(); }
+    }
   }
 
   function render() {
@@ -358,8 +429,9 @@ window.CompanionImageMaterialsPage = (() => {
     root.innerHTML = `<section class="image-materials-card">
       ${state.notice ? `<div class="image-materials-notice ${state.noticeError ? "is-error" : ""}" role="status">${esc(state.notice)}</div>` : ""}
       ${error ? statusCard("素材状态暂不可读", errorText({message:error}, "请刷新后重试。"), "error") : ""}
+      <section class="image-materials-outfit" data-im-outfit-photo aria-label="每日穿搭图">${renderOutfitPhoto()}</section>
       <section class="image-materials-library"><header class="image-materials-section-head"><h4>参考图库</h4><span class="image-materials-count">${activeReferences().length} / 24 张生效</span><div class="image-materials-section-tools"><button type="button" class="button small primary" data-im-toggle-upload aria-expanded="${state.uploadOpen}" aria-controls="image-materials-upload">${state.uploadOpen ? "收起上传" : "添加参考图"}</button><button type="button" class="button small" data-im-refresh ${state.inventoryLoading || state.albumLoading || state.action ? "disabled" : ""}>刷新状态</button><button type="button" class="button small" data-im-save-gallery ${!galleryOrderDirty() || state.action || state.inventoryLoading ? "disabled" : ""}>${state.action === "save-gallery" ? "正在保存…" : "保存图库"}</button></div></header>${renderUploadForm()}${renderReferenceList()}</section>
-      <div class="image-materials-columns">${renderAlbum()}<section class="image-materials-section image-materials-wardrobe-section"><header class="image-materials-section-head"><h4>衣柜与每日穿搭</h4><span class="image-materials-count">${activeWardrobe().length} 件生效</span></header><button type="button" class="button small image-materials-add-wardrobe" data-im-toggle-wardrobe aria-expanded="${state.wardrobeOpen}" aria-controls="image-materials-wardrobe-add">${state.wardrobeOpen ? "收起新增" : "新增衣物"}</button>${renderWardrobeForm()}${renderWardrobeList()}</section></div>
+      <div class="image-materials-columns">${renderAlbum()}<section class="image-materials-section image-materials-wardrobe-section"><header class="image-materials-section-head"><h4>衣柜</h4><span class="image-materials-count">${activeWardrobe().length} 件生效</span></header><button type="button" class="button small image-materials-add-wardrobe" data-im-toggle-wardrobe aria-expanded="${state.wardrobeOpen}" aria-controls="image-materials-wardrobe-add">${state.wardrobeOpen ? "收起新增" : "新增衣物"}</button>${renderWardrobeForm()}${renderWardrobeList()}</section></div>
     </section>`;
     window.lucide?.createIcons?.({attrs: {"aria-hidden": "true"}});
   }
@@ -417,6 +489,8 @@ window.CompanionImageMaterialsPage = (() => {
     state.action = "";
     state.scope = nextScope;
     const ticket = ++state.ticket;
+    clearTimeout(state.outfitTimer);
+    state.outfitPhoto = null; state.outfitError = "";
     /* A refresh supersedes an in-flight request.  Reset the local busy flags as
        well: the old promise deliberately cannot clear them after its ticket is
        stale, and otherwise the album's append guard would leave the new read
@@ -426,6 +500,7 @@ window.CompanionImageMaterialsPage = (() => {
     state.albumLoaded = false; state.albumError = ""; setNotice("");
     state.editAssetId = ""; state.editRevision = 0; state.editLabel = ""; state.editRoles = new Set(); state.editUsage = defaultUsage();
     if (previousScope !== nextScope) {
+      state.outfitOperation = "";
       state.galleryBaseOrder = []; state.galleryDraftOrder = [];
       state.uploadFile = null; state.uploadDataUrl = ""; state.uploadLabel = "";
       state.uploadRoles = new Set(["identity"]); state.uploadKey = operationKey("upload");
@@ -436,7 +511,7 @@ window.CompanionImageMaterialsPage = (() => {
     }
     render();
     if (!nextScope || !role()?.image_material_api) return;
-    await Promise.allSettled([loadInventory(ticket), loadAlbum(ticket)]);
+    await Promise.allSettled([loadInventory(ticket), loadAlbum(ticket), loadOutfitPhoto(ticket)]);
   }
 
   async function registerReference() {
@@ -569,7 +644,7 @@ window.CompanionImageMaterialsPage = (() => {
       });
       if (!live(ticket)) return;
       state.wardrobeName = ""; state.wardrobeDescription = ""; state.wardrobeTags = ""; state.wardrobeAssetId = ""; state.wardrobeKey = operationKey("wardrobe");
-      setNotice("衣柜条目已加入当前角色。你可以继续添加，或设为今日穿搭。");
+      setNotice("衣物已加入当前角色的衣柜。");
       await loadInventory(ticket);
     } catch (error) { if (live(ticket)) setNotice(errorText(error, "衣柜条目没有保存，请重试。"), true); }
     finally { if (live(ticket)) { state.action = ""; render(); } }
@@ -590,7 +665,7 @@ window.CompanionImageMaterialsPage = (() => {
     const ticket = state.ticket; state.action = `daily-${itemId}`; render();
     try {
       await request("POST", apiPath("/daily-outfit"), {item_id: itemId});
-      if (live(ticket)) { setNotice("已更新今天的穿搭选择。"); await loadInventory(ticket); }
+      if (live(ticket)) { setNotice("已设为今天的穿搭参考。"); await loadInventory(ticket); }
     } catch (error) { if (live(ticket)) setNotice(errorText(error, "每日穿搭没有更新，请重试。"), true); }
     finally { if (live(ticket)) { state.action = ""; render(); } }
   }
@@ -707,11 +782,12 @@ window.CompanionImageMaterialsPage = (() => {
     if (target.matches("[data-im-wardrobe-asset]")) { state.wardrobeAssetId = target.value; render(); }
   }
   function click(event) {
-    const target = event.target.closest("[data-im-refresh],[data-im-load-more],[data-im-select],[data-im-register],[data-im-upload],[data-im-save-gallery],[data-im-move-ref],[data-im-edit-ref],[data-im-quick-roles],[data-im-save-ref],[data-im-cancel-edit],[data-im-withdraw-ref],[data-im-wardrobe-submit],[data-im-withdraw-wardrobe],[data-im-daily],[data-im-toggle-upload],[data-im-toggle-wardrobe]");
+    const target = event.target.closest("[data-im-refresh],[data-im-load-more],[data-im-select],[data-im-register],[data-im-upload],[data-im-save-gallery],[data-im-move-ref],[data-im-edit-ref],[data-im-quick-roles],[data-im-save-ref],[data-im-cancel-edit],[data-im-withdraw-ref],[data-im-wardrobe-submit],[data-im-withdraw-wardrobe],[data-im-daily],[data-im-toggle-upload],[data-im-toggle-wardrobe],[data-im-generate-outfit]");
     if (!target || !state.root?.contains(target) || target.disabled || state.action) return;
     if (target.matches("[data-im-toggle-upload]")) { state.uploadOpen = !state.uploadOpen; render(); return; }
     if (target.matches("[data-im-toggle-wardrobe]")) { state.wardrobeOpen = !state.wardrobeOpen; render(); return; }
     if (target.matches("[data-im-refresh]")) { refresh(); return; }
+    if (target.matches("[data-im-generate-outfit]")) { generateOutfitPhoto(); return; }
     if (target.matches("[data-im-load-more]")) { loadAlbum(state.ticket, true); return; }
     if (target.matches("[data-im-save-gallery]")) { saveGalleryOrder(); return; }
     if (target.matches("[data-im-move-ref]")) { moveReference(target.dataset.imAsset, target.dataset.imMoveRef); return; }
@@ -752,10 +828,12 @@ window.CompanionImageMaterialsPage = (() => {
     state.root.addEventListener("input", input, {signal: state.abort.signal});
     state.root.addEventListener("change", change, {signal: state.abort.signal});
     render();
-    if (state.scope && role()?.image_material_api) { const ticket = state.ticket; Promise.allSettled([loadInventory(ticket), loadAlbum(ticket)]); }
+    if (state.scope && role()?.image_material_api) { const ticket = state.ticket; Promise.allSettled([loadInventory(ticket), loadAlbum(ticket), loadOutfitPhoto(ticket)]); }
   }
 
   function unmount() {
+    clearTimeout(state.outfitTimer);
+    state.outfitPhoto = null; state.outfitError = ""; state.outfitOperation = "";
     state.ticket++; state.abort?.abort(); state.abort = null; state.root = null; state.scope = "";
     state.inventory = null; state.album = []; state.albumCursor = null; state.albumLoaded = false; state.albumError = ""; state.inventoryError = ""; state.action = "";
     state.galleryBaseOrder = []; state.galleryDraftOrder = [];

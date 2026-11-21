@@ -90,6 +90,18 @@ class KnowledgeContext:
         return self._background(context, self.settings(context), text=text, at=at, batch_id=batch_id,
                                 sources=sources, audience=audience, include_official=include_official)
 
+    def core_background_contributions(self, context, *, text, at, batch_id, sources, audience):
+        """Core replies delegate official KBs to AstrBot unless ``official_in_core`` is on.
+
+        When it is on, V2 queries the selected official knowledge bases with the
+        user's actual message instead of relying on AstrBot's retrieval query, so
+        a host-side query mismatch cannot silently remove the knowledge reference.
+        """
+        settings = self.settings(context)
+        return self._background(context, settings, text=text, at=at, batch_id=batch_id,
+                                sources=sources, audience=audience,
+                                include_official=settings.official_in_core)
+
     def member_contribution(self, context, *, text, at, batch_id, sources, audience):
         """Select attributed member background independently of optional knowledge retrieval."""
         return self._clues(context, self.settings(context), text=text, at=at, batch_id=batch_id,

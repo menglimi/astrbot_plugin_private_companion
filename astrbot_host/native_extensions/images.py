@@ -48,11 +48,14 @@ def _inspect_role_reference(asset, raw):
 class ImageReferenceLease:
     """One invocation's one-use references backed by current images and role assets."""
 
-    def __init__(self, registry, invocation):
+    def __init__(self, registry, invocation, *, role_references_only=False):
         self.registry, self.invocation = registry, invocation
         self.messages = getattr(registry.application, "messages", None)
         self._tickets, self._by_handle, self._used = [], {}, []
         if (self.messages is None or invocation.context.scope.kind not in (ScopeKind.PRIVATE, ScopeKind.GROUP)):
+            return
+        if role_references_only:
+            self._add_role_references()
             return
         from companion_v2.conversation.native_tool_sources import native_input_images, native_invocation, native_turn
         self.native = native_turn(invocation.parent_task_id)
@@ -105,40 +108,42 @@ class ImageReferenceLease:
                 self._tickets.append(ticket)
                 self._by_handle[handle] = ticket
         if invocation.descriptor.tool.action in {"image.edit", "image.mask_edit"}:
-            arguments = json.loads(invocation.arguments_json)
-            reference_ids = arguments.get("reference_ids", [])
-            if (type(reference_ids) is not list or len(reference_ids) > MAX_REFERENCE_IMAGES
-                    or any(type(item) is not str or not item or len(item) > 128 for item in reference_ids)
-                    or len(set(reference_ids)) != len(reference_ids)):
-                raise TaskError("reference_ids_invalid", "saved reference IDs must be a unique bounded list")
-            references = getattr(registry.application, "references", None)
-            for asset_id in reference_ids:
-                if references is None:
-                    raise TaskError("reference_media_unavailable", "the V2 reference library is unavailable")
-                position = len(self._tickets)
-                if position >= MAX_REFERENCE_IMAGES:
-                    raise TaskError("native_reference_limit", "the current edit has too many image references")
-                asset, raw, roles = references.read_asset(invocation.context, asset_id)
-                image = _inspect_role_reference(asset, raw)
-                handle = uuid4().hex
-                ticket = {
-                    "reference_handle": handle,
-                    "reference_id": asset.asset_id,
-                    "source_key": "role-reference:" + asset.asset_id + ":" + str(asset.revision),
-                    "content_hash": asset.content_hash.sha256,
-                    "position": position,
-                    "event": None,
-                    "reference": None,
-                    "asset": None,
-                    "parent": None,
-                    "image": image,
-                    "used": False,
-                    "role": None,
-                    "roles": roles,
-                    "registered_asset": asset,
-                }
-                self._tickets.append(ticket)
-                self._by_handle[handle] = ticket
+            self._add_role_references()
+
+    def _add_role_references(self):
+        invocation = self.invocation
+        reference_ids = json.loads(invocation.arguments_json).get("reference_ids", [])
+        if (type(reference_ids) is not list or len(reference_ids) > MAX_REFERENCE_IMAGES
+                or any(type(item) is not str or not item or len(item) > 128 for item in reference_ids)
+                or len(set(reference_ids)) != len(reference_ids)):
+            raise TaskError("reference_ids_invalid", "saved reference IDs must be a unique bounded list")
+        references = getattr(self.registry.application, "references", None)
+        for asset_id in reference_ids:
+            if references is None:
+                raise TaskError("reference_media_unavailable", "the V2 reference library is unavailable")
+            position = len(self._tickets)
+            if position >= MAX_REFERENCE_IMAGES:
+                raise TaskError("native_reference_limit", "the current edit has too many image references")
+            asset, raw, roles = references.read_asset(invocation.context, asset_id)
+            handle = uuid4().hex
+            ticket = {
+                "reference_handle": handle,
+                "reference_id": asset.asset_id,
+                "source_key": "role-reference:" + asset.asset_id + ":" + str(asset.revision),
+                "content_hash": asset.content_hash.sha256,
+                "position": position,
+                "event": None,
+                "reference": None,
+                "asset": None,
+                "parent": None,
+                "image": _inspect_role_reference(asset, raw),
+                "used": False,
+                "role": None,
+                "roles": roles,
+                "registered_asset": asset,
+            }
+            self._tickets.append(ticket)
+            self._by_handle[handle] = ticket
 
     @property
     def offers(self):
