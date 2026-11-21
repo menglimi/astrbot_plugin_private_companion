@@ -122,7 +122,7 @@ window.CompanionMemoryPage = (() => {
     info:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/></svg>',
     alert:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5M12 16h.01"/></svg>',
   };
-  let root = null, bridge = null, version = 0, timer = null, data = null;
+  let root = null, bridge = null, version = 0, timer = null, data = null, backgroundLoading = false;
 
   function blank() {
     return {catalog:null, target:-1, role:0, area:"facts", tab:"facts",
@@ -223,10 +223,9 @@ window.CompanionMemoryPage = (() => {
     stopTimer();
     /* 只在「整理与修复」里轮询：那是有后台任务的视图。事实流是被动数据，
        用户自己在看，8 秒刷一次只会把筛选与滚动位置晃掉。 */
-    if (data?.ready && role()?.memory_api && !document.hidden && !data.addOpen && ["reflections","facts"].includes(data.area)) {
+    if (data?.ready && role()?.memory_api && !document.hidden && !data.addOpen && data.area === "reflections") {
       // Poll only reads. Neither a timer nor a page reload can queue a model call.
-      const quiet = data.area === "facts" && (data.search || data.filter !== "all");
-      timer = setTimeout(() => { if (!data.busy && !data.loading && !quiet) load(); else schedule(); }, 8000);
+      timer = setTimeout(() => { if (!data.busy && !data.loading && !backgroundLoading) load({silent:true}); else schedule(); }, 8000);
     }
   }
   function notice(message, error=false) { data.notice = message; data.error = error; }
@@ -909,7 +908,7 @@ window.CompanionMemoryPage = (() => {
 
   async function directory() {
     const ticket = ++version;
-    stopTimer();
+    stopTimer(); backgroundLoading = false;
     data = blank(); data.loading = true; render();
     try {
       /* 归属是独立的一次读，而且**先读**：它决定这一页顶上那句话，读不到也要
@@ -970,10 +969,26 @@ window.CompanionMemoryPage = (() => {
     return {items:collected, next:cursor || null, hasMore:more, failed};
   }
 
-  async function load() {
+  function dataSnapshot() {
+    if (!data) return "";
+    return JSON.stringify({
+      ready: data.ready, area: data.area, page: data.page, history: data.history,
+      items: data.items || null, detail: data.detail || null, detailId: data.detailId || null,
+      corpus: data.corpus, next: data.next, hasMore: data.hasMore,
+      overview: data.overview || null, selId: data.selId, factDetail: data.factDetail || null,
+      revisions: data.revisions, notice: data.notice, error: data.error,
+      pending: data.pending || null, pendingMutation: data.pendingMutation || null,
+    });
+  }
+
+  async function load({silent=false}={}) {
     if (!root || !data.ready || !role()?.memory_api || data.busy) return;
+    if (silent && (data.loading || backgroundLoading)) return;
     const ticket = ++version;
-    stopTimer(); data.loading = true; render();
+    stopTimer();
+    const previousSnapshot = silent ? dataSnapshot() : null;
+    if (silent) backgroundLoading = true;
+    else { backgroundLoading = false; data.loading = true; render(); }
     try {
       const path = endpoint();
       if (data.area === "facts") {
@@ -1027,7 +1042,18 @@ window.CompanionMemoryPage = (() => {
         notice("");
       }
     } catch (error) { if (live(ticket)) failure(error); }
-    finally { if (live(ticket)) { data.loading = false; render(); schedule(); } }
+    finally {
+      if (live(ticket)) {
+        if (silent) {
+          backgroundLoading = false;
+          if (dataSnapshot() !== previousSnapshot) render();
+        } else {
+          data.loading = false;
+          render();
+        }
+        schedule();
+      }
+    }
   }
 
   /* 继续读取更早的事实（超出预读窗口时用）。追加而非替换，
@@ -1696,7 +1722,7 @@ window.CompanionMemoryPage = (() => {
     });
   }
   function unmount() {
-    ++version; stopTimer(); clearTimeout(searchTimer);
+    ++version; stopTimer(); clearTimeout(searchTimer); backgroundLoading = false;
     root?.removeEventListener("click",click); root?.removeEventListener("change",change);
     root?.removeEventListener("submit",submit); root?.removeEventListener("input",input);
     root?.removeEventListener("keydown",keydown); root?.removeEventListener("scroll",scroll,true);
@@ -1705,7 +1731,7 @@ window.CompanionMemoryPage = (() => {
   document.addEventListener("visibilitychange",()=>{
     if (!data?.ready) return;
     if (document.hidden) { stopTimer(); return; }
-    if (!data.busy) load();
+    if (!data.busy && !data.loading && !backgroundLoading && !data.addOpen && data.area === "reflections") load({silent:true});
   });
   /* `state.data` 只为测试驱动而暴露：本页的 data 是模块私有的，
      测试要断言归档/导入这些流程时没有别的入口。 */

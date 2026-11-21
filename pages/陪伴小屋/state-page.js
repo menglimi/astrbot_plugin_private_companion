@@ -34,7 +34,7 @@ window.CompanionStatePage = (() => {
   const when = value => value && Number.isFinite(Date.parse(value))
     ? new Date(value).toLocaleString("zh-CN", {hour12:false}) : "未安排";
   const reason = code => errors[code] || (code ? "当前状态未能确认，请刷新核对。" : "暂时无法读取角色状态。请刷新核对。");
-  let root = null, bridge = null, version = 0, timer = null, data = null, editor = null, calendarEditor = null;
+  let root = null, bridge = null, version = 0, timer = null, data = null, editor = null, calendarEditor = null, backgroundLoading = false;
   let section = "state", activeFeature = null;
   let settingsOpen=false,settingsReturnFeature=null,settingsReturnFocus=null;
 
@@ -540,7 +540,18 @@ window.CompanionStatePage = (() => {
   }
   function schedule() {
     stopTimer();
-    if(data?.ready&&role()?.state_api&&!document.hidden&&!editor?.interacting)timer=setTimeout(()=>{if(!data.loading)load();else schedule();},data?.pendingMaintenance?3000:15000);
+    if(data?.ready&&role()?.state_api&&!document.hidden&&!editor?.interacting)timer=setTimeout(()=>{if(!data.loading&&!backgroundLoading)load(data.cursor,{silent:true});else schedule();},data?.pendingMaintenance?3000:15000);
+  }
+  function snapshotStatus(status) {
+    if(!status)return null;
+    if(!status.presentation_diagnostics||!Object.hasOwn(status.presentation_diagnostics,"observed_at"))return status;
+    const {observed_at,...diagnostics}=status.presentation_diagnostics;
+    return {...status,presentation_diagnostics:diagnostics};
+  }
+  function stateSnapshot() {
+    if(!data)return "";
+    return JSON.stringify({ready:data.ready,windowSelected:data.windowSelected,cursor:data.cursor,
+      status:snapshotStatus(data.status),pendingMaintenance:data.pendingMaintenance,notice:data.notice,error:data.error});
   }
   async function refreshAfterSave() {
     const result=await load();
@@ -556,7 +567,7 @@ window.CompanionStatePage = (() => {
     stateByScope.delete(stateScopeKey);
   }
   async function directory() {
-    const ticket=++version; stopTimer();
+    const ticket=++version; stopTimer(); backgroundLoading=false;
     const cached=stateByScope.get(stateScopeKey), fresh=blank();
     if(cached){fresh.catalog=cached.catalog;fresh.target=cached.target;fresh.role=cached.role;fresh.status=cached.status;fresh.cursor=cached.cursor;
       fresh.windowSelected=cached.windowSelected;fresh.pendingMaintenance=cached.pendingMaintenance;fresh.ready=!!cached.catalog;}
@@ -580,9 +591,13 @@ window.CompanionStatePage = (() => {
       else {data.notice=section==="contact"&&!data.windowSelected?"":"当前角色尚未绑定状态工作区，请核对账号与人格映射。";render();}
     } catch(error) { if(live(ticket)){failure(error);data.loading=false;render();} }
   }
-  async function load(cursor=data?.cursor||"") {
-    if(!root||!data.ready||!role()?.state_api||data.loading)return;
-    const ticket=++version;stopTimer();data.cursor=cursor;data.loading=true;render();
+  async function load(cursor=data?.cursor||"",{silent=false}={}) {
+    if(!root||!data.ready||!role()?.state_api)return;
+    if(silent?(data.loading||backgroundLoading):data.loading)return;
+    const ticket=++version;stopTimer();data.cursor=cursor;
+    const previousSnapshot=silent?stateSnapshot():null;
+    if(silent)backgroundLoading=true;
+    else {backgroundLoading=false;data.loading=true;render();}
     try {
       const result=await api("GET",endpoint(),{after_id:data.cursor});
       if(!live(ticket))return;
@@ -606,7 +621,18 @@ window.CompanionStatePage = (() => {
       stateScopeKey=currentStateScope(); rememberState();
       return data.status;
     } catch(error) { if(live(ticket))failure(error);return null; }
-    finally { if(live(ticket)){data.loading=false;render();schedule();} }
+    finally {
+      if(live(ticket)){
+        if(silent){
+          backgroundLoading=false;
+          if(stateSnapshot()!==previousSnapshot)render();
+        }else{
+          data.loading=false;
+          render();
+        }
+        schedule();
+      }
+    }
   }
   async function requestMaintenance() {
     if(!root?.isConnected||!data?.status||data.loading||data.maintenanceSubmitting||section!=="state")return;
@@ -640,7 +666,7 @@ window.CompanionStatePage = (() => {
     const selectedTarget=data.catalog.targets[targetIndex],selectedRole=selectedTarget.roles[roleIndex];
     if(await window.CompanionProduct?.choose(selectedTarget.target_id,selectedRole.role_id,true)===false)return;
     if(!root?.isConnected)return;
-    ++version;stopTimer();const catalog=data.catalog;
+    ++version;stopTimer();backgroundLoading=false;const catalog=data.catalog;
     data={...blank(),catalog,target:targetIndex,role:roleIndex,windowSelected:selectedTarget.scope_kind==="private",ready:true};
     if(role()?.state_api){try{endpoint();load();}catch(error){failure(error);render();}}else render();
   }
@@ -800,8 +826,8 @@ window.CompanionStatePage = (() => {
       setChrome(true);await directory();
     } catch(error) { if(live(ticket)){failure(error);data.loading=false;render();} }
   }
-  function unmount() { rememberState();++version;stopTimer();root?.querySelector("#state-home-settings")?.close();settingsOpen=false;settingsReturnFeature=settingsReturnFocus=null;editor?.destroy();editor=null;calendarEditor=null;root?.removeEventListener("click",click);root?.removeEventListener("keydown",keydown);root?.removeEventListener("change",change);root?.removeEventListener("input",input);root?.removeEventListener("submit",submit);root=null;data=null;bridge=null;activeFeature=null;stateScopeKey="";syncSettingsButton();setChrome(false); }
-  document.addEventListener("visibilitychange",()=>{if(!data?.ready)return;if(document.hidden)stopTimer();else if(!data.loading&&!editor?.interacting)load();});
+  function unmount() { rememberState();++version;stopTimer();backgroundLoading=false;root?.querySelector("#state-home-settings")?.close();settingsOpen=false;settingsReturnFeature=settingsReturnFocus=null;editor?.destroy();editor=null;calendarEditor=null;root?.removeEventListener("click",click);root?.removeEventListener("keydown",keydown);root?.removeEventListener("change",change);root?.removeEventListener("input",input);root?.removeEventListener("submit",submit);root=null;data=null;bridge=null;activeFeature=null;stateScopeKey="";syncSettingsButton();setChrome(false); }
+  document.addEventListener("visibilitychange",()=>{if(!data?.ready)return;if(document.hidden)stopTimer();else if(!data.loading&&!backgroundLoading&&!editor?.interacting)load(data.cursor,{silent:true});});
   window.addEventListener?.("beforeunload",event=>{if(editor?.dirty){event.preventDefault();event.returnValue="";}});
   return {mount,unmount,openSettings,openEditor,openFeature,currentFeature:()=>activeFeature,
     canLeave:()=>editor?.discardIfPristine()??true};

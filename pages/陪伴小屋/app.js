@@ -731,12 +731,39 @@ function renderStageBar(){
 function liteHomeSuspended(){
   return litePerformanceMode&&(document.hidden||Boolean(window.CompanionShell?.section));
 }
+let shellSideHost=null,shellSideStateCard='',shellSideAge='',shellSideSchedule='';
 function renderShellSide(){
   const host=$('#shellSide');
   if(!host||liteHomeSuspended())return;
   host.setAttribute('aria-label',arrangementDraft?'布置房间工作台':'此刻的状态与今日安排');
   if(arrangementDraft)return;
+  const nextStateCard=stateCard(),nextAge=product.stateAge?.()||'',nextSchedule=scheduleCard();
+  const rendered=host===shellSideHost&&Boolean(host.innerHTML)&&!host.innerHTML.includes('id="roomEditor"');
+  if(rendered&&nextStateCard===shellSideStateCard&&nextAge===shellSideAge&&nextSchedule===shellSideSchedule)return;
+  if(rendered&&nextStateCard===shellSideStateCard){
+    const ageNode=host.querySelector?.('[data-home-state-age]');
+    const agendaHost=host.querySelector?.('[data-home-agenda-clock]');
+    const ageCompatible=nextAge===shellSideAge||(Boolean(ageNode)&&Boolean(nextAge));
+    if(ageCompatible&&agendaHost){
+      if(nextAge!==shellSideAge)ageNode.textContent=nextAge;
+      if(nextSchedule!==shellSideSchedule&&agendaHost.innerHTML!==nextSchedule){
+        const previous=agendaHost.querySelector?.('.home-agenda-scroll');
+        const scrollTop=previous?.scrollTop||0;
+        const restoreFocus=previous?.contains?.(document.activeElement)||false;
+        agendaHost.innerHTML=nextSchedule;
+        const current=agendaHost.querySelector?.('.home-agenda-scroll');
+        if(current){current.scrollTop=scrollTop;if(restoreFocus)current.focus({preventScroll:true});}
+      }
+      shellSideAge=nextAge;
+      shellSideSchedule=nextSchedule;
+      return;
+    }
+  }
   host.innerHTML=homeStateBand()+homeScheduleBand();
+  shellSideHost=host;
+  shellSideStateCard=nextStateCard;
+  shellSideAge=nextAge;
+  shellSideSchedule=nextSchedule;
   icons(host);
 }
 let homeAgendaClockTimer=null;
@@ -744,7 +771,9 @@ function refreshHomeStateAge(){
   const node=$('[data-home-state-age]');
   if(!node)return;
   const next=product.stateAge?.()||"";
-  if(next)node.textContent=next;else node.remove();
+  shellSideAge=next;
+  if(next){if(node.textContent!==next)node.textContent=next;}
+  else node.remove();
 }
 async function refreshHomeAgendaClock(refresh=false){
   if(document.hidden||liteHomeSuspended()||!$('[data-home-agenda-clock]'))return;
@@ -759,6 +788,7 @@ async function refreshHomeAgendaClock(refresh=false){
     const scrollTop=previous?.scrollTop||0;
     const restoreFocus=previous?.contains(document.activeElement)||false;
     host.innerHTML=next;
+    shellSideSchedule=next;
     const current=host.querySelector('.home-agenda-scroll');
     if(current){current.scrollTop=scrollTop;if(restoreFocus)current.focus({preventScroll:true});}
   }
