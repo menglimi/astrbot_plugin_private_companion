@@ -159,7 +159,7 @@ test("group participation exposes topic thread settings and their bounded behavi
   view.page.mount(view.root, {groupSettingsMarkup:'<section id="groupParticipationConfigWorkspace"></section>'});
   view.page.setView("group");
 
-  assert.deepEqual(Array.from(groupEditor.visibleGroups), ["topics", "atmosphere", "repeat"]);
+  assert.deepEqual(Array.from(groupEditor.visibleGroups), ["topics", "atmosphere", "repeat", "history"]);
   view.page.unmount();
 });
 

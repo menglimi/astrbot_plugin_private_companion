@@ -21692,12 +21692,42 @@ kbd{color:var(--t-text-faint);background:var(--t-surface-soft);border-color:var(
   @starting-style { #detailDialog[open] { transform: translateY(16px); } }
 }
 
+@keyframes search-target-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--t-accent) 42%, transparent);
+    background-color: color-mix(in srgb, var(--t-accent-quiet) 85%, transparent);
+  }
+  28% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--t-accent) 32%, transparent);
+    background-color: color-mix(in srgb, var(--t-accent-quiet) 65%, transparent);
+  }
+  65% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--t-accent) 18%, transparent);
+    background-color: color-mix(in srgb, var(--t-accent-quiet) 32%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+    background-color: transparent;
+  }
+}
+.is-search-target {
+  border-radius: var(--r-sm, 8px);
+  outline: 2px solid color-mix(in srgb, var(--t-accent) 68%, transparent);
+  outline-offset: 2px;
+  animation: search-target-pulse 2.4s var(--ease-control) 1;
+}
+
 /* 减弱只保留短淡入；关闭或系统减少动效立即提交最终状态。 */
 :root:is([data-motion="low"], [data-motion="off"]), body.reduce-motion {
   --control-hover-y: 0px;
   --control-press-y: 0px;
   --control-press-scale: 1;
   --control-icon-x: 0px;
+}
+:root:is([data-motion="low"], [data-motion="off"]) .is-search-target,
+body.reduce-motion .is-search-target {
+  animation: none !important;
+  background-color: color-mix(in srgb, var(--t-accent-quiet) 50%, transparent);
 }
 :root[data-motion="low"] #homeShell :is(.shell-nav-link, .stage-overlay-button, .stage-furniture-strip button):is(:hover, :active),
 :root[data-motion="low"] #homeShell .shell-nav-link:hover svg,
@@ -21715,6 +21745,10 @@ body.reduce-motion :is(#detailDialog, #searchDialog, #navigationDialog) { transi
 body.reduce-motion :is(#detailDialog, #searchDialog, #navigationDialog)::backdrop { transition: none !important; }
 @media (prefers-reduced-motion: reduce) {
   :root { --control-hover-y: 0px; --control-press-y: 0px; --control-press-scale: 1; --control-icon-x: 0px; }
+  .is-search-target {
+    animation: none !important;
+    background-color: color-mix(in srgb, var(--t-accent-quiet) 50%, transparent);
+  }
   :is(#homeShell, #detailDialog, #searchDialog, #navigationDialog) *,
   #homeShell details::details-content,
   :is(#detailDialog, #searchDialog, #navigationDialog),

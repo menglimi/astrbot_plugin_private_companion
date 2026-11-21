@@ -86,8 +86,8 @@ window.CompanionHostOptionsPage = (() => {
       </summary>
       <div class="voice-global-body">
       <nav class="host-options-jumps" aria-label="语音的其他配置位置">
-        <a class="button small" href="#manage/models">发音人与音色 · 模型与连接</a>
-        <a class="button small" href="#manage/models">试听与语种 · 同上（语音配置）</a>
+        <a class="button small" href="#manage/models/voice">发音人与音色 · 模型与连接</a>
+        <a class="button small" href="#manage/models/voice">试听与语种 · 同上（语音配置）</a>
         <a class="button small" href="#manage/expression/text">分段与发送位置 · 表达 / 文本</a>
       </nav>
       ${!value.enabled ? '<p class="host-options-warning" role="note">语音总开关关闭时，本页窗口设置开启也不会合成。</p>' : ""}
@@ -374,6 +374,8 @@ window.CompanionHostOptionsPage = (() => {
       ["back_times", "连续回戳次数", "收到戳一戳", ["连戳", "回戳次数"]],
       ["model_reply_enabled", "模型即兴回复", "收到戳一戳", ["模型", "即兴回复"]],
       ["model_reply_probability", "模型回复概率", "收到戳一戳", ["模型", "即兴回复"]],
+      ["context_reply_enabled", "拍一拍上下文接话", "收到戳一戳", ["拍一拍", "戳一戳", "群聊接话", "上下文"]],
+      ["context_delay_seconds", "上下文接话延迟秒数", "收到戳一戳", ["拍一拍", "戳一戳", "延迟", "群聊接话"]],
       ["replies", "可选回复", "收到戳一戳", ["戳戳文案", "预设短句"]],
     ].map(([field, label, sectionTitle, aliases]) => ({group: "poke", groupTitle: "平台动作",
       field, label, help: "", section: "received", sectionTitle, sectionCount: 1, aliases}));
