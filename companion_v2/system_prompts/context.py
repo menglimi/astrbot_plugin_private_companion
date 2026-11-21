@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from .catalog import FIELD_DEFAULTS
+from .catalog import ENTRY_BY_KEY, FIELD_DEFAULTS
 from .configuration import (
     GROUP, RoleSystemPromptConfigurationOwner, configuration_fields, target_for,
 )
@@ -27,7 +27,7 @@ class SystemPromptContext:
         }
 
     def overrides(self, context):
-        """Only non-default values; an empty value means "use the built-in"."""
+        """Return replacements, including empty text for an optional block."""
         try:
             values = self.read(context)
         except Exception as error:  # a broken override must never block a reply
@@ -36,5 +36,6 @@ class SystemPromptContext:
         return {
             key: value.strip()
             for key, value in values.items()
-            if isinstance(value, str) and value.strip() and value.strip() != FIELD_DEFAULTS.get(key, "")
+            if isinstance(value, str) and (value.strip() or ENTRY_BY_KEY[key].can_disable)
+            and value.strip() != FIELD_DEFAULTS[key]
         }

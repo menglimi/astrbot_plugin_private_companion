@@ -12,7 +12,7 @@ from companion_v2.system_prompts.context import SystemPromptContext
 def test_catalog_has_bounded_defaults_for_every_editable_block():
     keys = {entry.key for entry in catalog.ENTRIES}
     assert keys == {"voice_rules", "voice_drama", "voice_indextts", "background",
-                    "relationship", "knowledge", "memory"}
+                    "relationship", "knowledge", "memory", "reply_style", "reply_time_style"}
     assert set(catalog.FIELD_DEFAULTS) == keys
     assert all(isinstance(value, str) and value.strip() for value in catalog.FIELD_DEFAULTS.values())
     assert "<pc_tts>" in catalog.VOICE_RULES
@@ -40,13 +40,19 @@ def test_context_returns_only_non_default_overrides(monkeypatch):
     values = dict(catalog.FIELD_DEFAULTS)
     values["voice_drama"] = "自定义 Drama 规则"
     values["knowledge"] = ""
+    values["reply_style"] = "  "
+    values["reply_time_style"] = "自定义时间表达"
     snapshot = SimpleNamespace(fields={
         f"system.prompts.{key}": SimpleNamespace(value=value) for key, value in values.items()
     })
-    prompts = SystemPromptContext(runtime=object())
+    prompts = SystemPromptContext(runtime=SimpleNamespace(configuration_store=object()))
     monkeypatch.setattr("companion_v2.system_prompts.context.target_for", lambda context: object())
     monkeypatch.setattr(prompts.owner, "read", lambda target, fields: snapshot)
-    assert prompts.overrides(context) == {"voice_drama": "自定义 Drama 规则"}
+    assert prompts.overrides(context) == {
+        "voice_drama": "自定义 Drama 规则",
+        "reply_style": "",
+        "reply_time_style": "自定义时间表达",
+    }
 
 
 def test_voice_rules_override_keeps_the_runtime_limits():
