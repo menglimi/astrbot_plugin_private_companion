@@ -47,7 +47,6 @@ _HTTP_REASON_RE = re.compile(r"^Laya HTTP ([1-5][0-9]{2})(?:[：:\s·]+(.*))?$",
 _AUTH_FALLBACK_RE = re.compile(r"^判断服务(?:拒绝访问|鉴权失败)（HTTP ([1-5][0-9]{2})）。$")
 _OBSERVATION_BATCH_CHUNK = 400
 _LEGACY_SCOPE_PAGE_SIZE = 200
-_LEGACY_SCOPE_SCAN_BUDGET = 1000
 
 
 def _sanitize_auth_text(text: object, *, api_key: str = "") -> str:
@@ -613,11 +612,8 @@ class LayaDecisionService:
         indexed_keys = [(row["observed_at"], int(row["_rowid"])) for row in indexed_rows]
         cutoff = _top_k_cutoff(indexed_keys, [], limit)
 
-        # Pre-existing legacy rows written before schema v69 (or without scope)
-        # have scope_key IS NULL. Walk only those NULL rows in bounded keyset
-        # pages, stopping as soon as either ``limit`` matches are gathered,
-        # remaining legacy rows are strictly older than our top-k cutoff, or
-        # the hard row-scan budget is exhausted.
+        # Unindexed rows may still be attributable through observations. Page
+        # until the remaining rows are older than the last result we can return.
         legacy_matched_ids: list[str] = []
         legacy_matched_keys: list[tuple[str, int]] = []
         by_batch: dict[str, dict] = {}
@@ -626,44 +622,25 @@ class LayaDecisionService:
         checked_origins: set[str] = set()
         observations_available: bool | None = None
         cursor: tuple[str, int] | None = None
-        scanned = 0
-        budget = _LEGACY_SCOPE_SCAN_BUDGET
         page_size = min(_LEGACY_SCOPE_PAGE_SIZE, max(limit * 4, 50))
 
-        while scanned < budget:
-            batch_limit = min(page_size, budget - scanned)
-            if cursor is None and cutoff is None:
-                page = self.runtime.read_all(
-                    "SELECT rowid AS _rowid, event_id, origin_key, batch_id, processing_json, observed_at "
-                    "FROM laya_decision_events WHERE scope_key IS NULL "
-                    "ORDER BY observed_at DESC, rowid DESC LIMIT ?",
-                    (batch_limit,),
-                )
-            elif cursor is None:
-                page = self.runtime.read_all(
-                    "SELECT rowid AS _rowid, event_id, origin_key, batch_id, processing_json, observed_at "
-                    "FROM laya_decision_events WHERE scope_key IS NULL AND (observed_at, rowid) > (?, ?) "
-                    "ORDER BY observed_at DESC, rowid DESC LIMIT ?",
-                    (cutoff[0], cutoff[1], batch_limit),
-                )
-            elif cutoff is None:
-                page = self.runtime.read_all(
-                    "SELECT rowid AS _rowid, event_id, origin_key, batch_id, processing_json, observed_at "
-                    "FROM laya_decision_events WHERE scope_key IS NULL AND (observed_at, rowid) < (?, ?) "
-                    "ORDER BY observed_at DESC, rowid DESC LIMIT ?",
-                    (cursor[0], cursor[1], batch_limit),
-                )
-            else:
-                page = self.runtime.read_all(
-                    "SELECT rowid AS _rowid, event_id, origin_key, batch_id, processing_json, observed_at "
-                    "FROM laya_decision_events WHERE scope_key IS NULL "
-                    "AND (observed_at, rowid) < (?, ?) AND (observed_at, rowid) > (?, ?) "
-                    "ORDER BY observed_at DESC, rowid DESC LIMIT ?",
-                    (cursor[0], cursor[1], cutoff[0], cutoff[1], batch_limit),
-                )
+        while True:
+            where = ["scope_key IS NULL"]
+            parameters = []
+            if cursor is not None:
+                where.append("(observed_at, rowid) < (?, ?)")
+                parameters.extend(cursor)
+            if cutoff is not None:
+                where.append("(observed_at, rowid) > (?, ?)")
+                parameters.extend(cutoff)
+            page = self.runtime.read_all(
+                "SELECT rowid AS _rowid, event_id, origin_key, batch_id, processing_json, observed_at "
+                "FROM laya_decision_events WHERE " + " AND ".join(where) +
+                " ORDER BY observed_at DESC, rowid DESC LIMIT ?",
+                (*parameters, page_size),
+            )
             if not page:
                 break
-            scanned += len(page)
             unresolved_batches = set()
             unresolved_origins = set()
             pre_scopes = []
@@ -703,7 +680,7 @@ class LayaDecisionService:
                     cutoff = _top_k_cutoff(indexed_keys, legacy_matched_keys, limit)
                     if len(legacy_matched_ids) >= limit:
                         break
-            if reached_cutoff or len(legacy_matched_ids) >= limit or len(page) < batch_limit:
+            if reached_cutoff or len(legacy_matched_ids) >= limit or len(page) < page_size:
                 break
             cursor = (page[-1]["observed_at"], int(page[-1]["_rowid"]))
             if cutoff is not None and cursor <= cutoff:

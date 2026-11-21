@@ -2167,10 +2167,14 @@ MIGRATION_V67_TO_V68_FINGERPRINT = hashlib.sha256(
 # judgments used to load every row and parse processing_json in Python. Storing
 # scope_key as a nullable column with an ascending (scope_key, observed_at)
 # composite index lets SQLite walk backwards in exact (observed_at DESC, rowid
-# DESC) order without a temp B-tree while pre-existing NULL rows remain readable
-# through a bounded keyset-paginated fallback.
+# DESC) order without a temp B-tree. Populate explicit historical scope keys at
+# upgrade time. Rows that depend on observation data still use the legacy lookup.
 V69_MIGRATION_STATEMENTS = (
     "ALTER TABLE laya_decision_events ADD COLUMN scope_key TEXT CHECK(scope_key IS NULL OR length(scope_key) BETWEEN 1 AND 256)",
+    """UPDATE laya_decision_events
+        SET scope_key = json_extract(processing_json, '$.scope.scope_key')
+        WHERE json_type(processing_json, '$.scope.scope_key') = 'text'
+        AND length(json_extract(processing_json, '$.scope.scope_key')) BETWEEN 1 AND 256""",
     "CREATE INDEX IF NOT EXISTS laya_decision_events_scope_recent_idx ON laya_decision_events(scope_key, observed_at)",
 )
 V69_REQUIRED_TABLES = V68_REQUIRED_TABLES

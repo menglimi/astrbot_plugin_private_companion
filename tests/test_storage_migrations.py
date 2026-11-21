@@ -581,10 +581,10 @@ class StorageMigrationTests(unittest.TestCase):
     def test_v68_upgrade_adds_laya_scope_key_column_and_index(self):
         runtime = self.open_runtime()
         with runtime.transaction() as connection:
-            connection.execute("""INSERT INTO laya_decision_events
-                (event_id, origin_key, source, status, mode, enabled_fields_json, observed_at)
-                VALUES (?, ?, 'conversation', 'ok', 'remote', '{}', '2026-11-20T00:00:00+00:00')""",
-                ("a" * 32, "legacy-origin"))
+            connection.executemany("""INSERT INTO laya_decision_events
+                (event_id, origin_key, source, status, mode, enabled_fields_json, observed_at, processing_json)
+                VALUES (?, 'legacy-origin', 'conversation', 'ok', 'remote', '{}', '2026-11-20T00:00:00+00:00', ?)""",
+                [("a" * 32, None), ("b" * 32, '{"scope":{"scope_key":"scope-a"}}')])
         runtime.close()
         with closing(sqlite3.connect(self.database)) as connection:
             remove_v69(connection)
@@ -601,6 +601,8 @@ class StorageMigrationTests(unittest.TestCase):
         self.assertIn("scope_key", columns)
         legacy = upgraded.read_one("SELECT scope_key FROM laya_decision_events WHERE event_id = ?", ("a" * 32,))
         self.assertIsNone(legacy["scope_key"])
+        scoped = upgraded.read_one("SELECT scope_key FROM laya_decision_events WHERE event_id = ?", ("b" * 32,))
+        self.assertEqual(scoped["scope_key"], "scope-a")
         names = {row["name"] for row in upgraded.read_all(
             "SELECT name FROM sqlite_master WHERE type = 'index'", ())}
         self.assertIn("laya_decision_events_scope_recent_idx", names)
