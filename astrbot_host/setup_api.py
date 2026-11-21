@@ -972,9 +972,24 @@ class SetupWebAPI:
 
     async def _recipient_document(self):
         resolver = getattr(self.controller, "proactive_diagnostic_targets", None)
-        if not callable(resolver):
-            raise TaskError("proactive_recipients_unavailable", "the shared host does not support recipient selection")
-        targets = await resolver()
+        if callable(resolver):
+            targets = list(await resolver())
+        else:
+            # Single-window hosts have no picker: the confirmed core binding is the
+            # only candidate.  Keep the page working there instead of reporting
+            # "unsupported" for a host that can answer.
+            single = getattr(self.controller, "proactive_diagnostic_target", None)
+            if not callable(single):
+                raise TaskError("proactive_recipients_unavailable",
+                                "the shared host does not support recipient selection")
+            try:
+                target = await single()
+            except TaskError as error:
+                if error.code != "setup_binding_confirmation_required":
+                    raise
+                targets = []
+            else:
+                targets = [target] if target is not None else []
         stored = self.diagnostic_recipient.read()
         selected = next((t for t in targets if self.diagnostic_recipient.identity(t) == stored), None)
         # A unique live CORE recipient needs no manual configuration, even after

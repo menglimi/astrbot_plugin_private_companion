@@ -28,7 +28,7 @@ class NativeService:
     def v2_api(self):
         from ..integration_registry import UnifiedCompanionExtensionAPI
         if not hasattr(self, "_v2_api"):
-            self._v2_api = UnifiedCompanionExtensionAPI(self.controller)
+            self._v2_api = UnifiedCompanionExtensionAPI(self.controller, claim=False)
         return self._v2_api
 
     def v2_host_api(self):

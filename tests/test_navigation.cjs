@@ -323,6 +323,17 @@ test("retired routes open their current workspace instead of account management"
   }
 });
 
+test("self identity chapter header follows the selected chapter", () => {
+  const h = harness();
+  const intro = h.anchor("selfChapterIntro");
+  h.run("selectSelfProfileSection('identity')");
+  assert.match(intro.innerHTML, /01 \/ IDENTITY/);
+  assert.match(intro.innerHTML, /身份/);
+  h.run("selectSelfProfileSection('appearance')");
+  assert.match(intro.innerHTML, /02 \/ APPEARANCE/);
+  assert.match(intro.innerHTML, /外貌/);
+});
+
 test("self subpages survive copied links and a second address synchronization", () => {
   const h = harness();
   for (const pane of ["relationship", "questionnaire", "knowledge"]) {

@@ -1,4 +1,4 @@
-.reply-heading,.reply-diagnostics header{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-3);flex-wrap:wrap}
+﻿.reply-heading,.reply-diagnostics header{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-3);flex-wrap:wrap}
 .reply-heading h2{font-size:var(--fs-head)}.reply-heading p,.reply-preview>p,.reply-diagnostics>p{color:var(--t-text-soft);line-height:1.8;margin:var(--sp-2) 0 var(--sp-4)}
 .reply-notice,.reply-pending{padding:var(--sp-3) var(--sp-4);margin:var(--sp-4) 0;border-radius:var(--r-sm);background:var(--t-ok-quiet);color:var(--t-ok-ink);line-height:1.8;overflow-wrap:anywhere}
 .reply-error,.reply-pending{background:var(--t-warn-quiet);color:var(--t-warn-ink)}.reply-pending button{margin-top:var(--sp-2)}
@@ -64,3 +64,9 @@
 @media(max-width:760px){.reply-preview-grid{grid-template-columns:minmax(0,1fr);gap:var(--sp-4)}.reply-preview-head>.button{width:auto}}
 @media(max-width:420px){.reply-preview-head>.button{width:100%}.reply-preview-summary{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.reply-preview .reply-image-count{grid-template-columns:minmax(0,1fr) 80px}}
 @media(prefers-reduced-motion:reduce){.reply-preview-result{transition:none}}
+
+/* 分段效果预览里的 QQ 消息效果（数据来自当前预览草稿） */
+.reply-preview-chat{display:grid;gap:var(--sp-2);min-width:0;margin-bottom:var(--sp-3)}
+.reply-preview-chat>header{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);
+  color:var(--t-text-faint);font-size:var(--fs-micro)}
+.reply-preview-chat>header strong{color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:600}

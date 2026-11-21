@@ -430,7 +430,8 @@ def _compact_private_reply_context(context, request):
         return context
     host = _host_history_keys(request)
     native = [(item.get("speaker"), item.get("text", "").strip())
-              if isinstance(item, dict) and isinstance(item.get("text"), str) else (None, "")
+              if (isinstance(item, dict) and "sent_ref" not in item
+                  and isinstance(item.get("text"), str)) else (None, "")
               for item in before]
     native_counts, host_counts = Counter(native), Counter(host)
     matched, bound = set(), len(host)
@@ -478,7 +479,19 @@ def _compact_private_reply_context(context, request):
     return result
 
 
-def _structured_background(prepared, turn_context):
+def _confirmed_contact(material):
+    if not isinstance(material, Mapping) or material.get("kind") != "confirmed_background_message":
+        return None
+    content = material.get("content")
+    if (isinstance(content, dict) and content.get("owner") == "proactive.contact"
+            and isinstance(content.get("delivered_at"), str) and isinstance(content.get("text"), str)
+            and isinstance(content.get("ref"), str) and content["ref"]
+            and isinstance(content.get("part"), dict) and type(content["part"].get("sequence")) is int):
+        return content
+    return None
+
+
+def _structured_background(prepared, turn_context, private_context=None):
     base = prepared.get("prompt_context_instruction")
     blocks = prepared.get("prompt_context_blocks")
     current = turn_context.strip()
@@ -487,7 +500,24 @@ def _structured_background(prepared, turn_context):
     prefix = base.strip()
     if not current.startswith(prefix):
         return current
-    result = {"sections": list(blocks)}
+    timeline_parts = {(entry["sent_ref"], entry["part"]["sequence"])
+                      for group in ("before_input", "after_input")
+                      for entry in (private_context or {}).get(group, ()) if "sent_ref" in entry}
+    sections = []
+    for block in blocks:
+        if not timeline_parts or "materials" not in block:
+            sections.append(block)
+            continue
+        materials = []
+        for material in block["materials"]:
+            content = _confirmed_contact(material)
+            if content is not None and (content["ref"], content["part"]["sequence"]) in timeline_parts:
+                reduced = dict(content, text_in_private_reply_context=True)
+                del reduced["text"]
+                material = dict(material, content=reduced)
+            materials.append(material)
+        sections.append(dict(block, materials=materials))
+    result = {"sections": sections}
     additional = current[len(prefix):].strip()
     if additional:
         result["additional_guidance"] = additional
@@ -556,9 +586,13 @@ async def inject_core_reply_perception_context(event, request, *, native_context
     if application is not None:
         try:
             from companion_v2.conversation.private_reply_context import capture_private_reply_context
+            contacts = tuple(contact for block in prepared.get("prompt_context_blocks", ())
+                             for material in block.get("materials", ())
+                             if (contact := _confirmed_contact(material)) is not None)
             private_context = await asyncio.to_thread(
                 capture_private_reply_context, application.messages, prepared.get("context"), original,
-                at=application.tasks.now(), merged_inputs=prepared.get("debounced_inputs", ()))
+                at=application.tasks.now(), merged_inputs=prepared.get("debounced_inputs", ()),
+                confirmed_contacts=contacts)
             if private_context is not None:
                 details["private_reply_context"] = _compact_private_reply_context(private_context, request)
         except Exception:
@@ -627,7 +661,8 @@ async def inject_core_reply_perception_context(event, request, *, native_context
             _restore_wake_prefix(event, request, original_text, prompt_text, native_context)
     turn_context = prepared.get("prompt_instruction")
     if isinstance(turn_context, str) and turn_context.strip():
-        details["companion_background"] = _structured_background(prepared, turn_context)
+        details["companion_background"] = _structured_background(
+            prepared, turn_context, details.get("private_reply_context"))
     participation_hint = _group_participation_hint(prepared)
     if participation_hint:
         details["group_participation_hint"] = participation_hint

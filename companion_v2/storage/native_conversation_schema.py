@@ -20,6 +20,20 @@ STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS conversation_native_owner_idx ON conversation_native_observations(memory_owner, observed_at, observation_id)",
     "CREATE INDEX IF NOT EXISTS conversation_native_input_context_idx ON conversation_native_observations(context_key, observed_at DESC, observation_id) WHERE kind = 'input' AND delivery_state = 'input_observed'",
     "CREATE INDEX IF NOT EXISTS conversation_native_input_role_idx ON conversation_native_observations(json_extract(context_json, '$.role_binding'), observed_at DESC, observation_id) WHERE kind = 'input' AND delivery_state = 'input_observed'",
+    # ``native_history.rows`` reads one context's input + sent-reply rows in
+    # reverse chronological order; ascending observed_at lets SQLite walk the
+    # index backwards in exact (observed_at DESC, rowid DESC) order.
+    "CREATE INDEX IF NOT EXISTS conversation_native_obs_context_delivery_idx "
+    "ON conversation_native_observations(context_key, observed_at) "
+    "WHERE delivery_state IN ('input_observed', 'send_returned')",
+    # ``private_scope.private_people`` / ``role_private_contexts`` scan recent
+    # inputs for one role/bot/installation ordered by observed_at DESC, rowid DESC.
+    "CREATE INDEX IF NOT EXISTS conversation_native_obs_role_input_recent_idx "
+    "ON conversation_native_observations("
+    "json_extract(context_json, '$.role_binding.role.subject_id'), "
+    "json_extract(context_json, '$.role_binding.scope.bot_id'), "
+    "json_extract(context_json, '$.role_binding.scope.installation_id'), "
+    "observed_at) WHERE kind = 'input'",
     "CREATE INDEX IF NOT EXISTS conversation_native_source_idx ON conversation_native_observations(json_extract(source_json, '$.source_id'))",
     """CREATE TABLE IF NOT EXISTS conversation_native_turns (
         turn_id TEXT PRIMARY KEY, context_key TEXT NOT NULL, context_json TEXT NOT NULL,
@@ -29,6 +43,12 @@ STATEMENTS = (
         phase_at TEXT NOT NULL, last_sent_at TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS conversation_native_turn_context_idx ON conversation_native_turns(context_key, observed_at DESC, turn_id)",
+    # Ascending (context_key, observed_at) has implicit trailing rowid ASC, so
+    # backwards scans satisfy ORDER BY observed_at DESC, rowid DESC with no temp
+    # B-tree and power both loose-index-scan latest-per-context reads and O(log N)
+    # row-value NOT EXISTS probes without shadowing conversation_native_open_turn_idx.
+    "CREATE INDEX IF NOT EXISTS conversation_native_turn_context_recent_idx "
+    "ON conversation_native_turns(context_key, observed_at)",
     # Latest-turn-per-context probes must prove no newer row exists for the same
     # context, so their cost is the whole table unless the caller can cut the
     # candidate set first. In-flight turns are the per-pass case (presence asks
@@ -63,5 +83,23 @@ STATEMENTS = (
             json_extract(context_json, '$.actor.subject.subject_id'))"""
         for table in ("conversation_batches", "conversation_native_turns",
                       "conversation_native_observations")
+    ),
+    # ``private_scope.private_people`` / ``role_private_contexts`` query
+    # conversation_batches by (role, bot, installation) ORDER BY rowid DESC.
+    """CREATE INDEX IF NOT EXISTS conversation_batches_role_recent_idx ON conversation_batches(
+        json_extract(context_json, '$.role_binding.role.subject_id'),
+        json_extract(context_json, '$.role_binding.scope.bot_id'),
+        json_extract(context_json, '$.role_binding.scope.installation_id'))""",
+    # ``scope_family._windows`` resolves both group and private scope families
+    # across conversation_native_turns and conversation_batches ORDER BY rowid DESC.
+    *(
+        f"""CREATE INDEX IF NOT EXISTS {table}_scope_family_idx ON {table}(
+            json_extract(context_json, '$.role_binding.scope.installation_id'),
+            json_extract(context_json, '$.role_binding.scope.platform'),
+            json_extract(context_json, '$.role_binding.scope.bot_id'),
+            json_extract(context_json, '$.role_binding.scope.account_id'),
+            json_extract(context_json, '$.role_binding.scope.native_scope_id'),
+            json_extract(context_json, '$.audience.scope.kind'))"""
+        for table in ("conversation_native_turns", "conversation_batches")
     ),
 )

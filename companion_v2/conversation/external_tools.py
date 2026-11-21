@@ -270,6 +270,17 @@ class ExternalToolExecutor:
         """Public admission check for trusted callers outside the model tool loop."""
         return self._admit(descriptor, context, at)
 
+    def is_invokable(self, action, context, at=None):
+        """Whether ``context.actor`` may execute ``action`` right now."""
+        provider = self.providers.get(action)
+        if provider is None:
+            return False
+        try:
+            self._admit(provider.descriptor, context, self.tasks.now() if at is None else at)
+        except TaskError:
+            return False
+        return True
+
     def resolve(self, descriptor):
         """The declaration a dispatch would use after any host rebinding."""
         return self._provider(descriptor)[1]
@@ -313,16 +324,19 @@ class ExternalToolExecutor:
                 action, current.provider, current.capability,
                 previous.version, current.version, previous.generation, current.generation)
 
-    def _admit(self, descriptor, context, at):
+    def _admit(self, descriptor, context, at, *, for_catalog=False):
         action = descriptor.tool.action
         privacy = action in PRIVACY_ACTIONS
         actor = getattr(context, "actor", None)
         core_admin = actor is not None and is_core(self.runtime, actor.subject)
         core_group = action in CORE_GROUP_ACTIONS
+        if not for_catalog:
+            self._require_group_admin(action, context)
         core = core_admin if privacy else False
-        # 现实设备工具对群聊保持常驻挂载，避免按发言人增删工具导致提示词缓存
-        # 反复失效；真正执行前由 _require_group_admin 只放行核心管理员。
-        if context.scope.kind is ScopeKind.GROUP and core_group:
+        # 隐私能力与现实设备工具在群聊目录中按窗口/角色配置常驻挂载，不随当前
+        # 发言人身份切换增删工具（避免 Provider 工具前缀缓存 tools_hash 反复失效）；
+        # 真正执行时由 for_catalog=False 与 _require_group_admin 严格只放行核心管理员。
+        if context.scope.kind is ScopeKind.GROUP and (core_group or (for_catalog and privacy)):
             core = True
         # The core administrator's own group turn keeps the same image tools as
         # a private turn: the per-window consent enrolled for other members is
@@ -363,11 +377,20 @@ class ExternalToolExecutor:
                        capability_id=current.binding.capability, subject=context.actor.subject, scope=context.scope))
 
     def _require_group_admin(self, action, context):
-        if context.scope.kind is not ScopeKind.GROUP or action not in CORE_GROUP_ACTIONS:
+        if context.scope.kind is not ScopeKind.GROUP:
+            return
+        if action not in CORE_GROUP_ACTIONS and action not in PRIVACY_ACTIONS:
             return
         actor = getattr(context, "actor", None)
-        if actor is None or not is_core(self.runtime, actor.subject):
-            raise TaskError("reality_admin_only", "现实设备操作只允许核心管理员使用")
+        if actor is not None and is_core(self.runtime, actor.subject):
+            return
+        if action == "screen.capture":
+            raise TaskError("screen_scope_denied", "桌面截屏在群聊中只允许核心管理员使用")
+        if action == "reality.camera.observe":
+            raise TaskError("reality_camera_private_required", "摄像头观察在群聊中只允许核心管理员使用")
+        if action in PRIVACY_ACTIONS:
+            raise TaskError("reality_admin_only", "现实感知工具在群聊中只允许核心管理员使用")
+        raise TaskError("reality_admin_only", "现实设备操作只允许核心管理员使用")
 
     def catalog_for(self, context):
         return self.catalog_with_diagnostics(context)[0]
@@ -380,7 +403,7 @@ class ExternalToolExecutor:
             for provider in self.providers.values():
                 action = provider.descriptor.tool.action
                 try:
-                    self._admit(provider.descriptor, context, self.tasks.now())
+                    self._admit(provider.descriptor, context, self.tasks.now(), for_catalog=True)
                 except TaskError as error:
                     reason = ("not_supported_for_group" if context.scope.kind is ScopeKind.GROUP
                               and action not in GROUP_IMAGE_ACTIONS else error.code)

@@ -8,9 +8,15 @@ from zoneinfo import ZoneInfo
 from companion_v2.conversation.media.generated import IMAGE_ACTIONS
 from companion_v2.conversation.media.output_settings import (effective_settings, image_request_denial,
                                                              is_rule_image_request, prompt_instruction)
+from companion_v2.execution.models import TaskError
 from companion_v2.references.prompts import IMAGE_REFERENCE_INSTRUCTION
 
 from .native_extensions.request_context import set_system_instruction
+
+_EXPECTED_REFERENCE_DISABLED_CODES = frozenset({
+    "photo_reference_disabled",
+    "photo_reference_group_disabled",
+})
 
 
 def _record_turn_note(session, text):
@@ -288,5 +294,11 @@ def inject_core_image_prompt(session, request, offered, values):
                     if route_guidance:
                         instruction += "\n" + route_guidance
             except Exception as error:
-                logger.warning("[CompanionV2] 核心生图参考资料暂不可用 error_type=%s code=%s", type(error).__name__, getattr(error, "code", "unknown"))
+                code = getattr(error, "code", "unknown")
+                if isinstance(error, TaskError) and code in _EXPECTED_REFERENCE_DISABLED_CODES:
+                    logger.debug("[CompanionV2] 核心生图参考资料按配置关闭 error_type=%s code=%s",
+                                 type(error).__name__, code)
+                else:
+                    logger.warning("[CompanionV2] 核心生图参考资料暂不可用 error_type=%s code=%s",
+                                   type(error).__name__, code)
     set_system_instruction(request, "image_output", instruction)

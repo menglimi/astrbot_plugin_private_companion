@@ -97,11 +97,15 @@ class _MaterialSection:
     def render(self):
         payload = json.dumps(self.materials, ensure_ascii=False, sort_keys=True,
                              separators=(",", ":"), allow_nan=False)
-        return "\n\n【" + self.title + "】\n" + self.instruction + "\n" + payload
+        if self.instruction:
+            return "\n\n【" + self.title + "】\n" + self.instruction + "\n" + payload
+        return "\n\n【" + self.title + "】\n" + payload
 
     def structured(self):
-        return {"title": self.title, "instruction": self.instruction,
-                "materials": self.materials}
+        if self.instruction:
+            return {"title": self.title, "instruction": self.instruction,
+                    "materials": self.materials}
+        return {"title": self.title, "materials": self.materials}
 
 
 def _ready(materials):
@@ -374,10 +378,22 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             logger.warning("[CompanionV2] 核心回复附加提示读取降级 error_type=%s", type(error).__name__)
         return "\n\n【对话附加提示】\n" + prompt.strip() if isinstance(prompt, str) and prompt.strip() else ""
 
+    group_instruction_emitted = False
+
+    def _group_material_section(title, materials):
+        nonlocal group_instruction_emitted
+        instruction = "" if group_instruction_emitted else GROUP_INSTRUCTION
+        section = _material_section(title, instruction, materials)
+        if section:
+            group_instruction_emitted = True
+        return section
+
     optional("task_prompt", task_prompt, stable=True)
-    optional("person_card", lambda: _material_section("当前相识资料", GROUP_INSTRUCTION
-        if context.scope.kind is ScopeKind.GROUP else system_text("memory", MEMORY_INSTRUCTION),
-        (messages.acquaintance.card_contribution(context, at),)))
+    optional("person_card", lambda: (
+        _group_material_section("当前相识资料", (messages.acquaintance.card_contribution(context, at),))
+        if context.scope.kind is ScopeKind.GROUP
+        else _material_section("当前相识资料", system_text("memory", MEMORY_INSTRUCTION),
+                               (messages.acquaintance.card_contribution(context, at),))))
     if context.scope.kind is ScopeKind.GROUP and isinstance(private_group_context, str) and private_group_context.strip():
         optional("private_group_context", lambda: "\n\n【当前发言者的私聊上下文摘要】\n"
                  "这段摘要只用于理解当前发言者，不要向群内其他人复述私聊原文、称呼、关系细节或时间；"
@@ -585,14 +601,19 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
         optional("group_participation", group_participation)
 
         def group_speaker():
+            nonlocal group_instruction_emitted
             messages.group_context.authorize(context, at)
-            return "\n\n【当前群聊发言者】\n" + GROUP_INSTRUCTION + "\n" + encode({
+            header = "\n\n【当前群聊发言者】\n"
+            if not group_instruction_emitted:
+                group_instruction_emitted = True
+                header += GROUP_INSTRUCTION + "\n"
+            return header + encode({
                 "speaker_id": context.actor.principal.native_account_id,
                 "group_id": context.scope.native_scope_id,
             })
 
         optional("group_speaker", group_speaker)
-        optional("group_network", lambda: _material_section("群成员与近期互动", GROUP_INSTRUCTION,
+        optional("group_network", lambda: _group_material_section("群成员与近期互动",
             (messages.group_network.contribution(context, (native_input,), at=at),)))
 
         def group_memory():
@@ -600,8 +621,8 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             key = "core-reply-" + digest([context.key, native_input.event_id])
             snapshot = owner.capture(context, key)
             with validation_batch(runtime, key):
-                return _material_section("群公共记忆", GROUP_INSTRUCTION,
-                                         owner.contributions(snapshot, context, key))
+                return _group_material_section("群公共记忆",
+                                               owner.contributions(snapshot, context, key))
 
         optional("group_memory", group_memory)
         optional("role_state", role_state)

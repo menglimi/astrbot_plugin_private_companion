@@ -16,7 +16,6 @@ from mcp.types import CallToolResult, ImageContent, TextContent
 from astrbot.core.agent.tool import FunctionTool, ToolSet
 
 from companion_v2.agenda.models import AgendaTarget, MemoCursor
-from companion_v2.capabilities.privacy import is_core
 from companion_v2.conversation.agenda_tools import AgendaRoleSession
 from companion_v2.conversation.interaction_tools import POKE_ACTION, POKE_SPEC
 from companion_v2.conversation.tool_loop import READ_ACTIONS
@@ -59,9 +58,9 @@ def group_tool_manifest(offered, profile, *, allow_camera=False):
 
     ``full`` keeps the ordinary catalogue.  ``lean`` and ``standard`` filter to
     the same ordered allowlist on every turn, so the provider's cached tool
-    prefix does not change when a message happens to carry an image or mention.
-    ``allow_camera`` is the explicit core-admin exception; it is computed from
-    the authenticated actor, never from message text.
+    prefix does not change when a message happens to carry an image, mention,
+    or a different group speaker.  ``allow_camera`` reflects window/role
+    camera availability; execution-time admission enforces core-admin access.
     """
     if profile not in ("lean", "standard"):
         return tuple(offered)
@@ -89,6 +88,13 @@ access_scope=same_device 的链接仅供运行 AstrBot 的电脑使用；public_
 对方明确点名要你戳一戳/拍一拍某个人时，调用 interaction.poke，target 用对方给出的昵称、群名片或 QQ；只戳被点名的人，不猜同名，同一轮对同一人只戳一次。不要用文字假装已经戳过；结果未知时如实说明，不重复调用。"""
 EVIDENCE_SPEC = ToolSpec("turn.evidence", "读取本轮已认证发言的证据句柄，供记忆、日历、成长和关系提案使用。",
                         encode({"type": "object", "properties": {}, "additionalProperties": False}))
+
+
+_GROUP_ADMIN_DENIAL_REASONS = {
+    "screen_scope_denied": "桌面截屏在群聊中只允许核心管理员使用，本次操作已拒绝。",
+    "reality_camera_private_required": "摄像头观察在群聊中只允许核心管理员使用，本次操作已拒绝。",
+    "reality_admin_only": "该现实能力在群聊中只允许核心管理员使用，本次操作已拒绝。",
+}
 
 
 def native_tool_name(action: str) -> str:
@@ -308,7 +314,11 @@ class CoreReplyToolSession:
                 and getattr(getattr(getattr(self, "event", None), "platform_meta", None), "name", "") != "wechat_native"):
             offered.append(_OfferedTool(POKE_SPEC, "interaction"))
         if self.context.scope.kind is ScopeKind.GROUP and self.group_tool_profile in ("lean", "standard"):
-            allow_camera = is_core(self.application.runtime, self.context.actor.subject)
+            # Expose camera strictly by window/role configuration (already
+            # filtered by external.catalog_for), never by current speaker, so
+            # alternating admin/member turns keep an invariant tools_hash.
+            # Execution-time admission strictly enforces core-admin permission.
+            allow_camera = any(item.spec.action == "reality.camera.observe" for item in offered)
             return group_tool_manifest(offered, self.group_tool_profile, allow_camera=allow_camera)
         return tuple(offered)
 
@@ -549,6 +559,10 @@ class CoreReplyToolSession:
             elif offered.owner == "interaction":
                 result = await self.poke(arguments)
             elif offered.owner == "external":
+                external = getattr(self.application.tools, "external", None)
+                provider = external.providers.get(action) if external is not None else None
+                if provider is not None:
+                    external.admit(provider.descriptor, self.context, self.application.tasks.now())
                 if action in ("image.edit", "image.mask_edit"):
                     # An explicit empty inbound selection means this edit only
                     # uses saved reference_ids. Capturing every current/quoted
@@ -634,8 +648,14 @@ class CoreReplyToolSession:
                 return encode({key: value for key, value in {**result, "material_state": "unavailable", "code": error.code}.items()
                                if key in {"state", "effect", "invocation_id", "operation_id", "receipt_ref", "material_state",
                                           "code", "retry_disposition", "reason", "next_step"}})
-            return encode({"state": "failed", "effect": "none", "code": error.code,
-                           "retry_disposition": "input_invalid" if error.code == "invalid_tool_arguments" else "stop"})
+            payload = {
+                "state": "failed", "effect": "none", "code": error.code,
+                "retry_disposition": "input_invalid" if error.code == "invalid_tool_arguments" else "stop",
+            }
+            denial_reason = _GROUP_ADMIN_DENIAL_REASONS.get(error.code)
+            if denial_reason:
+                payload["reason"] = denial_reason
+            return encode(payload)
         except (ValueError, ValidationError):
             return encode({"state": "failed", "effect": "none", "code": "invalid_tool_arguments",
                            "retry_disposition": "input_invalid"})
