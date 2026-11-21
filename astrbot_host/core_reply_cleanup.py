@@ -19,6 +19,7 @@ _META_RETRY = re.compile(
     r"^(?:等等[，,。.！!]?\s*)?(?:格式|格式错|格式错了|说错|打错|写错)[^\n]{0,12}?"
     r"(?:重来|重新来|重发)[。.!！]?$")
 _MIN_HALF_CHARS = 6
+_MIN_NON_ADJACENT_CHARS = 24
 
 
 def _halved(text):
@@ -29,6 +30,25 @@ def _halved(text):
     half = len(stripped) // 2
     first, second = stripped[:half], stripped[half:]
     return first if first == second else None
+
+
+def _dedupe_paragraph_lines(paragraph):
+    """清理单段内完全一致的长重复行（保留短句与正常语气重复）。"""
+    lines = paragraph.split("\n")
+    if len(lines) <= 1:
+        return paragraph, 0
+    kept = []
+    seen_substantial = set()
+    removed = 0
+    for line in lines:
+        stripped = line.strip()
+        if len(stripped) >= _MIN_NON_ADJACENT_CHARS:
+            if stripped in seen_substantial:
+                removed += 1
+                continue
+            seen_substantial.add(stripped)
+        kept.append(line)
+    return "\n".join(kept), removed
 
 
 def clean_reply_text(text):
@@ -47,14 +67,22 @@ def clean_reply_text(text):
         return whole, removed + 1
     paragraphs = _PARAGRAPH_SPLIT.split(cleaned) if cleaned else []
     result = []
+    seen_substantial = set()
     for paragraph in paragraphs:
         half = _halved(paragraph)
         if half is not None:
             removed += 1
-            result.append(half)
-            continue
-        if result and paragraph.strip() and paragraph.strip() == result[-1].strip():
+            paragraph = half
+        paragraph, line_removed = _dedupe_paragraph_lines(paragraph)
+        removed += line_removed
+        stripped = paragraph.strip()
+        if result and stripped and stripped == result[-1].strip():
             removed += 1
             continue
+        if len(stripped) >= _MIN_NON_ADJACENT_CHARS and stripped in seen_substantial:
+            removed += 1
+            continue
+        if len(stripped) >= _MIN_NON_ADJACENT_CHARS:
+            seen_substantial.add(stripped)
         result.append(paragraph)
     return "\n\n".join(result).strip(), removed

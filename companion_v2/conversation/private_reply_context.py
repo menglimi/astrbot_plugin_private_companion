@@ -1,12 +1,17 @@
 """Actual private-message timing for interpreting queued conversational follow-ups."""
 
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
+import logging
+import re
 
 from companion_v2.execution.models import require, stamp
 from companion_v2.foundation.refs import ScopeKind
 
 from .native_history import dialogue
 
+
+logger = logging.getLogger(__name__)
 
 INSTRUCTION = (
     "private_reply_context 按真实输入时间、原生发送回调与主动消息投递回执整理私聊时序，记录有界，不证明对方已读。"
@@ -24,11 +29,83 @@ INSTRUCTION = (
     "连续的应声、确认或补充可以都在衔接同一次较早的回复，保留那次请求的对象和进度，不逐条另起一件事。"
     "后来已发送的内容可用于了解处理进展、避免重复承诺或执行，不能反过来改写用户原意；"
     "用户明确转向、撤回、纠正或另指一条消息时按其本意接续，不把所有短话都当成同意。"
+    "标有 repeat_suppressed 的助手条目表示该轮与较早助手回复高度重复，已省略重复正文以避免复读；"
+    "请直接推进当前话题，不要照抄或复述此前已说过的大段内容。"
 )
 BEFORE_TURNS = 24
 AFTER_TURNS = 12
 # SegmentationPolicy accepts at most 64 bubbles in one reply turn.
 MAX_BUBBLES_PER_TURN = 64
+# Read-side repetition guard thresholds (sources are never mutated or deduplicated).
+INTRA_TURN_DUPLICATE_MIN_CHARS = 16
+REPEAT_SUPPRESS_MIN_CHARS = 24
+REPEAT_SUPPRESS_SIMILARITY = 0.85
+_WHITESPACE_RE = re.compile(r"\s+")
+_TRAILING_PUNCT_CHARS = "。！？!?…~～、，,.;；:： "
+
+
+def _normalize_repeat_text(text):
+    if not isinstance(text, str):
+        return ""
+    return _WHITESPACE_RE.sub("", text).strip(_TRAILING_PUNCT_CHARS)
+
+
+def _is_substantial_repeat(first, second):
+    if len(first) < REPEAT_SUPPRESS_MIN_CHARS or len(second) < REPEAT_SUPPRESS_MIN_CHARS:
+        return False
+    if first == second:
+        return True
+    shorter, longer = (len(first), len(second)) if len(first) <= len(second) else (len(second), len(first))
+    if shorter / longer < REPEAT_SUPPRESS_SIMILARITY:
+        return False
+    return SequenceMatcher(None, first, second).ratio() >= REPEAT_SUPPRESS_SIMILARITY
+
+
+def _slice_recent_turns(entries, limit):
+    """Keep the most recent ``limit`` logical turns rather than raw bubble rows."""
+    if limit <= 0 or not entries:
+        return []
+    kept = []
+    turns_seen = 0
+    last_turn_key = None
+    for index in range(len(entries) - 1, -1, -1):
+        entry = entries[index]
+        turn_id = entry.get("turn_id")
+        turn_key = (entry.get("speaker"), turn_id) if turn_id else ("row", index)
+        if turn_key != last_turn_key:
+            if turns_seen >= limit:
+                break
+            turns_seen += 1
+            last_turn_key = turn_key
+        kept.append(entry)
+    kept.reverse()
+    return kept
+
+
+def _suppress_repeated_assistant_turns(entries):
+    """Suppress repeated substantial assistant turns on read without mutating sources.
+
+    Keeps the first occurrence verbatim and marks later near-duplicate turns with
+    ``repeat_suppressed=True`` while preserving their real ``at``, ``speaker``,
+    and ``turn_id`` so timeline anchors stay intact and positive-feedback loops
+    are broken.
+    """
+    seen = []
+    suppressed = 0
+    for entry in entries:
+        if entry.get("speaker") != "assistant" or "sent_ref" in entry:
+            continue
+        text = entry.get("text")
+        normalized = _normalize_repeat_text(text)
+        if len(normalized) < REPEAT_SUPPRESS_MIN_CHARS:
+            continue
+        if any(_is_substantial_repeat(previous, normalized) for previous in seen):
+            entry.pop("text", None)
+            entry["repeat_suppressed"] = True
+            suppressed += 1
+        else:
+            seen.append(normalized)
+    return suppressed
 
 
 def _moment(value):
@@ -101,6 +178,7 @@ def capture_private_reply_context(messages, context, native_input, *, at, merged
 
     def project(items, *, after_input=False, limit):
         result = []
+        turn_bubbles = []
         previous_speaker = None
         for item in items:
             if item["speaker"] == "user" and item["event_id"] == native_input.event_id:
@@ -117,21 +195,41 @@ def capture_private_reply_context(messages, context, native_input, *, at, merged
             if "sent_ref" in item:
                 entry.update(sent_ref=item["sent_ref"], part=item["part"])
                 result.append(entry)
+                turn_bubbles.append(None)
             elif (entry["speaker"] == previous_speaker == "assistant" and entry["turn_id"]
                     and result[-1]["turn_id"] == entry["turn_id"]):
-                result[-1]["text"] += "\n" + entry["text"]
-                result[-1]["at"] = entry["at"]
+                incoming_stripped = entry["text"].strip()
+                seen_bubbles = turn_bubbles[-1]
+                if (len(incoming_stripped) >= INTRA_TURN_DUPLICATE_MIN_CHARS
+                        and seen_bubbles is not None and incoming_stripped in seen_bubbles):
+                    result[-1]["at"] = entry["at"]
+                else:
+                    result[-1]["text"] += "\n" + entry["text"]
+                    result[-1]["at"] = entry["at"]
+                    if seen_bubbles is not None and incoming_stripped:
+                        seen_bubbles.add(incoming_stripped)
             else:
                 result.append(entry)
+                stripped = entry["text"].strip()
+                turn_bubbles.append({stripped} if stripped else set())
             previous_speaker = entry["speaker"]
-        return result[-limit:]
+        return _slice_recent_turns(result, limit)
 
     before = project(earlier, limit=BEFORE_TURNS)
     after = project(later, after_input=True, limit=AFTER_TURNS)
+    suppressed_turns = _suppress_repeated_assistant_turns(before)
+    if suppressed_turns:
+        logger.warning(
+            "[CompanionV2] private_reply_context suppressed repeated assistant turns count=%d",
+            suppressed_turns,
+        )
     last_reply = next((item["turn_id"] for item in reversed(before)
                        if item["speaker"] == "assistant"), None)
-    return {"input_received_at": stamp(received), "captured_at": stamp(now),
-            "current_inputs": inputs, "before_input": before, "after_input": after,
-            "last_sent_reply_turn_id": last_reply, "history_is_bounded": True,
-            "delivery_evidence": ("native_send_return; confirmed_contact_receipt; recipient_read_unknown"
-                                  if sent_before or sent_after else "native_send_return; recipient_read_unknown")}
+    payload = {"input_received_at": stamp(received), "captured_at": stamp(now),
+               "current_inputs": inputs, "before_input": before, "after_input": after,
+               "last_sent_reply_turn_id": last_reply, "history_is_bounded": True,
+               "delivery_evidence": ("native_send_return; confirmed_contact_receipt; recipient_read_unknown"
+                                     if sent_before or sent_after else "native_send_return; recipient_read_unknown")}
+    if suppressed_turns:
+        payload["repeat_suppression"] = {"detected": True, "suppressed_turns": suppressed_turns}
+    return payload

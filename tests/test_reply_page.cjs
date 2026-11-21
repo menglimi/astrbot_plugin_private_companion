@@ -27,6 +27,8 @@ const DEFAULTS = {
   group_wakeup_context_words: '[]', group_wakeup_interest_keywords: '[]',
   group_wakeup_question_enabled: false, group_wakeup_bot_name: '',
   group_wakeup_primary_member_ids: '[]', group_wakeup_owner_direct_words: '[]', group_tool_profile: 'full',
+  private_tool_profile: 'full',
+  private_tool_groups: 'agenda、calendar、memory、records、interaction、media、diagnostics、relay、extensions',
   group_wakeup_interest_probability: 0.18, group_wakeup_question_threshold: 65,
   group_wakeup_cold_group_enabled: false, group_wakeup_cold_group_threshold: 65,
   group_wakeup_cold_group_idle_minutes: 25, group_wakeup_cooldown_seconds: 90,
@@ -394,6 +396,8 @@ test('the card is split into labelled groups but keeps one save', async () => {
   /* 段落只是阅读顺序：仍然只有一个 edit_token、一次保存。 */
   assert.equal(instance.state.container.fields.enabled.editable.includes('window'), true);
   assert.equal(instance.state.container.fields.group_tool_profile, undefined);
+  assert.equal(instance.state.container.fields.private_tool_profile, undefined);
+  assert.equal(instance.state.container.fields.private_tool_groups, undefined);
   assert.ok(plain(instance.state.container.groups.find(group => group.id === 'segment').fields)
     .includes('part_gap_mode'), 'message spacing is part of the segmentation workspace');
   assert.equal(harnessed.page.selectSection('timing'), true, 'the old timing jump resolves to segmentation');
@@ -775,8 +779,15 @@ test('reply expression, perception, and decision settings partition every field 
   const decisionState = live(decisionHarness).state.container;
   const decision = plain(decisionState.groups.flatMap(group => group.fields));
   assert.ok(decision.includes('group_tool_profile'));
+  assert.ok(decision.includes('private_tool_profile'));
+  assert.ok(decision.includes('private_tool_groups'));
   assert.deepEqual(plain(decisionState.fields.group_tool_profile.choices),
     {full: '完整工具', standard: '常用工具', lean: '精简工具'});
+  assert.deepEqual(plain(decisionState.fields.private_tool_profile.choices),
+    {full: '完整工具', lean: '精简工具', custom: '按组自选', none: '关闭陪伴工具'});
+  assert.equal(decisionState.fields.private_tool_groups.input, 'chips');
+  assert.deepEqual(plain(decisionState.fields.private_tool_groups.chipOptions.options),
+    ['agenda', 'calendar', 'memory', 'records', 'interaction', 'media', 'diagnostics', 'relay', 'extensions']);
   assert.deepEqual(plain(decisionState.groups.map(group => group.id)),
     ['wakeup_direct', 'wakeup_interest', 'wakeup_members', 'wakeup_cold_group', 'wakeup_fatigue',
       'group_continuation', 'private_debounce', 'silence_policy', 'group_air_guard', 'private_closing', 'group_content_safety']);
