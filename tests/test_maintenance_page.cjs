@@ -2111,6 +2111,8 @@ test('system prompt workspace edits one rule, shows risk and restores the built-
     relationship: '默认相处资料说明',
     knowledge: '默认知识说明',
     memory: '默认记忆说明',
+    reply_style: '默认表达风格',
+    reply_time_style: '默认时间表达',
   };
   const section = {
     settings: {...defaults, voice_drama: '自定义 Drama 规则'},
@@ -2144,6 +2146,15 @@ test('system prompt workspace edits one rule, shows risk and restores the built-
   const reset = h.requests.filter(([method, route]) => method === 'POST' && route === '/config/configure').at(-1);
   assert.equal(Object.keys(reset[2].changes).length, 0);
   assert.equal(reset[2].reset[0], 'voice_drama');
+
+  h.root.click('[data-system-prompt]', {systemPrompt: 'reply_style'});
+  assert.match(h.root.innerHTML, /停用此段/);
+  h.root.click('[data-system-prompt-disable]');
+  h.root.click('[data-system-prompt-save]');
+  await flush();
+  const disabled = h.requests.filter(([method, route]) => method === 'POST' && route === '/config/configure').at(-1);
+  assert.equal(disabled[2].changes.reply_style, '');
+  assert.equal(disabled[2].reset.length, 0);
   h.page.unmount();
 });
 

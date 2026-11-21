@@ -1186,6 +1186,12 @@ window.CompanionMaintenancePage = (() => {
     {key: "memory", label: "私聊记忆说明", group: "背景资料规则",
       description: "解释记忆只属于当前私聊对象和角色，摘要不能替代本轮表达，也不能当独立证据。",
       risk: "改错可能让模型把摘要当证据、把旧记忆套到别人，或反复背诵时间戳。"},
+    {key: "reply_style", label: "自然表达", group: "普通聊天", optional: true,
+      description: "替换当前角色普通私聊和群聊的接话、篇幅与表达风格规则。",
+      risk: "停用后由人格和其他已启用的表达规则决定回复风格。"},
+    {key: "reply_time_style", label: "时间表达", group: "普通聊天", optional: true,
+      description: "替换普通私聊和群聊的问候、隔夜接话与时间问答规则。",
+      risk: "停用后仍会提供本地时间和历史消息各自的时间。"},
   ];
   const SYSTEM_PROMPT_LIMIT = 8000;
   const PLUGIN_PREFIX = "/astrbot_plugin_private_companion";
@@ -1309,7 +1315,7 @@ window.CompanionMaintenancePage = (() => {
     const section = systemPromptSection();
     const entry = systemPromptEntry(state?.systemPromptKey);
     if (!section || !state || state.systemPromptSaving) return;
-    const effectiveReset = reset || !state.systemPromptDraft.trim();
+    const effectiveReset = reset || (!entry.optional && !state.systemPromptDraft.trim());
     const defaultText = String(section.fields?.[entry.key]?.default || "");
     if (!effectiveReset && !systemPromptDirty()) return;
     if (effectiveReset && section.settings?.[entry.key] === defaultText) return;
@@ -1324,7 +1330,7 @@ window.CompanionMaintenancePage = (() => {
         section: "system.prompts",
         operation_key: systemPromptOperationKey(),
         edit_token: current.systemPromptToken,
-        changes: effectiveReset ? {} : {[entry.key]: current.systemPromptDraft},
+        changes: effectiveReset ? {} : {[entry.key]: entry.optional ? current.systemPromptDraft.trim() : current.systemPromptDraft},
         reset: effectiveReset ? [entry.key] : [],
       };
       await configRequest("POST", "/configure", body);
@@ -1367,23 +1373,26 @@ window.CompanionMaintenancePage = (() => {
     const customized = typeof value === "string" && value !== String(field.default || "");
     const dirty = systemPromptDirty();
     const overLimit = state.systemPromptDraft.length > SYSTEM_PROMPT_LIMIT;
-    const message = state.systemPromptMessage || (dirty ? "有未保存更改" : customized ? "已修改，下一轮回复使用新规则" : "使用内置默认");
+    const disabled = entry.optional && typeof value === "string" && !value.trim();
+    const message = state.systemPromptMessage || (dirty ? "有未保存更改" : disabled ? "此段已停用" : customized ? "已修改，下一轮回复使用新规则" : "使用内置默认");
     const messageKind = state.systemPromptMessageKind || (dirty ? "dirty" : customized ? "custom" : "ok");
-    const groups = [...new Set(SYSTEM_PROMPT_ENTRIES.map(item => item.group))];
+    const available = SYSTEM_PROMPT_ENTRIES.filter(item => Object.hasOwn(section.fields, item.key));
+    const groups = [...new Set(available.map(item => item.group))];
     const catalog = groups.map(group => {
-      const items = SYSTEM_PROMPT_ENTRIES.filter(item => item.group === group);
+      const items = available.filter(item => item.group === group);
       return '<div class="maint-prompt-group-label">' + escapeHtml(group) + '</div>' +
         items.map(item => {
           const itemValue = section.settings?.[item.key];
           const itemDefault = section.fields?.[item.key]?.default;
           const changed = typeof itemValue === "string" && itemValue !== String(itemDefault || "");
+          const stopped = item.optional && typeof itemValue === "string" && !itemValue.trim();
           return '<button type="button" class="maint-prompt-task' +
             (item.key === entry.key ? ' is-active' : '') + '" data-system-prompt="' + escapeHtml(item.key) +
             '" aria-pressed="' + (item.key === entry.key) + '"' + (state.systemPromptSaving ? ' disabled' : '') + '>' +
             '<span class="maint-prompt-task-copy"><strong>' + escapeHtml(item.label) + '</strong><small>' +
             escapeHtml(item.description) + '</small><code>system.prompts.' + escapeHtml(item.key) + '</code></span>' +
             '<span class="maint-prompt-task-state" data-state="' + (changed ? 'custom' : 'default') + '"><i aria-hidden="true"></i><small>' +
-            (changed ? '已修改' : '默认') + '</small></span></button>';
+            (stopped ? '已停用' : changed ? '已修改' : '默认') + '</small></span></button>';
         }).join('');
     }).join('');
     const defaultText = String(field.default || "");
@@ -1392,7 +1401,7 @@ window.CompanionMaintenancePage = (() => {
     return '<section class="maint-prompt-section" aria-labelledby="maint-system-prompt-heading">' +
       '<div class="maint-panel-heading"><div><span class="maint-eyebrow">核心提示词</span><h3 id="maint-system-prompt-heading">固定规则与默认值</h3>' +
       '<p class="maint-scope-note"><i data-lucide="shield-check"></i>当前角色 · 仅影响下一轮核心回复</p></div>' +
-      '<div class="maint-prompt-summary"><span><strong>' + SYSTEM_PROMPT_ENTRIES.length + '</strong> 项固定规则</span><button type="button" class="maint-text-action" data-system-prompt-reload>重新读取</button></div></div>' +
+      '<div class="maint-prompt-summary"><span><strong>' + available.length + '</strong> 项固定规则</span><button type="button" class="maint-text-action" data-system-prompt-reload>重新读取</button></div></div>' +
       '<div class="maint-system-risk" role="note"><i data-lucide="triangle-alert"></i><div><strong>修改风险</strong>' +
       '<p>' + escapeHtml(entry.risk) + '</p><p>这些文本会直接进入核心回复的系统提示词，不是任务提示词；改错会影响所有私聊/群聊回复。建议只改措辞，不删除身份、权限和资料边界。保存后可在下一轮对话生效；随时可以恢复内置默认。</p></div></div>' +
       '<div class="maint-prompt-workspace"><aside class="maint-prompt-catalog" aria-label="系统提示词目录">' +
@@ -1402,14 +1411,17 @@ window.CompanionMaintenancePage = (() => {
       escapeHtml(entry.group) + '</span><code>system.prompts.' + escapeHtml(entry.key) + '</code></div><h4>' +
       escapeHtml(entry.label) + '</h4><p>' + escapeHtml(entry.description) + '</p></div>' +
       '<span class="maint-prompt-badge" data-state="' + (customized ? 'custom' : 'default') + '"><i data-lucide="' +
-      (customized ? 'circle-check' : 'circle-dot') + '"></i><span>' + (customized ? '已修改' : '内置默认') + '</span></span></div>' +
-      '<label class="maint-prompt-field"><span><strong>系统提示词正文</strong><small>最多 ' + SYSTEM_PROMPT_LIMIT + ' 字 · 留空保存等于恢复默认</small></span>' +
+      (customized ? 'circle-check' : 'circle-dot') + '"></i><span>' + (disabled ? '已停用' : customized ? '已修改' : '内置默认') + '</span></span></div>' +
+      '<label class="maint-prompt-field"><span><strong>系统提示词正文</strong><small>最多 ' + SYSTEM_PROMPT_LIMIT +
+      (entry.optional ? ' 字 · 留空保存会停用此段' : ' 字 · 留空保存等于恢复默认') + '</small></span>' +
       '<textarea data-system-prompt-draft rows="12" maxlength="' + SYSTEM_PROMPT_LIMIT + '" spellcheck="false"' +
       (state.systemPromptSaving ? ' disabled' : '') + '>' + escapeHtml(state.systemPromptDraft) + '</textarea></label>' +
       '<div class="maint-prompt-editor-foot"><span class="maint-prompt-status" data-state="' + escapeHtml(messageKind) + '" role="status" aria-live="polite"><span>' +
       escapeHtml(message) + '</span><b data-system-prompt-count>' + number(state.systemPromptDraft.length) + ' / ' + SYSTEM_PROMPT_LIMIT + ' 字</b></span>' +
       '<div class="maint-prompt-actions"><button type="button" class="maint-prompt-secondary" data-system-prompt-reset ' +
       (canReset ? '' : 'disabled') + '><i data-lucide="rotate-ccw"></i><span>恢复内置默认</span></button>' +
+      (entry.optional && state.systemPromptDraft.trim() ? '<button type="button" class="maint-prompt-secondary" data-system-prompt-disable ' +
+        (state.systemPromptSaving ? 'disabled' : '') + '><i data-lucide="circle-minus"></i><span>停用此段</span></button>' : '') +
       '<button type="button" class="maint-prompt-primary" data-system-prompt-save ' + (canSave ? '' : 'disabled') + '><i data-lucide="save"></i><span>' +
       (state.systemPromptSaving ? '正在保存' : '保存提示词') + '</span></button></div></div>' +
       '<details class="maint-prompt-default"><summary>查看内置默认文本</summary><section class="maint-prompt-preview" aria-label="系统提示词内置默认">' +
@@ -4654,6 +4666,15 @@ window.CompanionMaintenancePage = (() => {
     }
     if (target.closest("[data-system-prompt-save]") && state) { void saveSystemPrompt(false); return; }
     if (target.closest("[data-system-prompt-reset]") && state) { void saveSystemPrompt(true); return; }
+    if (target.closest("[data-system-prompt-disable]") && state && !state.systemPromptSaving
+        && systemPromptEntry(state.systemPromptKey).optional) {
+      state.systemPromptDraft = "";
+      state.systemPromptMessage = "";
+      state.systemPromptMessageKind = "";
+      render();
+      root?.querySelector?.("[data-system-prompt-save]")?.focus();
+      return;
+    }
     const promptMode = target.closest("[data-prompt-mode]");
     if (promptMode && state) {
       state.promptMode = promptMode.dataset.promptMode === "customized" ? "customized" : "all";
