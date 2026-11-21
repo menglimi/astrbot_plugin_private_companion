@@ -13,53 +13,75 @@ from companion_v2.execution.models import TaskContext
 from companion_v2.foundation.refs import ScopeKind
 
 
-def private_people(runtime, identity, context, at):
-    """List only participants with a stored, currently bound private context for this role."""
+def _distinct_role_private_contexts(runtime, context):
+    """Collect distinct private TaskContexts for this role, deduplicating before JSON decode."""
     if context.scope.kind is not ScopeKind.PRIVATE:
         return ()
-    candidates = {}
     scope_filter = """json_extract(context_json, '$.role_binding.role.subject_id') = ?
         AND json_extract(context_json, '$.role_binding.scope.bot_id') = ?
         AND json_extract(context_json, '$.role_binding.scope.installation_id') = ?"""
     parameters = (context.role_binding.role.subject_id, context.scope.bot_id,
                   context.scope.installation_id)
-    for query in (
-        "SELECT context_json FROM conversation_batches WHERE " + scope_filter + " ORDER BY rowid DESC LIMIT 2000",
-        "SELECT context_json FROM conversation_native_observations WHERE kind = 'input' AND "
+    queries = (
+        "SELECT origin_key AS ctx_key, context_json FROM conversation_batches WHERE "
+        + scope_filter + " ORDER BY rowid DESC LIMIT 2000",
+        "SELECT context_key AS ctx_key, context_json FROM conversation_native_observations WHERE kind = 'input' AND "
         + scope_filter + " ORDER BY observed_at DESC, rowid DESC LIMIT 2000",
-    ):
+    )
+    seen_keys = set()
+    seen_raw = set()
+    distinct = []
+    for query in queries:
         try:
             rows = runtime.read_all(query, parameters)
         except Exception:
             continue
         for row in rows:
+            ctx_key = row["ctx_key"]
+            if ctx_key:
+                if ctx_key in seen_keys:
+                    continue
+                seen_keys.add(ctx_key)
+            raw_json = row["context_json"]
+            if not ctx_key:
+                if raw_json in seen_raw:
+                    continue
+                seen_raw.add(raw_json)
             try:
-                candidate = TaskContext.restore(json.loads(row["context_json"]))
+                candidate = TaskContext.restore(json.loads(raw_json))
             except (TypeError, ValueError, KeyError):
                 continue
             if (candidate.scope.kind is not ScopeKind.PRIVATE
                     or candidate.scope.installation_id != context.scope.installation_id
                     or candidate.scope.bot_id != context.scope.bot_id
-                    or candidate.role_binding.role != context.role_binding.role
-                    or candidate.actor.subject.kind.value != "human"):
+                    or candidate.role_binding.role != context.role_binding.role):
                 continue
-            subject_id = candidate.actor.subject.subject_id
-            if subject_id in candidates:
-                continue
-            resolved = identity.resolve_authenticated(candidate.actor.principal, observed_at=at)
-            current_role = identity.resolve_role(candidate.scope, observed_at=at)
-            if (not resolved.is_success or not current_role.is_success
-                    or resolved.unwrap().subject != candidate.actor.subject
-                    or resolved.unwrap().binding_id != candidate.actor.binding_id
-                    or resolved.unwrap().binding_revision != candidate.actor.binding_revision
-                    or current_role.unwrap() != candidate.role_binding):
-                continue
-            candidates[subject_id] = {
-                "subject_id": subject_id,
-                "label": candidate.actor.principal.native_account_id or subject_id,
-                "platform": candidate.scope.platform,
-                "scope_label": candidate.scope.native_scope_id,
-            }
+            distinct.append(candidate)
+    return tuple(distinct)
+
+
+def _bound_private_people(identity, context, at, distinct_contexts):
+    candidates = {}
+    for candidate in distinct_contexts:
+        if candidate.actor.subject.kind.value != "human":
+            continue
+        subject_id = candidate.actor.subject.subject_id
+        if subject_id in candidates:
+            continue
+        resolved = identity.resolve_authenticated(candidate.actor.principal, observed_at=at)
+        current_role = identity.resolve_role(candidate.scope, observed_at=at)
+        if (not resolved.is_success or not current_role.is_success
+                or resolved.unwrap().subject != candidate.actor.subject
+                or resolved.unwrap().binding_id != candidate.actor.binding_id
+                or resolved.unwrap().binding_revision != candidate.actor.binding_revision
+                or current_role.unwrap() != candidate.role_binding):
+            continue
+        candidates[subject_id] = {
+            "subject_id": subject_id,
+            "label": candidate.actor.principal.native_account_id or subject_id,
+            "platform": candidate.scope.platform,
+            "scope_label": candidate.scope.native_scope_id,
+        }
     selected = candidates.get(context.actor.subject.subject_id)
     if selected is not None:
         candidates[context.actor.subject.subject_id] = {
@@ -69,47 +91,35 @@ def private_people(runtime, identity, context, at):
     return tuple(sorted(candidates.values(), key=lambda item: (item["label"], item["subject_id"])))
 
 
+def private_people(runtime, identity, context, at):
+    """List only participants with a stored, currently bound private context for this role."""
+    if context.scope.kind is not ScopeKind.PRIVATE:
+        return ()
+    distinct_contexts = _distinct_role_private_contexts(runtime, context)
+    return _bound_private_people(identity, context, at, distinct_contexts)
+
+
 def role_private_contexts(runtime, identity, messages, context, at):
     from .configuration import read_settings, source_subject_allowed_for_context
 
-    people = private_people(runtime, identity, context, at)
+    if context.scope.kind is not ScopeKind.PRIVATE:
+        return ()
+    distinct_contexts = _distinct_role_private_contexts(runtime, context)
+    people = _bound_private_people(identity, context, at, distinct_contexts)
     allowed_ids = {item["subject_id"] for item in people}
     contexts = {}
-    scope_filter = """json_extract(context_json, '$.role_binding.role.subject_id') = ?
-        AND json_extract(context_json, '$.role_binding.scope.bot_id') = ?
-        AND json_extract(context_json, '$.role_binding.scope.installation_id') = ?"""
-    parameters = (context.role_binding.role.subject_id, context.scope.bot_id,
-                  context.scope.installation_id)
-    queries = (
-        "SELECT context_json FROM conversation_batches WHERE " + scope_filter + " ORDER BY rowid DESC LIMIT 2000",
-        "SELECT context_json FROM conversation_native_observations WHERE kind = 'input' AND "
-        + scope_filter + " ORDER BY observed_at DESC, rowid DESC LIMIT 2000",
-    )
-    for query in queries:
+    for candidate in distinct_contexts:
+        subject_id = candidate.actor.subject.subject_id
+        if candidate.key in contexts or subject_id not in allowed_ids:
+            continue
         try:
-            rows = runtime.read_all(query, parameters)
+            messages.authorize(candidate, at)
+            policy = read_settings(runtime, candidate)
+            if (policy.private_learning_enabled
+                    and source_subject_allowed_for_context(runtime, candidate)):
+                contexts[candidate.key] = candidate
         except Exception:
             continue
-        for row in rows:
-            try:
-                candidate = TaskContext.restore(json.loads(row["context_json"]))
-            except (TypeError, ValueError, KeyError):
-                continue
-            subject_id = candidate.actor.subject.subject_id
-            if candidate.key in contexts or subject_id not in allowed_ids:
-                continue
-            try:
-                messages.authorize(candidate, at)
-                policy = read_settings(runtime, candidate)
-                if (candidate.scope.kind is ScopeKind.PRIVATE
-                        and candidate.scope.installation_id == context.scope.installation_id
-                        and candidate.scope.bot_id == context.scope.bot_id
-                        and candidate.role_binding.role == context.role_binding.role
-                        and policy.private_learning_enabled
-                        and source_subject_allowed_for_context(runtime, candidate)):
-                    contexts[candidate.key] = candidate
-            except Exception:
-                continue
     return tuple(contexts.values())
 
 

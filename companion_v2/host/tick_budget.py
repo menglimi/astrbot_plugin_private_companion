@@ -18,9 +18,15 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import logging
 import sqlite3
 import time
 from typing import Callable
+
+
+logger = logging.getLogger(__name__)
+SLOW_UNIT_WARNING_SECONDS = 0.5
+SLOW_UNIT_LOG_INTERVAL_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -29,6 +35,7 @@ class TickUnit:
 
     name: str
     run: Callable[[], object]
+    offload: bool = False
 
 
 @dataclass(frozen=True)
@@ -70,6 +77,7 @@ class TickScheduler:
         self._clock = clock
         self._cursor = 0
         self._rotated = False
+        self._slow_log_at: dict[str, float] = {}
 
     @property
     def cursor(self) -> int:
@@ -95,8 +103,12 @@ class TickScheduler:
             if ran and self._rotated and self._clock() - started >= self._budget_seconds:
                 return TickReport(False, tuple(ran), results)
             unit = self._units[self._cursor]
+            unit_started = time.monotonic()
             try:
-                results[unit.name] = unit.run()
+                if unit.offload:
+                    results[unit.name] = await asyncio.to_thread(unit.run)
+                else:
+                    results[unit.name] = unit.run()
             except sqlite3.OperationalError as error:
                 # A transient SQLite lock must not terminate the whole host
                 # loop. Keep the cursor on this unit so the next slice retries
@@ -106,6 +118,18 @@ class TickScheduler:
                     "message": str(error)[:200],
                 }
                 return TickReport(False, tuple(ran), results)
+            finally:
+                unit_finished = time.monotonic()
+                elapsed = unit_finished - unit_started
+                if not unit.offload and elapsed >= SLOW_UNIT_WARNING_SECONDS:
+                    last_logged = self._slow_log_at.get(unit.name, 0.0)
+                    if unit_finished - last_logged >= SLOW_UNIT_LOG_INTERVAL_SECONDS:
+                        self._slow_log_at[unit.name] = unit_finished
+                        logger.warning(
+                            "[CompanionV2] 维护单元主线程耗时过长 unit=%s elapsed_ms=%d",
+                            unit.name,
+                            round(elapsed * 1000),
+                        )
             ran.append(unit.name)
             self._cursor += 1
             if self._cursor >= len(self._units):
