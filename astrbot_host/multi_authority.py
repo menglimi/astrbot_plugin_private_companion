@@ -441,6 +441,8 @@ class MultiAuthority:
             context = self.context(target.target_id, role.subject_id)
             from .image_access import ensure_image_access
             ensure_image_access(self.runtime, context, observed_at=self.now())
+            from .content_access import ensure_content_access
+            ensure_content_access(self.runtime, context, observed_at=self.now())
             from companion_v2.role_work.state.configuration import (
                 ensure_window_presentation_grants, ensure_role_state_grants)
             ensure_window_presentation_grants(self.runtime, context, observed_at=self.now())

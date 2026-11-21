@@ -132,6 +132,60 @@ def _recent_life_summary(app, context, at):
     return items or None
 
 
+def _content_authoring_summary(app, context, at):
+    from companion_v2.capabilities.models import CapabilityDesiredState
+    from companion_v2.capabilities.repositories import CapabilityRepository
+    from companion_v2.content.catalogue import content_database
+    from companion_v2.conversation.content.authoring_service import effective_settings
+    from companion_v2.conversation.content.library import summarize_role_works
+
+    try:
+        settings = effective_settings(app.runtime, context)
+    except Exception:
+        return None
+    if not settings.enabled:
+        return None
+    role = getattr(getattr(context, "role_binding", None), "role", None)
+    scope = getattr(context, "scope", None)
+    if role is None or scope is None:
+        return None
+    try:
+        projected = CapabilityRepository(app.runtime).projection(
+            extension_id="content", role=role, scope=scope
+        )
+    except Exception:
+        return None
+    if not projected.is_success:
+        return None
+    projection = projected.unwrap()
+    if (
+        projection.installation.desired_state is not CapabilityDesiredState.ACTIVE
+        or projection.role_selection is None
+        or not projection.role_selection.enabled
+    ):
+        return None
+    works = {"works_total": 0, "drafting_works": 0, "days_since_last_work": None}
+    bot_id = getattr(scope, "bot_id", None)
+    if bot_id:
+        works = summarize_role_works(
+            content_database(app.runtime.data_root),
+            installation_id=scope.installation_id,
+            bot_id=bot_id,
+            role_id=role.subject_id,
+            now=at,
+        )
+    summary = {
+        "enabled": True,
+        "works_total": works["works_total"],
+        "drafting_works": works["drafting_works"],
+        "days_since_last_work": works["days_since_last_work"],
+    }
+    direction = settings.direction_prompt.strip()
+    if direction:
+        summary["direction_prompt"] = direction[:400]
+    return summary
+
+
 def calendar_inventory(app, context, *, role_global=False):
     if not role_global:
         inventory = app.calendar.inventory(context, limit=100)
@@ -346,6 +400,13 @@ def capture(planner, context, instruction, mode, slot, occurrence=None, *, weath
         if used_chars + size <= MATERIAL_CHARS:
             material["recent_life"] = recent_life
             used_chars += size
+    if mode in ("daily", "horizon"):
+        content_authoring = _content_authoring_summary(app, context, at)
+        if content_authoring is not None:
+            size = len(json.dumps(content_authoring, ensure_ascii=False, separators=(",", ":")))
+            if used_chars + size <= MATERIAL_CHARS:
+                material["content_authoring"] = content_authoring
+                used_chars += size
     return {"context": context, "instruction": instruction, "mode": mode, "slot": slot, "at": at, "end": end,
         "settings": settings, "sources": tuple(sources),
         "goal_refs": goal_refs, "calendar_refs": calendar_refs, "memory_refs": memory_refs, "growth_refs": growth_refs,

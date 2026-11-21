@@ -2,9 +2,12 @@
 
 import asyncio
 from datetime import datetime
+import logging
 import sqlite3
+import time
 from types import SimpleNamespace
 
+from astrbot_host.content_access import ensure_content_access
 from companion_v2.content.models import (
     Call,
     Chapter,
@@ -35,11 +38,40 @@ from companion_v2.role_work.life.calendar_work import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 class ScheduledAuthoring:
+    BLOCKED_LOG_INTERVAL_SECONDS = 300.0
+    BLOCKED_LOG_MAX_KEYS = 256
+
     def __init__(self, consumer):
         self.consumer = consumer
         self.app = consumer.application
         self.runtime = self.app.runtime
+        self._blocked_log_at: dict[tuple[str, str, str], float] = {}
+        self._log_clock = time.monotonic
+
+    def _warn_blocked(self, context, stage: str, code: str, *, window=None) -> None:
+        now = self._log_clock()
+        key = (getattr(context, "key", ""), stage, code)
+        last = self._blocked_log_at.get(key)
+        if last is not None and now - last < self.BLOCKED_LOG_INTERVAL_SECONDS:
+            return
+        if len(self._blocked_log_at) >= self.BLOCKED_LOG_MAX_KEYS and key not in self._blocked_log_at:
+            oldest = min(self._blocked_log_at, key=self._blocked_log_at.__getitem__)
+            self._blocked_log_at.pop(oldest, None)
+        self._blocked_log_at[key] = now
+        role = getattr(getattr(context, "role_binding", None), "role", None)
+        role_id = getattr(role, "subject_id", "")
+        window_id = f"{window.get('id', '')}:{window.get('sequence', '')}" if isinstance(window, dict) else "-"
+        logger.warning(
+            "[CompanionV2] 定时创作被阻止 stage=%s code=%s role=%s window=%s",
+            stage,
+            code,
+            role_id,
+            window_id,
+        )
 
     def port(self):
         port = self.consumer.registry.active_service("content")
@@ -76,26 +108,35 @@ class ScheduledAuthoring:
 
     def ready(self, context, window=None):
         if (
-            DRAFT_KIND not in self.app.gateway.router.profiles
-            or not effective_settings(self.runtime, context).enabled
-            or self.app.gateway.ledger.background_deferral(
-                context, DRAFT_KIND, at=self.app.now()
-            )
-        ):
-            return False
-        try:
-            for action in ("read", "list"):
-                self.admit(context, action)
-        except TaskError:
-            return False
-        return (
-            window is None
-            or self.runtime.read_one(
+            window is not None
+            and self.runtime.read_one(
                 "SELECT 1 FROM runtime_metadata WHERE key=?",
                 (self.key(context, window),),
             )
-            is None
-        )
+            is not None
+        ):
+            return False
+        if DRAFT_KIND not in self.app.gateway.router.profiles:
+            if window is not None:
+                self._warn_blocked(context, "ready", "model_task_unregistered", window=window)
+            return False
+        if not effective_settings(self.runtime, context).enabled:
+            if window is not None:
+                self._warn_blocked(context, "ready", "content_authoring_disabled", window=window)
+            return False
+        if self.app.gateway.ledger.background_deferral(
+            context, DRAFT_KIND, at=self.app.now()
+        ):
+            return False
+        ensure_content_access(self.runtime, context, observed_at=self.app.now())
+        try:
+            for action in ("read", "list"):
+                self.admit(context, action)
+        except TaskError as error:
+            if window is not None:
+                self._warn_blocked(context, "ready", error.code, window=window)
+            return False
+        return True
 
     def plan_continuation(self, context, now, settings, page, *, sleep_plan):
         if (
@@ -121,7 +162,9 @@ class ScheduledAuthoring:
                     items=page["items"],
                     sleep_plan=sleep_plan,
                 )
-        except (TaskError, ContentError, sqlite3.Error):
+        except (TaskError, ContentError, sqlite3.Error) as error:
+            code = getattr(error, "code", type(error).__name__)
+            self._warn_blocked(context, "plan_continuation", code)
             return
 
     def key(self, context, window):
@@ -419,6 +462,7 @@ class ScheduledAuthoring:
                 "state": "failed",
                 "code": getattr(error, "code", "content_storage_unavailable"),
             }
+            self._warn_blocked(context, "run", result["code"], window=window)
         with self.runtime.transaction() as connection:
             connection.execute(
                 "UPDATE runtime_metadata SET value=? WHERE key=?", (encode(result), key)

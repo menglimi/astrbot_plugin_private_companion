@@ -799,6 +799,8 @@ def inject_core_reply_tools(event, req, *, application):
     # here, on the real event context, before the catalogue is filtered.
     from .image_access import ensure_image_access
     ensure_image_access(application.runtime, session.context, observed_at=application.tasks.now())
+    from .content_access import ensure_content_access
+    ensure_content_access(application.runtime, session.context, observed_at=application.tasks.now())
     offered, image_values = core_image_tools(session, session.catalog())
     semantic = getattr(application.tools, "semantic", None)
     if semantic is not None:
