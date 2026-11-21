@@ -253,6 +253,51 @@ class NativePerceptionAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["data"]["code"], "material_pool_unavailable")
         log_error.assert_called_once()
 
+    async def test_material_pool_schedules_role_news_warmup_on_running_event_loop(self):
+        import asyncio
+        from companion_v2.proactive.external_materials import parse_news_response
+
+        (await self.controller.initialize_profile()).unwrap()
+        events = self.controller.session.application.contact_schedule.news_events
+
+        class WarmupPort:
+            fingerprint = "warmup-news-v1"
+            source_label = "warmup.example"
+
+            def __init__(self):
+                self.calls = 0
+
+            async def fetch(self):
+                self.calls += 1
+                return parse_news_response({"items": [{
+                    "id": "warmup-1",
+                    "title": "巡视预热资讯",
+                    "summary": "后台任务在事件循环中成功预热。",
+                    "url": "https://warmup.example/1",
+                    "published_at": support.NOW.isoformat(),
+                    "category": "趣事",
+                }]})
+
+        port = WarmupPort()
+        loop = asyncio.get_running_loop()
+        with (patch.object(events, "_source", return_value=port),
+              patch.object(events, "_source_enabled", return_value=True),
+              patch("astrbot_host.native_perception_api.logger.exception") as log_error):
+            first = await self.call(route=PREFIX + "/materials")
+            self.assertEqual(first["status"], "ok", first)
+            log_error.assert_not_called()
+            workers = tuple(events._maintenance_workers.values())
+            self.assertEqual(len(workers), 1)
+            self.assertIsInstance(workers[0], asyncio.Task)
+            self.assertIs(workers[0].get_loop(), loop)
+            await asyncio.gather(*workers)
+
+            second = await self.call(route=PREFIX + "/materials")
+
+        self.assertEqual(port.calls, 1)
+        self.assertEqual(second["status"], "ok", second)
+        self.assertEqual([item["title"] for item in second["data"]["items"]], ["巡视预热资讯"])
+
     async def test_runtime_snapshot_uses_enabled_weather_and_returns_explicit_empty_states(self):
         class WeatherPort:
             def __init__(self):

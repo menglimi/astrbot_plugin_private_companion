@@ -187,6 +187,9 @@ class GroupReplyWebAPI:
                     status = result.value if action in ("status", "expression", "participation") else result.value["status"]
                     status.update(target_id=self.target_id, role_id=self.role_id, session_id=session_id,
                                   scope_kind="group")
+                    if action in ("status", "configure"):
+                        from .video.compressor import video_capabilities_status
+                        status["video"] = video_capabilities_status()
                 return outcome_response(result)
             except TaskError as error:
                 return outcome_response(Outcome.failed(error.code, str(error)))

@@ -1,4 +1,4 @@
-﻿.workspace-learning{min-width:0}
+.workspace-learning{min-width:0}
 .expression-samples-workspace{min-width:0}
 .lh-samples{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0;padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised)}
 .lh-samples-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);min-height:48px}
@@ -30,7 +30,7 @@
 .learning-hub-tab:hover{background:var(--t-surface);color:var(--t-text-strong)}
 .learning-hub-tab.is-active{border-color:var(--t-line);background:var(--t-surface-raised);color:var(--t-accent-ink);font-weight:650;box-shadow:var(--t-shadow)}
 .learning-hub-tab:focus-visible,.lh-review-row:focus-visible,.lea-chain-row:focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
-.learning-hub-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);min-width:0}
+.learning-hub-head{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:var(--sp-4);min-width:0}
 .learning-hub-head h1{margin:0;color:var(--t-text-strong);font-size:var(--fs-title);font-weight:700;line-height:1.25}
 .learning-hub-head h1 span{color:var(--t-text-soft);font-weight:550}
 .learning-policy-workspaces{display:flex;flex-direction:column;gap:var(--sp-4);min-width:0}
@@ -363,4 +363,162 @@
 .lh-track-actions a{padding:7px 11px;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-accent-ink);font-size:var(--fs-tiny);text-decoration:none}
 .lh-track-actions a:first-child{border-color:var(--t-accent);background:var(--t-accent-quiet)}
 .lh-track-actions a:hover{border-color:var(--t-accent)}
+
+/* ===== 审阅中心：手稿式逐条批阅 =====
+   左侧是按时间排列的待批阅队列，右侧是一条记录的手稿：标题、原文引述、
+   适用条件、依据和底部裁决。页面自己的标题与刷新放在这一块，学习总览的
+   通用标题在审阅页隐藏，避免两行标题打架。 */
+.learning-hub.is-review .learning-hub-head{display:none}
+/* 审阅中心有自己的一套标题与类型筛选，但学习导航仍要保留——它是这个分区
+   唯一的入口，收起后只能靠浏览器回退或面包屑。只在窄屏（导航折成两排、
+   会把待批阅列表推出首屏）收起。 */
+@media(max-width:760px){
+  .learning-hub.is-review .learning-hub-nav{display:none}
+}
+.shell-panel:has(.learning-hub.is-review) .shell-panel-head{display:none}
+/* 审阅中心的详情卡会一直铺到内容区右下角；小屋的浮动缩略场景会压住裁决按钮。
+   这一页以逐条批阅为主，先把缩略场景让开，顶部仍有「回到小屋」。 */
+body:has(.learning-hub.is-review) #homeShell[data-away="true"] .stage-region{visibility:hidden!important;pointer-events:none!important}
+.lh-review-page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--sp-4);padding:2px 0 var(--sp-4)}
+.lh-review-page-title{display:grid;gap:4px;min-width:0}
+.lh-review-breadcrumb{margin:0;color:var(--t-text-faint);font-size:var(--fs-micro);letter-spacing:.02em}
+.lh-review-breadcrumb a{color:inherit;text-decoration:none}
+.lh-review-breadcrumb a:hover{color:var(--t-accent-ink)}
+.lh-review-breadcrumb span{margin:0 6px;color:var(--t-line-firm)}
+.lh-review-page-title h1{margin:0;color:var(--t-text-strong);font-size:clamp(22px,1.5vw,26px);font-weight:650;line-height:1.3}
+.lh-review-subtitle{margin:0;color:var(--t-text-soft);font-size:var(--fs-body);line-height:1.6}
+.lh-review-refresh{display:inline-flex;align-items:center;gap:var(--sp-2);min-height:36px;padding:var(--sp-1) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);cursor:pointer}
+.lh-review-refresh:hover:not(:disabled){border-color:var(--t-line-firm);color:var(--t-text-strong)}
+.lh-review-refresh svg{width:15px;height:15px}
+.lh-review-refresh:disabled{opacity:.5;cursor:default}
+.lh-review-toolbar{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap;margin-bottom:var(--sp-2)}
+.lh-review-filters{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-1)}
+.lh-review-filters button{min-height:35px;padding:var(--sp-1) var(--sp-3);border:1px solid transparent;border-radius:999px;background:var(--t-surface);color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);cursor:pointer}
+.lh-review-filters button:hover{border-color:var(--t-line);color:var(--t-text-strong)}
+.lh-review-filters button[aria-pressed="true"]{background:var(--t-accent-solid);border-color:var(--t-accent-solid);color:var(--t-on-solid)}
+.lh-review-filters button span{margin-inline-start:6px;opacity:.8;font-variant-numeric:tabular-nums}
+.lh-review-selection{display:flex;align-items:center;gap:var(--sp-2);color:var(--t-text-faint);font-size:var(--fs-tiny)}
+.lh-review-select-all{display:inline-flex;align-items:center;gap:4px;margin-inline-end:2px;color:var(--t-text-faint);font-size:var(--fs-micro)}
+.lh-review-select-all input{accent-color:var(--t-accent-solid)}
+.lh-review-selection button{min-height:34px;padding:var(--sp-1) var(--sp-3);border:0;border-radius:999px;background:var(--t-accent-solid);color:var(--t-on-solid);font:inherit;font-size:var(--fs-tiny);cursor:pointer}
+.lh-review-selection button:disabled{background:var(--t-surface-soft);color:var(--t-text-faint);cursor:default}
+.lh-review-selection .lh-review-bulk-reject{background:transparent;color:var(--t-text-soft);padding-inline:var(--sp-2)}
+.lh-review-selection .lh-review-bulk-reject:hover:not(:disabled){color:var(--t-risk-ink)}
+.lh-review-selection .lh-review-bulk-reject:disabled{background:transparent}
+.lh-review-bulk{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap;margin:0 0 var(--sp-3);color:var(--t-text-faint);font-size:var(--fs-tiny)}
+.lh-review-bulk>label{display:flex;align-items:center;gap:var(--sp-1)}
+.lh-review-bulk>label input,.lh-review-check{accent-color:var(--t-accent-solid)}
+.lh-review-bulk>span{margin-inline-end:0}
+.lh-review-bulk>button{margin-inline-start:auto}
+.lh-review-bulk button{min-height:31px;padding:var(--sp-1) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);cursor:pointer}
+.lh-review-bulk button:disabled{opacity:.45;cursor:default}
+/* 审阅页要把剩余视口高度用满：队列在卡片内滚动，详情卡的裁决栏钉在底部，
+   卡片下方不再留一大片空背景。352px = 导航 + 页面标题 + 筛选条 + 内外边距；
+   导航在中窄屏折成两排时由下面的断点补上。 */
+.lh-review-layout{display:grid;grid-template-columns:minmax(320px,.74fr) minmax(0,1.55fr);gap:var(--sp-4);
+  align-items:stretch;min-width:0;height:calc(100vh - 352px);min-height:560px}
+.lh-review-queue,.lh-review-detail{min-width:0;border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface);box-shadow:0 1px 2px color-mix(in srgb,var(--t-text) 4%,transparent)}
+.lh-review-queue{display:flex;flex-direction:column;height:100%;min-height:0;max-height:none;overflow:hidden;padding:var(--sp-4) 0 0}
+.lh-review-queue-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--sp-3);padding:0 var(--sp-4) var(--sp-3);border-bottom:1px solid var(--t-line)}
+.lh-review-queue>.lh-review-queue-head{position:static;top:auto;z-index:auto;background:transparent}
+.lh-review-queue-head h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-lead);font-weight:650}
+.lh-review-queue-head p{margin:4px 0 0;color:var(--t-text-faint);font-size:var(--fs-micro)}
+.lh-review-queue-head>span{color:var(--t-text-faint);font-size:var(--fs-tiny);font-variant-numeric:tabular-nums}
+.lh-review-queue-list{display:flex;flex-direction:column;gap:2px;min-height:0;overflow:auto;padding:var(--sp-2) var(--sp-3)}
+.lh-review-row-wrap{display:grid;grid-template-columns:24px minmax(0,1fr) 18px;align-items:start;gap:var(--sp-2);padding:2px;border-radius:var(--r-sm)}
+.lh-review-row-wrap.is-selected{background:var(--t-accent-quiet)}
+.lh-review-index{padding-top:10px;color:var(--t-text-faint);font-size:var(--fs-micro);font-variant-numeric:tabular-nums;text-align:right}
+.lh-review-row{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:start;gap:4px var(--sp-2);width:100%;min-width:0;padding:9px 10px;border:1px solid transparent;border-radius:var(--r-sm);background:transparent;color:var(--t-text);text-align:left;cursor:pointer}
+.lh-review-row:hover{border-color:var(--t-line);background:var(--t-surface-soft)}
+.lh-review-row.is-selected{border-color:transparent;background:transparent}
+.lh-review-type{flex:none;align-self:start;padding:2px 8px;border-radius:var(--r-2xs);background:var(--t-accent-quiet);color:var(--t-accent-ink);font-size:var(--fs-micro);font-weight:600;white-space:nowrap}
+.lh-review-type.is-growth{background:var(--t-surface-soft);color:var(--t-text-soft)}
+.lh-review-type.is-self{background:var(--t-ok-quiet);color:var(--t-ok-ink)}
+.lh-review-type.is-style{background:var(--t-accent-quiet);color:var(--t-accent-ink)}
+.lh-review-row-copy{display:flex;flex-direction:column;gap:4px;min-width:0}
+.lh-review-row-copy strong{color:var(--t-text-strong);font-size:var(--fs-body);font-weight:600;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.lh-review-row-copy small{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lh-review-check{justify-self:center;width:14px;height:14px;margin-top:11px}
+.lh-review-queue-foot{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);flex-wrap:wrap;padding:var(--sp-3) var(--sp-4);border-top:1px solid var(--t-line);color:var(--t-text-faint);font-size:var(--fs-micro)}
+.lh-review-queue-foot .lh-command{min-height:29px;padding:2px var(--sp-2);font-size:var(--fs-micro)}
+.lh-review-detail{display:flex;flex-direction:column;padding:var(--sp-5);height:100%;min-height:0}
+.lh-review-detail-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap}
+.lh-review-detail>.lh-review-detail-head{display:flex;grid-template-columns:none;align-items:center}
+.lh-review-detail-chips{display:flex;align-items:center;gap:var(--sp-1);flex-wrap:wrap}
+.lh-review-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:var(--r-2xs);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-micro);font-weight:600}
+.lh-review-chip.is-pending{background:var(--t-warn-quiet);color:var(--t-warn-ink)}
+.lh-review-chip.is-pending i{width:5px;height:5px;border-radius:50%;background:currentColor}
+.lh-review-chip.is-type{background:var(--t-accent-solid);color:var(--t-on-solid)}
+.lh-review-position{color:var(--t-text-faint);font-size:var(--fs-micro);font-variant-numeric:tabular-nums}
+.lh-review-meta-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-4);margin:var(--sp-4) 0 0;padding:0 0 var(--sp-3);border-bottom:1px solid var(--t-line)}
+.lh-review-meta-grid div{display:grid;gap:3px;min-width:0}
+.lh-review-meta-grid dt{color:var(--t-text-faint);font-size:var(--fs-micro)}
+.lh-review-meta-grid dd{margin:0;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.5;overflow-wrap:anywhere}
+.lh-review-detail-title{margin:var(--sp-4) 0 0}
+.lh-review-detail-title h2{margin:0;color:var(--t-text-strong);font-size:clamp(20px,1.35vw,24px);font-weight:650;line-height:1.45;overflow-wrap:anywhere}
+.lh-review-detail-title p{margin:var(--sp-2) 0 0;color:var(--t-text-faint);font-size:var(--fs-body);line-height:1.65}
+.lh-review-quote{margin:var(--sp-4) 0 0;padding:2px 0 2px var(--sp-4);border-inline-start:3px solid var(--t-accent);background:transparent}
+.lh-review-quote p{margin:0;color:var(--t-text-strong);font-size:var(--fs-title);line-height:1.9;overflow-wrap:anywhere}
+.lh-review-avoid{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--sp-3);align-items:baseline;margin-top:var(--sp-4)}
+.lh-review-avoid span{color:var(--t-text-faint);font-size:var(--fs-micro);white-space:nowrap}
+.lh-review-avoid p{margin:0;color:var(--t-text-soft);font-size:var(--fs-body);line-height:1.8}
+.lh-review-conditions{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--sp-3);align-items:start;margin-top:var(--sp-4)}
+.lh-review-conditions>span{color:var(--t-text-faint);font-size:var(--fs-micro);white-space:nowrap;padding-top:3px}
+.lh-review-conditions>div{display:flex;flex-wrap:wrap;gap:var(--sp-1)}
+.lh-review-condition{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:var(--r-2xs);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-micro);line-height:1.4}
+.lh-review-condition em{color:var(--t-text-faint);font-style:normal}
+.lh-review-evidence{margin-top:var(--sp-4);padding-top:var(--sp-3);border-top:1px solid var(--t-line)}
+.lh-review-evidence summary{color:var(--t-text-soft);font-size:var(--fs-tiny);font-weight:650;cursor:pointer}
+.lh-review-evidence ol{display:grid;gap:var(--sp-1);margin:var(--sp-2) 0 0;padding-inline-start:1.3rem}
+.lh-review-evidence li{color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.65;overflow-wrap:anywhere}
+.lh-review-detail-foot{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap;margin-top:auto;padding-top:var(--sp-4);border-top:1px solid var(--t-line)}
+.lh-review-detail>.lh-review-detail-foot{display:flex;justify-content:space-between}
+.lh-review-detail-meta{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.6;min-width:0}
+.lh-review-detail-actions{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;margin-inline-start:auto}
+.lh-review-detail-actions .lh-command{min-height:40px;padding:var(--sp-2) var(--sp-4);border-radius:999px}
+.lh-review-detail-actions .lh-command.is-primary{border-color:var(--t-accent-solid);background:var(--t-accent-solid);color:var(--t-on-solid)}
+.lh-review-next,.lh-review-skip{display:inline-flex;align-items:center;gap:6px;min-height:38px;padding:var(--sp-1) var(--sp-2);border:0;background:transparent;color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);cursor:pointer}
+.lh-review-next kbd{padding:1px 5px;border:1px solid var(--t-line);border-radius:3px;background:var(--t-surface-soft);color:var(--t-text-faint);font:inherit;font-size:var(--fs-micro)}
+.lh-review-next:hover:not(:disabled),.lh-review-skip:hover:not(:disabled){color:var(--t-text-strong)}
+.lh-review-next:disabled,.lh-review-skip:disabled{opacity:.4;cursor:default}
+.lh-review-reject{min-height:38px;padding:var(--sp-1) var(--sp-2);border:0;background:transparent;color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);cursor:pointer}
+.lh-review-reject:hover:not(:disabled){color:var(--t-risk-ink)}
+.lh-review-reject:disabled{opacity:.4;cursor:default}
+.lh-review-detail .lh-review-confirm{margin-top:var(--sp-3)}
+.lh-review-detail-empty{display:grid;place-items:center;min-height:300px;border:1px dashed var(--t-line);border-radius:var(--r-md);background:var(--t-surface);color:var(--t-text-faint);font-size:var(--fs-tiny)}
+@media(max-width:1100px){
+  .lh-review-layout{grid-template-columns:minmax(280px,.7fr) minmax(0,1.3fr)}
+  .lh-review-detail{padding:var(--sp-4)}
+}
+@media(max-width:1080px){
+  /* 学习导航折成两排，视口里要多扣一行；卡片仍填满剩余高度。 */
+  .lh-review-layout{height:calc(100vh - 400px)}
+}
+@media(max-width:900px){
+  .lh-review-layout{grid-template-columns:minmax(0,1fr);height:auto;min-height:0;align-items:start}
+  .lh-review-queue{height:auto;min-height:0;max-height:none;overflow:visible}
+  .lh-review-queue-list{overflow:visible}
+  .lh-review-detail{height:auto;min-height:0}
+  .lh-review-detail-foot{margin-top:var(--sp-4)}
+}
+@media(max-width:560px){
+  .lh-review-page-head{gap:var(--sp-2)}
+  .lh-review-page-title h1{font-size:var(--fs-title)}
+  .lh-review-refresh span{display:none}
+  .lh-review-toolbar{align-items:stretch;flex-direction:column}
+  .lh-review-filters{gap:2px;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+  .lh-review-filters button{flex:none;min-height:32px;padding:4px 8px;font-size:var(--fs-micro)}
+  .lh-review-filters button span{margin-inline-start:3px}
+  .lh-review-selection{justify-content:space-between}
+  .lh-review-selection button{flex:1}
+  .lh-review-layout{gap:var(--sp-3)}
+  .lh-review-queue{padding-top:var(--sp-3)}
+  .lh-review-detail{padding:var(--sp-4)}
+  .lh-review-detail-title h2{font-size:var(--fs-title)}
+  .lh-review-quote p{font-size:var(--fs-body)}
+  .lh-review-meta-grid{grid-template-columns:minmax(0,1fr);gap:var(--sp-2)}
+  .lh-review-detail-actions{width:100%;justify-content:flex-end}
+  .lh-review-detail-actions .lh-command{flex:1}
+  .lh-review-detail-meta{width:100%}
+}
 

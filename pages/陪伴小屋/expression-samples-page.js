@@ -61,8 +61,23 @@ window.CompanionExpressionSamplesPage = (() => {
   };
   function project(){
     const rows=Object.values(rowsBySource);
-    items=rows.flatMap(row=>row.items).sort(compareItems);
-    counts=rows.reduce((total,row)=>{for(const [key,value] of Object.entries(row.counts||{}))total[key]=(total[key]||0)+Number(value||0);return total;},{});
+    /* Role-level and window-level targets can expose the same material.  The
+       handle is the server's identity for a sample; source-local keys made the
+       same row appear twice and doubled the header counters. */
+    const unique=new Map();
+    for(const item of rows.flatMap(row=>row.items)){
+      const key=item.handle || item._key;
+      const previous=unique.get(key);
+      if(!previous)unique.set(key,item);
+      else {
+        const preferred=item.state!=="pending"&&previous.state==="pending"?item:previous;
+        const fallback=preferred===item?previous:item;
+        unique.set(key,{...fallback,...preferred,actions:preferred.actions||fallback.actions,
+          view_token:preferred.view_token||fallback.view_token});
+      }
+    }
+    items=Array.from(unique.values()).sort(compareItems);
+    counts=rows.reduce((total,row)=>{for(const [key,value] of Object.entries(row.counts||{}))total[key]=Math.max(total[key]||0,Number(value||0));return total;},{});
     const runtimes=rows.map(row=>row.runtime||{});
     runtime={running:runtimes.some(value=>value.running),learning_enabled:runtimes.some(value=>value.learning_enabled),
       application_enabled:runtimes.some(value=>value.application_enabled),eligible_samples:runtimes.reduce((sum,value)=>sum+Number(value.eligible_samples||0),0),

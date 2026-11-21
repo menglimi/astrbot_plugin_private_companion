@@ -1,5 +1,6 @@
 """Read V2 background for the exact private window that opened a game room."""
 
+import asyncio
 from dataclasses import dataclass
 import logging
 from types import SimpleNamespace
@@ -147,8 +148,11 @@ async def room_background(runtime, room, visitor_qq, query, *, resolved=None):
     controller = runtime.controller
     native_input = SimpleNamespace(text=str(query), event_id="game-background-" + uuid4().hex)
     try:
-        return build_core_reply_prompt(resolved.application, resolved.context, native_input,
-                                       at=controller.now()).instruction
+        prompt = await asyncio.to_thread(
+            build_core_reply_prompt, resolved.application, resolved.context, native_input,
+            at=controller.now(),
+        )
+        return prompt.instruction
     except Exception as error:
         logger.debug("[GameCompanion] V2 私聊背景构建失败: %s", type(error).__name__)
         return ""

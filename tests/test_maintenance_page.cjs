@@ -1,4 +1,4 @@
-﻿const assert = require('node:assert/strict');
+const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
@@ -1699,8 +1699,8 @@ test('maintenance shows connected external token ledgers without mixing their bu
   assert.match(root.innerHTML, /50/);
   assert.match(root.innerHTML, /25/);
   assert.match(root.innerHTML, /V2 角色预算保持独立|不计入 V2 角色预算/);
-  assert.match(root.innerHTML, /V2 联动摘要/);
-  assert.match(root.innerHTML, /只读分类计数，不含记忆正文/);
+  assert.match(root.innerHTML, /本插件联动摘要/);
+  assert.match(root.innerHTML, /只读分类计数/);
   assert.match(root.innerHTML, /私聊内容/);
   assert.match(root.innerHTML, /<dt>合计<\/dt><dd>10<\/dd>/);
   const externalOverview = root.innerHTML.split('data-maint-view="overview"')[1].split('data-maint-view="prompts"')[0];
@@ -2191,8 +2191,3 @@ test('the token total splits conversation, plugin and extension into one proport
   assert.doesNotMatch(bareTrack, /data-part="extension"/, '未接入的拓展不画成 0 宽度段');
   bare.page.unmount();
 });
-
-
-
-
-

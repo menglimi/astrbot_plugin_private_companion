@@ -42,7 +42,7 @@ SNAPSHOT_CSS: set[str] = set()
 GENERATED_CSS: set[str] = {"bundle.css"}
 
 # 已迁移到尺度令牌的页面：这几页必须零写死。
-MIGRATED = ("memory-page.css", "learning-page.css", "contact-page.css",
+MIGRATED = ("text-page.css", "voice-page.css", "memory-page.css", "learning-page.css", "contact-page.css",
             "entrance.css", "appearance-page.css", "setup-guide.css",
             "reply-page.css", "product-page.css",
             "backup-page.css", "console.css",

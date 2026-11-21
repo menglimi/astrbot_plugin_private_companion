@@ -192,16 +192,28 @@ class MultiPrivateBridge(NativePrivateBridge):
                 raise TaskError("host_client_mismatch", "private host account changed during persona lookup")
             self.client(scope)
             recipients = AudienceRef(scope, (actor.subject,))
+            from companion_v2.adapters.astrbot.voice_stt import VOICE_TRANSCRIPT_PREFIX, trusted_stt_transcript
+
+            stt_text = trusted_stt_transcript(event)
+            stt_used = False
             pieces = []
             for part in getattr(message, "message", ()):
                 kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
                 if kind == "Plain" and isinstance(getattr(part, "text", None), str):
-                    pieces.append(part.text)
+                    if stt_text and part.text.strip() == "[语音消息]" and not stt_used:
+                        pieces.append(VOICE_TRANSCRIPT_PREFIX + stt_text)
+                        stt_used = True
+                    else:
+                        if stt_text and stt_text in part.text:
+                            stt_used = True
+                        pieces.append(part.text)
                 elif kind in ("Face", "Mface"):
                     # A sticker is an emotional expression, not an empty message:
                     # keep a bounded marker so the model can answer the feeling
                     # instead of seeing nothing (or refusing the whole turn).
                     pieces.append("[表情]")
+            if stt_text and not stt_used:
+                pieces.append(VOICE_TRANSCRIPT_PREFIX + stt_text)
             raw_message = getattr(message, "raw_message", None)
             raw_segments = raw_message.get("message") if isinstance(raw_message, Mapping) else None
             if isinstance(raw_segments, list):
@@ -469,6 +481,18 @@ class MultiHostSession:
         self.authority.settings = settings
         self.bridge.sync_settings(settings)
 
+    def sync_native_bridge_pairs(self):
+        """Latch each platform's baseline pair once an account on it is confirmed online."""
+        private_snapshot, group_snapshot = self.native_bridge_pairs
+        for bridge, snapshot in ((self.bridge, private_snapshot), (self.bridge.groups, group_snapshot)):
+            connections = getattr(bridge, "connections", None)
+            online = connections.online_platforms() if callable(getattr(connections, "online_platforms", None)) else {}
+            for platform_id, pair in online.items():
+                # Defer recording until the first confirmed online state so swapping
+                # an unauthenticated/waiting client before first login does not look
+                # like a live adapter reload.
+                snapshot.setdefault(platform_id, pair)
+
     def __init__(self, runtime, native_context, *, settings, personas, authority, native_types,
                  provider_fingerprint, runtime_instance_id, now, native_tool_port=None, news_port=None,
                  solar_term_port=None, qzone_transport=None, balance_port=None, weather_ports=None,
@@ -503,9 +527,12 @@ class MultiHostSession:
             persona_window_snapshot_update=persona_window_snapshot_update,
             private_session_lookup=private_session_lookup,
             file_settings=lambda scope, role: file_intake_settings(runtime, scope, role))
-        # Connection refresh updates bridge.platforms in place. Keep the pairs
-        # assembled for this session so adapter reloads remain detectable.
-        self.native_bridge_pairs = (dict(self.bridge.platforms), dict(self.bridge.groups.platforms))
+        # Connection refresh updates bridge.platforms in place even when an account
+        # is still waiting/offline. Record each platform's baseline only once an
+        # account on it is confirmed online so adapter reloads remain detectable
+        # without treating a pre-login client swap as a live session reload.
+        self.native_bridge_pairs = ({}, {})
+        self.sync_native_bridge_pairs()
         from .account_recovery import AccountRecovery
         self.account_recovery = AccountRecovery(self)
         self.model = AstrBotTextProvider(native_context, bridge=self.bridge,
@@ -553,9 +580,15 @@ class MultiHostSession:
                     *((image_narration_profile(next(model.binding.provider for model in self.models
                         if "image" in model.local_provider().capabilities)),)
                       if any("image" in model.local_provider().capabilities for model in self.models) else ()),
-                    *((video_narration_profile(next(model.binding.provider for model in self.models
-                        if "video" in model.local_provider().capabilities)),)
-                      if any("video" in model.local_provider().capabilities for model in self.models) else ()))
+                    *((video_narration_profile(next(
+                        (model.binding.provider for model in self.models
+                         if "video" in model.local_provider().capabilities),
+                        next(model.binding.provider for model in self.models
+                             if model.local_provider().supports_video_relay),
+                    )),)
+                      if any("video" in model.local_provider().capabilities
+                             or model.local_provider().supports_video_relay
+                             for model in self.models) else ()))
         # The host budget is a reply budget; structural tasks register a larger default.
         profiles = with_thinking_margins(profiles)
         modes = ["onebot_private", "onebot_group"]

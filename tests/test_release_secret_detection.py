@@ -9,6 +9,14 @@ from tools.check_tracked_privacy import is_private_path
 
 
 class ReleaseSecretDetectionTests(unittest.TestCase):
+    def test_packaging_rejects_await_inside_a_synchronous_function(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = root / "main.py"
+            script.write_text("def cleanup():\n    await close()\n", encoding="utf-8")
+            with self.assertRaisesRegex(SyntaxError, "outside async function"):
+                checked_payload(script, root)
+
     def test_zip_entries_apply_requested_compression_to_custom_metadata(self):
         payload = b"".join(("release-source-%s\n" % (index % 357)).encode()
                            for index in range(2000))

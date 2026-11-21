@@ -1382,3 +1382,429 @@ def test_jev_mode_never_falls_back_to_a_local_checkpoint_at_call_time(tmp_path, 
     with pytest.raises(LayaClientError):
         asyncio.run(service.decide({"message_kind": "text", "user_text": "你好"}))
     assert captured["body"]["model"] == MODE_MODELS["jev"]
+
+
+def test_auth_failed_reason_preserves_http_status_and_whitelisted_summary_without_secrets():
+    from companion_v2.decision.service import _safe_log_reason, safe_laya_client_error_reason
+
+    summary_403 = _safe_log_reason(
+        "laya_auth_failed",
+        'Laya HTTP 403：{"code":"MODEL_ACCESS_DENIED","message":"当前模型仅对灰度用户开放"}',
+    )
+    assert "403" in summary_403
+    assert "MODEL_ACCESS_DENIED: 当前模型仅对灰度用户开放" in summary_403
+    assert len(summary_403) <= 120
+
+    leaked_token = "sk-" + "test_secret_987654"
+    summary_401 = _safe_log_reason(
+        "laya_auth_failed",
+        f'Laya HTTP 401：{{"error":{{"code":"invalid_api_key","message":"Incorrect API key {leaked_token}"}}}}',
+    )
+    assert "401" in summary_401
+    assert "invalid_api_key" in summary_401
+    assert leaked_token not in summary_401
+    assert "<hidden>" in summary_401
+
+    bearer_summary = _safe_log_reason(
+        "laya_auth_failed",
+        'Laya HTTP 401：{"detail":"Rejected Bearer secret_tok_abc123"}',
+    )
+    assert "secret_tok_abc123" not in bearer_summary
+    assert "Bearer <hidden>" in bearer_summary
+
+    non_whitelisted = _safe_log_reason(
+        "laya_auth_failed",
+        'Laya HTTP 403：{"user_text":"用户私密聊天正文","unrelated":"ignored"}',
+    )
+    assert non_whitelisted == "判断服务拒绝访问（HTTP 403）。"
+    assert "用户私密聊天正文" not in non_whitelisted
+
+    assert _safe_log_reason("laya_auth_failed", "Laya HTTP 401") == "判断服务鉴权失败（HTTP 401）。"
+    assert _safe_log_reason("laya_auth_failed", "判断服务鉴权失败（HTTP 401）。") == "判断服务鉴权失败（HTTP 401）。"
+    assert _safe_log_reason("laya_auth_failed", summary_403) == summary_403
+    assert _safe_log_reason("laya_auth_failed", "Laya HTTP 403：{\"truncated\": ") == "判断服务拒绝访问（HTTP 403）。"
+
+    custom_key = "custom-secret-token-xyz"
+    bridge_text = safe_laya_client_error_reason(
+        LayaClientError("laya_auth_failed", f'Laya HTTP 401：{{"message":"rejected {custom_key}"}}'),
+        api_key=custom_key,
+    )
+    assert "401" in bridge_text
+    assert custom_key not in bridge_text
+    assert "<hidden>" in bridge_text
+
+
+def test_auth_failure_persists_safe_summary_to_ledger(tmp_path):
+    from companion_v2.storage.runtime import StorageRuntime
+
+    store = LayaSettingsStore(tmp_path / "settings", "target", "role")
+    store.update(store.raw()["revision"], {"enabled": True})
+    runtime = StorageRuntime.open(data_root=tmp_path / "runtime", installation_id="laya-auth-ledger")
+
+    class AuthFailedClient:
+        async def decide(self, _facts, *, enabled_fields=None):
+            raise LayaClientError(
+                "laya_auth_failed",
+                'Laya HTTP 403：{"code":"MODEL_ACCESS_DENIED","message":"当前模型仅对灰度用户开放"}',
+            )
+
+    try:
+        service = LayaDecisionService(store, runtime=runtime, origin_key="origin-auth")
+        service._client = lambda _values: AuthFailedClient()
+        service.set_trace(event_ref="reply-" + "c" * 32, source="conversation")
+        with pytest.raises(LayaClientError):
+            asyncio.run(service.decide({"message_kind": "text", "user_text": "你好"}))
+        event = service.recent()["events"][0]
+        assert event["status"] == "failed"
+        assert event["reason_code"] == "laya_auth_failed"
+        assert event["reason"] == "Laya HTTP 403 · MODEL_ACCESS_DENIED: 当前模型仅对灰度用户开放"
+    finally:
+        runtime.close()
+
+
+def test_recent_all_origins_and_scope_key_filtering_with_legacy_observations(tmp_path):
+    from companion_v2.foundation.refs import ScopeKind, ScopeRef
+    from companion_v2.storage.runtime import StorageRuntime
+
+    store = LayaSettingsStore(tmp_path / "settings", "target", "role")
+    store.update(store.raw()["revision"], {"enabled": True})
+    runtime = StorageRuntime.open(data_root=tmp_path / "runtime", installation_id="inst-laya")
+
+    group_a = ScopeRef("inst-laya", "onebot_qq", ScopeKind.GROUP, "103111519",
+                       "bot-1", "1001", "astrbot-conv-a:v2-role:r1", "103111519")
+    group_b = ScopeRef("inst-laya", "onebot_qq", ScopeKind.GROUP, "717222383",
+                       "bot-1", "1001", "astrbot-conv-b:v2-role:r1", "717222383")
+    private_p = ScopeRef("inst-laya", "onebot_qq", ScopeKind.PRIVATE, "153000127",
+                         "bot-1", "1001", "astrbot-conv-p:v2-role:r1", "153000127")
+
+    try:
+        # 1. New events written with processing["scope"] attribution
+        svc_a_new = LayaDecisionService(store, runtime=runtime, origin_key="origin-a-member-1", scope=group_a)
+        svc_a_new.set_trace(event_ref="core-reply:new-a", source="conversation")
+        svc_a_new._record(store.raw(), "ok", 18, decision=decision_document())
+
+        svc_b_new = LayaDecisionService(store, runtime=runtime, origin_key="origin-b-member-1", scope=group_b)
+        svc_b_new.set_trace(event_ref="core-reply:new-b", source="conversation")
+        svc_b_new._record(store.raw(), "ok", 22, decision={**decision_document(), "action": "silent"})
+
+        # 2. Legacy events without processing["scope"]:
+        #    - one matched via batch_id == astrbot_core_reply_observations.turn_id
+        #    - one matched via origin_key == astrbot_core_reply_observations.context_key
+        #    - one private intervention matched via context_key
+        svc_a_legacy_turn = LayaDecisionService(store, runtime=runtime, origin_key="origin-a-legacy-member")
+        svc_a_legacy_turn.set_trace(event_ref="core-reply:legacy-a-turn", source="conversation")
+        svc_a_legacy_turn._record(store.raw(), "ok", 31, decision=decision_document())
+
+        svc_a_legacy_ctx = LayaDecisionService(store, runtime=runtime, origin_key="origin-a-legacy-member")
+        svc_a_legacy_ctx.set_trace(event_ref="core-reply:legacy-a-unobserved", source="conversation")
+        svc_a_legacy_ctx._record(store.raw(), "failed", 40, reason_code="laya_http_error", reason="Laya HTTP 502")
+
+        svc_priv_legacy = LayaDecisionService(store, runtime=runtime, origin_key="origin-priv-1")
+        svc_priv_legacy.set_trace(event_ref="role-intervention-legacy-1", source="role_intervention")
+        svc_priv_legacy._record(store.raw(), "ok", 15, decision={"intervention_need": "none"})
+
+        from companion_v2.storage.core_reply_telemetry_schema import STATEMENTS as TELEMETRY_STATEMENTS
+
+        with runtime.transaction() as connection:
+            for statement in TELEMETRY_STATEMENTS:
+                connection.execute(statement)
+            for turn_id, ctx_key, scope_obj in (
+                ("core-reply:legacy-a-turn", "origin-a-legacy-member", group_a),
+                ("core-reply:priv-turn-1", "origin-priv-1", private_p),
+            ):
+                connection.execute(
+                    """INSERT INTO astrbot_core_reply_observations
+                       (turn_id, revision, role_key, context_key, scope_kind, context_json, received_at, observed_at, record_json)
+                       VALUES (?, 1, 'role-key', ?, ?, ?, '2026-11-19T00:00:00+00:00', '2026-11-19T00:00:00+00:00', '{}')""",
+                    (turn_id, ctx_key, scope_obj.kind.value,
+                     json.dumps({"audience": {"scope": scope_obj.document()}})),
+                )
+
+        # Default recent() stays isolated to origin_key
+        assert len(svc_a_new.recent()["events"]) == 1
+        assert svc_a_new.recent()["events"][0]["batch_id"] == "core-reply:new-a"
+
+        # all_origins=True returns all 5 events in reverse chronological order
+        all_events = svc_a_new.recent(all_origins=True)["events"]
+        assert [ev["batch_id"] for ev in all_events] == [
+            "role-intervention-legacy-1",
+            "core-reply:legacy-a-unobserved",
+            "core-reply:legacy-a-turn",
+            "core-reply:new-b",
+            "core-reply:new-a",
+        ]
+        assert all_events[0]["scope_info"] == {"kind": "private", "native_scope_id": "153000127"}
+        assert all_events[3]["scope_info"] == {"kind": "group", "native_scope_id": "717222383"}
+
+        # scope_key=group_a.key hits both new and legacy records for group A only
+        group_a_events = svc_a_new.recent(scope_key=group_a.key)["events"]
+        assert [ev["batch_id"] for ev in group_a_events] == [
+            "core-reply:legacy-a-unobserved",
+            "core-reply:legacy-a-turn",
+            "core-reply:new-a",
+        ]
+        assert all(ev["scope_info"] == {"kind": "group", "native_scope_id": "103111519"} for ev in group_a_events)
+
+        group_b_events = svc_a_new.recent(scope_key=group_b.key)["events"]
+        assert [ev["batch_id"] for ev in group_b_events] == ["core-reply:new-b"]
+
+        priv_events = svc_a_new.recent(scope_key=private_p.key)["events"]
+        assert [ev["batch_id"] for ev in priv_events] == ["role-intervention-legacy-1"]
+    finally:
+        runtime.close()
+
+
+def test_model_api_laya_logs_scope_and_auth_bridge_payloads(tmp_path, monkeypatch):
+    from types import SimpleNamespace as NS
+    from unittest.mock import AsyncMock
+    from astrbot_host import model_api as model_api_module
+    from companion_v2.foundation.outcome import Outcome
+    from companion_v2.foundation.refs import ScopeKind, ScopeRef
+    from companion_v2.storage.runtime import StorageRuntime
+
+    runtime = StorageRuntime.open(data_root=tmp_path / "runtime", installation_id="inst-api")
+    priv_scope = ScopeRef("inst-api", "onebot_qq", ScopeKind.PRIVATE, "153000127",
+                          "bot-1", "1001", "conv-p:v2-role:r1", "153000127")
+    group_scope = ScopeRef("inst-api", "onebot_qq", ScopeKind.GROUP, "103111519",
+                           "bot-1", "1001", "conv-g:v2-role:r1", "103111519")
+    secret_key = "api-key-should-stay-hidden"
+    store = LayaSettingsStore(tmp_path / "data", "target-p", "role-1")
+    store.update(store.raw()["revision"], {
+        "enabled": True, "mode": "remote", "endpoint": "https://laya.test/v1/systemone", "api_key": secret_key,
+    })
+
+    try:
+        # Seed a group conversation event + a private probe event
+        LayaDecisionService(store, runtime=runtime, origin_key="group-member-ctx", scope=group_scope)._record(
+            store.raw(), "ok", 10, decision=decision_document())
+        priv_svc = LayaDecisionService(store, runtime=runtime, origin_key="priv-target-ctx", scope=priv_scope)
+        priv_svc.set_trace(source="probe")
+        priv_svc._record(store.raw(), "ok", 12, decision=decision_document())
+
+        controller = NS(
+            data_root=tmp_path / "data",
+            _control_lock=asyncio.Lock(),
+            _terminated=False,
+            runtime=runtime,
+            now=lambda: __import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+            session=NS(
+                application=NS(runtime=runtime),
+                profile=NS(target=NS(key="priv-target-ctx", scope=priv_scope)),
+            ),
+            last_session=None,
+        )
+        api = model_api_module.ModelWebAPI(controller)
+        monkeypatch.setattr(api, "_authorized", lambda **_kw: (controller.session, "admin", None, None))
+
+        # scope="all" (and default) returns both origins
+        monkeypatch.setattr(model_api_module, "request", NS(query={}, username="admin"))
+        res_default = asyncio.run(api.laya_logs())
+        assert res_default["status"] == "ok"
+        assert res_default["data"]["scope"] == "all"
+        assert len(res_default["data"]["events"]) == 2
+
+        monkeypatch.setattr(model_api_module, "request", NS(query={"scope": "current"}, username="admin"))
+        res_current = asyncio.run(api.laya_logs())
+        assert res_current["status"] == "ok"
+        assert res_current["data"]["scope"] == "current"
+        assert len(res_current["data"]["events"]) == 1
+        assert res_current["data"]["events"][0]["scope_info"] == {"kind": "private", "native_scope_id": "153000127"}
+
+        monkeypatch.setattr(model_api_module, "request", NS(query={"scope": "invalid"}, username="admin"))
+        res_invalid = asyncio.run(api.laya_logs())
+        assert res_invalid["status"] == "error"
+        assert res_invalid["data"]["code"] == "model_request_invalid"
+
+        # Upstream 403 auth failure returns Outcome.success({"status": "failed", ...}) to survive bridge
+        class FakeRejectClient:
+            def __init__(self, **_kwargs):
+                self.last_trace = None
+
+            async def probe(self, *, enabled_fields=None):
+                raise LayaClientError(
+                    "laya_auth_failed",
+                    f'Laya HTTP 403：{{"code":"MODEL_ACCESS_DENIED","message":"禁止访问 {secret_key}"}}',
+                )
+
+            async def decide(self, _facts, *, enabled_fields=None):
+                raise LayaClientError(
+                    "laya_auth_failed",
+                    f'Laya HTTP 401：{{"error":{{"message":"invalid token {secret_key}"}}}}',
+                )
+
+        monkeypatch.setattr("astrbot_host.laya_client.LayaDecisionClient", FakeRejectClient)
+        monkeypatch.setattr(model_api_module, "request",
+                            NS(query={}, username="admin", body=AsyncMock(return_value=b"{}")))
+        test_res = asyncio.run(api.laya_test())
+        assert test_res["status"] == "ok"
+        assert test_res["data"]["status"] == "failed"
+        assert test_res["data"]["code"] == "laya_auth_failed"
+        assert "Laya HTTP 403 · MODEL_ACCESS_DENIED: 禁止访问 <hidden>" == test_res["data"]["reason"]
+        assert secret_key not in json.dumps(test_res, ensure_ascii=False)
+
+        monkeypatch.setattr(model_api_module, "request",
+                            NS(query={}, username="admin",
+                               body=AsyncMock(return_value=b'{"facts":{"message_kind":"text","user_text":"hi"}}')))
+        decide_res = asyncio.run(api.laya_decide())
+        assert decide_res["status"] == "ok"
+        assert decide_res["data"]["status"] == "failed"
+        assert decide_res["data"]["code"] == "laya_auth_failed"
+        assert decide_res["data"]["reason"] == "Laya HTTP 401 · invalid token <hidden>"
+        assert secret_key not in json.dumps(decide_res, ensure_ascii=False)
+    finally:
+        runtime.close()
+
+
+def test_recent_scope_key_is_sql_bounded_across_2000_rows_and_legacy_null_fallback(tmp_path):
+    from unittest.mock import patch
+    from companion_v2.decision.service import _LEGACY_SCOPE_PAGE_SIZE
+    from companion_v2.foundation.refs import ScopeKind, ScopeRef
+    from companion_v2.storage.core_reply_telemetry_schema import STATEMENTS as TELEMETRY_STATEMENTS
+    from companion_v2.storage.runtime import StorageRuntime
+
+    store = LayaSettingsStore(tmp_path / "settings", "target", "role")
+    store.update(store.raw()["revision"], {"enabled": True})
+    runtime = StorageRuntime.open(data_root=tmp_path / "runtime", installation_id="inst-laya-bounded")
+    group_a = ScopeRef("inst-laya-bounded", "onebot_qq", ScopeKind.GROUP, "103111519",
+                       "bot-1", "1001", "conv-a:v2-role:r1", "103111519")
+    group_b = ScopeRef("inst-laya-bounded", "onebot_qq", ScopeKind.GROUP, "717222383",
+                       "bot-1", "1001", "conv-b:v2-role:r1", "717222383")
+    group_missing = ScopeRef("inst-laya-bounded", "onebot_qq", ScopeKind.GROUP, "999000111",
+                             "bot-1", "1001", "conv-m:v2-role:r1", "999000111")
+
+    try:
+        # 1. Seed 2,000 indexed rows (1,000 Group A + 1,000 Group B) + 100 older legacy NULL rows.
+        proc_a = json.dumps({"status": "ok", "scope": {"scope_key": group_a.key, "kind": "group", "native_scope_id": "103111519"}})
+        proc_b = json.dumps({"status": "ok", "scope": {"scope_key": group_b.key, "kind": "group", "native_scope_id": "717222383"}})
+        decision_raw = json.dumps(decision_document())
+        with runtime.transaction() as connection:
+            for statement in TELEMETRY_STATEMENTS:
+                connection.execute(statement)
+            legacy_rows = [
+                (f"c{i:031x}", "legacy-origin-other", f"legacy-batch-{i}", "conversation", "ok", "remote",
+                 None, None, 10, decision_raw, "{}", None, None, '{"status":"ok"}',
+                 f"2026-11-18T{i // 3600:02d}:{(i // 60) % 60:02d}:{i % 60:02d}+00:00", None)
+                for i in range(100)
+            ]
+            indexed_rows = [
+                (f"a{i:031x}", f"origin-{i % 4}", f"indexed-batch-{i}", "conversation", "ok", "remote",
+                 None, None, 12, decision_raw, "{}", None, None,
+                 proc_a if i % 2 == 0 else proc_b,
+                 f"2026-11-19T{i // 3600:02d}:{(i // 60) % 60:02d}:{i % 60:02d}+00:00",
+                 group_a.key if i % 2 == 0 else group_b.key)
+                for i in range(2000)
+            ]
+            connection.executemany(
+                """INSERT INTO laya_decision_events
+                   (event_id, origin_key, batch_id, source, status, mode, reason_code, reason, elapsed_ms,
+                    decision_json, enabled_fields_json, request_json, response_json, processing_json,
+                    observed_at, scope_key)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [*legacy_rows, *indexed_rows],
+            )
+
+        # Verify SQLite uses the composite index with zero table scan and zero temp B-tree.
+        plan_indexed = " | ".join(row["detail"] for row in runtime.read_all(
+            "EXPLAIN QUERY PLAN SELECT rowid AS _rowid, event_id FROM laya_decision_events "
+            "WHERE scope_key = ? ORDER BY observed_at DESC, rowid DESC LIMIT ?",
+            (group_a.key, 1),
+        ))
+        assert "laya_decision_events_scope_recent_idx" in plan_indexed
+        assert "SCAN laya_decision_events" not in plan_indexed
+        assert "TEMP B-TREE" not in plan_indexed
+
+        # Requesting limit=1 for Group A must read only the 1 matching indexed row (never 2,000).
+        svc = LayaDecisionService(store, runtime=runtime, origin_key="mgmt-a", scope=group_a)
+        seen_rows = 0
+        executed_queries = []
+        original_read_all = runtime.read_all
+
+        def counting_read_all(statement, parameters):
+            nonlocal seen_rows
+            rows = original_read_all(statement, parameters)
+            executed_queries.append((statement, parameters, len(rows)))
+            seen_rows += len(rows)
+            return rows
+
+        with patch.object(runtime, "read_all", side_effect=counting_read_all):
+            result = svc.recent(limit=1, scope_key=group_a.key)
+
+        assert len(result["events"]) == 1
+        assert result["events"][0]["batch_id"] == "indexed-batch-1998"
+        assert result["events"][0]["scope_info"] == {"kind": "group", "native_scope_id": "103111519"}
+        assert seen_rows == 1, f"expected 1 row read, got {seen_rows}: {executed_queries}"
+        assert all("LIMIT ?" in sql for sql, _, _ in executed_queries)
+
+        # Verify _record() populates the scope_key column directly.
+        svc.set_trace(event_ref="recorded-with-scope-col", source="conversation")
+        svc._record(store.raw(), "ok", 15, decision=decision_document())
+        recorded = runtime.read_one(
+            "SELECT scope_key FROM laya_decision_events WHERE batch_id = ?",
+            ("recorded-with-scope-col",),
+        )
+        assert recorded is not None and recorded["scope_key"] == group_a.key
+
+        # An old match may sit behind many unrelated records. Keep looking in
+        # bounded pages until the result is found or the remaining rows are exhausted.
+        runtime_legacy = StorageRuntime.open(data_root=tmp_path / "runtime-legacy", installation_id="inst-laya-bounded")
+        try:
+            with runtime_legacy.transaction() as connection:
+                for statement in TELEMETRY_STATEMENTS:
+                    connection.execute(statement)
+                connection.executemany(
+                    """INSERT INTO astrbot_core_reply_observations
+                       (turn_id, revision, role_key, context_key, scope_kind, context_json, received_at, observed_at, record_json)
+                       VALUES (?, 1, 'role-key', ?, 'group', ?, '2026-11-19T00:00:00+00:00', '2026-11-19T00:00:00+00:00', '{}')""",
+                    [("legacy-turn-1995", "legacy-origin-1995", json.dumps({"audience": {"scope": group_a.document()}})),
+                     ("legacy-turn-5", "legacy-origin-5-scope", json.dumps({"audience": {"scope": group_b.document()}}))],
+                )
+                rows_2000 = [
+                    (f"d{i:031x}",
+                     f"legacy-origin-{i % 7}",
+                     f"legacy-turn-{i}",
+                     "conversation", "ok", "remote", None, None, 11, decision_raw, "{}",
+                     None, None, '{"status":"ok"}',
+                     f"2026-11-19T{i // 3600:02d}:{(i // 60) % 60:02d}:{i % 60:02d}+00:00",
+                     None)
+                    for i in range(2000)
+                ]
+                connection.executemany(
+                    """INSERT INTO laya_decision_events
+                       (event_id, origin_key, batch_id, source, status, mode, reason_code, reason, elapsed_ms,
+                        decision_json, enabled_fields_json, request_json, response_json, processing_json,
+                        observed_at, scope_key)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    rows_2000,
+                )
+
+            legacy_svc = LayaDecisionService(store, runtime=runtime_legacy, origin_key="mgmt-a", scope=group_a)
+            legacy_scanned = 0
+            orig_legacy_read_all = runtime_legacy.read_all
+
+            def count_legacy_read_all(statement, parameters):
+                nonlocal legacy_scanned
+                rows = orig_legacy_read_all(statement, parameters)
+                if "FROM laya_decision_events" in statement and "scope_key IS NULL" in statement:
+                    assert "LIMIT ?" in statement
+                    assert len(rows) <= _LEGACY_SCOPE_PAGE_SIZE
+                    legacy_scanned += len(rows)
+                return rows
+
+            with patch.object(runtime_legacy, "read_all", side_effect=count_legacy_read_all):
+                hit = legacy_svc.recent(limit=1, scope_key=group_a.key)
+            assert [ev["batch_id"] for ev in hit["events"]] == ["legacy-turn-1995"]
+            assert legacy_scanned <= _LEGACY_SCOPE_PAGE_SIZE
+
+            with patch.object(runtime_legacy, "read_all", side_effect=count_legacy_read_all):
+                older = legacy_svc.recent(limit=1, scope_key=group_b.key)
+            assert [ev["batch_id"] for ev in older["events"]] == ["legacy-turn-5"]
+
+            legacy_scanned = 0
+            with patch.object(runtime_legacy, "read_all", side_effect=count_legacy_read_all):
+                miss = legacy_svc.recent(limit=1, scope_key=group_missing.key)
+            assert miss["events"] == []
+            assert legacy_scanned == 2000
+        finally:
+            runtime_legacy.close()
+    finally:
+        runtime.close()

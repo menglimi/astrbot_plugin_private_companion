@@ -39,6 +39,7 @@ from .astrbot_host.multi_controller import AstrBotMultiController
 from .astrbot_host.conversation_reset import install_native_reset_marker
 from .astrbot_host.core_reply import (
     CORE_REPLY_CONTEXT_EXTRA,
+    SILENT_SEND_DENIAL_CODES,
     activate_core_reply_delivery_guard,
     adopt_core_reply_event,
     inject_core_reply_prompt,
@@ -66,7 +67,7 @@ from .astrbot_host.native_extensions.host_events import (
 )
 from .astrbot_host.core_reply_segmentation import (
     activate_core_reply_segmentation, prepare_core_reply_segmentation,
-    prepare_core_reply_streaming_boundary,
+    prepare_core_reply_streaming_boundary, prepare_core_result_decoration,
 )
 from .astrbot_host.core_reply_tracking import (
     activate_core_reply_tracking, adopt_core_reply_tracking, finish_core_reply_tracking,
@@ -83,10 +84,12 @@ from .astrbot_host.functional_commands import classify_functional_command, injec
 from .astrbot_host.group_command import receive_group_llm_command
 from .astrbot_host.reset_command import receive_reset_command
 from companion_v2.conversation.group_llm_block import GroupLLMBlock
+from companion_v2.conversation.group_timing import SELF_MENTION
 from companion_v2.conversation import debounce_log
 from .astrbot_host.private_debounce import PrivateDebounce, PrivateDeliveryDedup
 from .astrbot_host.group_debounce import GroupDebounce, group_plain_text, replace_group_plain_text
 from companion_v2.adapters.astrbot.group import group_event_route
+from companion_v2.adapters.astrbot.voice_stt import has_external_stt_extra, read_stt_extra
 from .astrbot_host.private_reply_followup import PrivateReplyFollowUps
 from .astrbot_host.event_routing import (
     COMPANION_INTAKE_PRIORITY, competing_command_handler, suppress_default_reply,
@@ -170,6 +173,94 @@ def _can_continue_astrbot_core_reply(code):
     return False
 
 
+def _chain_has_populated_content(chain: Any) -> bool:
+    """Return True when a message result chain contains non-empty text or a non-Plain component."""
+    if not chain:
+        return False
+    if not isinstance(chain, (list, tuple)):
+        return True
+    for part in chain:
+        kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
+        if kind == "Plain" or type(part).__name__ == "Plain":
+            if str(getattr(part, "text", "") or "").strip():
+                return True
+            continue
+        return True
+    return False
+
+
+def _has_populated_event_result(event: Any) -> bool:
+    """Return True when an upstream handler already attached a concrete reply result on ``event``."""
+    getter = getattr(event, "get_result", None)
+    result = getter() if callable(getter) else None
+    if result is None:
+        return False
+    if isinstance(result, str):
+        return bool(result.strip())
+    is_stopped = getattr(result, "is_stopped", None)
+    if callable(is_stopped) and is_stopped():
+        return True
+    if _chain_has_populated_content(getattr(result, "chain", None)) or getattr(result, "async_stream", None) is not None:
+        return True
+    content_type = getattr(getattr(result, "result_content_type", None), "name", None)
+    return content_type in {"LLM_RESULT", "STREAMING_RESULT", "STREAMING_FINISH", "AGENT_RUNNER_ERROR"}
+
+
+def _is_external_stt_cache_only(event: Any) -> bool:
+    """Return True when upstream ``astrbot_plugin_hear_voice``（兼容 ``_gemini_stt_*``）suppressed a group voice turn to cache-only."""
+    return read_stt_extra(event, "cache_only") is True and read_stt_extra(event, "should_reply") is False
+
+
+def _is_explicit_non_hijacking_external_stt(event: Any) -> bool:
+    """Return True when upstream ``astrbot_plugin_hear_voice``（兼容 ``_gemini_stt_*``）explicitly declared a non-hijacking turn."""
+    hijacked = read_stt_extra(event, "hijacked")
+    non_hijacking = read_stt_extra(event, "non_hijacking")
+    if hijacked is True or non_hijacking is False:
+        return False
+    if hijacked is False or non_hijacking is True:
+        return True
+    return read_stt_extra(event, "notify_only_sent") is True
+
+
+def _should_skip_hijacked_external_stt(event: Any) -> bool:
+    """Return True ONLY when an external STT plugin genuinely hijacked or replied to this turn.
+
+    Non-hijacking ``astrbot_plugin_hear_voice``（兼容 ``_gemini_stt_*``）sets
+    ``_hear_voice_should_reply=True`` and ``_hear_voice_cache_only=False`` alongside
+    ``_hear_voice_non_hijacking=True`` and ``_hear_voice_hijacked=False`` (both on success and
+    under ``on_stt_fail="pass"`` / ``"notify_pass"``; ``notify_pass`` may also set
+    ``_hear_voice_notify_only_sent=True`` and fall back to ``event.send()`` which sets
+    ``_has_send_oper=True``). Only legacy un-flagged STT plugins treat ``_has_send_oper`` as a
+    hijack takeover clue. Events without any external STT extra are never treated as an
+    external STT hijack.
+    """
+    if not has_external_stt_extra(event):
+        return False
+    getter = getattr(event, "get_extra", None)
+    if not callable(getter):
+        return False
+    hijacked = read_stt_extra(event, "hijacked")
+    non_hijacking = read_stt_extra(event, "non_hijacking")
+    notify_only_sent = read_stt_extra(event, "notify_only_sent")
+    if hijacked is True or non_hijacking is False:
+        return True
+    if hijacked is False or non_hijacking is True or notify_only_sent is True:
+        is_stopped = getattr(event, "is_stopped", None)
+        if callable(is_stopped) and is_stopped():
+            return True
+        if getter("provider_request") is not None:
+            return True
+        return False
+    if getattr(event, "_has_send_oper", False):
+        return True
+    is_stopped = getattr(event, "is_stopped", None)
+    if callable(is_stopped) and is_stopped():
+        return True
+    if getter("provider_request") is not None:
+        return True
+    return _has_populated_event_result(event)
+
+
 @register(
     PLUGIN_NAME,
     "menglimi",
@@ -215,7 +306,7 @@ class PrivateCompanionV2StagingPlugin(Star):
                 logger.warning("[CompanionV2] 启动时已自动修复旧策略字段：%s", repaired)
             # One public facade exposes the body and its seven internal modules.
             # Independent third-party integrations use their documented APIs.
-            self.extension_api = UnifiedCompanionExtensionAPI(self.staging)
+            self.extension_api = UnifiedCompanionExtensionAPI(self.staging, claim=True)
             global _ACTIVE_EXTENSION_API
             _ACTIVE_EXTENSION_API = self.extension_api
             try:
@@ -485,8 +576,10 @@ class PrivateCompanionV2StagingPlugin(Star):
         if self._session_settings_warm_task is None or self._session_settings_warm_task.done():
             self._session_settings_warm_task = asyncio.create_task(
                 warm_session_settings(), name="companion-v2-session-settings-warmup")
-        # Started here, not after the host is up: the driver polls and no-ops
-        # until a running session exists, so a slow boot cannot lose it.
+        # Start both drivers before host startup; each checks its own readiness.
+        if getattr(self, "_automatic_backup", None) is None:
+            from .astrbot_host.automatic_backup import AutomaticBackup
+            self._automatic_backup = AutomaticBackup(self.staging).start()
         if self._qzone_life_publisher is None:
             from .astrbot_host.qzone_life_publish import QzoneLifePublisher
             self._qzone_life_publisher = QzoneLifePublisher(self.staging).start()
@@ -718,10 +811,14 @@ class PrivateCompanionV2StagingPlugin(Star):
             self._record_no_reply(event, "core_reply_send_denied", origin_key=origin_key,
                                   channel=channel, event_ref=event_ref, stage="delivery",
                                   turn=event_ref, code=reason)
-            logger.warning("[CompanionV2] 核心回复发送前复核失败，这条已生成的回复没有发出 "
-                           "event_ref=%s code=%s 说明=%s", event_ref, reason,
-                           CORE_REPLY_SEND_DENIAL_HINTS.get(
-                               reason, "发送前复核未通过，这条已生成的回复没有发出"))
+            hint = CORE_REPLY_SEND_DENIAL_HINTS.get(
+                reason, "发送前复核未通过，这条已生成的回复没有发出")
+            if reason in SILENT_SEND_DENIAL_CODES:
+                logger.info("[CompanionV2] 核心回复按撤回静默跳过发送 event_ref=%s code=%s 说明=%s",
+                            event_ref, reason, hint)
+            else:
+                logger.warning("[CompanionV2] 核心回复发送前复核失败，这条已生成的回复没有发出 "
+                               "event_ref=%s code=%s 说明=%s", event_ref, reason, hint)
 
         def observe_core_send(current, text):
             observer = getattr(getattr(self.staging, "session", None), "core_reply_observations", None)
@@ -815,8 +912,17 @@ class PrivateCompanionV2StagingPlugin(Star):
                          getattr(competing, "handler_full_name", "unknown"))
             return
         # Ordinary listeners (e.g. prefix-free sign-in) run before intake.
-        # A plugin may answer without stopping propagation; respect that reply.
-        if getattr(event, "_has_send_oper", False):
+        # A plugin may answer without stopping propagation; respect that reply,
+        # unless upstream astrbot_plugin_hear_voice（兼容 _gemini_stt_*）explicitly
+        # declared a non-hijacking turn (e.g. notify_pass).
+        if getattr(event, "_has_send_oper", False) and not _is_explicit_non_hijacking_external_stt(event):
+            return
+        if _is_external_stt_cache_only(event):
+            suppress_default_reply(event)
+            logger.debug("[CompanionV2] 外部 hear_voice/gemini_stt 群语音概率门控设为仅缓存，跳过本轮回复")
+            return
+        if _should_skip_hijacked_external_stt(event):
+            logger.debug("[CompanionV2] 外部 hear_voice/gemini_stt 已接管本轮语音回复，跳过重复受理")
             return
         if not self.staging.claims(event):
             # 不是本插件的目标：这条消息从来没有进入它的预期范围，回复与否都不是
@@ -1020,8 +1126,12 @@ class PrivateCompanionV2StagingPlugin(Star):
                                     event_ref, candidate.failure.code)
                         return
                     suppress_default_reply(event)
-                    logger.warning("[CompanionV2] 群回复候选检查失败 event_ref=%s code=%s",
-                                   event_ref, candidate.failure.code)
+                    if candidate.failure.code == "host_text_invalid":
+                        logger.debug("[CompanionV2] 群回复候选跳过无正文消息 event_ref=%s code=%s",
+                                     event_ref, candidate.failure.code)
+                    else:
+                        logger.warning("[CompanionV2] 群回复候选检查失败 event_ref=%s code=%s",
+                                       event_ref, candidate.failure.code)
                     return
                 group_admission = candidate.unwrap()
             except Exception as error:
@@ -1259,6 +1369,18 @@ class PrivateCompanionV2StagingPlugin(Star):
                             event_ref, prepared.get("turn_id"), action, closing.get("reason"))
             return
         prepare_core_reply_streaming_boundary(event)
+        if (channel == "group"
+                and (prepared.get("group_trigger") or {}).get("bare_mention")
+                and not str(getattr(event, "message_str", "") or "").strip()):
+            # AstrBot's aiocqhttp adapter strips the leading self-@ from
+            # message_str; give bare self-mentions the canonical SELF_MENTION
+            # placeholder and stay off streaming so V2 intake & decoration run.
+            event.message_str = SELF_MENTION
+            if getattr(event, "message_obj", None) is not None:
+                event.message_obj.message_str = SELF_MENTION
+            setter = getattr(event, "set_extra", None)
+            if callable(setter):
+                setter("enable_streaming", False)
         event.is_wake = True
         event.is_at_or_wake_command = True
         if channel == "private":
@@ -1269,6 +1391,15 @@ class PrivateCompanionV2StagingPlugin(Star):
                 target_key or getattr(target, "target_id", ""), event, event_ref, entries)
         logger.info("[CompanionV2] 交由 AstrBot 核心回复管线 event_ref=%s channel=%s",
                     event_ref, channel)
+
+    def _video_fusion(self):
+        fusion = getattr(self, "_video_fusion_service", None)
+        if fusion is None:
+            from .astrbot_host.video.fusion import VideoFusionService
+
+            fusion = VideoFusionService()
+            self._video_fusion_service = fusion
+        return fusion
 
     async def _route_core_video_to_image_provider(self, event):
         from .astrbot_host.core_reply_perception import event_has_video
@@ -1281,12 +1412,13 @@ class PrivateCompanionV2StagingPlugin(Star):
         scope = getattr(context, "scope", None)
         if getattr(getattr(scope, "kind", None), "value", None) not in ("private", "group"):
             return
-        if not event_has_video(event) and not peek(key_from_context(context)):
-            return
         application = getattr(getattr(self.staging, "session", None), "application", None)
         settings = self._video_understanding_settings(application, context)
         if settings.get("video_understanding_enabled") is not True or not media_scope_enabled(
                 settings, "video_understanding", scope):
+            return
+        include_quoted = bool(settings.get("video_understanding_quoted_enabled", True))
+        if not event_has_video(event, include_quoted=include_quoted) and not peek(key_from_context(context)):
             return
         native = getattr(self.staging, "context", None)
         if native is None:
@@ -1500,30 +1632,32 @@ class PrivateCompanionV2StagingPlugin(Star):
                     url=url, id=f"companion-video-frame:{video.descriptor.position}:{descriptor.index}"
                 )).mark_as_temp())
 
+    @staticmethod
+    async def _call_video_loader_with_budget(loader, target, *, maximum_bytes: int):
+        """Pass ``maximum_bytes`` on the first call; fall back only for 1-arg test stubs."""
+        try:
+            return await loader(target, maximum_bytes=maximum_bytes)
+        except TypeError as error:
+            if "maximum_bytes" not in str(error) and "unexpected keyword" not in str(error):
+                raise
+            return await loader(target)
+
     async def _attach_core_reply_video_material(self, event, prepared, request, originals,
-                                                application, context, settings):
-        """Try native MP4 understanding first, then use sampled frames per failed video."""
+                                                application, context, settings, *,
+                                                question="", fetch_errors=()):
+        """Try visual video understanding (native Gemini / OpenAI relay + compression), then sample frames on failure."""
+        from pathlib import Path
         from astrbot.core.agent.message import TextPart
         from companion_v2.conversation.media.models import MAX_TURN_BYTES, MAX_TURN_FRAMES
-        from companion_v2.conversation.media.video.models import MAX_TURN_VIDEO_MS, MAX_VIDEOS
+        from companion_v2.conversation.media.video.models import MAX_TURN_VIDEO_MS, MAX_VIDEOS, MAX_VIDEO_BYTES
+        from .astrbot_host.core_reply_perception import neutralize_video_placeholder
         from .astrbot_host.video.container import inspect_container
         from .astrbot_host.video.core_understanding import (
             select_native_video_routes, summarize_original_video)
         from .astrbot_host.video.loader import decode_video
 
         parts = getattr(request, "extra_user_content_parts", None)
-        if not isinstance(parts, list) or not originals or len(originals) > MAX_VIDEOS:
-            return
-        try:
-            movies = await asyncio.gather(*(asyncio.to_thread(inspect_container, content)
-                                            for _position, content in originals))
-        except Exception as error:
-            logger.warning("[CompanionV2] 原视频校验失败 event_ref=%s code=%s",
-                           prepared.get("event_ref"), getattr(error, "code", type(error).__name__))
-            return
-        if (sum(movie.duration_ms for movie in movies) > MAX_TURN_VIDEO_MS
-                or sum(len(content) for _position, content in originals) > MAX_TURN_BYTES):
-            logger.warning("[CompanionV2] 视频输入超过本轮预算 event_ref=%s", prepared.get("event_ref"))
+        if not isinstance(parts, list) or (not originals and not fetch_errors) or len(originals) > MAX_VIDEOS:
             return
 
         routes = ()
@@ -1534,64 +1668,137 @@ class PrivateCompanionV2StagingPlugin(Star):
                     event, self.staging.now())
             except Exception as error:
                 logger.warning("[CompanionV2] 原生视频路由暂不可用 error_type=%s", type(error).__name__)
+
+        fusion = self._video_fusion()
         staged = []
-        fallback_frames = []
+        pending_frame_videos = []
+        fallback_source_bytes = 0
         native_count = 0
-        for number, (position, content) in enumerate(originals, 1):
-            deadline = time.monotonic() + settings.get("video_understanding_wait_seconds", 45)
-            native_succeeded = False
-            for provider, model in routes:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
+
+        for number, entry in enumerate(originals, 1):
+            if len(entry) == 2:
+                position, content = entry
+                suffix, placeholder_obj = ".mp4", None
+            else:
+                position, content, suffix, placeholder_obj = entry
+            ext = (Path(f"clip{suffix}").suffix or ".mp4").lower()
+            if ext == ".ts":
+                continue
+
+            outcome = await fusion.analyze_video(
+                content,
+                suffix=ext,
+                routes=routes,
+                settings=settings,
+                question=question,
+                summarize_fn=summarize_original_video,
+            )
+            if outcome.status == "summary":
+                staged.append(TextPart(text=(
+                    f"<companion_video_native_summary>视频 {number} 的原视频理解转述"
+                    "（模型直接读取整段视频，转述可能有误差；据此回应，不自行补造细节）：\n"
+                    f"{outcome.text}\n</companion_video_native_summary>"
+                )).mark_as_temp())
+                if placeholder_obj is not None:
+                    label = placeholder_obj.name or f"视频{number}"
+                    neutralize_video_placeholder(
+                        placeholder_obj.part,
+                        f"[视频内容已由陪伴理解服务完成转述（文件名 {label}），请直接参考下方转述，无需再次读取原文件。]",
+                    )
+                native_count += 1
+                continue
+
+            if outcome.status == "rejected":
+                staged.append(TextPart(text=(
+                    f"<companion_video_notice>视频 {number} 未处理：{outcome.error_reason}</companion_video_notice>"
+                )).mark_as_temp())
+                if placeholder_obj is not None:
+                    label = placeholder_obj.name or f"视频{number}"
+                    neutralize_video_placeholder(
+                        placeholder_obj.part,
+                        f"[视频 {label} 超出配置限制未发送：{outcome.error_reason}]",
+                    )
+                continue
+
+            decoded_video = None
+            candidate = outcome.prepared_bytes or content
+            if 0 < len(candidate) <= MAX_VIDEO_BYTES:
                 try:
-                    text = await summarize_original_video(content, provider, model,
-                        {**settings, "video_understanding_wait_seconds": remaining})
-                    staged.append(TextPart(text=(
-                        f"<companion_video_native_summary>视频 {number} 的原视频理解转述"
-                        "（模型直接读取整段视频，转述可能有误差；据此回应，不自行补造细节）：\n"
-                        f"{text}\n</companion_video_native_summary>"
-                    )).mark_as_temp())
-                    native_count += 1
-                    native_succeeded = True
-                    break
+                    movie = await asyncio.to_thread(inspect_container, candidate)
+                    if getattr(movie, "duration_ms", 0) <= MAX_TURN_VIDEO_MS:
+                        decoded_video = await decode_video(candidate, position)
+                        fallback_source_bytes += len(candidate)
                 except Exception as error:
-                    logger.warning("[CompanionV2] 原生视频理解失败 event_ref=%s position=%s model=%s code=%s",
-                                   prepared.get("event_ref"), position, model,
+                    logger.warning("[CompanionV2] 视频抽帧失败 event_ref=%s position=%s code=%s",
+                                   prepared.get("event_ref"), position,
                                    getattr(error, "code", type(error).__name__))
-            if native_succeeded:
+            if decoded_video is not None:
+                # Defer appending frame parts and neutralizing placeholders until
+                # after turn frame/byte budget enforcement so evicted frames never
+                # leave misleading "已提取关键帧" placeholders or orphan captions.
+                pending_frame_videos.append((number, decoded_video, placeholder_obj))
                 continue
-            try:
-                video = await decode_video(content, position)
-            except Exception as error:
-                logger.warning("[CompanionV2] 视频抽帧失败 event_ref=%s position=%s code=%s",
-                               prepared.get("event_ref"), position,
-                               getattr(error, "code", type(error).__name__))
-                continue
-            fallback_frames.extend(video.frames)
-            self._append_core_reply_video_frames(staged, (video,), start_number=number)
-        if (sum(len(content) for _position, content in originals)
-                + sum(len(frame.content) for frame in fallback_frames) > MAX_TURN_BYTES
-                or len(fallback_frames) > MAX_TURN_FRAMES):
+
+            reason = outcome.error_reason or "视频无法读取或抽帧。"
+            staged.append(TextPart(text=(
+                f"<companion_video_notice>视频 {number} 理解降级：{reason}</companion_video_notice>"
+            )).mark_as_temp())
+            if placeholder_obj is not None:
+                label = placeholder_obj.name or f"视频{number}"
+                neutralize_video_placeholder(
+                    placeholder_obj.part,
+                    f"[视频 {label} 理解失败（{reason}），切勿猜测或编造视频内容。]",
+                )
+
+        for index, placeholder_obj, error_reason in fetch_errors:
+            label = (getattr(placeholder_obj, "name", "") if placeholder_obj is not None else "") or f"视频{index}"
+            staged.append(TextPart(text=(
+                f"<companion_video_notice>视频 {label} 获取失败：{error_reason}</companion_video_notice>"
+            )).mark_as_temp())
+            if placeholder_obj is not None:
+                neutralize_video_placeholder(
+                    placeholder_obj.part,
+                    f"[视频 {label} 暂无法读取（{error_reason}），请如实告知对方。]",
+                )
+
+        total_frame_count = sum(len(video.frames) for _num, video, _ph in pending_frame_videos)
+        total_frame_bytes = fallback_source_bytes + sum(
+            len(frame.content)
+            for _num, video, _ph in pending_frame_videos
+            for frame in video.frames
+        )
+        attached_frame_count = 0
+        if pending_frame_videos and (
+                total_frame_bytes > MAX_TURN_BYTES or total_frame_count > MAX_TURN_FRAMES):
             logger.warning("[CompanionV2] 视频抽帧超过本轮预算 event_ref=%s", prepared.get("event_ref"))
-            return
-        parts.extend(staged)
+            for number, _video, placeholder_obj in pending_frame_videos:
+                staged.append(TextPart(text=(
+                    f"<companion_video_notice>视频 {number} 理解降级：视频抽帧超出本轮上下文预算，未附带画面帧。</companion_video_notice>"
+                )).mark_as_temp())
+                if placeholder_obj is not None:
+                    label = placeholder_obj.name or f"视频{number}"
+                    neutralize_video_placeholder(
+                        placeholder_obj.part,
+                        f"[视频 {label} 抽帧超出本轮预算未能提供画面，切勿猜测或编造视频内容。]",
+                    )
+        else:
+            for number, video, placeholder_obj in pending_frame_videos:
+                self._append_core_reply_video_frames(staged, (video,), start_number=number)
+                if placeholder_obj is not None:
+                    label = placeholder_obj.name or f"视频{number}"
+                    neutralize_video_placeholder(
+                        placeholder_obj.part,
+                        f"[视频 {label} 已由陪伴提取关键帧（共 {len(video.frames)} 帧），请直接参考画面帧。]",
+                    )
+            attached_frame_count = total_frame_count
+
         if staged:
+            parts.extend(staged)
             logger.info("[CompanionV2] 视频已送入核心回复 event_ref=%s native=%s sampled_frames=%s",
-                        prepared.get("event_ref"), native_count, len(fallback_frames))
+                        prepared.get("event_ref"), native_count, attached_frame_count)
 
     async def _attach_core_reply_videos(self, prepared, request, *, event=None):
-        """把上一条群消息里被文本化丢弃的视频补挂进这一轮请求。
-
-        消息是独立事件：用户先裸发一条视频、再单独发一条 @ 时，第二轮事件里没有
-        任何 Video 组件，核心既写不出占位符也扫不到视频。位置在
-        ``capture_text_only`` 把它折成「[视频不可用]」之前就存进了进程内缓存
-        （``astrbot_host/core_reply_video_sources.py``），这里按**既有**开关决定
-        要不要用它，不新增任何配置键。
-
-        一次性语义：位置在任何判断之前就被取出（``take`` 是弹出），所以无论这一轮
-        最终有没有挂上，下一轮都不会再拿同一条视频试第二次。
-        """
+        """把上一条群消息里被文本化丢弃的视频补挂进这一轮请求。"""
         from .astrbot_host.core_reply_video_sources import key_from_context, take
         state = prepared if isinstance(prepared, Mapping) else {}
         context = state.get("context")
@@ -1601,9 +1808,8 @@ class PrivateCompanionV2StagingPlugin(Star):
         locators = take(key_from_context(context))
         if not locators:
             return
-        from .astrbot_host.core_reply_perception import video_request_state
-        # audio_url 里的 MP4 会被 AstrBot 当音频预处理；已补挂的原生转述或抽帧才可跳过。
-        if video_request_state(request) in ("native_summary", "sampled_frames", "native_and_sampled"):
+        from .astrbot_host.core_reply_perception import extract_video_question, video_request_state
+        if video_request_state(request) in ("native_summary", "sampled_frames", "native_and_sampled", "external_summary"):
             return
         application = getattr(getattr(self.staging, "session", None), "application", None)
         settings = self._video_understanding_settings(application, context)
@@ -1613,35 +1819,42 @@ class PrivateCompanionV2StagingPlugin(Star):
         if not media_scope_enabled(settings, "video_understanding", scope):
             return
         from companion_v2.conversation.media.video.models import MAX_VIDEOS
+        from .astrbot_host.video.fusion import MAX_CORE_VIDEO_DOWNLOAD_BYTES
         from .astrbot_host.video.loader import fetch_native_video_bytes
+        from .astrbot_host.video.openai_compat_video import sanitize_video_error
         originals = []
-        for locator in locators[:MAX_VIDEOS]:
+        fetch_errors = []
+        for idx, locator in enumerate(locators[:MAX_VIDEOS], 1):
             try:
-                originals.append((locator.position, await fetch_native_video_bytes(locator)))
+                raw = await self._call_video_loader_with_budget(
+                    fetch_native_video_bytes,
+                    locator,
+                    maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES,
+                )
+                originals.append((locator.position, raw, ".mp4", None))
             except Exception as error:
-                # 位置过期、下载失败、解码超时、超出体积预算：这一轮安静地少一段
-                # 视频，文字回复照常进行。
                 logger.warning("[CompanionV2] 群聊视频补挂跳过 position=%s code=%s",
                                getattr(locator, "position", None),
                                getattr(error, "code", type(error).__name__))
-                return
+                fetch_errors.append((idx, None, sanitize_video_error(error)))
+        question = extract_video_question(event, request, state)
         await self._attach_core_reply_video_material(event, state, request, originals,
-                                                     application, context, settings)
+                                                     application, context, settings,
+                                                     question=question, fetch_errors=fetch_errors)
 
     async def _attach_core_reply_current_videos(self, event, request):
-        """Supply this event's host-resolved video to the core chat request."""
+        """Supply current or quoted host-resolved / remote ref videos to the core chat request."""
         state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
         prepared = state.get("prepared") if isinstance(state, dict) else None
         context = prepared.get("context") if isinstance(prepared, Mapping) else None
         scope = getattr(context, "scope", None)
         if getattr(getattr(scope, "kind", None), "value", None) not in ("private", "group"):
             return
-        from .astrbot_host.core_reply_perception import video_placeholder_paths, video_request_state
+        from .astrbot_host.core_reply_perception import (
+            extract_video_question, neutralize_video_placeholder,
+            video_placeholders, video_request_state)
 
-        if video_request_state(request) in ("native_summary", "sampled_frames", "native_and_sampled"):
-            return
-        paths = video_placeholder_paths(request)
-        if not paths:
+        if video_request_state(request) in ("native_summary", "sampled_frames", "native_and_sampled", "external_summary"):
             return
         application = getattr(getattr(self.staging, "session", None), "application", None)
         settings = self._video_understanding_settings(application, context)
@@ -1651,20 +1864,49 @@ class PrivateCompanionV2StagingPlugin(Star):
 
         if not media_scope_enabled(settings, "video_understanding", scope):
             return
+        include_quoted = bool(settings.get("video_understanding_quoted_enabled", True))
+        placeholders = video_placeholders(request, include_quoted=include_quoted)
+        if not placeholders:
+            return
+        from pathlib import Path
+        from urllib.parse import urlparse
         from companion_v2.conversation.media.video.models import MAX_VIDEOS
-        from .astrbot_host.video.loader import read_host_resolved_video_bytes
+        from .astrbot_host.video.fusion import MAX_CORE_VIDEO_DOWNLOAD_BYTES
+        from .astrbot_host.video.loader import (
+            fetch_placeholder_ref_video_bytes, read_host_resolved_video_bytes)
+        from .astrbot_host.video.openai_compat_video import sanitize_video_error
 
         originals = []
-        for position, path in enumerate(paths[:MAX_VIDEOS]):
+        fetch_errors = []
+        for position, item in enumerate(placeholders[:MAX_VIDEOS]):
+            parsed_name = item.name or (urlparse(item.value).path if "://" in item.value else item.value)
+            suffix = (Path(parsed_name).suffix or ".mp4").lower()
             try:
-                originals.append((position, await read_host_resolved_video_bytes(path)))
+                if item.location == "path":
+                    raw = await self._call_video_loader_with_budget(
+                        read_host_resolved_video_bytes,
+                        item.value,
+                        maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES,
+                    )
+                else:
+                    raw = await fetch_placeholder_ref_video_bytes(
+                        item.value, maximum_bytes=MAX_CORE_VIDEO_DOWNLOAD_BYTES)
+                originals.append((position, raw, suffix, item))
             except Exception as error:
                 logger.warning("[CompanionV2] 当前视频读取失败 event_ref=%s position=%s code=%s",
                                prepared.get("event_ref"), position,
                                getattr(error, "code", type(error).__name__))
-                return
+                fetch_errors.append((position + 1, item, sanitize_video_error(error)))
+        for index, placeholder_obj in enumerate(placeholders[MAX_VIDEOS:], MAX_VIDEOS + 1):
+            label = placeholder_obj.name or f"视频{index}"
+            neutralize_video_placeholder(
+                placeholder_obj.part,
+                f"[视频 {label} 超出单轮理解数量上限（最多 {MAX_VIDEOS} 个），已跳过读取，请勿自行抓取外部链接。]",
+            )
+        question = extract_video_question(event, request, prepared)
         await self._attach_core_reply_video_material(event, prepared, request, originals,
-                                                     application, context, settings)
+                                                     application, context, settings,
+                                                     question=question, fetch_errors=fetch_errors)
 
     def _video_understanding_settings(self, application, context):
         """读这个窗口的媒体理解设置；读不到就返回 {}（等于本轮不挂）。
@@ -1839,6 +2081,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         activate_core_reply_delivery_guard(event)
         activate_core_reply_tracking(event)
         activate_core_reply_segmentation(event)
+        prepare_core_result_decoration(event)
 
     @filter.on_decorating_result(priority=999999)
     async def suppress_companion_native_tool_repeat(self, event: AstrMessageEvent):
@@ -1961,6 +2204,13 @@ class PrivateCompanionV2StagingPlugin(Star):
                 await qzone_publisher.close()
             except Exception as error:
                 logger.warning("[CompanionV2] 生活说说停机清理失败 error_type=%s", type(error).__name__)
+        video_fusion = getattr(self, "_video_fusion_service", None)
+        self._video_fusion_service = None
+        if video_fusion is not None:
+            try:
+                video_fusion.close()
+            except Exception as error:
+                logger.warning("[CompanionV2] 视频通道停机清理失败 error_type=%s", type(error).__name__)
         startup_task = getattr(self, "_host_start_task", None)
         self._host_start_task = None
         if startup_task is not None and not startup_task.done():
@@ -1969,6 +2219,13 @@ class PrivateCompanionV2StagingPlugin(Star):
                 await startup_task
             except asyncio.CancelledError:
                 pass
+        automatic_backup = getattr(self, "_automatic_backup", None)
+        self._automatic_backup = None
+        if automatic_backup is not None:
+            try:
+                await automatic_backup.close()
+            except Exception as error:
+                logger.warning("[CompanionV2] 自动滚动备份停机清理失败 error_type=%s", type(error).__name__)
         retire_reset_marker = getattr(self, "_retire_context_reset_marker", None)
         if retire_reset_marker is not None:
             retire_reset_marker()

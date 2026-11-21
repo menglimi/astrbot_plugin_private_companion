@@ -147,18 +147,20 @@ def checked_rules(raw: str) -> tuple[RouteRule, ...]:
     return result.rules
 
 
-def validate_targets(rules, providers, *, capabilities, max_output_tokens=None):
+def validate_targets(rules, providers, *, capabilities, max_output_tokens=None, task_kind=""):
     """Check every declared route target against the loaded providers.
 
     ``max_output_tokens=None`` compares no ceiling: a registry default is
     evaluated after the provider chain is known and is clamped to the selected
     provider there, while an explicitly saved value is still compared here.
     """
+    from .models import provider_supports_task
+
     for rule in rules:
         provider = providers.get(rule.provider_id)
         if provider is None:
             raise ValueError("route target has no registered V2 provider")
-        if not set(capabilities).issubset(provider.capabilities):
+        if not provider_supports_task(task_kind, capabilities, provider):
             raise ValueError("route target lacks required task capabilities")
         if max_output_tokens is not None and max_output_tokens > provider.maximum_output_tokens:
             raise ValueError("route target output limit is too small")

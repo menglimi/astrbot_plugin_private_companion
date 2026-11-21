@@ -13,7 +13,7 @@ from companion_v2.conversation.foreground import PromptRequest
 from companion_v2.execution.models import TaskError, digest, require
 from companion_v2.execution.runner import TaskRun
 
-from .models import LocalProvider, MAX_MODEL_OUTPUT_TOKENS, ModelEnvelope, ModelTaskProfile
+from .models import LocalProvider, MAX_MODEL_OUTPUT_TOKENS, ModelEnvelope, ModelTaskProfile, provider_supports_task
 from .refusal import parse_refusal_terms
 from .replacement_rules import checked_rules, match_route, output_capabilities, validate_targets
 
@@ -94,8 +94,7 @@ class ModelRouter:
 
     @staticmethod
     def _serves(profile, provider):
-        """True when the provider declares every capability the task requires."""
-        return set(profile.capabilities).issubset(provider.capabilities)
+        return provider_supports_task(profile.kind, profile.capabilities, provider)
 
     def _resolves(self, provider_id, profile):
         """A saved route only counts when this runtime can still dispatch it."""
@@ -271,7 +270,8 @@ class ModelRouter:
             for rule in rules:
                 self.provider_for(rule.provider_id)
             validate_targets(rules, self.providers,
-                             capabilities=profile.capabilities, max_output_tokens=max_output_tokens)
+                             capabilities=profile.capabilities, max_output_tokens=max_output_tokens,
+                             task_kind=profile.kind)
         except TaskError:
             raise
         except ValueError as error:

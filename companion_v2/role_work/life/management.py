@@ -9,6 +9,7 @@ from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import OperationRef, RoleOwnerRef, ScopeKind, SourceRef, VersionRef
 from companion_v2.identity_policy.models import AuthorizationTier, GrantState
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
+from companion_v2.sources.dependencies import validation_batch
 from companion_v2.sources.models import SourceRecord
 from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
@@ -67,11 +68,11 @@ class RoleLifeManagement:
                 return
             cursor = page[-1].activity_id
 
-    def _project_activity(self, a, operator, access):
+    def _project_activity(self, a, operator, access, *, now=None):
         unavailable = None
         if a.work.source:
             check = self.app.role_journal.sources.validate_reference_for_audience(a.work.source,
-                recipient=self.context.actor.subject, observed_at=self.app.now())
+                recipient=self.context.actor.subject, observed_at=now or self.app.now())
             unavailable = check.failure.code if check.failure else None
         task = None
         if a.work.kind == "reading":
@@ -97,7 +98,8 @@ class RoleLifeManagement:
             "unavailable_reason": unavailable, "task": task,
             "view_token": self.token(operator, access, a.activity_id, a.revision)}
 
-    def _journal(self, key, operator, access):
+    def _journal(self, key, operator, access, *, now=None):
+        now = now or self.app.now()
         journal = self.app.role_journal
         head = journal.head(key)
         if head.state is JournalState.ABSENT:
@@ -112,13 +114,13 @@ class RoleLifeManagement:
                 "view_token": self.token(operator, access, digest(key), head.revision)}
         if head.state is JournalState.ACTIVE:
             try:
-                entry = journal.get(key)
+                entry = journal.get(key, observed_at=now)
                 for source in entry.draft.sources:
                     require(journal.sources.validate_reference_for_audience(source,
-                        recipient=self.context.actor.subject, observed_at=self.app.now()))
+                        recipient=self.context.actor.subject, observed_at=now))
                 data.update(body=entry.draft.body, afterglow=entry.draft.afterglow,
                             recall=entry.draft.recall.value if entry.draft.recall else None)
-                derived = journal.derivatives(key)
+                derived = journal.derivatives(key, observed_at=now, _validated_entry=entry)
                 if derived:
                     data.update(summary=derived.material.summary, dream_fragments=derived.material.dream_fragments)
             except TaskError as error:
@@ -127,13 +129,18 @@ class RoleLifeManagement:
 
     def status(self, operator, *, before=None, after_activity=None):
         access = self.authorize(operator)
-        config = require(self.app.configuration.read(operator, target=target_for(self.context), group_id=GROUP,
-                                                      observed_at=self.app.now()))
         # Cursor pages include unavailable/deleted records; a damaged source never hides the rest of the archive.
         if before is not None:
             date.fromisoformat(before)
         if after_activity is not None and (not isinstance(after_activity, str) or len(after_activity) > 512):
             raise ValueError("invalid activity cursor")
+        now = self.app.now()
+        with self.runtime.read_snapshot(), validation_batch(self.runtime, now):
+            return self._status_in_snapshot(operator, access, now, before=before, after_activity=after_activity)
+
+    def _status_in_snapshot(self, operator, access, now, *, before=None, after_activity=None):
+        config = require(self.app.configuration.read(operator, target=target_for(self.context), group_id=GROUP,
+                                                      observed_at=now))
         rows = self.runtime.read_all("""SELECT context_json FROM role_journals WHERE owner_key = ?
             AND local_date IN (SELECT DISTINCT local_date FROM role_journals WHERE owner_key = ?
                 AND (? IS NULL OR local_date < ?) ORDER BY local_date DESC LIMIT 50)
@@ -142,7 +149,7 @@ class RoleLifeManagement:
         for row in rows:
             target = codec.context(json.loads(row["context_json"]))
             if target.scope == self.context.scope:
-                journals.append(self._journal(target.key, operator, access))
+                journals.append(self._journal(target.key, operator, access, now=now))
         archive = self.app.role_life.archive_activities(self.owner, self.context.scope,
                                                        after_id=after_activity, limit=31)
         activities = archive[:30]
@@ -198,7 +205,7 @@ class RoleLifeManagement:
             "next_sleep_at": sleep_schedule["next_sleep_at"], "sleep_schedule": sleep_schedule,
             "next_reading_at": self.life.next_reading_at,
             "body_sleep": self.app.role_state.body_clock.read(self.context),
-            "activities": [{**self._project_activity(a, operator, access),
+            "activities": [{**self._project_activity(a, operator, access, now=now),
                             "book_progress": books.get(a.work.source)} for a in activities],
             "next_activity": cursor, "journals": journals,
             "next_date": codec.context(json.loads(rows[-1]["context_json"])).key.local_date

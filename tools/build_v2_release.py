@@ -14,7 +14,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE_ID = "astrbot_plugin_private_companion"
-VERSION = "7.2.6"
+VERSION = "7.2.7"
 RELEASE_SCHEMA = "companion.v2.release.v2"
 MARKET_MAX_BYTES = 16_000_000
 NATIVE_EXTENSION_FILES = {
@@ -270,7 +270,8 @@ def checked_payload(path, root):
     if (path.suffix.lower() in TEXT_SUFFIXES and not is_historical_workbook) or path.name in {"LICENSE", "NOTICE", ".editorconfig"}:
         text = payload.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
         if path.suffix == ".py":
-            ast.parse(text, filename=str(path.relative_to(root)))
+            # AST parsing alone accepts constructs such as await inside a sync def.
+            compile(text, str(path.relative_to(root)), "exec", dont_inherit=True)
         if path.suffix == ".json":
             json.loads(text)
         payload = (text.rstrip("\n") + "\n").encode("utf-8")

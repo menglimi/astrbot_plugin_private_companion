@@ -57,11 +57,27 @@ window.CompanionUnderstandingPage = (() => {
       ["上下文描述条数", number("context_image_caption_max_items", "张"), status("enable_context_image_captioning")],
       ["AstrBot 原生动图优化", status("astrbot_animated_image_understanding_enabled"), ""],
     ];
-    if (tab === "video") return [
-      ["视频理解状态", status("video_understanding_enabled"), ""],
-      ["转述字数上限", number("video_understanding_max_chars", "字"), ""],
-      ["转述等待时间", number("video_understanding_wait_seconds", "秒"), ""],
-    ];
+    if (tab === "video") {
+      const actionLabel = {
+        compress: "超限：压缩",
+        truncate: "超限：截断",
+        reject: "超限：拒收",
+      }[settings().video_understanding_oversize_action] || "";
+      const videoCaps = replyStatus?.video || {};
+      const ffmpegText = videoCaps.ffmpeg_available === true
+        ? "已就绪"
+        : videoCaps.ffmpeg_available === false ? "未检测到" : "—";
+      const features = [
+        settings().video_understanding_quoted_enabled ? "含引用视频" : "",
+        settings().video_understanding_qa_enabled ? "定向问答" : "",
+      ].filter(Boolean).join(" · ");
+      return [
+        ["视频理解状态", status("video_understanding_enabled"), features],
+        ["体积 / 时长上限", `${number("video_understanding_target_mb", "MB")} · ${number("video_understanding_max_duration_seconds", "秒")}`, actionLabel],
+        ["转述预算", `${number("video_understanding_max_chars", "字")} · ${number("video_understanding_wait_seconds", "秒")}`, ""],
+        ["FFmpeg 压缩器", ffmpegText, videoCaps.ffmpeg_available === false ? "仅小视频可直传或抽帧" : "支持异步压缩与截断"],
+      ];
+    }
     if (tab === "file") {
       const count = formatCount();
       const parsers = replyStatus?.documents || {};

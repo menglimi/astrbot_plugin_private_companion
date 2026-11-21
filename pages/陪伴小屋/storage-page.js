@@ -15,7 +15,8 @@ window.CompanionStoragePage = (() => {
   const labels = {database: "运行资料", backups: "备份快照", other: "其他文件"};
   let root = null, bridge = null, version = 0;
   let state = {loading: true, busy: false, error: false, message: "", status: null,
-    form: {path: "", backup_path: "", retention_count: 10, retention_days: 90}, confirming: false};
+    form: {path: "", backup_path: "", retention_count: 10, retention_days: 90,
+      auto_backup_enabled: false, auto_backup_interval_minutes: 1440}, confirming: false};
 
   function live(ticket) { return ticket === version && root?.isConnected; }
   function stop() { version += 1; root = null; bridge = null; }
@@ -52,6 +53,9 @@ window.CompanionStoragePage = (() => {
         ? `<button class="button small danger" type="button" data-storage-clean-confirm${state.busy ? " disabled" : ""}>确认清理</button><button class="button small" type="button" data-storage-clean-cancel>取消</button>`
         : `<button class="button small" type="button" data-storage-clean-review${state.busy ? " disabled" : ""}>清理快照</button>`}</div>`
       : `<p class="storage-cleanup-empty">${preview.snapshot_count ? "当前快照均在保留范围内。" : "暂无快照"}</p>`;
+    const futureBackups = Number(preview.future_count) || 0;
+    const futureNotice = futureBackups > 0
+      ? `<p class="storage-location-note is-pending">${futureBackups} 份快照的时间晚于当前时间，暂不参与轮转；请核对系统时钟。</p>` : "";
     const diskFree = (status?.restart_required ? status.destination_free_bytes : inventory.free_bytes) == null
       ? "—" : formatBytes(status?.restart_required ? status.destination_free_bytes : inventory.free_bytes);
     root.innerHTML = `<div class="storage-dashboard">
@@ -64,12 +68,33 @@ window.CompanionStoragePage = (() => {
           <label class="storage-path-field"><span class="storage-field-label">运行资料位置 <em>重启生效</em></span><input name="path" type="text" autocomplete="off" spellcheck="false" placeholder="留空使用 AstrBot 默认目录" value="${text(state.form.path)}"><small>填写其他磁盘上的绝对目录。</small>${locationState}</label>
           <label class="storage-path-field"><span class="storage-field-label">备份快照位置 <em>${state.form.backup_path ? "独立目录" : "跟随资料"}</em></span><input name="backup_path" type="text" autocomplete="off" spellcheck="false" placeholder="留空跟随运行资料位置" value="${text(state.form.backup_path)}"><small>切换目录时迁移已有快照。</small>${backupLocation}</label>
         </div></section>
-        <section class="storage-panel"><h4>备份清理策略</h4><fieldset class="storage-retention"><label>每个运行档最多保留<input name="retention_count" type="number" min="1" max="200" step="1" value="${text(state.form.retention_count)}">份</label><label>保留最近<input name="retention_days" type="number" min="1" max="3650" step="1" value="${text(state.form.retention_days)}">天</label><small>新建快照时自动清理，始终保留最新一份。</small></fieldset>
-          ${cleanup}<div class="storage-actions"><button class="button primary small" type="submit"${state.busy ? " disabled" : ""}>保存存储设置</button><button class="button small" type="button" data-storage-refresh${state.busy ? " disabled" : ""}>重新读取</button></div>
+        <section class="storage-panel"><h4>自动滚动备份</h4>
+          <div class="option-row"><div>启用自动备份<small>最近完整快照到期或不存在时自动新建，目录和保留策略与手动备份共用。</small></div>
+            <button class="switch" type="button" role="switch" aria-checked="${state.form.auto_backup_enabled}"
+              aria-label="启用自动备份" data-storage-auto-toggle${state.busy ? " disabled" : ""}></button></div>
+          <fieldset class="storage-retention">
+            <div class="storage-retention-fields"><label>每隔<input name="auto_backup_interval_minutes" type="number" min="1" max="43200" step="1" required value="${text(state.form.auto_backup_interval_minutes)}">分钟</label></div>
+            <small>默认 1440 分钟。手动快照也计入间隔。删除最后一份后会自动补建。</small>
+          </fieldset>
         </section>
-        <section class="storage-panel"><h4>运行缓存</h4>
-          <p class="storage-cache-note">图片转述、失败冷却和诊断报告都可以随时重建；清理只释放当前进程里的缓存，不会删除对话、记忆、日记或已发送的图片。</p>
-          <div class="storage-actions"><button class="button small" type="button" data-storage-cache-clear${state.busy ? " disabled" : ""}>清理运行缓存</button></div>
+        <section class="storage-panel storage-policy"><h4>备份清理策略</h4>
+          <fieldset class="storage-retention">
+            <div class="storage-retention-fields">
+              <label>每个运行档最多保留<input name="retention_count" type="number" min="1" max="200" step="1" value="${text(state.form.retention_count)}">份</label>
+              <label>保留最近<input name="retention_days" type="number" min="1" max="3650" step="1" value="${text(state.form.retention_days)}">天</label>
+            </div>
+            <div class="storage-retention-aside"><small>新建快照时自动清理，始终保留最新一份。</small>${cleanup}${futureNotice}</div>
+          </fieldset>
+          <div class="storage-actions storage-form-actions">
+            <button class="button primary small" type="submit"${state.busy ? " disabled" : ""}>保存存储设置</button>
+            <button class="button small" type="button" data-storage-refresh${state.busy ? " disabled" : ""}>重新读取</button>
+          </div>
+        </section>
+        <section class="storage-panel storage-cache-panel"><h4>运行缓存</h4>
+          <div class="storage-cache-row">
+            <p class="storage-cache-note">图片转述、失败冷却和诊断报告都可以随时重建；清理只释放当前进程里的缓存，不会删除对话、记忆、日记或已发送的图片。</p>
+            <div class="storage-actions"><button class="button small" type="button" data-storage-cache-clear${state.busy ? " disabled" : ""}>清理运行缓存</button></div>
+          </div>
         </section>
       </form>
       ${message}
@@ -107,7 +132,9 @@ window.CompanionStoragePage = (() => {
       state.form = {path: result.selected_path || "",
         backup_path: result.selected_backup_path || "",
         retention_count: result.policy?.retention_count ?? 10,
-        retention_days: result.policy?.retention_days ?? 90};
+        retention_days: result.policy?.retention_days ?? 90,
+        auto_backup_enabled: result.auto_backup?.auto_backup_enabled ?? false,
+        auto_backup_interval_minutes: result.auto_backup?.auto_backup_interval_minutes ?? 1440};
       state.loading = false;
       state.error = false;
       state.message = "";
@@ -133,15 +160,19 @@ window.CompanionStoragePage = (() => {
         state.form = {path: result.selected_path || "",
           backup_path: result.selected_backup_path || "",
           retention_count: result.policy?.retention_count ?? state.form.retention_count,
-          retention_days: result.policy?.retention_days ?? state.form.retention_days};
+          retention_days: result.policy?.retention_days ?? state.form.retention_days,
+          auto_backup_enabled: result.auto_backup?.auto_backup_enabled ?? state.form.auto_backup_enabled,
+          auto_backup_interval_minutes: result.auto_backup?.auto_backup_interval_minutes ?? state.form.auto_backup_interval_minutes};
       }
       const cache = result.cache_result || {};
+      const cleanup = result.cleanup_result || {};
+      const missed = Number(cleanup.failed_count) || 0;
       state.message = body.action === "clean"
-        ? `已清理 ${result.cleanup_result?.removed_count || 0} 份快照，释放 ${formatBytes(result.cleanup_result?.removed_bytes)}。`
+        ? `已清理 ${cleanup.removed_count || 0} 份快照，释放 ${formatBytes(cleanup.removed_bytes)}。${missed ? `另有 ${missed} 份未能清理，请检查目录权限或文件占用。` : ""}`
         : body.action === "cache"
         ? `已清理运行缓存：图片转述 ${Number(cache.image_narration) || 0} 条、失败记录 ${Number(cache.image_narration_failures) || 0} 条、诊断报告 ${Number(cache.diagnostics) || 0} 条。`
         : result.restart_required ? "设置已保存，运行资料位置将在重启后切换。" : "存储设置已保存。";
-      state.error = false;
+      state.error = body.action === "clean" && cleanup.failed === true;
       state.confirming = false;
     } catch (error) {
       if (!live(ticket)) return;
@@ -150,7 +181,7 @@ window.CompanionStoragePage = (() => {
       const code = typeof candidate === "string" && /^[a-z][a-z0-9_]{2,80}$/.test(candidate) ? candidate : "";
       const messages = {
         storage_config_save_failed: "存储设置未能保存，请检查配置文件是否可写。",
-        storage_request_invalid: "存储目录或清理设置不合法，请核对绝对路径与保留范围。",
+        storage_request_invalid: "存储设置不合法，请核对绝对路径、保留范围和备份间隔。",
         storage_operation_failed: "插件进程无法访问或迁移存储文件。请检查目录及磁盘连接；网络磁盘可填写对应的共享路径。",
         dashboard_identity_required: "请从已登录的 AstrBot 管理页面保存存储设置。",
         core_access_required: "当前管理身份没有修改存储设置的权限。",
@@ -166,8 +197,10 @@ window.CompanionStoragePage = (() => {
     root = node;
     const ticket = version;
     state = {loading: true, busy: false, error: false, message: "", status: null,
-      form: {path: "", backup_path: "", retention_count: 10, retention_days: 90}, confirming: false};
+      form: {path: "", backup_path: "", retention_count: 10, retention_days: 90,
+      auto_backup_enabled: false, auto_backup_interval_minutes: 1440}, confirming: false};
     root.addEventListener("input", event => {
+      if (event.target?.name === "auto_backup_interval_minutes") state.form.auto_backup_interval_minutes = event.target.value;
       if (event.target?.name === "path") state.form.path = event.target.value;
       if (event.target?.name === "backup_path") state.form.backup_path = event.target.value;
       if (event.target?.name === "retention_count") state.form.retention_count = event.target.value;
@@ -178,12 +211,18 @@ window.CompanionStoragePage = (() => {
       event.preventDefault();
       update({action: "save", path: String(state.form.path || "").trim(),
         backup_path: String(state.form.backup_path || "").trim(),
-        retention_count: Number(state.form.retention_count), retention_days: Number(state.form.retention_days)}, ticket);
+        retention_count: Number(state.form.retention_count), retention_days: Number(state.form.retention_days),
+        auto_backup_enabled: state.form.auto_backup_enabled,
+        auto_backup_interval_minutes: Number(state.form.auto_backup_interval_minutes)}, ticket);
     });
     root.addEventListener("click", event => {
       const button = event.target?.closest("button");
       if (!button || state.busy) return;
-      if (button.hasAttribute("data-storage-refresh")) load(ticket);
+      if (button.hasAttribute("data-storage-auto-toggle")) {
+        state.form.auto_backup_enabled = !state.form.auto_backup_enabled;
+        button.setAttribute("aria-checked", String(state.form.auto_backup_enabled));
+      }
+      else if (button.hasAttribute("data-storage-refresh")) load(ticket);
       else if (button.hasAttribute("data-storage-cache-clear")) update({action: "cache"}, ticket);
       else if (button.hasAttribute("data-storage-clean-review")) { state.confirming = true; render(); }
       else if (button.hasAttribute("data-storage-clean-cancel")) { state.confirming = false; render(); }
