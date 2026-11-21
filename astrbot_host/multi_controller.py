@@ -1834,6 +1834,10 @@ class AstrBotMultiController:
             else:
                 await self._release_runtime()
         finally:
+            from .exchange_rate import close_exchange_rate_services
+            from .pricing_sources import close_pricing_catalog_services
+            await close_exchange_rate_services(self)
+            await close_pricing_catalog_services(self)
             self.unregister_routes()
 
     async def _release_runtime(self):

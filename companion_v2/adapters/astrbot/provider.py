@@ -17,6 +17,7 @@ from companion_v2.execution.models import TaskError, digest, encode
 from companion_v2.model_gateway.cache_diagnostics import signature_for_payload
 from companion_v2.model_gateway.failures import ModelFailure
 from companion_v2.model_gateway.models import Amount, CapturedModelOutput, LocalProvider, ProviderResponse
+from companion_v2.model_gateway.pricing import UsageTariff
 from companion_v2.model_gateway.response_diagnostics import ResponseDiagnostics, ResponseTextSummary
 
 from .model_wire import build_wire, decode_response, decode_text_response
@@ -333,25 +334,6 @@ def provider_config_drift(expected, provider, auto_resolved=None):
     return tuple(sorted(drifted))
 
 
-@dataclass(frozen=True)
-class UsageTariff:
-    """Explicit rated cost in microUSD per million tokens; not a billing receipt."""
-    input: int
-    cached_input: int
-    output: int
-
-    def __post_init__(self):
-        if any(type(v) is not int or not 0 <= v <= 10**12 for v in (self.input, self.cached_input, self.output)):
-            raise ValueError("tariff requires nonnegative integer microUSD rates")
-
-    def amount(self, other, cached, output, *, input_tokens=None, cached_input_tokens=None,
-               cache_creation_tokens=None):
-        cost = (other * self.input + cached * self.cached_input + output * self.output + 999999) // 1000000
-        return Amount(other + cached + output, cost, input_tokens=input_tokens,
-                      cached_input_tokens=cached_input_tokens, cache_creation_tokens=cache_creation_tokens,
-                      output_tokens=output if input_tokens is not None else None)
-
-
 def looks_like_text_provider(native):
     """AstrBot 文本 provider 的公共合同：_query(payloads, tools) + get_model + provider_config。
 
@@ -454,7 +436,8 @@ def host_capabilities(provider_config):
 class AstrBotTextProvider:
     def __init__(self, context, *, bridge, binding, provider_id, version, provider_type,
                  function_tool_type, tool_set_type, tariff: UsageTariff, maximum_output_tokens=4096,
-                 maximum_input_estimate=131072, output_parameter="max_tokens", streaming=False):
+                 maximum_input_estimate=131072, output_parameter="max_tokens", streaming=False,
+                 tariff_resolver=None):
         check_version(version)
         if output_parameter not in ("max_tokens", "max_completion_tokens"):
             raise ValueError("output token parameter must be selected explicitly")
@@ -511,6 +494,7 @@ class AstrBotTextProvider:
         self.parameters = frozenset(getattr(self.native, "default_params", {}))
         self.function_tool_type, self.tool_set_type = function_tool_type, tool_set_type
         self.tariff, self.output_parameter = tariff, output_parameter
+        self._tariff_resolver = tariff_resolver if callable(tariff_resolver) else None
         if type(streaming) is not bool:
             raise ValueError("streaming must be an explicit boolean")
         # 只有 Chat Completions 的 chunk 协议与 StreamTranscript 兼容。Responses
@@ -656,25 +640,34 @@ class AstrBotTextProvider:
                                      "provider_max_output_tokens": self.maximum_output_tokens})
         return estimated
 
+    def _active_tariff(self, model_name=""):
+        if self._tariff_resolver is not None:
+            resolved = self._tariff_resolver(self.provider_id, model_name or self.model, self.tariff)
+            if isinstance(resolved, UsageTariff):
+                return resolved
+        return self.tariff
+
     def reserve(self, envelope):
-        estimate = self._estimate(envelope, build_wire(envelope, model_name=envelope.model_override or self.model))
-        # No assumed cache hit; reserve using the larger of the two input rates.
-        rate = max(self.tariff.input, self.tariff.cached_input)
-        return UsageTariff(rate, rate, self.tariff.output).amount(estimate, 0, envelope.max_output_tokens)
+        model_name = envelope.model_override or self.model
+        estimate = self._estimate(envelope, build_wire(envelope, model_name=model_name))
+        # No assumed cache hit; reserve using the largest input rate.
+        return self._active_tariff(model_name).reserve_amount(estimate, envelope.max_output_tokens)
 
     def _usage(self, raw):
         try:
             def read(value, name):
                 return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
 
+            raw_model = read(raw, "model")
+            tariff = self._active_tariff(raw_model if type(raw_model) is str else "")
             usage = read(raw, "usage")
             if hasattr(usage, "input_other"):
                 # AstrBot 的原生 Gemini 用量是 TokenUsage，而不是 OpenAI 的 usage dict。
                 other, cached, output = usage.input_other, usage.input_cached, usage.output
                 if any(type(v) is not int or v < 0 for v in (other, cached, output)):
                     return None
-                return self.tariff.amount(other, cached, output,
-                                          input_tokens=other + cached, cached_input_tokens=cached)
+                return tariff.amount(other, cached, output,
+                                     input_tokens=other + cached, cached_input_tokens=cached)
             prompt = read(usage, "prompt_tokens")
             completion = read(usage, "completion_tokens")
             total = read(usage, "total_tokens")
@@ -707,9 +700,9 @@ class AstrBotTextProvider:
                                                        or not 0 <= cache_creation <= prompt
                                                        or cache_read + cache_creation > prompt)):
                 return None
-            return self.tariff.amount(prompt - cache_read, cache_read, completion, input_tokens=prompt,
-                                      cached_input_tokens=cache_read if cached is not None else None,
-                                      cache_creation_tokens=cache_creation)
+            return tariff.amount(prompt - cache_read, cache_read, completion, input_tokens=prompt,
+                                 cached_input_tokens=cache_read if cached is not None else None,
+                                 cache_creation_tokens=cache_creation)
         except (AttributeError, TypeError, ValueError):
             return None
 
