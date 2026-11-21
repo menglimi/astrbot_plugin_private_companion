@@ -12,6 +12,21 @@ MODEL_OPTIONS = [
 ]
 
 
+def _is_fish_drama3(provider_type, model):
+    return provider_type == "fishaudio_tts_api" and str(model).strip().casefold() == "drama-3"
+
+
+def supports_singsing(provider):
+    config = getattr(provider, "provider_config", None)
+    if not isinstance(config, dict):
+        return False
+    getter = getattr(provider, "get_model", None)
+    model = getter() if callable(getter) else config.get("model")
+    headers = getattr(provider, "headers", None)
+    request_model = headers.get("model", model) if isinstance(headers, dict) else model
+    return _is_fish_drama3(config.get("type"), model) and _is_fish_drama3(config.get("type"), request_model)
+
+
 def _is_index_tts(provider_type, model):
     folded = str(provider_type or "").replace("_", "").replace("-", "").casefold()
     return "indextts" in folded or "indextts" in str(model or "").replace("-", "").casefold()
@@ -30,7 +45,7 @@ def _direction_for(policy, provider_type, model, overrides=None):
     if mode == "indextts2":
         return index if _is_index_tts(provider_type, model) else ""
     # auto：只对明确支持表演指令的引擎开口，其他保持沉默。
-    if str(provider_type) == "fishaudio_tts_api" and str(model).strip().casefold() == "drama-3":
+    if _is_fish_drama3(provider_type, model):
         return drama
     if _is_index_tts(provider_type, model):
         return index

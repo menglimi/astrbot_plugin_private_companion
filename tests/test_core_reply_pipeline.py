@@ -22,6 +22,7 @@ from companion_v2.conversation.segmentation import SegmentationPolicy
 from companion_v2.conversation.voice_reply import VoiceReplyPolicy
 from companion_v2.foundation.outcome import Outcome
 from astrbot_host.core_reply import sent_core_text
+from astrbot_host.voice import singsing_route_available
 
 
 class PipelineEvent(AstrMessageEvent):
@@ -82,13 +83,15 @@ class CoreAgentFixture:
             result = MessageEventResult().message(text)
             result.set_result_content_type(ResultContentType.LLM_RESULT)
         event.set_result(result)
+        self.result = result
         yield
 
 
 class CoreReplyPipelineTests(unittest.IsolatedAsyncioTestCase):
     async def run_pipeline(self, *, streaming=False, authorize=None, segmented=False, tts=False, dual=False,
                            presentation=None, companion_segmenting=False, voice_policy=None, response_text=None,
-                           native_tool_text=None, native_image=True, native_quote=False):
+                           native_tool_text=None, native_image=True, native_quote=False,
+                           singsing_enabled=False, voice_available=True, tts_probability=None):
         plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
         target = NS(key="target", target_id="target")
         observed = []
@@ -115,34 +118,46 @@ class CoreReplyPipelineTests(unittest.IsolatedAsyncioTestCase):
             session=NS(core_reply_observations=NS(outputs=observed,
                 output=lambda prepared, text, **kwargs: observed.append((text, kwargs["state"]))
                     if kwargs.get("state") == "send_returned" else None),
-                voice=AsyncMock(return_value={"type": "record", "data": {"file": "base64://YQ=="}}),
+                voice=AsyncMock(return_value={"type": "record", "data": {"file": "base64://YQ=="}}
+                                if voice_available else None),
                 voice_delivery=None),
         )
         event = PipelineEvent()
-        await plugin.receive_companion_message(event)
 
         config = deepcopy(DEFAULT_CONFIG)
         config["t2i"] = False
         config["provider_tts_settings"].update(enable=tts, dual_output=dual, use_file_service=False)
+        if tts_probability is not None:
+            config["provider_tts_settings"]["trigger_probability"] = tts_probability
         config["platform_settings"]["reply_with_mention"] = False
         config["platform_settings"]["reply_with_quote"] = native_quote
         config["platform_settings"]["reply_prefix"] = ""
         config["platform_settings"]["segmented_reply"].update(
             enable=segmented, split_mode="regex", regex=r"[^\n]+", interval="0,0", interval_method="random",
         )
+        native_voice = AsyncMock(return_value="native-test-speech.wav")
+        native_provider = (NS(get_audio=native_voice,
+                              provider_config={"type": "fishaudio_tts_api", "model": "drama-3"}) if tts else None)
+
         async def get_tts_provider(_umo):
-            return (NS(get_audio=AsyncMock(return_value="native-test-speech.wav")) if tts else None)
+            return native_provider
+
+        if singsing_enabled:
+            native_context = NS(get_config=lambda _: config, get_using_tts_provider_async=get_tts_provider)
+            prepared["voice_singsing_enabled"] = await singsing_route_available(
+                native_context, event.unified_msg_origin, "")
+        await plugin.receive_companion_message(event)
 
         pipeline_context = NS(astrbot_config=config,
                               plugin_manager=NS(context=NS(
-                                  get_using_tts_provider=lambda _: NS(
-                                      get_audio=AsyncMock(return_value="native-test-speech.wav")) if tts else None,
+                                  get_using_tts_provider=lambda _: native_provider,
                                   get_using_tts_provider_async=get_tts_provider)))
         process = ProcessStage()
         process.ctx = pipeline_context
         plugin.context = NS(get_config=lambda _: config)
         agent = CoreAgentFixture(plugin, streaming=streaming, response_text=response_text,
                                  native_tool_text=native_tool_text)
+        agent.native_voice = native_voice
         process.agent_sub_stage = agent
         decorate = decorate_module.ResultDecorateStage()
         await decorate.initialize(pipeline_context)
@@ -219,6 +234,73 @@ class CoreReplyPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(isinstance(c, Plain) for c in event.sent[0]))
         self.assertEqual(plugin.staging.session.core_reply_observations.outputs,
                          [("嘿嘿！\n\n再摸一下！", "send_returned")])
+
+    async def test_singsing_with_zero_host_tts_probability_keeps_text_and_speech_through_decoration(self):
+        body = "月儿弯弯。"
+        example = '示例：`<pc_tts style="sing">示例歌词</pc_tts>`'
+        policy = VoiceReplyPolicy(trigger_mode="adaptive")
+        for response_text, visible, voice_available, expected_singing in (
+            (body, body, True, None),
+            (example, example, True, None),
+            (f"<pc_tts>{body}</pc_tts>", body, True, False),
+            (f'<pc_tts style="sing">{body}</pc_tts>', body, True, True),
+            (f'<pc_tts style="sing">{body}</pc_tts>', body, False, True),
+        ):
+            with self.subTest(response_text=response_text, voice_available=voice_available):
+                with patch.object(decorate_module.SessionServiceManager, "is_tts_enabled_for_session",
+                                  new_callable=AsyncMock, return_value=True), \
+                        patch.object(decorate_module.random, "random", return_value=0.5):
+                    plugin, event, agent = await self.run_pipeline(
+                        tts=True, singsing_enabled=True, tts_probability=0, voice_policy=policy,
+                        response_text=response_text, voice_available=voice_available, native_image=False)
+                self.assertIn('style="sing"', agent.requests[0].system_prompt)
+                self.assertTrue(agent.result.is_llm_result())
+                self.assertNotIn("is_llm_result", vars(agent.result))
+                agent.native_voice.assert_not_awaited()
+                voice = plugin.staging.session.voice
+                if expected_singing is None:
+                    voice.assert_not_awaited()
+                else:
+                    self.assertEqual(voice.await_count, 1)
+                    self.assertEqual(voice.await_args.args[1], body)
+                    self.assertIs(voice.await_args.kwargs.get("singing", False), expected_singing)
+                components = [part for chain in event.sent for part in chain]
+                self.assertEqual([part.text for part in components if isinstance(part, Plain)], [visible])
+                self.assertEqual(sum(isinstance(part, Record) for part in components),
+                                 int(expected_singing is not None and voice_available))
+
+    async def test_native_segmentation_does_not_reinterpret_a_literal_singing_tag(self):
+        example = '<pc_tts style="sing">只是示例</pc_tts>'
+        lyrics = "月儿弯弯。"
+        response = f'> ```xml\n> {example}\n> ```\n<pc_tts style="sing">{lyrics}</pc_tts>'
+        with patch.object(decorate_module.SessionServiceManager, "is_tts_enabled_for_session",
+                          new_callable=AsyncMock, return_value=True), \
+                patch.object(decorate_module.random, "random", return_value=0.5):
+            plugin, event, agent = await self.run_pipeline(
+                segmented=True, companion_segmenting=True, tts=True, tts_probability=0,
+                singsing_enabled=True, voice_policy=VoiceReplyPolicy(trigger_mode="adaptive"),
+                response_text=response, native_image=False)
+
+        agent.native_voice.assert_not_awaited()
+        components = [part for chain in event.sent for part in chain]
+        self.assertEqual([part.text for part in components if isinstance(part, Plain)],
+                         ["> ```xml", f"> {example}", "> ```", lyrics])
+        voice = plugin.staging.session.voice
+        self.assertEqual(voice.await_count, 1)
+        self.assertEqual(voice.await_args.args[1], lyrics)
+        self.assertTrue(voice.await_args.kwargs["singing"])
+
+    async def test_default_host_tts_probability_does_not_admit_singsing(self):
+        with patch.object(decorate_module.SessionServiceManager, "is_tts_enabled_for_session",
+                          new_callable=AsyncMock, return_value=True), \
+                patch.object(decorate_module.random, "random", return_value=0.5):
+            plugin, event, agent = await self.run_pipeline(
+                tts=True, singsing_enabled=True, voice_policy=VoiceReplyPolicy(trigger_mode="adaptive"),
+                response_text="普通回复。", native_image=False)
+        self.assertNotIn('style="sing"', agent.requests[0].system_prompt)
+        agent.native_voice.assert_awaited_once_with("普通回复。")
+        plugin.staging.session.voice.assert_not_awaited()
+        self.assertEqual([type(part) for chain in event.sent for part in chain], [Record])
 
     async def test_plugin_segmentation_splits_complete_private_reply_before_each_authorized_send(self):
         plugin, event, agent = await self.run_pipeline(companion_segmenting=True)
