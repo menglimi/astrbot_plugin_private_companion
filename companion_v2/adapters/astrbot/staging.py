@@ -61,6 +61,7 @@ from companion_v2.storage.repositories import OperationRepository
 from .application import AstrBotCompanionHost
 from .tools import CompositeAstrBotToolPort
 from .native import HostAccount, HostPersona, NativePrivateBridge, check_version, persona_instruction, route_id
+from companion_v2.model_gateway.pricing import tariff_resolver_for
 from .provider import AstrBotTextProvider, REPLY_TASK_CAPABILITIES, UsageTariff, provider_fingerprint
 from .provider_catalog import TextProviderSettings, assemble_providers, attach_native_video, loaded_routing
 from .staging_config import DELIVERY_CAPABILITY, DELIVERY_GRANT_ID
@@ -278,12 +279,13 @@ class AstrBotStagingSession:
             raise ValueError("staging provider is unavailable or has an unverified native type")
         binding = ProviderBinding("model.text", profile.provider_id, native_types.version,
             provider_fingerprint(native))
+        self._tariff_resolver = tariff_resolver_for(runtime.data_root)
         self.model = AstrBotTextProvider(context, bridge=self.bridge, binding=binding,
             provider_id=profile.provider_id, version=native_types.version, provider_type=native_types.provider_types,
             function_tool_type=native_types.function_tool, tool_set_type=native_types.tool_set,
             tariff=profile.tariff, maximum_output_tokens=max(profile.max_output_tokens, 8192),
             maximum_input_estimate=profile.maximum_input_estimate, output_parameter=profile.output_parameter,
-            streaming=profile.streaming)
+            streaming=profile.streaming, tariff_resolver=self._tariff_resolver)
         if self.model.native is not native:
             raise TaskError("host_provider_changed", "native provider changed during staging assembly")
         self.model._current()
@@ -294,7 +296,8 @@ class AstrBotStagingSession:
         self.models = (self.model,) + assemble_providers(context, bridge=self.bridge, native_types=native_types,
             primary_id=profile.provider_id, additional=additional_providers,
             defaults=TextProviderSettings(profile.provider_id, profile.tariff, max(profile.max_output_tokens, 8192),
-                profile.maximum_input_estimate, profile.output_parameter, profile.streaming))
+                profile.maximum_input_estimate, profile.output_parameter, profile.streaming),
+            tariff_resolver=self._tariff_resolver)
         fallback_provider_id, replacement_rules = loaded_routing(fallback_provider_id, replacement_rules,
             (model.binding.provider for model in self.models))
         narration_profiles = tuple(image_narration_profile(model.binding.provider)

@@ -169,7 +169,7 @@ def loaded_routing(fallback_provider_id, replacement_rules, provider_ids):
 
 
 def assemble_providers(context, *, bridge, native_types, primary_id, additional=(), defaults=None,
-                       only_ids=None):
+                       only_ids=None, tariff_resolver=None):
     """Expose every loaded, verified AstrBot text provider to V2 routing.
 
     ``additional`` remains a compatibility layer for existing installations that
@@ -186,7 +186,7 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
     if len(overrides) != len(additional) or primary_id in overrides:
         raise ValueError("model provider profiles must have distinct IDs")
     if defaults is None:
-        defaults = TextProviderSettings(primary_id, UsageTariff(0, 0, 0))
+        defaults = TextProviderSettings(primary_id, UsageTariff.unconfigured())
     if not isinstance(defaults, TextProviderSettings):
         raise TypeError("default model provider profile is invalid")
 
@@ -234,7 +234,7 @@ def assemble_providers(context, *, bridge, native_types, primary_id, additional=
                     function_tool_type=native_types.function_tool, tool_set_type=native_types.tool_set,
                     tariff=settings.tariff, maximum_output_tokens=settings.maximum_output_tokens,
                     maximum_input_estimate=settings.maximum_input_estimate, output_parameter=settings.output_parameter,
-                    streaming=settings.streaming)
+                    streaming=settings.streaming, tariff_resolver=tariff_resolver)
                 adapter = attach_native_video(context, bridge=bridge, native_types=native_types,
                                               text=adapter, settings=settings)
             if adapter.native is not native:

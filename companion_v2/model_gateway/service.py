@@ -737,7 +737,8 @@ class LocalModelGateway:
                                "cache_creation_tokens": row["cache_creation_tokens"], "output_tokens": row["output_tokens"],
                                "usage_state": "unknown" if row["actual_tokens"] is None else "settled",
                                "over_reservation": None if row["actual_tokens"] is None else (
-                                   row["actual_tokens"] > row["reserved_tokens"] or row["actual_cost"] > row["reserved_cost"]),
+                                   row["actual_tokens"] > row["reserved_tokens"]
+                                   or (row["actual_cost"] is not None and row["actual_cost"] > row["reserved_cost"])),
                                "provider_latency_ms": row["latency_ms"],
                                "response_diagnostics": checked_response_diagnostics(row["response_summary_json"]),
                                "failure": None if row["failure_code"] is None else {

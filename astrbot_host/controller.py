@@ -1222,6 +1222,10 @@ class AstrBotStagingController:
                     self.runtime.close()
                     self.runtime = None
         finally:
+            from .exchange_rate import close_exchange_rate_services
+            from .pricing_sources import close_pricing_catalog_services
+            await close_exchange_rate_services(self)
+            await close_pricing_catalog_services(self)
             if self.native_extensions is not None:
                 await self.native_extensions.aclose()
                 self.native_extensions = None
