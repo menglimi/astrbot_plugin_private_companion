@@ -6,7 +6,7 @@ import base64
 import json
 from types import SimpleNamespace as NS
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from tests import test_astrbot_staging_host as _host_import
 from astrbot.core.agent.message import Message, ToolCall
@@ -159,6 +159,24 @@ class CoreReplyToolsTests(CoreReplyToolFixture, unittest.IsolatedAsyncioTestCase
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) n FROM conversation_batches", ())["n"], 0)
         self.assertEqual(self.runtime.read_one("SELECT COUNT(*) n FROM model_rounds", ())["n"], 0)
         self.assertEqual(self.native_event.sent, [])
+
+    async def test_phone_task_returns_queued_and_preserves_the_order_goal(self):
+        goal = "沪上阿姨杨枝甘露，大杯，零卡糖，一对一接送，用美团红包，付款前确认"
+        task = {"task_id": "phone-order-test", "goal": goal, "state": "active"}
+        create = Mock(return_value=task)
+        self.app.phone_actions = NS(available=lambda _context: True, create=create)
+        event, request = self.prepare("phone-order-event")
+
+        result = await self.call_native("phone.task.start", {"goal": goal, "resume_checkout": True},
+                                        event=event, request=request)
+
+        self.assertEqual(result["state"], "queued")
+        self.assertEqual(result["payload"], task)
+        self.assertIn("state=queued", request.system_prompt)
+        self.assertIn("红包和优惠条件", request.system_prompt)
+        self.assertIn("设置 resume_checkout=true", request.system_prompt)
+        create.assert_called_once_with(self.context, goal, delay_minutes=0, max_steps=None,
+                                       shopping=True, resume_checkout=True)
 
     async def test_external_operation_uses_real_task_and_original_receipt(self):
         generation = self.tasks.generation

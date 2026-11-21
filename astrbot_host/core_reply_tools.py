@@ -89,17 +89,31 @@ access_scope=same_device 的链接仅供运行 AstrBot 的电脑使用；public_
 EVIDENCE_SPEC = ToolSpec("turn.evidence", "读取本轮已认证发言的证据句柄，供记忆、日历、成长和关系提案使用。",
                         encode({"type": "object", "properties": {}, "additionalProperties": False}))
 
+PHONE_TASK_INSTRUCTION = (
+    "调用 phone.task.start 时，目标要保留用户交办的全部细节，包括数量、规格、配送方式、红包和优惠条件、明确要求填写的备注和停止条件。"
+    "用户交办手机操作或调整当前订单时，先调用此工具，再根据回执回复。"
+    "结账暂停后的「继续」「改一对一配送」「记得用红包」都是当前订单的接续请求，设置 resume_checkout=true，"
+    "保留原订单和最新要求。结账设置改动后需要新的订单截图，付款应按新回执单独回复「确认支付」。"
+    "单独要求唤醒手机、解锁或查看当前页面时，登记普通手机任务，shopping 和 resume_checkout 都设为 false。"
+    "若工具返回 phone_checkout_unavailable，说明当前私聊没有可接续订单，按回执准确回应。"
+    "收到「点击极速支付」等说法时，按现有结账和确认状态处理；需要新回执时先接续订单，只有后台回执能确认是否实际支付。"
+    "state=queued 表示任务已登记，可以回复已接到任务，等后台回执。"
+    "工具未调用、失败或仍排队时，如实说明当前状态。商品、规格、红包、配送和付款状态以手机任务回执为准。"
+)
 PHONE_TASK_SPEC = ToolSpec(
     "phone.task.start",
-    "登记一件角色稍后自己用手机完成的事。只登记，不立即执行；到点后由后台行动回合观察屏幕并逐步操作。"
-    "只在已通过 phone.json 启用手机通道的私聊可用；需要用户明确同意。",
+    "登记当前私聊交办的手机任务，由后台逐步执行。登记回执为 queued。"
+    "点餐、购买等任务须设置 shopping=true，付款前会在原私聊发送订单明细和截图。"
+    "继续已停在结账环节的订单或调整配送、红包时，设置 resume_checkout=true。",
     encode({"type": "object", "properties": {
         "goal": {"type": "string", "minLength": 1, "maxLength": 500,
-                 "description": "要完成的事，写成可验证的目标，例如：打开某应用并完成签到。"},
+                 "description": "写成可验证的目标，保留用户指定的应用、商家、商品、数量、规格、配送方式、红包和优惠条件、备注和停止条件。重复交办同一件事时，将本轮新增要求合并到之前的目标。"},
         "delay_minutes": {"type": "integer", "minimum": 0, "maximum": 1440,
                           "description": "多少分钟后开始第一步；0 表示下一个空闲回合。"},
-        "max_steps": {"type": "integer", "minimum": 1, "maximum": 6,
-                      "description": "最多允许几步操作，默认按手机配置。"},
+        "max_steps": {"type": "integer", "minimum": 1, "maximum": 20,
+                      "description": "最多允许几步操作，默认按手机配置（最多 20 步）。"},
+        "shopping": {"type": "boolean", "description": "用户交办点餐、购物或其他涉及付款的任务时设为 true。"},
+        "resume_checkout": {"type": "boolean", "description": "调整或接续已登记的当前订单时设为 true，goal 写明原订单和本次调整。单独唤醒手机时设为 false。"},
     }, "required": ["goal"], "additionalProperties": False}))
 
 
@@ -687,10 +701,14 @@ class CoreReplyToolSession:
         goal = arguments.get("goal")
         if not isinstance(goal, str) or not goal.strip():
             raise TaskError("invalid_tool_arguments", "a phone task needs a goal")
+        resumed = arguments.get("resume_checkout") is True
         document = service.create(context, goal,
                                   delay_minutes=int(arguments.get("delay_minutes") or 0),
-                                  max_steps=arguments.get("max_steps"))
-        return {"state": "succeeded", "effect": "committed", "payload": document}
+                                  max_steps=arguments.get("max_steps"),
+                                  shopping=arguments.get("shopping") is True or resumed,
+                                  resume_checkout=resumed)
+        return {"state": "queued", "effect": "committed", "payload": document,
+                "reason": "手机任务已登记，等待后台执行。"}
 
     def _read(self, owner, action, arguments):
         app, context = self.application, self.context
@@ -806,6 +824,8 @@ def inject_core_reply_tools(event, req, *, application):
         if (session.group_tool_profile == "lean" and session.context.scope.kind is ScopeKind.GROUP
                 and LEAN_GROUP_INSTRUCTION not in req.system_prompt):
             req.system_prompt = (req.system_prompt.rstrip() + "\n\n" + LEAN_GROUP_INSTRUCTION).lstrip()
+        if any(item.owner == "phone" for item in offered) and PHONE_TASK_INSTRUCTION not in req.system_prompt:
+            req.system_prompt += "\n\n" + PHONE_TASK_INSTRUCTION
         if any(item.owner == "authoring" for item in offered):
             from companion_v2.conversation.content.authoring_workflow import INSTRUCTION as AUTHORING_INSTRUCTION
             if AUTHORING_INSTRUCTION not in req.system_prompt:

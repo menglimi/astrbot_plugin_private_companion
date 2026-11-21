@@ -361,6 +361,28 @@ class AdbClient:
                 raise AdbError("adb_screen_off", "the screen did not wake before the operation")
         return state
 
+    def _keyguard(self) -> tuple[str, str]:
+        policy = self.shell("dumpsys", "window", "policy", timeout=SCREENSHOT_TIMEOUT)
+        delegate = policy.partition("KeyguardServiceDelegate")[2]
+        showing = (re.search(r"^\s*mIsShowing=(true|false)\b", delegate, re.M)
+                   or re.search(r"^\s*showing=(true|false)\b", delegate, re.M))
+        secure = re.search(r"^\s*secure=(true|false)\b", delegate, re.M)
+        return (showing.group(1) if showing else "", secure.group(1) if secure else "")
+
+    def ensure_interactive(self) -> None:
+        """Wake the display and dismiss a confirmed swipe-only lock screen."""
+        state = self.ensure_awake()
+        showing, secure = self._keyguard()
+        if showing != "true":
+            return
+        if secure == "false" and state["on"] is True:
+            width, height = self.screen_size()
+            self.swipe(width // 2, height * 85 // 100, width // 2, height * 24 // 100, duration_ms=380)
+            time.sleep(0.7)
+            if self._keyguard()[0] == "false":
+                return
+        raise AdbError("adb_unlock_required", "unlock the phone before continuing")
+
     def tap(self, x: int, y: int) -> None:
         width, height = self.screen_size()
         if not (0 <= x < width and 0 <= y < height):

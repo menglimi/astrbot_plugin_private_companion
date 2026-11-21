@@ -115,7 +115,45 @@ class ConfigurationWebAPI:
                            (PREFIX + "/behavior/command", self.behavior_command, ["POST"], "Review one learned group habit")])
         if "device.phone" in self.sections:
             routes.append((PREFIX + "/phone-connection", self.phone_connection, ["POST"], "Set up an Android phone for this role"))
+            routes.append((PREFIX + "/phone-task", self.phone_task, ["POST"], "Start or inspect a private phone task"))
         return routes
+
+    async def phone_task(self):
+        from companion_v2.capabilities.privacy import is_core
+        from .web_api import outcome_response
+
+        try:
+            raw = await request.body()
+            if request.query or len(raw) > 4096:
+                raise ValueError("invalid phone task request")
+            data = _document(raw, expected={"action"}, optional=("goal", "shopping", "task_id"))
+            controller = self.controller
+            async with controller._control_lock:
+                session = controller.session
+                if controller._terminated or session is None or controller.runtime is None:
+                    raise TaskError("phone_unavailable", "start the plugin before running a phone task")
+                operator = dashboard_operator(controller.runtime, request.username, at=controller.now())
+                if not is_core(controller.runtime, operator.subject):
+                    raise TaskError("phone_admin_required", "phone tasks require an authenticated administrator")
+                context = await self._management_context(controller, session, "", "")
+                app = session.application
+                app.require_running()
+                if app.private_access_gate.denied(context, at=controller.now()):
+                    raise TaskError("private_access_dialogue_denied", "the target private route is unavailable")
+                service = app.phone_actions
+                if data["action"] == "start" and set(data) <= {"action", "goal", "shopping"}:
+                    if type(data.get("goal")) is not str or type(data.get("shopping", False)) is not bool:
+                        raise ValueError("invalid phone goal")
+                    result = service.create(context, data["goal"], shopping=data.get("shopping", False))
+                elif data["action"] == "status" and set(data) == {"action", "task_id"}:
+                    result = service.status(context, data["task_id"])
+                else:
+                    raise ValueError("unknown phone task request")
+                return outcome_response(Outcome.success(result))
+        except (TaskError, ConfigurationError) as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+            return outcome_response(Outcome.failed("phone_task_request_invalid", "invalid UTF-8 phone task request"))
 
     async def phone_connection(self):
         from .web_api import outcome_response

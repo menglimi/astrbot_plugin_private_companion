@@ -23,6 +23,7 @@ from companion_v2.model_gateway.failures import ModelFailure
 from companion_v2.model_gateway.models import (Amount, BudgetPolicy, CacheSignature, CapturedModelOutput,
     LocalProvider, MAX_MODEL_OUTPUT_TOKENS, ModelTaskProfile, ProviderResponse, is_released)
 from companion_v2.model_gateway.perception import capability_instruction
+from companion_v2.model_gateway.response_diagnostics import ResponseDiagnostics
 from companion_v2.model_gateway.routing import ModelRouter, configuration_fields
 from companion_v2.model_gateway.service import LocalModelGateway
 from companion_v2.sources.models import SourceRecord
@@ -279,6 +280,38 @@ class ModelGatewayTests(ModelFixture, unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.code, "model_usage_unknown")
         self.assertEqual([name for name, _ in self.called], ["primary"])
+
+    async def test_phone_rate_limit_tries_the_configured_fallback(self):
+        self.responses["primary"] = ProviderResponse(
+            "unknown", failure=ModelFailure.TRANSPORT, diagnostics=ResponseDiagnostics(
+                failure=ModelFailure.TRANSPORT, status_code=429))
+        request = replace(self.request(), output_format="phone_action")
+
+        completion = await self.gateway.generate(self.model_run(), request)
+
+        self.assertEqual(completion.draft.text, "private draft")
+        self.assertEqual([name for name, _ in self.called], ["primary", "fallback"])
+        self.assertEqual([(row["state"], row["actual_tokens"]) for row in self.call_rows()],
+                         [("unknown", None), ("generated", 15)])
+
+    async def test_phone_bad_json_retries_once_before_changing_providers(self):
+        invalid = ProviderResponse("unknown", usage=Amount(12, 30),
+                                  failure=ModelFailure.WIRE_DECODE, receipt_ref="primary:bad-json")
+        action = '{"action":"tap_text","text":"专人直送"}'
+        self.responses["fallback"] = ProviderResponse("not_started", usage=Amount(0, 0), receipt_ref="fallback:unavailable")
+
+        async def primary(envelope):
+            if "上一次回复无法解析" not in envelope.original.instruction:
+                return invalid
+            return ProviderResponse("generated", ModelDraft(action, ()), Amount(15, 40), "primary:repaired")
+
+        self.responses["primary"] = primary
+        request = replace(self.request(), output_format="phone_action", response_format="json_object")
+        completion = await self.gateway.generate(self.model_run(), request)
+
+        self.assertEqual(completion.draft.text, action)
+        self.assertEqual([name for name, _ in self.called], ["primary", "primary"])
+        self.assertEqual([(row["position"], row["actual_tokens"]) for row in self.call_rows()], [(0, 12), (2, 15)])
 
     async def test_configured_refusal_terms_do_not_intercept_when_disabled(self):
         self.patch_model(refusal_terms="cannot help with that")

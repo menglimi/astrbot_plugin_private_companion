@@ -18,16 +18,16 @@ from typing import Callable, Sequence
 
 from .adb import AdbClient, AdbError, ImeTextInput, UiElement, select_elements, take_ime_restore_error
 
-ACTION_KINDS = frozenset({"launch", "tap_text", "tap", "type", "key", "wait_text", "force_stop",
+ACTION_KINDS = frozenset({"launch", "tap_text", "tap", "swipe", "type", "key", "wait_text", "force_stop",
                           "done", "fail"})
 # Stopping an app is destructive; the operator must add it to the allowlist.
 DEFAULT_ALLOWED = frozenset(ACTION_KINDS - {"force_stop"})
-MUTATING = frozenset({"launch", "tap_text", "tap", "type", "key", "force_stop"})
-MAX_STEPS = 6
+MUTATING = frozenset({"launch", "tap_text", "tap", "swipe", "type", "key", "force_stop"})
+MAX_STEPS = 20
 MAX_SECONDS = 180.0
 MAX_ELEMENTS_IN_PROMPT = 24
 SETTLE_SECONDS = 0.6
-LAUNCH_SETTLE_SECONDS = 1.2
+LAUNCH_SETTLE_SECONDS = 10.0
 
 
 def _now() -> str:
@@ -44,12 +44,16 @@ class PhoneAction:
     key: str = ""
     seconds: float = 0.0
     reason: str = ""
+    to_x: int | None = None
+    to_y: int | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in ACTION_KINDS:
             raise ValueError("phone action must name a declared kind")
         if self.kind == "tap" and (self.x is None or self.y is None):
             raise ValueError("tap requires coordinates")
+        if self.kind == "swipe" and None in (self.x, self.y, self.to_x, self.to_y):
+            raise ValueError("swipe requires start and end coordinates")
         if self.kind in ("tap_text", "type") and not self.text.strip():
             raise ValueError("this action requires text")
         if self.kind == "launch" and not self.package.strip():
@@ -63,9 +67,9 @@ class PhoneAction:
 
     def document(self) -> dict:
         value = {"kind": self.kind}
-        for name in ("text", "x", "y", "package", "key", "seconds", "reason"):
+        for name in ("text", "x", "y", "to_x", "to_y", "package", "key", "seconds", "reason"):
             item = getattr(self, name)
-            if item not in ("", None, 0.0):
+            if item not in ("", None) and (name != "seconds" or item):
                 value[name] = item
         return value
 
@@ -74,7 +78,7 @@ def parse_action(payload: dict) -> PhoneAction:
     """Accept only the declared JSON object; unknown keys are a hard error."""
     if type(payload) is not dict:
         raise ValueError("phone action must be a JSON object")
-    allowed = {"kind", "text", "x", "y", "package", "key", "seconds", "reason"}
+    allowed = {"kind", "text", "x", "y", "to_x", "to_y", "package", "key", "seconds", "reason"}
     unknown = set(payload) - allowed
     if unknown:
         raise ValueError("phone action contains unknown fields: " + ", ".join(sorted(unknown)))
@@ -87,6 +91,7 @@ def parse_action(payload: dict) -> PhoneAction:
         kind=kind,
         text=str(payload.get("text") or "").strip()[:500],
         x=integer("x"), y=integer("y"),
+        to_x=integer("to_x"), to_y=integer("to_y"),
         package=str(payload.get("package") or "").strip()[:160],
         key=str(payload.get("key") or "").strip()[:32],
         seconds=float(number) if type(number) in (int, float) else 0.0,
@@ -182,7 +187,7 @@ class PhoneSession:
         error = take_ime_restore_error(self.client)
         if error is not None:
             raise error
-        self.client.ensure_awake()
+        self.client.ensure_interactive()
         width, height = self.client.screen_size()
         first = self.client.screenshot()
         elements = self.client.ui_dump()
@@ -203,7 +208,7 @@ class PhoneSession:
         if action.kind not in self.allowed:
             raise AdbError("phone_action_forbidden", "this action is not allowed for the current session")
         if action.kind in MUTATING:
-            self.client.ensure_awake()
+            self.client.ensure_interactive()
         if action.kind == "launch":
             return self.client.launch(action.package)
         if action.kind == "force_stop":
@@ -214,6 +219,9 @@ class PhoneSession:
         if action.kind == "tap":
             self.client.tap(int(action.x or 0), int(action.y or 0))
             return f"点击 ({action.x},{action.y})"
+        if action.kind == "swipe":
+            self.client.swipe(action.x, action.y, action.to_x, action.to_y)
+            return f"滑动 ({action.x},{action.y}) → ({action.to_x},{action.to_y})"
         if action.kind == "type":
             if all(32 <= ord(char) <= 126 for char in action.text):
                 self.client.text(action.text)

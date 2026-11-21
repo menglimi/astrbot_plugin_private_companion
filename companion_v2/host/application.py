@@ -105,7 +105,7 @@ from companion_v2.screen.configuration import (ScreenConfigurationOwner, ScreenS
     configuration_fields as screen_configuration_fields)
 from companion_v2.screen.interpretation import ScreenInterpretationService
 from companion_v2.screen.peek import ScreenPeekService
-from companion_v2.device.action_service import PhoneActionService
+from companion_v2.device.action_service import KIND as PHONE_KIND, NOTICE_OWNER as PHONE_NOTICE_OWNER, PhoneActionService
 from companion_v2.conversation.relay_settings import (RelayConfigurationOwner, RelaySettings,
     configuration_fields as relay_configuration_fields)
 from companion_v2.conversation.recall_settings import (RecallConfigurationOwner, RecallSettings,
@@ -342,11 +342,13 @@ class CompanionApplication:
         self.expression_style = ExpressionStyleService(runtime)
         self.expression_draft_review = ExpressionDraftReview(runtime)
         self.agenda = AgendaService(runtime)
+        self.phone_actions = PhoneActionService(runtime, notify=self.notify)
         self.outbound = OutboundDelivery(runtime, sender, (
             DeliveryOwner(AGENDA_OWNER, "reminder.deliver", lambda request, at: self.agenda_background.delivery_text(request, at),
                 lambda request, at: self.agenda_background.history_text(request, at)),
             DeliveryOwner(CONTACT_GROUP, CONTACT_GROUP, self.proactive.delivery_text, self.proactive.history_text),
             DeliveryOwner(FALLBACK_OWNER, "conversation.reply", lambda request, at: self.image_fallback.read(request, at)),
+            DeliveryOwner(PHONE_NOTICE_OWNER, PHONE_KIND, self.phone_actions.delivery_content),
         ), concurrency=limits.background_slots)
         self.outbound.on_delivered = self._mark_contact_sent
         self.outbound.on_receipt = self._record_contact_delivery_receipt
@@ -358,7 +360,6 @@ class CompanionApplication:
         self.video_narration = NativeVideoNarrationService(runtime, notify=self.notify)
         self.screen_interpretation = ScreenInterpretationService(runtime, notify=self.notify)
         self.screen_peek = ScreenPeekService(runtime, notify=self.notify)
-        self.phone_actions = PhoneActionService(runtime, notify=self.notify)
         self.authoring = ContentAuthoringWorkflow(runtime)
         self.scheduled_authoring = None
         self.poke_reply_model = PokeReplyModel(runtime, now=self.now)
@@ -1144,6 +1145,7 @@ class CompanionApplication:
             self.image_review_service.cancel_running()
             self.screen_interpretation.cancel_running()
             self.screen_peek.cancel_running()
+            self.phone_actions.cancel_running()
             self.memory.activity.close()
             if self.memory.game is not None:
                 self.memory.game.close()
@@ -1173,6 +1175,7 @@ class CompanionApplication:
                 + self.poke_reply_model.active_handles + tuple(self.poke_context_tasks)
                 + self.screen_interpretation.active_handles
                 + self.screen_peek.active_handles
+                + self.phone_actions.active_handles
                 + (self.authoring.runner.active_handles if self.authoring.runner else ())
                 + (self.external.runner.active_handles if self.external else ()))
 
@@ -1219,6 +1222,7 @@ class CompanionApplication:
             await self.video_narration.close()
             await self.screen_interpretation.close()
             await self.screen_peek.close()
+            await self.phone_actions.close()
             self.memory.activity.close()
             if self.memory.game is not None:
                 self.memory.game.close()

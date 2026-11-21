@@ -27,22 +27,23 @@ from .adb import AdbClient, discover_adb
 GROUP = "device.phone"
 OWNER = "device.phone.settings"
 SETTINGS_FILE = "phone.json"
-MAX_STEPS = 4
+DEFAULT_MAX_STEPS = 4
+MAX_STEPS = 20
 UNICODE_INPUTS = ("off", "adbkeyboard")
-DEFAULT_ALLOWED = "launch,tap_text,tap,type,key,wait_text,done,fail"
+DEFAULT_ALLOWED = "launch,tap_text,tap,swipe,type,key,wait_text,done,fail"
 
 DEFAULTS = {
     "enabled": False,
     "adb_path": "",
     "serial": "",
     "connect": "",
-    "max_steps": MAX_STEPS,
+    "max_steps": DEFAULT_MAX_STEPS,
     "unicode_input": "off",
     "ime_restore_seconds": 30,
     "allowed_actions": DEFAULT_ALLOWED,
     "allowed_subjects": "",
 }
-LIMITS = {"max_steps": (1, 6), "ime_restore_seconds": (5, 120)}
+LIMITS = {"max_steps": (1, MAX_STEPS), "ime_restore_seconds": (5, 120)}
 TEXT_LIMITS = {"adb_path": 4096, "serial": 256, "connect": 256,
                "allowed_actions": 512, "allowed_subjects": 1024, "unicode_input": 16}
 
@@ -131,7 +132,7 @@ class PhoneSettings:
     adb: str = ""
     serial: str = ""
     connect: str = ""
-    max_steps: int = MAX_STEPS
+    max_steps: int = DEFAULT_MAX_STEPS
     allowed: tuple[str, ...] = tuple(DEFAULT_ALLOWED.split(","))
     allowed_subjects: tuple[str, ...] = ()
     unicode_input: str = "off"
@@ -144,8 +145,8 @@ class PhoneSettings:
             value = getattr(self, name)
             if type(value) is not str or len(value) > 4096:
                 raise ValueError(f"phone settings {name} must be a short string")
-        if type(self.max_steps) is not int or not 1 <= self.max_steps <= 6:
-            raise ValueError("phone settings max_steps must be between 1 and 6")
+        if type(self.max_steps) is not int or not 1 <= self.max_steps <= MAX_STEPS:
+            raise ValueError(f"phone settings max_steps must be between 1 and {MAX_STEPS}")
         if (not self.allowed or len(set(self.allowed)) != len(self.allowed)
                 or not {"done", "fail"} <= set(self.allowed)):
             raise ValueError("phone settings allowed must name declared actions")
