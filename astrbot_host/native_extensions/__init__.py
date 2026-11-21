@@ -45,14 +45,116 @@ def together_execution_binding(settings):
             "tts_timeout_seconds": voice.timeout_seconds}
 
 
-def together_room_execution(binding, service):
+def _together_provider_id(provider):
+    try:
+        meta = provider.meta() if callable(getattr(provider, "meta", None)) else None
+    except Exception:
+        meta = None
+    config = getattr(provider, "provider_config", None) or getattr(provider, "config", None)
+    for candidate in (
+        meta.get("id") if isinstance(meta, dict) else getattr(meta, "id", ""),
+        config.get("id") if isinstance(config, dict) else getattr(config, "id", ""),
+        getattr(provider, "provider_id", ""),
+        getattr(provider, "id", ""),
+    ):
+        cleaned = str(candidate or "").strip()
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def _together_provider_available(provider_id, *, capability, context=None, service=None,
+                                 provider_resolver=None):
+    """Validate a room provider override when a host resolver is reachable.
+
+    Returns ``True`` when the provider is registered and exposes *capability*,
+    ``False`` when the host resolver checked it and found it missing or
+    incompatible, and ``None`` when no host resolver is available.
+    """
+    resolver = provider_resolver if callable(provider_resolver) else None
+    effective_context = context if context is not None else getattr(service, "context", None)
+    if resolver is None and effective_context is not None:
+        candidate = getattr(effective_context, "get_provider_by_id", None)
+        if callable(candidate):
+            resolver = candidate
+    if resolver is None and effective_context is None:
+        candidate = getattr(service, "_get_provider_by_id", None)
+        if callable(candidate):
+            resolver = candidate
+
+    tts_lister = (
+        getattr(effective_context, "get_all_tts_providers", None)
+        if capability == "get_audio" and effective_context is not None else None
+    )
+    if resolver is None and not callable(tts_lister):
+        return None
+
+    if resolver is not None:
+        try:
+            provider = resolver(provider_id)
+        except Exception as exc:
+            logger.debug("[CompanionV2] 校验一起房间 Provider 失败: id=%s error=%s",
+                         provider_id[:160], exc)
+            provider = None
+        if provider is not None and callable(getattr(provider, capability, None)):
+            return True
+
+    if callable(tts_lister):
+        try:
+            for provider in list(tts_lister() or ()):
+                if (_together_provider_id(provider) == provider_id
+                        and callable(getattr(provider, "get_audio", None))):
+                    return True
+        except Exception as exc:
+            logger.debug("[CompanionV2] 校验一起房间 TTS Provider 失败: id=%s error=%s",
+                         provider_id[:160], exc)
+    return False
+
+
+def together_room_execution(binding, service, *, context=None, provider_resolver=None):
     """Pin explicit room model choices while retaining the verified host defaults."""
     execution = dict(binding)
-    for target, setting in (("model_provider_id", "chat_provider_id"),
-                            ("tts_provider_id", "tts_provider_id")):
+    for target, setting, capability in (
+        ("model_provider_id", "chat_provider_id", "text_chat"),
+        ("tts_provider_id", "tts_provider_id", "get_audio"),
+    ):
         selected = str(getattr(service, setting, "") or "").strip()
-        if selected:
-            execution[target] = selected
+        if not selected:
+            continue
+        fallback = str(execution.get(target) or "").strip()
+        available = _together_provider_available(
+            selected,
+            capability=capability,
+            context=context,
+            service=service,
+            provider_resolver=provider_resolver,
+        )
+        if available is False:
+            if target == "model_provider_id" and not fallback:
+                logger.warning(
+                    "[CompanionV2] 一起房间配置的 %s=%s 无效或未注册，且主配置 %s 为空，无法回退",
+                    setting,
+                    selected[:160],
+                    target,
+                )
+                execution[target] = selected
+            elif selected != fallback:
+                logger.warning(
+                    "[CompanionV2] 一起房间配置的 %s=%s 无效或未注册，已回退到主配置 %s=%s",
+                    setting,
+                    selected[:160],
+                    target,
+                    fallback[:160] or "<默认>",
+                )
+            else:
+                logger.warning(
+                    "[CompanionV2] 一起房间配置的 %s=%s 无效或未注册（与主配置 %s 相同）",
+                    setting,
+                    selected[:160],
+                    target,
+                )
+            continue
+        execution[target] = selected
     timeout = getattr(service, "tts_timeout_seconds", None)
     if type(timeout) is int and 15 <= timeout <= 180:
         execution["tts_timeout_seconds"] = timeout
@@ -516,7 +618,7 @@ class NativeExtensionRegistry(AstrBotToolPort):
             request["host_persona"] = await self.persona_guard(
                 invocation.context.scope, invocation.context.role_binding)
             request["host_execution"] = together_room_execution(
-                self.together_execution, entry[1].instance)
+                self.together_execution, entry[1].instance, context=self.context)
             guard()
         if self.content is not None and invocation.descriptor.tool.action in CONTENT_ACTIONS:
             self.content.sources.synchronize()

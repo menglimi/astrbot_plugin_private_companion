@@ -75,7 +75,7 @@
         "type": "string",
         "default": "",
         "_special": "select_provider",
-        "hint": "留空时跟随私伴主配置 model.provider_id。选中的模型会用于房间对话与语音通话，必须是 AstrBot 里存在且支持文本对话的 Provider。"
+        "hint": "留空时跟随私伴主配置 model.provider_id。选中的模型会用于房间对话与语音通话，必须是 AstrBot 里存在且支持文本对话的 Provider；若所选 Provider 已删除或失效，建房时将记录告警并自动回退到主配置模型。"
       },
       "history_turns": {
         "description": "房间上下文轮数",
@@ -169,7 +169,7 @@
         "type": "string",
         "default": "",
         "_special": "select_provider_tts",
-        "hint": "留空时跟随 AstrBot 当前 TTS。"
+        "hint": "留空时跟随 AstrBot 当前 TTS；若所选 TTS Provider 已删除或失效，建房时将记录告警并自动回退到主配置或默认 TTS。"
       },
       "browser_tts_fallback": {
         "description": "浏览器朗读兜底",

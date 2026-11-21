@@ -929,6 +929,67 @@ class MobileGatewayMixin:
             return {'matched': True, 'available': False, 'ready': False, 'capabilities': {}, 'modes': [], 'reason': 'mobile_v2_unavailable'}
         return result
 
+    def _mobile_together_exception_response(
+        self,
+        *,
+        capability: str,
+        label: str,
+        default_code: str,
+        default_message: str,
+        unknown_message: str,
+        exc: Exception,
+        request_id: Any,
+        conflict_message: str = '这次请求的房间参数已变化，请使用原来的参数重试',
+        request_id_message: str = '房间请求编号格式不正确，请更新手机客户端后重试',
+    ) -> tuple[dict[str, Any], int]:
+        code = _clean(getattr(exc, 'code', ''), 100)
+        resolved_request_id = getattr(exc, 'request_id', request_id)
+        message = {
+            'mobile_together_result_unknown': unknown_message,
+            'mobile_v2_context_changed': '私聊人格或会话已变化，请回到原会话确认房间状态',
+            'mobile_together_request_conflict': conflict_message,
+            'mobile_request_id_required': request_id_message,
+        }.get(code, default_message)
+        logger.warning('[CompanionV2] %s失败 code=%s error_type=%s',
+                       label, code or default_code, type(exc).__name__)
+        body, status_code = self._mobile_json_error(message, 409)
+        body['code'] = code or default_code
+        if resolved_request_id:
+            body['data'] = {'request_id': resolved_request_id, 'execution_path': 'v2_native',
+                            'capability': capability}
+        if code == 'mobile_together_result_unknown' or not code:
+            body['uncertain'] = True
+        return body, status_code
+
+    def _mobile_together_failed_response(
+        self,
+        *,
+        capability: str,
+        label: str,
+        default_code: str,
+        failed_message: str,
+        unknown_message: str,
+        result: dict[str, Any],
+        request_id: Any,
+    ) -> tuple[dict[str, Any], int]:
+        uncertain = result.get('state') == 'unknown'
+        native_code = _clean(result.get('code'), 100)
+        body, status_code = self._mobile_json_error(unknown_message if uncertain else failed_message, 409)
+        body['code'] = ('mobile_together_result_unknown' if uncertain
+                        else native_code or default_code)
+        body['data'] = {
+            'request_id': request_id,
+            'execution_path': 'v2_native',
+            'capability': capability,
+            **{key: result[key] for key in ('state', 'operation_id', 'receipt_ref', 'effect') if key in result},
+        }
+        if native_code:
+            body['data']['error_code'] = native_code
+        logger.warning('[CompanionV2] %s未完成 code=%s operation=%s state=%s',
+                       label, native_code or body['code'], result.get('operation_id'), result.get('state'))
+        body['uncertain'] = uncertain
+        return body, status_code
+
     async def mobile_create_room(self) -> tuple[dict[str, Any], int]:
         auth = self._mobile_authorize()
         if not auth:
@@ -968,41 +1029,30 @@ class MobileGatewayMixin:
                         return self._mobile_json_error('视频通话需要 HTTPS 安全地址，才能由手机浏览器安全申请摄像头和麦克风', 409)
                     result = await self._mobile_call_gateway_aware(creator, session_token, request_id, mode)
                 except Exception as exc:
-                    code = _clean(getattr(exc, 'code', ''), 100)
-                    request_id = getattr(exc, 'request_id', request_id)
-                    message = {
-                        'mobile_together_result_unknown': '建房结果还在确认中，再点一次会继续检查这次请求',
-                        'mobile_v2_context_changed': '私聊人格或会话已变化，请回到原会话确认房间状态',
-                        'mobile_together_request_conflict': '这次请求的房间参数已变化，请使用原来的房间模式重试',
-                        'mobile_request_id_required': '建房请求编号格式不正确，请更新手机客户端后重试',
-                    }.get(code, 'V2 建房请求未完成')
-                    logger.warning('[CompanionV2] 手机建房失败 code=%s error_type=%s',
-                                   code or 'mobile_together_create_failed', type(exc).__name__)
-                    body, status = self._mobile_json_error(message, 409)
-                    body['code'] = code or 'mobile_together_create_failed'
-                    if request_id:
-                        body['data'] = {'request_id': request_id, 'execution_path': 'v2_native',
-                                        'capability': 'together.room.create'}
-                    if code == 'mobile_together_result_unknown' or not code:
-                        body['uncertain'] = True
-                    return body, status
+                    return self._mobile_together_exception_response(
+                        capability='together.room.create',
+                        label='手机建房',
+                        default_code='mobile_together_create_failed',
+                        default_message='V2 建房请求未完成',
+                        unknown_message='建房结果还在确认中，再点一次会继续检查这次请求',
+                        conflict_message='这次请求的房间参数已变化，请使用原来的房间模式重试',
+                        request_id_message='建房请求编号格式不正确，请更新手机客户端后重试',
+                        exc=exc,
+                        request_id=request_id,
+                    )
             if type(result) is not dict or result.get('matched') is not True:
                 return self._mobile_json_error('V2 建房目标已变化，请重新检查陪伴授权', 409)
             request_id = result.get('request_id', request_id)
             if result.get('state') != 'succeeded':
-                uncertain = result.get('state') == 'unknown'
-                native_code = _clean(result.get('code'), 100)
-                body, status = self._mobile_json_error('建房结果还在确认中，再点一次会继续检查这次请求' if uncertain else 'V2 房间服务未能完成建房', 409)
-                body['code'] = ('mobile_together_result_unknown' if uncertain
-                                else native_code or 'mobile_together_create_failed')
-                body['data'] = {'request_id': request_id, 'execution_path': 'v2_native', 'capability': 'together.room.create',
-                    **{key: result[key] for key in ('state', 'operation_id', 'receipt_ref', 'effect') if key in result}}
-                if native_code:
-                    body['data']['error_code'] = native_code
-                    logger.warning('[CompanionV2] 手机建房未完成 code=%s operation=%s state=%s',
-                                   native_code, result.get('operation_id'), result.get('state'))
-                body['uncertain'] = uncertain
-                return (body, status)
+                return self._mobile_together_failed_response(
+                    capability='together.room.create',
+                    label='手机建房',
+                    default_code='mobile_together_create_failed',
+                    failed_message='V2 房间服务未能完成建房',
+                    unknown_message='建房结果还在确认中，再点一次会继续检查这次请求',
+                    result=result,
+                    request_id=request_id,
+                )
             room = result.get('result', {}).get('room', {})
             room_url = self._mobile_room_url_via_gateway(str(room.get('url') or ''))
             native_client = _clean(payload.get('client'), 40).lower() in {'android_native', 'android-native'}
@@ -1038,17 +1088,28 @@ class MobileGatewayMixin:
                 await self._mobile_prepare_together_access(together)
                 result = await self._mobile_call_gateway_aware(callback, session_token, request_id, expires)
             except Exception as exc:
-                code = _clean(getattr(exc, 'code', ''), 100)
-                message = '邀请结果暂不可确认，请使用原 request_id 查询或重试' if code == 'mobile_together_result_unknown' else 'V2 邀请请求未完成'
-                return self._mobile_json_error(message, 409)
+                return self._mobile_together_exception_response(
+                    capability='together.room.invite',
+                    label='手机房间邀请',
+                    default_code='mobile_together_invite_failed',
+                    default_message='V2 邀请请求未完成',
+                    unknown_message='邀请结果暂不可确认，请使用原 request_id 查询或重试',
+                    exc=exc,
+                    request_id=request_id,
+                )
         if type(result) is not dict or result.get('matched') is not True:
             return self._mobile_json_error('V2 邀请目标已变化，请重新检查陪伴授权', 409)
+        request_id = result.get('request_id', request_id)
         if result.get('state') != 'succeeded':
-            uncertain = result.get('state') == 'unknown'
-            body, status_code = self._mobile_json_error('邀请结果暂不可确认，请勿更换 request_id 重复提交' if uncertain else 'V2 服务未能发出邀请', 409)
-            body['uncertain'] = uncertain
-            body['data'] = {key: result[key] for key in ('operation_id', 'receipt_ref', 'effect') if key in result}
-            return (body, status_code)
+            return self._mobile_together_failed_response(
+                capability='together.room.invite',
+                label='手机房间邀请',
+                default_code='mobile_together_invite_failed',
+                failed_message='V2 服务未能发出邀请',
+                unknown_message='邀请结果暂不可确认，请勿更换 request_id 重复提交',
+                result=result,
+                request_id=request_id,
+            )
         invitation = result.get('result', {}).get('invitation', {})
         return ({'ok': True, 'data': {**invitation, 'request_id': request_id}}, 200)
 
@@ -1082,17 +1143,28 @@ class MobileGatewayMixin:
                     return self._mobile_json_error('加入通话需要 HTTPS 安全地址', 409)
                 result = await self._mobile_call_gateway_aware(callback, session_token, request_id, invitation_id)
             except Exception as exc:
-                code = _clean(getattr(exc, 'code', ''), 100)
-                message = '加入结果暂不可确认，请使用原 request_id 查询或重试' if code == 'mobile_together_result_unknown' else 'V2 加入请求未完成'
-                return self._mobile_json_error(message, 409)
+                return self._mobile_together_exception_response(
+                    capability='together.room.join',
+                    label='手机房间加入',
+                    default_code='mobile_together_join_failed',
+                    default_message='V2 加入请求未完成',
+                    unknown_message='加入结果暂不可确认，请使用原 request_id 查询或重试',
+                    exc=exc,
+                    request_id=request_id,
+                )
         if type(result) is not dict or result.get('matched') is not True:
             return self._mobile_json_error('V2 加入目标已变化，请重新检查陪伴授权', 409)
+        request_id = result.get('request_id', request_id)
         if result.get('state') != 'succeeded':
-            uncertain = result.get('state') == 'unknown'
-            body, status_code = self._mobile_json_error('加入结果暂不可确认，请勿更换 request_id 重复提交' if uncertain else 'V2 服务未能加入此邀请', 409)
-            body['uncertain'] = uncertain
-            body['data'] = {key: result[key] for key in ('operation_id', 'receipt_ref', 'effect') if key in result}
-            return (body, status_code)
+            return self._mobile_together_failed_response(
+                capability='together.room.join',
+                label='手机房间加入',
+                default_code='mobile_together_join_failed',
+                failed_message='V2 服务未能加入此邀请',
+                unknown_message='加入结果暂不可确认，请勿更换 request_id 重复提交',
+                result=result,
+                request_id=request_id,
+            )
         joined = result.get('result', {}).get('join', {})
         joined = dict(joined)
         joined['join_url'] = self._mobile_room_url_via_gateway(str(joined.get('join_url') or ''))
