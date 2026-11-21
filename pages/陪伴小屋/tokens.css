@@ -175,7 +175,7 @@
   --t-accent-quiet:#252a3a;
   --t-accent-ink:#b3c3e8;
   --t-accent-solid:#61749f;
-  --t-accent-solid-hover:#7b92c8;
+  --t-accent-solid-hover:#51638d;
   --t-on-solid:#ffffff;
   --t-line:rgba(255,255,255,.10);
   --t-line-firm:rgba(255,255,255,.20);
@@ -218,7 +218,7 @@
   --t-accent-quiet:#332c22;
   --t-accent-ink:#d0b28e;
   --t-accent-solid:#8a6c4a;
-  --t-accent-solid-hover:#a3805a;
+  --t-accent-solid-hover:#785c3d;
   --t-on-solid:#ffffff;
   --t-line:rgba(232,226,214,.12);
   --t-line-firm:rgba(232,226,214,.22);
@@ -403,9 +403,23 @@
      却从未声明，那条 color 声明整条失效、警告文字退化成普通正文色。
      别名集中在这里，别再让页面各自拼一个令牌名。 */
   --t-danger:var(--t-risk-ink);
+  --t-danger-ink:var(--t-risk-ink);
   --t-danger-quiet:var(--t-risk-quiet);
   --t-caution:var(--t-warn-ink);
+  --t-warn-soft:var(--t-warn-quiet);
   --t-line-strong:var(--t-line-firm);
+  --t-ink:var(--t-text);
+  --t-muted:var(--t-text-faint);
+}
+/* 暗色主题下 --t-text 是浅色，若直接混入 --scrim 会把模态遮罩洗成灰白雾面；
+   改由深色画布色派生，确保暗色弹层遮罩真正压暗背景。 */
+:root[data-theme="night"],
+[data-theme="night"],
+:root[data-theme="dark"],
+[data-theme="dark"],
+:root[data-theme="walnut"],
+[data-theme="walnut"]{
+  --scrim:color-mix(in srgb, var(--t-canvas) 76%, transparent);
 }
 
 /* === 维度作用到既有排版 === */

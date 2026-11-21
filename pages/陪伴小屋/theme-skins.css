@@ -32,6 +32,39 @@ input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),textarea,se
 #homeShell .stage-region .room-stage{background-color:var(--t-surface-soft);
   background-image:var(--skin-canvas-pattern,none);background-size:var(--skin-canvas-size,auto)}
 
+/* 通用弹层、表单、胶囊与吐司统一接入语义令牌，避免深色主题出现白底浅字或冷紫残留。 */
+dialog{border-color:var(--t-line-firm);background:var(--t-surface-raised);color:var(--t-text);box-shadow:var(--t-shadow-lift)}
+dialog::backdrop{background:var(--scrim)}
+.detail-dialog{background:var(--t-surface-raised);color:var(--t-text);border-color:var(--t-line-firm)}
+.dialog-head{background:var(--t-veil);border-bottom-color:var(--t-line);color:var(--t-text-strong)}
+.dialog-head::before{background:var(--t-line-firm)}
+.dialog-quote{border-left-color:var(--t-line-firm);color:var(--t-text-soft)}
+.form-field input,.form-field textarea,.form-field select{border-color:var(--t-line-firm);background:var(--t-surface);color:var(--t-text)}
+.source-box{background:var(--t-surface-soft);color:var(--t-text-soft);border:1px solid var(--t-line)}
+.scene-choice{border-color:var(--t-line-firm);background:var(--t-surface);color:var(--t-text)}
+.scene-choice.active{border-color:var(--t-accent);box-shadow:0 0 0 2px var(--t-accent-quiet)}
+.scene-choice img{background:var(--t-surface-sunken)}
+.pill{background:var(--t-ok-quiet);color:var(--t-ok-ink)}
+.pill.amber{background:var(--t-warn-quiet);color:var(--t-warn-ink)}
+.pill.lavender{background:var(--t-accent-quiet);color:var(--t-accent-ink)}
+.pill.gray{background:var(--t-surface-sunken);color:var(--t-text-soft)}
+.pill.rose{background:var(--t-risk-quiet);color:var(--t-risk-ink)}
+input[type="range"]{accent-color:var(--t-accent-solid)}
+.switch{background:var(--t-line-firm)}
+.switch::after{background:var(--t-on-solid);box-shadow:var(--t-shadow)}
+.switch[aria-checked="true"]{background:var(--t-accent-solid)}
+.brand-symbol{background:linear-gradient(145deg,var(--t-brand),var(--t-accent-solid));color:var(--t-on-solid);box-shadow:var(--t-shadow)}
+#toast{background:var(--t-text-strong);color:var(--t-text-invert);box-shadow:var(--t-shadow-lift)}
+.icon-button:hover{background:var(--t-surface-soft)}
+kbd{color:var(--t-text-faint);background:var(--t-surface-soft);border-color:var(--t-line)}
+.search-field>svg,.search-result>svg{color:var(--t-text-faint)}
+.all-feature-toggle-visual::after{background:var(--t-on-solid);box-shadow:var(--t-shadow)}
+.room-editor-hint.is-blocked{color:var(--t-warn-ink)}
+
+/* 缓存命中率主读数与正向增幅走语义成功墨色，修复浅色主题下 #3FE0A6 对比度不足（1.69:1）。 */
+.maint-cache-donut strong,
+.maint-cache-rate-copy .maint-cache-period-comparison[data-direction="up"]{color:var(--t-ok-ink)}
+
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{scroll-behavior:auto!important}
 }

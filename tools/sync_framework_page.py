@@ -26,6 +26,44 @@ def normalized_payload(path, payload):
     return (text.rstrip("\n") + "\n").encode("utf-8")
 
 
+def _extract_workspace_tokens(tokens_css):
+    """Extract base scale defaults (before workspace CSS) and palette tokens (after workspace CSS).
+
+    Placing --sp-* / --r-* / --fs-* defaults BEFORE a workspace's own stylesheet keeps
+    each workspace's layout dimensions (--gap / --pad / custom radius overrides)
+    authoritative while guaranteeing workspace-theme.css always has valid scale tokens.
+    """
+    clean = re.sub(r"/\*.*?\*/", "", tokens_css, flags=re.S)
+    scale_prop = re.compile(
+        r"(--(?:sp-[0-9]+|r-(?:2xs|xs|sm|md|lg|xl|pill)|fs-[a-z]+|dur(?:-[a-z]+)?|"
+        r"type-scale|density-scale|font-scale|motion|numeric-font|numeric-spacing)\s*:[^;{}]+)"
+    )
+    alias_prop = re.compile(r"(--(?:t-[a-z0-9-]+|scrim)\s*:[^;{}]+)")
+    scale_blocks = []
+    palette_blocks = []
+    for match in re.finditer(r"([^{}]+)\{([^{}]+)\}", clean):
+        selector = match.group(1).strip()
+        body = match.group(2)
+        if "--t-canvas:" in body:
+            palette_blocks.append(f"{selector}{{{body.strip()}}}")
+            continue
+        if "--scrim:" in body and "data-theme" in selector:
+            palette_blocks.append(f"{selector}{{{body.strip()}}}")
+            continue
+        if selector == ":root":
+            scale_decls = [m.group(1).strip() for m in scale_prop.finditer(body)]
+            if scale_decls:
+                scale_blocks.append(f":root{{{';'.join(scale_decls)};}}")
+            alias_decls = [m.group(1).strip() for m in alias_prop.finditer(body)]
+            if alias_decls:
+                palette_blocks.append(f":root{{{';'.join(alias_decls)};}}")
+        elif re.fullmatch(r':root\[data-(?:radius|density|type-scale|motion)="[^"]+"\]', selector):
+            scale_decls = [m.group(1).strip() for m in scale_prop.finditer(body)]
+            if scale_decls:
+                scale_blocks.append(f"{selector}{{{';'.join(scale_decls)};}}")
+    return "\n".join(scale_blocks), "\n".join(palette_blocks)
+
+
 def publish(*, check=False, preview=None):
     changed = []
 
@@ -40,11 +78,10 @@ def publish(*, check=False, preview=None):
 
     projected = {}
     bundles = {}
-    # Only palette declarations belong in embedded workspaces. Their own layout
-    # and appearance dimensions remain authoritative.
+    # Supply canonical --sp-*/--r-*/--fs-* defaults before workspace CSS (so workspace
+    # layout dimensions remain authoritative), and project --t-* palette after it.
     tokens = (SOURCE / "tokens.css").read_text(encoding="utf-8-sig")
-    palette = "\n".join(match.group(0) for match in re.finditer(r"[^{}]+\{[^{}]+\}", tokens)
-                        if "--t-canvas:" in match.group(0))
+    workspace_scale, palette = _extract_workspace_tokens(tokens)
     workspace_theme = (SOURCE / "workspace-theme.css").read_text(encoding="utf-8-sig")
     for name, source in WORKSPACES.items():
         source_root = ROOT / "pages" / source
@@ -59,7 +96,7 @@ def publish(*, check=False, preview=None):
         css = (source_root / "style.css").read_text(encoding="utf-8-sig")
         html = re.sub(r'<script[^>]*src="[^"]+"[^>]*></script>', "", html)
         html = html.replace('<link rel="stylesheet" href="style.css">',
-                            "<style>" + css + "\n" + palette + "\n" + workspace_theme + "</style>")
+                            "<style>" + workspace_scale + "\n" + css + "\n" + palette + "\n" + workspace_theme + "</style>")
         html = html.replace("</body>", "<script>" + (bridge + "\n" + js).replace("</script", "<\\/script") + "</script></body>")
         bundles[name] = html
         for filename in ("index.html", "app.js", "style.css", *extras):

@@ -46,9 +46,9 @@ MIGRATED = ("text-page.css", "voice-page.css", "memory-page.css", "learning-page
             "entrance.css", "appearance-page.css", "setup-guide.css",
             "reply-page.css", "product-page.css",
             "backup-page.css", "console.css",
-            # 2026-10-01 这一批：模型与连接、状态、语义、行动、决策、话题。
+            # 2026-10-01 这一批：模型与连接、状态、语义、行动、决策。
             "models-page.css", "state-page.css", "semantic-page.css",
-            "action-page.css", "decision-page.css", "topic-page.css",
+            "action-page.css", "decision-page.css",
             # 自我页展示区与配置导航只使用统一尺度令牌。
             "self-page.css", "self-review-page.css",
             # 2026-10-01 这一批（治理与维护 + 芝麻字号）：见下面的迁移记录。

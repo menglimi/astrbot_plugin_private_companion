@@ -1,65 +1,67 @@
 /* Migration configuration comparison, shared with the reviewed guide design. */
-.migration-config-review { min-width:0; color:var(--ink); font-size:var(--fs-tiny); }
-.migration-config-heading { display:flex; align-items:center; justify-content:space-between; gap:var(--sp-3); padding:0 0 var(--sp-3); border-bottom:1px solid var(--line); }
+.migration-config-review { min-width:0; color:var(--t-text); font-size:var(--fs-tiny); }
+.migration-config-heading { display:flex; align-items:center; justify-content:space-between; gap:var(--sp-3); padding:0 0 var(--sp-3); border-bottom:1px solid var(--t-line); }
 .migration-config-heading h4 { margin:0; font-size:var(--fs-body); font-weight:600; }
-.migration-config-heading > span { color:var(--muted); font-size:var(--fs-micro); }
+.migration-config-heading > span { color:var(--t-text-soft); font-size:var(--fs-micro); }
 .migration-config-toolbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:var(--sp-3); padding:var(--sp-3) 0 var(--sp-4); }
 .migration-config-toolbar nav, .migration-config-tools { display:flex; align-items:center; flex-wrap:wrap; gap:var(--sp-1); min-width:0; }
-.migration-config-toolbar nav button { padding:var(--sp-2) var(--sp-3); min-height:32px; border:1px solid var(--line); border-radius:var(--r-pill); background:var(--surface); color:var(--muted); font:inherit; cursor:pointer; }
-.migration-config-toolbar nav button[aria-pressed="true"] { border-color:var(--accent); background:var(--surface-soft); color:var(--accent); font-weight:600; }
-.migration-config-search { display:flex; align-items:center; gap:var(--sp-2); width:220px; min-width:0; min-height:34px; padding:0 var(--sp-2); border:1px solid var(--line-strong); border-radius:var(--r-xs); background:var(--surface); }
+.migration-config-toolbar nav button { padding:var(--sp-2) var(--sp-3); min-height:32px; border:1px solid var(--t-line); border-radius:var(--r-pill); background:var(--t-surface); color:var(--t-text-soft); font:inherit; cursor:pointer; }
+.migration-config-toolbar nav button[aria-pressed="true"] { border-color:var(--t-accent); background:var(--t-surface-soft); color:var(--t-accent-ink); font-weight:600; }
+.migration-config-search { display:flex; align-items:center; gap:var(--sp-2); width:220px; min-width:0; min-height:34px; padding:0 var(--sp-2); border:1px solid var(--t-line-firm); border-radius:var(--r-xs); background:var(--t-surface); }
 .migration-config-search svg { flex:0 0 14px; width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.5; }
-.migration-config-search input { width:100%; min-width:0; padding:var(--sp-2) 0; border:0; background:transparent; color:var(--ink); font:inherit; outline-offset:3px; }
-.migration-config-reset { min-height:34px; padding:var(--sp-2) var(--sp-3); border:0; background:transparent; color:var(--accent); font:inherit; cursor:pointer; }
-.migration-config-table-wrap { max-height:58vh; min-height:160px; overflow:auto; border:1px solid var(--line-strong); border-radius:var(--r-xs); }
+.migration-config-search input { width:100%; min-width:0; padding:var(--sp-2) 0; border:0; background:transparent; color:var(--t-text); font:inherit; outline-offset:3px; }
+.migration-config-reset { min-height:34px; padding:var(--sp-2) var(--sp-3); border:0; background:transparent; color:var(--t-accent-ink); font:inherit; cursor:pointer; }
+.migration-config-table-wrap { max-height:58vh; min-height:160px; overflow:auto; border:1px solid var(--t-line-firm); border-radius:var(--r-xs); }
 .migration-config-table { width:100%; border-collapse:separate; border-spacing:0; table-layout:fixed; font-size:inherit; line-height:1.45; text-align:left; }
-.migration-config-table col.field { width:29%; }
-.migration-config-table col.values { width:26%; }
-.migration-config-table col.status { width:15%; }
-.migration-config-table col.actions { width:30%; }
-.migration-config-table th, .migration-config-table td { min-width:0; padding:var(--sp-3); border-bottom:1px solid var(--line); vertical-align:middle; overflow-wrap:anywhere; }
-.migration-config-table thead { position:sticky; top:0; z-index:1; background:var(--surface-soft); }
-.migration-config-table thead th { color:var(--muted); font-weight:600; font-size:var(--fs-micro); }
+.migration-config-table col.field { width:28%; }
+.migration-config-table col.values { width:25%; }
+.migration-config-table col.status { width:18%; }
+.migration-config-table col.actions { width:29%; }
+.migration-config-table th, .migration-config-table td { min-width:0; padding:var(--sp-3); border-bottom:1px solid var(--t-line); vertical-align:middle; overflow-wrap:anywhere; }
+.migration-config-table thead { position:sticky; top:0; z-index:1; background:var(--t-surface-soft); }
+.migration-config-table thead th { color:var(--t-text-soft); font-weight:600; font-size:var(--fs-micro); }
 .migration-config-table tbody tr:last-child > * { border-bottom:0; }
-.migration-config-table .migration-config-group th { padding:var(--sp-2) var(--sp-3); background:var(--surface-soft); color:var(--accent); }
+.migration-config-table .migration-config-group th { padding:var(--sp-2) var(--sp-3); background:var(--t-surface-soft); color:var(--t-accent-ink); }
 .migration-config-group th > div { display:flex; align-items:center; flex-wrap:wrap; gap:var(--sp-1) var(--sp-2); }
-.migration-config-group small { color:var(--muted); font-size:var(--fs-micro); font-weight:400; }
+.migration-config-group small { color:var(--t-text-soft); font-size:var(--fs-micro); font-weight:400; }
 .migration-config-group th > div > span { display:flex; flex-wrap:wrap; gap:var(--sp-1); margin-left:auto; }
 .migration-config-field > strong { display:block; font-weight:600; }
-.migration-config-field .migration-config-key { display:block; margin-top:2px; color:var(--muted); font-size:var(--fs-micro); font-weight:400; word-break:break-all; }
-.migration-config-field small { display:block; margin-top:3px; color:var(--muted); font-size:var(--fs-micro); font-weight:400; line-height:1.45; }
+.migration-config-field .migration-config-key { display:block; margin-top:2px; color:var(--t-text-faint); font-size:var(--fs-micro); font-weight:400; word-break:break-all; }
+.migration-config-field small { display:block; margin-top:3px; color:var(--t-text-soft); font-size:var(--fs-micro); font-weight:400; line-height:1.45; }
 .migration-config-diff { display:flex; align-items:baseline; flex-wrap:wrap; gap:var(--sp-1); min-width:0; font-variant-numeric:tabular-nums; }
-.migration-config-diff .old { color:var(--muted); }
-.migration-config-diff .arrow { color:var(--line-strong); }
+.migration-config-diff .old { color:var(--t-text-faint); }
+.migration-config-diff .arrow { color:var(--t-line-firm); }
 .migration-config-diff strong { font-weight:600; }
 .migration-config-badge { display:inline-flex; align-items:center; gap:var(--sp-1); padding:var(--sp-1) var(--sp-2); border-radius:var(--r-2xs); font-size:var(--fs-micro); white-space:nowrap; }
-.migration-config-badge.pending { background:var(--t-warn-soft, #fff4df); color:var(--t-warn-ink, #946020); }
+.migration-config-badge.pending { background:var(--t-warn-quiet); color:var(--t-warn-ink); }
 .migration-config-badge.pending::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; }
-.migration-config-badge.ready { color:var(--accent); background:var(--surface-soft); }
-.migration-config-badge.muted, .migration-config-locked { color:var(--muted); font-size:var(--fs-micro); }
-.migration-config-segment { display:inline-flex; max-width:100%; border:1px solid var(--line-strong); border-radius:var(--r-xs); overflow:hidden; }
-.migration-config-segment button, .migration-config-mini { min-height:28px; padding:var(--sp-1) var(--sp-2); border:0; background:var(--surface); color:var(--muted); font:inherit; font-size:var(--fs-micro); cursor:pointer; }
-.migration-config-segment button + button { border-left:1px solid var(--line); }
-.migration-config-segment button[aria-pressed="true"] { color:var(--accent); background:var(--surface-soft); font-weight:600; }
-.migration-config-mini { border:1px solid var(--line-strong); border-radius:var(--r-2xs); }
+.migration-config-badge.ready { color:var(--t-accent-ink); background:var(--t-accent-quiet); }
+.migration-config-badge.muted, .migration-config-locked { color:var(--t-text-faint); font-size:var(--fs-micro); }
+.migration-config-segment { display:inline-flex; max-width:100%; border:1px solid var(--t-line-firm); border-radius:var(--r-xs); overflow:hidden; }
+.migration-config-segment button, .migration-config-mini { min-height:28px; padding:var(--sp-1) var(--sp-2); border:0; background:var(--t-surface); color:var(--t-text-soft); font:inherit; font-size:var(--fs-micro); cursor:pointer; }
+.migration-config-segment button + button { border-left:1px solid var(--t-line); }
+.migration-config-segment button[aria-pressed="true"] { color:var(--t-accent-ink); background:var(--t-accent-quiet); font-weight:600; }
+.migration-config-mini { border:1px solid var(--t-line-firm); border-radius:var(--r-2xs); }
 .migration-config-manual { display:flex; flex-wrap:wrap; gap:var(--sp-1); }
-.migration-config-review button:hover:not(:disabled) { color:var(--accent); background:var(--surface-soft); }
+.migration-config-review button:hover:not(:disabled) { color:var(--t-accent-ink); background:var(--t-surface-soft); }
 .migration-config-review button:disabled { opacity:.5; cursor:not-allowed; }
-.migration-config-pagination { display:flex; align-items:center; justify-content:flex-end; gap:var(--sp-2); padding:var(--sp-2) 0 0; color:var(--muted); font-size:var(--fs-micro); }
+.migration-config-pagination { display:flex; align-items:center; justify-content:flex-end; gap:var(--sp-2); padding:var(--sp-2) 0 0; color:var(--t-text-soft); font-size:var(--fs-micro); }
 .migration-config-pagination span { margin-right:auto; }
-.migration-config-summary { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:var(--sp-1) var(--sp-4); margin-top:var(--sp-3); padding:var(--sp-2) var(--sp-3); border:1px dashed var(--line-strong); border-radius:var(--r-xs); color:var(--muted); font-size:var(--fs-tiny); }
-.migration-config-summary strong { color:var(--ink); font-weight:600; }
-.migration-config-summary .pending { color:var(--t-warn-ink, #946020); }
-.migration-config-summary .ready { color:var(--accent); }
-.migration-config-hint { margin:var(--sp-2) 0 0; color:var(--muted); font-size:var(--fs-micro); line-height:1.55; }
-.migration-config-empty { padding:var(--sp-6) var(--sp-4); border:1px solid var(--line); border-radius:var(--r-xs); color:var(--muted); text-align:center; }
-.setup-migration-config-options { margin:var(--sp-4) 0 0; color:var(--muted); font-size:var(--fs-micro); }
+.migration-config-summary { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:var(--sp-1) var(--sp-4); margin-top:var(--sp-3); padding:var(--sp-2) var(--sp-3); border:1px dashed var(--t-line-firm); border-radius:var(--r-xs); color:var(--t-text-soft); font-size:var(--fs-tiny); }
+.migration-config-summary strong { color:var(--t-text-strong); font-weight:600; }
+.migration-config-summary .pending { color:var(--t-warn-ink); }
+.migration-config-summary .ready { color:var(--t-accent-ink); }
+.migration-config-hint { margin:var(--sp-2) 0 0; color:var(--t-text-soft); font-size:var(--fs-micro); line-height:1.55; }
+.migration-config-empty { padding:var(--sp-6) var(--sp-4); border:1px solid var(--t-line); border-radius:var(--r-xs); color:var(--t-text-soft); text-align:center; }
+.setup-migration-config-options { margin:var(--sp-4) 0 0; color:var(--t-text-soft); font-size:var(--fs-micro); }
 .setup-migration-config-options summary { cursor:pointer; }
 .setup-migration-config-options .setup-actions { margin-top:var(--sp-3); }
+@media (max-width:860px) {
+  .migration-config-table { min-width:640px; }
+}
 @media (max-width:700px) {
   .migration-config-tools { width:100%; justify-content:space-between; }
   .migration-config-search { flex:1 1 160px; }
-  .migration-config-table { min-width:640px; }
   .migration-config-table-wrap { max-height:62vh; }
   .migration-config-group small { display:none; }
   .migration-config-table th, .migration-config-table td { padding:var(--sp-2); }

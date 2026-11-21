@@ -223,10 +223,10 @@
 .backup-preview-scope {
   margin:0;
   padding:var(--sp-2) var(--sp-3);
-  border-left: 3px solid var(--m-line2);
+  border-left: 3px solid var(--t-line-firm);
   font-size: var(--fs-tiny);
   line-height: 1.7;
-  color: var(--m-ink2);
+  color: var(--t-text-soft);
 }
 
 /* 会替换掉什么：这是整个页面唯一需要用户读全的一段。 */

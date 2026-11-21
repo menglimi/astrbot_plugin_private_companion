@@ -882,7 +882,8 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-role-card-heading {
 body:not(.room-editing) #homeShell[data-away="true"] .stage-region:hover,
 body:not(.room-editing) #homeShell[data-away="true"] .stage-region:focus-within { opacity: 1; }
 #homeShell[data-away="true"] .shell-panel-body {
-  padding-bottom: calc(var(--sp-4) + var(--shell-pip-h) + var(--shell-pad));
+  padding-bottom: calc(var(--sp-6) + max(var(--shell-pip-h, 118px), 118px) + var(--shell-pad));
+  scroll-padding-bottom: calc(var(--sp-6) + max(var(--shell-pip-h, 118px), 118px) + var(--shell-pad));
 }
 .stage-role-card-name {
   min-width: 0;
