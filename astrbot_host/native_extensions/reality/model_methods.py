@@ -160,39 +160,3 @@ class RealityModelMethods:
         sender = getattr(event, 'send', None)
         if callable(sender):
             await sender(event.plain_result(str(text or '')))
-
-    def _reality_touch_location_check_text(self, user_id: str) -> str:
-        context = self.mobile_context(user_id)
-        location = context.get('location') if isinstance(context.get('location'), dict) else {}
-        if not context.get('available'):
-            reason = _single_line(location.get('reason'), 80)
-            if reason == 'mobile_gateway_disabled':
-                return '位置检查：手机陪伴终端网关未启用或尚未运行。'
-            ttl = _safe_int((context.get('privacy') or {}).get('expires_after_seconds') if isinstance(context.get('privacy'), dict) else 0, 900, 60)
-            return f'位置检查：当前没有有效的手机前台位置；可能尚未上报、已撤销或已超过 {ttl} 秒有效期。'
-        parts = ['位置检查：手机陪伴终端位置有效']
-        place = location.get('place') if isinstance(location.get('place'), dict) else {}
-        place_name = _single_line(place.get('name'), 40) if place.get('matched') else ''
-        label = _single_line(location.get('label'), 40)
-        if place_name:
-            parts.append(f'标记地点：{place_name}')
-        elif label:
-            parts.append(f'设备标记：{label}')
-        latitude = location.get('latitude')
-        longitude = location.get('longitude')
-        if latitude is not None and longitude is not None:
-            parts.append(f'约略坐标：{latitude}, {longitude}')
-        accuracy = _safe_float(location.get('accuracy_m'), 0.0, 0.0)
-        if accuracy > 0:
-            parts.append(f'精度约 {round(accuracy)} 米')
-        captured_at = _safe_float(location.get('captured_at'), 0.0, 0.0)
-        if captured_at > 0:
-            try:
-                timezone = zoneinfo.ZoneInfo(self.environment_perception_timezone or 'Asia/Shanghai')
-            except (zoneinfo.ZoneInfoNotFoundError, ValueError):
-                timezone = zoneinfo.ZoneInfo('Asia/Shanghai')
-            captured_text = datetime.fromtimestamp(captured_at, timezone).strftime('%Y-%m-%d %H:%M:%S')
-            parts.append(f'采集时间：{captured_text}')
-        age = _safe_int(location.get('age_seconds'), 0, 0)
-        parts.append(f'距采集约 {age} 秒')
-        return '；'.join(parts) + '。'

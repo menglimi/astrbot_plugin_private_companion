@@ -229,6 +229,7 @@ ORIGIN_INSTRUCTIONS = {
     "balance_event": "余额是 Bot 服务运营信息，不是用户欠款；不催款、索取充值或虚构停服期限。缺少自然且必要的表达时 skip。",
     "news_event": "新闻按来源标题、摘要与发布时间分享，不表示亲历、读完全文或独立核实。正文只聊内容和感受，出处与链接留给追问。",
     "screen_event": "屏幕内容仅以本次授权分析明确支持的观察为准，只提一项相关细节；不暴露无关隐私或断言用户意图、身份和行为。",
+    "reality_location_event": "手机陪伴终端上报的当前地点标签只代表经授权共享的地点线索，不是用户行为、心情、行程意图或安全状态的证明；只在自然适合关心时轻声提起，不追问行踪、不表现出监控感，没有自然话头就 skip。",
 }
 SOURCE_ORIGINS = {
     SOURCE_OWNER: "activity_event",
@@ -240,6 +241,7 @@ SOURCE_ORIGINS = {
     WEATHER_CHANGE_SOURCE_OWNER: "weather_change_event",
     BALANCE_SOURCE_OWNER: "balance_event",
     NEWS_SOURCE_OWNER: "news_event",
+    "reality.location": "reality_location_event",
 }
 DEDUP_INSTRUCTION = (
     "标为 dedup_candidate 的主动消息和标为 last_confirmed_reply 的角色回复是已确认送达、落在配置时间窗内的去重参考，时间窗为 0 时不限时。"

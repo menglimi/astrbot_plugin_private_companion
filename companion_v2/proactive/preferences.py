@@ -28,6 +28,7 @@ DEDUP_EVENT_POLICY = (
     ("activity_event", "life_event"), ("journal_event", "life_event"),
     ("date_event", "daily_slot"), ("meal_event", "daily_slot"),
     ("news_event", "content_fingerprint"), ("balance_event", "event_anchor"),
+    ("reality_location_event", "event_revision"),
 )
 
 

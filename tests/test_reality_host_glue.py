@@ -75,6 +75,7 @@ class RealityHostGlueTests(unittest.IsolatedAsyncioTestCase):
         prepared = require(await self.controller.prepare_core_reply(
             support.FakeEvent(self.native, event_id="reality-seed", text="昨天一起聊到那本天文书。")))
         await prepared["native_source_future"]
+        self.prepared = prepared
         self.context = prepared["context"]
         self.app = self.controller.session.application
         self.api = UnifiedCompanionExtensionAPI(self.controller)
@@ -726,6 +727,10 @@ class RealityHostGlueTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(expected & {entry[0] for entry in registered})
 
     async def test_location_notification_uses_per_user_snapshot_consent_and_contact_policy(self):
+        from companion_v2.conversation.native_turns import NativeConversationTurns
+        from companion_v2.execution.models import digest as v2_digest
+
+        NativeConversationTurns(self.app.runtime).mark(self.prepared, "completed", at=support.NOW)
         mobile = {"available": True, "location": {"available": True, "captured_at": 123,
             "latitude": 30, "longitude": 120, "place": {"matched": True, "name": "家"}}}
         self.runtime.mobile_context = Mock(return_value=mobile)
@@ -742,8 +747,16 @@ class RealityHostGlueTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await self.api.notify_mobile_location_update("200"))["reason"], "reality_location_unchanged")
         self.app.proactive.contact.assert_awaited_once()
         context, opportunity, intents = self.app.proactive.contact.await_args.args
+        kwargs = self.app.proactive.contact.await_args.kwargs
         self.assertEqual(context, self.context)
         self.assertEqual(intents[0].purpose, "environment")
+        origin = kwargs.get("automatic_origin")
+        self.assertIsInstance(origin, dict)
+        self.assertEqual(origin.get("batch_id"), self.prepared["turn_id"])
+        self.assertEqual(origin.get("role_hash"), v2_digest(kwargs["role_instruction"]))
+        self.assertIn("reality_location_event", origin)
+        self.assertEqual(origin["reality_location_event"]["source_id"],
+                         intents[0].thought.evidence.sources[0].source_id)
         source = require(self.app.proactive.sources.read(intents[0].thought.evidence.sources[0],
             resolved=context.actor, capability="text", observed_at=support.NOW,
             authorizer=self.app.tasks.identity))
