@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import base64
+from collections import OrderedDict
 from hashlib import sha256
 from io import BytesIO
 import json
 import os
+from pathlib import Path
+import re
 import subprocess
 import sys
+import tempfile
+import threading
 import warnings
 import zipfile
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -44,21 +49,126 @@ from companion_v2.references.wardrobe import (
     WardrobeConfigurationOwner,
     configuration_fields as wardrobe_fields,
 )
-from companion_v2.storage.generated_album import sync_generated_album_folder
+from companion_v2.storage.generated_album import album_filename, sync_generated_album_folder
 from companion_v2.storage.runtime import StorageRuntime
 
 
 MANAGEMENT_SCOPE = "page.management"
 MANAGEMENT_ACTION = "memory.manage"
-ALBUM_LIMIT = 16
-ALBUM_SYNC_PAGE_LIMIT = 32
+ALBUM_LIMIT = 24
+ALBUM_MAX_LIMIT = 60
+ALBUM_SYNC_PAGE_LIMIT = 60
 ALBUM_SELECTION_LIMIT = 24
 ALBUM_EXPORT_BYTES = 32 * 1024 * 1024
 ALBUM_HIDDEN_KEY_PREFIX = "image.album.hidden.v1:"
+ALBUM_THUMBNAIL_SIZE = 360
+ALBUM_THUMBNAIL_QUALITY = 74
+ALBUM_THUMBNAIL_MEMORY_CAP = 512
+ALBUM_THUMBNAIL_DISK_CAP = 1024
+ALBUM_THUMBNAIL_DIRNAME = "album-thumbnails"
 THUMBNAIL_BYTES = 160 * 1024
 REFERENCE_THUMBNAIL_BYTES = 64 * 1024
 UPLOAD_MAX_BYTES = 12 * 1024 * 1024
 IMAGE_ROLES = tuple(role.value for role in ReferenceRole)
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+_SAFE_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+_ALBUM_THUMBNAIL_LOCK = threading.Lock()
+_ALBUM_THUMBNAIL_MEMORY: OrderedDict[tuple[str, int], bytes] = OrderedDict()
+
+
+def _thumbnail_cache_dir(data_root) -> Path | None:
+    if data_root is None:
+        return None
+    try:
+        root = Path(data_root).resolve()
+        if not root.is_dir():
+            return None
+        media_dir = root / "media"
+        if media_dir.is_symlink():
+            return None
+        cache_dir = media_dir / ALBUM_THUMBNAIL_DIRNAME
+        if cache_dir.is_symlink():
+            return None
+        resolved = cache_dir.resolve()
+        if not resolved.is_relative_to(root):
+            return None
+        return resolved
+    except (OSError, ValueError):
+        return None
+
+
+def _prune_thumbnail_disk_cache(cache_dir: Path, *, cap: int = ALBUM_THUMBNAIL_DISK_CAP) -> None:
+    try:
+        entries = []
+        with os.scandir(cache_dir) as scan:
+            for entry in scan:
+                if entry.name.startswith(".") or not entry.name.endswith(".jpg"):
+                    continue
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    entries.append((entry.stat(follow_symlinks=False).st_mtime, Path(entry.path)))
+                except OSError:
+                    continue
+        if len(entries) <= cap:
+            return
+        target_keep = max(1, int(cap * 0.8))
+        entries.sort(key=lambda pair: pair[0])
+        for _, victim in entries[:len(entries) - target_keep]:
+            try:
+                victim.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _read_disk_thumbnail(cache_dir: Path | None, content_hash: str, size: int) -> bytes | None:
+    if cache_dir is None or _HEX64_RE.fullmatch(content_hash) is None:
+        return None
+    target = cache_dir / f"{content_hash}-{size}.jpg"
+    try:
+        if target.is_symlink() or not target.is_file():
+            return None
+        if target.resolve().parent != cache_dir:
+            return None
+        data = target.read_bytes()
+        if 0 < len(data) <= THUMBNAIL_BYTES and data.startswith(b"\xff\xd8\xff"):
+            return data
+    except OSError:
+        return None
+    return None
+
+
+def _write_disk_thumbnail(cache_dir: Path | None, content_hash: str, size: int, data: bytes) -> None:
+    if cache_dir is None or _HEX64_RE.fullmatch(content_hash) is None or not data:
+        return
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        resolved_dir = cache_dir.resolve()
+        target = resolved_dir / f"{content_hash}-{size}.jpg"
+        if target.parent != resolved_dir or target.is_symlink() or target.exists():
+            return
+        handle, temporary = tempfile.mkstemp(prefix=".thumb-", suffix=".tmp", dir=resolved_dir)
+        try:
+            with os.fdopen(handle, "wb") as stream:
+                stream.write(data)
+            if not target.exists() and not target.is_symlink():
+                os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+        _prune_thumbnail_disk_cache(resolved_dir)
+    except OSError:
+        pass
+
+
+def _clear_album_thumbnail_memory_cache() -> None:
+    with _ALBUM_THUMBNAIL_LOCK:
+        _ALBUM_THUMBNAIL_MEMORY.clear()
 
 
 def _asset_view(repository, owner, asset):
@@ -403,32 +513,141 @@ class ReferenceMaterialManagement:
             "total_count": synced["total_count"],
         }
 
-    def album(self, operator, context, *, at, cursor=None):
-        self._admit(operator, context, at)
-        page = self.application.messages.generated_images.album_page(
-            context, at, limit=ALBUM_LIMIT, cursor=cursor)
-        hidden = self._hidden_album_ids(context)
-        items = []
-        for item in page["items"]:
-            if item.image_id in hidden:
-                continue
-            with Image.open(BytesIO(item.content)) as source:
+    @staticmethod
+    def _resolve_album_mime_type(content: bytes, declared: str = "") -> str:
+        normalized = (declared or "").strip().lower()
+        if normalized in _SAFE_IMAGE_MIMES:
+            return normalized
+        if content.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if content.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+            return "image/webp"
+        if content[:6] in {b"GIF87a", b"GIF89a"}:
+            return "image/gif"
+        return "application/octet-stream"
+
+    @staticmethod
+    def _render_album_thumbnail(payload: bytes, *, size: int = ALBUM_THUMBNAIL_SIZE) -> bytes:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(payload)) as source:
                 source.load()
-                source.thumbnail((480, 480), Image.Resampling.LANCZOS)
+                preview = ImageOps.exif_transpose(source)
+                preview.thumbnail((size, size), Image.Resampling.LANCZOS)
+                if preview.mode in ("RGBA", "LA") or (preview.mode == "P" and "transparency" in preview.info):
+                    rgba = preview.convert("RGBA")
+                    canvas = Image.new("RGB", rgba.size, "#f3f4f4")
+                    canvas.paste(rgba, mask=rgba.getchannel("A"))
+                else:
+                    canvas = preview.convert("RGB")
                 thumbnail = BytesIO()
-                source.convert("RGB").save(thumbnail, format="JPEG", quality=76, optimize=True)
-            data = thumbnail.getvalue()
-            if not data or len(data) > THUMBNAIL_BYTES:
-                raise TaskError("generated_album_thumbnail_invalid", "an album preview exceeds its image budget")
+                canvas.save(thumbnail, format="JPEG", quality=ALBUM_THUMBNAIL_QUALITY, optimize=True)
+        data = thumbnail.getvalue()
+        if not data or len(data) > THUMBNAIL_BYTES:
+            raise TaskError("generated_album_thumbnail_invalid", "an album preview exceeds its image budget")
+        return data
+
+    def _album_thumbnail_bytes(self, item) -> bytes:
+        raw_hash = getattr(getattr(item, "descriptor", None), "content_hash", "")
+        if isinstance(raw_hash, str) and _HEX64_RE.fullmatch(raw_hash.lower()):
+            content_hash = raw_hash.lower()
+        else:
+            content_hash = sha256(item.content).hexdigest()
+        cache_key = (content_hash, ALBUM_THUMBNAIL_SIZE)
+        with _ALBUM_THUMBNAIL_LOCK:
+            cached = _ALBUM_THUMBNAIL_MEMORY.get(cache_key)
+            if cached is not None:
+                _ALBUM_THUMBNAIL_MEMORY.move_to_end(cache_key)
+                return cached
+        cache_dir = _thumbnail_cache_dir(getattr(self.runtime, "data_root", None))
+        disk_hit = _read_disk_thumbnail(cache_dir, content_hash, ALBUM_THUMBNAIL_SIZE)
+        if disk_hit is not None:
+            with _ALBUM_THUMBNAIL_LOCK:
+                _ALBUM_THUMBNAIL_MEMORY[cache_key] = disk_hit
+                _ALBUM_THUMBNAIL_MEMORY.move_to_end(cache_key)
+                while len(_ALBUM_THUMBNAIL_MEMORY) > ALBUM_THUMBNAIL_MEMORY_CAP:
+                    _ALBUM_THUMBNAIL_MEMORY.popitem(last=False)
+            return disk_hit
+        data = self._render_album_thumbnail(item.content, size=ALBUM_THUMBNAIL_SIZE)
+        _write_disk_thumbnail(cache_dir, content_hash, ALBUM_THUMBNAIL_SIZE, data)
+        with _ALBUM_THUMBNAIL_LOCK:
+            _ALBUM_THUMBNAIL_MEMORY[cache_key] = data
+            _ALBUM_THUMBNAIL_MEMORY.move_to_end(cache_key)
+            while len(_ALBUM_THUMBNAIL_MEMORY) > ALBUM_THUMBNAIL_MEMORY_CAP:
+                _ALBUM_THUMBNAIL_MEMORY.popitem(last=False)
+        return data
+
+    def album(self, operator, context, *, at, cursor=None, limit=ALBUM_LIMIT):
+        self._admit(operator, context, at)
+        if type(limit) is not int or isinstance(limit, bool) or not 1 <= limit <= ALBUM_MAX_LIMIT:
+            raise TaskError("generated_album_limit_invalid", "the album page size is outside its bounds")
+        hidden = self._hidden_album_ids(context)
+        current_cursor = cursor
+        seen_cursors = set()
+        visible = []
+        next_cursor = None
+        for _ in range(8):
+            page = self.application.messages.generated_images.album_page(
+                context, at, limit=limit, cursor=current_cursor)
+            next_cursor = page.get("next_cursor")
+            visible = [item for item in page["items"] if item.image_id not in hidden]
+            if visible or not next_cursor or next_cursor in seen_cursors:
+                break
+            seen_cursors.add(next_cursor)
+            current_cursor = next_cursor
+        items = []
+        for item in visible:
+            mime_type = self._resolve_album_mime_type(
+                item.content, getattr(item.descriptor, "mime_type", ""))
+            filename = album_filename(
+                item.image_id, item.created_at, item.action, item.content, mime_type=mime_type)
+            data = self._album_thumbnail_bytes(item)
             items.append({
                 "image_id": item.image_id,
+                "filename": filename,
+                "mime_type": mime_type,
+                "size_bytes": len(item.content),
                 "created_at": item.created_at,
                 "action": item.action,
                 "width": item.descriptor.width,
                 "height": item.descriptor.height,
                 "thumbnail": "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii"),
             })
-        return {"items": items, "next_cursor": page["next_cursor"]}
+        counter = getattr(self.application.messages.generated_images, "album_count", None)
+        if callable(counter):
+            counted = counter(context, at, hidden_ids=hidden)
+            total = max(counted, len(items)) if (type(counted) is int and counted >= 0) else None
+        else:
+            total = len(items) if (cursor is None and next_cursor is None) else None
+        return {"items": items, "next_cursor": next_cursor, "total": total}
+
+    def album_image(self, operator, context, *, at, image_id):
+        self._admit(operator, context, at)
+        if type(image_id) is not str or not 1 <= len(image_id) <= 180:
+            raise TaskError("generated_image_missing", "select one image from this role's album")
+        if image_id in self._hidden_album_ids(context):
+            raise TaskError("generated_image_missing", "the selected album image is unavailable")
+        item = self.application.messages.generated_images.album_image(context, at, image_id)
+        payload = item.content
+        if not isinstance(payload, bytes) or not payload or len(payload) > MAX_ASSET_BYTES:
+            raise TaskError("generated_image_missing", "the selected album image is unavailable")
+        mime_type = self._resolve_album_mime_type(
+            payload, getattr(item.descriptor, "mime_type", ""))
+        filename = album_filename(
+            item.image_id, item.created_at, item.action, payload, mime_type=mime_type)
+        return {
+            "image_id": item.image_id,
+            "filename": filename,
+            "mime_type": mime_type,
+            "width": item.descriptor.width,
+            "height": item.descriptor.height,
+            "size_bytes": len(payload),
+            "created_at": item.created_at,
+            "action": item.action,
+            "data_url": f"data:{mime_type};base64," + base64.b64encode(payload).decode("ascii"),
+        }
 
     @staticmethod
     def _operation_key(value):
