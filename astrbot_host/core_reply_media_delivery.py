@@ -64,7 +64,7 @@ def native_reply_messages(event, message):
     groups, current = [], []
     for part in chain:
         reaction = getattr(part, "_companion_v2_reaction_attachment", None)
-        separate = (qq and isinstance(part, Record)) or (
+        separate = (isinstance(part, Record) and (qq or getattr(part, "_companion_v2_optional_singing", False))) or (
             isinstance(reaction, dict) and reaction.get("delivery_mode") != "same_message")
         if separate:
             if current:
@@ -91,6 +91,12 @@ def native_reply_messages(event, message):
     target = next((index for index, group in enumerate(bodies) if _has_text(group)), 0)
     bodies[target] = headers + bodies[target]
     return tuple(_derive(message, group) for group in bodies)
+
+
+def is_optional_singing_message(message):
+    chain = getattr(message, "chain", None) or ()
+    return (len(chain) == 1 and isinstance(chain[0], Record)
+            and getattr(chain[0], "_companion_v2_optional_singing", False))
 
 
 async def native_wire_message(event, message):

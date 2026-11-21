@@ -7,17 +7,18 @@ import math
 import re
 
 from companion_v2.conversation.segment_control import controlled_parts
+from companion_v2.conversation.text_processing import markdown_code_runs, mask_markdown_code
 from companion_v2.execution.models import digest, stamp
 from companion_v2.foundation.refs import ScopeKind
 from companion_v2.system_prompts.catalog import VOICE_RULES
 from .voice_markup import (
     VOICE_PROTOCOL_GT, VOICE_PROTOCOL_LT, VOICE_TAG_NAME_PATTERN, canonical_voice_tag,
-    slice_speech, strip_performance_controls, visible_speech,
+    slice_speech, strip_performance_controls, strip_singing_provider_cue, visible_speech,
 )
 
 
 _TAG = re.compile(
-    rf"(?is){VOICE_PROTOCOL_LT}\s*(?P<open_tag>{VOICE_TAG_NAME_PATTERN})\b[^>]*?{VOICE_PROTOCOL_GT}(?P<speech>.*?)"
+    rf"(?is){VOICE_PROTOCOL_LT}\s*(?P<open_tag>{VOICE_TAG_NAME_PATTERN})\b(?P<attrs>[^>]*?){VOICE_PROTOCOL_GT}(?P<speech>.*?)"
     rf"{VOICE_PROTOCOL_LT}\s*/\s*(?P<close_tag>{VOICE_TAG_NAME_PATTERN})\s*{VOICE_PROTOCOL_GT}"
 )
 _STRAY_TAG = re.compile(
@@ -26,6 +27,14 @@ _STRAY_TAG = re.compile(
 _BARE_STRAY_TAG = re.compile(
     rf"(?is){VOICE_PROTOCOL_LT}\s*/?\s*{VOICE_TAG_NAME_PATTERN}\b(?![^>]*>)"
 )
+_SINGING_STYLE = re.compile(r"""\s+style\s*=\s*(?:"sing"|'sing')\s*""", re.I)
+_SINGING_REQUEST = re.compile(
+    r"(?:^(?:请|麻烦|可以|能不能)?\s*(?:给我)?(?:唱歌|唱一[首段句]|唱个|哼一[段句首])"
+    r"|(?:给我|为我|帮我)\s*(?:用[^，。！？\n]{1,12})?\s*(?:唱|哼)"
+    r"|(?:唱|哼)[^，。！？\n]{0,12}给我听"
+    r"|(?:请|能不能|可以|想听你)[^，。！？\n]{0,12}(?:唱歌|唱一[首段句]|唱一下|哼一[段句首])"
+    r"|^(?:(?:please|can you|could you|would you)\s+)?sing\s+(?:me\b|for me\b|a song\b))", re.I)
+_NEGATED_SINGING = re.compile(r"(?:别|不要|不用|不必|不需要).{0,8}(?:唱|哼)|\b(?:don't|do not|no)\s+sing", re.I)
 _TURN_LANGUAGE_NAMES = {
     "ja": r"(?:日语|日語|日文|日本语|日本語|japanese)",
     "en": r"(?:英语|英語|英文|english)",
@@ -125,21 +134,39 @@ def tts_wait_budget(policy, *, segment_index, segment_count, whole_reply=False):
     return min(configured, SEGMENTED_TTS_BUDGET_SECONDS) if configured > 0 else SEGMENTED_TTS_BUDGET_SECONDS
 
 
-def strip_voice_markup(text):
+def strip_voice_markup(text, *, singsing=False):
     """Remove internal voice wrappers while keeping their authored text visible."""
     if type(text) is not str:
         return text
-    return strip_performance_controls(_strip_stray_voice_tags(_TAG.sub(_visible_voice_match, text)))
+    body, cursor = [], 0
+    for match in _voice_matches(mask_markdown_code(text)):
+        body.append(_body_text(text[cursor:match.start()], singsing=singsing))
+        body.append(_visible_wrapped_speech(_voice_payload(text, match, singsing=singsing)))
+        cursor = match.end()
+    body.append(_body_text(text[cursor:], singsing=singsing))
+    return "".join(body)
 
 
 def _matching_voice_tags(match):
     return canonical_voice_tag(match.group("open_tag")) == canonical_voice_tag(match.group("close_tag"))
 
 
-def _visible_voice_match(match):
-    if not _matching_voice_tags(match):
-        return match.group(0)
-    return visible_speech(match.group("speech"))
+def _voice_matches(syntax):
+    return tuple(match for match in _TAG.finditer(syntax) if _matching_voice_tags(match))
+
+
+def _voice_payload(text, match, *, singsing=False):
+    start, end = match.span("speech")
+    payload = text[start:end]
+    return _map_voice_prose(payload, strip_singing_provider_cue) if singsing else payload
+
+
+def _map_voice_prose(text, transform):
+    return "".join(run if is_code else transform(run) for is_code, run in markdown_code_runs(text))
+
+
+def _visible_wrapped_speech(text):
+    return _map_voice_prose(text, visible_speech)
 
 
 def _strip_stray_voice_tags(text):
@@ -150,10 +177,15 @@ def voice_wrapper_pairing(text):
     """Count well-formed voice wrappers and the stray tag tokens left over."""
     if type(text) is not str:
         return 0, 0
-    paired = sum(1 for match in _TAG.finditer(text) if _matching_voice_tags(match))
-    remaining = _STRAY_TAG.sub("", text)
-    tokens = len(_STRAY_TAG.findall(text)) + len(_BARE_STRAY_TAG.findall(remaining))
-    return paired, max(tokens - 2 * paired, 0)
+    syntax = mask_markdown_code(text)
+    paired = len(_voice_matches(syntax))
+    return paired, _stray_voice_tag_count(syntax, paired)
+
+
+def _stray_voice_tag_count(syntax, paired):
+    remaining = _STRAY_TAG.sub("", syntax)
+    tokens = len(_STRAY_TAG.findall(syntax)) + len(_BARE_STRAY_TAG.findall(remaining))
+    return max(tokens - 2 * paired, 0)
 
 
 def _has_chinese_translation(text):
@@ -384,7 +416,7 @@ class _VisibleText:
         return self.length
 
 
-def _body_text(text):
+def _body_text(text, *, singsing=False):
     """Show body text: delivery marks go, performance marks stay as written.
 
     A pause mark and a bracketed direction are delivery, so they are read out but
@@ -392,7 +424,7 @@ def _body_text(text):
     performance marks such as ``<soft>`` are left exactly as written, because
     prose may mention them and only the wrapper decides whether one is delivery.
     """
-    return _strip_stray_voice_tags(strip_performance_controls(text))
+    return _map_voice_prose(text, lambda run: _strip_stray_voice_tags(strip_performance_controls(run, singsing=singsing)))
 
 
 def _wording(text):
@@ -664,7 +696,7 @@ def _restatement(speech, following, remaining):
     return _copy_length(speech, following) or _opening_length(speech, following, remaining)
 
 
-def separate_spoken(text, policy):
+def separate_spoken(text, policy, *, singsing=False):
     """Return visible text and (offset, speech) pairs before segmentation.
 
     The reply is assembled once, left to right, so each span carries the offset
@@ -679,28 +711,49 @@ def separate_spoken(text, policy):
     them, because a copy is the same statement whether or not a boundary follows.
     """
     if policy is None or not policy.uses_model_tags:
-        return strip_voice_markup(text), ()
+        return strip_voice_markup(text, singsing=singsing), ()
     translate = policy.language != "zh" and policy.foreign_text_mode == "translation"
-    matches = tuple(match for match in _TAG.finditer(text) if _matching_voice_tags(match))
+    matches = _voice_matches(mask_markdown_code(text))
     visible, spoken, cursor = _VisibleText(), [], 0
     for index, match in enumerate(matches):
-        visible.add(_body_text(text[cursor:match.start()]))
-        speech = match.group("speech").strip()
+        visible.add(_body_text(text[cursor:match.start()], singsing=singsing))
+        raw_speech = _voice_payload(text, match, singsing=singsing)
+        speech = raw_speech.strip()
         if speech:
             spoken.append((visible.length, speech))
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         following = text[match.end():end]
-        if translate and _has_chinese_translation(following):
-            visible.add(_body_text(following))
+        first_run = next(markdown_code_runs(following), (False, ""))
+        lead_prose = first_run[1] if not first_run[0] else ""
+        if translate and _has_chinese_translation(lead_prose):
+            visible.add(_body_text(following, singsing=singsing))
         else:
-            visible.add(visible_speech(match.group("speech")))
+            visible.add(_visible_wrapped_speech(raw_speech))
             # A statement said again right after its wrapper is shown once; the
             # wrapper is the copy kept because it is the one being voiced.
-            repeated = _restatement(speech, following, text[match.end():])
-            visible.add(_body_text(following[repeated:]))
+            repeated = _restatement(speech, lead_prose, text[match.end():]) if lead_prose else 0
+            visible.add(_body_text(following[repeated:], singsing=singsing))
         cursor = end
-    visible.add(_body_text(text[cursor:]))
+    visible.add(_body_text(text[cursor:], singsing=singsing))
     return "".join(visible.parts), tuple(spoken)
+
+
+def authored_singing(text):
+    """Read the single delivery mode of a completed, model-authored reply."""
+    syntax = mask_markdown_code(text)
+    matches = _voice_matches(syntax)
+    if _stray_voice_tag_count(syntax, len(matches)):
+        return False
+    has_lyrics = False
+    for match in matches:
+        speech = _voice_payload(text, match, singsing=True)
+        if not speech.strip():
+            continue
+        attr_start, attr_end = match.span("attrs")
+        if not _SINGING_STYLE.fullmatch(text[attr_start:attr_end]):
+            return False
+        has_lyrics |= bool(visible_speech(mask_markdown_code(speech)).strip())
+    return has_lyrics
 
 
 def _part_offsets(visible, parts):
@@ -766,12 +819,14 @@ def planned_speech(visible, parts, spans, policy):
     return tuple(speech for speech, _ in speech_decisions(visible, parts, spans, policy))
 
 
-def eligible(policy, *, input_text, kind, batch_id, primary_mention=False):
+def eligible(policy, *, input_text, kind, batch_id, primary_mention=False, allow_singing=False):
     primary_trigger = (primary_mention and policy.primary_mention_probability > 0
         and any(word in input_text.casefold() for word in policy.primary_mention_words()))
     if policy.trigger_mode == "request" and not primary_trigger:
         keywords = policy.keywords() or ("语音", "说给我听", "念给我听", "读给我听", "voice", "tts")
-        if not any(word in input_text.casefold() for word in keywords):
+        singing_request = (allow_singing and not _NEGATED_SINGING.search(input_text)
+                           and _SINGING_REQUEST.search(input_text.strip()))
+        if not singing_request and not any(word in input_text.casefold() for word in keywords):
             return False
     chance = max(policy.chance(kind), policy.primary_mention_probability) if primary_trigger else policy.chance(kind)
     return chance >= 1 or chance > 0 and int(digest(batch_id)[:12], 16) / 0xFFFFFFFFFFFF < chance

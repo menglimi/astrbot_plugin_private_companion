@@ -27,7 +27,7 @@ class VoicePolicyTests(unittest.TestCase):
     def test_schema_defaults_and_trigger_modes(self):
         schema = json.loads((Path(__file__).resolve().parents[1] / "_conf_schema.json").read_text(encoding="utf-8"))
         defaults = {name: item["default"] for name, item in schema["voice_reply"]["items"].items()
-                    if name != "enabled"}
+                    if name not in {"enabled", "singsing_enabled"}}
         self.assertEqual(defaults, asdict(VoiceReplyPolicy()))
         request = VoiceReplyPolicy(trigger_mode="request", trigger_keywords="朗读, read aloud")
         self.assertTrue(eligible(request, input_text="请朗读这句话", kind="private", batch_id="a"))

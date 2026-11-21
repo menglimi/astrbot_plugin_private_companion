@@ -12,10 +12,13 @@ from dataclasses import replace
 
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path, get_astrbot_temp_path
 
+from companion_v2.conversation.voice_markup import SINGING_PROVIDER_CUE, strip_singing_provider_cue
 from companion_v2.conversation.voice_reply import (
     VoiceReplyPolicy, requested_voice_language, with_voice_override,
 )
 from companion_v2.foundation.refs import ScopeKind
+
+from .fish_audio import supports_singsing
 
 
 logger = logging.getLogger(__name__)
@@ -325,6 +328,57 @@ def _read_audio(path_value, *, allow_data=False):
     return _finalize_streamed_wav(audio) if 0 < len(audio) <= MAX_VOICE_BYTES else None
 
 
+def _configured_tts_provider(context, provider_id):
+    provider = context.get_provider_by_id(provider_id)
+    return provider if provider is not None and provider in context.get_all_tts_providers() else None
+
+
+async def _session_tts_provider(context, umo):
+    getter = getattr(context, "get_using_tts_provider_async", None)
+    return await getter(umo) if callable(getter) else context.get_using_tts_provider(umo)
+
+
+def singsing_config_origin(event):
+    """AstrBot 4.29.4 selects the profile before applying session isolation."""
+    umo = event.unified_msg_origin
+    if not event.get_extra("_session_isolated", False):
+        return umo
+    original_id = getattr(getattr(event, "message_obj", None), "session_id", "")
+    parts = umo.split(":", 2)
+    if len(parts) != 3 or not isinstance(original_id, str) or not original_id:
+        return ""
+    return ":".join((*parts[:2], original_id))
+
+
+async def _singsing_session_enabled(context, umo, config_umo):
+    from astrbot.core.star.session_llm_manager import SessionServiceManager
+
+    if not umo or not config_umo:
+        return False
+    settings = context.get_config(config_umo).get("provider_tts_settings", {})
+    probability = settings.get("trigger_probability", 1)
+    try:
+        auto_tts_disabled = type(probability) is not bool and float(probability) == 0
+    except (TypeError, ValueError, OverflowError):
+        auto_tts_disabled = False
+    return (settings.get("enable") is True and auto_tts_disabled
+            and await SessionServiceManager.is_tts_enabled_for_session(umo) is True)
+
+
+async def singsing_route_available(context, umo, provider_id, *, config_umo=None):
+    async def check():
+        if not await _singsing_session_enabled(context, umo, umo if config_umo is None else config_umo):
+            return False
+        provider = (_configured_tts_provider(context, provider_id) if provider_id
+                    else await _session_tts_provider(context, umo))
+        return supports_singsing(provider)
+
+    try:
+        return await asyncio.wait_for(check(), timeout=1)
+    except Exception:
+        return False
+
+
 class NativeVoiceReply:
     def __init__(self, context):
         self.context = context
@@ -345,32 +399,38 @@ class NativeVoiceReply:
         return await asyncio.wait_for(synthesize(), timeout=timeout_seconds)
 
     async def render(self, task_context, text, *, provider_id="", timeout_seconds=30,
-                     model_override="", voice_override=""):
+                     model_override="", voice_override="", singing=False, singing_umo="", singing_config_umo=None):
         scope = task_context.scope
         kind = "GroupMessage" if scope.kind is ScopeKind.GROUP else "FriendMessage"
-        umo = f"{scope.platform}:{kind}:{scope.session_id}"
+        umo = singing_umo if singing and singing_umo else f"{scope.platform}:{kind}:{scope.session_id}"
         try:
+            if singing:
+                config_umo = umo if singing_config_umo is None else singing_config_umo
+                if not await asyncio.wait_for(_singsing_session_enabled(self.context, umo, config_umo),
+                                              timeout=timeout_seconds):
+                    return None
             provider = None
             explicit_missing = False
             if provider_id:
-                candidate = self.context.get_provider_by_id(provider_id)
-                if candidate is not None and candidate in self.context.get_all_tts_providers():
-                    provider = candidate
-                else:
+                provider = _configured_tts_provider(self.context, provider_id)
+                if provider is None:
                     explicit_missing = True
                     logger.warning("[CompanionV2] 指定 TTS Provider 未加载，回退默认语音服务 provider=%s", provider_id)
             if provider is None and not explicit_missing:
-                getter = getattr(self.context, "get_using_tts_provider_async", None)
-                if callable(getter):
-                    provider = await getter(umo)
-                else:
-                    provider = self.context.get_using_tts_provider(umo)
+                provider = await _session_tts_provider(self.context, umo)
             if explicit_missing:
+                return None
+            if singing and not supports_singsing(provider):
                 return None
             if provider is not None and (model_override or voice_override):
                 provider = _provider_with_overrides(provider, model_override, voice_override)
+            if singing:
+                text = strip_singing_provider_cue(text).strip()
+                if not text or not supports_singsing(provider):
+                    return None
+                text = SINGING_PROVIDER_CUE + text
             audio = await self._synthesize(provider, text, timeout_seconds)
-            if audio is None:
+            if audio is None and not singing:
                 # V2 normally uses AstrBot's TTS provider.  The V1 MiMo Voice
                 # Clone integration was a tool bridge, not a provider; keep it
                 # as an explicit fallback when no host provider can synthesize.

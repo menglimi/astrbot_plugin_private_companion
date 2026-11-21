@@ -13,6 +13,7 @@ from astrbot.core.message.components import Plain, Record
 from companion_v2.conversation.segment_control import controlled_parts
 from companion_v2.conversation.voice_reply import (
     VoiceReplyPolicy,
+    authored_singing,
     capability_instruction,
     detected_speech_language,
     separate_spoken,
@@ -31,7 +32,7 @@ def _text_only(text):
         text, re.I))
 
 
-def _should_repair(core, response):
+def _should_repair(core, response, *, final=True):
     policy = core.get("prepared", {}).get("voice_reply_policy")
     text = getattr(response, "completion_text", "") or ""
     original = getattr(core.get("prepared", {}).get("native_input"), "text", "")
@@ -40,7 +41,10 @@ def _should_repair(core, response):
             and policy.generation_mode == "model_tag" and text.strip()
             and not _text_only(original) and core.get("_voice_authoring_attempted_response") is not response):
         return False
-    _, spoken = separate_spoken(text, policy)
+    singsing = bool(core["prepared"].get("voice_singsing_enabled"))
+    _, spoken = separate_spoken(text, policy, singsing=singsing)
+    if final and singsing and authored_singing(text):
+        return False
     # An existing voice tag proves the model produced a spoken span, but not
     # that it spoke the configured language.  In ja+translation mode a Chinese
     # speech span beside Japanese visible text used to skip repair entirely.
@@ -214,9 +218,9 @@ async def author_core_voice_message(event, message):
         return
     text = "".join(component.text for component in chain if isinstance(component, Plain))
     response = SimpleNamespace(role="assistant", completion_text=text, result_chain=message)
-    if _should_repair(core, response):
+    if _should_repair(core, response, final=False):
         await _repair(event, state["runner"], response, segmented=False)
-    observe_core_voice_response(event, response)
+    observe_core_voice_response(event, response, final=False)
 
 
 def restore_core_voice_authoring(event):

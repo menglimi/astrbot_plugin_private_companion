@@ -13,7 +13,7 @@ const drain = async (count = 8) => {for (let index = 0; index < count; index += 
 function harness(rootId = "forwardIntakeWorkspace") {
   const calls = [], handlers = {};
   let snapshot = {
-    voice_reply: {enabled: false, probability: 1, private_probability: -1, group_probability: -1},
+    voice_reply: {enabled: false, singsing_enabled: false, probability: 1, private_probability: -1, group_probability: -1},
     poke: {enabled: false, trigger_probability: 0.25, back_probability: 0, back_times: 1,
       model_reply_enabled: false, model_reply_probability: 0.3, replies: ["我在"]},
     forward_intake: {max_forwards: 4, max_nodes: 32, max_depth: 4, parse_nested: true},
@@ -25,11 +25,10 @@ function harness(rootId = "forwardIntakeWorkspace") {
     async apiGet(route) {calls.push({method: "GET", route});return {status: "ok", data: snapshot};},
     async apiPost(route, body) {
       calls.push({method: "POST", route, body});
-      snapshot = route === "host-options/poke"
-        ? {...snapshot, poke: {...snapshot.poke, ...body.changes}}
-        : {...snapshot, forward_intake: {...snapshot.forward_intake, ...body.changes}};
-      return {status: "ok", data: {...snapshot, saved: true,
-        apply_mode: route === "host-options/poke" ? "immediate" : "immediate_next_input"}};
+      const group = route.split("/").at(-1);
+      const key = group === "voice" ? "voice_reply" : group;
+      snapshot = {...snapshot, [key]: {...snapshot[key], ...body.changes}};
+      return {status: "ok", data: {...snapshot, saved: true, apply_mode: snapshot.apply_modes[group]}};
     },
   };
   const window = {CompanionProduct: {bridgeNow: () => bridge}};
@@ -46,6 +45,33 @@ test("host option rows adapt to a narrow panel even in a wide viewport", () => {
   const narrowRule = styles.match(/@container\s+host-options\s*\(max-width:\s*560px\)\s*\{([\s\S]*?)\n\}/)?.[1] || "";
   assert.match(narrowRule, /\.host-options-row/);
   assert.match(narrowRule, /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+});
+
+test("voice page saves only plugin settings and explains the AstrBot prerequisites", async () => {
+  const h = harness("voiceReplyPolicyWorkspace");
+  h.page.mount({voiceRoot: h.root});
+  await drain();
+  assert.match(h.root.innerHTML, /name="singsing_enabled"[^>]*>\s*<span>已关闭/);
+  assert.match(h.root.innerHTML, /Fish Audio Drama 3/);
+  assert.match(h.root.innerHTML, /自动转语音概率设为 0/);
+  assert.match(h.root.innerHTML, /不会修改 AstrBot 设置/);
+  assert.equal(h.page.searchEntries().find(item => item.field === "singsing_enabled")?.label, "普通回复自主唱歌");
+
+  const controls = {enabled: {checked: true}, singsing_enabled: {checked: true},
+    probability: {value: "100"}, private_probability_inherit: {checked: true},
+    group_probability_inherit: {checked: true}};
+  const form = {dataset: {hostForm: "voice"},
+    querySelector(selector) {
+      const field = selector.match(/^\[name="(.+)"\]$/)?.[1];
+      return field ? controls[field] : {textContent: "", hidden: true};
+    }};
+  h.handlers.submit({target: {closest: () => form}, preventDefault() {}});
+  await drain();
+  const saved = h.calls.find(call => call.method === "POST");
+  assert.equal(saved.route, "host-options/voice");
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.body.changes)),
+    {enabled: true, singsing_enabled: true, probability: 1, private_probability: -1, group_probability: -1});
+  assert.match(h.root.innerHTML, /name="singsing_enabled"[^>]*checked/);
 });
 
 test("forward intake page renders bounded controls, saves all values and exposes the search owner", async () => {

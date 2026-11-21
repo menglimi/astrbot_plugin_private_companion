@@ -77,7 +77,7 @@ from .multi_authority import HOST_ID
 from .model_settings import PROVIDER_OUTPUT_FLOOR, conversation_provider_resolver
 from .group_settings import GroupTarget
 from .group_admission import group_trigger_facts, mentioned_account_ids
-from .voice import NativeVoiceReply
+from .voice import NativeVoiceReply, singsing_config_origin, singsing_route_available
 from .relay_tools import RelayToolPort
 
 
@@ -1336,6 +1336,7 @@ class MultiHostSession:
                     except Exception as error:
                         logger.warning("[CompanionV2] 表情回复准备降级 error_type=%s", type(error).__name__)
                 voice_policy, configured_voice_policy = None, None
+                singsing_enabled = False
                 is_group_repeat = group_admission and group_admission.get("reason") == "repeat"
                 if not is_group_repeat:
                     from companion_v2.conversation.voice_reply import eligible, voice_policy_for_turn
@@ -1358,8 +1359,17 @@ class MultiHostSession:
                         candidate = voice_policy_for_turn(configured_voice_policy, captured.text)
                         primary_mention = self._core_user_mention_matches(
                             event, context, candidate, captured.text, captured.at)
-                        if eligible(candidate, input_text=captured.text, kind=channel, batch_id=turn_id,
-                                     primary_mention=primary_mention):
+                        allow_singing = (getattr(self.settings.common, "voice_singsing_enabled", False)
+                                         and candidate.uses_model_tags and candidate.direction_mode != "off")
+                        voice_eligible = eligible(candidate, input_text=captured.text, kind=channel,
+                                                  batch_id=turn_id, primary_mention=primary_mention)
+                        if allow_singing and (voice_eligible or eligible(
+                                candidate, input_text=captured.text, kind=channel, batch_id=turn_id,
+                                primary_mention=primary_mention, allow_singing=True)):
+                            singsing_enabled = await singsing_route_available(
+                                self.bridge.context, event.unified_msg_origin,
+                                candidate.provider_for_language(channel), config_umo=singsing_config_origin(event))
+                        if voice_eligible or singsing_enabled:
                             if primary_mention:
                                 mention_prompt = "主要用户的已认证账号在本轮原生消息中被提及，且正文命中定向语音词。"
                                 extra_prompt = "\n".join(part for part in (
@@ -1414,6 +1424,7 @@ class MultiHostSession:
                     "outbound_settings": captured_outbound_settings,
                     "astrbot_animated_image_understanding_enabled": astrbot_animated_image_understanding_enabled,
                     "voice_reply_policy": voice_policy,
+                    "voice_singsing_enabled": singsing_enabled,
                     "configured_voice_reply_policy": configured_voice_policy,
                     "voice_provider_instruction": voice_direction,
                     "reaction_reply_enabled": reaction_reply_enabled,
