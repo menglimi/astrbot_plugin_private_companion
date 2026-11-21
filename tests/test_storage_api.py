@@ -131,6 +131,26 @@ class StorageApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({method for route, _, methods, _ in self.api.routes()
                           if route == PREFIX for method in methods}, {"GET", "POST"})
 
+    async def test_auto_backup_settings_are_bounded_and_preserved_for_old_clients(self):
+        base = {"action": "save", "path": "", "backup_path": "",
+                "retention_count": 5, "retention_days": 30}
+        with patch("astrbot_host.storage_api.request", self.request):
+            response = await self.api.status()
+            self.assertEqual(response["data"]["auto_backup"], {"auto_backup_enabled": False,
+                                                               "auto_backup_interval_minutes": 1440})
+            for update in ({"auto_backup_enabled": 1}, {"auto_backup_interval_minutes": True},
+                           {"auto_backup_interval_minutes": 0}, {"auto_backup_interval_minutes": 43201}):
+                self.request.payload = json.dumps({**base, **update}).encode()
+                response = await self.api.update()
+                self.assertEqual(response["status"], "error")
+            schedule = {"auto_backup_enabled": True, "auto_backup_interval_minutes": 1}
+            self.request.payload = json.dumps({**base, **schedule}).encode()
+            response = await self.api.update()
+            self.assertEqual(response["data"]["auto_backup"], schedule)
+            self.request.payload = json.dumps(base).encode()
+            response = await self.api.update()
+            self.assertEqual(response["data"]["auto_backup"], schedule)
+
     async def test_save_persists_external_path_and_bounded_policy(self):
         selected = self.root / "D-drive" / "AstrBotData"
         backup = self.root / "E-drive" / "Snapshots"

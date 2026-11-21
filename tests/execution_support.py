@@ -79,9 +79,19 @@ def remove_v67(connection):
 
 def remove_v68(connection):
     """Drop the two lookup indexes v68 added; they carry no data of their own."""
+    remove_v69(connection)
     connection.execute('DROP INDEX IF EXISTS "proactive_contacts_origin_recent_idx"')
     connection.execute('DROP INDEX IF EXISTS "background_deliveries_source_ref_idx"')
     connection.execute("DELETE FROM schema_migrations WHERE migration_id = 'companion-v2.storage.v67-to-v68'")
+
+
+def remove_v69(connection):
+    """Drop the nullable scope_key column and lookup index v69 added to laya_decision_events."""
+    connection.execute('DROP INDEX IF EXISTS "laya_decision_events_scope_recent_idx"')
+    columns = {row[1] for row in connection.execute('PRAGMA table_info("laya_decision_events")')}
+    if "scope_key" in columns:
+        connection.execute('ALTER TABLE laya_decision_events DROP COLUMN "scope_key"')
+    connection.execute("DELETE FROM schema_migrations WHERE migration_id = 'companion-v2.storage.v68-to-v69'")
 
 
 def remove_v65(connection):

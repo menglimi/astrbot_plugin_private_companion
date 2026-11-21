@@ -11,12 +11,13 @@ import re
 from pathlib import Path
 import sqlite3
 import sys
-from threading import Condition, Lock, RLock, current_thread, get_ident, local
+from threading import Condition, Lock, RLock, Thread, current_thread, get_ident, local
 import time
 from typing import Iterator
-from weakref import WeakKeyDictionary
 
 from .schema import (
+    SCHEMA_VERSION_V69, MIGRATION_V68_TO_V69_ID, MIGRATION_V68_TO_V69_FINGERPRINT,
+    V69_MIGRATION_STATEMENTS, V69_REQUIRED_TABLES, V69_SCHEMA_STATEMENTS,
     SCHEMA_VERSION_V68, MIGRATION_V67_TO_V68_ID, MIGRATION_V67_TO_V68_FINGERPRINT,
     V68_MIGRATION_STATEMENTS, V68_REQUIRED_TABLES, V68_SCHEMA_STATEMENTS,
     SCHEMA_VERSION_V67, MIGRATION_V66_TO_V67_ID, MIGRATION_V66_TO_V67_FINGERPRINT,
@@ -353,6 +354,7 @@ CONFIGURATION_STORE_STATEMENTS = (
 FORWARD_COMPATIBLE_SCHEMA_VERSIONS = frozenset({
     "companion-v2.storage.v69",
     "companion-v2.storage.v70",
+    "companion-v2.storage.v71",
 })
 
 
@@ -393,7 +395,8 @@ class StorageRuntime:
         self._read_snapshot_diagnostics = local()
         self._read_connections = local()
         self._reader_condition = Condition()
-        self._reader_connections = WeakKeyDictionary()
+        # Keep ownership until close, even after a temporary worker exits.
+        self._reader_connections: dict[Thread, sqlite3.Connection] = {}
         self._active_readers = 0
         self._reader_closing = False
         self._savepoint_sequence = 0
@@ -728,6 +731,13 @@ class StorageRuntime:
         try:
             connection = getattr(self._read_connections, "connection", None)
             if connection is None:
+                with self._reader_condition:
+                    # A dead owner cannot be using its connection. Reap it
+                    # before adding new readers so worker churn stays bounded.
+                    for owner in tuple(self._reader_connections):
+                        if not owner.is_alive():
+                            self._reader_connections[owner].close()
+                            del self._reader_connections[owner]
                 try:
                     connection = sqlite3.connect(
                         str(self._database_path), timeout=5.0, isolation_level=None,
@@ -954,6 +964,7 @@ class StorageRuntime:
                 self._migrate_v65_to_v66(connection)
                 self._migrate_v66_to_v67(connection)
                 self._migrate_v67_to_v68(connection)
+                self._migrate_v68_to_v69(connection)
                 return
             if "runtime_metadata" not in existing_tables:
                 raise StorageOpenError("V2 data root is partially initialized")
@@ -1714,13 +1725,21 @@ class StorageRuntime:
                 self._migrate_v67_to_v68(connection)
                 version = SCHEMA_VERSION_V68
                 existing_tables = _existing_tables(connection)
-            forward_compatible = version in FORWARD_COMPATIBLE_SCHEMA_VERSIONS
+            if version == SCHEMA_VERSION_V68:
+                _validate_table_shapes(connection, V68_SCHEMA_STATEMENTS, V68_REQUIRED_TABLES)
+                _validate_integrity(connection)
+                for previous in range(2, 69):
+                    getattr(self, f"_validate_v{previous}_migration_record")(connection)
+                self._migrate_v68_to_v69(connection)
+                version = SCHEMA_VERSION_V69
+                existing_tables = _existing_tables(connection)
+            forward_compatible = version != SCHEMA_VERSION and version in FORWARD_COMPATIBLE_SCHEMA_VERSIONS
             if version != SCHEMA_VERSION and not forward_compatible:
                 raise StorageOpenError("V2 data root has an incompatible schema version")
-            missing = V68_REQUIRED_TABLES.difference(existing_tables)
+            missing = V69_REQUIRED_TABLES.difference(existing_tables)
             if missing:
                 raise StorageOpenError("V2 data root is missing required schema objects")
-            _validate_table_shapes(connection, V68_SCHEMA_STATEMENTS, V68_REQUIRED_TABLES,
+            _validate_table_shapes(connection, V69_SCHEMA_STATEMENTS, V69_REQUIRED_TABLES,
                                    allow_extra=forward_compatible)
             # Each schema migration runs a full integrity check at its boundary.
             # Rechecking every page and foreign key on every normal startup makes
@@ -1794,6 +1813,7 @@ class StorageRuntime:
             self._validate_v66_migration_record(connection)
             self._validate_v67_migration_record(connection)
             self._validate_v68_migration_record(connection)
+            self._validate_v69_migration_record(connection)
 
     def _migrate_v53_to_v54(self, connection):
         for statement in V54_MIGRATION_STATEMENTS:
@@ -2109,6 +2129,27 @@ class StorageRuntime:
         if row is None or (row["from_version"] != SCHEMA_VERSION_V67 or row["to_version"] != SCHEMA_VERSION_V68
                            or row["fingerprint"] != MIGRATION_V67_TO_V68_FINGERPRINT):
             raise StorageOpenError("V2 data root has an untrusted v68 migration record")
+
+    def _migrate_v68_to_v69(self, connection):
+        for statement in V69_MIGRATION_STATEMENTS:
+            connection.execute(statement)
+        _validate_table_shapes(connection, V69_SCHEMA_STATEMENTS, V69_REQUIRED_TABLES)
+        _validate_integrity(connection)
+        connection.execute("INSERT INTO schema_migrations VALUES (?, ?, ?, ?, ?)", (
+            MIGRATION_V68_TO_V69_ID, SCHEMA_VERSION_V68, SCHEMA_VERSION_V69,
+            MIGRATION_V68_TO_V69_FINGERPRINT, datetime.now(timezone.utc).isoformat()))
+        changed = connection.execute("UPDATE runtime_metadata SET value = ? WHERE key = ? AND value = ?",
+                                     (SCHEMA_VERSION_V69, "schema_version", SCHEMA_VERSION_V68))
+        if changed.rowcount != 1:
+            raise StorageOpenError("V2 v69 migration lost its schema boundary")
+
+    @staticmethod
+    def _validate_v69_migration_record(connection):
+        row = connection.execute("SELECT * FROM schema_migrations WHERE migration_id = ?",
+                                 (MIGRATION_V68_TO_V69_ID,)).fetchone()
+        if row is None or (row["from_version"] != SCHEMA_VERSION_V68 or row["to_version"] != SCHEMA_VERSION_V69
+                           or row["fingerprint"] != MIGRATION_V68_TO_V69_FINGERPRINT):
+            raise StorageOpenError("V2 data root has an untrusted v69 migration record")
 
     def _migrate_v52_to_v53(self, connection):
         for statement in V53_MIGRATION_STATEMENTS:

@@ -30,6 +30,17 @@
         "type": "string",
         "default": ""
       },
+      "auto_backup_enabled": {
+        "description": "启用自动滚动备份",
+        "type": "bool",
+        "default": false
+      },
+      "auto_backup_interval_minutes": {
+        "description": "自动备份间隔（分钟）",
+        "hint": "1–43200 分钟，默认 1440（24 小时）。",
+        "type": "int",
+        "default": 1440
+      },
       "retention_count": {
         "description": "保留最近备份数量",
         "type": "int",

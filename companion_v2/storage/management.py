@@ -115,6 +115,33 @@ def retention_policy(config: object) -> dict[str, int]:
     return {"retention_count": count, "retention_days": days}
 
 
+DEFAULT_AUTO_BACKUP_INTERVAL_MINUTES = 1440
+MAX_AUTO_BACKUP_INTERVAL_MINUTES = 43200
+
+
+def valid_auto_backup_interval(value: object) -> bool:
+    return type(value) is int and 1 <= value <= MAX_AUTO_BACKUP_INTERVAL_MINUTES
+
+
+def auto_backup_policy(config: object) -> dict:
+    storage = config.get("storage", {}) if isinstance(config, dict) else {}
+    if not isinstance(storage, dict):
+        storage = {}
+    interval = storage.get("auto_backup_interval_minutes")
+    return {"auto_backup_enabled": storage.get("auto_backup_enabled") is True,
+            "auto_backup_interval_minutes": (interval if valid_auto_backup_interval(interval)
+                                             else DEFAULT_AUTO_BACKUP_INTERVAL_MINUTES)}
+
+
+def latest_installation_snapshot(data_root: Path, *, backup_directory: Path,
+                                 installation_id: str, now: datetime) -> tuple[str, datetime] | None:
+    """Return the newest eligible snapshot ID and time, ignoring legacy and future records."""
+    records = _snapshot_records(data_root, backup_directory=backup_directory,
+                                installation_id=installation_id)
+    return next(((item["snapshot_id"], item["created_at"]) for item in records
+                 if item["kind"] == "bundle" and item["created_at"] <= now), None)
+
+
 # -- snapshot discovery ------------------------------------------------------
 
 
@@ -236,7 +263,7 @@ def _pending_protected_ids(data_root: Path) -> frozenset[str]:
         return frozenset()
     if type(document) is not dict:
         return frozenset()
-    values = {document.get("snapshot_id"), document.get("safety_snapshot_id")}
+    values = (document.get("snapshot_id"), document.get("safety_snapshot_id"))
     return frozenset(value for value in values if type(value) is str and _SNAPSHOT_ID.fullmatch(value))
 
 
@@ -246,61 +273,83 @@ def _pending_protected_ids(data_root: Path) -> frozenset[str]:
 def cleanup_plan(data_root: Path, *, retention_count: int, retention_days: int,
                  now: datetime | None = None, backup_directory: Path | None = None,
                  installation_id: str | None = None,
-                 preserve_snapshot_ids: tuple[str, ...] | list[str] = ()) -> dict:
-    """Return complete snapshots outside policy, always keeping the newest one.
+                 preserve_snapshot_ids: tuple[str, ...] | list[str] = (),
+                 created_snapshot_id: str | None = None) -> dict:
+    """Return complete snapshots outside policy, always keeping the newest eligible one.
 
     ``incomplete_ids`` names pairs that cannot be counted (missing bundle, missing
     payload) and are therefore never deleted here. They are reported so the
     operator — and a backup-directory move — can see what is blocking instead of
     guessing (review P2-4).
     """
+    plan, _ = _cleanup_selection(data_root, retention_count=retention_count, retention_days=retention_days,
+                                 now=now, backup_directory=backup_directory, installation_id=installation_id,
+                                 preserve_snapshot_ids=preserve_snapshot_ids, created_snapshot_id=created_snapshot_id)
+    return plan
+
+
+def _cleanup_selection(data_root: Path, *, retention_count: int, retention_days: int,
+                       now: datetime | None, backup_directory: Path | None, installation_id: str | None,
+                       preserve_snapshot_ids, created_snapshot_id: str | None) -> tuple[dict, list[dict]]:
     records, problems = _snapshot_scan(Path(data_root), backup_directory=backup_directory,
                                        installation_id=installation_id)
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         raise ValueError("cleanup time must include a timezone")
     cutoff = current.astimezone(timezone.utc) - timedelta(days=retention_days)
+    eligible = [item for item in records if item["created_at"] <= current]
+    # A clock correction must not let a future-dated snapshot consume today's
+    # quota. Keep those records untouched until their timestamps become eligible.
+    # On equal timestamps prefer the snapshot that this operation just published.
+    if created_snapshot_id is not None:
+        eligible.sort(key=lambda item: (item["created_at"], item["snapshot_id"] == created_snapshot_id),
+                      reverse=True)
     protected = set(preserve_snapshot_ids) | set(_pending_protected_ids(Path(data_root)))
-    removed = [item for index, item in enumerate(records)
+    if created_snapshot_id is not None:
+        protected.add(created_snapshot_id)
+    removed = [item for index, item in enumerate(eligible)
                if index > 0 and item["snapshot_id"] not in protected
                and (index >= retention_count or item["created_at"] < cutoff)]
-    return {"snapshot_count": len(records), "remove_count": len(removed),
+    plan = {"snapshot_count": len(records), "future_count": len(records) - len(eligible),
+            "remove_count": len(removed),
             "remove_bytes": sum(item["byte_size"] for item in removed),
             "snapshot_ids": [item["snapshot_id"] for item in removed],
             "incomplete_count": len(problems),
             "incomplete_ids": [item["snapshot_id"] for item in problems],
             "incomplete_reasons": [item["reason"] for item in problems]}
+    return plan, removed
 
 
 def cleanup_backups(data_root: Path, *, retention_count: int, retention_days: int,
                     now: datetime | None = None, backup_directory: Path | None = None,
                     installation_id: str | None = None,
-                    preserve_snapshot_ids: tuple[str, ...] | list[str] = ()) -> dict:
+                    preserve_snapshot_ids: tuple[str, ...] | list[str] = (),
+                    created_snapshot_id: str | None = None) -> dict:
     """Delete only complete, verified-by-manifest snapshot pairs outside policy."""
-    records = _snapshot_records(Path(data_root), backup_directory=backup_directory,
-                                installation_id=installation_id)
-    plan = cleanup_plan(Path(data_root), retention_count=retention_count,
-                        retention_days=retention_days, now=now, backup_directory=backup_directory,
-                        installation_id=installation_id,
-                        preserve_snapshot_ids=preserve_snapshot_ids)
-    candidates = set(plan["snapshot_ids"])
+    plan, candidates = _cleanup_selection(data_root, retention_count=retention_count,
+                                          retention_days=retention_days, now=now,
+                                          backup_directory=backup_directory, installation_id=installation_id,
+                                          preserve_snapshot_ids=preserve_snapshot_ids,
+                                          created_snapshot_id=created_snapshot_id)
     removed_count = removed_bytes = 0
-    for item in records:
-        if item["snapshot_id"] not in candidates:
+    for item in candidates:
+        try:
+            if item["kind"] == "bundle":
+                _remove_tree(item["primary"])
+                if item["primary"].exists() or _is_link(item["primary"]):
+                    # Keep the manifest when filesystem removal is incomplete.
+                    continue
+            else:
+                item["primary"].unlink()
+            item["sidecar"].unlink()
+        except OSError:
+            # Preserve progress on other pairs, but report a partial cleanup.
             continue
-        size = item["byte_size"]
-        if item["kind"] == "bundle":
-            _remove_tree(item["primary"])
-            if item["primary"].exists():
-                # Keep the manifest so a later pass can retry the removal; a
-                # sidecar without its bundle would hide the leftovers forever.
-                continue
-        else:
-            item["primary"].unlink()
-        item["sidecar"].unlink()
         removed_count += 1
-        removed_bytes += size
-    return {**plan, "removed_count": removed_count, "removed_bytes": removed_bytes}
+        removed_bytes += item["byte_size"]
+    failed_count = plan["remove_count"] - removed_count
+    return {**plan, "removed_count": removed_count, "removed_bytes": removed_bytes,
+            "failed": failed_count > 0, "failed_count": failed_count}
 
 
 QUARANTINE_DIRECTORY = ".incomplete"
@@ -536,6 +585,9 @@ def cleanup_all_backups(data_root: Path, *, retention_count: int, retention_days
             "remove_bytes": sum(item["remove_bytes"] for item in summaries),
             "removed_count": sum(item.get("removed_count", 0) for item in summaries),
             "removed_bytes": sum(item.get("removed_bytes", 0) for item in summaries),
+            "failed": any(item.get("failed", False) for item in summaries),
+            "failed_count": sum(item.get("failed_count", 0) for item in summaries),
+            "future_count": sum(item["future_count"] for item in summaries),
             "incomplete_count": sum(item.get("incomplete_count", 0) for item in summaries),
             "incomplete_ids": [identifier for item in summaries
                                for identifier in item.get("incomplete_ids", [])],

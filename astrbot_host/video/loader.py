@@ -69,20 +69,25 @@ async def load_native_video(locator):
     return await decode_video(await fetch_native_video_bytes(locator), locator.position)
 
 
-async def fetch_native_video_bytes(locator):
+def _b64decode_strict(encoded: str) -> bytes:
+    return base64.b64decode(encoded, validate=True)
+
+
+async def fetch_native_video_bytes(locator, *, maximum_bytes=MAX_VIDEO_BYTES):
     """Fetch a frozen host component once; native models need no frame decoder."""
     if type(locator) is not NativeVideoLocator:
         raise TaskError("host_video_location_invalid", "video needs its frozen original component")
+    limit = max(1, int(maximum_bytes))
     try:
         value = locator.locator
         if value.startswith("base64://"):
             encoded = value[9:]
-            if len(encoded) > (MAX_VIDEO_BYTES + 2) // 3 * 4:
+            if len(encoded) > (limit + 2) // 3 * 4:
                 raise TaskError("host_video_limit", "video exceeds its intake byte budget")
-            content = base64.b64decode(encoded, validate=True)
+            content = await asyncio.to_thread(_b64decode_strict, encoded)
         else:
-            content = await fetch_attachment(value, maximum_bytes=MAX_VIDEO_BYTES)
-        if not 0 < len(content) <= MAX_VIDEO_BYTES:
+            content = await fetch_attachment(value, maximum_bytes=limit)
+        if not 0 < len(content) <= limit:
             raise TaskError("host_video_limit", "video exceeds its intake byte budget")
         return content
     except TaskError as error:
@@ -93,14 +98,33 @@ async def fetch_native_video_bytes(locator):
         raise TaskError("host_video_fetch_failed", "original video could not be prepared") from None
 
 
+async def fetch_placeholder_ref_video_bytes(url, *, maximum_bytes=50 * 1024 * 1024):
+    """Download a remote video ``ref`` through the host SSRF-safe attachment fetcher."""
+    if not isinstance(url, str) or not url.strip():
+        raise TaskError("host_video_location_invalid", "video ref must be a public HTTP(S) URL")
+    limit = max(1024, int(maximum_bytes))
+    try:
+        content = await fetch_attachment(url.strip(), maximum_bytes=limit)
+        if not 0 < len(content) <= limit:
+            raise TaskError("host_video_limit", "video exceeds its download byte budget")
+        return content
+    except TaskError as error:
+        if error.code.startswith("host_image_"):
+            raise TaskError(error.code.replace("host_image_", "host_video_", 1), "video attachment could not be downloaded") from None
+        raise
+    except Exception:
+        raise TaskError("host_video_fetch_failed", "video attachment could not be downloaded") from None
+
+
 async def load_host_resolved_video(value, position):
     return await decode_video(await read_host_resolved_video_bytes(value), position)
 
 
-async def read_host_resolved_video_bytes(value):
+async def read_host_resolved_video_bytes(value, *, maximum_bytes=MAX_VIDEO_BYTES):
     """Read only a video path that AstrBot resolved into its event temp directory."""
     from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
+    limit = max(1, int(maximum_bytes))
     try:
         root = Path(get_astrbot_temp_path()).resolve(strict=True)
         path = Path(value).resolve(strict=True)
@@ -112,9 +136,9 @@ async def read_host_resolved_video_bytes(value):
 
     def read():
         with path.open("rb") as stream:
-            return stream.read(MAX_VIDEO_BYTES + 1)
+            return stream.read(limit + 1)
 
     content = await asyncio.to_thread(read)
-    if not 0 < len(content) <= MAX_VIDEO_BYTES:
+    if not 0 < len(content) <= limit:
         raise TaskError("host_video_limit", "video exceeds its intake byte budget")
     return content

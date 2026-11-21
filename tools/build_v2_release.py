@@ -270,7 +270,8 @@ def checked_payload(path, root):
     if (path.suffix.lower() in TEXT_SUFFIXES and not is_historical_workbook) or path.name in {"LICENSE", "NOTICE", ".editorconfig"}:
         text = payload.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
         if path.suffix == ".py":
-            ast.parse(text, filename=str(path.relative_to(root)))
+            # AST parsing alone accepts constructs such as await inside a sync def.
+            compile(text, str(path.relative_to(root)), "exec", dont_inherit=True)
         if path.suffix == ".json":
             json.loads(text)
         payload = (text.rstrip("\n") + "\n").encode("utf-8")

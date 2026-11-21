@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from astrbot_host.storage_location import (OWNER_NAME, PLUGIN_NAME, POINTER_NAME,
                                            prepare_storage_root, selected_backup_directory, selected_root)
@@ -105,6 +106,46 @@ class StorageManagementTests(unittest.TestCase):
                 selected_backup_directory(root, "relative")
             with self.assertRaises(ValueError):
                 selected_backup_directory(root, str(root / "nested"))
+
+    def test_retention_protects_future_records_and_prefers_newly_created_tied_snapshot(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            previously_written, just_written, future = "a" * 32, "b" * 32, "c" * 32
+            add_snapshot(root, previously_written, NOW, 16)
+            add_snapshot(root, just_written, NOW, 20)
+            add_snapshot(root, future, NOW + timedelta(days=2), 24)
+            result = cleanup_backups(root, retention_count=1, retention_days=90, now=NOW,
+                                     created_snapshot_id=just_written)
+            self.assertEqual(result["snapshot_ids"], [previously_written])
+            self.assertEqual(result["future_count"], 1)
+            self.assertEqual(result["removed_count"], 1)
+            self.assertFalse(result["failed"])
+            plan = cleanup_plan(root, retention_count=1, retention_days=90, now=NOW)
+            self.assertEqual(plan["snapshot_count"], 2)
+            self.assertEqual(plan["remove_count"], 0)
+
+    def test_retention_reports_failure_and_continues_cleaning_other_pairs(self):
+        from companion_v2.storage.management import _remove_tree
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            newest, locked, removable = "a" * 32, "b" * 32, "c" * 32
+            add_snapshot(root, newest, NOW, 16)
+            add_snapshot(root, locked, NOW - timedelta(days=1), 20)
+            add_snapshot(root, removable, NOW - timedelta(days=2), 24)
+
+            def partial_remove(path):
+                if locked not in path.name:
+                    _remove_tree(path)
+
+            with patch("companion_v2.storage.management._remove_tree", side_effect=partial_remove):
+                result = cleanup_backups(root, retention_count=1, retention_days=90, now=NOW)
+            self.assertEqual(result["remove_count"], 2)
+            self.assertEqual(result["removed_count"], 1)
+            self.assertEqual(result["failed_count"], 1)
+            self.assertTrue(result["failed"])
+            self.assertEqual(cleanup_plan(root, retention_count=1, retention_days=90, now=NOW)["snapshot_ids"],
+                             [locked])
 
     def test_retention_combines_count_and_age_but_keeps_the_newest_snapshot(self):
         with TemporaryDirectory(ignore_cleanup_errors=True) as temporary:

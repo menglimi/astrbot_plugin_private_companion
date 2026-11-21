@@ -299,8 +299,14 @@ class AstrBotStagingSession:
             (model.binding.provider for model in self.models))
         narration_profiles = tuple(image_narration_profile(model.binding.provider)
             for model in self.models if "image" in model.local_provider().capabilities)[:1]
-        native_video_profiles = tuple(video_narration_profile(model.binding.provider)
-            for model in self.models if "video" in model.local_provider().capabilities)[:1]
+        video_default = next(
+            (model.binding.provider for model in self.models if "video" in model.local_provider().capabilities),
+            None,
+        ) or next(
+            (model.binding.provider for model in self.models if model.local_provider().supports_video_relay),
+            None,
+        )
+        native_video_profiles = (video_narration_profile(video_default),) if video_default else ()
         self.model_profile = ModelTaskProfile(REPLY_KIND, Lane.FOREGROUND, profile.provider_id,
             profile.task_prompt, default_fallback=fallback_provider_id, replacement_rules=replacement_rules,
             fallback_on_refusal=fallback_on_refusal,

@@ -289,7 +289,7 @@ class RuntimeLockWindowTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-def _install_astrbot_stubs():
+def _astrbot_stubs():
     """Minimal synthetic seams so ``backup_api`` can be imported without the SDK.
 
     ``astrbot_host/backup_api.py`` imports ``astrbot.api.web.request`` and resolves
@@ -313,22 +313,18 @@ def _install_astrbot_stubs():
         return {"status": "ok", "message": message, "data": result.unwrap()}
 
     host_web_api.outcome_response = outcome_response
-    sys.modules.update({"astrbot": astrbot, "astrbot.api": astrbot_api,
-                        "astrbot.api.web": astrbot_web, "astrbot_host.web_api": host_web_api})
-    return request
+    return request, {"astrbot": astrbot, "astrbot.api": astrbot_api,
+                     "astrbot.api.web": astrbot_web, "astrbot_host.web_api": host_web_api}
 
 
 class DashboardRouteTests(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.request = _install_astrbot_stubs()
+        cls.request, stubs = _astrbot_stubs()
+        cls.enterClassContext(patch.dict(sys.modules, stubs))
         import astrbot_host.backup_api as backup_api
+        cls.enterClassContext(patch.object(backup_api, "request", cls.request))
         cls.backup_api = backup_api
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        for name in ("astrbot", "astrbot.api", "astrbot.api.web", "astrbot_host.web_api"):
-            sys.modules.pop(name, None)
 
     def controller(self, runtime):
         return types.SimpleNamespace(
@@ -379,6 +375,22 @@ class DashboardRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(ticks, 8, f"the event loop only ran {ticks} times during a 0.6s backup")
         from astrbot_host.backup_api import backup_operation_lock
         self.assertFalse(backup_operation_lock(api.controller).locked())
+
+    async def test_delete_route_requires_confirmation_and_dashboard_identity(self) -> None:
+        installation = _installations(self)(external=True)
+        installation.runtime.backup_directory = installation.external
+        document = installation.create()
+        snapshot_id, digest = document["snapshot_id"], document["content_hash"]
+        api = self.backup_api.BackupWebAPI(self.controller(installation.runtime))
+        self.assertIn(self.backup_api.PREFIX + "/delete", [path for path, *_ in api.routes()])
+        self.request.body = self._body_for({"snapshot_id": snapshot_id, "confirmed_hash": digest})
+        self.assertEqual((await api.delete())["message"], "backup_request_invalid")
+        self.request.body = self._body_for({"snapshot_id": snapshot_id, "confirmed_hash": digest, "confirm": True})
+        with patch.object(self.request, "username", ""):
+            self.assertEqual((await api.delete())["message"], "dashboard_identity_required")
+        response = await api.delete()
+        self.assertEqual(response["status"], "ok", response)
+        self.assertEqual((await api.delete())["message"], "backup_snapshot_missing")
 
     async def test_a_second_operation_waits_for_the_first(self) -> None:
         """Two dashboard backups must not interleave: the write path shares the store."""
@@ -438,6 +450,25 @@ class DashboardRouteTests(unittest.IsolatedAsyncioTestCase):
 
 
 class LegacySnapshotTests(unittest.TestCase):
+    def test_manual_delete_handles_legacy_pairs_but_refuses_foreign_and_incomplete_pairs(self) -> None:
+        installation = _installations(self)(external=True)
+        backup = installation.backup()
+        document = installation.legacy_pair()
+        snapshot_id = document["snapshot_id"]
+        sidecar = backup.directory / f"companion-v2-{snapshot_id}.json"
+        database = backup.directory / f"companion-v2-{snapshot_id}.sqlite3"
+        command = {"snapshot_id": snapshot_id, "confirmed_hash": document["content_hash"], "confirm": True}
+        sidecar.write_text(json.dumps({**document, "installation_id": "foreign"}), encoding="utf-8")
+        self.assertEqual(backup.delete(**command).failure.code, "backup_snapshot_missing")
+        self.assertTrue(database.is_file())
+        sidecar.write_text(json.dumps({**document, "byte_size": 1}), encoding="utf-8")
+        self.assertEqual(backup.delete(**command).failure.code, "backup_delete_incomplete")
+        self.assertTrue(database.is_file())
+        sidecar.write_text(json.dumps(document), encoding="utf-8")
+        self.assertTrue(backup.delete(**command).is_success)
+        self.assertFalse(sidecar.exists())
+        self.assertFalse(database.exists())
+
     def test_a_v1_snapshot_restores_the_main_database_and_says_what_it_skips(self) -> None:
         installation = _installations(self)(external=True)
         legacy = installation.legacy_pair()
