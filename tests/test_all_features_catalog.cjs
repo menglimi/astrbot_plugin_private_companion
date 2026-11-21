@@ -390,6 +390,52 @@ test("多分区保存部分失败时保留已成功分区的基线与新令牌�
   assert.equal(retryPosts[0].body.section, "budget");
 });
 
+test("保存分区时切换角色会停止旧批次并保留新角色的配置和令牌", async () => {
+  let resolveSave;
+  let started;
+  const firstPost = new Promise(resolve => { started = resolve; });
+  const cfg = "/astrbot_plugin_private_companion/host/targets/t/roles/";
+  const options = {
+    scopeKey: "role-a",
+    configApi: cfg + "role-a/config",
+    onRequest(method, route, body) {
+      if (method === "POST") {
+        assert.equal(body.edit_token, "life-role-a");
+        return new Promise(resolve => {
+          resolveSave = resolve;
+          started();
+        });
+      }
+      if (route === "config") return {sections: {}};
+      const token = options.scopeKey;
+      const section = name => ({
+        scope: "window", edit_token: name + "-" + token,
+        settings: {enabled: true}, fields: {enabled: {kind: "boolean"}},
+      });
+      return {sections: {life: section("life"), relay: section("relay")}};
+    },
+  };
+  const {api, requests} = loadAllFeaturesSandbox(options);
+  await api.load();
+  api.state.draft.life.enabled = false;
+  api.state.draft.relay.enabled = false;
+  const saving = api.save();
+  await firstPost;
+
+  options.scopeKey = "role-b";
+  options.configApi = cfg + "role-b/config";
+  await api.load();
+  resolveSave({result: {edit_token: "life-a-next"}});
+  await saving;
+
+  assert.equal(requests.filter(row => row.method === "POST").length, 1);
+  assert.equal(api.state.sections.life.edit_token, "life-role-b");
+  assert.equal(api.state.sections.life.settings.enabled, true);
+  assert.equal(api.state.sections.relay.edit_token, "relay-role-b");
+  assert.equal(api.state.notice, "");
+  assert.equal(api.state.saving, false);
+});
+
 test("全局搜索覆盖 image.output / web_understanding / expression.learning 且 pageLabels 零英文泄漏", () => {
   const ctx = loadConfigSandbox();
   for (const name of ["reply-page.js", "host-options-page.js", "state-maintenance.js",

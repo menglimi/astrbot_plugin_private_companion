@@ -4709,6 +4709,7 @@ async function loadAllFeatures(){
     allFeaturesState.sections={};
     allFeaturesState.endpoints={};
     allFeaturesState.draft={};
+    allFeaturesState.notice='';
   }
   if(manageTab==='all')paintPanel();
   try{
@@ -4753,7 +4754,10 @@ async function loadAllFeatures(){
   }
 }
 async function saveAllFeatures(){
-  if(allFeaturesState.saving)return;
+  const {roleKey,ticket}=allFeaturesState;
+  const isCurrent=()=>allFeaturesState.ticket===ticket&&
+    (window.CompanionProduct?.scopeKey?.()||'')===roleKey;
+  if(allFeaturesState.saving||!isCurrent())return;
   const fallbackEndpoint=pluginRelativePath(window.CompanionProduct?.role?.()?.config_api);
   const pending=[];
   for(const [group,fields] of Object.entries(allFeaturesState.draft||{})){
@@ -4761,26 +4765,30 @@ async function saveAllFeatures(){
     for(const [field,value] of Object.entries(fields))
       if(allFeatureDirty(group,field,value))changes[field]=Boolean(value);
     const targetEndpoint=allFeaturesState.endpoints?.[group]||fallbackEndpoint;
-    if(Object.keys(changes).length&&targetEndpoint)pending.push({group,changes,endpoint:targetEndpoint});
+    if(Object.keys(changes).length&&targetEndpoint)
+      pending.push({group,changes,endpoint:targetEndpoint,section:allFeaturesState.sections[group]});
   }
   if(!pending.length)return;
   allFeaturesState.saving=true;allFeaturesState.notice='';allFeaturesState.error='';
   updateAllFeatureSaveState();
   try{
-    for(const item of pending){
-      const section=allFeaturesState.sections[item.group];
+    for(const {group,changes,endpoint,section} of pending){
+      if(!isCurrent())return;
       const key=(globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`).replace(/-/g,'');
-      const saved=await window.CompanionProduct.request('POST',item.endpoint+'/configure',{
-        section:item.group,operation_key:key,edit_token:section.edit_token,changes:item.changes});
-      if(section?.settings)Object.assign(section.settings,item.changes);
+      const saved=await window.CompanionProduct.request('POST',endpoint+'/configure',{
+        section:group,operation_key:key,edit_token:section.edit_token,changes});
+      if(!isCurrent())return;
+      if(section.settings)Object.assign(section.settings,changes);
       const nextToken=saved?.result?.edit_token||saved?.edit_token||'';
-      if(section&&nextToken)section.edit_token=nextToken;
+      if(nextToken)section.edit_token=nextToken;
     }
     allFeaturesState.notice='已保存';
     await loadAllFeatures();
   }catch(error){
-    allFeaturesState.error=allFeatureErrorText(error);
-    if(manageTab==='all')paintPanel();
+    if(isCurrent()){
+      allFeaturesState.error=allFeatureErrorText(error);
+      if(manageTab==='all')paintPanel();
+    }
   }
   finally{allFeaturesState.saving=false;updateAllFeatureSaveState();}
 }
