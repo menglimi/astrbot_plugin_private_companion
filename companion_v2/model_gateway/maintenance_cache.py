@@ -35,6 +35,7 @@ from .usage import CORE_CHAIN_KIND, MAIN_CHAIN_KIND, ModelUsageReport, usage_sou
 
 SNAPSHOT_CACHE_MAX_ENTRIES = 16
 DAY_CACHE_MAX_ENTRIES = 16
+RAW_DAY_CACHE_MAX_ENTRIES = 16
 LEGACY_CACHE_MAX_ENTRIES = 16
 
 CACHE_DIAGNOSTIC_KEYS = ("all", "conversation", "plugin", "astrbot_core", "legacy_conversation")
@@ -65,6 +66,7 @@ SCOPE_FIELDS = (
 )
 _IMMUTABLES = frozenset({str, int, float, bool, type(None), bytes})
 _RECENT_DROP_KEYS = frozenset({"signature", "signature_json", "audience_scope_json", "aggregate"})
+_PRICING_ROW_DROP_KEYS = frozenset({"signature", "signature_json", "audience_scope_json"})
 _AVAILABILITY_DEFAULTS = {
     "cost_reported_requests": 0,
     "cost_availability": "unavailable",
@@ -532,6 +534,27 @@ def merge_cache_diagnostics(
 
 def _strip_recent_row(row: dict) -> dict:
     return {key: value for key, value in row.items() if key not in _RECENT_DROP_KEYS}
+
+
+def _strip_pricing_row(row: dict) -> dict:
+    return {key: value for key, value in row.items() if key not in _PRICING_ROW_DROP_KEYS}
+
+
+def _build_usage_report_from_pricing_rows(
+    pricing_rows: tuple[dict, ...] | list[dict],
+    *,
+    enrich_core_rows,
+) -> ModelUsageReport:
+    usage_report = ModelUsageReport()
+    if not pricing_rows:
+        return usage_report
+    new_recent = []
+    for row, cost_meta, recent in enrich_core_rows(pricing_rows):
+        usage_report.add_group({**row, **row["aggregate"], **cost_meta})
+        usage_report.add_hour({**row, **cost_meta})
+        new_recent.append(_strip_recent_row(recent))
+    usage_report.recent_rows = sorted(new_recent, key=_recent_sort_key, reverse=True)[:80]
+    return usage_report
 
 
 def _strip_private_observation(obs: dict) -> dict:
@@ -1194,10 +1217,17 @@ def _query_core_partition_rows(
     received_ge: str | None = None,
     received_lt: str | None = None,
     end_dt: datetime,
+    eff_start_iso: str | None = None,
 ) -> tuple[list[tuple[dict, str, datetime]], bool, datetime | None]:
-    """Query one half-open SQL partition [received_ge, received_lt) via astrbot_core_reply_role_idx."""
+    """Query one half-open SQL partition [received_ge, received_lt) via astrbot_core_reply_role_idx.
+
+    Prunes large unused diagnostic fields in SQLite before Python JSON deserialization:
+    rows outside the 7-day private reply-efficiency window never need ``request_hook_signature``,
+    ``offered_tools``, ``preparation_steps``, ``materials``, ``tools`` or ``delivery``; rows
+    inside it only retain ``request_hook_signature.tool_count``.
+    """
     where = ["role_key = ?"]
-    values: list[object] = [role_key_value]
+    values: list[object] = [eff_start_iso, eff_start_iso, eff_start_iso, eff_start_iso, role_key_value]
     if received_ge is not None:
         where.append("received_at >= ?")
         values.append(received_ge)
@@ -1205,7 +1235,19 @@ def _query_core_partition_rows(
         where.append("received_at < ?")
         values.append(received_lt)
     rows = runtime.read_all(
-        "SELECT scope_kind, context_key, context_json, received_at, record_json "
+        "SELECT scope_kind, context_key, context_json, received_at, "
+        "CASE "
+        "WHEN NOT json_valid(record_json) THEN record_json "
+        "WHEN scope_kind = 'private' AND (? IS NULL OR received_at >= ?) THEN "
+        "json_remove(record_json, '$.request_hook_signature') "
+        "ELSE json_remove(record_json, '$.request_hook_signature', '$.offered_tools', "
+        "'$.preparation_steps', '$.materials', '$.tools', '$.delivery') "
+        "END AS record_json, "
+        "CASE "
+        "WHEN json_valid(record_json) AND scope_kind = 'private' AND (? IS NULL OR received_at >= ?) "
+        "THEN json_extract(record_json, '$.request_hook_signature.tool_count') "
+        "ELSE NULL "
+        "END AS hook_tool_count "
         "FROM astrbot_core_reply_observations WHERE " + " AND ".join(where)
         + " ORDER BY received_at DESC, turn_id DESC",
         tuple(values),
@@ -1225,6 +1267,9 @@ def _query_core_partition_rows(
         try:
             record = json.loads(row["record_json"])
             if type(record) is dict and record.get("version") == 1:
+                hook_tool_count = row["hook_tool_count"]
+                if hook_tool_count is not None:
+                    record["request_hook_signature"] = {"tool_count": hook_tool_count}
                 obs = {**record, "context_key": row["context_key"], "context_json": row["context_json"]}
                 result.append((obs, row["scope_kind"], row_dt))
         except (TypeError, ValueError):
@@ -1240,6 +1285,19 @@ def _has_future_conversation_batches(runtime, *, now_iso: str, batch_count: int 
         (now_iso,),
     )
     return row is not None
+
+
+@dataclass
+class _CoreRawHistoryEntry:
+    """Pricing-independent historical core aggregates cached across pricing/FX refreshes."""
+
+    hist_watermark: tuple | None
+    hist_max_utc_dt: datetime | None
+    core_days: frozenset[str]
+    availability_counts: tuple[int, ...]
+    cache_diag: CacheDiagnosticAccumulator
+    private_7d_records: tuple[tuple[dict, datetime], ...]
+    pricing_rows: tuple[dict, ...]
 
 
 @dataclass
@@ -1369,6 +1427,102 @@ def _fold_core_observations(
     )
 
 
+def _fold_core_raw_observations(
+    base: _CoreRawHistoryEntry | None,
+    obs_with_scope: list[tuple[dict, str, datetime]],
+    *,
+    eff_start: datetime,
+    eff_now: datetime,
+    hist_watermark: tuple | None,
+    hist_max_utc_dt: datetime | None,
+) -> tuple[_CoreRawHistoryEntry | None, bool]:
+    """Fold *obs_with_scope* into pricing-independent raw state, returning ``(entry, order_ok)``."""
+    obs_list = [obs for obs, _scope_kind, _row_dt in obs_with_scope]
+    rows = request_rows(obs_list, include_signature_json=False)
+    sorted_rows = sorted(
+        rows,
+        key=lambda row: (row["finished_at"] or row["started_at"] or row["created_at"], row["position"]),
+    )
+    if base is not None and base.cache_diag.max_sort_key is not None and sorted_rows:
+        first = sorted_rows[0]
+        first_key = (first["finished_at"] or first["started_at"] or first["created_at"], first["position"])
+        if first_key <= base.cache_diag.max_sort_key:
+            return None, False
+
+    if base is None:
+        cache_diag = CacheDiagnosticAccumulator()
+        core_days = set()
+        avail_counts = (0, 0, 0, 0, 0, 0, 0, 0)
+        private_records: list[tuple[dict, datetime]] = []
+        prior_pricing_rows: tuple[dict, ...] = ()
+        merged_max_dt = hist_max_utc_dt
+    else:
+        cache_diag = base.cache_diag.clone()
+        core_days = set(base.core_days)
+        avail_counts = base.availability_counts
+        private_records = [
+            (rec, dt) for rec, dt in base.private_7d_records if eff_start <= dt <= eff_now
+        ]
+        prior_pricing_rows = base.pricing_rows
+        if base.hist_max_utc_dt is None:
+            merged_max_dt = hist_max_utc_dt
+        elif hist_max_utc_dt is None:
+            merged_max_dt = base.hist_max_utc_dt
+        else:
+            merged_max_dt = max(base.hist_max_utc_dt, hist_max_utc_dt)
+
+    if rows:
+        core_days.update(row["day"] for row in rows)
+        pricing_rows = tuple(_strip_pricing_row(row) for row in rows) + prior_pricing_rows
+    else:
+        pricing_rows = prior_pricing_rows
+
+    for row in sorted_rows:
+        cache_diag.add_row(row, track_sort_key=True)
+
+    avail_counts = _add_availability_counts(avail_counts, _availability_counts_for_observations(obs_list))
+    new_private = [
+        (_strip_private_observation(obs), row_dt)
+        for obs, scope_kind, row_dt in obs_with_scope
+        if scope_kind == "private" and eff_start <= row_dt <= eff_now
+    ]
+    private_records = new_private + private_records
+
+    return (
+        _CoreRawHistoryEntry(
+            hist_watermark=hist_watermark,
+            hist_max_utc_dt=merged_max_dt,
+            core_days=frozenset(core_days),
+            availability_counts=avail_counts,
+            cache_diag=cache_diag,
+            private_7d_records=tuple(private_records),
+            pricing_rows=pricing_rows,
+        ),
+        True,
+    )
+
+
+def _materialize_core_history_entry(
+    raw_entry: _CoreRawHistoryEntry,
+    *,
+    enrich_core_rows,
+) -> _CoreHistoryEntry:
+    """Project current pricing onto a pricing-independent raw historical entry without touching SQLite."""
+    usage_report = _build_usage_report_from_pricing_rows(
+        raw_entry.pricing_rows,
+        enrich_core_rows=enrich_core_rows,
+    )
+    return _CoreHistoryEntry(
+        hist_watermark=raw_entry.hist_watermark,
+        hist_max_utc_dt=raw_entry.hist_max_utc_dt,
+        core_days=raw_entry.core_days,
+        usage_report=usage_report,
+        availability_counts=raw_entry.availability_counts,
+        cache_diag=raw_entry.cache_diag,
+        private_7d_records=raw_entry.private_7d_records,
+    )
+
+
 def _lru_put(cache: OrderedDict, key, value, max_entries: int) -> None:
     if key in cache:
         cache.move_to_end(key)
@@ -1384,6 +1538,7 @@ class _RuntimeMaintenanceCache:
         self._lock = Lock()
         self._snapshots: OrderedDict[tuple, _SnapshotCacheEntry] = OrderedDict()
         self._days: OrderedDict[tuple, _CoreHistoryEntry] = OrderedDict()
+        self._raw_days: OrderedDict[tuple, _CoreRawHistoryEntry] = OrderedDict()
         self._legacy: OrderedDict[tuple, _LegacyCacheEntry] = OrderedDict()
         self._stats = {
             "snapshot_hits": 0,
@@ -1391,6 +1546,9 @@ class _RuntimeMaintenanceCache:
             "day_cache_hits": 0,
             "day_cache_advances": 0,
             "day_cache_misses": 0,
+            "raw_day_cache_hits": 0,
+            "raw_day_cache_advances": 0,
+            "raw_day_cache_misses": 0,
             "legacy_cache_hits": 0,
             "legacy_cache_misses": 0,
         }
@@ -1401,6 +1559,7 @@ class _RuntimeMaintenanceCache:
                 **self._stats,
                 "snapshot_entries": len(self._snapshots),
                 "day_entries": len(self._days),
+                "raw_day_entries": len(self._raw_days),
                 "legacy_entries": len(self._legacy),
             }
 
@@ -1408,6 +1567,7 @@ class _RuntimeMaintenanceCache:
         with self._lock:
             self._snapshots.clear()
             self._days.clear()
+            self._raw_days.clear()
             self._legacy.clear()
             for key in self._stats:
                 self._stats[key] = 0
@@ -1611,6 +1771,7 @@ class _RuntimeMaintenanceCache:
         hist_watermark: tuple | None = None,
         can_cache: bool = True,
         shared_token_before: _DatabaseWriteToken | None = None,
+        raw_cache_version: object | None = None,
     ) -> CorePartitionState:
         """Load historical core aggregates from LRU day cache and query only today's rows."""
         if not core_available:
@@ -1625,6 +1786,7 @@ class _RuntimeMaintenanceCache:
             )
 
         now_utc = eff_now.astimezone(timezone.utc)
+        eff_start_buffer_iso = (eff_start - timedelta(days=2)).astimezone(timezone.utc).isoformat()
         if hist_watermark is None:
             hist_watermark = read_core_history_watermark(
                 runtime,
@@ -1633,9 +1795,13 @@ class _RuntimeMaintenanceCache:
                 core_available=True,
             )
         day_key = (role_key_value, history_cutoff, tz_offset_seconds, cache_version)
+        raw_ver = raw_cache_version if raw_cache_version is not None else cache_version
+        raw_key = (role_key_value, history_cutoff, tz_offset_seconds, raw_ver)
 
         hist_entry: _CoreHistoryEntry | None = None
+        raw_hit_entry: _CoreRawHistoryEntry | None = None
         prior_candidates: list[tuple[str, _CoreHistoryEntry]] = []
+        prior_raw_candidates: list[tuple[str, _CoreRawHistoryEntry]] = []
         with self._lock:
             cached = self._days.get(day_key)
             if (
@@ -1647,15 +1813,54 @@ class _RuntimeMaintenanceCache:
                 self._stats["day_cache_hits"] += 1
                 hist_entry = cached
             else:
-                for existing_key, existing_entry in self._days.items():
-                    if (
-                        existing_key[0] == role_key_value
-                        and existing_key[1] < history_cutoff
-                        and existing_key[2] == tz_offset_seconds
-                        and existing_key[3] == cache_version
-                        and (existing_entry.hist_max_utc_dt is None or now_utc >= existing_entry.hist_max_utc_dt)
-                    ):
-                        prior_candidates.append((existing_key[1], existing_entry))
+                cached_raw = self._raw_days.get(raw_key)
+                if (
+                    cached_raw is not None
+                    and cached_raw.hist_watermark == hist_watermark
+                    and (cached_raw.hist_max_utc_dt is None or now_utc >= cached_raw.hist_max_utc_dt)
+                ):
+                    self._raw_days.move_to_end(raw_key)
+                    raw_hit_entry = cached_raw
+                else:
+                    for existing_key, existing_entry in self._days.items():
+                        if (
+                            existing_key[0] == role_key_value
+                            and existing_key[1] < history_cutoff
+                            and existing_key[2] == tz_offset_seconds
+                            and existing_key[3] == cache_version
+                            and (existing_entry.hist_max_utc_dt is None or now_utc >= existing_entry.hist_max_utc_dt)
+                        ):
+                            prior_candidates.append((existing_key[1], existing_entry))
+                    for existing_key, existing_entry in self._raw_days.items():
+                        if (
+                            existing_key[0] == role_key_value
+                            and existing_key[1] < history_cutoff
+                            and existing_key[2] == tz_offset_seconds
+                            and existing_key[3] == raw_ver
+                            and (existing_entry.hist_max_utc_dt is None or now_utc >= existing_entry.hist_max_utc_dt)
+                        ):
+                            prior_raw_candidates.append((existing_key[1], existing_entry))
+
+        def _can_store_entry() -> bool:
+            return (
+                can_cache
+                and not has_active_write_transaction(runtime)
+                and (
+                    shared_token_before is None
+                    or read_shared_db_token(runtime) == shared_token_before
+                    or has_active_read_snapshot(runtime)
+                )
+            )
+
+        # Pricing/FX refresh fast path: re-project pricing from cached raw historical
+        # rows in memory without re-scanning astrbot_core_reply_observations in SQLite.
+        if hist_entry is None and raw_hit_entry is not None:
+            hist_entry = _materialize_core_history_entry(raw_hit_entry, enrich_core_rows=enrich_core_rows)
+            store_ok = _can_store_entry()
+            with self._lock:
+                self._stats["raw_day_cache_hits"] += 1
+                if store_ok:
+                    _lru_put(self._days, day_key, hist_entry, DAY_CACHE_MAX_ENTRIES)
 
         # Midnight rollover fast path: advance the latest valid earlier day prefix across the gap.
         if hist_entry is None and prior_candidates:
@@ -1674,6 +1879,7 @@ class _RuntimeMaintenanceCache:
                     received_ge=prev_cutoff,
                     received_lt=history_cutoff,
                     end_dt=now_utc,
+                    eff_start_iso=eff_start_buffer_iso,
                 )
                 if not gap_future:
                     advanced, order_ok = _fold_core_observations(
@@ -1687,18 +1893,68 @@ class _RuntimeMaintenanceCache:
                     )
                     if order_ok and advanced is not None:
                         hist_entry = advanced
-                        store_ok = (
-                            can_cache
-                            and not has_active_write_transaction(runtime)
-                            and (
-                                shared_token_before is None
-                                or read_shared_db_token(runtime) == shared_token_before
-                                or has_active_read_snapshot(runtime)
-                            )
+                        advanced_raw = None
+                        prev_raw = next(
+                            (entry for cutoff, entry in prior_raw_candidates if cutoff == prev_cutoff),
+                            None,
                         )
+                        if prev_raw is not None and prev_raw.hist_watermark == prev_wm:
+                            cand_raw, raw_ok = _fold_core_raw_observations(
+                                prev_raw,
+                                gap_obs,
+                                eff_start=eff_start,
+                                eff_now=eff_now,
+                                hist_watermark=hist_watermark,
+                                hist_max_utc_dt=gap_max_dt,
+                            )
+                            if raw_ok and cand_raw is not None:
+                                advanced_raw = cand_raw
+                        store_ok = _can_store_entry()
                         with self._lock:
                             self._stats["day_cache_advances"] += 1
                             if store_ok:
+                                _lru_put(self._days, day_key, hist_entry, DAY_CACHE_MAX_ENTRIES)
+                                if advanced_raw is not None:
+                                    _lru_put(self._raw_days, raw_key, advanced_raw, RAW_DAY_CACHE_MAX_ENTRIES)
+
+        # Midnight rollover + pricing change fast path: advance pricing-independent raw cache across the gap.
+        if hist_entry is None and prior_raw_candidates:
+            prior_raw_candidates.sort(key=lambda item: item[0], reverse=True)
+            prev_cutoff, prev_raw = prior_raw_candidates[0]
+            prev_wm = read_core_history_watermark(
+                runtime,
+                role_key_value=role_key_value,
+                history_cutoff=prev_cutoff,
+                core_available=True,
+            )
+            if prev_wm == prev_raw.hist_watermark:
+                gap_obs, gap_future, gap_max_dt = _query_core_partition_rows(
+                    runtime,
+                    role_key_value=role_key_value,
+                    received_ge=prev_cutoff,
+                    received_lt=history_cutoff,
+                    end_dt=now_utc,
+                    eff_start_iso=eff_start_buffer_iso,
+                )
+                if not gap_future:
+                    advanced_raw, order_ok = _fold_core_raw_observations(
+                        prev_raw,
+                        gap_obs,
+                        eff_start=eff_start,
+                        eff_now=eff_now,
+                        hist_watermark=hist_watermark,
+                        hist_max_utc_dt=gap_max_dt,
+                    )
+                    if order_ok and advanced_raw is not None:
+                        hist_entry = _materialize_core_history_entry(
+                            advanced_raw, enrich_core_rows=enrich_core_rows
+                        )
+                        store_ok = _can_store_entry()
+                        with self._lock:
+                            self._stats["raw_day_cache_advances"] += 1
+                            self._stats["day_cache_advances"] += 1
+                            if store_ok:
+                                _lru_put(self._raw_days, raw_key, advanced_raw, RAW_DAY_CACHE_MAX_ENTRIES)
                                 _lru_put(self._days, day_key, hist_entry, DAY_CACHE_MAX_ENTRIES)
 
         hist_has_future = False
@@ -1708,31 +1964,24 @@ class _RuntimeMaintenanceCache:
                 role_key_value=role_key_value,
                 received_lt=history_cutoff,
                 end_dt=now_utc,
+                eff_start_iso=eff_start_buffer_iso,
             )
-            built, _ = _fold_core_observations(
+            built_raw, _ = _fold_core_raw_observations(
                 None,
                 hist_obs,
-                enrich_core_rows=enrich_core_rows,
                 eff_start=eff_start,
                 eff_now=eff_now,
                 hist_watermark=hist_watermark,
                 hist_max_utc_dt=hist_max_dt,
             )
-            hist_entry = built
-            store_ok = (
-                can_cache
-                and not hist_has_future
-                and hist_entry is not None
-                and not has_active_write_transaction(runtime)
-                and (
-                    shared_token_before is None
-                    or read_shared_db_token(runtime) == shared_token_before
-                    or has_active_read_snapshot(runtime)
-                )
-            )
+            assert built_raw is not None
+            hist_entry = _materialize_core_history_entry(built_raw, enrich_core_rows=enrich_core_rows)
+            store_ok = not hist_has_future and _can_store_entry()
             with self._lock:
                 self._stats["day_cache_misses"] += 1
+                self._stats["raw_day_cache_misses"] += 1
                 if store_ok:
+                    _lru_put(self._raw_days, raw_key, built_raw, RAW_DAY_CACHE_MAX_ENTRIES)
                     _lru_put(self._days, day_key, hist_entry, DAY_CACHE_MAX_ENTRIES)
 
         today_obs, today_has_future, today_max_dt = _query_core_partition_rows(
@@ -1740,6 +1989,7 @@ class _RuntimeMaintenanceCache:
             role_key_value=role_key_value,
             received_ge=history_cutoff,
             end_dt=now_utc,
+            eff_start_iso=eff_start_buffer_iso,
         )
         merged, order_ok = _fold_core_observations(
             hist_entry,
