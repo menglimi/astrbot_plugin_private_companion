@@ -1,8 +1,9 @@
 """Idempotent, bounded receipt-to-experience production for authenticated life windows."""
 
+from dataclasses import replace
 import json
 
-from companion_v2.execution.models import TaskContext, TaskError, digest, encode, require
+from companion_v2.execution.models import AudienceRef, TaskContext, TaskError, digest, encode, require
 from companion_v2.execution.service import outcome
 from companion_v2.foundation.refs import ScopeKind, SourceRef, VersionRef
 from companion_v2.sources.dependencies import link
@@ -16,7 +17,7 @@ from .models import Evidence, owner_key
 
 OWNER = "memory.role_activity_receipt"
 SCHEMA = "memory.role-activity-receipt.v1"
-CURSOR_PREFIX = "memory.activity-ingestion.v1:"
+CURSOR_PREFIX = "memory.activity-ingestion.v2:"
 TERMINAL_UNAVAILABLE = frozenset({"source_revoked", "source_expired", "source_dependency_unavailable",
     "source_dependency_expired", "journal_unavailable", "journal_dependency_changed", "memory_evidence_forgotten"})
 
@@ -58,25 +59,101 @@ class MemoryActivityIngestion:
         header = encode({"schema": SCHEMA, "context": context, "stream": stream, "operation_id": operation_id})
         return header + "\n" + experience.text, len(header) + 1
 
+    def _validated_context(self, stored_context, at):
+        """Re-resolve live authority for a stored receipt without changing owner or role.
+
+        Switching a private window to a new conversation scope bumps the prior
+        scope's persona binding revision to fence in-flight work, while keeping
+        the same human and role assigned to that historical scope. Revalidating
+        against the current actor and role binding preserves revocation and
+        reassignment checks without stranding already-recorded experiences.
+        """
+        current_actor = require(self.tasks.identity.resolve_authenticated(stored_context.actor.principal, observed_at=at))
+        if current_actor.subject != stored_context.actor.subject:
+            raise TaskError("binding_rebound", "original receipt belongs to another human")
+        current_role = require(self.tasks.identity.resolve_role(stored_context.scope, observed_at=at))
+        if current_role.role != stored_context.role_binding.role:
+            raise TaskError("role_binding_changed", "original receipt belongs to another role")
+        return replace(stored_context, actor=current_actor, role_binding=current_role)
+
+    @staticmethod
+    def _same_receipt_source(original, context, stream, operation_id, experience):
+        if original.audience != context.audience or "\n" not in original.payload:
+            return False
+        header, body = original.payload.split("\n", 1)
+        if body != experience.text:
+            return False
+        try:
+            value = json.loads(header)
+            if (set(value) != {"schema", "context", "stream", "operation_id"}
+                    or value["schema"] != SCHEMA or value["stream"] != stream
+                    or value["operation_id"] != operation_id):
+                return False
+            stored = TaskContext.restore(value["context"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        return (stored.actor.principal == context.actor.principal
+                and stored.actor.subject == context.actor.subject
+                and stored.scope == context.scope
+                and stored.role_binding.role == context.role_binding.role
+                and stored.audience == context.audience)
+
+    @staticmethod
+    def _same_private_window_scope(left, right):
+        return (left.kind is ScopeKind.PRIVATE and right.kind is ScopeKind.PRIVATE
+                and left.installation_id == right.installation_id
+                and left.platform == right.platform
+                and left.native_scope_id == right.native_scope_id
+                and left.bot_id == right.bot_id
+                and left.account_id == right.account_id
+                and left.session_id == right.session_id)
+
+    def _operation_context(self, context, op_scope, at):
+        """Match same-window receipts across conversation_id rotation (e.g. V1 import -> first chat)."""
+        if op_scope == context.scope:
+            return context
+        if not self._same_private_window_scope(context.scope, op_scope):
+            return None
+        resolved_persona = self.memory.writer.access.personas.resolve(op_scope, observed_at=at)
+        if not resolved_persona.is_success:
+            return None
+        persona = resolved_persona.unwrap()
+        if (persona.route.user != context.actor.subject
+                or persona.binding.role != context.role_binding.role):
+            return None
+        resolved_actor = self.tasks.identity.resolve_authenticated(context.actor.principal, observed_at=at)
+        if not resolved_actor.is_success:
+            return None
+        actor = resolved_actor.unwrap()
+        if actor.subject != context.actor.subject:
+            return None
+        candidate = TaskContext(actor, persona.binding, AudienceRef(op_scope, (actor.subject,)))
+        try:
+            self._authorize(candidate, write=True, at=at)
+        except TaskError:
+            return None
+        return candidate
+
     def _validate(self, record, at):
         try:
             header, _ = record.payload.split("\n", 1)
             value = json.loads(header)
             if set(value) != {"schema", "context", "stream", "operation_id"} or value["schema"] != SCHEMA:
                 raise ValueError("invalid receipt source header")
-            context = TaskContext.restore(value["context"])
-            self._authorize(context, at=at)
-            identity = self._identity(context, value["stream"], value["operation_id"])
-            experience = self.reader.read(context, value["stream"], value["operation_id"], at)
+            stored_context = TaskContext.restore(value["context"])
+            validated_context = self._validated_context(stored_context, at)
+            self._authorize(validated_context, at=at)
+            identity = self._identity(stored_context, value["stream"], value["operation_id"])
+            experience = self.reader.read(stored_context, value["stream"], value["operation_id"], at)
             if experience is None:
                 raise ValueError("operation is not a completed experience")
             for source in experience.sources:
                 # Memory-specific forgetting does not revoke the producer's
                 # original source globally. Respect it throughout this projection.
-                self.memory.writer.access.source(context, source, at=at)
-            reference = SourceRef(identity, OWNER, context.scope, VersionRef(identity, 1), experience.occurred_at)
-            payload, _ = self._payload(context, value["stream"], value["operation_id"], experience)
-            if (record.reference != reference or record.audience != context.audience
+                self.memory.writer.access.source(validated_context, source, at=at)
+            reference = SourceRef(identity, OWNER, stored_context.scope, VersionRef(identity, 1), experience.occurred_at)
+            payload, _ = self._payload(stored_context, value["stream"], value["operation_id"], experience)
+            if (record.reference != reference or record.audience != stored_context.audience
                     or record.payload != payload or record.content_hash != digest(payload)):
                 raise ValueError("original receipt source changed")
         except TaskError:
@@ -88,8 +165,9 @@ class MemoryActivityIngestion:
     def record(self, context, *, stream, operation_id):
         """Trusted owner receipt IDs only; no inferred intention or model JSON input."""
         with self.runtime.transaction():
-            self._authorize(context, write=True)
-            experience = self.reader.read(context, stream, operation_id, self.tasks.now())
+            now = self.tasks.now()
+            self._authorize(context, write=True, at=now)
+            experience = self.reader.read(context, stream, operation_id, now)
             if experience is None:
                 return {"state": "not_completed", "view_id": None}
             identity = self._identity(context, stream, operation_id)
@@ -99,13 +177,15 @@ class MemoryActivityIngestion:
                 AND lineage_id = ? AND source_revision = 1""", (identity, identity))
             if row is not None:
                 original = _source_from_row(row)
-                require(self.memory.writer.sources.validate_reference(original.reference, observed_at=self.tasks.now()))
-                if original.payload != payload or original.audience != context.audience:
+                require(self.memory.writer.sources.validate_reference(original.reference, observed_at=now))
+                if not self._same_receipt_source(original, context, stream, operation_id, experience):
                     raise TaskError("memory_activity_context_changed", "original experience retains its captured authority")
+                payload = original.payload
+                offset = original.payload.index("\n") + 1
             else:
                 require(self.memory.writer.sources.publish(SourceRecord(reference, context.audience,
-                    digest(payload), payload), observed_at=self.tasks.now()))
-                link(self.runtime, reference, experience.sources, self.tasks.now())
+                    digest(payload), payload), observed_at=now))
+                link(self.runtime, reference, experience.sources, now)
             statements = []
             for statement in experience.statements:
                 evidence = Evidence(reference, digest(payload), offset, offset + len(statement), digest(statement),
@@ -128,7 +208,8 @@ class MemoryActivityIngestion:
         A transient missing owner stops that stream at its original receipt.
         """
         with self.runtime.transaction() as connection:
-            self._authorize(context, write=True)
+            now = self.tasks.now()
+            self._authorize(context, write=True, at=now)
             key = self._cursor_key(context)
             saved = connection.execute("SELECT value FROM runtime_metadata WHERE key = ?", (key,)).fetchone()
             cursor = json.loads(saved["value"]) if saved else {stream: 0 for stream in TABLES}
@@ -147,13 +228,15 @@ class MemoryActivityIngestion:
                         report["skipped"] += 1
                     else:
                         operation = require(self.reader.life.life.operations.get(row["operation_id"]))
-                        if operation.operation.scope != context.scope:
+                        target_context = self._operation_context(context, operation.operation.scope, now)
+                        if target_context is None:
                             report["skipped"] += 1
                         else:
-                            result = self.record(context, stream=stream, operation_id=row["operation_id"])
+                            result = self.record(target_context, stream=stream, operation_id=row["operation_id"])
                             if result.is_success:
                                 report["saved" if result.unwrap()["view_id"] else "skipped"] += 1
-                            elif result.failure.code in TERMINAL_UNAVAILABLE:
+                            elif result.failure.code in TERMINAL_UNAVAILABLE or (
+                                    target_context is not context and result.failure.code == "life_context_scope"):
                                 report["skipped"] += 1
                             else:
                                 report["blocked"].append({"stream": stream, "operation_id": row["operation_id"],
