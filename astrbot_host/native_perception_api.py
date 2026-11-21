@@ -495,18 +495,24 @@ class NativePerceptionWebAPI:
                 if session is None or runtime is None:
                     raise TaskError("staging_not_initialized", "load a V2 profile first")
                 observed_at = controller.now()
+                app, context = session.application, session.profile.target
+
+                def load_contact():
+                    operator = dashboard_operator(runtime, username, at=observed_at)
+                    return require(ProactiveContactManagement(app, context).status(operator))
+
+                contact = await asyncio.to_thread(load_contact)
+                schedule = app.contact_schedule
+                events = getattr(schedule, "news_events", None)
+                if events is not None:
+                    # maintain_role() schedules an asyncio background task via create_task(),
+                    # so it must run on the event loop thread rather than inside to_thread().
+                    try:
+                        events.maintain_role(contact["settings"])
+                    except Exception:
+                        logger.exception("[CompanionV2] 角色共享资讯巡视未能启动")
 
                 def load_materials():
-                    operator = dashboard_operator(runtime, username, at=observed_at)
-                    app, context = session.application, session.profile.target
-                    contact = require(ProactiveContactManagement(app, context).status(operator))
-                    schedule = app.contact_schedule
-                    events = getattr(schedule, "news_events", None)
-                    if events is not None:
-                        try:
-                            events.maintain_role(contact["settings"])
-                        except Exception:
-                            logger.exception("[CompanionV2] 角色共享资讯巡视未能启动")
                     shared = read_role_material_pool(schedule, observed_at=observed_at,
                         settings=contact["settings"])
                     trace_state, trace_unavailable = "ready", 0

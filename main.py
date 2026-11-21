@@ -215,7 +215,7 @@ class PrivateCompanionV2StagingPlugin(Star):
                 logger.warning("[CompanionV2] 启动时已自动修复旧策略字段：%s", repaired)
             # One public facade exposes the body and its seven internal modules.
             # Independent third-party integrations use their documented APIs.
-            self.extension_api = UnifiedCompanionExtensionAPI(self.staging)
+            self.extension_api = UnifiedCompanionExtensionAPI(self.staging, claim=True)
             global _ACTIVE_EXTENSION_API
             _ACTIVE_EXTENSION_API = self.extension_api
             try:
