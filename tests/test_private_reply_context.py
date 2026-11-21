@@ -133,6 +133,41 @@ class PrivateReplyContextTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.native.provider.client.state.calls, [])
         self.assertEqual(event.sent, [])
 
+    async def test_confirmed_contact_bubbles_follow_older_native_replies_in_provider_context(self):
+        _, old = await self.prepare("下次聊", "before-contact")
+        self.clock.advance(timedelta(seconds=1))
+        await self.sent(old, "先去上课吧。")
+        self.clock.advance(timedelta(seconds=1))
+        first_at = stamp(self.clock.now())
+        self.clock.advance(timedelta(seconds=1))
+        second_at = stamp(self.clock.now())
+        self.clock.advance(timedelta(seconds=1))
+        event, current = await self.prepare("这让我有点担心。", "after-contact")
+        bubbles = [(first_at, "看到窗台上的杯子了。"), (second_at, "它快被风吹落了。")]
+        materials = [{"kind": "confirmed_background_message", "content": {
+            "owner": "proactive.contact", "ref": "sent_1", "delivered_at": at, "text": text,
+            "part": {"sequence": sequence, "part_count": 2},
+        }} for sequence, (at, text) in enumerate(bubbles, 1)]
+        current.update(prompt_instruction="主动消息", prompt_context_instruction="主动消息",
+                       prompt_context_blocks=({"title": "主动消息", "materials": materials},))
+        event.set_extra(CORE_REPLY_CONTEXT_EXTRA, {"prepared": current})
+        request = NS(prompt="这让我有点担心。", extra_user_content_parts=[],
+                     contexts=[{"role": "assistant", "content": "先去上课吧。"}])
+        await inject_core_reply_perception_context(event, request, application=self.app)
+
+        payload = json.loads(request.extra_user_content_parts[-1].text.split("\n", 1)[1]
+                             .removesuffix("\n</companion_v2_context>"))
+        timeline = payload["private_reply_context"]
+        native, first, second = [item for item in timeline["before_input"] if item["speaker"] == "assistant"]
+        self.assertTrue(native["text_in_host_history"])
+        self.assertEqual([(item["at"], item["text"]) for item in (first, second)], bubbles)
+        self.assertEqual([item["part"]["sequence"] for item in (first, second)], [1, 2])
+        self.assertEqual(first["turn_id"], second["turn_id"])
+        self.assertEqual(timeline["last_sent_reply_turn_id"], second["turn_id"])
+        for material in payload["companion_background"]["sections"][0]["materials"]:
+            self.assertTrue(material["content"]["text_in_private_reply_context"])
+            self.assertNotIn("text", material["content"])
+
     async def test_other_window_and_unauthorized_history_are_not_injected(self):
         _, other = await self.prepare("另一个窗口的请求", "other-window", target="second")
         self.clock.advance(timedelta(seconds=1))
