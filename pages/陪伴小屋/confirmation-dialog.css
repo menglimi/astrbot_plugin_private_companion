@@ -9,7 +9,7 @@
   background: var(--t-surface-raised);
   border: 1px solid var(--t-line-firm);
   border-radius: var(--r-lg);
-  box-shadow: 0 22px 70px color-mix(in srgb, var(--t-text) 26%, transparent);
+  box-shadow: var(--t-shadow-lift);
 }
 /* 遮罩跟着主题走：暗色主题下写死的深灰会和背景糊成一片。 */
 .confirmation-dialog::backdrop { background: var(--scrim); backdrop-filter: blur(3px); }
