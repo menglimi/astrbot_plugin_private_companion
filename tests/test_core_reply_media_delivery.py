@@ -129,5 +129,57 @@ class NativeReplyMessagesTests(unittest.TestCase):
                 self.assertEqual(native_reply_messages(_Event(), MessageChain(chain=chain)), ())
 
 
+class QqVoiceTextSendPacingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_qq_split_record_and_plain_inserts_brief_inter_part_pace(self):
+        from unittest.mock import AsyncMock, patch
+        from astrbot_host.core_reply import (
+            QQ_RECORD_PART_PACE_SECONDS,
+            activate_core_reply_delivery_guard,
+            prepare_core_reply_event,
+        )
+        from companion_v2.foundation.outcome import Outcome
+
+        sent = []
+
+        class FakeQqEvent:
+            def __init__(self, platform="aiocqhttp"):
+                self._platform = platform
+                self._extra = {}
+
+            def get_platform_name(self):
+                return self._platform
+
+            def get_extra(self, key, default=None):
+                return self._extra.get(key, default)
+
+            def set_extra(self, key, value):
+                self._extra[key] = value
+
+            async def send(self, message):
+                sent.append(message)
+                return True
+
+        async def _authorize(_prepared):
+            return Outcome.success(True)
+
+        event = FakeQqEvent("aiocqhttp")
+        prepare_core_reply_event(event, {"event_id": "evt-pace-1"}, authorize=_authorize)
+        activate_core_reply_delivery_guard(event)
+        chain = MessageChain(chain=[Record(file=silent_wav(), text="你好"), Plain("你好")])
+
+        with patch("astrbot_host.core_reply.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            await event.send(chain)
+
+        self.assertEqual(len(sent), 2)
+        sleep_mock.assert_awaited_once_with(QQ_RECORD_PART_PACE_SECONDS)
+
+        # Single plain message on QQ does not sleep.
+        sent.clear()
+        with patch("astrbot_host.core_reply.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            await event.send(MessageChain(chain=[Plain("仅文字")]))
+        self.assertEqual(len(sent), 1)
+        sleep_mock.assert_not_awaited()
+
+
 if __name__ == "__main__":
     unittest.main()

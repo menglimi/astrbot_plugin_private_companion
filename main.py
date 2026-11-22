@@ -523,7 +523,9 @@ class PrivateCompanionV2StagingPlugin(Star):
                 or getattr(event, "call_llm", False)
                 or getattr(event, "_has_send_oper", False)):
             return
-        await self._enter_core_reply_followup_guard(event, event_ref=event_ref, channel=channel)
+        outcome = await self._enter_core_reply_followup_guard(event, event_ref=event_ref, channel=channel)
+        if outcome.get("reason") == "closed":
+            suppress_default_reply(event)
 
     def _fold_private_follow_up(self, event, target, event_ref, text):
         """Join a post-debounce message to the first model request when possible."""
@@ -1488,17 +1490,19 @@ class PrivateCompanionV2StagingPlugin(Star):
                 event.message_str = SELF_MENTION
                 if getattr(event, "message_obj", None) is not None:
                     event.message_obj.message_str = SELF_MENTION
-        event.is_wake = True
-        event.is_at_or_wake_command = True
         guard_outcome = await self._enter_core_reply_followup_guard(
             event, event_ref=event_ref, channel=channel, prepared=prepared)
         if guard_outcome.get("reason") in {"stopped", "closed"}:
+            if guard_outcome.get("reason") == "closed":
+                suppress_default_reply(event)
             cleanup_reason = (
                 "wait_stopped" if guard_outcome.get("reason") == "stopped" else "wait_closed"
             )
             self._cleanup_captured_core_followup(
                 event, prepared, event_ref=event_ref, channel=channel, reason=cleanup_reason)
             return
+        event.is_wake = True
+        event.is_at_or_wake_command = True
         if channel == "private" and not guard_outcome.get("had_active_turn"):
             entries = (debounced_entries if debounced_entries is not None else
                        ((event, str(prepared.get("text") or event.message_str or ""),
@@ -2080,6 +2084,9 @@ class PrivateCompanionV2StagingPlugin(Star):
         # Empty/error results can end the runner without a final send hook.
         # A subsequent native delivery reopens the observation phase itself.
         finish_core_reply_tracking(event, log_completion=False)
+        followup_guard = getattr(self, "_core_followup_guard", None)
+        if followup_guard is not None:
+            followup_guard.finish_turn(event)
 
     @filter.on_using_llm_tool()
     async def observe_companion_core_tool_begin(self, event: AstrMessageEvent, tool, tool_args):
@@ -2131,6 +2138,9 @@ class PrivateCompanionV2StagingPlugin(Star):
     @filter.after_message_sent(priority=1000000)
     async def observe_companion_core_reply_sent(self, event: AstrMessageEvent):
         from .astrbot_host.core_reply_voice_authoring import restore_core_voice_authoring
+        followup_guard = getattr(self, "_core_followup_guard", None)
+        if followup_guard is not None:
+            followup_guard.finish_turn(event)
         self._private_reply_followups().finish(event)
         restore_core_voice_authoring(event)
         await close_core_reply_turn(event)

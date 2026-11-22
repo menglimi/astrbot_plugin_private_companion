@@ -19,6 +19,9 @@ CORE_REPLY_CONTEXT_EXTRA = "_companion_v2_core_reply_context"
 # cleanly at the send boundary avoids bubbling unhandled TaskError tracebacks
 # into AstrBot's RespondStage.
 SILENT_SEND_DENIAL_CODES = frozenset({"message_withdrawn"})
+_QQ_PACE_PLATFORMS = frozenset({"aiocqhttp", "qq_official", "qq_official_webhook"})
+# Brief inter-part pause when splitting Record + Plain on QQ to avoid 0ms anti-flood rejections.
+QQ_RECORD_PART_PACE_SECONDS = 0.35
 
 
 def _is_silent_send_denial(error: BaseException) -> bool:
@@ -309,6 +312,16 @@ def prepare_core_reply_event(
                                                   should_drop_core_reply_duplicate)
             result = None
             outbound_parts = native_reply_messages(event, message)
+            from astrbot.core.message.components import Record
+            platform_getter = getattr(event, "get_platform_name", None)
+            pace_qq_record = (
+                len(outbound_parts) > 1
+                and QQ_RECORD_PART_PACE_SECONDS > 0
+                and callable(platform_getter)
+                and platform_getter() in _QQ_PACE_PLATFORMS
+            )
+            sent_any_part = False
+            previous_had_record = False
             for part in outbound_parts:
                 # A repeat right after an accepted body is the same delivery twice.
                 # Only this guarded native loop is compared: send_streaming paths
@@ -317,6 +330,9 @@ def prepare_core_reply_event(
                 # notification and no behavior record for a body that never leaves.
                 if should_drop_core_reply_duplicate(event, part):
                     continue
+                current_has_record = any(isinstance(component, Record) for component in getattr(part, "chain", ()))
+                if pace_qq_record and sent_any_part and (previous_had_record or current_has_record):
+                    await asyncio.sleep(QQ_RECORD_PART_PACE_SECONDS)
                 try:
                     await authorize_delivery()
                     wire = await native_wire_message(event, part)
@@ -345,10 +361,11 @@ def prepare_core_reply_event(
                     observe_core_behavior_delivery(event, part, "failed")
                     raise TaskError("core_reply_platform_unavailable", "the platform did not accept this reply")
                 result = send_result
+                sent_any_part = True
+                previous_had_record = current_has_record
                 state["send_returns"] += 1
                 record_core_reply_delivery(event, part)
-                from astrbot.core.message.components import Record
-                if any(isinstance(component, Record) for component in getattr(part, "chain", ())):
+                if current_has_record:
                     commit_pending_voice_claim(event)
                 notify_delivery("returned")
                 observe_core_behavior_delivery(event, part, "returned")

@@ -69,6 +69,13 @@ class AuthoringContractTests(unittest.TestCase):
         self.assertIn("不得以提纲、摘要或创作说明代替", rendered)
         self.assertIn("避免重复意象", rendered)
         self.assertIn("不设插件自有的字数目标", rendered)
+        self.assertIn('"title"', rendered)
+        self.assertIn('"work_type"', rendered)
+        self.assertIn('"body"', rendered)
+
+        cont_request = service.prepare(action="continue", brief="续写下一章", base_version="v-1")
+        cont_rendered = service.prompt(cont_request, {}, settings=service.AuthoringSettings.from_values({}))
+        self.assertIn('{"body": "接续正文"}', cont_rendered)
 
     def test_writing_prompt_restores_v1_genre_specific_output_forms(self):
         request = service.prepare(action="continue", brief="接着写", base_version="v-3")

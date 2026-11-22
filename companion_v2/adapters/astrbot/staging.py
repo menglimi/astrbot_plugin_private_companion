@@ -319,7 +319,7 @@ class AstrBotStagingSession:
         self.writing_profiles = writing_profiles(profile.provider_id, max_output_tokens=profile.max_output_tokens)
         self.reading_profile = reading_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens)
         profiles = (self.model_profile, poke_reply_profile(profile.provider_id,
-                    max_output_tokens=min(128, profile.max_output_tokens)),
+                    max_output_tokens=min(4096, profile.max_output_tokens)),
                     contact_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),
                     plan_profile(profile.provider_id, max_output_tokens=min(1024, profile.max_output_tokens)),
                     persona_judge_profile(profile.provider_id, max_output_tokens=profile.max_output_tokens),

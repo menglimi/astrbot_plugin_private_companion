@@ -562,9 +562,10 @@ class StateMaintenance:
                 "characters": characters, "reference": hint["reference"], "allowed": hint["allowed"],
                 "baseline": baseline, "materials": tuple(materials), "sources": tuple(sources)}
 
-    def _calendar(self, context, at):
+    def _calendar(self, context, at, *, start=None):
         try:
-            return self.app.calendar.occurrences(context, start=at, end=at + timedelta(hours=24))
+            window_start = at if start is None else min(start, at)
+            return self.app.calendar.occurrences(context, start=window_start, end=at + timedelta(hours=24))
         except TaskError:
             return {"state": "unavailable"}
 
@@ -690,7 +691,7 @@ class StateMaintenance:
             start = maintenance_context.dialogue_start(self, candidate, now)
             if maintenance_context.recent_dialogue(self, candidate, now, start=start, end=stamp(now)):
                 return None
-        calendar = self._calendar(context, now)
+        calendar = self._calendar(context, now, start=settled_at)
         if _calendar_transition_crossed(calendar, since=settled_at, now=now):
             return None
         current_fp = self._idle_fingerprint(context, settings, token, now, calendar=calendar)

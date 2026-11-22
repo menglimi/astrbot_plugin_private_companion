@@ -72,7 +72,9 @@ class OutputDefaultTableTests(unittest.TestCase):
         for kind in ("conversation.reply", "proactive.judge", "role.journal.select"):
             with self.subTest(kind=kind):
                 self.assertEqual(output_defaults.default_output_tokens(kind, 2048), 2048)
-        self.assertEqual(output_defaults.default_output_tokens("conversation.poke_reply", 128), 128)
+        self.assertEqual(output_defaults.default_output_tokens("conversation.poke_reply", 128), 4096)
+        self.assertEqual(output_defaults.default_output_tokens("conversation.poke_reply", 128, maximum=2048), 2048)
+        self.assertEqual(output_defaults.default_output_tokens("conversation.poke_reply", 8192), 8192)
 
 
 class StagingOutputDefaultTests(StagingFixture, unittest.IsolatedAsyncioTestCase):
@@ -112,7 +114,7 @@ class StagingOutputDefaultTests(StagingFixture, unittest.IsolatedAsyncioTestCase
             "calendar.plan": 30000,
             "screen.interpretation": 30000,
             "conversation.reply": 2048,
-            "conversation.poke_reply": 128,
+            "conversation.poke_reply": 4096,
             "proactive.judge": 2048,
         }
         for kind, tokens in expected.items():
