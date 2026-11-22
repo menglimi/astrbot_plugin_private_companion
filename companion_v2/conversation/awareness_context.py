@@ -20,7 +20,8 @@ INSTRUCTION = """跨窗口在场只记录同一角色在另一个窗口实际看
 在私聊里，如果 continuity.state=handoff，说明对方刚在群里提出请求、随后按你的邀请转到私聊；必须把 prior_question 当作当前仍未完成的请求继续执行（例如生图直接调用图片工具），不要让对方重说一遍。如果 continuity.state=repeat，说明对方刚在群里问过近似问题；把当前消息当作同一段对话的自然延续，保持此前回答一致，可以自然地说“你刚在群里也问过这个，我还是这个意思”，不必像第一次听到。没有 continuity 时，recent_group_activity 只用于理解对方刚从群聊转场，不要机械点破，也不要复述群里的原话当开场。任何情况下都只使用这里给出的当前对象本人公开原话与角色自己的回复摘要；不声称看见未提供的群消息，不把群内其他人的话、私聊内容或窗口标识带进当前回复。
 peer 数、peer_replies 和 peer_repliers 只是有限互动信号，不证明亲疏、立场、回复内容或现实关系，不要点名或推断。
 在群聊里，private_contact 只表示当前发言者与你有过私聊来往，不代表可以在本群提及私聊内容、称呼、关系细节或时间。
-记录缺失不代表没发生；不要主动报出窗口标识、内部编号或精确时间戳。"""
+记录缺失不代表没发生；不要主动报出窗口标识、内部编号或精确时间戳。
+群聊里的 cross_group_activity 只代表当前用户在另一个群自己公开说过的话，不包含其他群成员或 Bot 的内容。可以自然承接或轻轻点破，但不要报出群名、群号或具体窗口，也不要把其他人的话算到当前用户头上。"""
 
 
 def _valid_recent(item) -> bool:
@@ -53,7 +54,20 @@ def _valid_payload(payload, context) -> bool:
     if type(payload) is not dict or not payload or len(encode(payload)) > MAX_PAYLOAD_CHARS:
         return False
     if context.scope.kind is ScopeKind.GROUP:
-        return payload == {"private_contact": True}
+        if not set(payload) <= {"private_contact", "cross_group_activity"}:
+            return False
+        if payload.get("private_contact") is not None and payload["private_contact"] is not True:
+            return False
+        activity = payload.get("cross_group_activity", [])
+        if type(activity) is not list or len(activity) > MAX_ITEMS:
+            return False
+        for item in activity:
+            if (type(item) is not dict or set(item) != {"at", "topic"}
+                    or type(item["at"]) is not str or not 1 <= len(item["at"]) <= MAX_CHARS
+                    or type(item["topic"]) is not str or not 1 <= len(item["topic"]) <= MAX_TOPIC_CHARS
+                    or not _iso(item["at"])):
+                return False
+        return bool(payload.get("private_contact") or activity)
     if context.scope.kind is not ScopeKind.PRIVATE:
         return False
     if not set(payload) <= {"recent_group_activity", "attention", "peer_replies", "peer_repliers", "continuity"}:

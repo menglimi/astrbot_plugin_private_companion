@@ -5,10 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 import json
+import logging
 import re
 
 from .binding import message_text
 from .native_extensions.request_context import set_system_instruction
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -182,13 +186,23 @@ def parse_functional_command(text: object, *, channel: str) -> FunctionalCommand
             return FunctionalCommand(channel, "manage_hdsi", action)
         return None
     roots = {item.casefold() for item in _ROOTS[channel]}
+    tail = parts[1].strip() if len(parts) > 1 else ""
     if head not in roots:
+        # Natural typing often omits the space ("陪伴状态", "陪伴群关闭LLM").
+        # Accept it only when the remainder is an exact known alias, so ordinary
+        # chat beginning with the root is still not a command.
+        for root in sorted(roots, key=len, reverse=True):
+            if not head.startswith(root) or len(head) == len(root):
+                continue
+            combined = (head[len(root):] + " " + tail).strip()
+            intent, argument = _match_alias(combined, _ALIASES[channel])
+            if intent:
+                return FunctionalCommand(channel, intent, argument)
         # The two original image entry points were top-level command names.
         if channel == "private" and head in {"陪伴画图", "陪伴合照", "陪伴图任务"}:
             intent = {"陪伴画图": "image_generate", "陪伴合照": "image_edit", "陪伴图任务": "image_tasks"}[head]
             return FunctionalCommand(channel, intent, parts[1].strip() if len(parts) > 1 else "")
         return None
-    tail = parts[1].strip() if len(parts) > 1 else ""
     intent, argument = _match_alias(tail, _ALIASES[channel])
     if channel == "private" and intent == "manage_diagnostics" and len(argument.split()) == 1:
         head = tail.split(maxsplit=1)[0].casefold()
@@ -206,7 +220,9 @@ def _base_instruction(command: FunctionalCommand | None) -> str:
     if intent == "help":
         return "用户明确调用功能帮助。只简洁列出当前版本真实可用指令与管理页入口，不把旧版未迁移的操作说成仍可执行。\n" + _HELP
     if intent == "status":
-        return "用户请求角色状态。优先依据本轮已提供的角色状态、睡眠和生活材料回答；材料缺失时说明未取得，不把角色状态套到用户身上。"
+        return ("用户请求角色状态。只输出简洁的状态清单：精力、健康、饥饿、心情、睡眠、忙碌、位置；"
+                "有本轮材料就用材料中的值，没有就写“未取得”，不要编造。"
+                "不要用角色扮演叙事，不要拆成多段语气气泡，也不要只回答其中一两项。")
     if intent == "capabilities":
         return "用户请求能力列表。只总结本轮实际可用工具和已启用内置能力，不声称未提供或未授权的能力可执行；设置入口指向陪伴小屋。"
     if intent == "diagnostics":
@@ -671,6 +687,8 @@ def inject_functional_command_instruction(event, request, *, channel: str, own_m
     else:
         command = parse_functional_command(message_text(event), channel=channel)
     _store_core_functional_command(event, command)
+    if command is not None:
+        logger.info("[CompanionV2] 功能指令识别 surface=%s intent=%s", command.surface, command.intent)
     set_system_instruction(request, "functional_command", command_instruction(command))
     set_system_instruction(request, "functional_command_receipt",
                            functional_command_receipt(event, command, application=application, context=context))

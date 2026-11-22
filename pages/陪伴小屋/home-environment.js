@@ -98,17 +98,23 @@ window.CompanionHomeEnvironment = (() => {
     const headline = String(alert?.title || "").trim();
     const alertLabel = alert ? (eventName && eventName !== "其他预警" ? eventName
       : headline && headline !== "其他预警" ? headline : "天气预警") : "";
-    const summary = weatherText(settings, location) + (alert ? ` · ${alertLabel}` : "");
+    const waiting = !input.state?.settings;
+    const summary = waiting ? "正在准备地点与天气"
+      : weatherText(settings, location) + (alert ? ` · ${alertLabel}` : "");
     const condition = weather?.condition || "";
-    const icon = alert ? "triangle-alert" : iconFor(condition);
+    const icon = waiting ? "loader-circle" : alert ? "triangle-alert" : iconFor(condition);
     const canRefresh = settings.planning_weather_enabled === true && Boolean(location);
-    const locationLabel = weather?.location || location || "角色地点未设置";
+    const locationLabel = waiting ? "正在读取小屋环境"
+      : weather?.location || location || "角色地点未设置";
     const severityMap = {minor:"蓝色 · 一般",moderate:"黄色 · 较重",severe:"橙色 · 严重",extreme:"红色 · 特别严重",unknown:"级别待核对"};
     const severity = severityMap[alert?.severity] || (alert?.severity && alert.severity !== "unknown" ? alert.severity : "级别待核对");
-    const detail = alert
-      ? `官方预警 · ${severity}${alert.ends_at ? ` · 至 ${new Date(alert.ends_at).toLocaleString("zh-CN")}` : ""}`
-      : weatherDetail(settings, location);
+    const detail = waiting ? "正在读取角色状态与天气设置，请稍候"
+      : alert
+        ? `官方预警 · ${severity}${alert.ends_at ? ` · 至 ${new Date(alert.ends_at).toLocaleString("zh-CN")}` : ""}`
+        : weatherDetail(settings, location);
     const timeISO = time.date.toISOString();
+    host.classList.toggle("is-loading", waiting);
+    host.setAttribute("aria-busy", waiting ? "true" : "false");
     host.innerHTML = `<div class="home-environment-icon" aria-hidden="true"><i data-lucide="${icon}"></i></div>
       <div class="home-environment-copy"><strong>${escapeHTML(locationLabel)} · ${escapeHTML(summary)}</strong>
         <small>${escapeHTML(detail)}</small></div>

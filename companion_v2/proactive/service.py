@@ -12,6 +12,7 @@ import logging
 import re
 from zoneinfo import ZoneInfo
 
+from companion_v2.agenda.planning_config import configured_annual_calendars
 from companion_v2.capabilities.memory_push import (DEFAULT_MEMORY_PUSH, PUSH_PROACTIVE_MESSAGE, MemoryPushRecord,
     push_memory, push_memory_id)
 from companion_v2.configuration.models import ConfigurationError
@@ -286,6 +287,15 @@ class ProactiveContacts:
             summary["sleep_execution"] = {key: sleep[key] for key in (
                 "state", "awake_minutes", "sleep_pressure", "sleep_debt_minutes") if key in sleep}
         return summary or None
+
+    def _annual_calendars(self, context):
+        if self.role_state is None:
+            return ()
+        try:
+            values, _ = self.role_state.settings(context)
+            return configured_annual_calendars(values.get("planning_annual_calendars") or "")
+        except Exception:
+            return ()
 
     def _recent_life_summary(self, context, at):
         if self.life_context is None:
@@ -993,13 +1003,15 @@ class ProactiveContacts:
             dialogue=dialogue, memory=memory,
             rhythm_snapshot=None if job.administrator_test else self.budget.rhythm_snapshot(job.context, preferences, at),
             role_state=None if job.administrator_test else role_state_for_prompt(
-                self._role_state_summary(job.context, at), job.intent.purpose))
+                self._role_state_summary(job.context, at), job.intent.purpose),
+            annual_calendars=self._annual_calendars(job.context))
         request = plan_request_for(base, job, records)
         fits, detail = self._contact_request_fits(run, request)
         if not fits:
             if detail["limit_code"] == "host_model_limit_output":
                 self._contact_profile_failure(run, detail)
-            base = request_for(job, records, preferences, (), last_reply=None, dialogue=(), memory=())
+            base = request_for(job, records, preferences, (), last_reply=None, dialogue=(), memory=(),
+                               annual_calendars=self._annual_calendars(job.context))
             request = plan_request_for(base, job, records)
             fits, detail = self._contact_request_fits(run, request)
             if not fits:
@@ -1118,7 +1130,8 @@ class ProactiveContacts:
                 reactions_available=reactions_available,
                 voice_available=voice_available, poke_available=poke_available,
                 memory=memory_materials, expression=expression_materials,
-                rhythm_snapshot=rhythm_snapshot, role_state=role_state, recent_life=recent_life)
+                rhythm_snapshot=rhythm_snapshot, role_state=role_state, recent_life=recent_life,
+                annual_calendars=self._annual_calendars(job.context))
             stable_extra = "\n".join(text for text in
                 (segmentation.instruction, presentation.instruction) if text)
             variable_extra = (news_presentation_instruction(segmentation)
@@ -1743,7 +1756,8 @@ class ProactiveContacts:
                  "role_instruction": batch["role_instruction"], "observed_at": at,
                  # Same instant, same zone, same vocabulary as compose: the judge
                  # must not have to reconstruct local time from a UTC stamp.
-                 "local": local_time_fields(at, preferences.values["quiet_timezone"]),
+                 "local": local_time_fields(at, preferences.values["quiet_timezone"],
+                                             self._annual_calendars(context)),
                  "records": records, "thought": data.get("thought_summary"),
                  "cause_id": run.task.task_id, "history": history, "dialogue": dialogue, "last_reply": last_reply,
                  "role_state": role_state_for_prompt(

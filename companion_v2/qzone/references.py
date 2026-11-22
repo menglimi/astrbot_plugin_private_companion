@@ -48,6 +48,7 @@ class QzonePost:
     created_at: str = ""
     liked: bool = False
     own: bool = False
+    videos: tuple = ()
     images: tuple[QzonePhoto, ...] = ()
 
     def __post_init__(self):
@@ -76,7 +77,9 @@ class QzonePostReference:
         """The model-facing and page-facing view: no session tickets."""
         return {"post_ref": self.token, "author": self.post.author_name, "excerpt": self.post.excerpt,
                 "at": self.post.created_at or self.issued_at.isoformat(), "liked": self.post.liked,
-                "own_post": self.post.own, "images": [photo.summary() for photo in self.post.images]}
+                "own_post": self.post.own, "images": [photo.summary() for photo in self.post.images],
+                "videos": len(self.post.videos),
+                "video_seconds": sum(int(item[2] or 0) for item in self.post.videos)}
 
 
 class QzoneReferenceStore:
