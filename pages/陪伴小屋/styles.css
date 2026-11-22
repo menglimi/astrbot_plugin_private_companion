@@ -22,10 +22,18 @@ dialog{padding:0;color:var(--ink);border:1px solid #ffffffe0;box-shadow:0 20px 8
 /* 关系目录的辅助设置从正文移到标题操作区；弹窗提供足够宽度让配置字段保持清晰。 */
 .page-heading-copy{min-width:0}
 .page-heading-copy .subtitle{max-width:72ch}
-.detail-dialog.detail-dialog-settings{width:min(760px,calc(100vw - 40px))}
-.identity-settings-dialog>p{margin-bottom:var(--sp-5)}
+.detail-dialog.detail-dialog-settings{width:min(760px,calc(100vw - 40px));overflow:hidden;overflow:clip}
+.detail-dialog.detail-dialog-settings[open]{display:flex;flex-direction:column}
+.detail-dialog.detail-dialog-settings>#dialogContent{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;overflow:hidden;overflow:clip}
+.detail-dialog.detail-dialog-settings .dialog-head{flex:0 0 auto;position:static;align-items:center;gap:var(--sp-3);padding:var(--sp-4) var(--sp-5);background:var(--t-surface-soft);border-bottom:1px solid var(--t-line)}
+.detail-dialog.detail-dialog-settings .dialog-head h2{margin:0;font-size:var(--fs-head);line-height:1.4;min-width:0;overflow-wrap:anywhere}
+.detail-dialog.detail-dialog-settings .dialog-head>.icon-button{flex:0 0 auto;border:1px solid transparent;color:var(--t-text-soft)}
+.detail-dialog.detail-dialog-settings .dialog-head>.icon-button:hover{background:var(--t-surface-sunken);border-color:var(--t-line);color:var(--t-text-strong)}
+.detail-dialog.detail-dialog-settings .dialog-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:var(--sp-5);scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent}
+.identity-settings-dialog>p{margin:0 0 var(--sp-4);color:var(--t-text-soft)}
 .identity-settings-dialog .config-editor-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(max-width:900px){.detail-dialog.detail-dialog-settings{width:100%;max-width:100%}}
+@media(max-width:650px){.detail-dialog.detail-dialog-settings .dialog-head{padding:var(--sp-4) var(--sp-4) var(--sp-3)}.detail-dialog.detail-dialog-settings .dialog-body{padding:var(--sp-4);scrollbar-gutter:auto}}
 @media(max-width:640px){.identity-settings-dialog .config-editor-fields{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:900px){.page-heading{align-items:flex-start;flex-wrap:wrap}.page-heading-copy{flex:1 1 100%}.page-heading .page-actions{width:100%;justify-content:flex-start;flex-wrap:wrap}}
 

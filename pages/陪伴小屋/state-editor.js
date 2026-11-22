@@ -364,7 +364,8 @@ window.CompanionStateEditor = (() => {
         <p class="state-edit-help">当前文案：${e(current()?.presence||"留空")}；清空后不提供日程文案。</p>`;
       const title=draft.kind==="contact"?"联系安排":maintenance?.titles[draft.kind];
       const hideLegend=grouped||["intensity","health","hunger","mood","patrol"].includes(draft.kind);
-      return `<form id="state-edit-form" data-state-form-kind="${draft.kind}"${grouped?' class="state-config-form"':""}><fieldset class="state-config-fields" ${disabled?"disabled":""}>${hideLegend?`<legend class="sr-only">${title||"状态配置"}</legend>`:`<legend>${title|| (settings?"编辑展示设置":"编辑日程公开文案")}</legend>`}${content}</fieldset>${after}
+      const bodyMarkup=`<fieldset class="state-config-fields" ${disabled?"disabled":""}>${hideLegend?`<legend class="sr-only">${title||"状态配置"}</legend>`:`<legend>${title|| (settings?"编辑展示设置":"编辑日程公开文案")}</legend>`}${content}</fieldset>${after}`;
+      return `<form id="state-edit-form" data-state-form-kind="${draft.kind}"${grouped?' class="state-config-form"':""}>${grouped?`<div class="state-config-body">${bodyMarkup}</div>`:bodyMarkup}
         <div class="state-edit-actions${grouped?" state-config-actions":""}">${grouped?`<span class="state-config-draft-hint" data-state-draft-hint role="status" ${draftDirty()?"":"hidden"}>修改尚未保存</span>`:""}<button type="submit" class="memory-button" ${disabled||draft.stale?"disabled":""}>${busy?"正在保存…":draft.kind==="align"?"确认周期校准":grouped?"保存":title?"保存"+title:settings?"保存展示设置":"保存公开文案"}</button>
         ${draft.stale?`<button type="button" class="memory-button" data-state-edit="rebase" ${disabled?"disabled":""}>读取当前版本继续编辑</button>`:""}
         <button type="button" class="memory-button" data-state-edit="reset" ${disabled||!draftDirty()?"disabled":""}>重置</button>

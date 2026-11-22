@@ -4903,6 +4903,7 @@ function openAllFeatureDetail(group, field=''){
   const body=`<p class="all-feature-detail-note">${escapeHTML(spec.note||'修改后会回到「全部功能」页显示；复杂字段在下方完整配置中编辑。')}</p>`
     +configEditors(id,[group],title);
   if(!openDetailDialog(title,body))return;
+  document.querySelector?.('#detailDialog')?.classList?.add('detail-dialog-settings');
   const targetSection=field?(spec.sections||[]).find(item=>Array.isArray(item.fields)&&item.fields.includes(field)):null;
   const views=targetSection?.id?{[group]:{initialSection:targetSection.id}}:{};
   allFeatureDialogMount?.unmount?.();
@@ -6008,6 +6009,8 @@ function focusTokenTaskElement(element,{highlight=false}={}){
     ||window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches
     ||['low','off'].includes(document.documentElement?.dataset?.motion));
   element.scrollIntoView?.({behavior:reduced?'instant':'smooth',block:'center'});
+  const hostDialog=element.closest?.('dialog');
+  if(hostDialog&&hostDialog.classList?.contains('detail-dialog-settings'))hostDialog.scrollTop=0;
   if(element.matches?.('button,input,select,textarea,a'))element.focus?.({preventScroll:true});
   else if(typeof element.focus==='function'){
     if(!element.hasAttribute?.('tabindex'))element.tabIndex=-1;

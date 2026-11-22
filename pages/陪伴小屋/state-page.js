@@ -423,8 +423,8 @@ window.CompanionStatePage = (() => {
   }
   function homeSettingsMarkup() {
     return `<dialog id="state-home-settings" class="state-home-settings state-config-page" aria-labelledby="state-home-settings-title">
-      <header><div><span class="state-eyebrow">${e(personaLabel())} · 人格共享</span><h3 id="state-home-settings-title"><i data-lucide="settings-2" aria-hidden="true"></i>状态功能与首页展示</h3></div><button type="button" class="state-feature-close" data-state-close-home-settings aria-label="关闭状态设置" title="关闭" ${editor?.busy?"disabled":""}><i data-lucide="x" aria-hidden="true"></i></button></header>
-      <div class="state-home-settings-body">${data?.status?editor?.markup({feature:"home"})||"":`<p class="memory-notice" role="status">${e(data?.notice||"正在读取状态设置…")}</p><button type="button" class="memory-button" id="state-home-settings-refresh" ${data?.loading?"disabled":""}>重新读取状态</button>`}</div>
+      <header class="state-home-settings-header"><div class="state-home-settings-title"><span class="state-eyebrow">${e(personaLabel())} · 人格共享</span><h3 id="state-home-settings-title"><i data-lucide="settings-2" aria-hidden="true"></i><span>状态功能与首页展示</span></h3></div><button type="button" class="state-feature-close" data-state-close-home-settings aria-label="关闭" title="关闭" ${editor?.busy?"disabled":""}><i data-lucide="x" aria-hidden="true"></i></button></header>
+      <div class="state-home-settings-body">${data?.status?editor?.markup({feature:"home"})||"":`<div class="state-home-settings-fallback"><p class="memory-notice" role="status">${e(data?.notice||"正在读取状态设置…")}</p><button type="button" class="memory-button" id="state-home-settings-refresh" ${data?.loading?"disabled":""}>重新读取状态</button></div>`}</div>
     </dialog>`;
   }
   /* 地址栏的落点：`#life/state/<feature>` 进来时只切图块，不打开编辑表单
@@ -517,7 +517,19 @@ window.CompanionStatePage = (() => {
         const reduced=Boolean(document.body?.classList?.contains("reduce-motion")
           ||["low","off"].includes(document.documentElement?.dataset?.motion)
           ||window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
-        input.scrollIntoView?.({block:"center",behavior:reduced?"instant":"smooth"});
+        const dialogScrollBody=input.closest?.(".state-home-settings .state-config-body, .state-home-settings-body");
+        const hostDialog=input.closest?.("dialog");
+        if(dialogScrollBody&&typeof dialogScrollBody.getBoundingClientRect==="function"&&typeof input.getBoundingClientRect==="function"){
+          const bodyRect=dialogScrollBody.getBoundingClientRect();
+          const inputRect=input.getBoundingClientRect();
+          const targetTop=Math.max(0,dialogScrollBody.scrollTop+(inputRect.top-bodyRect.top)-(bodyRect.height-inputRect.height)/2);
+          if(typeof dialogScrollBody.scrollTo==="function")dialogScrollBody.scrollTo({top:targetTop,behavior:reduced?"instant":"smooth"});
+          else dialogScrollBody.scrollTop=targetTop;
+          if(hostDialog)hostDialog.scrollTop=0;
+        }else{
+          input.scrollIntoView?.({block:"center",behavior:reduced?"instant":"smooth"});
+          if(hostDialog)hostDialog.scrollTop=0;
+        }
         input.focus?.({preventScroll:true});
         highlightStateTarget(input.closest?.("label, .state-field, .state-edit-field, .state-setting-row")||input);
         return;
@@ -556,7 +568,7 @@ window.CompanionStatePage = (() => {
       else activeFeature=required==="health"&&activeFeature==="hunger"?"hunger":required;
     }
     const oldDialog=root.querySelector("#state-home-settings");
-    const dialogScroll=oldDialog?.querySelector(".state-home-settings-body")?.scrollTop||0;
+    const dialogScroll=oldDialog?.querySelector(".state-config-body, .state-home-settings-body")?.scrollTop||0;
     const focused=root.contains(document.activeElement)?document.activeElement.id:null;
     const expanded=new Set([...root.querySelectorAll(".state-receipt-reference[open]")].map(item=>item.dataset.receipt));
     const available=!!role()?.state_api;
@@ -602,7 +614,9 @@ window.CompanionStatePage = (() => {
         if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)closeSettings();
       });
       settingsDialog.showModal();
-      settingsDialog.querySelector(".state-home-settings-body").scrollTop=dialogScroll;
+      const dialogScrollBody=settingsDialog.querySelector(".state-config-body")||settingsDialog.querySelector(".state-home-settings-body");
+      if(dialogScrollBody)dialogScrollBody.scrollTop=dialogScroll;
+      settingsDialog.scrollTop=0;
     }
     if(focused)root.querySelector("#"+focused)?.focus({preventScroll:true});
     syncSettingsButton();

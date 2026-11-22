@@ -813,3 +813,115 @@ test("Req 20: relationship_profile, split native perception, multi-group host di
   assert.equal(h.location.hash, "#manage/perception");
   assert.equal(activatedPerception.at(-1)[0], "config-screen");
 });
+
+test("Modal UX: state-home-settings and detail-dialog-settings enforce three-tier flex layout with overflow:clip and zero bottom dead space", async () => {
+  const stateConfigCss = readPage("state-config.css");
+  const stylesCss = readPage("styles.css");
+  const statePageSrc = readPage("state-page.js");
+  const stateEditorSrc = readPage("state-editor.js");
+
+  // 1) Outer dialog uses flex column + overflow:clip + var(--scrim) backdrop + 0 padding
+  assert.match(stateConfigCss, /\.state-home-settings\{[^}]*max-height:min\(86dvh,780px\)[^}]*padding:0[^}]*overflow:hidden;overflow:clip/);
+  assert.match(stateConfigCss, /\.state-home-settings\[open\]\{display:flex;flex-direction:column\}/);
+  assert.match(stateConfigCss, /\.state-home-settings::backdrop\{background:var\(--scrim\)/);
+
+  // 2) Fixed Header with balanced padding & rounded ghost close button
+  assert.match(stateConfigCss, /\.state-home-settings\.state-config-page>header\{display:flex;align-items:center;justify-content:space-between;flex:0 0 auto;[^}]*padding:var\(--sp-4\) var\(--sp-5\);border-bottom:1px solid var\(--t-line\);background:var\(--t-surface-soft\)\}/);
+  assert.match(statePageSrc, /data-state-close-home-settings\s+aria-label="关闭"/);
+
+  // 3) Dedicated scrollable body .state-config-body wrapping grouped fieldset + flush pinned footer
+  assert.match(stateEditorSrc, /class="state-config-body"/);
+  assert.match(stateConfigCss, /\.state-home-settings \.state-config-body\{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;[^}]*overflow-y:auto;/);
+  assert.match(stateConfigCss, /\.state-home-settings \.state-config-actions\{position:static;flex:0 0 auto;display:flex;align-items:center;justify-content:flex-end;[^}]*margin:0;padding:var\(--sp-3\) var\(--sp-5\);border-top:1px solid var\(--t-line\);background:var\(--t-surface-soft\)\}/);
+
+  // 4) Narrow-screen specificity: .state-home-settings.state-config-page overrides .state-config-page narrow rule
+  const narrowGenericIdx = stateConfigCss.indexOf(".state-config-page{padding:var(--sp-3);margin:var(--sp-3) 0}");
+  const narrowHomeIdx = stateConfigCss.indexOf(".state-home-settings.state-config-page{width:calc(100vw - 24px);max-height:90dvh;margin:auto;padding:0}");
+  assert.ok(narrowGenericIdx > 0 && narrowHomeIdx > narrowGenericIdx,
+    "Mobile .state-home-settings.state-config-page override must come after generic .state-config-page mobile padding");
+
+  // 5) Matching three-tier flex structure for .detail-dialog.detail-dialog-settings
+  assert.match(stylesCss, /\.detail-dialog\.detail-dialog-settings\{[^}]*overflow:hidden;overflow:clip\}/);
+  assert.match(stylesCss, /\.detail-dialog\.detail-dialog-settings\[open\]\{display:flex;flex-direction:column\}/);
+  assert.match(stylesCss, /\.detail-dialog\.detail-dialog-settings \.dialog-head\{flex:0 0 auto;position:static;align-items:center;/);
+  assert.match(stylesCss, /\.detail-dialog\.detail-dialog-settings \.dialog-body\{flex:1 1 auto;min-height:0;overflow-y:auto;/);
+
+  // 6) Runtime check: openEditor("home", "maintenance_minutes") scrolls .state-config-body without shifting dialog.scrollTop
+  const flush = () => new Promise(r => setImmediate(r));
+  let bodyScrolledTo = null;
+  const fakeDialog = {
+    open: false,
+    scrollTop: 48,
+    showModal() { this.open = true; },
+    close() { this.open = false; },
+    addEventListener() {},
+    querySelector: sel => sel === ".state-config-body" ? fakeScrollBody : null,
+  };
+  const fakeScrollBody = {
+    scrollTop: 0,
+    getBoundingClientRect: () => ({top: 100, height: 400}),
+    scrollTo(opts) { bodyScrolledTo = opts; this.scrollTop = opts.top; },
+  };
+  const targetInput = {
+    closest: sel => sel === "dialog" ? fakeDialog : sel.includes(".state-config-body") ? fakeScrollBody : null,
+    getBoundingClientRect: () => ({top: 460, height: 40}),
+    classList: {add() {}, remove() {}},
+    focus() { this.focused = true; },
+    scrollIntoView() { this.usedFallbackScrollIntoView = true; },
+  };
+  const root = {
+    isConnected: true,
+    innerHTML: "",
+    addEventListener() {},
+    removeEventListener() {},
+    contains: () => false,
+    querySelectorAll: () => [],
+    querySelector: sel => sel === "#state-home-settings" ? fakeDialog
+      : sel === '[data-state-field="maintenance_minutes"]' ? targetInput : null,
+  };
+  const ctx = vm.createContext({
+    window: {},
+    document: {
+      hidden: false, activeElement: null,
+      documentElement: {dataset: {}},
+      body: {classList: {contains: () => false, toggle() {}}},
+      addEventListener() {}, querySelector: () => null, getElementById: () => null,
+    },
+    console, setTimeout, clearTimeout, requestAnimationFrame: cb => cb(), matchMedia: () => ({matches: false}),
+  });
+  ctx.window = ctx;
+  ctx.CompanionProduct = {
+    hosted: () => true, scopeKey: () => "scope-modal",
+    selection: () => ({target_id: "t1", bot_id: "b1", role_id: "r1"}),
+    roleTarget: () => ({target_id: "t1", bot_id: "b1", scope_kind: "private"}),
+    directory: () => ({
+      installation_id: "inst", operator_id: "op",
+      targets: [{target_id: "t1", bot_id: "b1", scope_kind: "private", roles: [{role_id: "r1", state_api: "/astrbot_plugin_private_companion/targets/t1/roles/r1/state"}]}],
+    }),
+    bridgeNow: () => ({
+      ready: async () => ({pluginName: "astrbot_plugin_private_companion"}),
+      apiGet: async () => ({status: "ok", data: {state: {revision: 1, values: {}}, settings: {enabled: true}, sleep_schedule: {}, calendar: {items: []}}}),
+    }),
+  };
+  vm.runInContext(readPage("state-maintenance.js"), ctx, {filename: "state-maintenance.js"});
+  ctx.CompanionStateEditor = {
+    create: () => ({
+      busy: false, dirty: false, interacting: false,
+      setScope() {}, setStatus() {}, invalidate() {}, destroy() {},
+      discardIfPristine: () => true, markup: () => "", open() {},
+    }),
+  };
+  vm.runInContext(readPage("state-page.js"), ctx, {filename: "state-page.js"});
+  try {
+    await ctx.CompanionStatePage.mount(root, {section: "state"});
+    await flush();
+    assert.equal(ctx.CompanionStatePage.openEditor("home", "maintenance_minutes"), true);
+    assert.equal(fakeDialog.open, true);
+    assert.equal(fakeDialog.scrollTop, 0, "Outer dialog.scrollTop must stay pinned at 0");
+    assert.ok(bodyScrolledTo && bodyScrolledTo.top > 0, "Inner .state-config-body must scroll to center the field");
+    assert.equal(targetInput.focused, true);
+    assert.equal(Boolean(targetInput.usedFallbackScrollIntoView), false, "Should scroll inner body directly instead of scrollIntoView on dialog");
+  } finally {
+    ctx.CompanionStatePage.unmount();
+  }
+});
