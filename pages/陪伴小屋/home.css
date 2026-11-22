@@ -614,7 +614,7 @@
 .home-agenda-list-toggle .is-closed{display:none}
 .home-agenda-list:not([open]) .home-agenda-list-toggle .is-open{display:none}
 .home-agenda-list:not([open]) .home-agenda-list-toggle .is-closed{display:inline}
-.home-agenda-scroll{flex:0 0 auto;max-height:460px;overflow-y:auto;overscroll-behavior:contain;padding:2px 6px 8px 0;scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent}
+.home-agenda-scroll{flex:0 0 auto;max-height:640px;overflow-y:auto;overscroll-behavior:contain;padding:2px 6px 8px 0;scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent}
 .home-agenda-scroll:focus-visible{outline:2px solid var(--t-accent);outline-offset:2px;border-radius:var(--r-xs)}
 .home-agenda-scroll::-webkit-scrollbar{width:5px}
 .home-agenda-scroll::-webkit-scrollbar-track{background:transparent}
@@ -664,7 +664,11 @@
 .home-agenda-row[data-temporary="true"] .home-agenda-row-time small,.home-agenda-row[data-temporary="true"] .home-agenda-row-detail,.home-agenda-row[data-temporary="true"] .home-agenda-row-note{color:color-mix(in srgb,var(--t-warn-ink) 68%,var(--t-text-soft))}
 .home-agenda-row[data-temporary="true"] .home-agenda-row-marker{border-color:var(--t-warn-ink)}
 @media(min-width:1121px){
-  .shell-side .home-agenda-scroll{flex:0 0 auto;max-height:460px}
+  .shell-side .home-agenda-scroll{flex:0 0 auto;max-height:640px}
+  body:not(.room-editing) #homeShell[data-away="false"]:has(#shellPanel:not([hidden])) .shell-side .home-agenda-scroll{
+    min-height:0;
+    max-height:max(320px,calc(100dvh - 210px));
+  }
 }
 @media(min-width:761px) and (max-width:1120px){
   .shell-side .home-agenda-scroll{flex:0 0 auto;max-height:360px}

@@ -1235,6 +1235,7 @@ function syncStageSpace(){
       +number(sceneStyle.marginBottom)+number(stripStyle.marginTop)+number(stripStyle.marginBottom)
       +number(bodyStyle.paddingBottom);
     scene.style.setProperty('--shell-stage-chrome',`${Math.ceil(reserved)}px`);
+    window.CompanionHomeSidebar?.syncScrollFade?.();
   });
 }
 
@@ -1817,10 +1818,10 @@ function refreshHomeCapabilities(){
 function scheduleCard(){return product.scheduleCard();}
 function stateCard(){return product.stateCard();}
 /* 右栏延续 V1 的状态摘要与日程时间线；标题和导航仍由小屋外壳负责。 */
-function sideBand(title,body,action,meta=""){return `<section class="home-band home-side-band"><header class="home-band-head"><h2>${title}</h2>${meta}${action}</header>${body}</section>`;}
+function sideBand(title,body,action,meta="",extraClass=""){const cls=extraClass?`home-band home-side-band ${extraClass}`:'home-band home-side-band';return `<section class="${cls}"><header class="home-band-head"><h2>${title}</h2>${meta}${action}</header>${body}</section>`;}
 function stateAgeMarkup(){const age=product.stateAge?.()||"";return age?`<span class="home-side-age" data-home-state-age>${escapeHTML(age)}</span>`:"";}
 function homeStateBand(){return sideBand('此刻的状态',stateCard(),'<button type="button" class="text-button home-side-action" data-go="life" data-life-target="state">查看与更新</button>',stateAgeMarkup());}
-function homeScheduleBand(){return sideBand('今日安排',`<div data-home-agenda-clock>${scheduleCard()}</div>`,'<button type="button" class="text-button home-side-action" data-shell-furniture="calendar">翻开日历</button>');}
+function homeScheduleBand(){return sideBand('今日安排',`<div data-home-agenda-clock>${scheduleCard()}</div>`,'<button type="button" class="text-button home-side-action" data-shell-furniture="calendar">翻开日历</button>','','home-schedule-band');}
 const observationFilters=[['records','日记与梦境'],['timeline','生活轨迹'],['state','状态变化'],['impact','交互影响']];
 /* 生活观察。
  *

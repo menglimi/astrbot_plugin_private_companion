@@ -70,9 +70,9 @@ test("需求 4：panelHead 统一使用右侧 .shell-panel-actions，「每日�
     );
 });
 
-/* ---------- 需求 5：表达 -> 语音朗读 2 列 Bento 自适应网格与去强隐 hack ---------- */
+/* ---------- 需求 5：表达 -> 语音朗读全通栏分组卡片 + 内部多列容器网格与去强隐 hack ---------- */
 
-test("需求 5：语音朗读取消强隐面板 hack 与硬编码网格坐标，采用自适应 2 列 Bento 网格与奇数尾项通栏", () => {
+test("需求 5：语音朗读取消强隐面板 hack 与双列卡高矮空洞，采用全通栏分组卡片 + 内部容器多列网格", () => {
     const exprCss = stripComments(readPage("expression-config.css"));
     const voiceCss = stripComments(readPage("voice-page.css"));
     const wbJs = readPage("workbench-page.js");
@@ -91,13 +91,13 @@ test("需求 5：语音朗读取消强隐面板 hack 与硬编码网格坐标，
 
     assert.match(
         voiceCss,
-        /#replyWorkspace\.expression-voice-focus\s+\.wb-card-body\s*\{[^}]*grid-template-columns:\s*repeat\(\s*2\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\s*\)/s,
-        "voice-page.css 桌面应保持 2 列自适应 Bento 网格",
+        /#replyWorkspace\.expression-voice-focus\s+\.wb-card-body\s*\{[^}]*grid-template-columns:\s*minmax\(\s*0\s*,\s*1fr\s*\)/s,
+        "voice-page.css 全部 7 张语音分组卡片应通栏单列堆叠，彻底消灭左右卡片高矮不齐造成的垂直空白",
     );
     assert.match(
         voiceCss,
-        /#replyWorkspace\.expression-voice-focus\s+\.wb-card-body\s*>\s*\.wb-group:only-of-type\s*,[\s\S]*?#replyWorkspace\.expression-voice-focus\s+\.wb-card-body\s*>\s*\.wb-group:last-of-type:nth-of-type\(odd\)\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/s,
-        "voice-page.css 单组或奇数尾组应整行通栏，消除任意分组组合下的空列",
+        /\.expression-voice-workspace\s*\{[^}]*padding-bottom:\s*calc\(var\(--shell-pip-h,calc\(var\(--sp-8\)\s*\*\s*2\)\)\s*\+\s*var\(--sp-4\)\)/s,
+        "语音页底部应留足安全距离防右下角悬浮迷你小屋遮挡",
     );
     assert.doesNotMatch(
         voiceCss,
@@ -106,8 +106,23 @@ test("需求 5：语音朗读取消强隐面板 hack 与硬编码网格坐标，
     );
     assert.match(
         voiceCss,
+        /@container\s+wb-group\s*\(\s*min-width:\s*540px\s*\)\s*\{[\s\S]*?\.wb-fields\s*\{[^}]*repeat\(\s*2\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\s*\)/s,
+        "中等容器宽度下各分组内部字段应自动展开为 2 列网格",
+    );
+    assert.match(
+        voiceCss,
         /@container\s+wb-group\s*\(\s*min-width:\s*720px\s*\)\s*\{[\s\S]*?\[data-wb-group="voice_channels"\]\s+\.wb-fields\s*\{[^}]*repeat\(\s*3\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\s*\)/s,
         "私聊/群聊覆盖 3 列网格应由卡片自身 @container 宽度驱动",
+    );
+    assert.match(
+        voiceCss,
+        /@container\s+wb-group\s*\(\s*min-width:\s*760px\s*\)\s*\{[\s\S]*?\[data-wb-group="voice"\]\s+\.wb-fields,\s*[\s\S]*?\[data-wb-group="voice_render"\]\s+\.wb-fields\s*\{[^}]*repeat\(\s*4\s*,\s*minmax\(\s*0\s*,\s*1fr\s*\)\s*\)/s,
+        "宽容器下「开关与触发」(4项)与「朗读方式」(8项)应整齐展开为 4 列网格",
+    );
+    assert.match(
+        voiceCss,
+        /\[data-wb-group="voice_extra"\]\s+\.wb-control\s+textarea\s*\{[^}]*min-height:\s*136px/s,
+        "「关键词与语气」文本域应具备舒展高度避免局促滚动条",
     );
     assert.match(wbJs, /function setVisibleGroups\(ids,\s*preferredId = "",\s*options = \{\}\)/);
     assert.match(replyJs, /navigationLimit:\s*voice\s*\?\s*0\s*:\s*activeSections\.length/);
@@ -156,10 +171,26 @@ test("需求 14（结构与样式）：>= 1121px 双态零空白（开面板左�
         "桌面首页打开面板时应将 stage 与 panel 置于左列上下衔接、side 跨两行",
     );
     const sideRule = desktopMedia[1].match(/body:not\(\.room-editing\)\s+#homeShell\[data-away="false"\]\s+\.shell-side\s*\{([^}]*)\}/);
-    assert.ok(sideRule, "桌面首页右栏应保持 align-self: start 自然流高度");
+    assert.ok(sideRule, "桌面纯首页态右栏应保持 align-self: start 自然流高度");
     assert.match(sideRule[1], /align-self:\s*start/);
     assert.doesNotMatch(sideRule[1], /max-height:\s*calc\(\s*100dvh/, "右栏不得以 100dvh 上限挤压下方今日安排滚动区");
     assert.doesNotMatch(sideRule[1], /overflow:\s*hidden/, "右栏容器本身不应 overflow:hidden，避免裁切状态悬浮提示");
+
+    assert.match(
+        desktopMedia[1],
+        /body:not\(\.room-editing\)\s+#homeShell\[data-away="false"\]:has\(#shellPanel:not\(\[hidden\]\)\)\s+\.shell-side\s*\{[^}]*align-self:\s*stretch[^}]*display:\s*flex[^}]*flex-direction:\s*column/s,
+        "桌面打开家具面板态右栏应撑满 stage+panel 完整高度，为今日安排提供吸顶轨道",
+    );
+    assert.match(
+        desktopMedia[1],
+        /body:not\(\.room-editing\)\s+#homeShell\[data-away="false"\]:has\(#shellPanel:not\(\[hidden\]\)\)\s+\.shell-side\s*>\s*\.home-schedule-band\s*\{[^}]*position:\s*sticky[^}]*top:\s*var\(--shell-pad\)/s,
+        "桌面打开家具面板态下「今日安排」应优雅吸顶伴随左侧家具长面板滚动",
+    );
+    assert.match(
+        appJs,
+        /function homeScheduleBand\(\)\{return sideBand\('今日安排'[\s\S]*?'home-schedule-band'\);\}/,
+        "homeScheduleBand 应挂载语义类 .home-schedule-band",
+    );
 
     assert.match(
         shellCss,
@@ -173,15 +204,20 @@ test("需求 14（结构与样式）：>= 1121px 双态零空白（开面板左�
         "syncStageSpace 应相对 .stage-region 计算顶距，避免 sticky 滚动时误叠加 scrollY",
     );
 
-    assert.match(homeCss, /\.home-agenda-scroll\{[^}]*flex:0 0 auto;max-height:460px;overflow-y:auto/);
+    assert.match(homeCss, /\.home-agenda-scroll\{[^}]*flex:0 0 auto;max-height:640px;overflow-y:auto/);
     assert.match(homeCss, /\.home-agenda-scroll\[data-fade-top="true"\]\{[^}]*mask-image:linear-gradient/);
     assert.match(homeCss, /\.home-agenda-scroll\[data-fade-bottom="true"\]\{[^}]*mask-image:linear-gradient/);
     assert.match(homeCss, /\.home-agenda-row\[data-tone="current"\]\{[^}]*box-shadow:inset 3px 0 0 var\(--t-accent\)/);
     assert.match(homeCss, /\.home-agenda-row-detail\.is-clamped\{[^}]*-webkit-line-clamp:2/);
     assert.match(
         homeCss,
-        /@media\(min-width:1121px\)\{[\s\S]*?\.shell-side\s+\.home-agenda-scroll\{[^}]*flex:0 0 auto;max-height:460px/,
-        "桌面态今日安排滚动区应拥有独立且不被 flex 挤压的 460px 充裕高度",
+        /@media\(min-width:1121px\)\{[\s\S]*?\.shell-side\s+\.home-agenda-scroll\{[^}]*flex:0 0 auto;max-height:640px/,
+        "桌面纯首页态今日安排滚动区应放宽至 640px，完整展示 5 条日程不被半截裁切",
+    );
+    assert.match(
+        homeCss,
+        /@media\(min-width:1121px\)\{[\s\S]*?body:not\(\.room-editing\)\s+#homeShell\[data-away="false"\]:has\(#shellPanel:not\(\[hidden\]\)\)\s+\.shell-side\s+\.home-agenda-scroll\{[^}]*min-height:0;[^}]*max-height:max\(320px,calc\(100dvh - 210px\)\)/s,
+        "桌面打开家具面板态下今日安排滚动区应随视口高度充分舒展（calc(100dvh - 210px)）",
     );
     assert.doesNotMatch(
         homeCss,

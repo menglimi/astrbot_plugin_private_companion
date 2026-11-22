@@ -800,6 +800,18 @@
   body:not(.room-editing) #homeShell[data-away="false"] .shell-side {
     align-self: start;
   }
+  body:not(.room-editing) #homeShell[data-away="false"]:has(#shellPanel:not([hidden])) .shell-side {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+  }
+  body:not(.room-editing) #homeShell[data-away="false"]:has(#shellPanel:not([hidden])) .shell-side > .home-schedule-band {
+    position: sticky;
+    top: var(--shell-pad);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
   body:not(.room-editing) #homeShell[data-away="false"]:has(#shellPanel[hidden]) .stage-region .room-stage {
     height: max(var(--shell-stage-min), calc(100dvh - var(--shell-stage-chrome, 192px)));
   }

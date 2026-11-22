@@ -62,33 +62,35 @@
 .voice-hero.is-off .voice-hero-preview{opacity:.72}
 
 /* ---------- 设置卡片 ---------- */
+.expression-voice-workspace{
+  padding-bottom:calc(var(--shell-pip-h,calc(var(--sp-8) * 2)) + var(--sp-4));
+}
 #replyWorkspace.expression-voice-focus .wb-card{border:0;background:transparent;overflow:visible}
 #replyWorkspace.expression-voice-focus .wb-card-head{display:none}
 #replyWorkspace.expression-voice-focus .wb-rail-legend{display:none}
+/* 全部 7 组分节卡片统一通栏单列堆叠，彻底消除左右卡片高矮不一撕出的垂直空白；
+   卡片内部 .wb-fields 由 @container wb-group 驱动舒展的多列响应网格。 */
 #replyWorkspace.expression-voice-focus .wb-card-body{display:grid;
-  grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;
+  grid-template-columns:minmax(0,1fr);align-items:start;
   gap:var(--sp-3);padding:0}
 #replyWorkspace.expression-voice-focus .wb-card-body>.wb-pending,
 #replyWorkspace.expression-voice-focus .wb-card-body>.wb-skeleton,
-#replyWorkspace.expression-voice-focus .wb-card-body>.wb-group:only-of-type,
-#replyWorkspace.expression-voice-focus .wb-card-body>.wb-group:last-of-type:nth-of-type(odd){
-  grid-column:1/-1}
-#replyWorkspace.expression-voice-focus .wb-group{display:grid;align-content:start;gap:var(--sp-1);
-  min-width:0;margin:0!important;padding:var(--sp-3) var(--sp-4)!important;
+#replyWorkspace.expression-voice-focus .wb-card-body>.wb-group{grid-column:1/-1}
+#replyWorkspace.expression-voice-focus .wb-group{display:grid;align-content:start;gap:var(--sp-2);
+  min-width:0;margin:0!important;padding:var(--sp-4)!important;
   border:1px solid var(--t-line)!important;border-radius:var(--r-md);
-  background:var(--t-surface)}
-#replyWorkspace.expression-voice-focus .wb-group-head{margin:0 0 var(--sp-1);
-  color:var(--t-text-strong);font-size:var(--fs-body);font-weight:650}
-#replyWorkspace.expression-voice-focus .wb-group>.wb-help{margin:0 0 var(--sp-1);max-width:64ch;
+  background:var(--t-surface);box-shadow:var(--t-shadow)}
+#replyWorkspace.expression-voice-focus .wb-group-head{margin:0;
+  color:var(--t-text-strong);font-size:var(--fs-lead);font-weight:650}
+#replyWorkspace.expression-voice-focus .wb-group>.wb-help{margin:0;max-width:72ch;
   color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.6}
 #replyWorkspace.expression-voice-focus .wb-fields{display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));
-  gap:0 var(--sp-5);max-width:none}
+  grid-template-columns:minmax(0,1fr);
+  gap:var(--sp-3) var(--sp-5);max-width:none;
+  padding-top:var(--sp-3);border-top:1px solid var(--t-line)}
 #replyWorkspace.expression-voice-focus .wb-field{grid-template-columns:10px minmax(0,1fr);
-  gap:var(--sp-1) var(--sp-2);padding:var(--sp-2) 0;
-  border:0;border-radius:0;border-top:1px solid color-mix(in srgb,var(--t-line) 62%,transparent);
-  background:transparent}
-#replyWorkspace.expression-voice-focus .wb-field:first-child{border-top:0;padding-top:2px}
+  gap:var(--sp-1) var(--sp-2);padding:var(--sp-1) 0;
+  border:0;border-radius:0;background:transparent}
 #replyWorkspace.expression-voice-focus .wb-field>.wb-field-main{grid-column:2}
 #replyWorkspace.expression-voice-focus .wb-field>.wb-field-side{grid-column:2;justify-content:flex-start;padding-top:0}
 #replyWorkspace.expression-voice-focus .wb-fields>.wb-field>.wb-field-main{grid-template-columns:minmax(0,1fr);gap:0;justify-content:normal;align-items:start}
@@ -102,16 +104,34 @@
 #replyWorkspace.expression-voice-focus .wb-control input,
 #replyWorkspace.expression-voice-focus .wb-control select,
 #replyWorkspace.expression-voice-focus .wb-control textarea{width:100%;max-width:none;
-  min-height:34px;font-size:var(--fs-tiny)}
-#replyWorkspace.expression-voice-focus .wb-control textarea{min-height:64px;line-height:1.7}
+  min-height:36px;font-size:var(--fs-tiny)}
+#replyWorkspace.expression-voice-focus .wb-control textarea{min-height:92px;line-height:1.7;resize:vertical}
 #replyWorkspace.expression-voice-focus .wb-field:hover,
 #replyWorkspace.expression-voice-focus .wb-field.is-inherited{background:transparent}
-#replyWorkspace.expression-voice-focus .wb-field:has(textarea),
 #replyWorkspace.expression-voice-focus .wb-field:has(.wb-word-editor),
-#replyWorkspace.expression-voice-focus .wb-field:has(.wb-keywords){grid-column:1/-1}
+#replyWorkspace.expression-voice-focus .wb-field:has(.wb-keywords),
+#replyWorkspace.expression-voice-focus .wb-group:not([data-wb-group="voice_primary"]):not([data-wb-group="voice_extra"]) .wb-field:has(textarea){
+  grid-column:1/-1}
+/* 文本域组给更舒展的可视高度，避免「语音表达偏好」等长提示挤出局促滚动条。 */
+#replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_primary"] .wb-control textarea{min-height:84px}
+#replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_primary"] .wb-field:last-child .wb-control textarea{min-height:112px}
+#replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_extra"] .wb-control textarea{min-height:136px}
+@container wb-group (min-width:540px){
+  #replyWorkspace.expression-voice-focus .wb-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_primary"] .wb-field:last-child:nth-child(odd){grid-column:1/-1}
+}
 @container wb-group (min-width:720px){
   #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_channels"] .wb-fields{
     grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@container wb-group (min-width:760px){
+  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice"] .wb-fields,
+  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_render"] .wb-fields{
+    grid-template-columns:repeat(4,minmax(0,1fr))}
+}
+@container wb-group (min-width:1080px){
+  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_engine"] .wb-fields{
+    grid-template-columns:repeat(4,minmax(0,1fr))}
 }
 #replyWorkspace.expression-voice-focus .wb-actions{grid-column:1/-1;position:sticky;bottom:var(--sp-2);z-index:4;
   margin:var(--sp-1) 0 0;padding:var(--sp-2) var(--sp-3);
@@ -122,14 +142,10 @@
 @container expression-modules (max-width:760px){
   .voice-hero{grid-template-columns:minmax(0,1fr)}
   .voice-hero-chips{grid-template-columns:repeat(2,minmax(0,1fr))}
-  #replyWorkspace.expression-voice-focus .wb-card-body{grid-template-columns:minmax(0,1fr)}
 }
 @media(max-width:1080px){
   .voice-hero{grid-template-columns:minmax(0,1fr)}
   .voice-hero-chips{grid-template-columns:repeat(2,minmax(0,1fr))}
-}
-@media(max-width:900px){
-  #replyWorkspace.expression-voice-focus .wb-card-body{grid-template-columns:minmax(0,1fr)}
 }
 @media(max-width:760px){
   /* 手机上常驻底部保存条会遮住字段，改成随内容排在最后。 */
@@ -137,10 +153,13 @@
 }
 @media(max-width:560px){
   #replyWorkspace.expression-voice-focus .wb-fields,
+  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice"] .wb-fields,
+  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_render"] .wb-fields,
+  #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_engine"] .wb-fields,
   #replyWorkspace.expression-voice-focus .wb-group[data-wb-group="voice_channels"] .wb-fields{
     grid-template-columns:minmax(0,1fr)}
-  #replyWorkspace.expression-voice-focus .wb-group{padding:var(--sp-2) var(--sp-3)!important}
-  #replyWorkspace.expression-voice-focus .wb-control textarea{min-height:48px}
+  #replyWorkspace.expression-voice-focus .wb-group{padding:var(--sp-3)!important}
+  #replyWorkspace.expression-voice-focus .wb-control textarea{min-height:72px}
   .voice-hero{padding:var(--sp-3)}
   .voice-hero-actions .button{flex:1 1 100%;justify-content:center}
 }
