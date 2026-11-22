@@ -927,6 +927,126 @@ class DailyOutfitAlbumIntegrationTests(unittest.TestCase):
             finally:
                 runtime.close()
 
+    def test_daily_outfit_index_range_scan_and_zero_read_amplification_on_next_pages(self):
+        import json
+        from companion_v2.references.daily_outfit import (
+            PREFIX as OUTFIT_PREFIX,
+            daily_outfit_image_id,
+        )
+        from companion_v2.storage.image_payloads import store_image
+        from companion_v2.storage.runtime import StorageRuntime
+
+        with tempfile.TemporaryDirectory(prefix="companion-v2-outfit-perf-") as temporary:
+            data_root = Path(temporary)
+            runtime = StorageRuntime.open(data_root=data_root, installation_id="inst-1")
+            try:
+                owner = "1234567890abcdef1234567890abcdef"
+                outfit_png = _make_image("#2e6f56", size=(80, 120))
+                marker = store_image(data_root, outfit_png, mime_type="image/png").decode("ascii")
+                outfit_hash = hashlib.sha256(outfit_png).hexdigest()
+                outfit_id = daily_outfit_image_id(owner, "2026-11-22", outfit_hash)
+                with runtime.transaction() as conn:
+                    conn.execute(
+                        "INSERT INTO runtime_metadata(key, value) VALUES(?, ?)",
+                        (
+                            f"{OUTFIT_PREFIX}{owner}:2026-11-22",
+                            json.dumps({
+                                "task_id": "outfit-perf-1",
+                                "photo": {
+                                    "marker": marker,
+                                    "content_hash": outfit_hash,
+                                    "created_at": "2026-11-22T01:30:00+00:00",
+                                    "weather": None,
+                                    "activities": [],
+                                },
+                            }),
+                        ),
+                    )
+
+                # 1. Verify runtime_metadata range query uses the primary-key index (not SCAN).
+                prefix = f"{OUTFIT_PREFIX}{owner}:"
+                prefix_end = f"{OUTFIT_PREFIX}{owner};"
+                plan = runtime.read_all(
+                    "EXPLAIN QUERY PLAN SELECT key, value FROM runtime_metadata WHERE key >= ? AND key < ?",
+                    (prefix, prefix_end),
+                )
+                details = " ".join(str(row["detail"]) for row in plan)
+                self.assertIn("SEARCH runtime_metadata USING", details)
+                self.assertNotIn("SCAN runtime_metadata", details)
+
+                # 2. Verify with GeneratedImages._encode_album_cursor present, pages 2..N do 1x read (no 2x amplification).
+                gen_items = [
+                    _album_item(
+                        f"generated-image:inv-{idx:02d}:0",
+                        _make_image("#335577", size=(64, 64)),
+                        created_at=f"2026-11-{21 - idx:02d}T12:00:00+00:00",
+                        action="image.generate",
+                        width=64,
+                        height=64,
+                    )
+                    for idx in range(5)
+                ]
+                page_calls = []
+
+                class CursorAwareGenerated:
+                    _encode_album_cursor = staticmethod(GeneratedImages._encode_album_cursor)
+
+                    def album_page(self, context, at, *, limit=24, cursor=None):
+                        page_calls.append((cursor, limit))
+                        if cursor is None:
+                            start = 0
+                        else:
+                            decoded = GeneratedImages._album_cursor(cursor)
+                            key_before = (decoded["created_at"], decoded["invocation_id"], decoded["position"])
+                            start = len(gen_items)
+                            for i, item in enumerate(gen_items):
+                                item_key = (item.created_at, item.image_id.split(":")[1], item.descriptor.position)
+                                if item_key < key_before:
+                                    start = i
+                                    break
+                        batch = tuple(gen_items[start:start + limit])
+                        nxt = (
+                            GeneratedImages._encode_album_cursor(batch[-1])
+                            if batch and start + limit < len(gen_items)
+                            else None
+                        )
+                        return {"items": batch, "next_cursor": nxt}
+
+                    def album_count(self, context, at, *, hidden_ids=()):
+                        return len(gen_items)
+
+                app = SimpleNamespace(
+                    runtime=runtime,
+                    messages=SimpleNamespace(generated_images=CursorAwareGenerated()),
+                    references=SimpleNamespace(owner=lambda ctx: owner, assets=object()),
+                )
+                manager = ReferenceMaterialManagement(app)
+                manager._admit = lambda op, ctx, at: owner
+                context = SimpleNamespace(key="ctx-outfit-perf")
+                at = datetime(2026, 11, 22, 8, 0, tzinfo=timezone.utc)
+
+                collected = []
+                cursor = None
+                calls_per_page = []
+                for _ in range(5):
+                    before_calls = len(page_calls)
+                    page = manager.album(SimpleNamespace(), context, at=at, cursor=cursor, limit=2)
+                    calls_per_page.append(len(page_calls) - before_calls)
+                    self.assertEqual(page["total"], 6)
+                    collected.extend(page["items"])
+                    cursor = page["next_cursor"]
+                    if cursor is None:
+                        break
+                self.assertIsNone(cursor)
+                # Every single page fetches album_page at most ONCE (zero 2x read amplification!).
+                self.assertEqual(calls_per_page, [1, 1, 1])
+                self.assertEqual(
+                    [entry["image_id"] for entry in collected],
+                    [outfit_id, *(item.image_id for item in gen_items)],
+                )
+            finally:
+                runtime.close()
+
 
 if __name__ == "__main__":
     unittest.main()

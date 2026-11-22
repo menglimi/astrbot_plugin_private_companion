@@ -839,7 +839,20 @@ class ReferenceMaterialManagement:
         if gen_done:
             next_gc, next_gd, next_gs, next_gl = None, True, 0, limit
         elif gi < len(gen_raw):
-            next_gc, next_gd, next_gs, next_gl = gen_cursor, False, gi, fetch_limit
+            encoded_tail = None
+            if gi > 0:
+                encoder = getattr(self.application.messages.generated_images, "_encode_album_cursor", None)
+                if callable(encoder):
+                    try:
+                        candidate = encoder(gen_raw[gi - 1])
+                        if type(candidate) is str and 8 <= len(candidate) <= 1024:
+                            encoded_tail = candidate
+                    except (AttributeError, IndexError, TypeError, ValueError):
+                        encoded_tail = None
+            if encoded_tail is not None:
+                next_gc, next_gd, next_gs, next_gl = encoded_tail, False, 0, limit
+            else:
+                next_gc, next_gd, next_gs, next_gl = gen_cursor, False, gi, fetch_limit
         elif gen_next:
             next_gc, next_gd, next_gs, next_gl = gen_next, False, 0, limit
         else:

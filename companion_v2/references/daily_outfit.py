@@ -113,9 +113,10 @@ def list_daily_outfit_records(runtime, owner: str, *, hidden_ids=()) -> list[dic
     if not callable(read_all) or not isinstance(owner, str) or len(owner) < 8:
         return []
     prefix = f"{PREFIX}{owner}:"
+    prefix_end = f"{PREFIX}{owner};"
     rows = read_all(
-        "SELECT key, value FROM runtime_metadata WHERE substr(key, 1, ?) = ?",
-        (len(prefix), prefix),
+        "SELECT key, value FROM runtime_metadata WHERE key >= ? AND key < ?",
+        (prefix, prefix_end),
     )
     hidden = set(hidden_ids or ())
     data_root = getattr(runtime, "data_root", None)
