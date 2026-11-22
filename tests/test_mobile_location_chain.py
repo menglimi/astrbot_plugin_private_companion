@@ -43,11 +43,17 @@ def _ensure_astrbot_stubs():
         def __init__(self, text=""):
             self.type = "text"
             self.text = text
-            self.temp = False
+            self._no_save = False
 
         def mark_as_temp(self):
-            self.temp = True
+            self._no_save = True
             return self
+
+        def model_dump_for_context(self):
+            part = {"type": self.type, "text": self.text}
+            if self._no_save:
+                part["_no_save"] = True
+            return part
 
     agent_msg = module("astrbot.core.agent.message", TextPart=_TextPart)
     astrbot.api = api
@@ -503,7 +509,9 @@ class ProductionLocationDeliveryEndToEndTests(JudgeFixture, unittest.IsolatedAsy
 
         # Verify compose received the reality_location_event boundary guidance and activity_note.
         compose_request = self.contact_calls()[-1].original
-        self.assertIn(ORIGIN_INSTRUCTIONS["reality_location_event"], compose_request.instruction)
+        location_guidance = ORIGIN_INSTRUCTIONS["reality_location_event"]
+        self.assertIn(location_guidance, compose_request.user_instruction)
+        self.assertNotIn(location_guidance, compose_request.instruction)
         evidence_payloads = [item.payload for item in compose_request.context.materials
                              if item.owner == "reality.location"]
         self.assertTrue(evidence_payloads)
@@ -754,7 +762,7 @@ class PrivateLocationContextAndDeadCodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(req.system_prompt, original_system)
         self.assertEqual(len(req.extra_user_content_parts), 1)
         temp_part = req.extra_user_content_parts[0]
-        self.assertTrue(getattr(temp_part, "temp", False))
+        self.assertTrue(temp_part.model_dump_for_context().get("_no_save"))
         self.assertIn("<companion_v2_context>", temp_part.text)
         self.assertIn("location_context", temp_part.text)
         self.assertIn("在家看电影", temp_part.text)
