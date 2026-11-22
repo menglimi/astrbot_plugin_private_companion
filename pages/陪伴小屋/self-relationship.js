@@ -91,8 +91,8 @@
       ["interaction", "相处方式", "area", 900],
       ["extra", "其他补充", "area", 900],
     ];
-    const controls = fields.map(([name, label, kind, limit]) => `<label class="self-relationship-field${kind === "area" ? " is-wide" : ""}"><span>${label}</span>${kind === "area"
-      ? `<textarea data-self-relationship-field="${name}" rows="${name === "interaction" ? 4 : 3}" maxlength="${limit}"${state.loading || state.busy || !state.section ? " disabled" : ""}>${esc(state.drafts[name] ?? settings[name] ?? "")}</textarea>`
+    const controls = fields.map(([name, label, kind, limit]) => `<label class="self-relationship-field${kind === "area" || name === "user_occupation" ? " is-wide" : ""}"><span>${label}</span>${kind === "area"
+      ? `<textarea data-self-relationship-field="${name}" rows="${name === "interaction" ? 5 : 4}" maxlength="${limit}"${state.loading || state.busy || !state.section ? " disabled" : ""}>${esc(state.drafts[name] ?? settings[name] ?? "")}</textarea>`
       : `<input type="text" data-self-relationship-field="${name}" maxlength="${limit}" value="${esc(state.drafts[name] ?? settings[name] ?? "")}"${state.loading || state.busy || !state.section ? " disabled" : ""}>`}</label>`).join("");
     const contactSettings = state.contactSection?.settings || {};
     const contactFields = [
@@ -114,7 +114,7 @@
           aria-label="${label}"${state.loading || state.busy || !state.contactSection ? " disabled" : ""}>
         <strong>${label}</strong></label>${hint(source, `${label}的来源`)}</div>`;
       return `<div class="self-relationship-field is-wide"><div class="self-contact-field-label"><label for="self-contact-${name}">${label}</label>${hint(source, `${label}的来源`)}</div>
-        <textarea id="self-contact-${name}" data-self-contact-field="${name}" rows="${name === "note" ? 3 : 4}" maxlength="2000"
+        <textarea id="self-contact-${name}" data-self-contact-field="${name}" rows="${name === "note" ? 4 : 5}" maxlength="2000"
           ${state.loading || state.busy || !state.contactSection ? " disabled" : ""}>${esc(current ?? "")}</textarea></div>`;
     }).join("");
     const contactPanel = state.contactSection ? `<section class="self-contact-settings" aria-label="该用户私聊的主动联系设置">
