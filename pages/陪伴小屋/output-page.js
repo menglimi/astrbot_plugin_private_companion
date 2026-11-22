@@ -4,8 +4,8 @@ window.CompanionOutputPage=(()=>{
   const BACKENDS={auto:"自动",online_api:"在线 API",comfyui:"ComfyUI",sd_webui:"SD WebUI"};
   const PLATFORMS={auto:"自动识别",openai:"OpenAI 兼容接口",minimax:"MiniMax"};
   const ALBUM_PAGE_SIZES=[24,48,60];
-  const ALBUM_FILTERS=[["all","全部"],["image.generate","文生图"],["edit","改图"]];
-  const ALBUM_ACTION_LABELS={"image.generate":"文生图","image.edit":"改图","image.mask_edit":"蒙版改图"};
+  const ALBUM_FILTERS=[["all","全部"],["image.generate","文生图"],["edit","改图"],["wardrobe.outfit","每日穿搭"]];
+  const ALBUM_ACTION_LABELS={"image.generate":"文生图","image.edit":"改图","image.mask_edit":"蒙版改图","wardrobe.outfit":"每日穿搭"};
   const ALBUM_BATCH_PAGES=3;
   const ALBUM_FULL_CACHE_MAX=12;
   const REFERENCE_ROLES=[["identity","身份"],["outfit","穿搭"],["pose","姿态"],["scene","场景"],["style","风格"],["background","背景"],["continuity","连续性"],["edit_source","编辑源"],["edit_mask","编辑遮罩"]];
@@ -43,7 +43,7 @@ window.CompanionOutputPage=(()=>{
     nai_output_unavailable:"NAI 返回的图片暂不可读取"};
   let root=null,abort=null,ticket=0,scope="",base=null,draft=null,revision="",busy="",notice="",bad=false,hostRegistered=false,expanded=new Set(),tests=new Map(),testKeys=new Map(),observation=null,observationBusy=false,observationError="",sceneEditorOpen=false,sceneDraft=null,sceneError="",sceneSaving=false;
   let albumSources=[],albumItems=[],albumCursor=null,albumTotal=null,albumLoaded=false,albumLoading=false,albumBatchLoading=false,albumBatchStep=0,albumBatchTotal=0,albumError="",albumSelected=-1,albumSelectedId="",albumSelectedIds=new Set(),albumNotice="",albumBusy="";
-  let albumPageSize=24,albumFilter="all",albumAutoLoad=true,albumObserver=null,albumZoomed=false,albumCopyFeedback="",albumCopyTimer=null;
+  let albumPageSize=24,albumFilter="all",albumAutoLoad=true,albumObserver=null,albumZoomed=false,albumCopyFeedback="",albumCopyTimer=null,albumStandaloneItem=null;
   const fullImageCache=new Map(),fullImagePending=new Map(),albumFullError=new Map();
   let albumReferenceOpen=false,albumReferenceImageId="",albumReferenceLabel="",albumReferenceRoles=new Set(["identity"]),albumReferenceError="";
   let naiStatus=null;
@@ -248,11 +248,35 @@ window.CompanionOutputPage=(()=>{
     const size=[item.width,item.height].filter(value=>value!=null&&value!=="").join(" × ");
     return [size,formatMimeLabel(item.mime_type),formatBytes(item.size_bytes),formatTime(item.created_at)].filter(Boolean).join(" · ");
   }
+  function formatWeather(weather){
+    if(!weather||typeof weather!=="object")return "";
+    const temp=weather.temperature_c!==undefined&&weather.temperature_c!==null&&weather.temperature_c!==""?`${weather.temperature_c}°C`:"";
+    return [weather.role_location,weather.condition,temp].filter(Boolean).join(" · ");
+  }
+  function ensureLightboxHost(){
+    const host=root?.querySelector("#outputAlbumLightbox");
+    if(!host)return null;
+    if(root&&host.parentElement&&host.parentElement!==root&&typeof root.appendChild==="function"){
+      root.appendChild(host);
+    }
+    return host;
+  }
+  function currentLightboxItem(){
+    if(albumStandaloneItem&&(!albumSelectedId||albumStandaloneItem.image_id===albumSelectedId))return albumStandaloneItem;
+    if(!albumSelectedId)return null;
+    const visible=filteredAlbumItems();
+    return visible.find(candidate=>candidate.image_id===albumSelectedId)
+      ||albumItems.find(candidate=>candidate.image_id===albumSelectedId)
+      ||null;
+  }
   function albumCard(item,index){
+    const isOutfit=item.action==="wardrobe.outfit";
+    const headline=isOutfit&&item.local_date?item.local_date:formatTime(item.created_at);
     const meta=[item.width&&item.height?item.width+' × '+item.height:'',formatMimeLabel(item.mime_type),albumActionLabel(item.action)].filter(Boolean).join(' · ')||'生成图片';
     const checked=albumSelectedIds.has(item.image_id);
     const tip=item.filename?` title="${esc(item.filename)}"`:"";
-    return '<article class="output-album-card'+(checked?' is-selected':'')+'"><label class="output-album-select"><input type="checkbox" data-output-album-select="'+esc(item.image_id)+'"'+(checked?' checked':'')+' aria-label="选择产出图片 '+(index+1)+'"></label><button type="button" class="output-album-open" data-output-native-action="album-open" data-output-image-index="'+index+'"'+tip+' aria-label="查看产出图片 '+(index+1)+'"><img src="'+esc(item.thumbnail)+'" alt="'+esc(item.filename||albumActionLabel(item.action))+'" loading="lazy" decoding="async"><span class="output-album-card-meta"><strong>'+esc(formatTime(item.created_at))+'</strong><small>'+esc(meta)+'</small></span></button></article>';
+    const badge=isOutfit?'<span class="output-album-card-badge">每日穿搭</span>':'';
+    return '<article class="output-album-card'+(checked?' is-selected':'')+'"><label class="output-album-select"><input type="checkbox" data-output-album-select="'+esc(item.image_id)+'"'+(checked?' checked':'')+' aria-label="选择产出图片 '+(index+1)+'"></label>'+badge+'<button type="button" class="output-album-open" data-output-native-action="album-open" data-output-image-index="'+index+'"'+tip+' aria-label="查看产出图片 '+(index+1)+'"><img src="'+esc(item.thumbnail)+'" alt="'+esc(item.filename||albumActionLabel(item.action))+'" loading="lazy" decoding="async"><span class="output-album-card-meta"><strong>'+esc(headline)+'</strong><small>'+esc(meta)+'</small></span></button></article>';
   }
   function renderAlbumReference(){
     if(!albumReferenceOpen)return "";
@@ -418,6 +442,9 @@ window.CompanionOutputPage=(()=>{
           size_bytes:data.size_bytes??item.size_bytes,
           created_at:data.created_at||item.created_at||"",
           action:data.action||item.action||"",
+          local_date:data.local_date||item.local_date||"",
+          weather:data.weather||item.weather||null,
+          activities:Array.isArray(data.activities)?data.activities:(Array.isArray(item.activities)?item.activities:[]),
           url:viewer.url,
           isBlobUrl:viewer.isBlobUrl,
           dataUrl:data.data_url,
@@ -429,7 +456,7 @@ window.CompanionOutputPage=(()=>{
         return null;
       }finally{
         fullImagePending.delete(imageId);
-        if(live(id)&&albumSelectedId===imageId)renderAlbumLightbox();
+        if(live(id)&&currentLightboxItem()?.image_id===imageId)renderAlbumLightbox();
       }
     })();
     fullImagePending.set(imageId,task);
@@ -459,39 +486,52 @@ window.CompanionOutputPage=(()=>{
     clearTimeout(albumCopyTimer);
     albumCopyFeedback=copied?"已复制":"请手动复制";
     renderAlbumLightbox();
-    albumCopyTimer=setTimeout(()=>{albumCopyFeedback="";if(albumSelectedId)renderAlbumLightbox();},2000);
+    albumCopyTimer=setTimeout(()=>{albumCopyFeedback="";if(currentLightboxItem())renderAlbumLightbox();},2000);
   }
   async function downloadFullAlbumImage(item){
     if(!item)return;
     const entry=getCachedFullImage(item.image_id)||await loadFullAlbumImage(item,{force:true});
-    if(!entry?.url)return;
-    downloadDataUrl(entry.url,entry.filename||item.filename||fallbackAlbumFilename(item));
+    if(entry?.url){
+      downloadDataUrl(entry.url,entry.filename||item.filename||fallbackAlbumFilename(item));
+      return;
+    }
+    if(!item._albumEndpoint&&item.thumbnail){
+      downloadDataUrl(item.thumbnail,item.filename||fallbackAlbumFilename(item));
+    }
   }
   function closeAlbumLightbox(){
-    albumSelectedId="";albumSelected=-1;albumZoomed=false;albumCopyFeedback="";
+    albumStandaloneItem=null;albumSelectedId="";albumSelected=-1;albumZoomed=false;albumCopyFeedback="";
     clearTimeout(albumCopyTimer);
     renderAlbumLightbox();
   }
   function renderAlbumLightbox(){
-    const host=root?.querySelector("#outputAlbumLightbox");
+    const host=ensureLightboxHost();
     if(!host)return;
-    const visible=filteredAlbumItems();
-    const item=albumSelectedId?(visible.find(candidate=>candidate.image_id===albumSelectedId)||albumItems.find(candidate=>candidate.image_id===albumSelectedId)):null;
+    const item=currentLightboxItem();
     if(!item){host.hidden=true;host.innerHTML="";return;}
-    const list=visible.some(candidate=>candidate.image_id===item.image_id)?visible:albumItems;
-    const position=list.findIndex(candidate=>candidate.image_id===item.image_id);
+    const standalone=!!(albumStandaloneItem&&item===albumStandaloneItem);
+    const visible=filteredAlbumItems();
+    const list=standalone?[item]:(visible.some(candidate=>candidate.image_id===item.image_id)?visible:albumItems);
+    const position=standalone?0:list.findIndex(candidate=>candidate.image_id===item.image_id);
     albumSelected=position;
     const fullEntry=getCachedFullImage(item.image_id);
     const isLoadingFull=fullImagePending.has(item.image_id);
     const fullError=albumFullError.get(item.image_id)||"";
     const meta=fullEntry||item;
+    const isOutfit=meta.action==="wardrobe.outfit";
     const filename=meta.filename||item.filename||fallbackAlbumFilename(item);
     const imageSrc=fullEntry?.url||item.thumbnail;
+    const weatherText=formatWeather(meta.weather||item.weather);
+    const localDate=meta.local_date||item.local_date||"";
+    const activities=Array.isArray(meta.activities)&&meta.activities.length
+      ?meta.activities:(Array.isArray(item.activities)?item.activities:[]);
     const specs=[
       meta.width&&meta.height?`${meta.width} × ${meta.height}`:"",
       formatMimeLabel(meta.mime_type),
       formatBytes(meta.size_bytes),
-      formatTime(meta.created_at),
+      localDate||"",
+      meta.created_at?formatTime(meta.created_at):"",
+      weatherText,
     ].filter(Boolean).join(" · ");
     const badge=isLoadingFull
       ?'<span class="output-album-full-badge is-loading" role="status"><span class="output-album-mini-spinner" aria-hidden="true"></span>加载原图中…</span>'
@@ -500,14 +540,19 @@ window.CompanionOutputPage=(()=>{
       :"";
     const downloadControl=fullEntry?.url
       ?`<a class="button small primary output-album-download" href="${esc(fullEntry.url)}" download="${esc(filename)}" rel="noopener" data-output-album-download>${icon("download")}<span>下载原图</span></a>`
+      :!item._albumEndpoint&&item.thumbnail
+      ?`<a class="button small primary output-album-download" href="${esc(item.thumbnail)}" download="${esc(filename)}" rel="noopener" data-output-album-download>${icon("download")}<span>下载原图</span></a>`
       :`<button type="button" class="button small primary output-album-download" data-output-native-action="album-download"${isLoadingFull?" disabled":""}>${icon("download")}<span>${isLoadingFull?"加载原图中…":"下载原图"}</span></button>`;
+    const showNav=!standalone&&list.length>1;
+    const posChip=showNav?`<span class="output-album-lightbox-pos">${position+1} / ${list.length}</span>`
+      :(localDate?`<span class="output-album-lightbox-pos">${esc(localDate)}</span>`:`<span class="output-album-lightbox-pos">1 / 1</span>`);
     host.hidden=false;
     host.innerHTML=`<button type="button" class="output-album-lightbox-mask" data-output-native-action="album-close" aria-label="关闭"></button>
-      <section class="output-album-lightbox-card" role="dialog" aria-modal="true" aria-label="产出原图预览">
+      <section class="output-album-lightbox-card" role="dialog" aria-modal="true" aria-label="${isOutfit?"每日穿搭原图预览":"产出原图预览"}">
         <header>
           <div class="output-album-lightbox-head-copy">
-            <strong>产出图片</strong>
-            <span class="output-album-lightbox-pos">${position+1} / ${list.length}</span>
+            <strong>${isOutfit?"每日穿搭图":"产出图片"}</strong>
+            ${posChip}
             <span class="output-album-lightbox-tag">${esc(albumActionLabel(meta.action))}</span>
           </div>
           <div class="output-album-lightbox-head-actions">
@@ -515,13 +560,13 @@ window.CompanionOutputPage=(()=>{
             <button type="button" class="output-icon-button" data-output-native-action="album-close" aria-label="关闭">${icon("x")}</button>
           </div>
         </header>
-        <div class="output-album-lightbox-stage${albumZoomed?" is-zoomed":""}">
-          <button type="button" class="output-album-nav prev" data-output-native-action="album-prev" aria-label="上一张"${position<=0?" disabled":""}>${icon("chevron-left")}</button>
+        <div class="output-album-lightbox-stage${albumZoomed?" is-zoomed":""}${showNav?"":" is-single"}">
+          ${showNav?`<button type="button" class="output-album-nav prev" data-output-native-action="album-prev" aria-label="上一张"${position<=0?" disabled":""}>${icon("chevron-left")}</button>`:""}
           <div class="output-album-lightbox-viewport">
             <img class="output-album-lightbox-img" src="${esc(imageSrc)}" alt="${esc(filename)}" data-output-native-action="album-zoom" title="${albumZoomed?"点击适应窗口":"点击查看 1:1 细节"}">
             ${badge}
           </div>
-          <button type="button" class="output-album-nav next" data-output-native-action="album-next" aria-label="下一张"${position>=list.length-1?" disabled":""}>${icon("chevron-right")}</button>
+          ${showNav?`<button type="button" class="output-album-nav next" data-output-native-action="album-next" aria-label="下一张"${position>=list.length-1?" disabled":""}>${icon("chevron-right")}</button>`:""}
         </div>
         <footer class="output-album-lightbox-foot">
           <div class="output-album-lightbox-meta">
@@ -530,6 +575,7 @@ window.CompanionOutputPage=(()=>{
               <button type="button" class="output-album-copy" data-output-native-action="album-copy-name" data-output-filename="${esc(filename)}" aria-label="复制文件名">${icon(albumCopyFeedback==="已复制"?"check":"copy")}<span>${esc(albumCopyFeedback||"复制文件名")}</span></button>
             </div>
             <small class="output-album-specs">${esc(specs||albumActionLabel(meta.action))}</small>
+            ${activities.length?`<small class="output-album-outfit-context">当日安排：${esc(activities.join("、"))}</small>`:""}
           </div>
           <div class="output-album-lightbox-foot-actions">${downloadControl}</div>
         </footer>
@@ -540,12 +586,24 @@ window.CompanionOutputPage=(()=>{
     const visible=filteredAlbumItems();
     if(!Number.isInteger(index)||index<0||index>=visible.length)return;
     const item=visible[index];
-    albumSelectedId=item.image_id;albumSelected=index;albumZoomed=false;albumCopyFeedback="";
+    albumStandaloneItem=null;albumSelectedId=item.image_id;albumSelected=index;albumZoomed=false;albumCopyFeedback="";
     clearTimeout(albumCopyTimer);
     if(!getCachedFullImage(item.image_id))void loadFullAlbumImage(item);
     renderAlbumLightbox();
   }
+  function openLightbox(item){
+    if(!root?.isConnected||!item?.thumbnail)return false;
+    const imageId=typeof item.image_id==="string"&&item.image_id?item.image_id:`preview:${item.local_date||Date.now()}`;
+    const normalized={...item,image_id:imageId};
+    albumStandaloneItem=normalized;
+    albumSelectedId=imageId;albumSelected=0;albumZoomed=false;albumCopyFeedback="";
+    clearTimeout(albumCopyTimer);
+    if(normalized._albumEndpoint&&!getCachedFullImage(imageId))void loadFullAlbumImage(normalized);
+    renderAlbumLightbox();
+    return true;
+  }
   function stepAlbum(delta){
+    if(albumStandaloneItem)return;
     const visible=filteredAlbumItems();
     if(!visible.length)return;
     const current=visible.findIndex(item=>item.image_id===albumSelectedId);
@@ -1110,11 +1168,11 @@ window.CompanionOutputPage=(()=>{
     if(action==="album-prev"){stepAlbum(-1);return;}
     if(action==="album-next"){stepAlbum(1);return;}
     if(action==="album-zoom"){
-      if(!albumSelectedId)return;
+      if(!currentLightboxItem())return;
       albumZoomed=!albumZoomed;renderAlbumLightbox();return;
     }
     if(action==="album-retry-full"){
-      const item=albumItems.find(candidate=>candidate.image_id===albumSelectedId);
+      const item=currentLightboxItem();
       if(item){void loadFullAlbumImage(item,{force:true});renderAlbumLightbox();}
       return;
     }
@@ -1123,7 +1181,7 @@ window.CompanionOutputPage=(()=>{
       return;
     }
     if(action==="album-download"){
-      const item=albumItems.find(candidate=>candidate.image_id===albumSelectedId);
+      const item=currentLightboxItem();
       if(item)void downloadFullAlbumImage(item);
       return;
     }
@@ -1142,7 +1200,7 @@ window.CompanionOutputPage=(()=>{
     render();
   }
   function keydown(event){
-    if(!albumSelectedId||!root?.isConnected)return;
+    if(!currentLightboxItem()||!root?.isConnected)return;
     const tag=String(event.target?.tagName||"").toUpperCase();
     if(tag==="INPUT"||tag==="TEXTAREA"||tag==="SELECT"||event.target?.isContentEditable)return;
     if(event.key==="Escape"){event.preventDefault?.();closeAlbumLightbox();return;}
@@ -1152,7 +1210,7 @@ window.CompanionOutputPage=(()=>{
   function unmount(){
     ticket++;abort?.abort();abort=null;disconnectAlbumObserver();clearFullImageCache();clearTimeout(albumCopyTimer);albumCopyTimer=null;
     root=null;draft=base=null;naiStatus=null;busy="";scope="";observation=null;observationBusy=false;sceneEditorOpen=false;sceneDraft=null;sceneSaving=false;
-    albumSources=[];albumItems=[];albumCursor=null;albumTotal=null;albumLoaded=false;albumLoading=false;albumBatchLoading=false;albumBatchStep=0;albumBatchTotal=0;albumError="";albumSelected=-1;albumSelectedId="";albumSelectedIds=new Set();albumNotice="";albumBusy="";albumFilter="all";albumZoomed=false;albumCopyFeedback="";
+    albumSources=[];albumItems=[];albumCursor=null;albumTotal=null;albumLoaded=false;albumLoading=false;albumBatchLoading=false;albumBatchStep=0;albumBatchTotal=0;albumError="";albumStandaloneItem=null;albumSelected=-1;albumSelectedId="";albumSelectedIds=new Set();albumNotice="";albumBusy="";albumFilter="all";albumZoomed=false;albumCopyFeedback="";
     albumReferenceOpen=false;albumReferenceImageId="";albumReferenceLabel="";albumReferenceRoles=new Set(["identity"]);albumReferenceError="";
   }
   function mount(node){
@@ -1169,5 +1227,5 @@ window.CompanionOutputPage=(()=>{
     if(!root.querySelector("#output-panel-creation")?.hidden)showWorks();
   }
   function showWorks(){if(!worksLoaded)void loadWorks();}
-  return {mount,unmount,refresh,refreshObservability,showWorks,configUpdated:renderScenePresets};
+  return {mount,unmount,refresh,refreshAlbum:()=>loadAlbum(false),openLightbox,refreshObservability,showWorks,configUpdated:renderScenePresets};
 })();

@@ -745,3 +745,113 @@ test("lightbox loads full-res Blob URL with LRU eviction, zoom, keyboard nav, fi
   s.page.unmount();
   assert.equal(s.revokedUrls.length, 14);
 });
+
+test("gallery supports daily outfit filter pill and standalone openLightbox relocates host and loads full-res outfit", async () => {
+  const outfitId = "wardrobe-outfit:a1b2c3d4:2026-11-22:deadbeef";
+  const outfitFile = "20261122-013000-wardrobe-outfit-0123456789ab.png";
+  const s = fullGalleryFixture({
+    request(method, endpoint, body) {
+      if (method === "GET" && endpoint === "image-materials/album") {
+        return {
+          total: 2,
+          next_cursor: null,
+          items: [
+            {
+              image_id: outfitId,
+              filename: outfitFile,
+              mime_type: "image/png",
+              size_bytes: 1_500_000,
+              width: 832,
+              height: 1216,
+              created_at: "2026-11-22T01:30:00Z",
+              action: "wardrobe.outfit",
+              local_date: "2026-11-22",
+              weather: {role_location: "维也纳", condition: "晴", temperature_c: 3},
+              activities: ["午间开指热身", "冬季巡演曲目定稿"],
+              thumbnail: "data:image/jpeg;base64,outfit-thumb",
+            },
+            {
+              image_id: "img-gen-1",
+              filename: "20261121-100000-generate-111111111111.png",
+              mime_type: "image/png",
+              size_bytes: 500_000,
+              width: 768,
+              height: 1024,
+              created_at: "2026-11-21T10:00:00Z",
+              action: "image.generate",
+              thumbnail: "data:image/jpeg;base64,gen-thumb",
+            },
+          ],
+        };
+      }
+      if (method === "GET" && endpoint === "image-materials/album/image") {
+        return {
+          image_id: body.image_id,
+          filename: outfitFile,
+          mime_type: "image/png",
+          width: 832,
+          height: 1216,
+          size_bytes: 1_500_000,
+          created_at: "2026-11-22T01:30:00Z",
+          action: "wardrobe.outfit",
+          local_date: "2026-11-22",
+          weather: {role_location: "维也纳", condition: "晴", temperature_c: 3},
+          activities: ["午间开指热身", "冬季巡演曲目定稿"],
+          data_url: "data:image/png;base64,aGVsbG8=",
+        };
+      }
+      throw new Error(`unexpected ${method} ${endpoint}`);
+    },
+  });
+  // Simulate #outputAlbumLightbox starting inside hidden #output-panel-gallery so ensureLightboxHost relocates it.
+  const lb = s.single.get("#outputAlbumLightbox");
+  lb.parentElement = {id: "output-panel-gallery"};
+  let relocatedToRoot = false;
+  s.root.appendChild = node => {
+    if (node === lb) {
+      lb.parentElement = s.root;
+      relocatedToRoot = true;
+    }
+  };
+
+  s.page.mount(s.root);
+  await settleAlbum();
+  const ws = s.single.get("#outputAlbumWorkspace");
+  assert.match(ws.innerHTML, /data-output-album-filter="wardrobe\.outfit"/);
+  assert.match(ws.innerHTML, /output-album-card-badge">每日穿搭</);
+
+  // Filter down to daily outfits only.
+  s.clickAction("album-filter", {outputAlbumFilter: "wardrobe.outfit"});
+  assert.match(ws.innerHTML, /当前筛选显示 1 张/);
+  assert.match(ws.innerHTML, /2026-11-22/);
+  assert.doesNotMatch(ws.innerHTML, /img-gen-1/);
+
+  // Standalone openLightbox (invoked from daily outfit card in materials tab) relocates host & loads full-res PNG.
+  const opened = s.page.openLightbox({
+    image_id: outfitId,
+    filename: outfitFile,
+    mime_type: "image/png",
+    width: 832,
+    height: 1216,
+    size_bytes: 1_500_000,
+    created_at: "2026-11-22T01:30:00Z",
+    action: "wardrobe.outfit",
+    local_date: "2026-11-22",
+    weather: {role_location: "维也纳", condition: "晴", temperature_c: 3},
+    activities: ["午间开指热身", "冬季巡演曲目定稿"],
+    thumbnail: "data:image/jpeg;base64,outfit-thumb",
+    _albumEndpoint: "image-materials/album",
+  });
+  assert.equal(opened, true);
+  assert.equal(relocatedToRoot, true, "lightbox must relocate out of hidden gallery panel to .output-page root");
+  assert.equal(lb.hidden, false);
+  await settleAlbum();
+  assert.match(lb.innerHTML, /每日穿搭图/);
+  assert.match(lb.innerHTML, /维也纳 · 晴 · 3°C/);
+  assert.match(lb.innerHTML, /午间开指热身、冬季巡演曲目定稿/);
+  assert.match(lb.innerHTML, /blob:companion-1/);
+  assert.match(lb.innerHTML, /<a[^>]+href="blob:companion-1"[^>]+download="20261122-013000-wardrobe-outfit-0123456789ab\.png"/);
+  assert.equal(s.pressKey("Escape"), true);
+  assert.equal(lb.hidden, true);
+  s.page.unmount();
+});

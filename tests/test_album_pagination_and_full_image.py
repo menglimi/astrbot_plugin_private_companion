@@ -708,5 +708,225 @@ class ImageMaterialsWebAPIRouteTests(unittest.IsolatedAsyncioTestCase):
             _restore_modules(saved)
 
 
+class DailyOutfitAlbumIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        _clear_album_thumbnail_memory_cache()
+
+    def tearDown(self):
+        _clear_album_thumbnail_memory_cache()
+
+    def test_daily_outfit_photos_merge_into_album_pagination_total_full_image_export_hide_and_auth(self):
+        import json
+        import zipfile
+        from companion_v2.references.daily_outfit import (
+            DAILY_OUTFIT_ACTION,
+            PREFIX as OUTFIT_PREFIX,
+            DailyOutfitPhotos,
+            daily_outfit_image_id,
+        )
+        from companion_v2.storage.image_payloads import store_image
+        from companion_v2.storage.runtime import StorageRuntime
+
+        with tempfile.TemporaryDirectory(prefix="companion-v2-daily-outfit-album-") as temporary:
+            data_root = Path(temporary)
+            runtime = StorageRuntime.open(data_root=data_root, installation_id="inst-1")
+            try:
+                owner = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+                other_owner = "ffeeddccbbaa99887766554433221100"
+                outfit_png_new = _make_image("#2e6f56", size=(120, 180))
+                outfit_png_mid = _make_image("#553f7a", size=(110, 160))
+                outfit_png_other = _make_image("#884422", size=(90, 90))
+                marker_new = store_image(data_root, outfit_png_new, mime_type="image/png").decode("ascii")
+                marker_mid = store_image(data_root, outfit_png_mid, mime_type="image/png").decode("ascii")
+                marker_other = store_image(data_root, outfit_png_other, mime_type="image/png").decode("ascii")
+                hash_new = hashlib.sha256(outfit_png_new).hexdigest()
+                hash_mid = hashlib.sha256(outfit_png_mid).hexdigest()
+                hash_other = hashlib.sha256(outfit_png_other).hexdigest()
+                outfit_id_new = daily_outfit_image_id(owner, "2026-11-22", hash_new)
+                outfit_id_mid = daily_outfit_image_id(owner, "2026-11-20", hash_mid)
+                outfit_id_other = daily_outfit_image_id(other_owner, "2026-11-22", hash_other)
+
+                with runtime.transaction() as conn:
+                    conn.execute(
+                        "INSERT INTO runtime_metadata(key, value) VALUES(?, ?)",
+                        (
+                            f"{OUTFIT_PREFIX}{owner}:2026-11-22",
+                            json.dumps({
+                                "task_id": "outfit-task-new",
+                                "photo": {
+                                    "marker": marker_new,
+                                    "content_hash": hash_new,
+                                    "created_at": "2026-11-22T01:30:00+00:00",
+                                    "weather": {"role_location": "维也纳", "condition": "晴", "temperature_c": 3},
+                                    "activities": ["午间开指热身", "冬季巡演曲目定稿"],
+                                },
+                            }),
+                        ),
+                    )
+                    conn.execute(
+                        "INSERT INTO runtime_metadata(key, value) VALUES(?, ?)",
+                        (
+                            f"{OUTFIT_PREFIX}{owner}:2026-11-20",
+                            json.dumps({
+                                "task_id": "outfit-task-mid",
+                                "photo": {
+                                    "marker": marker_mid,
+                                    "content_hash": hash_mid,
+                                    "created_at": "2026-11-20T06:00:00+00:00",
+                                    "weather": {"role_location": "维也纳", "condition": "阴", "temperature_c": 5},
+                                    "activities": ["练琴"],
+                                },
+                            }),
+                        ),
+                    )
+                    # Another role's daily outfit must never leak or be readable.
+                    conn.execute(
+                        "INSERT INTO runtime_metadata(key, value) VALUES(?, ?)",
+                        (
+                            f"{OUTFIT_PREFIX}{other_owner}:2026-11-22",
+                            json.dumps({
+                                "task_id": "outfit-task-other",
+                                "photo": {
+                                    "marker": marker_other,
+                                    "content_hash": hash_other,
+                                    "created_at": "2026-11-22T02:00:00+00:00",
+                                    "weather": None,
+                                    "activities": [],
+                                },
+                            }),
+                        ),
+                    )
+
+                gen_items = [
+                    _album_item("generated-image:g-newest:0", _make_image("#224466", size=(80, 80)),
+                                created_at="2026-11-21T12:00:00+00:00", action="image.generate", width=80, height=80),
+                    _album_item("generated-image:g-older:0", _make_image("#664422", size=(80, 80)),
+                                created_at="2026-11-19T12:00:00+00:00", action="image.edit", width=80, height=80),
+                    _album_item("generated-image:g-oldest:0", _make_image("#446622", size=(80, 80)),
+                                created_at="2026-11-18T12:00:00+00:00", action="image.generate", width=80, height=80),
+                ]
+
+                class FakeGenerated:
+                    def album_page(self, context, at, *, limit=24, cursor=None):
+                        start = int(cursor.removeprefix("cursor-idx-")) if cursor else 0
+                        batch = tuple(gen_items[start:start + limit])
+                        nxt = f"cursor-idx-{start + limit}" if start + limit < len(gen_items) else None
+                        return {"items": batch, "next_cursor": nxt}
+
+                    def album_count(self, context, at, *, hidden_ids=()):
+                        hidden = set(hidden_ids or ())
+                        return sum(1 for item in gen_items if item.image_id not in hidden)
+
+                    def album_image(self, context, at, image_id):
+                        for item in gen_items:
+                            if item.image_id == image_id:
+                                return item
+                        raise TaskError("generated_image_missing", "missing")
+
+                app = SimpleNamespace(
+                    runtime=runtime,
+                    messages=SimpleNamespace(generated_images=FakeGenerated()),
+                    references=SimpleNamespace(owner=lambda ctx: owner, assets=object()),
+                    role_state=SimpleNamespace(settings=lambda ctx: ({"planning_timezone": "UTC"}, None)),
+                    tasks=SimpleNamespace(_record=lambda row: None),
+                )
+                manager = ReferenceMaterialManagement(app)
+                manager._admit = lambda op, ctx, at: owner
+                context = SimpleNamespace(key="ctx-outfit-merge")
+                at = datetime(2026, 11, 22, 8, 0, tzinfo=timezone.utc)
+
+                # 1. Paginate merged stream (3 generated + 2 daily outfits = 5) with limit=2 across all pages.
+                collected = []
+                cursor = None
+                for _ in range(5):
+                    page = manager.album(SimpleNamespace(), context, at=at, cursor=cursor, limit=2)
+                    self.assertLessEqual(len(page["items"]), 2)
+                    self.assertEqual(page["total"], 5)
+                    collected.extend(page["items"])
+                    cursor = page["next_cursor"]
+                    if cursor is None:
+                        break
+                self.assertIsNone(cursor)
+                self.assertEqual(
+                    [entry["image_id"] for entry in collected],
+                    [
+                        outfit_id_new,
+                        "generated-image:g-newest:0",
+                        outfit_id_mid,
+                        "generated-image:g-older:0",
+                        "generated-image:g-oldest:0",
+                    ],
+                )
+                first_outfit = collected[0]
+                self.assertEqual(first_outfit["action"], DAILY_OUTFIT_ACTION)
+                self.assertEqual(first_outfit["local_date"], "2026-11-22")
+                self.assertEqual(first_outfit["width"], 120)
+                self.assertEqual(first_outfit["height"], 180)
+                self.assertEqual(first_outfit["size_bytes"], len(outfit_png_new))
+                self.assertEqual(first_outfit["mime_type"], "image/png")
+                self.assertRegex(first_outfit["filename"], r"^20261122-013000-wardrobe-outfit-[0-9a-f]{12}\.png$")
+                self.assertEqual(first_outfit["weather"]["role_location"], "维也纳")
+                self.assertEqual(first_outfit["activities"], ["午间开指热身", "冬季巡演曲目定稿"])
+
+                # 2. GET /album/image returns lossless original for daily outfit photo.
+                full = manager.album_image(SimpleNamespace(), context, at=at, image_id=outfit_id_new)
+                self.assertEqual(full["image_id"], outfit_id_new)
+                self.assertEqual(full["action"], DAILY_OUTFIT_ACTION)
+                self.assertEqual(full["local_date"], "2026-11-22")
+                self.assertEqual(full["filename"], first_outfit["filename"])
+                self.assertEqual(
+                    base64.b64decode(full["data_url"].removeprefix("data:image/png;base64,")),
+                    outfit_png_new,
+                )
+
+                # 3. Cross-role / tampered-hash / nonexistent outfit IDs are rejected cleanly.
+                for bad_id in (
+                    outfit_id_other,
+                    f"wardrobe-outfit:{owner[:8]}:2026-11-22:deadbeef",
+                    f"wardrobe-outfit:{owner[:8]}:2026-11-25:{hash_new[:8]}",
+                    "wardrobe-outfit:../etc/passwd",
+                ):
+                    with self.assertRaises(TaskError) as err:
+                        manager.album_image(SimpleNamespace(), context, at=at, image_id=bad_id)
+                    self.assertEqual(err.exception.code, "generated_image_missing")
+
+                # 4. export_album supports exporting daily outfit photos alongside generated images.
+                exported = manager.export_album(
+                    SimpleNamespace(), context, at=at, image_ids=[outfit_id_new, "generated-image:g-newest:0"]
+                )
+                self.assertEqual(exported["count"], 2)
+                zip_bytes = base64.b64decode(exported["data_url"].removeprefix("data:application/zip;base64,"))
+                with zipfile.ZipFile(BytesIO(zip_bytes), "r") as zf:
+                    self.assertEqual(len(zf.namelist()), 2)
+                    self.assertEqual(zf.read(zf.namelist()[0]), outfit_png_new)
+
+                # 5. hide_album_images non-destructively hides a daily outfit from /album & /album/image.
+                manager.hide_album_images(SimpleNamespace(), context, at=at, image_ids=[outfit_id_mid])
+                after_hide = manager.album(SimpleNamespace(), context, at=at, limit=24)
+                self.assertEqual(after_hide["total"], 4)
+                self.assertNotIn(outfit_id_mid, [item["image_id"] for item in after_hide["items"]])
+                with self.assertRaises(TaskError) as hidden_err:
+                    manager.album_image(SimpleNamespace(), context, at=at, image_id=outfit_id_mid)
+                self.assertEqual(hidden_err.exception.code, "generated_image_missing")
+
+                # 6. DailyOutfitPhotos.status() exposes image_id, filename, dimensions & size_bytes for lightbox.
+                outfit_owner = DailyOutfitPhotos(runtime, None)
+                outfit_owner.app = app
+                status = outfit_owner.status(
+                    context,
+                    at=at,
+                    preview=lambda raw: "data:image/jpeg;base64," + base64.b64encode(raw[:16]).decode("ascii"),
+                )
+                self.assertEqual(status["photo"]["image_id"], outfit_id_new)
+                self.assertEqual(status["photo"]["local_date"], "2026-11-22")
+                self.assertEqual(status["photo"]["filename"], first_outfit["filename"])
+                self.assertEqual(status["photo"]["mime_type"], "image/png")
+                self.assertEqual(status["photo"]["width"], 120)
+                self.assertEqual(status["photo"]["height"], 180)
+                self.assertEqual(status["photo"]["size_bytes"], len(outfit_png_new))
+            finally:
+                runtime.close()
+
+
 if __name__ == "__main__":
     unittest.main()

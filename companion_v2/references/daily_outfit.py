@@ -5,9 +5,13 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, time, timedelta
 import hashlib
+from io import BytesIO
 import json
 import logging
+import re
 from zoneinfo import ZoneInfo
+
+from PIL import Image
 
 from companion_v2.agenda.planning import KIND as PLANNING_KIND
 from companion_v2.agenda.planning_config import (
@@ -21,15 +25,199 @@ from companion_v2.execution.models import (
 from companion_v2.execution.runner import ExactTaskRunner
 from companion_v2.execution.service import outcome
 from companion_v2.foundation.refs import ScopeKind
-from companion_v2.storage.image_payloads import load_image, store_image
+from companion_v2.storage.generated_album import album_filename
+from companion_v2.storage.image_payloads import MARKER_PREFIX, image_root, is_marker, load_image, store_image
 
-from .models import ReferenceRole
+from .models import MAX_ASSET_BYTES, ReferenceRole
 
 
 KIND = "role.daily_outfit"
 PREFIX = "daily-outfit-photo.v1:"
+DAILY_OUTFIT_ACTION = "wardrobe.outfit"
+DAILY_OUTFIT_IMAGE_PREFIX = "wardrobe-outfit:"
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+_LOCAL_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_MARKER_NAME_RE = re.compile(r"^[0-9a-f]{64}\.(?:png|jpg|webp|gif|bin)$")
+_DAILY_OUTFIT_ID_RE = re.compile(r"^wardrobe-outfit:([0-9a-f]{8}):(\d{4}-\d{2}-\d{2}):([0-9a-f]{8})$")
+_SAFE_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
 TIMEOUT = 360
 logger = logging.getLogger(__name__)
+
+
+def daily_outfit_image_id(owner: str, local_date: str, content_hash: str) -> str:
+    """Build a deterministic, role-scoped album identifier for one daily outfit photo."""
+    return f"{DAILY_OUTFIT_IMAGE_PREFIX}{owner[:8].lower()}:{local_date}:{content_hash[:8].lower()}"
+
+
+def parse_daily_outfit_image_id(image_id: str) -> tuple[str, str, str] | None:
+    """Parse ``wardrobe-outfit:<owner8>:<YYYY-MM-DD>:<hash8>`` or return None."""
+    if type(image_id) is not str:
+        return None
+    match = _DAILY_OUTFIT_ID_RE.fullmatch(image_id)
+    if match is None:
+        return None
+    return match.group(1), match.group(2), match.group(3)
+
+
+def _sniff_mime_type(content: bytes, declared: str = "") -> str:
+    normalized = (declared or "").strip().lower()
+    if normalized in _SAFE_IMAGE_MIMES:
+        return normalized
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp"
+    if content[:6] in {b"GIF87a", b"GIF89a"}:
+        return "image/gif"
+    return "application/octet-stream"
+
+
+def _image_dimensions(content: bytes, photo: dict) -> tuple[int, int]:
+    width = photo.get("width")
+    height = photo.get("height")
+    if type(width) is int and type(height) is int and 1 <= width <= 16384 and 1 <= height <= 16384:
+        return width, height
+    try:
+        with Image.open(BytesIO(content)) as opened:
+            w, h = opened.size
+            if type(w) is int and type(h) is int and w > 0 and h > 0:
+                return w, h
+    except Exception:
+        pass
+    return 0, 0
+
+
+def _marker_file_available(data_root, marker_str: str) -> bool:
+    if data_root is None:
+        return False
+    try:
+        raw = marker_str.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    if not is_marker(raw):
+        return bool(raw)
+    name = raw[len(MARKER_PREFIX):].decode("ascii", errors="ignore")
+    if _MARKER_NAME_RE.fullmatch(name) is None:
+        return False
+    try:
+        return (image_root(data_root) / name).is_file()
+    except OSError:
+        return False
+
+
+def list_daily_outfit_records(runtime, owner: str, *, hidden_ids=()) -> list[dict]:
+    """List valid role-owned daily outfit metadata records without decoding image bytes."""
+    read_all = getattr(runtime, "read_all", None)
+    if not callable(read_all) or not isinstance(owner, str) or len(owner) < 8:
+        return []
+    prefix = f"{PREFIX}{owner}:"
+    rows = read_all(
+        "SELECT key, value FROM runtime_metadata WHERE substr(key, 1, ?) = ?",
+        (len(prefix), prefix),
+    )
+    hidden = set(hidden_ids or ())
+    data_root = getattr(runtime, "data_root", None)
+    records = []
+    for row in rows:
+        key = row["key"]
+        local_date = key[len(prefix):] if isinstance(key, str) else ""
+        if _LOCAL_DATE_RE.fullmatch(local_date) is None:
+            continue
+        try:
+            document = json.loads(row["value"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        photo = document.get("photo") if isinstance(document, dict) else None
+        if not isinstance(photo, dict):
+            continue
+        marker = photo.get("marker")
+        content_hash = photo.get("content_hash")
+        created_at = photo.get("created_at")
+        if (type(marker) is not str or not marker
+                or type(content_hash) is not str or _HEX64_RE.fullmatch(content_hash.lower()) is None
+                or type(created_at) is not str or not created_at.strip()):
+            continue
+        normalized_hash = content_hash.lower()
+        image_id = daily_outfit_image_id(owner, local_date, normalized_hash)
+        if image_id in hidden:
+            continue
+        if not _marker_file_available(data_root, marker):
+            continue
+        records.append({
+            "image_id": image_id,
+            "local_date": local_date,
+            "marker": marker,
+            "content_hash": normalized_hash,
+            "created_at": created_at,
+            "action": DAILY_OUTFIT_ACTION,
+            "mime_type": photo.get("mime_type") if type(photo.get("mime_type")) is str else "",
+            "width": photo.get("width") if type(photo.get("width")) is int else None,
+            "height": photo.get("height") if type(photo.get("height")) is int else None,
+            "weather": photo.get("weather") if isinstance(photo.get("weather"), dict) else None,
+            "activities": list(photo.get("activities")) if isinstance(photo.get("activities"), list) else [],
+        })
+    records.sort(key=lambda item: (item["created_at"], item["image_id"]), reverse=True)
+    return records
+
+
+def load_daily_outfit_record(runtime, owner: str, image_id: str) -> dict | None:
+    """Resolve and verify one role-owned daily outfit image payload by its album image_id."""
+    parsed = parse_daily_outfit_image_id(image_id)
+    if parsed is None or not isinstance(owner, str) or len(owner) < 8:
+        return None
+    owner_prefix, local_date, hash_prefix = parsed
+    if owner_prefix != owner[:8].lower():
+        return None
+    read_one = getattr(runtime, "read_one", None)
+    data_root = getattr(runtime, "data_root", None)
+    if not callable(read_one) or data_root is None:
+        return None
+    row = read_one("SELECT value FROM runtime_metadata WHERE key = ?", (f"{PREFIX}{owner}:{local_date}",))
+    if row is None:
+        return None
+    try:
+        document = json.loads(row["value"])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    photo = document.get("photo") if isinstance(document, dict) else None
+    if not isinstance(photo, dict):
+        return None
+    marker = photo.get("marker")
+    content_hash = photo.get("content_hash")
+    created_at = photo.get("created_at")
+    if (type(marker) is not str or not marker
+            or type(content_hash) is not str or _HEX64_RE.fullmatch(content_hash.lower()) is None
+            or type(created_at) is not str or not created_at.strip()):
+        return None
+    normalized_hash = content_hash.lower()
+    if not normalized_hash.startswith(hash_prefix):
+        return None
+    try:
+        content = load_image(data_root, marker.encode("ascii"))
+    except (TaskError, OSError, ValueError, UnicodeEncodeError):
+        return None
+    if not isinstance(content, bytes) or not content or len(content) > MAX_ASSET_BYTES:
+        return None
+    if hashlib.sha256(content).hexdigest() != normalized_hash:
+        return None
+    mime_type = _sniff_mime_type(content, photo.get("mime_type") if type(photo.get("mime_type")) is str else "")
+    width, height = _image_dimensions(content, photo)
+    return {
+        "image_id": daily_outfit_image_id(owner, local_date, normalized_hash),
+        "local_date": local_date,
+        "created_at": created_at,
+        "action": DAILY_OUTFIT_ACTION,
+        "content": content,
+        "content_hash": normalized_hash,
+        "mime_type": mime_type,
+        "width": width,
+        "height": height,
+        "size_bytes": len(content),
+        "weather": photo.get("weather") if isinstance(photo.get("weather"), dict) else None,
+        "activities": list(photo.get("activities")) if isinstance(photo.get("activities"), list) else [],
+    }
 
 PROMPT = """Create one image of this character wearing a newly designed outfit for today.
 Treat the material below as background. Use the character's persona and visual reference for identity, and prefer the explicit character profile when it supplies a detail. Preserve recognizable facial features, hair, build and visual style. Use the clothing preferences and any suggested garment as inspiration.
@@ -260,24 +448,46 @@ class DailyOutfitPhotos:
                 "marker": marker.decode("ascii"), "content_hash": image.descriptor.content_hash,
                 "created_at": stamp(self.app.now()), "weather": material["weather"],
                 "activities": [item["activity"] for item in material["agenda"]],
+                "mime_type": image.descriptor.mime_type,
+                "width": image.descriptor.width, "height": image.descriptor.height,
+                "size_bytes": image.descriptor.byte_count,
             }})
         return TaskResult("succeeded", effect="committed", result_ref=spec.task_id,
                           operation_id=result.operation_id, receipt_ref=result.receipt_ref)
 
     def status(self, context, *, at, preview=None):
         day, _, _ = self._day(context, at)
+        local_date = day.isoformat()
+        owner = self.app.references.owner(context)
         document = self._read(self._key(context, day))
         task = self._task(document.get("task_id"))
         state = task.state if task else "empty"
         photo = document.get("photo")
-        value = {"local_date": day.isoformat(), "state": state, "code": document.get("code", "")}
+        value = {"local_date": local_date, "state": state, "code": document.get("code", "")}
         if photo:
-            value["photo"] = {key: photo[key] for key in ("created_at", "weather", "activities")}
+            photo_hash = photo.get("content_hash")
+            image_id = (daily_outfit_image_id(owner, local_date, photo_hash)
+                        if type(photo_hash) is str and _HEX64_RE.fullmatch(photo_hash.lower()) else "")
+            entry = {key: photo[key] for key in ("created_at", "weather", "activities")}
+            entry["local_date"] = local_date
+            if image_id:
+                entry["image_id"] = image_id
+            value["photo"] = entry
             if preview:
                 try:
                     content = load_image(self.runtime.data_root, photo["marker"].encode("ascii"))
                     if hashlib.sha256(content).hexdigest() == photo["content_hash"]:
-                        value["photo"]["thumbnail"] = preview(content)
+                        entry["thumbnail"] = preview(content)
+                        mime_type = _sniff_mime_type(content, photo.get("mime_type") or "")
+                        width, height = _image_dimensions(content, photo)
+                        entry["mime_type"] = mime_type
+                        entry["width"] = width
+                        entry["height"] = height
+                        entry["size_bytes"] = len(content)
+                        if image_id:
+                            entry["filename"] = album_filename(
+                                image_id, entry["created_at"], DAILY_OUTFIT_ACTION,
+                                content, mime_type=mime_type)
                 except (TaskError, OSError, ValueError):
                     pass
         return value

@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from PIL import Image, ImageOps
 
-from companion_v2.conversation.media.models import ImageDescriptor
+from companion_v2.conversation.media.models import MAX_IMAGE_BYTES, ImageDescriptor
 from companion_v2.conversation.media.output_settings import effective_settings as image_settings, parse_scene_presets
 from companion_v2.execution.models import TaskContext, TaskError, digest, require
 from companion_v2.foundation.refs import ScopeKind, ScopeRef
@@ -31,6 +31,12 @@ from companion_v2.references.configuration import (
     GROUP as REFERENCE_GROUP,
     ReferenceConfigurationOwner,
     configuration_fields as reference_fields,
+)
+from companion_v2.references.daily_outfit import (
+    DAILY_OUTFIT_ACTION,
+    DAILY_OUTFIT_IMAGE_PREFIX,
+    list_daily_outfit_records,
+    load_daily_outfit_record,
 )
 from companion_v2.references.models import (
     MAX_ASSET_BYTES,
@@ -72,8 +78,110 @@ UPLOAD_MAX_BYTES = 12 * 1024 * 1024
 IMAGE_ROLES = tuple(role.value for role in ReferenceRole)
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+_MERGED_CURSOR_PREFIX = "v2m:"
 _ALBUM_THUMBNAIL_LOCK = threading.Lock()
 _ALBUM_THUMBNAIL_MEMORY: OrderedDict[tuple[str, int], bytes] = OrderedDict()
+
+
+class _DailyOutfitDescriptor:
+    __slots__ = ("position", "mime_type", "width", "height", "byte_count", "content_hash")
+
+    def __init__(self, *, mime_type: str, width: int, height: int, byte_count: int, content_hash: str):
+        self.position = 0
+        self.mime_type = mime_type
+        self.width = width
+        self.height = height
+        self.byte_count = byte_count
+        self.content_hash = content_hash
+
+
+class _DailyOutfitAlbumItem:
+    __slots__ = ("image_id", "created_at", "action", "descriptor", "content",
+                 "local_date", "weather", "activities")
+
+    def __init__(self, *, image_id: str, created_at: str, action: str, descriptor, content: bytes,
+                 local_date: str = "", weather=None, activities=()):
+        self.image_id = image_id
+        self.created_at = created_at
+        self.action = action
+        self.descriptor = descriptor
+        self.content = content
+        self.local_date = local_date
+        self.weather = weather
+        self.activities = list(activities or ())
+
+
+def _build_daily_outfit_album_item(loaded: dict) -> _DailyOutfitAlbumItem:
+    content = loaded["content"]
+    mime_type = loaded["mime_type"]
+    width = loaded["width"]
+    height = loaded["height"]
+    content_hash = loaded["content_hash"]
+    byte_count = len(content)
+    descriptor = None
+    if (mime_type in {"image/png", "image/jpeg", "image/webp"}
+            and 1 <= width <= 8192 and 1 <= height <= 8192
+            and 0 < byte_count <= MAX_IMAGE_BYTES):
+        try:
+            descriptor = ImageDescriptor(
+                position=0, mime_type=mime_type, width=width, height=height,
+                byte_count=byte_count, content_hash=content_hash)
+        except TaskError:
+            descriptor = None
+    if descriptor is None:
+        descriptor = _DailyOutfitDescriptor(
+            mime_type=mime_type, width=width, height=height,
+            byte_count=byte_count, content_hash=content_hash)
+    return _DailyOutfitAlbumItem(
+        image_id=loaded["image_id"],
+        created_at=loaded["created_at"],
+        action=loaded.get("action") or DAILY_OUTFIT_ACTION,
+        descriptor=descriptor,
+        content=content,
+        local_date=loaded.get("local_date") or "",
+        weather=loaded.get("weather"),
+        activities=loaded.get("activities") or (),
+    )
+
+
+def _encode_merged_album_cursor(gen_cursor, gen_done: bool, outfit_offset: int,
+                                gen_skip: int, gen_limit: int) -> str:
+    payload = json.dumps(
+        {"gc": gen_cursor, "gd": bool(gen_done), "o": int(outfit_offset),
+         "gs": int(gen_skip), "gl": int(gen_limit)},
+        ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    encoded = _MERGED_CURSOR_PREFIX + base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    if len(encoded) > 1024:
+        raise TaskError("generated_album_cursor_invalid", "the album cursor is invalid")
+    return encoded
+
+
+def _decode_merged_album_cursor(cursor):
+    if cursor is None:
+        return None, False, 0, 0, None, False
+    if type(cursor) is not str or not 8 <= len(cursor) <= 1024:
+        raise TaskError("generated_album_cursor_invalid", "the album cursor is invalid")
+    if not cursor.startswith(_MERGED_CURSOR_PREFIX):
+        return cursor, False, 0, 0, None, False
+    raw = cursor[len(_MERGED_CURSOR_PREFIX):]
+    try:
+        padding = "=" * (-len(raw) % 4)
+        doc = json.loads(base64.urlsafe_b64decode(raw + padding).decode("utf-8"))
+        if type(doc) is not dict or set(doc) != {"gc", "gd", "o", "gs", "gl"}:
+            raise ValueError("unexpected merged cursor keys")
+        gc = doc["gc"]
+        if gc is not None and (type(gc) is not str or not 8 <= len(gc) <= 1024):
+            raise ValueError("invalid generated cursor")
+        if (type(doc["gd"]) is not bool
+                or type(doc["o"]) is not int or isinstance(doc["o"], bool) or doc["o"] < 0
+                or type(doc["gs"]) is not int or isinstance(doc["gs"], bool) or doc["gs"] < 0
+                or type(doc["gl"]) is not int or isinstance(doc["gl"], bool)
+                or not 1 <= doc["gl"] <= ALBUM_MAX_LIMIT):
+            raise ValueError("invalid merged cursor values")
+        return gc, doc["gd"], doc["o"], doc["gs"], doc["gl"], True
+    except (ValueError, TypeError, UnicodeError, json.JSONDecodeError):
+        raise TaskError("generated_album_cursor_invalid", "the album cursor is invalid") from None
 
 
 def _thumbnail_cache_dir(data_root) -> Path | None:
@@ -414,14 +522,22 @@ class ReferenceMaterialManagement:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, payload))
         return hidden
 
+    def _resolve_album_item(self, owner, context, at, image_id):
+        if isinstance(image_id, str) and image_id.startswith(DAILY_OUTFIT_IMAGE_PREFIX):
+            loaded = load_daily_outfit_record(self.runtime, owner, image_id)
+            if loaded is None:
+                raise TaskError("generated_image_missing", "the selected album image is unavailable")
+            return _build_daily_outfit_album_item(loaded)
+        return self.application.messages.generated_images.album_image(context, at, image_id)
+
     def export_album(self, operator, context, *, at, image_ids):
         identifiers = self._album_selection(image_ids)
-        self._admit(operator, context, at)
+        owner = self._admit(operator, context, at)
         archive = BytesIO()
         total = 0
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
             for index, image_id in enumerate(identifiers, 1):
-                item = self.application.messages.generated_images.album_image(context, at, image_id)
+                item = self._resolve_album_item(owner, context, at, image_id)
                 total += len(item.content)
                 if total > ALBUM_EXPORT_BYTES:
                     raise TaskError("generated_album_export_too_large",
@@ -438,20 +554,20 @@ class ReferenceMaterialManagement:
 
     def hide_album_images(self, operator, context, *, at, image_ids):
         identifiers = self._album_selection(image_ids)
-        self._admit(operator, context, at)
+        owner = self._admit(operator, context, at)
         for image_id in identifiers:
             # Hiding is a non-destructive gallery projection.  A stale native
             # item may no longer be readable (expired source, changed batch),
             # but the operator must still be able to remove its card.  Do not
             # let one unreadable image abort the whole selection.
             try:
-                self.application.messages.generated_images.album_image(context, at, image_id)
+                self._resolve_album_item(owner, context, at, image_id)
             except TaskError:
                 pass
         hidden = self._hide_album_ids(context, identifiers)
         return {"hidden": len(identifiers), "hidden_total": len(hidden)}
 
-    def _iter_album_items(self, context, at):
+    def _iter_album_items(self, context, at, *, owner=None):
         hidden = self._hidden_album_ids(context)
         cursor = None
         seen_cursors = set()
@@ -470,6 +586,16 @@ class ReferenceMaterialManagement:
                 break
             seen_cursors.add(next_cursor)
             cursor = next_cursor
+        if owner:
+            for record in list_daily_outfit_records(self.runtime, owner, hidden_ids=hidden):
+                image_id = record["image_id"]
+                if image_id in seen_ids:
+                    continue
+                loaded = load_daily_outfit_record(self.runtime, owner, image_id)
+                if loaded is None:
+                    continue
+                seen_ids.add(image_id)
+                yield _build_daily_outfit_album_item(loaded)
 
     def open_album_folder(self, operator, context, *, at, role_id=None):
         owner = self._admit(operator, context, at)
@@ -490,7 +616,7 @@ class ReferenceMaterialManagement:
         else:
             effective_role_id = bound_role if isinstance(bound_role, str) and bound_role.strip() else None
         try:
-            entries = self._iter_album_items(context, at) if effective_role_id is not None else ()
+            entries = self._iter_album_items(context, at, owner=owner) if effective_role_id is not None else ()
             synced = sync_generated_album_folder(root, entries, role_id=effective_role_id, owner=owner)
         except (OSError, ValueError) as error:
             raise TaskError("generated_album_folder_unavailable", "the generated album folder could not be prepared") from error
@@ -579,12 +705,36 @@ class ReferenceMaterialManagement:
                 _ALBUM_THUMBNAIL_MEMORY.popitem(last=False)
         return data
 
-    def album(self, operator, context, *, at, cursor=None, limit=ALBUM_LIMIT):
-        self._admit(operator, context, at)
-        if type(limit) is not int or isinstance(limit, bool) or not 1 <= limit <= ALBUM_MAX_LIMIT:
-            raise TaskError("generated_album_limit_invalid", "the album page size is outside its bounds")
-        hidden = self._hidden_album_ids(context)
-        current_cursor = cursor
+    def _format_album_entry(self, item) -> dict:
+        mime_type = self._resolve_album_mime_type(
+            item.content, getattr(item.descriptor, "mime_type", ""))
+        filename = album_filename(
+            item.image_id, item.created_at, item.action, item.content, mime_type=mime_type)
+        data = self._album_thumbnail_bytes(item)
+        entry = {
+            "image_id": item.image_id,
+            "filename": filename,
+            "mime_type": mime_type,
+            "size_bytes": len(item.content),
+            "created_at": item.created_at,
+            "action": item.action,
+            "width": item.descriptor.width,
+            "height": item.descriptor.height,
+            "thumbnail": "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii"),
+        }
+        local_date = getattr(item, "local_date", "")
+        if isinstance(local_date, str) and local_date:
+            entry["local_date"] = local_date
+        weather = getattr(item, "weather", None)
+        if isinstance(weather, dict):
+            entry["weather"] = weather
+        activities = getattr(item, "activities", None)
+        if isinstance(activities, list) and activities:
+            entry["activities"] = list(activities)
+        return entry
+
+    def _fetch_generated_album_visible(self, context, at, *, start_cursor, limit, hidden):
+        current_cursor = start_cursor
         seen_cursors = set()
         visible = []
         next_cursor = None
@@ -597,39 +747,127 @@ class ReferenceMaterialManagement:
                 break
             seen_cursors.add(next_cursor)
             current_cursor = next_cursor
+        return visible, next_cursor
+
+    def album(self, operator, context, *, at, cursor=None, limit=ALBUM_LIMIT):
+        owner = self._admit(operator, context, at)
+        if type(limit) is not int or isinstance(limit, bool) or not 1 <= limit <= ALBUM_MAX_LIMIT:
+            raise TaskError("generated_album_limit_invalid", "the album page size is outside its bounds")
+        hidden = self._hidden_album_ids(context)
+        outfit_records = list_daily_outfit_records(self.runtime, owner, hidden_ids=hidden)
+        gen_cursor, gen_done, outfit_offset, gen_skip, saved_gen_limit, is_merged = _decode_merged_album_cursor(cursor)
+
+        if not outfit_records and not is_merged:
+            visible, next_cursor = self._fetch_generated_album_visible(
+                context, at, start_cursor=cursor, limit=limit, hidden=hidden)
+            items = [self._format_album_entry(item) for item in visible]
+            counter = getattr(self.application.messages.generated_images, "album_count", None)
+            if callable(counter):
+                counted = counter(context, at, hidden_ids=hidden)
+                total = max(counted, len(items)) if (type(counted) is int and counted >= 0) else None
+            else:
+                total = len(items) if (cursor is None and next_cursor is None) else None
+            return {"items": items, "next_cursor": next_cursor, "total": total}
+
+        fetch_limit = saved_gen_limit if (gen_skip > 0 and saved_gen_limit is not None) else limit
+        gen_raw = []
+        gen_next = None
+        seen_refill = set()
+        if not gen_done:
+            gen_raw, gen_next = self._fetch_generated_album_visible(
+                context, at, start_cursor=gen_cursor, limit=fetch_limit, hidden=hidden)
+            if gen_skip >= len(gen_raw):
+                if gen_next and gen_next not in seen_refill:
+                    seen_refill.add(gen_next)
+                    gen_cursor = gen_next
+                    gen_skip = 0
+                    fetch_limit = limit
+                    gen_raw, gen_next = self._fetch_generated_album_visible(
+                        context, at, start_cursor=gen_cursor, limit=fetch_limit, hidden=hidden)
+                else:
+                    gen_done = True
+                    gen_raw = []
+                    gen_next = None
+                    gen_skip = 0
+
+        gi = gen_skip
+        oi = outfit_offset
         items = []
-        for item in visible:
-            mime_type = self._resolve_album_mime_type(
-                item.content, getattr(item.descriptor, "mime_type", ""))
-            filename = album_filename(
-                item.image_id, item.created_at, item.action, item.content, mime_type=mime_type)
-            data = self._album_thumbnail_bytes(item)
-            items.append({
-                "image_id": item.image_id,
-                "filename": filename,
-                "mime_type": mime_type,
-                "size_bytes": len(item.content),
-                "created_at": item.created_at,
-                "action": item.action,
-                "width": item.descriptor.width,
-                "height": item.descriptor.height,
-                "thumbnail": "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii"),
-            })
+        while len(items) < limit:
+            if not gen_done and gi >= len(gen_raw):
+                if gen_next and gen_next not in seen_refill:
+                    seen_refill.add(gen_next)
+                    gen_cursor = gen_next
+                    gen_skip = 0
+                    fetch_limit = limit
+                    gen_raw, gen_next = self._fetch_generated_album_visible(
+                        context, at, start_cursor=gen_cursor, limit=fetch_limit, hidden=hidden)
+                    gi = 0
+                else:
+                    gen_done = True
+                    gen_raw = []
+                    gen_next = None
+                    gen_skip = 0
+                    gi = 0
+            has_g = (not gen_done) and gi < len(gen_raw)
+            has_o = oi < len(outfit_records)
+            if not has_g and not has_o:
+                break
+            if has_g and not has_o:
+                items.append(self._format_album_entry(gen_raw[gi]))
+                gi += 1
+                continue
+            if not has_g and has_o:
+                loaded = load_daily_outfit_record(self.runtime, owner, outfit_records[oi]["image_id"])
+                oi += 1
+                if loaded is not None:
+                    items.append(self._format_album_entry(_build_daily_outfit_album_item(loaded)))
+                continue
+            g_item = gen_raw[gi]
+            o_rec = outfit_records[oi]
+            g_key = (str(g_item.created_at or ""), str(g_item.image_id or ""))
+            o_key = (str(o_rec["created_at"] or ""), str(o_rec["image_id"] or ""))
+            if o_key >= g_key:
+                loaded = load_daily_outfit_record(self.runtime, owner, o_rec["image_id"])
+                oi += 1
+                if loaded is not None:
+                    items.append(self._format_album_entry(_build_daily_outfit_album_item(loaded)))
+            else:
+                items.append(self._format_album_entry(g_item))
+                gi += 1
+
+        if gen_done:
+            next_gc, next_gd, next_gs, next_gl = None, True, 0, limit
+        elif gi < len(gen_raw):
+            next_gc, next_gd, next_gs, next_gl = gen_cursor, False, gi, fetch_limit
+        elif gen_next:
+            next_gc, next_gd, next_gs, next_gl = gen_next, False, 0, limit
+        else:
+            next_gc, next_gd, next_gs, next_gl = None, True, 0, limit
+
+        has_more = (not next_gd) or (oi < len(outfit_records))
+        next_cursor = (
+            _encode_merged_album_cursor(next_gc, next_gd, oi, next_gs, next_gl)
+            if has_more else None
+        )
         counter = getattr(self.application.messages.generated_images, "album_count", None)
         if callable(counter):
             counted = counter(context, at, hidden_ids=hidden)
-            total = max(counted, len(items)) if (type(counted) is int and counted >= 0) else None
+            if type(counted) is int and counted >= 0:
+                total = max(counted + len(outfit_records), len(items))
+            else:
+                total = None
         else:
             total = len(items) if (cursor is None and next_cursor is None) else None
         return {"items": items, "next_cursor": next_cursor, "total": total}
 
     def album_image(self, operator, context, *, at, image_id):
-        self._admit(operator, context, at)
+        owner = self._admit(operator, context, at)
         if type(image_id) is not str or not 1 <= len(image_id) <= 180:
             raise TaskError("generated_image_missing", "select one image from this role's album")
         if image_id in self._hidden_album_ids(context):
             raise TaskError("generated_image_missing", "the selected album image is unavailable")
-        item = self.application.messages.generated_images.album_image(context, at, image_id)
+        item = self._resolve_album_item(owner, context, at, image_id)
         payload = item.content
         if not isinstance(payload, bytes) or not payload or len(payload) > MAX_ASSET_BYTES:
             raise TaskError("generated_image_missing", "the selected album image is unavailable")
@@ -637,7 +875,7 @@ class ReferenceMaterialManagement:
             payload, getattr(item.descriptor, "mime_type", ""))
         filename = album_filename(
             item.image_id, item.created_at, item.action, payload, mime_type=mime_type)
-        return {
+        response = {
             "image_id": item.image_id,
             "filename": filename,
             "mime_type": mime_type,
@@ -648,6 +886,16 @@ class ReferenceMaterialManagement:
             "action": item.action,
             "data_url": f"data:{mime_type};base64," + base64.b64encode(payload).decode("ascii"),
         }
+        local_date = getattr(item, "local_date", "")
+        if isinstance(local_date, str) and local_date:
+            response["local_date"] = local_date
+        weather = getattr(item, "weather", None)
+        if isinstance(weather, dict):
+            response["weather"] = weather
+        activities = getattr(item, "activities", None)
+        if isinstance(activities, list) and activities:
+            response["activities"] = list(activities)
+        return response
 
     @staticmethod
     def _operation_key(value):
@@ -679,7 +927,7 @@ class ReferenceMaterialManagement:
             raise TaskError("reference_label_invalid", "the image label must be trimmed and under 120 characters")
         operation_key = self._operation_key(operation_key)
         selected_roles = self._roles(roles)
-        original = self.application.messages.generated_images.album_image(context, at, image_id)
+        original = self._resolve_album_item(owner, context, at, image_id)
         payload = original.content
         if len(payload) > MAX_ASSET_BYTES:
             raise TaskError("reference_asset_too_large", "this image exceeds the 20 MiB reference limit")

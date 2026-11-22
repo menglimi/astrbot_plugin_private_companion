@@ -387,3 +387,69 @@ test("未知服务异常使用操作提示且不回显内部消息", async () =>
   assert.doesNotMatch(fixture.node.innerHTML, /internal failure|dashboard:synthetic-admin/);
   assert.match(fixture.node.innerHTML, /未读到|读取|刷新/);
 });
+
+test("点击每日穿搭图复用高清 Lightbox 并校验左侧配置卡操作按钮防折行样式", async () => {
+  const openedItems = [];
+  const outfitPhoto = {
+    local_date: "2026-11-22",
+    state: "succeeded",
+    photo: {
+      image_id: "wardrobe-outfit:a1b2c3d4:2026-11-22:deadbeef",
+      filename: "20261122-013000-wardrobe-outfit-0123456789ab.png",
+      mime_type: "image/png",
+      width: 832,
+      height: 1216,
+      size_bytes: 1_500_000,
+      created_at: "2026-11-22T01:30:00Z",
+      local_date: "2026-11-22",
+      thumbnail: "data:image/jpeg;base64,ZmFrZQ==",
+      weather: {role_location: "维也纳", condition: "晴", temperature_c: 3},
+      activities: ["午间开指热身"],
+    },
+  };
+  const requests = [];
+  const bridge = {
+    apiGet(pathname, query) {
+      requests.push({method: "GET", pathname, query});
+      if (pathname.endsWith("/album")) return Promise.resolve(ok({items: [], next_cursor: null}));
+      if (pathname.endsWith("/daily-outfit/photo")) return Promise.resolve(ok(outfitPhoto));
+      return Promise.resolve(ok(inventory({enabled: true, dailyOutfit: true})));
+    },
+    apiPost: () => Promise.resolve(ok({})),
+  };
+  const context = {
+    window: {
+      CompanionProduct: {
+        scopeKey: () => "scope-a",
+        role: () => ({image_material_api: "image-materials"}),
+        relative: value => value,
+        bridgeNow: () => bridge,
+      },
+      CompanionOutputPage: {
+        openLightbox(item) { openedItems.push(item); return true; },
+      },
+      crypto: {randomUUID: () => "uuid-outfit"},
+    },
+    console, AbortController, setTimeout, clearTimeout, Promise, Math, Date, Error,
+    Object, String, Array, Set, JSON,
+  };
+  vm.runInNewContext(SOURCE, context, {filename: "image-materials-page.js"});
+  const node = makeNode();
+  context.window.CompanionImageMaterialsPage.mount(node);
+  await tick();
+
+  assert.match(node.innerHTML, /data-im-open-outfit/);
+  assert.match(node.innerHTML, /查看原图/);
+  node.click("[data-im-open-outfit]");
+  assert.equal(openedItems.length, 1);
+  assert.equal(openedItems[0].image_id, outfitPhoto.photo.image_id);
+  assert.equal(openedItems[0].filename, outfitPhoto.photo.filename);
+  assert.equal(openedItems[0].action, "wardrobe.outfit");
+  assert.equal(openedItems[0].local_date, "2026-11-22");
+  assert.equal(openedItems[0]._albumEndpoint, "image-materials/album");
+  assert.equal(openedItems[0].weather.role_location, "维也纳");
+
+  assert.match(CSS, /#homeShell\[data-away="true"\] \.output-material-settings \.wb-actions\{padding-right:0\}/);
+  assert.match(CSS, /\.output-page \.wb-save,\.output-page \.wb-actions \.button\{[^}]*white-space:nowrap/);
+  assert.match(CSS, /\.image-materials-outfit-trigger\{[^}]*cursor:zoom-in/);
+});
