@@ -422,6 +422,66 @@ def image(owner, context, at, invocation_id, position):
     raise TaskError("generated_image_missing", "the selected album image is unavailable")
 
 
+def count(owner, context, *, hidden_ids=()):
+    """Count active governed native album images without loading image bytes."""
+    selection, values = _selection(owner, context)
+    selection += " AND json_extract(m.value, '$.state') = 'succeeded' AND t.state = 'succeeded'"
+    rows = owner.runtime.read_all(
+        "SELECT json_extract(m.value, '$.invocation_id') AS invocation_id, "
+        "COALESCE(json_extract(m.value, '$.source'), json_extract(m.value, '$.result_source_json')) AS result_source_json, "
+        "json_extract(m.value, '$.images') AS images_json " + selection,
+        values,
+    )
+    hidden = set(hidden_ids or ())
+    seen_ids = set()
+    for row in rows:
+        invocation_id = row["invocation_id"]
+        raw_source = row["result_source_json"]
+        raw_images = row["images_json"]
+        if not invocation_id or not raw_source or not raw_images:
+            continue
+        try:
+            parent = source_from_document(json.loads(raw_source))
+            images = json.loads(raw_images)
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+            continue
+        if not isinstance(images, list) or not images:
+            continue
+        if not _active(owner, "sources", id_value=parent.source_id,
+                       lineage_value=parent.version.lineage_id, revision_value=parent.version.revision,
+                       id_column="source_id", lineage_column="lineage_id", revision_column="source_revision"):
+            continue
+        active_positions = {
+            item["position"]
+            for item in owner.runtime.read_all(
+                """SELECT p.position FROM conversation_image_payloads p
+                   JOIN sources s
+                     ON s.source_id = p.source_id
+                    AND s.lineage_id = p.source_lineage
+                    AND s.source_revision = p.source_revision
+                    AND s.state = 'active'
+                   JOIN assets a
+                     ON a.asset_id = p.asset_id
+                    AND a.lineage_id = p.asset_lineage
+                    AND a.asset_revision = p.asset_revision
+                    AND a.state = 'active'
+                   WHERE p.parent_id = ? AND p.parent_lineage = ? AND p.parent_revision = ?""",
+                (parent.source_id, parent.version.lineage_id, parent.version.revision),
+            )
+        }
+        for document in images:
+            if not isinstance(document, dict):
+                continue
+            position = document.get("position")
+            if type(position) is not int or position not in active_positions:
+                continue
+            image_id = f"generated-image:{invocation_id}:{position}"
+            if image_id in hidden:
+                continue
+            seen_ids.add(image_id)
+    return len(seen_ids), seen_ids
+
+
 def diagnostics(owner, context, *, limit):
     keys = _origin_keys(owner, context)
     selection, values = _selection(owner, context, origin_keys=keys)

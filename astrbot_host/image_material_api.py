@@ -14,7 +14,11 @@ from companion_v2.execution.models import TaskError, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind, ScopeRef
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
-from companion_v2.references.management import ReferenceMaterialManagement
+from companion_v2.references.management import (
+    ALBUM_LIMIT,
+    ALBUM_MAX_LIMIT,
+    ReferenceMaterialManagement,
+)
 from companion_v2.storage.runtime import StorageOpenError
 
 from .management_identity import dashboard_operator
@@ -34,6 +38,7 @@ class ImageMaterialsWebAPI:
         return [
             (PREFIX, self.inventory, ["GET"], "Read one role's native image materials"),
             (PREFIX + "/album", self.album, ["GET"], "Read the role-scoped generated image album"),
+            (PREFIX + "/album/image", self.album_image, ["GET"], "Read one full-resolution generated album image"),
             (PREFIX + "/album/export", self.export_album, ["POST"], "Export selected generated images as a ZIP archive"),
             (PREFIX + "/album/hide", self.hide_album, ["POST"], "Remove selected generated images from the album"),
             (PREFIX + "/album/open-folder", self.open_album_folder, ["POST"], "Open the role-scoped generated album folder"),
@@ -49,14 +54,14 @@ class ImageMaterialsWebAPI:
             (PREFIX + "/daily-outfit/generate", self.generate_daily_outfit_photo, ["POST"], "Generate today's role outfit photo"),
         ]
 
-    def _snapshot(self, *, allow_cursor=False):
+    def _snapshot(self, *, allowed_query=()):
         controller = self.controller
         username = request.username
         if type(username) is not str or not username.strip() or username.startswith("api_key:"):
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
         query = request.query
         query_keys = tuple(query.keys())
-        if set(query_keys) - ({"cursor"} if allow_cursor else set()) or any(
+        if set(query_keys).difference(allowed_query) or any(
                 len(query.getlist(key)) != 1 for key in query_keys):
             raise TaskError("image_material_request_invalid", "unexpected query fields")
         if controller._terminated:
@@ -83,10 +88,6 @@ class ImageMaterialsWebAPI:
         ))
         return operator, context, at, ReferenceMaterialManagement(session.application)
 
-    async def _operator_context(self, *, allow_cursor=False):
-        username, session, runtime, context, at = self._snapshot(allow_cursor=allow_cursor)
-        return self._authorize_material_access(username, session, runtime, context, at)
-
     @staticmethod
     def _document(raw, expected, optional=()):
         def unique(pairs):
@@ -110,7 +111,7 @@ class ImageMaterialsWebAPI:
         controller = self.controller
         try:
             async with controller._control_lock:
-                username, session, runtime, context, at = self._snapshot()
+                username, session, runtime, context, at = self._snapshot(allowed_query=query or ())
 
             def execute():
                 operator, ctx, observed_at, manager = self._authorize_material_access(
@@ -118,7 +119,9 @@ class ImageMaterialsWebAPI:
                 if action == "inventory":
                     return manager.inventory(operator, ctx, at=observed_at)
                 if action == "album":
-                    return manager.album(operator, ctx, at=observed_at, cursor=query.get("cursor"))
+                    return manager.album(operator, ctx, at=observed_at, **query)
+                if action == "album_image":
+                    return manager.album_image(operator, ctx, at=observed_at, **query)
                 if action == "export_album":
                     return manager.export_album(operator, ctx, at=observed_at, image_ids=body["image_ids"])
                 if action == "hide_album":
@@ -180,30 +183,37 @@ class ImageMaterialsWebAPI:
 
         query = request.query
         query_keys = tuple(query.keys())
-        if set(query_keys) - {"cursor"} or any(len(query.getlist(key)) != 1 for key in query_keys):
+        if set(query_keys) - {"cursor", "limit"} or any(len(query.getlist(key)) != 1 for key in query_keys):
             return outcome_response(Outcome.failed("image_material_request_invalid", "unknown or repeated album query fields"))
         cursor = query.get("cursor")
         if cursor is not None and (type(cursor) is not str or not 8 <= len(cursor) <= 1024):
             return outcome_response(Outcome.failed("generated_album_cursor_invalid", "the album cursor is invalid"))
-        # The cursor is passed separately; the authenticated manager is fixed by the route.
-        try:
-            controller = self.controller
-            async with controller._control_lock:
-                username, session, runtime, context, at = self._snapshot(allow_cursor=True)
-
-            def load_album():
-                operator, ctx, observed_at, manager = self._authorize_material_access(
-                    username, session, runtime, context, at)
-                return manager.album(operator, ctx, at=observed_at, cursor=cursor)
-
-            return outcome_response(Outcome.success(await asyncio.to_thread(load_album)))
-        except (TaskError, ConfigurationError) as error:
-            return outcome_response(Outcome.failed(error.code, str(error)))
-        except StorageOpenError:
+        raw_limit = query.get("limit")
+        if raw_limit is None:
+            limit = ALBUM_LIMIT
+        elif type(raw_limit) is str and raw_limit.isascii() and raw_limit.isdigit():
+            digits = raw_limit.lstrip("0")
+            limit = int(digits) if 0 < len(digits) <= len(str(ALBUM_MAX_LIMIT)) else 0
+        else:
+            limit = 0
+        if not 1 <= limit <= ALBUM_MAX_LIMIT:
             return outcome_response(Outcome.failed(
-                "image_material_storage_unavailable",
-                "image material storage is temporarily unavailable",
-            ))
+                "generated_album_limit_invalid", "the album page size is outside its bounds"))
+        return await self._run("album", query={"cursor": cursor, "limit": limit})
+
+    async def album_image(self):
+        from .web_api import outcome_response
+
+        query = request.query
+        query_keys = tuple(query.keys())
+        if set(query_keys) != {"image_id"} or any(len(query.getlist(key)) != 1 for key in query_keys):
+            return outcome_response(Outcome.failed(
+                "image_material_request_invalid", "image_id query parameter is required"))
+        image_id = query.get("image_id")
+        if type(image_id) is not str or not 1 <= len(image_id) <= 180:
+            return outcome_response(Outcome.failed(
+                "generated_image_missing", "the selected album image is unavailable"))
+        return await self._run("album_image", query={"image_id": image_id})
 
     @staticmethod
     def _decode_upload(data_url):

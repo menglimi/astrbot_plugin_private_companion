@@ -132,7 +132,7 @@ class ControlLockReleaseAndConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res_life["status"], "ok", res_life)
         self.assertEqual(res_state["status"], "ok", res_state)
 
-    async def test_image_materials_inventory_and_album_run_off_loop_without_holding_control_lock(self):
+    async def test_image_material_reads_run_off_loop_without_holding_control_lock(self):
         controller = _fake_controller()
         api = ImageMaterialsWebAPI(controller)
         ok_policy = NS(feature_access=lambda *a, **kw: Outcome.success(True))
@@ -140,6 +140,7 @@ class ControlLockReleaseAndConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         for route_name, method_name, query in (
             ("inventory", "inventory", ()),
             ("album", "album", ()),
+            ("album_image", "album_image", (("image_id", "generated-image:test:0"),)),
         ):
             entered, release = threading.Event(), threading.Event()
 

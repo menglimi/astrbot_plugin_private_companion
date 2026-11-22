@@ -473,3 +473,385 @@ test("role gallery reads one album per account even when the directory lists set
   assert.match(s.single.get("#outputAlbumWorkspace").innerHTML,/wx-new/);
   assert.ok(!s.requests.some(r=>r.endpoint.startsWith("alias-materials")));s.page.unmount();
 });
+
+function fullGalleryFixture(options = {}) {
+  const nodes = new Map(selectors.map(selector => [selector, [{textContent: "初始值", hidden: false,
+    classList: {toggle() {}}}]]));
+  const sentinelNode = {dataset: {outputAlbumSentinel: ""}};
+  const single = new Map([
+    ["#outputAlbumWorkspace", {innerHTML: "", hidden: false, scrolled: false, scrollIntoView() { this.scrolled = true; }}],
+    ["#outputAlbumLightbox", {innerHTML: "", hidden: true}],
+    ["[data-output-album-sentinel]", sentinelNode],
+    ["[data-output-preview-image]", {hidden: true, src: "", alt: "", removeAttribute() {}}],
+    [".output-image-frame", {dataset: {}}],
+    [".output-image-status span", {textContent: ""}],
+    ["[data-output-native-selector]", {innerHTML: ""}],
+    ["#outputNaiWorkspace", {innerHTML: ""}],
+    ["#outputObservationWorkspace", {innerHTML: ""}],
+  ]);
+  const requests = [], listeners = new Map(), windowListeners = new Map();
+  const createdUrls = [], revokedUrls = [], observedSentinels = [];
+  let observerCallback = null, observerDisconnected = 0, blobCounter = 0;
+  let clipboardText = "";
+  const role = {role_id: "role-a", model_api: "model", image_material_api: "image-materials"};
+  const window = {
+    CompanionProduct: {
+      scopeKey: () => "role-a",
+      role: () => role,
+      targets: () => [],
+      relative: value => value,
+      async request(method, endpoint, body, requestOptions) {
+        requests.push({method, endpoint, body, requestOptions});
+        if (options.request && /\/album(\/|$)/.test(endpoint)) return options.request(method, endpoint, body, requestOptions);
+        if (endpoint === "model/image/observability") return {images: {total: 0, items: []}, content: {available: false}};
+        if (endpoint === "model/image/output") return {settings: {backend: "auto", enabled: false, endpoints: [], comfyui: {}, sd_webui: {}, operation_routes: {generate: [], edit: []}}, nai: null, revision: "r1", host_registered: false};
+        if (endpoint === "model/image/review/providers") return {providers: []};
+        throw new Error(`unexpected request: ${method} ${endpoint}`);
+      },
+    },
+    addEventListener(type, fn) { windowListeners.set(type, fn); },
+    removeEventListener() {},
+    dispatchEvent() {},
+    document: {createElement: () => ({click() {}, remove() {}, select() {}, style: {}}), body: {appendChild() {}}},
+  };
+  const root = {
+    isConnected: true,
+    addEventListener(type, listener) { listeners.set(type, listener); },
+    removeEventListener() {},
+    contains() { return true; },
+    querySelector(selector) { return single.get(selector) || null; },
+    querySelectorAll(selector) { return nodes.get(selector) || []; },
+  };
+  class FakeIntersectionObserver {
+    constructor(cb, init) { observerCallback = cb; this.init = init; }
+    observe(el) { observedSentinels.push(el); }
+    disconnect() { observerDisconnected += 1; }
+  }
+  class FakeBlob { constructor(parts, opts) { this.parts = parts; this.type = opts?.type || ""; } }
+  const FakeURL = {
+    createObjectURL(blob) { const url = `blob:companion-${++blobCounter}`; createdUrls.push({url, type: blob.type}); return url; },
+    revokeObjectURL(url) { revokedUrls.push(url); },
+  };
+  const context = {
+    window, document: window.document,
+    navigator: {clipboard: {writeText: async text => { clipboardText = text; }}},
+    IntersectionObserver: FakeIntersectionObserver,
+    Blob: FakeBlob, URL: FakeURL, atob: str => Buffer.from(str, "base64").toString("binary"), Uint8Array,
+    crypto: {randomUUID: () => "synthetic-op"}, console, AbortController, Event, setTimeout, clearTimeout,
+    Promise, Math, Date, JSON, Object, String, Array, Map, Set, Error, Number, Boolean,
+  };
+  vm.runInNewContext(source, context, {filename: "output-page.js"});
+  return {
+    page: window.CompanionOutputPage,
+    single, requests, root, createdUrls, revokedUrls, observedSentinels,
+    get clipboardText() { return clipboardText; },
+    get observerDisconnected() { return observerDisconnected; },
+    triggerSentinel() { observerCallback?.([{isIntersecting: true}]); },
+    clickAction(action, dataset = {}) {
+      const target = {disabled: false, dataset: {outputNativeAction: action, ...dataset}};
+      listeners.get("click")?.({target: {closest: () => target}});
+    },
+    toggleAutoLoad(checked) {
+      const target = {matches: selector => selector === "[data-output-album-autoload]", checked};
+      listeners.get("change")?.({target});
+    },
+    pressKey(key) {
+      let prevented = false;
+      windowListeners.get("keydown")?.({key, target: {tagName: "BODY"}, preventDefault() { prevented = true; }});
+      return prevented;
+    },
+  };
+}
+
+test("gallery top bar renders total count, page sizes, type filter, auto-scroll sentinel, and batch load without dropping lightbox selection", async () => {
+  const makeItem = (idx, action = "image.generate") => ({
+    image_id: `img-${idx}`,
+    filename: `20261012-040506-generate-${String(idx).padStart(12, "0")}.png`,
+    mime_type: "image/png",
+    size_bytes: 204800,
+    width: 1024,
+    height: 1536,
+    created_at: `2026-10-${String(30 - idx).padStart(2, "0")}T04:05:06Z`,
+    action,
+    thumbnail: `data:image/jpeg;base64,thumb-${idx}`,
+  });
+  let pagesServed = 0;
+  const s = fullGalleryFixture({
+    request: async (method, endpoint, body) => {
+      if (method === "GET" && endpoint === "image-materials/album") {
+        pagesServed += 1;
+        if (!body?.cursor) {
+          return {items: [makeItem(1, "image.generate"), makeItem(2, "image.edit")], next_cursor: "cursor-page-2", total: 5};
+        }
+        if (body.cursor === "cursor-page-2") {
+          return {items: [makeItem(3, "image.generate"), makeItem(4, "image.mask_edit")], next_cursor: "cursor-page-3", total: 5};
+        }
+        return {items: [makeItem(5, "image.generate")], next_cursor: null, total: 5};
+      }
+      if (method === "GET" && endpoint === "image-materials/album/image") {
+        return {
+          image_id: body.image_id,
+          filename: `full-${body.image_id}.png`,
+          mime_type: "image/png",
+          width: 1024,
+          height: 1536,
+          size_bytes: 2500000,
+          created_at: "2026-10-29T04:05:06Z",
+          action: "image.generate",
+          data_url: "data:image/png;base64,iVBORw0KGgo=",
+        };
+      }
+      throw new Error(`unexpected ${method} ${endpoint}`);
+    },
+  });
+  s.page.mount(s.root);
+  await settleAlbum();
+
+  const gallery = s.single.get("#outputAlbumWorkspace");
+  assert.match(gallery.innerHTML, /已加载 <b>2<\/b> \/ 共 <b>5<\/b> 张/);
+  assert.match(gallery.innerHTML, /data-output-album-size="24"/);
+  assert.match(gallery.innerHTML, /data-output-album-size="48"/);
+  assert.match(gallery.innerHTML, /data-output-album-size="60"/);
+  assert.equal(s.requests.find(r => r.endpoint === "image-materials/album").body.limit, 24);
+  assert.ok(s.observedSentinels.length >= 1, "auto-scroll observer attaches to sentinel by default");
+
+  // Open Lightbox on image #1, then trigger auto-scroll append: Lightbox MUST stay open on img-1!
+  s.clickAction("album-open", {outputImageIndex: "0"});
+  await settleAlbum();
+  assert.equal(s.single.get("#outputAlbumLightbox").hidden, false);
+  assert.match(s.single.get("#outputAlbumLightbox").innerHTML, /1 \/ 2/);
+
+  s.triggerSentinel();
+  await settleAlbum();
+  assert.match(gallery.innerHTML, /已加载 <b>4<\/b> \/ 共 <b>5<\/b> 张/);
+  assert.equal(s.single.get("#outputAlbumLightbox").hidden, false, "appending pages must preserve open lightbox");
+  assert.match(s.single.get("#outputAlbumLightbox").innerHTML, /1 \/ 4/);
+
+  // Type filter narrows visible cards without losing loaded items.
+  s.clickAction("album-filter", {outputAlbumFilter: "edit"});
+  assert.match(gallery.innerHTML, /当前筛选显示 2 张/);
+  assert.doesNotMatch(gallery.innerHTML, /thumb-1/);
+  assert.match(gallery.innerHTML, /thumb-2/);
+  assert.match(gallery.innerHTML, /thumb-4/);
+  s.clickAction("album-filter", {outputAlbumFilter: "all"});
+
+  // Batch load fetches remaining page(s) and stops cleanly.
+  s.clickAction("album-load-batch");
+  await settleAlbum();
+  await settleAlbum();
+  assert.match(gallery.innerHTML, /已加载 <b>5<\/b> \/ 共 <b>5<\/b> 张/);
+  assert.match(gallery.innerHTML, /已全部加载/);
+
+  // Switching page size to 48 reloads with limit=48.
+  s.clickAction("album-page-size", {outputAlbumSize: "48"});
+  await settleAlbum();
+  assert.equal(s.requests.filter(r => r.endpoint === "image-materials/album").at(-1).body.limit, 48);
+
+  // Turning off auto-scroll disconnects IntersectionObserver.
+  const beforeDisconnect = s.observerDisconnected;
+  s.toggleAutoLoad(false);
+  assert.ok(s.observerDisconnected > beforeDisconnect);
+
+  s.page.unmount();
+});
+
+test("lightbox loads full-res Blob URL with LRU eviction, zoom, keyboard nav, filename copy, and download link", async () => {
+  const items = Array.from({length: 14}, (_, idx) => ({
+    image_id: `img-${idx + 1}`,
+    filename: `20261012-040506-generate-${String(idx + 1).padStart(12, "0")}.png`,
+    mime_type: "image/png",
+    size_bytes: 1536000,
+    width: 1024,
+    height: 1536,
+    created_at: `2026-10-${String(28 - idx).padStart(2, "0")}T04:05:06Z`,
+    action: "image.generate",
+    thumbnail: `data:image/jpeg;base64,thumb-${idx + 1}`,
+  }));
+  let releaseFirst = null;
+  const s = fullGalleryFixture({
+    request: async (method, endpoint, body) => {
+      if (method === "GET" && endpoint === "image-materials/album") {
+        return {items, next_cursor: null, total: items.length};
+      }
+      if (method === "GET" && endpoint === "image-materials/album/image") {
+        const payload = {
+          image_id: body.image_id,
+          filename: `20261012-040506-generate-${body.image_id}.png`,
+          mime_type: "image/png",
+          width: 1024,
+          height: 1536,
+          size_bytes: 2516582,
+          created_at: "2026-10-28T04:05:06Z",
+          action: "image.generate",
+          data_url: "data:image/png;base64,iVBORw0KGgo=",
+        };
+        if (body.image_id === "img-1" && !releaseFirst) {
+          return new Promise(resolve => { releaseFirst = () => resolve(payload); });
+        }
+        return payload;
+      }
+      throw new Error(`unexpected ${method} ${endpoint}`);
+    },
+  });
+  s.page.mount(s.root);
+  await settleAlbum();
+
+  // Instant open shows thumbnail + loading badge before full image resolves.
+  s.clickAction("album-open", {outputImageIndex: "0"});
+  const lb = s.single.get("#outputAlbumLightbox");
+  assert.equal(lb.hidden, false);
+  assert.match(lb.innerHTML, /thumb-1/);
+  assert.match(lb.innerHTML, /加载原图中…/);
+
+  // Resolving /album/image upgrades seamlessly to Blob URL, full filename, size, and <a download>.
+  releaseFirst();
+  await settleAlbum();
+  assert.match(lb.innerHTML, /blob:companion-1/);
+  assert.match(lb.innerHTML, /高清原图/);
+  assert.match(lb.innerHTML, /20261012-040506-generate-img-1\.png/);
+  assert.match(lb.innerHTML, /1024 × 1536 · PNG · 2\.40 MB/);
+  assert.match(lb.innerHTML, /<a[^>]+href="blob:companion-1"[^>]+download="20261012-040506-generate-img-1\.png"/);
+
+  // Copy filename action copies full filename.
+  s.clickAction("album-copy-name", {outputFilename: "20261012-040506-generate-img-1.png"});
+  await settleAlbum();
+  assert.equal(s.clipboardText, "20261012-040506-generate-img-1.png");
+
+  // Click zoom toggles is-zoomed class.
+  s.clickAction("album-zoom");
+  assert.match(lb.innerHTML, /output-album-lightbox-stage is-zoomed/);
+  s.clickAction("album-zoom");
+  assert.doesNotMatch(lb.innerHTML, /is-zoomed/);
+
+  // Keyboard ArrowRight / ArrowLeft steps through images; stepping through 13+ evicts LRU > 12 via revokeObjectURL.
+  for (let step = 1; step < 14; step += 1) {
+    assert.equal(s.pressKey("ArrowRight"), true);
+    await settleAlbum();
+  }
+  assert.equal(s.createdUrls.length, 14);
+  assert.equal(s.revokedUrls.length, 2, "LRU cache capped at 12 revokes oldest 2 Blob URLs");
+  assert.equal(s.revokedUrls[0], "blob:companion-1");
+  assert.equal(s.revokedUrls[1], "blob:companion-2");
+
+  assert.equal(s.pressKey("ArrowLeft"), true);
+  await settleAlbum();
+  assert.match(lb.innerHTML, /13 \/ 14/);
+
+  // Escape closes lightbox cleanly.
+  assert.equal(s.pressKey("Escape"), true);
+  assert.equal(lb.hidden, true);
+
+  // Unmount revokes all remaining cached Blob URLs.
+  s.page.unmount();
+  assert.equal(s.revokedUrls.length, 14);
+});
+
+test("gallery supports daily outfit filter pill and standalone openLightbox relocates host and loads full-res outfit", async () => {
+  const outfitId = "wardrobe-outfit:a1b2c3d4:2026-11-22:deadbeef";
+  const outfitFile = "20261122-013000-wardrobe-outfit-0123456789ab.png";
+  const s = fullGalleryFixture({
+    request(method, endpoint, body) {
+      if (method === "GET" && endpoint === "image-materials/album") {
+        return {
+          total: 2,
+          next_cursor: null,
+          items: [
+            {
+              image_id: outfitId,
+              filename: outfitFile,
+              mime_type: "image/png",
+              size_bytes: 1_500_000,
+              width: 832,
+              height: 1216,
+              created_at: "2026-11-22T01:30:00Z",
+              action: "wardrobe.outfit",
+              local_date: "2026-11-22",
+              weather: {role_location: "维也纳", condition: "晴", temperature_c: 3},
+              activities: ["午间开指热身", "冬季巡演曲目定稿"],
+              thumbnail: "data:image/jpeg;base64,outfit-thumb",
+            },
+            {
+              image_id: "img-gen-1",
+              filename: "20261121-100000-generate-111111111111.png",
+              mime_type: "image/png",
+              size_bytes: 500_000,
+              width: 768,
+              height: 1024,
+              created_at: "2026-11-21T10:00:00Z",
+              action: "image.generate",
+              thumbnail: "data:image/jpeg;base64,gen-thumb",
+            },
+          ],
+        };
+      }
+      if (method === "GET" && endpoint === "image-materials/album/image") {
+        return {
+          image_id: body.image_id,
+          filename: outfitFile,
+          mime_type: "image/png",
+          width: 832,
+          height: 1216,
+          size_bytes: 1_500_000,
+          created_at: "2026-11-22T01:30:00Z",
+          action: "wardrobe.outfit",
+          local_date: "2026-11-22",
+          weather: {role_location: "维也纳", condition: "晴", temperature_c: 3},
+          activities: ["午间开指热身", "冬季巡演曲目定稿"],
+          data_url: "data:image/png;base64,aGVsbG8=",
+        };
+      }
+      throw new Error(`unexpected ${method} ${endpoint}`);
+    },
+  });
+  // Simulate #outputAlbumLightbox starting inside hidden #output-panel-gallery so ensureLightboxHost relocates it.
+  const lb = s.single.get("#outputAlbumLightbox");
+  lb.parentElement = {id: "output-panel-gallery"};
+  let relocatedToRoot = false;
+  s.root.appendChild = node => {
+    if (node === lb) {
+      lb.parentElement = s.root;
+      relocatedToRoot = true;
+    }
+  };
+
+  s.page.mount(s.root);
+  await settleAlbum();
+  const ws = s.single.get("#outputAlbumWorkspace");
+  assert.match(ws.innerHTML, /data-output-album-filter="wardrobe\.outfit"/);
+  assert.match(ws.innerHTML, /output-album-card-badge">每日穿搭</);
+
+  // Filter down to daily outfits only.
+  s.clickAction("album-filter", {outputAlbumFilter: "wardrobe.outfit"});
+  assert.match(ws.innerHTML, /当前筛选显示 1 张/);
+  assert.match(ws.innerHTML, /2026-11-22/);
+  assert.doesNotMatch(ws.innerHTML, /img-gen-1/);
+
+  // Standalone openLightbox (invoked from daily outfit card in materials tab) relocates host & loads full-res PNG.
+  const opened = s.page.openLightbox({
+    image_id: outfitId,
+    filename: outfitFile,
+    mime_type: "image/png",
+    width: 832,
+    height: 1216,
+    size_bytes: 1_500_000,
+    created_at: "2026-11-22T01:30:00Z",
+    action: "wardrobe.outfit",
+    local_date: "2026-11-22",
+    weather: {role_location: "维也纳", condition: "晴", temperature_c: 3},
+    activities: ["午间开指热身", "冬季巡演曲目定稿"],
+    thumbnail: "data:image/jpeg;base64,outfit-thumb",
+    _albumEndpoint: "image-materials/album",
+  });
+  assert.equal(opened, true);
+  assert.equal(relocatedToRoot, true, "lightbox must relocate out of hidden gallery panel to .output-page root");
+  assert.equal(lb.hidden, false);
+  await settleAlbum();
+  assert.match(lb.innerHTML, /每日穿搭图/);
+  assert.match(lb.innerHTML, /维也纳 · 晴 · 3°C/);
+  assert.match(lb.innerHTML, /午间开指热身、冬季巡演曲目定稿/);
+  assert.match(lb.innerHTML, /blob:companion-1/);
+  assert.match(lb.innerHTML, /<a[^>]+href="blob:companion-1"[^>]+download="20261122-013000-wardrobe-outfit-0123456789ab\.png"/);
+  assert.equal(s.pressKey("Escape"), true);
+  assert.equal(lb.hidden, true);
+  s.page.unmount();
+});
