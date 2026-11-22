@@ -3263,9 +3263,26 @@ test('global defaults card edits, validates collision, tracks dirty state, and s
       },
     });
     await flush();
+    const silentRefresh = h.requests.filter(r => r.method === 'GET' && r.route === 'model').at(-1);
+    assert.ok(silentRefresh && silentRefresh !== h.requests[0], 'saveGlobalDefaults should silently re-read GET model');
+    const refreshed = status();
+    refreshed.global_defaults = {
+      provider_id: 'primary',
+      fallback_provider_id: 'secondary',
+      effective_provider_id: 'primary',
+      effective_fallback_provider_id: 'secondary',
+      editable: true,
+    };
+    refreshed.tasks[1].fields.fallback = {
+      value: 'secondary', inherited_value: 'secondary', source: 'installation', inherited_source: 'installation', explicit: false,
+    };
+    silentRefresh.resolve(refreshed);
+    await flush();
     assert.equal(h.page.isBusy(), false);
     assert.equal(h.page.isDirty(), false);
     assert.match(node.innerHTML, /重启插件后新全局默认将完全生效/);
+    const reflectRow = node.innerHTML.split('data-task-row="memory.reflect"')[1].split('</li>')[0];
+    assert.match(reflectRow, /secondary/, 'inherited task row should immediately show updated global fallback');
   } finally {
     h.page.unmount();
   }
@@ -3482,4 +3499,145 @@ test('image schema retries after failure and dirty image config refresh reports 
   } finally {
     h.page.unmount();
   }
+});
+
+test('inspector field labels never wrap inherit-reset buttons and bind via explicit for/id pairs', async () => {
+  const h = harness(), node = h.root(), data = status();
+  const coreTask = editable('conversation.reply', 'primary');
+  coreTask.fields.prompt = {value: '自定义核心提示', inherited_value: '', source: 'role', inherited_source: 'default', explicit: true};
+  const normalTask = editable('memory.reflect', 'primary');
+  normalTask.fields.provider = {value: 'primary', inherited_value: 'secondary', source: 'role', inherited_source: 'installation', explicit: true};
+  normalTask.fields.fallback = {value: 'secondary', inherited_value: '', source: 'role', inherited_source: 'default', explicit: true};
+  normalTask.fields.timeout_seconds = {value: 45, inherited_value: 20, source: 'role', inherited_source: 'default', explicit: true};
+  normalTask.fields.max_output_tokens = {value: 1024, inherited_value: 4096, source: 'role', inherited_source: 'default', explicit: true};
+  normalTask.fields.prompt = {value: '自定义附加提示', inherited_value: '', source: 'role', inherited_source: 'default', explicit: true};
+  data.tasks = [coreTask, normalTask];
+  h.page.mount(node);
+  try {
+    h.requests[0].resolve(data);
+    await flush();
+
+    // Check normal task inspector
+    node.click('[data-model-open]', {modelOpen: 'memory.reflect'});
+    const normalCard = node.innerHTML.split('data-fncard="memory.reflect"')[1].split('</article>')[0];
+    const normalLabels = [...normalCard.matchAll(/<label\b[^>]*>[\s\S]*?<\/label>/g)].map(m => m[0]);
+    assert.ok(normalLabels.length >= 5, 'normal inspector should render labels for all 5 fields');
+    for (const lbl of normalLabels) {
+      assert.doesNotMatch(lbl, /<button\b|data-model-inherit-reset/, 'label must never wrap an inherit-reset button');
+      const forMatch = lbl.match(/for="([^"]+)"/);
+      assert.ok(forMatch, `label must have explicit for attribute: ${lbl}`);
+      assert.ok(normalCard.includes(`id="${forMatch[1]}"`), `matching control id="${forMatch[1]}" must exist`);
+    }
+    assert.match(normalCard, /class="model-adv-chev"/, 'advanced details summary should render disclosure chevron');
+
+    // Check core reply inspector
+    node.click('[data-model-open]', {modelOpen: 'conversation.reply'});
+    const coreCard = node.innerHTML.split('data-fncard="conversation.reply"')[1].split('</article>')[0];
+    const coreLabels = [...coreCard.matchAll(/<label\b[^>]*>[\s\S]*?<\/label>/g)].map(m => m[0]);
+    assert.ok(coreLabels.length >= 1, 'core reply inspector should render prompt label');
+    for (const lbl of coreLabels) {
+      assert.doesNotMatch(lbl, /<button\b|data-model-inherit-reset/, 'core reply label must never wrap an inherit-reset button');
+      const forMatch = lbl.match(/for="([^"]+)"/);
+      assert.ok(forMatch, `core reply label must have explicit for attribute: ${lbl}`);
+      assert.ok(coreCard.includes(`id="${forMatch[1]}"`), `matching control id="${forMatch[1]}" must exist`);
+    }
+  } finally {
+    h.page.unmount();
+  }
+});
+
+test('inspector render preserves body scrollTop on same-task re-render and resets on task switch', async () => {
+  const h = harness(), node = h.root(), data = status();
+  let currentBody = {scrollTop: 0};
+  const origQuerySelector = node.querySelector.bind(node);
+  node.querySelector = sel => {
+    if (sel === '[data-fncard]') {
+      const m = node.innerHTML.match(/data-fncard="([^"]+)"/);
+      return m ? {dataset: {fncard: m[1]}, getAttribute: () => m[1]} : null;
+    }
+    if (sel === '.model-insp-body') return node.innerHTML.includes('class="model-insp-body"') ? currentBody : null;
+    return origQuerySelector(sel);
+  };
+  h.page.mount(node);
+  try {
+    h.requests[0].resolve(data);
+    await flush();
+    node.click('[data-model-open]', {modelOpen: 'memory.reflect'});
+    // Simulate user scrolling inspector body down, then resetting provider (which triggers full render)
+    currentBody = {scrollTop: 185};
+    node.change('[data-model-field]', {modelField: 'provider', modelKind: 'memory.reflect', value: 'secondary'});
+    assert.equal(currentBody.scrollTop, 185, 're-rendering the same open task should preserve scrollTop');
+
+    // Simulate switching to another task -> fresh body must NOT inherit previous task scrollTop
+    const nextBody = {scrollTop: 0};
+    let reads = 0;
+    node.querySelector = sel => {
+      if (sel === '[data-fncard]') {
+        const m = node.innerHTML.match(/data-fncard="([^"]+)"/);
+        return m ? {dataset: {fncard: m[1]}, getAttribute: () => m[1]} : null;
+      }
+      if (sel === '.model-insp-body') {
+        reads += 1;
+        return reads === 1 ? currentBody : nextBody;
+      }
+      return origQuerySelector(sel);
+    };
+    node.click('[data-model-open]', {modelOpen: 'conversation.reply'});
+    assert.equal(nextBody.scrollTop, 0, 'opening a different task should not restore previous task scrollTop');
+  } finally {
+    h.page.unmount();
+  }
+});
+
+test('saveGlobalDefaults preserves success state if silent GET refresh fails', async () => {
+  const h = harness(), node = h.root(), data = status();
+  data.global_defaults = {
+    provider_id: 'primary',
+    fallback_provider_id: '',
+    effective_provider_id: 'primary',
+    effective_fallback_provider_id: '',
+    editable: true,
+  };
+  h.page.mount(node);
+  try {
+    h.requests[0].resolve(data);
+    await flush();
+    node.change('[data-global-default-field]', {globalDefaultField: 'fallback_provider_id', value: 'secondary'});
+    node.click('[data-global-default-save]');
+    const post = h.requests.find(r => r.method === 'POST' && r.route === 'model/defaults');
+    post.resolve({
+      saved: true,
+      restart_required: false,
+      fallback_cleared_duplicate: false,
+      global_defaults: {
+        provider_id: 'primary',
+        fallback_provider_id: 'secondary',
+        effective_provider_id: 'primary',
+        effective_fallback_provider_id: 'secondary',
+        editable: true,
+      },
+    });
+    await flush();
+    const silentRefresh = h.requests.filter(r => r.method === 'GET' && r.route === 'model').at(-1);
+    silentRefresh.reject(new Error('transient_timeout'));
+    await flush();
+    assert.equal(h.page.isBusy(), false);
+    assert.equal(h.page.isDirty(), false);
+    assert.match(node.innerHTML, /陪伴通用模型已保存/);
+    assert.doesNotMatch(node.innerHTML, /保存失败/);
+  } finally {
+    h.page.unmount();
+  }
+});
+
+test('models-page.css pins narrow-screen routing row edit button to top-right and hides empty diff chips', () => {
+  const css = fs.readFileSync(path.resolve(__dirname, '../pages/陪伴小屋/models-page.css'), 'utf8');
+  assert.match(css, /\.model-diff-chips:empty\s*\{\s*display:\s*none\s*\}/);
+  assert.match(css, /\.model-rrow-edit\s*\{[^}]*grid-column:\s*5/);
+  const containerBlock = css.match(/@container\s+model-workspace\s*\(max-width:\s*720px\)\s*\{[\s\S]*?\n\}/);
+  assert.ok(containerBlock, 'missing @container model-workspace (max-width:720px) block');
+  assert.match(containerBlock[0], /\.model-rrow-edit\s*\{[^}]*grid-column:\s*3;\s*grid-row:\s*1/);
+  const mediaBlock = css.match(/@media\(max-width:960px\)\s*\{\s*\.model-img-workbench[\s\S]*?\n\}/);
+  assert.ok(mediaBlock, 'missing trailing @media(max-width:960px) block');
+  assert.match(mediaBlock[0], /\.model-rrow-edit\s*\{[^}]*grid-column:\s*3;\s*grid-row:\s*1/);
 });

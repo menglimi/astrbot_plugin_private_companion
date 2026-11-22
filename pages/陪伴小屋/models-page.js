@@ -706,11 +706,13 @@ window.CompanionModelsPage = (() => {
     return `<div class="model-alert" role="alert">${details ? "以下字段也在别处改过，请核对后选择保留草稿或放弃。" : "配置已更新，请重新读取后核对草稿。"}${details}</div>`;
   }
   /* ---------- compact routing list & right-side slide-over inspector drawer ---------- */
+  const fieldDomId = (kind, name) => `mf-${String(kind || "").replace(/[^a-zA-Z0-9_-]/g, "_")}-${String(name || "").replace(/[^a-zA-Z0-9_-]/g, "_")}`;
   function fieldHeader(label, hint, inherited, name, kind, fieldLocked) {
+    const controlId = fieldDomId(kind, name);
     const stateBadge = inherited
       ? `<span class="model-field-state" data-field-state="${esc(name)}" data-inherited="true">跟随上级</span>`
       : `<button type="button" class="model-inh-btn" data-model-inherit-reset="${esc(name)}" data-model-kind="${esc(kind)}" ${fieldLocked ? "disabled" : ""} title="清除本层覆写并改回跟随上级">↺ 恢复继承</button>`;
-    return `<span class="model-cap"><span class="model-cap-main"><b>${esc(label)}</b>${hint ? ` <em>${esc(hint)}</em>` : ""}</span>${stateBadge}</span>`;
+    return `<div class="model-cap"><label class="model-cap-main" for="${esc(controlId)}"><b>${esc(label)}</b>${hint ? ` <em>${esc(hint)}</em>` : ""}</label>${stateBadge}</div>`;
   }
   const scopeLabelText = scope => ({ plugin: "仅插件调用", conversation: "仅普通对话模型", all: "全部生效" }[scope] || "全部生效");
   function taskDiffChips(s, task, draft) {
@@ -838,8 +840,8 @@ window.CompanionModelsPage = (() => {
             ${draft.pending ? '<div class="model-alert">上次保存结果未确认，请核对原保存。</div>' : ""}
             <section class="model-insp-sec">
               <div class="model-insp-sec-h"><b>对话附加提示</b><span class="model-char-count" data-model-prompt-count="${esc(task.kind)}">${promptValue.length} / 8000</span></div>
-              <label class="model-fd">${fieldHeader("对话附加提示", "直接注入核心回复 · 最多 8000 字", draft.inherited.prompt, "prompt", task.kind, fieldLocked)}
-                <textarea rows="6" maxlength="8000" data-model-field="prompt" data-model-kind="${esc(task.kind)}" ${fieldLocked ? "disabled" : ""}>${esc(promptValue)}</textarea></label>
+              <div class="model-fd">${fieldHeader("对话附加提示", "直接注入核心回复 · 最多 8000 字", draft.inherited.prompt, "prompt", task.kind, fieldLocked)}
+                <textarea id="${esc(fieldDomId(task.kind, "prompt"))}" rows="6" maxlength="8000" data-model-field="prompt" data-model-kind="${esc(task.kind)}" ${fieldLocked ? "disabled" : ""}>${esc(promptValue)}</textarea></div>
             </section>
             <div class="model-sc-rf">
               <div class="r"><b>模型与呈现</b><span>AstrBot 当前会话的模型、工具往返、流式、分段和插件装饰</span></div>
@@ -892,10 +894,10 @@ window.CompanionModelsPage = (() => {
             ${draft.pending ? '<div class="model-alert">上次保存结果未确认。请核对原操作，避免重复提交。</div>' : ""}
             <section class="model-insp-sec">
               <div class="model-insp-sec-h"><b>核心路由</b><span class="model-state ${draft.pending ? "warn" : ""}">${esc(draft.pending ? "待核对原保存" : adoption(task.application_state))}</span></div>
-              <label class="model-fd">${fieldHeader("主模型提供方", `跟随上级时为 ${parentRoute(task.fields.provider)}`, draft.inherited.provider, "provider", task.kind, fieldLocked)}
-                <span class="model-msel"><i style="background:${pillColor(main)}"></i><select data-model-field="provider" data-model-kind="${esc(task.kind)}" aria-label="${esc(info.label)} 主模型提供方" ${fieldLocked ? "disabled" : ""}>${providerOptions(s, task, draft, "provider")}</select></span></label>
-              <label class="model-fd">${fieldHeader("备用模型提供方", "主模型失败、超时或拒答时尝试一次", draft.inherited.fallback, "fallback", task.kind, fieldLocked)}
-                <span class="model-msel"><i style="background:${pillColor(fallback)}"></i><select data-model-field="fallback" data-model-kind="${esc(task.kind)}" aria-label="${esc(info.label)} 备用模型提供方" ${fieldLocked ? "disabled" : ""}>${providerOptions(s, task, draft, "fallback")}</select></span></label>
+              <div class="model-fd">${fieldHeader("主模型提供方", `跟随上级时为 ${parentRoute(task.fields.provider)}`, draft.inherited.provider, "provider", task.kind, fieldLocked)}
+                <span class="model-msel"><i style="background:${pillColor(main)}"></i><select id="${esc(fieldDomId(task.kind, "provider"))}" data-model-field="provider" data-model-kind="${esc(task.kind)}" aria-label="${esc(info.label)} 主模型提供方" ${fieldLocked ? "disabled" : ""}>${providerOptions(s, task, draft, "provider")}</select></span></div>
+              <div class="model-fd">${fieldHeader("备用模型提供方", "主模型失败、超时或拒答时尝试一次", draft.inherited.fallback, "fallback", task.kind, fieldLocked)}
+                <span class="model-msel"><i style="background:${pillColor(fallback)}"></i><select id="${esc(fieldDomId(task.kind, "fallback"))}" data-model-field="fallback" data-model-kind="${esc(task.kind)}" aria-label="${esc(info.label)} 备用模型提供方" ${fieldLocked ? "disabled" : ""}>${providerOptions(s, task, draft, "fallback")}</select></span></div>
               <div class="model-insp-probe">
                 <div class="model-insp-route-preview"><span class="model-mono">${esc(main || "未设置")}${fallback ? " → " + esc(fallback) : ""}</span></div>
                 <span class="model-res">${result ? `<span class="model-resk ${result.status === "ok" ? "ok" : "bad"}">${result.status === "ok" ? "✓" : "！"}</span>${esc(probeLabel(result))}` : testing ? '<span class="model-sp"></span>测试中' : ""}</span>
@@ -904,7 +906,7 @@ window.CompanionModelsPage = (() => {
             </section>
             <details class="model-adv" ${advOpen ? "open" : ""}>
               <summary class="model-adv-sum" data-adv-toggle="${esc(task.kind)}">
-                <b>高级参数与附加提示词</b>
+                <span class="model-adv-title"><span class="model-adv-chev" aria-hidden="true">▸</span><b>高级参数与附加提示词</b></span>
                 <span class="model-adv-chips">
                   <span>超时 ${esc(timeoutVal)}s</span>
                   <span>上限 ${esc(maxTokensVal)}</span>
@@ -914,15 +916,15 @@ window.CompanionModelsPage = (() => {
               </summary>
               <div class="model-adv-body">
                 <div class="model-duo">
-                  <label class="model-fd">${fieldHeader("请求超时", "", draft.inherited.timeout_seconds, "timeout_seconds", task.kind, fieldLocked)}
-                    <span class="model-unit"><input type="number" min="1" max="600" step="1" data-model-field="timeout_seconds" data-model-kind="${esc(task.kind)}" value="${esc(timeoutVal)}" ${fieldLocked ? "disabled" : ""}><i>秒</i></span></label>
-                  <label class="model-fd">${fieldHeader("单次输出上限", "", draft.inherited.max_output_tokens, "max_output_tokens", task.kind, fieldLocked)}
-                    <span class="model-unit"><input type="number" min="1" max="${limit}" step="1" data-model-field="max_output_tokens" data-model-kind="${esc(task.kind)}" value="${esc(maxTokensVal)}" ${fieldLocked ? "disabled" : ""}><i>令牌</i></span></label>
+                  <div class="model-fd">${fieldHeader("请求超时", "", draft.inherited.timeout_seconds, "timeout_seconds", task.kind, fieldLocked)}
+                    <span class="model-unit"><input id="${esc(fieldDomId(task.kind, "timeout_seconds"))}" type="number" min="1" max="600" step="1" data-model-field="timeout_seconds" data-model-kind="${esc(task.kind)}" value="${esc(timeoutVal)}" ${fieldLocked ? "disabled" : ""}><i>秒</i></span></div>
+                  <div class="model-fd">${fieldHeader("单次输出上限", "", draft.inherited.max_output_tokens, "max_output_tokens", task.kind, fieldLocked)}
+                    <span class="model-unit"><input id="${esc(fieldDomId(task.kind, "max_output_tokens"))}" type="number" min="1" max="${limit}" step="1" data-model-field="max_output_tokens" data-model-kind="${esc(task.kind)}" value="${esc(maxTokensVal)}" ${fieldLocked ? "disabled" : ""}><i>令牌</i></span></div>
                 </div>
                 ${limitMessage ? `<div class="model-alert" role="alert">${esc(limitMessage)}</div>` : ""}
-                <label class="model-fd">${fieldHeader("任务附加提示词", `最多 8000 字`, draft.inherited.prompt, "prompt", task.kind, fieldLocked)}
-                  <textarea rows="6" maxlength="8000" data-model-field="prompt" data-model-kind="${esc(task.kind)}" ${fieldLocked ? "disabled" : ""}>${esc(promptVal || "")}</textarea>
-                  <span class="model-char-count" data-model-prompt-count="${esc(task.kind)}">${(promptVal || "").length} / 8000</span></label>
+                <div class="model-fd">${fieldHeader("任务附加提示词", `最多 8000 字`, draft.inherited.prompt, "prompt", task.kind, fieldLocked)}
+                  <textarea id="${esc(fieldDomId(task.kind, "prompt"))}" rows="6" maxlength="8000" data-model-field="prompt" data-model-kind="${esc(task.kind)}" ${fieldLocked ? "disabled" : ""}>${esc(promptVal || "")}</textarea>
+                  <span class="model-char-count" data-model-prompt-count="${esc(task.kind)}">${(promptVal || "").length} / 8000</span></div>
               </div>
             </details>
             <div class="model-policy-link">
@@ -1098,6 +1100,17 @@ window.CompanionModelsPage = (() => {
         : "陪伴通用模型已保存，所有保持「跟随上级」的任务将采用新的全局默认。"];
       if (result?.fallback_cleared_duplicate) notes.push("全局备用与主模型重复，已自动清空全局备用。");
       s.globalNotice = notes.join(" ");
+      try {
+        const fresh = await api("GET", taskPath, { layer: s.layer || "role" }, TASK_CONFIG_TIMEOUT_MS);
+        if (!current(ticket, s)) return;
+        setStatus(s, fresh);
+        if (result?.global_defaults && (!s.status.global_defaults || !s.status.global_defaults.editable)) {
+          s.status.global_defaults = result.global_defaults;
+        }
+        syncGlobalDraft(s, true);
+      } catch {
+        // 保存已成功；静默刷新失败时保留已保存的全局默认与成功提示
+      }
     } catch (err) {
       if (!current(ticket, s)) return;
       s.globalBad = true;
@@ -3258,8 +3271,15 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       <div class="model-sec"><h4>作为备用 · ${asFb.length} 项</h4>${asFb.map(t => `<div class="li"><button type="button" class="model-lk" data-model-open="${esc(t.kind)}">${esc(taskName(t.kind).label)}</button><span>${esc(taskName(t.kind).description)}</span></div>`).join("") || '<span class="model-mono">无</span>'}</div>
       <div class="model-sec"><button type="button" class="button primary" style="width:100%" data-drawer-goto="${esc(id)}">在任务路由中筛选此提供方</button></div></aside>`; }
   function render() { if (!root || !state) return; const s = state;
+    const prevCard = root.querySelector?.("[data-fncard]");
+    const prevKind = prevCard?.dataset?.fncard || prevCard?.getAttribute?.("data-fncard") || "";
+    const prevInspScroll = prevKind ? (root.querySelector?.(".model-insp-body")?.scrollTop || 0) : 0;
     const overlay = s.tab === "fn" && s.sub !== "pol" ? (drawer(s) || taskInspector(s)) : drawer(s);
     root.innerHTML = `<div class="model-workspace">${s.tab === "fn" ? semanticBanner() : ""}${tabBar(s)}${(s.bad || s.denied) ? notice(s) : ""}${pane(s)}${overlay}</div>`;
+    if (s.tab === "fn" && s.sub !== "pol" && !s.drawer && s.expanded && prevKind === s.expanded && prevInspScroll > 0) {
+      const nextBody = root.querySelector?.(".model-insp-body");
+      if (nextBody) nextBody.scrollTop = prevInspScroll;
+    }
     window.lucide?.createIcons?.({attrs: {"aria-hidden": "true"}}); }
   function handleKeydown(event) {
     const s = state; if (!s || !root?.isConnected || s.tab !== "fn") return;
