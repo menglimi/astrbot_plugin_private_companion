@@ -10,6 +10,11 @@ from typing import Any
 from astrbot.api.web import request as current_request
 
 try:
+    from fastapi.encoders import jsonable_encoder
+except Exception:  # pragma: no cover - fallback when FastAPI is absent
+    jsonable_encoder = None
+
+try:
     from starlette.responses import JSONResponse, Response
 except Exception:  # pragma: no cover - fallback when Starlette is absent
     JSONResponse = None
@@ -141,8 +146,9 @@ def conditional_response(
         return not_modified_response(tag)
     envelope = {**payload, "etag": tag}
     if JSONResponse is not None and _is_live_asgi_request(req):
+        content = jsonable_encoder(envelope) if jsonable_encoder is not None else envelope
         return JSONResponse(
-            content=envelope,
+            content=content,
             headers={"ETag": tag, "Cache-Control": "no-cache"},
         )
     return envelope

@@ -1,4 +1,4 @@
-"""Regression and benchmark tests for pc-pr03 Items 1-3:
+"""Regression and benchmark tests for storage deduplication, cold archiving, and media offload:
 
 1. Content-addressed deduplication (``role_instruction_blobs`` & ``conversation_contexts``)
 2. Cold telemetry archiving (``telemetry-archive.sqlite3`` & ``core_reply_daily_rollups``)
@@ -11,10 +11,12 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import sqlite3
 import struct
 from tempfile import TemporaryDirectory
+import time
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
@@ -73,6 +75,7 @@ from companion_v2.storage.native_dedup import (
     dedup_native_storage,
     is_context_ref,
     is_role_blob_ref,
+    resolve_context_json,
 )
 from companion_v2.storage.runtime import StorageRuntime
 from companion_v2.storage.semantic import REACTION_FILE_MARKER, SemanticStore
@@ -497,6 +500,89 @@ class ColdTelemetryArchiveTests(unittest.TestCase):
             finally:
                 runtime.close()
 
+    def test_archive_retry_after_sidecar_commit_still_populates_rollups_and_stays_idempotent(self):
+        with TemporaryDirectory(prefix="pr03-archive-retry-") as tmp:
+            runtime = StorageRuntime.open(data_root=Path(tmp) / "v2", installation_id=INSTALLATION_ID)
+            try:
+                ctx = _make_context(99)
+                rk = core_role_key(ctx)
+                day_at = NOW - timedelta(days=20)
+                for idx, (inp, out) in enumerate(((400, 120), (600, 180))):
+                    record_observation(
+                        runtime,
+                        ctx,
+                        _make_core_record(
+                            f"retry-turn-{idx}",
+                            day_at + timedelta(minutes=idx * 5),
+                            provider="prov-retry",
+                            input_tokens=inp,
+                            cached_tokens=50,
+                            output_tokens=out,
+                        ),
+                    )
+
+                # Simulate crash after sidecar commit and before primary transaction commit:
+                # sidecar already holds both rows while primary table still has them and no rollups exist.
+                archive = TelemetryArchiveStore(runtime.data_root)
+                live_rows = runtime.read_all(
+                    "SELECT rowid, turn_id, revision, role_key, context_key, scope_kind, "
+                    "context_json, received_at, observed_at, record_json "
+                    "FROM astrbot_core_reply_observations ORDER BY rowid ASC",
+                    (),
+                )
+                pre_archived = [
+                    {
+                        "turn_id": row["turn_id"],
+                        "revision": row["revision"],
+                        "role_key": row["role_key"],
+                        "context_key": row["context_key"],
+                        "scope_kind": row["scope_kind"],
+                        "context_json": resolve_context_json(runtime, row["context_json"]),
+                        "received_at": row["received_at"],
+                        "observed_at": row["observed_at"],
+                        "record_json": row["record_json"],
+                    }
+                    for row in live_rows
+                ]
+                newly = archive.archive_core_rows(pre_archived, archived_at=stamp(NOW))
+                self.assertEqual(len(newly), 2)
+                self.assertEqual(
+                    runtime.read_one("SELECT COUNT(*) FROM core_reply_daily_rollups", ())[0], 0
+                )
+
+                # Retry archive: primary rows must still be folded into core_reply_daily_rollups and deleted.
+                retry_stats = archive_cold_telemetry(runtime, ttl_days=14, now=NOW)
+                self.assertEqual(retry_stats["core_rows_archived"], 2)
+                self.assertEqual(retry_stats["core_rollup_days_updated"], 1)
+                self.assertEqual(
+                    runtime.read_one("SELECT COUNT(*) FROM astrbot_core_reply_observations", ())[0], 0
+                )
+                rollup_row = runtime.read_one(
+                    "SELECT source_row_count, archived_row_count, rollup_json "
+                    "FROM core_reply_daily_rollups WHERE role_key = ?",
+                    (rk,),
+                )
+                self.assertIsNotNone(rollup_row)
+                self.assertEqual(rollup_row["source_row_count"], 2)
+                self.assertEqual(rollup_row["archived_row_count"], 2)
+                payload = json.loads(rollup_row["rollup_json"])
+                self.assertEqual(payload["provider_totals"]["prov-retry"]["calls"], 2)
+                self.assertEqual(payload["provider_totals"]["prov-retry"]["input_tokens"], 1000)
+                self.assertEqual(payload["provider_totals"]["prov-retry"]["output_tokens"], 300)
+
+                # Subsequent retry is strictly idempotent.
+                again = archive_cold_telemetry(runtime, ttl_days=14, now=NOW)
+                self.assertEqual(again["core_rows_archived"], 0)
+                self.assertEqual(again["core_rollup_days_updated"], 0)
+                rollup_after = runtime.read_one(
+                    "SELECT source_row_count, archived_row_count, rollup_json "
+                    "FROM core_reply_daily_rollups WHERE role_key = ?",
+                    (rk,),
+                )
+                self.assertEqual(dict(rollup_after), dict(rollup_row))
+            finally:
+                runtime.close()
+
 
 class MediaOffloadVacuumBatcherAndApiTests(unittest.IsolatedAsyncioTestCase):
     def test_native_image_store_offloads_to_files_uses_incremental_vacuum_and_migrates_legacy(self):
@@ -542,6 +628,22 @@ class MediaOffloadVacuumBatcherAndApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(store.runtime_id, gen_before)
             _, post_mig_loaded = store.artifact("scope-a", art_id)
             self.assertEqual(post_mig_loaded, png1)
+
+            # Media GC protects freshly written unreferenced files under default grace window,
+            # while reclaiming aged orphans (or when min_age_seconds=0).
+            orphan_dir = store.media_root / "ff"
+            orphan_dir.mkdir(parents=True, exist_ok=True)
+            orphan_file = orphan_dir / ("f" * 64 + ".png")
+            orphan_file.write_bytes(png1)
+            gc_guarded = store.gc_unreferenced_media()
+            self.assertEqual(gc_guarded["removed_files"], 0)
+            self.assertTrue(orphan_file.is_file())
+            old_ts = time.time() - 600.0
+            os.utime(orphan_file, (old_ts, old_ts))
+            gc_aged = store.gc_unreferenced_media()
+            self.assertEqual(gc_aged["removed_files"], 1)
+            self.assertFalse(orphan_file.exists())
+            self.assertEqual(store.artifact("scope-a", art_id)[1], png1)
 
     def test_semantic_store_offloads_reactions_and_frames_and_protects_shared_files(self):
         with TemporaryDirectory(prefix="pr03-sem-media-") as tmp:
@@ -593,10 +695,13 @@ class MediaOffloadVacuumBatcherAndApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(store.get("owner-b", "reaction", "react-1")["content"], main_png)
             self.assertEqual(store.reaction_frames("owner-b", "react-1"), (frame0, frame1))
 
-            # Deleting the last owner + GC removes unreferenced files cleanly.
+            # Deleting the last owner: default GC grace window protects freshly written files,
+            # while min_age_seconds=0 reclaims all 3 unreferenced files cleanly.
             rev_b = store.get("owner-b", "reaction", "react-1")["revision"]
             store.delete("owner-b", "reaction", "react-1", expected=rev_b)
-            gc_res = store.gc_unreferenced_reaction_files()
+            gc_guarded = store.gc_unreferenced_reaction_files()
+            self.assertEqual(gc_guarded["removed_files"], 0)
+            gc_res = store.gc_unreferenced_reaction_files(min_age_seconds=0)
             self.assertEqual(gc_res["removed_files"], 3)
 
     def test_runtime_incremental_auto_vacuum_and_write_behind_micro_batching(self):

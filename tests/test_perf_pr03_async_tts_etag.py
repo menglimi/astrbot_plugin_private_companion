@@ -787,6 +787,65 @@ class ConcurrentTtsTests(unittest.IsolatedAsyncioTestCase):
         core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
         self.assertNotIn("_voice_segment_prefetch", core)
 
+    async def test_multi_segment_prefetch_cancels_and_reaps_task_when_authorize_fails(self):
+        from companion_v2.execution.models import TaskError
+
+        event = FakeEvent()
+        policy = VoiceReplyPolicy(generation_mode="plain", segment_mode="each", position="after_text")
+        seg_policy = SegmentationPolicy(enabled=True, llm_controlled=True)
+        prepared = {
+            "context": object(),
+            "event_id": "auth-fail-seg",
+            "event_ref": "auth-fail-seg",
+            "channel": "private",
+            "voice_reply_policy": policy,
+            "segmentation_settings": {**asdict(seg_policy), "part_gap_mode": "fixed", "part_gap_ms": 0},
+        }
+        cancelled = []
+        prefetch_started = asyncio.Event()
+        auth_calls = 0
+
+        async def renderer(_, text, **__):
+            if text == "第一段。":
+                await asyncio.sleep(0.02)
+                return {"type": "record", "data": {"file": "base64://first"}}
+            prefetch_started.set()
+            try:
+                await asyncio.sleep(10)
+                return {"type": "record", "data": {"file": f"base64://{text}"}}
+            except asyncio.CancelledError:
+                cancelled.append(text)
+                raise
+
+        async def authorize_then_fail():
+            nonlocal auth_calls
+            auth_calls += 1
+            if auth_calls == 2:
+                await asyncio.wait_for(prefetch_started.wait(), timeout=2.0)
+                raise TaskError("voice_unauthorized", "authorization denied")
+
+        async def prepare_send(current, message, check, segment_index, segment_count):
+            return await prepare_core_reply_voice_message(
+                event, current, message, renderer=renderer, delivery=None, authorize=authorize_then_fail,
+                segment_index=segment_index, segment_count=segment_count,
+            )
+
+        prepare_core_reply_event(event, prepared, authorize=_allow, prepare_send=prepare_send)
+        prepare_core_reply_segmentation(event)
+        activate_core_reply_delivery_guard(event)
+
+        from companion_v2.conversation.segment_control import LLM_SEGMENT_MARKER
+        body = f"\n{LLM_SEGMENT_MARKER}\n".join(("第一段。", "第二段。"))
+        await event.send(MessageChain(chain=[Plain(body)]))
+
+        self.assertEqual(len(event.sent), 2)
+        self.assertTrue(any(isinstance(part, Record) for part in event.sent[0].chain))
+        self.assertFalse(any(isinstance(part, Record) for part in event.sent[1].chain))
+        self.assertEqual(event.sent[1].get_plain_text(), "第二段。")
+        self.assertEqual(cancelled, ["第二段。"])
+        core = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+        self.assertNotIn("_voice_segment_prefetch", core)
+
 
 class HttpEtagPollingTests(unittest.IsolatedAsyncioTestCase):
     def test_etag_matching_and_ignore_keys(self):
@@ -803,12 +862,20 @@ class HttpEtagPollingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(etag_matches('W/"other"', tag1))
         self.assertFalse(etag_matches("", tag1))
 
-        # Live ASGI request returns JSONResponse with ETag header.
+        # Live ASGI request returns JSONResponse with ETag header and jsonable-encoded content.
+        from pathlib import Path
+
         live_req = _fake_request(live_asgi=True)
-        resp = conditional_response({"status": "ok", "data": {"x": 1}}, req=live_req)
+        resp = conditional_response(
+            {"status": "ok", "data": {"x": 1, "at": NOW, "path": Path("sample/file.txt")}},
+            req=live_req,
+        )
         self.assertIsInstance(resp, JSONResponse)
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.headers.get("etag"), compute_etag({"x": 1}))
+        self.assertEqual(
+            resp.headers.get("etag"),
+            compute_etag({"x": 1, "at": NOW, "path": Path("sample/file.txt")}),
+        )
 
     async def test_multi_api_status_and_performance_etag_304(self):
         state = {"mode": "multi", "state": "running", "targets": [], "counter": 1}
@@ -848,21 +915,32 @@ class HttpEtagPollingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(perf2.status_code, 304)
 
     async def test_model_maintenance_and_native_perception_etag_304(self):
-        # ModelWebAPI.maintenance
+        # ModelWebAPI.maintenance (including real generated_at / reply_efficiency.generated_at fields)
         controller = _fake_controller()
         model_api = ModelWebAPI(controller)
-        maint_data = {"state": "ok", "pending": 0, "observed_at": "2026-01-01T00:00:00Z"}
+        maint_data = {
+            "state": "ok",
+            "pending": 0,
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "observed_at": "2026-01-01T00:00:00Z",
+            "reply_efficiency": {"generated_at": "2026-01-01T00:00:00+00:00", "p50_ms": 120},
+        }
 
         async def fake_run(action):
             self.assertEqual(action, "maintenance")
-            return {"status": "ok", "data": dict(maint_data)}
+            return {
+                "status": "ok",
+                "data": {**maint_data, "reply_efficiency": dict(maint_data["reply_efficiency"])},
+            }
 
         with patch.object(model_api, "_run", side_effect=fake_run):
             with patch("astrbot_host.model_api.request", _fake_request()):
                 m1 = await model_api.maintenance()
             self.assertIsInstance(m1, dict)
             m_etag = m1["etag"]
+            maint_data["generated_at"] = "2026-01-01T00:01:00+00:00"
             maint_data["observed_at"] = "2026-01-01T00:01:00Z"
+            maint_data["reply_efficiency"]["generated_at"] = "2026-01-01T00:01:00+00:00"
             with patch("astrbot_host.model_api.request", _fake_request(headers={"If-None-Match": m_etag})):
                 m2 = await model_api.maintenance()
             self.assertIsInstance(m2, Response)

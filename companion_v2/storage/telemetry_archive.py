@@ -646,39 +646,54 @@ def archive_cold_telemetry(
                     + len(str(row["context_json"] or "").encode("utf-8")),
                 })
 
-            newly_archived_ids = archive_store.archive_core_rows(resolved_rows, archived_at=archived_at)
+            archive_store.archive_core_rows(resolved_rows, archived_at=archived_at)
 
-            # Group newly archived rows by (role_key, day) to build daily rollups without double-counting.
-            by_role_day: dict[tuple[str, str], list[dict[str, Any]]] = {}
-            max_rowid_by_role_day: dict[tuple[str, str], int] = {}
-            for item in resolved_rows:
-                if item["turn_id"] not in newly_archived_ids:
-                    continue
-                day = str(item["received_at"] or "")[:10]
-                if len(day) != 10:
-                    continue
-                try:
-                    record = json.loads(item["record_json"])
-                except (TypeError, ValueError):
-                    continue
-                if type(record) is not dict or record.get("version") != 1:
-                    continue
-                obs = {
-                    **record,
-                    "context_key": item["context_key"],
-                    "context_json": item["context_json"],
-                }
-                rd_key = (item["role_key"], day)
-                by_role_day.setdefault(rd_key, []).append(obs)
-                max_rowid_by_role_day[rd_key] = max(max_rowid_by_role_day.get(rd_key, 0), item["rowid"])
-
-            deltas = {
-                rd_key: (_build_day_rollup_delta(obs_list), len(obs_list), max_rowid_by_role_day[rd_key])
-                for rd_key, obs_list in by_role_day.items()
-            }
             turn_ids = [item["turn_id"] for item in resolved_rows]
+            marks = ",".join("?" for _ in turn_ids)
 
             with runtime.transaction() as connection:
+                # Re-verify which rows still exist in the primary table inside the
+                # same atomic transaction that updates rollups and deletes them.
+                # This ensures retries after a sidecar-committed/primary-rolled-back
+                # crash never silently drop rollup stats, while concurrent callers
+                # never double-count.
+                live_ids = {
+                    row["turn_id"]
+                    for row in connection.execute(
+                        f"SELECT turn_id FROM {CORE_OBS_TABLE} WHERE turn_id IN ({marks})",
+                        tuple(turn_ids),
+                    ).fetchall()
+                }
+                live_items = [item for item in resolved_rows if item["turn_id"] in live_ids]
+                if not live_items:
+                    continue
+
+                by_role_day: dict[tuple[str, str], list[dict[str, Any]]] = {}
+                max_rowid_by_role_day: dict[tuple[str, str], int] = {}
+                for item in live_items:
+                    day = str(item["received_at"] or "")[:10]
+                    if len(day) != 10:
+                        continue
+                    try:
+                        record = json.loads(item["record_json"])
+                    except (TypeError, ValueError):
+                        continue
+                    if type(record) is not dict or record.get("version") != 1:
+                        continue
+                    obs = {
+                        **record,
+                        "context_key": item["context_key"],
+                        "context_json": item["context_json"],
+                    }
+                    rd_key = (item["role_key"], day)
+                    by_role_day.setdefault(rd_key, []).append(obs)
+                    max_rowid_by_role_day[rd_key] = max(max_rowid_by_role_day.get(rd_key, 0), item["rowid"])
+
+                deltas = {
+                    rd_key: (_build_day_rollup_delta(obs_list), len(obs_list), max_rowid_by_role_day[rd_key])
+                    for rd_key, obs_list in by_role_day.items()
+                }
+
                 for (rk, day), (delta_payload, added_count, max_rid) in deltas.items():
                     existing_row = connection.execute(
                         f"SELECT source_row_count, max_rowid, archived_row_count, rollup_json "
@@ -720,13 +735,14 @@ def archive_cold_telemetry(
                     )
                     updated_rollup_keys.add((rk, day))
 
-                marks = ",".join("?" for _ in turn_ids)
+                live_turn_ids = [item["turn_id"] for item in live_items]
+                live_marks = ",".join("?" for _ in live_turn_ids)
                 deleted = connection.execute(
-                    f"DELETE FROM {CORE_OBS_TABLE} WHERE turn_id IN ({marks})",
-                    tuple(turn_ids),
+                    f"DELETE FROM {CORE_OBS_TABLE} WHERE turn_id IN ({live_marks})",
+                    tuple(live_turn_ids),
                 ).rowcount
                 stats["core_rows_archived"] += int(deleted or 0)
-                stats["core_bytes_reclaimed_estimate"] += sum(item["raw_bytes"] for item in resolved_rows)
+                stats["core_bytes_reclaimed_estimate"] += sum(item["raw_bytes"] for item in live_items)
 
     stats["core_rollup_days_updated"] = len(updated_rollup_keys)
 

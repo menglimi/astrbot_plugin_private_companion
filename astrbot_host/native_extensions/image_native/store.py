@@ -309,10 +309,17 @@ class ImageStore:
             "bytes_offloaded": bytes_offloaded,
         }
 
-    def gc_unreferenced_media(self) -> dict[str, int]:
-        """Remove unreferenced files under ``media/images`` not pointed to by any artifact row."""
+    def gc_unreferenced_media(self, *, min_age_seconds: float = 300.0) -> dict[str, int]:
+        """Remove unreferenced files under ``media/images`` older than *min_age_seconds*.
+
+        The cutoff timestamp is captured *before* reading committed SQLite
+        references so concurrent writes that persist a file before committing
+        their artifact row cannot be unlinked prematurely.
+        """
         if not self.media_root.exists():
             return {"removed_files": 0, "reclaimed_bytes": 0}
+        grace = max(0.0, float(min_age_seconds))
+        cutoff = time.time() - grace
         referenced: set[str] = set()
         with self.read_db() as db:
             for row in db.execute("SELECT data FROM artifacts"):
@@ -332,10 +339,12 @@ class ImageStore:
             rel = file_path.relative_to(self.media_root).as_posix()
             if rel not in referenced:
                 try:
-                    size = file_path.stat().st_size
+                    st = file_path.stat()
+                    if grace > 0.0 and st.st_mtime >= cutoff:
+                        continue
                     file_path.unlink()
                     removed += 1
-                    reclaimed += size
+                    reclaimed += st.st_size
                 except OSError:
                     continue
         return {"removed_files": removed, "reclaimed_bytes": reclaimed}

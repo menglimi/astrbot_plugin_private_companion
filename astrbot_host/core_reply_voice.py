@@ -595,11 +595,16 @@ async def prepare_core_reply_voice_message(
             records, language = await task
             note["language"] = language
         except asyncio.CancelledError:
-            if task is not None and not task.done():
-                task.cancel()
+            if task is not None:
+                if not task.done():
+                    task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
             raise
         except Exception as error:
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
             note["state"] = "synthesis_failed"
             note["error_type"] = type(error).__name__
             logger.warning("[CompanionV2] 核心回复 TTS 降级为文字 event_ref=%s error_type=%s",

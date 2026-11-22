@@ -694,7 +694,7 @@ class ModelWebAPI:
     async def maintenance(self):
         from .http_etag import conditional_response
         result = await self._run("maintenance")
-        return conditional_response(result, req=request, ignore_keys=("observed_at", "sampled_at"))
+        return conditional_response(result, req=request, ignore_keys=("generated_at", "observed_at", "sampled_at"))
 
     async def memory_diagnostic(self):
         try:

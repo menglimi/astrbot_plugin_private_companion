@@ -10,6 +10,7 @@ import re
 import sqlite3
 import struct
 import tempfile
+import time
 
 try:
     import numpy as _NP
@@ -606,10 +607,17 @@ class SemanticStore:
             "bytes_offloaded": bytes_offloaded,
         }
 
-    def gc_unreferenced_reaction_files(self) -> dict[str, int]:
-        """Remove unreferenced files under ``media/reactions`` safely (respecting shared hashes)."""
+    def gc_unreferenced_reaction_files(self, *, min_age_seconds: float = 300.0) -> dict[str, int]:
+        """Remove unreferenced files under ``media/reactions`` older than *min_age_seconds*.
+
+        The cutoff timestamp is captured *before* reading committed SQLite
+        references so concurrent writers that flush a new file to disk before
+        committing their metadata row are protected by the grace window.
+        """
         if not self.reaction_media_root.exists():
             return {"removed_files": 0, "reclaimed_bytes": 0}
+        grace = max(0.0, float(min_age_seconds))
+        cutoff = time.time() - grace
         referenced: set[str] = set()
         with self.db(read_only=True) as db:
             for query in (
@@ -633,10 +641,12 @@ class SemanticStore:
             rel = file_path.relative_to(self.reaction_media_root).as_posix()
             if rel not in referenced:
                 try:
-                    size = file_path.stat().st_size
+                    st = file_path.stat()
+                    if grace > 0.0 and st.st_mtime >= cutoff:
+                        continue
                     file_path.unlink()
                     removed += 1
-                    reclaimed += size
+                    reclaimed += st.st_size
                 except OSError:
                     continue
         return {"removed_files": removed, "reclaimed_bytes": reclaimed}
