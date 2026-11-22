@@ -8,6 +8,7 @@ from collections import Counter, OrderedDict
 import hashlib
 import inspect
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -19,17 +20,19 @@ import uuid
 from typing import Any
 
 from ..blackjack import BlackjackCard, BlackjackGame, RANKS, SUITS, fresh_shoe
-from ..draw_guess import DrawGuessGame, DrawWord, WORD_BANK
+from ..draw_guess import DrawGuessGame, DrawWord, WORD_BANK, normalize_strokes
 from ..gomoku import BLACK, WHITE, GomokuGame
 from ..pig_dice import PigDiceGame
 from ..tictactoe import NOUGHT, X, TicTacToeGame
-from ..turtle_soup import (TurtleSoupGame, clean_player_text, fallback_puzzle,
+from ..turtle_soup import (SoupPuzzle, TurtleSoupGame, clean_player_text, fallback_puzzle,
                            normalize_content_level, puzzle_from_mapping)
 from ..xiangqi import BLACK as XIANGQI_BLACK, RED as XIANGQI_RED, XiangqiGame
 from ..pikafish import MOVE_PATTERN
 from .xiangqi import MAX_MOVES as XIANGQI_MAX_MOVES
 from .xiangqi import outcome as xiangqi_outcome, replay as replay_xiangqi, view as xiangqi_view
 from .context import SNAPSHOT_ACTIONS, conversation_records, public_game_fact, stamp_game_changes
+
+logger = logging.getLogger(__name__)
 
 
 SCHEMA = "companion.native-provider.v1"
@@ -79,6 +82,11 @@ DRAW_ACTIONS = {DRAW_READ, DRAW_CREATE, DRAW_GUESS, DRAW_GIVE_UP, DRAW_CLOSE}
 BOARD_GAME_KINDS = {"tictactoe", "gomoku"}
 WEB_INTERACT = "web_interact"
 WEB_REPLY = "web_reply"
+WEB_DRAW_STROKES = "web_draw_strokes"
+WEB_DRAW_UNDO = "web_draw_undo"
+WEB_DRAW_CLEAR = "web_draw_clear"
+WEB_DRAW_BOT_GUESS = "web_draw_bot_guess"
+WEB_DRAW_ACTIONS = {WEB_DRAW_STROKES, WEB_DRAW_UNDO, WEB_DRAW_CLEAR, WEB_DRAW_BOT_GUESS}
 ACTIONS = (TICTACTOE_ACTIONS | GOMOKU_ACTIONS | {PIG_READ, PIG_CREATE, PIG_ROLL, PIG_HOLD, PIG_CLOSE}
            | {BLACKJACK_READ, BLACKJACK_CREATE, BLACKJACK_HIT, BLACKJACK_STAND, BLACKJACK_CLOSE}
            | XIANGQI_ACTIONS | TURTLE_ACTIONS | DRAW_ACTIONS)
@@ -217,6 +225,8 @@ def _turtle_game(record: dict[str, Any]) -> TurtleSoupGame:
 def _draw_game(record: dict[str, Any]) -> DrawGuessGame:
     target = record.get("target")
     started_at = record.get("started_at")
+    raw_strokes = record.get("strokes", [])
+    revision = record.get("revision", 0)
     if (record.get("difficulty") not in {"easy", "normal", "hard"}
             or type(record.get("max_guesses")) is not int or not 1 <= record["max_guesses"] <= 10
             or type(record.get("duration_seconds")) is not int or not 10 <= record["duration_seconds"] <= 600
@@ -226,10 +236,13 @@ def _draw_game(record: dict[str, Any]) -> DrawGuessGame:
             or type(target["aliases"]) is not list or len(target["aliases"]) > 8
             or any(type(alias) is not str or not alias or len(alias) > 80 for alias in target["aliases"])
             or type(record.get("guesses")) is not list or len(record["guesses"]) > record["max_guesses"]
-            or type(record.get("gave_up")) is not bool or type(record.get("timed_out")) is not bool):
+            or type(record.get("gave_up")) is not bool or type(record.get("timed_out")) is not bool
+            or type(revision) is not int or revision < 0):
         raise ValueError("invalid draw guess record")
+    strokes = normalize_strokes(raw_strokes)
     game = DrawGuessGame(record["difficulty"], record["max_guesses"], record["duration_seconds"],
-                         DrawWord(target["answer"], tuple(target["aliases"])), started_at=float(started_at))
+                         DrawWord(target["answer"], tuple(target["aliases"])), started_at=float(started_at),
+                         strokes=strokes, revision=revision)
     for event in record["guesses"]:
         if (type(event) is not dict or set(event) != {"guess", "correct"}
                 or type(event["guess"]) is not str or type(event["correct"]) is not bool
@@ -294,7 +307,10 @@ def _game(record: dict[str, Any]) -> (TicTacToeGame | GomokuGame | PigDiceGame |
 
 
 def _pig_dice_state(record: dict[str, Any]) -> tuple[PigDiceGame, dict[str, int]]:
-    game = PigDiceGame(difficulty=record["difficulty"], target_score=50, turn="human")
+    target_score = record.get("target_score", 50)
+    if type(target_score) is not int or not 20 <= target_score <= 200:
+        raise ValueError("invalid pig dice target score")
+    game = PigDiceGame(difficulty=record["difficulty"], target_score=target_score, turn="human")
     events = record["events"]
     if not isinstance(events, list) or len(events) > 1024:
         raise ValueError("invalid dice events")
@@ -364,7 +380,7 @@ def _board_pieces(record: dict[str, Any]) -> list[dict[str, Any]]:
     return pieces
 
 
-def _view(record: dict[str, Any]) -> dict[str, Any]:
+def _view(record: dict[str, Any], *, viewer: str = "guesser", include_strokes: bool = False) -> dict[str, Any]:
     game = _game(record)
     kind = _record_kind(record)
     if kind == "turtle_soup":
@@ -376,11 +392,18 @@ def _view(record: dict[str, Any]) -> dict[str, Any]:
                   "outcome": record.get("outcome")}
         return result
     if kind == "draw_guess":
-        state = game.snapshot(reveal_answer=record["status"] != "active")
+        is_drawer = viewer == "drawer"
+        reveal_answer = is_drawer or (record["status"] == "finished")
+        state = game.snapshot(reveal_answer=reveal_answer)
         for guess in state["guesses"]:
             guess.pop("at", None)
         state.pop("started_at", None)
         state.pop("deadline", None)
+        state["viewer_role"] = "drawer" if is_drawer else "guesser"
+        state["stroke_count"] = len(game.strokes)
+        state["has_drawing"] = bool(game.strokes)
+        if not include_strokes:
+            state["strokes"] = []
         return {"game_id": record["game_id"], "game_type": kind, "status": record["status"],
                 "state": state, "events": copy.deepcopy(record["guesses"][-24:]),
                 "outcome": record.get("outcome")}
@@ -516,6 +539,7 @@ class NativeGameProvider:
              source.parent.parent / "pig_dice.py", source.parent.parent / "blackjack.py",
              source.parent.parent / "xiangqi.py", source.parent.parent / "pikafish.py",
              source.parent / "xiangqi.py", source.parent.parent / "turtle_soup.py",
+             source.parent.parent / "turtle_soup_ai.py",
              source.parent.parent / "draw_guess.py", source.parent / "context.py"))).hexdigest()
         self.artifact_hash = artifact_hash
         self.generation = "game-" + _hash({"version": version, "artifact": artifact_hash})
@@ -523,7 +547,41 @@ class NativeGameProvider:
         self._async_lock = asyncio.Lock()
         self._xiangqi_cache: OrderedDict[str, tuple[str, XiangqiGame]] = OrderedDict()
         self._web_sessions: dict[str, dict[str, Any]] = {}
+        self._game_contexts: dict[str, Any] = {}
+        self._scope_contexts: dict[str, Any] = {}
+        self._web_terminal_callback: Any = None
         self.closed = False
+
+    def bind_game_context(self, game_id: str, context: Any, *, scope: str | None = None) -> None:
+        """Bind a live V2 TaskContext in memory for web-terminal memory writeback."""
+        if self.closed or not game_id or context is None:
+            return
+        self._game_contexts[str(game_id)] = context
+        if len(self._game_contexts) > WEB_TICKET_LIMIT * 2:
+            oldest = next(iter(self._game_contexts))
+            self._game_contexts.pop(oldest, None)
+        if scope:
+            self._scope_contexts[str(scope)] = context
+
+    def attach_web_terminal_callback(self, callback: Any) -> None:
+        self._web_terminal_callback = callback if callable(callback) else None
+
+    async def _notify_web_terminal(self, scope: str, game_id: str, game_view: dict[str, Any]) -> None:
+        callback = self._web_terminal_callback
+        if callback is None:
+            return
+        context = self._game_contexts.get(game_id) or self._scope_contexts.get(scope)
+        if context is None:
+            return
+        try:
+            if inspect.iscoroutinefunction(callback):
+                await callback(context, copy.deepcopy(game_view))
+            else:
+                result = await asyncio.to_thread(callback, context, copy.deepcopy(game_view))
+                if inspect.isawaitable(result):
+                    await result
+        except Exception as exc:
+            logger.warning("[CompanionV2][Game] 网页终局记忆回写失败 game_id=%s error=%s", game_id, exc)
 
     def manifest(self) -> dict[str, Any]:
         if self.closed:
@@ -897,12 +955,59 @@ class NativeGameProvider:
             )
         return _view(room)
 
-    def _apply(self, draft: dict[str, Any], scope: str, request: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _recent_turtle_signatures(rooms: dict[str, Any]) -> list[str]:
+        signatures: list[str] = []
+        for room in rooms.values():
+            if _record_kind(room) != "turtle_soup":
+                continue
+            puzzle = room.get("puzzle")
+            if not isinstance(puzzle, dict):
+                continue
+            theme = str(puzzle.get("theme") or "").strip().lower()
+            trick = str(puzzle.get("trick") or "").strip().lower()
+            if theme and trick:
+                signature = f"{theme}|{trick}"[:180]
+                if signature not in signatures:
+                    signatures.append(signature)
+        return signatures[-16:]
+
+    async def _prepare_turtle_puzzle(
+        self, scope: str, level: str, *, difficulty: str = "normal", session_id: str = ""
+    ) -> SoupPuzzle:
+        with self.store.lock:
+            rooms = self.store.data["scopes"].get(scope, {})
+            recent = self._recent_turtle_signatures(rooms)
+        generator = getattr(self.plugin, "generate_native_turtle_soup_puzzle", None)
+        if callable(generator):
+            try:
+                generated = await generator(
+                    difficulty=difficulty,
+                    content_level=level,
+                    recent_signatures=recent,
+                    session_id=session_id,
+                )
+                if isinstance(generated, SoupPuzzle):
+                    return generated
+            except Exception as exc:
+                logger.info("[CompanionV2][Game] 动态海龟汤出题失败，回落内置题库: %s", exc)
+        return fallback_puzzle(content_level=level, excluded_signatures=set(recent))
+
+    def _apply(
+        self,
+        draft: dict[str, Any],
+        scope: str,
+        request: dict[str, Any],
+        *,
+        viewer: str = "guesser",
+        include_strokes: bool = False,
+        prepared_puzzle: SoupPuzzle | None = None,
+    ) -> dict[str, Any]:
         rooms = draft["scopes"].setdefault(scope, {})
         args = request["arguments"]
         action = request["action"]
         kind = _kind(action)
-        if action in {WEB_INTERACT, WEB_REPLY}:
+        if action in {WEB_INTERACT, WEB_REPLY} or action in WEB_DRAW_ACTIONS:
             kind = _record_kind(rooms.get(args["game_id"], {}))
         if action not in CLOSE_ACTIONS and not getattr(self.plugin, f"native_v2_{kind}_enabled", False):
             raise NativeGameError(f"game_{kind}_disabled")
@@ -917,10 +1022,23 @@ class NativeGameProvider:
                     current["shoe"] = [card.as_dict() for card in fresh_shoe()]
                 if kind in {"pig_dice", "blackjack"}:
                     current["events"] = []
+                    if kind == "pig_dice":
+                        raw_target = getattr(
+                            self.plugin,
+                            "native_v2_pig_dice_target_score",
+                            getattr(self.plugin, "pig_dice_target_score", 50),
+                        )
+                        try:
+                            target_score = max(20, min(200, int(raw_target)))
+                        except (TypeError, ValueError):
+                            target_score = 50
+                        current["target_score"] = target_score
                 elif kind == "turtle_soup":
                     level = normalize_content_level(getattr(self.plugin,
                         "native_v2_turtle_soup_content_level", "normal"))
-                    puzzle = fallback_puzzle(content_level=level)
+                    recent = self._recent_turtle_signatures(rooms)
+                    puzzle = prepared_puzzle if isinstance(prepared_puzzle, SoupPuzzle) else fallback_puzzle(
+                        content_level=level, excluded_signatures=set(recent))
                     current.update(content_level=level,
                         max_hints=max(0, min(8, int(getattr(self.plugin,
                             "native_v2_turtle_soup_max_hints", 3)))),
@@ -933,7 +1051,8 @@ class NativeGameProvider:
                         duration_seconds=max(10, min(600, int(getattr(self.plugin,
                             "native_v2_draw_guess_duration_seconds", 120)))),
                         started_at=time.time(), target={"answer": target.answer,
-                            "aliases": list(target.aliases)}, guesses=[], gave_up=False, timed_out=False)
+                            "aliases": list(target.aliases)},
+                        strokes=[], revision=0, guesses=[], gave_up=False, timed_out=False)
                 else:
                     current["moves"] = []
                     if kind in BOARD_GAME_KINDS:
@@ -951,14 +1070,14 @@ class NativeGameProvider:
                         current["status"] = "finished"
                         current["outcome"] = _blackjack_outcome(game)
                 rooms[current["game_id"]] = current
-            return _view(current)
+            return _view(current, viewer=viewer, include_strokes=include_strokes)
         room = rooms.get(args["game_id"])
         if room is None or _record_kind(room) != kind:
             raise NativeGameError("game_not_found_in_scope")
         if action in CLOSE_ACTIONS:
             if room["status"] == "active":
                 room["status"] = "closed"
-            return _view(room)
+            return _view(room, viewer=viewer, include_strokes=include_strokes)
         if room["status"] != "active":
             raise NativeGameError("game_not_active")
         game = _game(room)
@@ -1006,12 +1125,33 @@ class NativeGameProvider:
                 room["timed_out"] = True
                 room["status"] = "finished"
                 room["outcome"] = "bot"
-                return _view(room)
+                return _view(room, viewer=viewer, include_strokes=include_strokes)
             if action == DRAW_GIVE_UP:
                 room["gave_up"] = True
                 room["status"] = "finished"
                 room["outcome"] = "bot"
-                return _view(room)
+                return _view(room, viewer=viewer, include_strokes=include_strokes)
+            if action == WEB_DRAW_STROKES:
+                try:
+                    strokes = normalize_strokes(args["strokes"])
+                    game.replace_strokes(strokes)
+                except ValueError as exc:
+                    raise NativeGameError("invalid_game_arguments") from exc
+                room["strokes"] = strokes
+                room["revision"] = int(room.get("revision", 0)) + 1
+                return _view(room, viewer=viewer, include_strokes=include_strokes)
+            if action == WEB_DRAW_UNDO:
+                strokes = list(room.get("strokes", []))
+                if strokes:
+                    strokes.pop()
+                    room["strokes"] = strokes
+                    room["revision"] = int(room.get("revision", 0)) + 1
+                return _view(room, viewer=viewer, include_strokes=include_strokes)
+            if action == WEB_DRAW_CLEAR:
+                if room.get("strokes"):
+                    room["strokes"] = []
+                    room["revision"] = int(room.get("revision", 0)) + 1
+                return _view(room, viewer=viewer, include_strokes=include_strokes)
             if action != DRAW_GUESS:
                 raise NativeGameError("invalid_game_request")
             if len(room["guesses"]) >= room["max_guesses"]:
@@ -1026,7 +1166,7 @@ class NativeGameProvider:
             if game.finished:
                 room["status"] = "finished"
                 room["outcome"] = "player" if game.solved else "bot"
-            return _view(room)
+            return _view(room, viewer=viewer, include_strokes=include_strokes)
         if kind == "blackjack":
             if len(room["events"]) >= 308:
                 raise NativeGameError("game_turn_limit")
@@ -1267,12 +1407,63 @@ class NativeGameProvider:
             self._cache_xiangqi(room, game)
         return self._receipt(request, operation)
 
+    async def _execute_turtle_create(self, request: dict[str, Any], *, before_dispatch) -> dict[str, Any]:
+        scope, _args = self._request(request)
+        if not getattr(self.plugin, "native_v2_turtle_soup_enabled", False):
+            raise NativeGameError("game_turtle_soup_disabled")
+        self._checked(before_dispatch)
+        identity = _identity(request)
+        with self.store.lock:
+            previous = self.store.data["operations"].get(request["invocation_id"])
+            if previous is not None:
+                if previous["identity"] != identity or previous["scope"] != scope:
+                    raise NativeGameError("game_original_invocation_mismatch")
+                return self._receipt(request, previous)
+            rooms = self.store.data["scopes"].get(scope, {})
+            existing_active = next(
+                (room for room in rooms.values()
+                 if _record_kind(room) == "turtle_soup" and room["status"] == "active"),
+                None,
+            )
+        prepared_puzzle: SoupPuzzle | None = None
+        if existing_active is None:
+            level = normalize_content_level(getattr(self.plugin,
+                "native_v2_turtle_soup_content_level", "normal"))
+            scope_doc = request.get("context", {}).get("scope") if isinstance(request.get("context"), dict) else None
+            session_id = str(scope_doc.get("session_id") or "") if isinstance(scope_doc, dict) else ""
+            prepared_puzzle = await self._prepare_turtle_puzzle(scope, level, session_id=session_id)
+        self._request(request)
+        if not getattr(self.plugin, "native_v2_turtle_soup_enabled", False):
+            raise NativeGameError("game_turtle_soup_disabled")
+        self._checked(before_dispatch)
+        with self.store.lock:
+            previous = self.store.data["operations"].get(request["invocation_id"])
+            if previous is not None:
+                if previous["identity"] != identity or previous["scope"] != scope:
+                    raise NativeGameError("game_original_invocation_mismatch")
+                return self._receipt(request, previous)
+            draft = copy.deepcopy(self.store.data)
+            operation = {"id": "game-op-" + uuid.uuid4().hex, "scope": scope,
+                         "identity": identity, "state": "succeeded", "effect": "committed", "result": None}
+            try:
+                operation["result"] = {"game": self._apply(draft, scope, request, prepared_puzzle=prepared_puzzle)}
+            except NativeGameError as exc:
+                draft = copy.deepcopy(self.store.data)
+                draft["scopes"].setdefault(scope, {})
+                operation.update(state="failed", effect="not_committed", error=exc.code)
+            draft["operations"][request["invocation_id"]] = operation
+            self._checked(before_dispatch)
+            self.store.commit(draft)
+            return self._receipt(request, operation)
+
     async def execute(self, request: dict[str, Any], *, before_dispatch) -> dict[str, Any]:
         # Keep all game commits serialized without holding a thread lock across engine awaits.
         async with self._async_lock:
             self._request(request)
             if request["action"] in XIANGQI_ACTIONS:
                 result = await self._execute_xiangqi(request, before_dispatch=before_dispatch)
+            elif request["action"] == TURTLE_CREATE:
+                result = await self._execute_turtle_create(request, before_dispatch=before_dispatch)
             else:
                 result = self._execute_sync(request, before_dispatch=before_dispatch)
         return await self._with_room_access(request, result, before_dispatch=before_dispatch)
@@ -1346,13 +1537,16 @@ class NativeGameProvider:
                                   "move_count": len(room.get("moves", room.get("events", room.get("guesses", []))))})
             return sorted(games, key=lambda item: item["game_id"])
 
-    def _issue_web_ticket(self, scope: str, game_id: str) -> str:
+    def _issue_web_ticket(self, scope: str, game_id: str, *, role: str = "drawer") -> str:
+        if role not in {"drawer", "guesser"}:
+            raise NativeGameError("invalid_game_arguments")
         now = time.time()
         self._web_sessions = {key: session for key, session in self._web_sessions.items()
                               if session["expires_at"] > now}
         ticket = secrets.token_urlsafe(32)
         self._web_sessions[self._web_ticket_key(ticket)] = {
-            "scope": scope, "game_id": game_id, "expires_at": now + WEB_TICKET_TTL_SECONDS,
+            "scope": scope, "game_id": game_id, "role": role,
+            "expires_at": now + WEB_TICKET_TTL_SECONDS,
         }
         if len(self._web_sessions) > WEB_TICKET_LIMIT:
             oldest = sorted(self._web_sessions.items(), key=lambda item: item[1]["expires_at"])
@@ -1360,9 +1554,11 @@ class NativeGameProvider:
                 self._web_sessions.pop(key, None)
         return ticket
 
-    def issue_web_ticket(self, game_id: str) -> str:
+    def issue_web_ticket(self, game_id: str, *, role: str = "drawer") -> str:
         if self.closed or type(game_id) is not str or not game_id:
             raise NativeGameError("game_not_found")
+        if role not in {"drawer", "guesser"}:
+            raise NativeGameError("invalid_game_arguments")
         with self.store.lock:
             for scope, rooms in self.store.data["scopes"].items():
                 room = rooms.get(game_id)
@@ -1370,7 +1566,7 @@ class NativeGameProvider:
                     continue
                 if not getattr(self.plugin, f"native_v2_{_record_kind(room)}_enabled", False):
                     raise NativeGameError("game_disabled")
-                return self._issue_web_ticket(scope, game_id)
+                return self._issue_web_ticket(scope, game_id, role=role)
         raise NativeGameError("game_not_found")
 
     def _web_session(self, ticket: str) -> dict[str, Any]:
@@ -1393,10 +1589,27 @@ class NativeGameProvider:
         return room
 
     async def web_state(self, ticket: str) -> dict[str, Any]:
+        terminal_event: tuple[str, str, dict[str, Any]] | None = None
         async with self._async_lock:
             with self.store.lock:
                 session = dict(self._web_session(ticket))
                 room = copy.deepcopy(self._web_game(session))
+                role = str(session.get("role") or "drawer")
+                if _record_kind(room) == "draw_guess" and room.get("status") == "active":
+                    draw_game = _draw_game(room)
+                    if time.time() >= draw_game.deadline:
+                        draft = copy.deepcopy(self.store.data)
+                        live_room = draft["scopes"][session["scope"]][session["game_id"]]
+                        live_room["timed_out"] = True
+                        live_room["status"] = "finished"
+                        live_room["outcome"] = "bot"
+                        self.store.commit(draft)
+                        room = copy.deepcopy(live_room)
+                        terminal_event = (
+                            session["scope"],
+                            session["game_id"],
+                            _view(room, viewer="guesser", include_strokes=False),
+                        )
             if _record_kind(room) == "xiangqi":
                 try:
                     game = await self._xiangqi_game(room)
@@ -1404,11 +1617,13 @@ class NativeGameProvider:
                     raise NativeGameError("game_xiangqi_engine_unavailable") from exc
                 result = xiangqi_view(room, game)
             else:
-                result = _view(room)
-            return {"game": result, "expires_at": session["expires_at"]}
+                result = _view(room, viewer=role, include_strokes=True)
+        if terminal_event is not None:
+            await self._notify_web_terminal(*terminal_event)
+        return {"game": result, "expires_at": session["expires_at"]}
 
     @staticmethod
-    def _web_action_request(kind: str, game_id: str, payload: Any) -> dict[str, Any]:
+    def _web_action_request(kind: str, game_id: str, payload: Any, *, role: str = "drawer") -> dict[str, Any]:
         if type(payload) is not dict or type(payload.get("action")) is not str:
             raise NativeGameError("invalid_game_arguments")
         action = payload["action"]
@@ -1419,11 +1634,24 @@ class NativeGameProvider:
             "blackjack": {"hit": BLACKJACK_HIT, "stand": BLACKJACK_STAND, "close": BLACKJACK_CLOSE},
             "xiangqi": {"move": XIANGQI_MOVE, "close": XIANGQI_CLOSE},
             "turtle_soup": {"hint": TURTLE_HINT, "give_up": TURTLE_GIVE_UP, "close": TURTLE_CLOSE},
-            "draw_guess": {"guess": DRAW_GUESS, "give_up": DRAW_GIVE_UP, "close": DRAW_CLOSE},
+            "draw_guess": {
+                "strokes": WEB_DRAW_STROKES,
+                "undo": WEB_DRAW_UNDO,
+                "clear": WEB_DRAW_CLEAR,
+                "bot_guess": WEB_DRAW_BOT_GUESS,
+                "guess": DRAW_GUESS,
+                "give_up": DRAW_GIVE_UP,
+                "close": DRAW_CLOSE,
+            },
         }
         native_action = maps.get(kind, {}).get(action)
         if native_action is None:
             raise NativeGameError("invalid_game_arguments")
+        if kind == "draw_guess":
+            if action in {"strokes", "undo", "clear", "bot_guess"} and role != "drawer":
+                raise NativeGameError("game_drawer_only")
+            if action == "guess" and role != "guesser":
+                raise NativeGameError("game_guesser_only")
         arguments: dict[str, Any] = {"game_id": game_id}
         if action == "move" and kind in {"tictactoe", "gomoku"}:
             size = 15 if kind == "gomoku" else 3
@@ -1492,6 +1720,21 @@ class NativeGameProvider:
                            for key, limit in coordinates.items())):
                 raise NativeGameError("invalid_game_arguments")
             arguments.update({key: payload[key] for key in coordinates})
+        elif action == "strokes" and kind == "draw_guess":
+            if set(payload) != {"action", "strokes"}:
+                raise NativeGameError("invalid_game_arguments")
+            try:
+                arguments["strokes"] = normalize_strokes(payload.get("strokes"))
+            except ValueError as exc:
+                raise NativeGameError("invalid_game_arguments") from exc
+        elif action == "bot_guess" and kind == "draw_guess":
+            image_data_url = payload.get("image_data_url")
+            if (set(payload) != {"action", "image_data_url"}
+                    or type(image_data_url) is not str
+                    or not image_data_url.strip()
+                    or len(image_data_url) > 700_000):
+                raise NativeGameError("invalid_game_arguments")
+            arguments["image_data_url"] = image_data_url.strip()
         elif action == "guess" and kind == "draw_guess":
             if (set(payload) != {"action", "guess"} or type(payload.get("guess")) is not str
                     or not payload["guess"].strip() or len(payload["guess"]) > 80):
@@ -1503,26 +1746,79 @@ class NativeGameProvider:
                 "invocation_id": "web-" + uuid.uuid4().hex}
 
     async def web_action(self, ticket: str, payload: Any) -> dict[str, Any]:
+        terminal_event: tuple[str, str, dict[str, Any]] | None = None
         async with self._async_lock:
             with self.store.lock:
                 session = dict(self._web_session(ticket))
                 room = self._web_game(session)
                 kind = _record_kind(room)
-                request = self._web_action_request(kind, session["game_id"], payload)
+                role = str(session.get("role") or "drawer")
+                was_active = room.get("status") == "active"
+                request = self._web_action_request(kind, session["game_id"], payload, role=role)
+                room_snapshot = copy.deepcopy(room)
                 draft = copy.deepcopy(self.store.data)
-            if request["action"] == XIANGQI_MOVE or request["action"] == XIANGQI_CLOSE:
+            if request["action"] == WEB_DRAW_BOT_GUESS:
+                if not was_active:
+                    raise NativeGameError("game_not_active")
+                draw_game = _draw_game(room_snapshot)
+                if time.time() >= draw_game.deadline:
+                    draft["scopes"][session["scope"]][session["game_id"]].update(
+                        timed_out=True, status="finished", outcome="bot"
+                    )
+                    result = _view(
+                        draft["scopes"][session["scope"]][session["game_id"]],
+                        viewer=role,
+                        include_strokes=True,
+                    )
+                else:
+                    if not draw_game.strokes:
+                        raise NativeGameError("game_drawing_empty")
+                    guesser = getattr(self.plugin, "native_guess_drawing", None)
+                    if not callable(guesser):
+                        raise NativeGameError("game_vision_unavailable")
+                    ctx = self._game_contexts.get(session["game_id"]) or self._scope_contexts.get(session["scope"])
+                    user_id = str(getattr(getattr(getattr(ctx, "actor", None), "principal", None), "native_account_id", "") or "")
+                    session_id = str(getattr(getattr(ctx, "scope", None), "session_id", "") or "")
+                    guess_text = await guesser(
+                        draw_game,
+                        request["arguments"]["image_data_url"],
+                        user_id=user_id,
+                        session_id=session_id,
+                    )
+                    guess_request = {
+                        "action": DRAW_GUESS,
+                        "arguments": {"game_id": session["game_id"], "guess": guess_text},
+                        "invocation_id": request["invocation_id"],
+                    }
+                    result = self._apply(
+                        draft, session["scope"], guess_request,
+                        viewer=role, include_strokes=True,
+                    )
+            elif request["action"] == XIANGQI_MOVE or request["action"] == XIANGQI_CLOSE:
                 try:
                     room, game = await self._apply_xiangqi(draft, session["scope"], request)
                 except (RuntimeError, OSError, asyncio.TimeoutError) as exc:
                     raise NativeGameError("game_xiangqi_engine_unavailable") from exc
                 result = xiangqi_view(room, game)
             else:
-                result = self._apply(draft, session["scope"], request)
+                result = self._apply(
+                    draft, session["scope"], request,
+                    viewer=role, include_strokes=True,
+                )
             with self.store.lock:
                 self.store.commit(draft)
                 if kind == "xiangqi":
                     self._cache_xiangqi(room, game)
-            return {"game": result, "expires_at": session["expires_at"]}
+                if was_active and result.get("status") == "finished":
+                    committed = draft["scopes"][session["scope"]][session["game_id"]]
+                    public_result = (
+                        result if kind == "xiangqi"
+                        else _view(committed, viewer="guesser", include_strokes=False)
+                    )
+                    terminal_event = (session["scope"], session["game_id"], public_result)
+        if terminal_event is not None:
+            await self._notify_web_terminal(*terminal_event)
+        return {"game": result, "expires_at": session["expires_at"]}
 
     async def create_mobile_game(self, owner_id: str, game_type: str,
                                  difficulty: str = "normal") -> dict[str, Any]:
@@ -1546,6 +1842,18 @@ class NativeGameProvider:
         async with self._async_lock:
             if not getattr(self.plugin, f"native_v2_{kind}_enabled", False):
                 raise NativeGameError(f"game_{kind}_disabled")
+            prepared_puzzle: SoupPuzzle | None = None
+            if kind == "turtle_soup":
+                with self.store.lock:
+                    existing_active = next(
+                        (item for item in self.store.data["scopes"].get(scope, {}).values()
+                         if _record_kind(item) == "turtle_soup" and item["status"] == "active"),
+                        None,
+                    )
+                if existing_active is None:
+                    level = normalize_content_level(getattr(self.plugin,
+                        "native_v2_turtle_soup_content_level", "normal"))
+                    prepared_puzzle = await self._prepare_turtle_puzzle(scope, level, difficulty=difficulty)
             draft = copy.deepcopy(self.store.data)
             if kind == "xiangqi":
                 try:
@@ -1554,7 +1862,7 @@ class NativeGameProvider:
                     raise NativeGameError("game_xiangqi_engine_unavailable") from exc
                 result = xiangqi_view(room, game)
             else:
-                result = self._apply(draft, scope, request)
+                result = self._apply(draft, scope, request, prepared_puzzle=prepared_puzzle)
                 room = draft["scopes"][scope][result["game_id"]]
             with self.store.lock:
                 self.store.commit(draft)
@@ -1567,3 +1875,6 @@ class NativeGameProvider:
         self.closed = True
         self._xiangqi_cache.clear()
         self._web_sessions.clear()
+        self._game_contexts.clear()
+        self._scope_contexts.clear()
+        self._web_terminal_callback = None

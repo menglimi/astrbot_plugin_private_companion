@@ -18,6 +18,31 @@
   let requestSequence = 0;
   let loading = false;
   let renderedSignature = "";
+  const DRAW_COLORS = [
+    {hex: "#1c2420", label: "墨黑"},
+    {hex: "#d9483b", label: "朱红"},
+    {hex: "#2d7dd2", label: "钴蓝"},
+    {hex: "#2a9d63", label: "松绿"},
+    {hex: "#e69f28", label: "暖黄"},
+    {hex: "#845ec2", label: "绛紫"},
+    {hex: "#ffffff", label: "橡皮"},
+  ];
+  const DRAW_WIDTHS = [
+    {size: 3, label: "细"},
+    {size: 6, label: "中"},
+    {size: 12, label: "粗"},
+  ];
+  const drawState = {
+    color: "#1c2420",
+    width: 6,
+    wordHidden: false,
+    strokes: [],
+    revision: -1,
+    activeStroke: null,
+    syncing: false,
+    dirty: false,
+    canvas: null,
+  };
   const gomoku = window.CompanionGomokuRoom.create({node, $, getGame: () => game,
     isBusy: () => busy, getSelectedPiece: () => selectedPiece,
     clearSelectedPiece: () => { selectedPiece = null; },
@@ -269,7 +294,15 @@
     const board = node("div", "xiangqi-board");
     const legal = Array.isArray(state.legal_moves) ? state.legal_moves : [];
     const active = game.status === "active" && turnIsHuman(state) && !busy;
-    state.board.forEach((row, rowIndex) => row.forEach((piece, columnIndex) => {
+    const flipped = state.human_side === "black";
+    const rowIndices = flipped ? [9, 8, 7, 6, 5, 4, 3, 2, 1, 0] : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    const colIndices = flipped ? [8, 7, 6, 5, 4, 3, 2, 1, 0] : [0, 1, 2, 3, 4, 5, 6, 7, 8];
+    const legalTargets = selected
+      ? new Set(legal.filter((item) => item[0] === selected[0] && item[1] === selected[1])
+          .map((item) => `${item[2]},${item[3]}`))
+      : null;
+    rowIndices.forEach((rowIndex) => colIndices.forEach((columnIndex) => {
+      const piece = state.board?.[rowIndex]?.[columnIndex] || ".";
       const button = node("button", "xiangqi-cell");
       button.type = "button";
       button.textContent = pieces[piece] || "";
@@ -277,6 +310,7 @@
       button.setAttribute("aria-label", `${rowIndex + 1} 行 ${columnIndex + 1} 列${pieces[piece] ? ` ${pieces[piece]}` : " 空位"}`);
       const isSelected = selected?.[0] === rowIndex && selected?.[1] === columnIndex;
       if (isSelected) button.classList.add("selected");
+      if (legalTargets?.has(`${rowIndex},${columnIndex}`)) button.classList.add("legal-target");
       button.disabled = !active;
       button.addEventListener("click", () => {
         if (!selected) {
@@ -343,12 +377,15 @@
     } else if (game.game_type === "draw_guess") {
       const pair = node("div", "score-pair");
       pair.append(scoreItem("已猜", state.guess_count || 0, "player"), scoreItem("还可猜", Math.max(0, (state.max_guesses || 0) - (state.guess_count || 0)), "bot"));
-      summary.append(pair, node("p", "summary-line", `剩余 ${state.remaining_seconds ?? 0} 秒`));
+      const roleText = state.viewer_role === "guesser" ? "猜测方" : "作画方";
+      summary.append(pair, node("p", "summary-line", `${roleText} · 剩余 ${state.remaining_seconds ?? 0} 秒`));
     }
     if (game.status === "finished") {
       const isPuzzle = ["turtle_soup", "draw_guess"].includes(game.game_type);
-      const result = isPuzzle ? (game.outcome === "player" ? "你解答成功了" : "本局未解答成功")
-        : ({player: "你赢了", bot: "陪伴者赢了", draw: "本局平局"}[game.outcome] || "本局结束");
+      const result = game.game_type === "draw_guess"
+        ? (game.outcome === "player" ? "合作猜中了" : (state.timed_out ? "作画超时，本轮未猜中" : "本轮未猜中"))
+        : isPuzzle ? (game.outcome === "player" ? "你解答成功了" : "本局未解答成功")
+          : ({player: "你赢了", bot: "陪伴者赢了", draw: "本局平局"}[game.outcome] || "本局结束");
       summary.append(node("p", "summary-line game-outcome", result));
     }
   }
@@ -356,7 +393,8 @@
   function cardMarkup(card) {
     const suits = {spades: "♠", clubs: "♣", hearts: "♥", diamonds: "♦"};
     const suit = suits[card.suit] || card.suit || "";
-    const element = node("div", `playing-card ${["hearts", "diamonds"].includes(card.suit) ? "red" : ""}`.trim());
+    const isRed = ["hearts", "diamonds", "♥", "♦"].includes(card.suit) || ["♥", "♦"].includes(suit);
+    const element = node("div", `playing-card ${isRed ? "red" : ""}`.trim());
     element.append(node("strong", "", String(card.rank)), node("small", "", suit));
     return element;
   }
@@ -379,6 +417,290 @@
     $("gameBoard").appendChild(table);
   }
 
+  function paintDrawCanvas(canvas) {
+    if (!canvas || typeof canvas.getContext !== "function") return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const width = canvas.width || 640;
+    const height = canvas.height || 420;
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = "#fffdf8";
+    ctx.fillRect(0, 0, width, height);
+    drawState.strokes.forEach((stroke) => {
+      const points = Array.isArray(stroke?.points) ? stroke.points : [];
+      if (!points.length) return;
+      ctx.beginPath();
+      ctx.strokeStyle = stroke.color || "#1c2420";
+      ctx.lineWidth = Number(stroke.width || 6);
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      points.forEach(([x, y], index) => {
+        const px = Number(x) * width;
+        const py = Number(y) * height;
+        if (index === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      if (points.length === 1) {
+        ctx.lineTo(Number(points[0][0]) * width + 0.1, Number(points[0][1]) * height + 0.1);
+      }
+      ctx.stroke();
+    });
+  }
+
+  function syncLocalDrawStrokes(state) {
+    const serverRevision = Number(state.revision ?? 0);
+    if (!drawState.activeStroke && !drawState.syncing && !drawState.dirty && serverRevision >= drawState.revision) {
+      drawState.strokes = Array.isArray(state.strokes) ? state.strokes.map((stroke) => ({
+        color: stroke.color || "#1c2420",
+        width: Number(stroke.width || 6),
+        points: Array.isArray(stroke.points) ? stroke.points.map((point) => [Number(point[0]), Number(point[1])]) : [],
+      })) : [];
+      drawState.revision = serverRevision;
+    }
+  }
+
+  function drawCanvasPoint(event, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    const width = rect.width || 1;
+    const height = rect.height || 1;
+    return [
+      Number(clamp((event.clientX - rect.left) / width, 0, 1).toFixed(5)),
+      Number(clamp((event.clientY - rect.top) / height, 0, 1).toFixed(5)),
+    ];
+  }
+
+  async function flushDrawStrokes() {
+    if (!drawState.dirty || drawState.syncing || game?.status !== "active") return true;
+    drawState.syncing = true;
+    drawState.dirty = false;
+    const snapshot = drawState.strokes.map((stroke) => ({
+      color: stroke.color,
+      width: stroke.width,
+      points: stroke.points.map((point) => [...point]),
+    }));
+    try {
+      const result = await fetchJSON(`/api/native/${encodeURIComponent(token)}/action`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({action: "strokes", strokes: snapshot}),
+      });
+      game = result.game;
+      drawState.revision = Number(game.state?.revision ?? drawState.revision);
+      setNotice("");
+      return true;
+    } catch (error) {
+      drawState.dirty = true;
+      setNotice(errorMessage(error, "画布同步失败，请稍后重试"), true);
+      return false;
+    } finally {
+      drawState.syncing = false;
+      if (drawState.dirty && !drawState.activeStroke && game?.status === "active") {
+        void flushDrawStrokes();
+      } else {
+        render({force: true});
+      }
+    }
+  }
+
+  async function submitBotDrawGuess() {
+    if (busy || game?.status !== "active") return;
+    if (!drawState.strokes.length) {
+      setNotice("请先在画布上画几笔，再让陪伴者猜", true);
+      return;
+    }
+    if (drawState.activeStroke) {
+      drawState.activeStroke = null;
+      drawState.dirty = true;
+    }
+    if (drawState.dirty && !(await flushDrawStrokes())) return;
+    let imageDataUrl = "";
+    if (drawState.canvas && typeof drawState.canvas.toDataURL === "function") {
+      imageDataUrl = drawState.canvas.toDataURL("image/png");
+    }
+    if (!imageDataUrl) {
+      setNotice("当前环境不支持导出画布图像", true);
+      return;
+    }
+    await sendAction({action: "bot_guess", image_data_url: imageDataUrl});
+  }
+
+  function renderTurtleSoup(state) {
+    const layout = node("div", "soup-layout");
+    const surface = node("article", "soup-surface");
+    const titleText = state.puzzle?.title ? `题面 · ${state.puzzle.title}` : "题面";
+    surface.append(node("h2", "", titleText), node("p", "", state.puzzle?.surface || "题面暂不可用"));
+    if (state.puzzle?.solution) {
+      const solutionBox = node("div", "soup-solution");
+      solutionBox.append(node("h3", "", "汤底揭晓"), node("p", "", state.puzzle.solution));
+      surface.appendChild(solutionBox);
+    }
+    layout.appendChild(surface);
+
+    const entriesPanel = node("section", "soup-entries");
+    entriesPanel.appendChild(node("h2", "", "提示与推理记录"));
+    const entries = Array.isArray(state.entries) ? state.entries : [];
+    if (!entries.length) {
+      entriesPanel.appendChild(node("p", "summary-line", "还没有提示或提问记录；可点击下方获取提示，或在聊天中向陪伴者提问。"));
+    } else {
+      const list = node("ol", "soup-entry-list");
+      const kindLabels = {hint: "提示", question: "提问", answer: "完整推理", reverse: "反猜回合"};
+      entries.forEach((entry, index) => {
+        const item = node("li", `soup-entry ${entry.kind === "hint" ? "is-hint" : ""}`.trim());
+        const head = node("div", "soup-entry-head");
+        head.append(node("span", "soup-badge", kindLabels[entry.kind] || "记录"));
+        head.append(node("span", entry.kind === "question" ? "soup-verdict" : "",
+          entry.kind === "question" ? (entry.response || "") : `#${index + 1}`));
+        item.appendChild(head);
+        if (entry.kind === "hint") {
+          item.appendChild(node("p", "soup-entry-response", entry.response || "提示暂不可用"));
+        } else {
+          if (entry.prompt) item.appendChild(node("p", "soup-entry-prompt", entry.prompt));
+          if (entry.response && entry.kind !== "question") {
+            item.appendChild(node("p", "soup-entry-response", entry.response));
+          }
+        }
+        list.appendChild(item);
+      });
+      entriesPanel.appendChild(list);
+    }
+    layout.appendChild(entriesPanel);
+    $("gameBoard").appendChild(layout);
+  }
+
+  function renderDrawGuess(state) {
+    syncLocalDrawStrokes(state);
+    const isGuesser = state.viewer_role === "guesser";
+    const editable = !isGuesser && game.status === "active" && !busy;
+    const layout = node("div", "draw-layout");
+
+    const promptCard = node("section", "draw-prompt-card");
+    const promptMain = node("div", "draw-prompt-main");
+    if (game.status !== "active" && state.answer) {
+      promptMain.append(
+        node("span", "eyebrow", "本轮答案"),
+        node("div", "draw-prompt-word", state.answer),
+        node("p", "draw-prompt-note", state.solved ? "合作猜中，太棒了！" : (state.timed_out ? "作画倒计时结束。" : "本轮已结束。")),
+      );
+      promptCard.appendChild(promptMain);
+    } else if (!isGuesser) {
+      const wordText = state.answer ? (drawState.wordHidden ? "已隐藏（点击右侧显示）" : state.answer) : "题词加载中";
+      promptMain.append(
+        node("span", "eyebrow", "本题题词（仅作画方可见）"),
+        node("div", "draw-prompt-word", wordText),
+        node("p", "draw-prompt-note", "陪伴者看不到题词，请作画后点击「让陪伴者猜」或在聊天中发送画作。"),
+      );
+      promptCard.appendChild(promptMain);
+      const toggle = node("button", "control-button", drawState.wordHidden ? "显示题词" : "隐藏题词");
+      toggle.type = "button";
+      toggle.dataset.drawToggleWord = "1";
+      toggle.addEventListener("click", () => {
+        drawState.wordHidden = !drawState.wordHidden;
+        render({force: true});
+      });
+      promptCard.appendChild(toggle);
+    } else {
+      promptMain.append(
+        node("span", "eyebrow", "你是猜测方"),
+        node("p", "draw-prompt-note", "观察画布上的作品，在下方输入你的猜测；本轮结束前不会显示答案。"),
+      );
+      promptCard.appendChild(promptMain);
+    }
+    layout.appendChild(promptCard);
+
+    if (!isGuesser && game.status === "active") {
+      const toolbar = node("div", "draw-toolbar");
+      const swatches = node("div", "draw-swatches");
+      DRAW_COLORS.forEach(({hex, label}) => {
+        const swatch = node("button", "draw-swatch");
+        swatch.type = "button";
+        swatch.style.backgroundColor = hex;
+        swatch.setAttribute("aria-label", label);
+        swatch.setAttribute("aria-pressed", String(drawState.color === hex));
+        swatch.dataset.drawColor = hex;
+        swatch.disabled = !editable;
+        swatch.addEventListener("click", () => {
+          drawState.color = hex;
+          render({force: true});
+        });
+        swatches.appendChild(swatch);
+      });
+      const widths = node("div", "draw-widths");
+      DRAW_WIDTHS.forEach(({size, label}) => {
+        const btn = node("button", "draw-width-btn", label);
+        btn.type = "button";
+        btn.setAttribute("aria-pressed", String(drawState.width === size));
+        btn.dataset.drawWidth = String(size);
+        btn.disabled = !editable;
+        btn.addEventListener("click", () => {
+          drawState.width = size;
+          render({force: true});
+        });
+        widths.appendChild(btn);
+      });
+      toolbar.append(swatches, widths);
+      layout.appendChild(toolbar);
+    }
+
+    const canvasShell = node("div", "draw-canvas-shell");
+    const canvas = node("canvas", `draw-canvas ${editable ? "" : "readonly"}`.trim());
+    canvas.width = 640;
+    canvas.height = 420;
+    canvas.setAttribute("aria-label", editable ? "你画我猜画布，可拖动绘制" : "你画我猜画布（只读）");
+    drawState.canvas = canvas;
+    if (editable) {
+      canvas.addEventListener("pointerdown", (event) => {
+        if (busy || game?.status !== "active") return;
+        event.preventDefault?.();
+        canvas.setPointerCapture?.(event.pointerId);
+        drawState.activeStroke = {
+          color: drawState.color,
+          width: drawState.width,
+          points: [drawCanvasPoint(event, canvas)],
+        };
+        drawState.strokes.push(drawState.activeStroke);
+        drawState.dirty = true;
+        paintDrawCanvas(canvas);
+      });
+      canvas.addEventListener("pointermove", (event) => {
+        if (!drawState.activeStroke) return;
+        event.preventDefault?.();
+        drawState.activeStroke.points.push(drawCanvasPoint(event, canvas));
+        paintDrawCanvas(canvas);
+      });
+      const finishStroke = (event) => {
+        if (!drawState.activeStroke) return;
+        event.preventDefault?.();
+        canvas.releasePointerCapture?.(event.pointerId);
+        drawState.activeStroke = null;
+        drawState.dirty = true;
+        paintDrawCanvas(canvas);
+        void flushDrawStrokes();
+      };
+      canvas.addEventListener("pointerup", finishStroke);
+      canvas.addEventListener("pointercancel", finishStroke);
+    }
+    paintDrawCanvas(canvas);
+    canvasShell.appendChild(canvas);
+    layout.appendChild(canvasShell);
+
+    const guesses = Array.isArray(state.guesses) ? state.guesses : [];
+    const guessBox = node("section", "draw-guesses");
+    guessBox.appendChild(node("h2", "", isGuesser ? "猜测记录" : "陪伴者的猜测"));
+    if (!guesses.length) {
+      guessBox.appendChild(node("p", "summary-line", isGuesser ? "还没有猜测" : "陪伴者还没有猜，画好后可点击下方「让陪伴者猜」"));
+    } else {
+      const list = node("ul", "draw-guess-list");
+      guesses.forEach((item, index) => {
+        const chip = node("li", `draw-guess-chip ${item.correct ? "correct" : ""}`.trim(),
+          `第 ${item.number || index + 1} 次：${item.guess}${item.correct ? " · 猜中" : " · 未命中"}`);
+        list.appendChild(chip);
+      });
+      guessBox.appendChild(list);
+    }
+    layout.appendChild(guessBox);
+    $("gameBoard").appendChild(layout);
+  }
+
   function renderBoard(state) {
     const host = $("gameBoard");
     host.replaceChildren();
@@ -397,16 +719,9 @@
     } else if (game.game_type === "blackjack") {
       renderBlackjack(state);
     } else if (game.game_type === "turtle_soup") {
-      const surface = node("article", "soup-surface");
-      surface.append(node("h2", "题面"), node("p", "", state.puzzle?.surface || "题面暂不可用"));
-      if (state.puzzle?.solution) surface.append(node("p", "summary-line", `汤底：${state.puzzle.solution}`));
-      host.appendChild(surface);
+      renderTurtleSoup(state);
     } else if (game.game_type === "draw_guess") {
-      const guesses = Array.isArray(state.guesses) ? state.guesses : [];
-      const list = node("div", "soup-surface");
-      list.append(node("h2", "你的猜测"));
-      list.append(node("p", "", guesses.length ? guesses.map((item) => `${item.guess}${item.correct ? " · 猜中" : " · 未命中"}`).join("\n") : "还没有猜测"));
-      host.appendChild(list);
+      renderDrawGuess(state);
     }
     renderSummary(state);
   }
@@ -425,30 +740,50 @@
         controls.append(iconButton("plus", "再要一张", {action: "hit"}, "primary"));
         controls.append(iconButton("hand", "停牌", {action: "stand"}));
       } else if (game.game_type === "turtle_soup") {
-        controls.append(iconButton("lightbulb", "给我一点提示", {action: "hint"}));
+        const exhausted = (state.hint_limit || 0) > 0 && (state.hints_used || 0) >= (state.hint_limit || 0);
+        const hintBtn = iconButton("lightbulb", exhausted ? "已无更多提示" : "给我一点提示", {action: "hint"});
+        if (exhausted) hintBtn.disabled = true;
+        controls.append(hintBtn);
         controls.append(iconButton("flag", "揭晓汤底", {action: "give_up"}, "warm"));
       } else if (game.game_type === "draw_guess") {
-        const form = node("form", "guess-form");
-        const input = node("input");
-        input.name = "guess";
-        input.maxLength = 80;
-        input.autocomplete = "off";
-        input.placeholder = "输入你的猜测";
-        input.setAttribute("aria-label", "输入你的猜测");
-        const button = node("button", "control-button primary");
-        button.type = "submit";
-        button.innerHTML = '<i data-lucide="send" aria-hidden="true"></i><span>提交</span>';
-        button.disabled = busy;
-        form.append(input, button);
-        form.addEventListener("submit", (event) => {
-          event.preventDefault();
-          const guess = input.value.trim();
-          if (guess) sendAction({action: "guess", guess});
-        });
-        controls.appendChild(form);
+        if (state.viewer_role === "guesser") {
+          const form = node("form", "guess-form");
+          const input = node("input");
+          input.name = "guess";
+          input.maxLength = 80;
+          input.autocomplete = "off";
+          input.placeholder = "输入你的猜测";
+          input.setAttribute("aria-label", "输入你的猜测");
+          const button = node("button", "control-button primary");
+          button.type = "submit";
+          button.innerHTML = '<i data-lucide="send" aria-hidden="true"></i><span>提交猜测</span>';
+          button.disabled = busy;
+          form.append(input, button);
+          form.addEventListener("submit", (event) => {
+            event.preventDefault();
+            const guess = input.value.trim();
+            if (guess) sendAction({action: "guess", guess});
+          });
+          controls.appendChild(form);
+        } else {
+          const hasStrokes = drawState.strokes.length > 0;
+          const undoBtn = iconButton("undo-2", "撤销一笔", {action: "undo"});
+          undoBtn.disabled = busy || drawState.syncing || !hasStrokes;
+          const clearBtn = iconButton("trash-2", "清空画布", {action: "clear"});
+          clearBtn.disabled = busy || drawState.syncing || !hasStrokes;
+          const guessBtn = node("button", "control-button primary");
+          guessBtn.type = "button";
+          guessBtn.innerHTML = '<i data-lucide="sparkles" aria-hidden="true"></i><span>让陪伴者猜</span>';
+          guessBtn.disabled = busy || drawState.syncing || !hasStrokes;
+          guessBtn.addEventListener("click", () => { void submitBotDrawGuess(); });
+          controls.append(undoBtn, clearBtn, guessBtn);
+        }
         controls.append(iconButton("flag", "放弃本局", {action: "give_up"}, "warm"));
       } else if (game.game_type === "xiangqi") {
-        controls.append(node("p", "summary-line", selected ? "选择要移动到的位置" : "点击红方棋子开始选择"));
+        const sideLabel = state.human_side === "black" ? "黑方" : "红方";
+        const hint = !turnIsHuman(state) ? "对方思考中，请稍候"
+          : (selected ? "选择要移动到的位置" : `点击${sideLabel}棋子开始选择`);
+        controls.append(node("p", "summary-line", hint));
       }
     }
     if (game.status === "active") controls.append(iconButton("x", "结束对局", {action: "close"}, "warm"));
@@ -461,6 +796,24 @@
   function renderHistory() {
     const list = $("gameHistory");
     list.replaceChildren();
+    if (game.game_type === "turtle_soup" && Array.isArray(game.state?.entries)) {
+      const entries = game.state.entries;
+      $("actionCount").textContent = String(entries.length);
+      const labelsByKind = {hint: "提示", question: "提问", answer: "推理", reverse: "反猜"};
+      entries.slice(-8).reverse().forEach((entry) => {
+        const actor = labelsByKind[entry.kind] || "进展";
+        const detail = entry.kind === "hint"
+          ? (entry.response || "已揭示提示")
+          : entry.kind === "question"
+            ? `${entry.prompt || ""} → ${entry.response || ""}`
+            : (entry.response || entry.prompt || "进展");
+        const item = node("li");
+        item.append(node("span", "", actor), node("span", "", detail));
+        list.appendChild(item);
+      });
+      if (!entries.length) list.append(node("li", "", "等待第一步"));
+      return;
+    }
     const events = game.events || game.moves || [];
     $("actionCount").textContent = String(events.length);
     events.slice(-8).reverse().forEach((event, index) => {
@@ -476,7 +829,7 @@
             : event[1] === "roll" ? `掷出 ${event[2]}` : event[1] === "hold" ? "存分" : String(event[1]);
         }
       } else if (event && typeof event === "object") {
-        actor = event.guess ? "你" : (event.action || "进展");
+        actor = event.guess ? (game.state?.viewer_role === "guesser" ? "你" : "陪伴者") : (event.action || "进展");
         action = event.guess ? `${event.guess}${event.correct ? " · 命中" : " · 未命中"}`
           : (event.question || event.answer || event.action || "进展");
       } else if (typeof event === "string") {
@@ -528,18 +881,24 @@
     game_not_found: "这局已不可用，请在聊天中打开当前房间",
     game_not_active: "本局已结束，棋盘已同步",
     game_not_found_in_scope: "这局已不可用，请在聊天中打开当前房间",
-    invalid_game_arguments: "落子信息未被接受，请同步棋盘后重新选择",
+    game_drawer_only: "只有作画方可以操作画布",
+    game_guesser_only: "只有猜测方可以提交猜词",
+    game_drawing_empty: "请先在画布上画几笔，再让陪伴者猜",
+    game_vision_unavailable: "当前未配置视觉模型，可将画作发到聊天让陪伴者猜",
+    invalid_game_arguments: "操作参数未被接受，请同步棋盘后重试",
   };
   const errorMessage = (error, fallback) => errors[error.message]
     || (/[\u3400-\u9fff]/.test(error.message || "") ? error.message : fallback);
 
   async function load({quiet = true, recovery = false} = {}) {
-    if (loading || dragState || gomoku.isInteracting() || (busy && !recovery)) return;
+    if (loading || dragState || drawState.activeStroke || drawState.syncing || drawState.dirty
+        || gomoku.isInteracting() || (busy && !recovery)) return;
     loading = true;
     const sequence = ++requestSequence;
     try {
       const result = await fetchJSON(`/api/native/${encodeURIComponent(token)}/state`);
-      if (sequence !== requestSequence || dragState || gomoku.isInteracting()) return;
+      if (sequence !== requestSequence || dragState || drawState.activeStroke
+          || drawState.syncing || drawState.dirty || gomoku.isInteracting()) return;
       game = result.game;
       $("connectionBadge").dataset.state = "online";
       $("connectionBadge").querySelector("span").textContent = "实时同步";
@@ -569,6 +928,10 @@
         body: JSON.stringify(payload),
       });
       game = result.game;
+      if (game?.game_type === "draw_guess" && ["undo", "clear"].includes(payload?.action)) {
+        drawState.dirty = false;
+        drawState.revision = -1;
+      }
       setNotice("");
     } catch (error) {
       setNotice(errorMessage(error, "这一步未收到确认，请以同步后的棋盘为准"), true);

@@ -58,30 +58,57 @@ class PikafishService:
     def running(self) -> bool:
         return bool(self._process and self._process.returncode is None)
 
+    def _configured_candidate(self) -> Path | None:
+        if not self.configured_path:
+            return None
+        configured = Path(self.configured_path).expanduser()
+        return configured.resolve() if configured.is_file() else None
+
     def binary_path(self) -> Path | None:
-        if self.configured_path:
-            configured = Path(self.configured_path).expanduser()
-            if configured.is_file():
-                return configured.resolve()
+        configured = self._configured_candidate()
+        if configured is not None:
+            return configured
         metadata = self._install_metadata()
-        candidate = self.install_root / str(metadata.get("binary") or "")
-        return candidate.resolve() if candidate.is_file() else None
+        recorded = str(metadata.get("binary") or "").strip()
+        if recorded:
+            candidate = self.install_root / recorded
+            if candidate.is_file():
+                return candidate.resolve()
+        names = ("pikafish.exe", "pikafish") if os.name == "nt" else ("pikafish",)
+        for name in names:
+            fallback = self.install_root / name
+            if fallback.is_file():
+                return fallback.resolve()
+        return None
 
     def status(self) -> dict[str, object]:
         binary = self.binary_path()
+        configured = self._configured_candidate()
+        configured_missing = bool(self.configured_path and configured is None)
         metadata = self._install_metadata()
         network = binary.parent / "pikafish.nnue" if binary else None
         available = bool(binary and network and network.is_file())
         status_error = self.error
-        if binary and not available and not status_error:
+        if configured_missing and not status_error:
+            status_error = f"配置的 Pikafish 路径不存在：{self.configured_path}"
+        elif binary and not available and not status_error:
             status_error = f"缺少神经网络文件：{network}"
+        try:
+            resolved_install = self.install_root.resolve()
+        except OSError:
+            resolved_install = self.install_root
+        managed = bool(binary and (resolved_install in binary.parents or self.install_root in binary.parents))
         return {
             "available": available,
             "running": self.running,
             "version": self.version or str(metadata.get("version") or ""),
             "path": str(binary) if binary else "",
-            "managed": bool(binary and self.install_root in binary.parents),
-            "configured": bool(binary and self.configured_path),
+            "nnue_path": str(network) if (network and network.is_file()) else "",
+            "install_root": str(self.install_root),
+            "configured_path": self.configured_path,
+            "configured_missing": configured_missing,
+            "managed": managed,
+            "configured": bool(binary and configured == binary),
             "allow_download": self.allow_download,
             "auto_download": self.auto_download,
             "platform": self._platform_label(),

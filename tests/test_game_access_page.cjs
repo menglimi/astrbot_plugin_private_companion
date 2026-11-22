@@ -45,7 +45,7 @@ function harness(request, single = false) {
       addEventListener(name, fn) { this.listeners[name] = fn; },
       removeEventListener(name) { delete this.listeners[name]; }};
   }
-  return {access:window.CompanionGameAccess, calls, node,
+  return {access:window.CompanionGameAccess, calls, node, window, product,
     select: value => { selected = value; },
     change: (root, value) => root.listeners.change({target:{value,matches:() => true}}),
     click: (root, kind) => root.listeners.click({target:{closest:() => ({dataset:{gameAccess:kind}})}})};
@@ -129,5 +129,26 @@ test("只有一个私聊时也提供明确选择入口，不自动授权", async
   await h.change(root, "first"); await settle();
   assert.match(root.innerHTML, /value="first" selected/);
   assert.equal(h.calls.filter(call => call.method === "POST").length, 0);
+  h.access.unmount();
+});
+
+test("保存授权后联动刷新扩展清单与游戏面板运行状态，并暴露 refresh 入口", async () => {
+  let reads = 0;
+  const h = harness(async (method) => method === "GET"
+    ? status(`tok-${++reads}`, reads > 1)
+    : {status: status("saved-tok", true), runtime: {state: "running", error_code: null}});
+  let refreshedIntegrations = 0;
+  const synced = [];
+  h.product.refreshIntegrations = async () => { refreshedIntegrations += 1; };
+  h.window.CompanionNativeExtensionPanel = {
+    syncRuntime: (name, runtime) => synced.push({name, runtime}),
+  };
+  const root = h.node();
+  h.access.mount(root); await settle();
+  h.click(root, "gomoku"); await settle();
+  assert.equal(refreshedIntegrations, 1);
+  assert.deepEqual(synced, [{name: "game", runtime: {state: "running", error_code: null}}]);
+  h.access.refresh(); await settle();
+  assert.equal(reads, 2);
   h.access.unmount();
 });

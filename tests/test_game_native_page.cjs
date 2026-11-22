@@ -22,6 +22,8 @@ class Element {
   }
   set textContent(value) { this.text = String(value); this.children = []; }
   get textContent() { return this.text + this.children.map(child => child.textContent).join(" "); }
+  set innerHTML(value) { this._innerHTML = String(value); this.children = []; this.text = this._innerHTML.replace(/<[^>]*>/g, ""); }
+  get innerHTML() { return this._innerHTML || ""; }
   append(...children) { this.children.push(...children); children.forEach(child => { child.parent = this; }); }
   appendChild(child) { this.append(child); child.parent = this; return child; }
   replaceChildren(...children) { this.text = ""; this.children = children; }
@@ -36,6 +38,21 @@ class Element {
   focus() { if (this.onFocus) this.onFocus(this); }
   setPointerCapture(id) { this.capturedPointer = id; }
   releasePointerCapture(id) { if (this.capturedPointer === id) this.capturedPointer = null; }
+  getContext(kind) {
+    if (this.tag !== "canvas" || kind !== "2d") return null;
+    if (!this._ctx) {
+      this._ctx = {ops: [], clearRect(...a) { this.ops.push(["clearRect", ...a]); },
+        fillRect(...a) { this.ops.push(["fillRect", ...a]); },
+        beginPath() { this.ops.push(["beginPath"]); },
+        moveTo(...a) { this.ops.push(["moveTo", ...a]); },
+        lineTo(...a) { this.ops.push(["lineTo", ...a]); },
+        stroke() { this.ops.push(["stroke"]); }};
+    }
+    return this._ctx;
+  }
+  toDataURL(mime = "image/png") {
+    return this.tag === "canvas" ? `data:${mime};base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFxoAAAAASUVORK5CYII=` : "";
+  }
 }
 
 function descendants(element) { return [element, ...element.children.flatMap(descendants)]; }
@@ -354,4 +371,174 @@ test("井字棋仍显示圈叉，并按棋子标记区分双方", async () => {
   assert.equal(pieces[1].textContent, "○");
   assert.equal($("gameHistory").children[0].children[0].textContent, "陪伴者");
   assert.equal($("gameHistory").children[1].children[0].textContent, "你");
+});
+
+test("原生页面 Brand 不再指向无效旧根路径", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../astrbot_host/native_extensions/game/web/native.html"), "utf8");
+  assert.doesNotMatch(html, /class="game-brand"[^>]*href="\/"/);
+  assert.match(html, /<div class="game-brand"[\s>]/);
+});
+
+test("二十一点同时兼容符号花色与英文花色名并正确标红", async () => {
+  const game = {
+    game_type: "blackjack", status: "active", outcome: null, moves: [],
+    state: {
+      phase: "player_turn", dealer_hidden: false, dealer_total: 18,
+      dealer_cards: [{rank: "A", suit: "♥"}, {rank: "7", suit: "spades"}],
+      hands: {"1": {value: 20, cards: [{rank: "K", suit: "diamonds"}, {rank: "Q", suit: "♣"}, {rank: "10", suit: "♦"}, {rank: "9", suit: "hearts"}]}},
+    },
+  };
+  const {$} = await render(game);
+  const cards = descendants($("gameBoard")).filter(el => el.className.split(/\s+/).includes("playing-card"));
+  assert.equal(cards.length, 6);
+  const byRank = Object.fromEntries(cards.map(c => [c.children[0].textContent, c.className.split(/\s+/)]));
+  assert.equal(byRank["A"].includes("red"), true);
+  assert.equal(byRank["K"].includes("red"), true);
+  assert.equal(byRank["10"].includes("red"), true);
+  assert.equal(byRank["9"].includes("red"), true);
+  assert.equal(byRank["7"].includes("red"), false);
+  assert.equal(byRank["Q"].includes("red"), false);
+});
+
+test("中国象棋按执红/执黑自适应文案、翻转棋盘并高亮合法落点", async () => {
+  const emptyBoard = () => Array.from({length: 10}, () => Array(9).fill("."));
+  const blackBoard = emptyBoard();
+  blackBoard[0][1] = "n";
+  blackBoard[9][1] = "N";
+  const blackGame = {
+    game_type: "xiangqi", status: "active", outcome: null, moves: [],
+    state: {board: blackBoard, human_side: "black", turn: "black", move_count: 1, legal_moves: [[0, 1, 2, 2]]},
+  };
+  const {$, requests} = await render(blackGame);
+  assert.match($("actionControls").textContent, /点击黑方棋子开始选择/);
+  const cells = descendants($("gameBoard")).filter(el => el.className.split(/\s+/).includes("xiangqi-cell"));
+  assert.equal(cells.length, 90);
+  // 执黑时棋盘翻转，第 10 行(row 9)在上方，第 1 行(row 0)在下方
+  assert.match(cells[0].attributes["aria-label"], /^10 行 9 列/);
+  const knightCell = cells.find(cell => cell.attributes["aria-label"].startsWith("1 行 2 列"));
+  click(knightCell);
+  const targetCell = descendants($("gameBoard")).find(cell => cell.attributes["aria-label"]?.startsWith("3 行 3 列"));
+  assert.equal(targetCell.className.split(/\s+/).includes("legal-target"), true);
+  click(targetCell);
+  await flush();
+  const post = requests.find(r => r.options.method === "POST");
+  assert.deepEqual(JSON.parse(post.options.body), {action: "move", from_row: 0, from_column: 1, to_row: 2, to_column: 2});
+
+  const redGame = {
+    game_type: "xiangqi", status: "active", outcome: null, moves: [],
+    state: {board: blackBoard, human_side: "red", turn: "red", move_count: 0, legal_moves: [[9, 1, 7, 2]]},
+  };
+  const redView = await render(redGame);
+  assert.match(redView.$("actionControls").textContent, /点击红方棋子开始选择/);
+});
+
+test("海龟汤展示非空题目标题、完整渲染历史问答与提示正文，并在用尽后禁用提示按钮", async () => {
+  const active = {
+    game_type: "turtle_soup", status: "active", outcome: null,
+    moves: [["hint", "注意时间差"]],
+    state: {
+      puzzle: {title: "午夜敲门声", surface: "半夜门响了三声，开门后空无一人，他却长舒一口气。"},
+      question_count: 1, discovered_fact_count: 1, key_fact_count: 3, hints_used: 1, hint_limit: 2,
+      entries: [
+        {kind: "question", prompt: "门外的人是熟人吗？", response: "是"},
+        {kind: "hint", prompt: "提示", response: "注意时间差"},
+      ],
+    },
+  };
+  const afterHint = JSON.parse(JSON.stringify(active));
+  afterHint.state.hints_used = 2;
+  afterHint.state.entries.push({kind: "hint", prompt: "提示", response: "敲门其实是约定信号"});
+  const {$, requests} = await render(active, {fetchAction: () => ({game: afterHint})});
+  const headings = descendants($("gameBoard")).filter(el => el.tag === "h2");
+  assert.equal(headings[0].textContent, "题面 · 午夜敲门声");
+  assert.equal(headings[0].className, "");
+  assert.match($("gameBoard").textContent, /门外的人是熟人吗/);
+  assert.match($("gameBoard").textContent, /注意时间差/);
+  assert.doesNotMatch($("gameHistory").textContent, /hint \| hint/);
+  const hintButton = byText($("actionControls"), "给我一点提示");
+  assert.equal(hintButton.disabled, false);
+  click(hintButton);
+  await flush();
+  assert.equal(requests.filter(r => r.options.method === "POST").length, 1);
+  assert.match($("gameBoard").textContent, /敲门其实是约定信号/);
+  const exhausted = byText($("actionControls"), "已无更多提示");
+  assert.equal(exhausted.disabled, true);
+});
+
+test("你画我猜作画方可见题词与可绘画布，支持落笔同步、撤销、清空和让陪伴者猜", async () => {
+  const drawerGame = {
+    game_type: "draw_guess", status: "active", outcome: null, moves: [],
+    state: {
+      viewer_role: "drawer", answer: "向日葵", guess_count: 0, max_guesses: 5,
+      remaining_seconds: 120, revision: 0, strokes: [], guesses: [],
+    },
+  };
+  const synced = JSON.parse(JSON.stringify(drawerGame));
+  synced.state.revision = 1;
+  synced.state.strokes = [{color: "#1c2420", width: 6, points: [[0.1, 0.2], [0.5, 0.5]]}];
+  const {$, requests} = await render(drawerGame, {
+    fetchAction: body => {
+      if (body.action === "strokes") {
+        synced.state.strokes = body.strokes;
+        synced.state.revision += 1;
+        return {game: JSON.parse(JSON.stringify(synced))};
+      }
+      return {game: JSON.parse(JSON.stringify(synced))};
+    },
+  });
+  const headings = descendants($("gameBoard")).filter(el => el.tag === "h2");
+  assert.equal(headings[0].textContent, "陪伴者的猜测");
+  assert.equal(headings[0].className, "");
+  assert.match($("gameBoard").textContent, /向日葵/);
+  click(byText($("gameBoard"), "隐藏题词"));
+  assert.doesNotMatch($("gameBoard").textContent, /向日葵/);
+  click(byText($("gameBoard"), "显示题词"));
+  assert.match($("gameBoard").textContent, /向日葵/);
+
+  const canvas = descendants($("gameBoard")).find(el => el.tag === "canvas");
+  assert.ok(canvas);
+  assert.doesNotMatch(canvas.className, /readonly/);
+  canvas.listeners.pointerdown(pointer(160, 220));
+  canvas.listeners.pointermove(pointer(400, 400));
+  canvas.listeners.pointerup(pointer(400, 400));
+  await flush();
+  const posts = requests.filter(r => r.options.method === "POST").map(r => JSON.parse(r.options.body));
+  assert.equal(posts[0].action, "strokes");
+  assert.equal(posts[0].strokes.length, 1);
+
+  click(byText($("actionControls"), "让陪伴者猜"));
+  await flush();
+  const afterGuess = requests.filter(r => r.options.method === "POST").map(r => JSON.parse(r.options.body));
+  assert.equal(afterGuess[1].action, "bot_guess");
+  assert.match(afterGuess[1].image_data_url, /^data:image\/png;base64,/);
+
+  click(byText($("actionControls"), "撤销一笔"));
+  await flush();
+  click(byText($("actionControls"), "清空画布"));
+  await flush();
+  const allActions = requests.filter(r => r.options.method === "POST").map(r => JSON.parse(r.options.body).action);
+  assert.deepEqual(allActions, ["strokes", "bot_guess", "undo", "clear"]);
+});
+
+test("你画我猜猜测方不暴露题词，仅展示只读画布与猜词输入框", async () => {
+  const guesserGame = {
+    game_type: "draw_guess", status: "active", outcome: null, moves: [],
+    state: {
+      viewer_role: "guesser", guess_count: 0, max_guesses: 5, remaining_seconds: 90, revision: 1,
+      strokes: [{color: "#d9534f", width: 6, points: [[0.2, 0.2], [0.8, 0.8]]}], guesses: [],
+    },
+  };
+  const {$, requests} = await render(guesserGame);
+  assert.match($("gameBoard").textContent, /你是猜测方/);
+  assert.doesNotMatch($("gameBoard").textContent, /本题题词/);
+  const canvas = descendants($("gameBoard")).find(el => el.tag === "canvas");
+  assert.match(canvas.className, /readonly/);
+  assert.equal(canvas.listeners.pointerdown, undefined);
+  const input = descendants($("actionControls")).find(el => el.tag === "input");
+  const form = descendants($("actionControls")).find(el => el.tag === "form");
+  input.value = "向日葵";
+  form.listeners.submit({preventDefault() {}});
+  await flush();
+  const post = requests.find(r => r.options.method === "POST");
+  assert.deepEqual(JSON.parse(post.options.body), {action: "guess", guess: "向日葵"});
 });

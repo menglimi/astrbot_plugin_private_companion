@@ -74,6 +74,8 @@ window.CompanionGameAccess = (() => {
       if (!current(ticket)) return;
       status = result.status;
       notice = command.enabled ? `已允许当前私聊使用${labels[kind]}。` : `已撤回当前私聊的${labels[kind]}授权。`;
+      try { await product.refreshIntegrations?.(); } catch (_) {}
+      if (current(ticket)) window.CompanionNativeExtensionPanel?.syncRuntime?.("game", result.runtime);
     } catch (error) {
       if (["game_access_changed","game_provider_changed","game_access_request_invalid","capability_not_active"].includes(error.code)) {
         if (pending.get(key) === command) pending.delete(key);
@@ -121,5 +123,8 @@ window.CompanionGameAccess = (() => {
     root.addEventListener("change", change);
     void load();
   }
-  return {mount, unmount};
+  function refresh() {
+    if (root?.isConnected && !busy) void load();
+  }
+  return {mount, unmount, refresh};
 })();

@@ -33,6 +33,12 @@ records.reality.management = {mihome:{auth:{logged_in:false}, login:{running:fal
     custom_reminders:[{id:"reminder-1", status:"scheduled", topic:"吃早餐", scheduled_text:"10-12 07:30"}],
     camera:{eligible:true, consented:false, enabled:false, proactive_mode:"off", proactive_max_daily:-1}}]};
 records.live.management = {connected:false, authenticated:false, hotkeys:[], error_code:null};
+records.game.management = {
+  server:{enabled:true, running:true, host:"127.0.0.1", port:6331, public_base_url:"", external_base_url:"", access_host:"", local_base_url:"http://127.0.0.1:6331"},
+  xiangqi_engine:{available:false, managed:false, configured:false, configured_path:"", configured_missing:false, path:"", nnue_path:"", version:"", install_root:"/data/pikafish", allow_download:true, running:false, error:"", guidance:"尚未安装 Pikafish 引擎；点击「下载 Pikafish 引擎」即可自动安装。"},
+  tunnel:{installed:true, source:"managed", path:"/data/cloudflared/cloudflared", download_dir:"/data/cloudflared", configured_path:"", configured_missing:false, running:false, ready:false, url:"", error:"", allow_download:true, guidance:"已检测到 cloudflared（托管目录），可按需提供临时公网访问。"},
+  native_games:[], rooms:[], actions:["cloudflared_check", "cloudflared_install", "tunnel_start", "tunnel_stop", "xiangqi_check", "xiangqi_install"],
+};
 let browser;
 before(async () => { browser = await chromium.launch({headless:true,
   ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? {executablePath:process.env.PLAYWRIGHT_EXECUTABLE_PATH} : {})}); });

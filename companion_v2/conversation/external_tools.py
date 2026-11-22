@@ -17,7 +17,11 @@ from threading import Lock
 from types import MappingProxyType
 from typing import Awaitable, Callable
 
-from companion_v2.capabilities.models import CapabilityPackageDescriptor
+from companion_v2.capabilities.models import (
+    CapabilityAuthorizationState,
+    CapabilityDesiredState,
+    CapabilityPackageDescriptor,
+)
 from companion_v2.capabilities.privacy import CORE_GROUP_ACTIONS, PRIVACY_ACTIONS, is_core
 from companion_v2.capabilities.repositories import CapabilityRepository
 from companion_v2.execution.models import (
@@ -358,7 +362,8 @@ class ExternalToolExecutor:
         # 房间能力对核心管理员只是一个开关：模块已装配即视为可用，不再要求
         # 写入角色能力行或逐能力授权；是否开放由扩展自身的启用/暂停决定。
         room_switch = core_admin and package.extension_id == "together"
-        if not core and not room_switch:
+        game_core = core_admin and package.extension_id == "game"
+        if not core and not room_switch and not game_core:
             require(self.tasks.authorize_context(context, action="extension.tool.invoke", observed_at=at))
         installed = require(self.capabilities.installation(extension_id=package.extension_id))
         if (installed.package_id, installed.package_version, installed.artifact_hash) != (
@@ -368,10 +373,43 @@ class ExternalToolExecutor:
                           package_id=package.package_id, package_version=package.package_version))
         if catalog != package:
             raise TaskError("external_package_changed", "tool differs from the trusted package catalog")
-        if not room_switch:
+        if not room_switch and not game_core:
             require(self.capabilities.require_role_enabled(extension_id=package.extension_id,
                     role=context.role_binding.role, bot_id=context.scope.bot_id))
         if core or room_switch:
+            return package
+        if game_core:
+            if installed.desired_state is not CapabilityDesiredState.ACTIVE:
+                raise TaskError("capability_not_admissible", "the capability is not active for new configuration")
+            projected = self.capabilities.projection(
+                extension_id=package.extension_id,
+                role=context.role_binding.role,
+                scope=context.scope,
+            )
+            if projected.is_success:
+                selection = projected.unwrap().role_selection
+                if selection is not None and not selection.enabled:
+                    raise TaskError("capability_role_not_enabled", "game is disabled for this role")
+            consent = self.capabilities.consent(
+                extension_id=package.extension_id,
+                capability_id=current.binding.capability,
+                subject=context.actor.subject,
+                scope=context.scope,
+            )
+            if consent.is_success:
+                return package
+            if consent.failure.code != "capability_consent_missing":
+                raise TaskError(consent.failure.code, consent.failure.reason)
+            previous = self.capabilities.latest_route_authorization(
+                extension_id=package.extension_id,
+                capability_id=current.binding.capability,
+                subject=context.actor.subject,
+                scope=context.scope,
+            )
+            if previous is not None:
+                if previous.state is CapabilityAuthorizationState.ACTIVE:
+                    return package
+                raise TaskError("capability_consent_revoked", "game permission was revoked on this route")
             return package
         return require(self.capabilities.authorize(extension_id=package.extension_id,
                        capability_id=current.binding.capability, subject=context.actor.subject, scope=context.scope))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 import re
 import time
@@ -7,6 +8,56 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .common import Difficulty
+
+MAX_DRAW_STROKES = 400
+MAX_DRAW_POINTS = 12000
+HEX_COLOR_PATTERN = re.compile(r"#[0-9a-f]{6}")
+
+
+def normalize_strokes(value: Any) -> list[dict[str, Any]]:
+    """Validate and bound a normalized canvas stroke document."""
+    if not isinstance(value, list):
+        raise ValueError("画布笔迹格式无效")
+    if len(value) > MAX_DRAW_STROKES:
+        raise ValueError("画布笔画过多，请先清理部分内容")
+    normalized: list[dict[str, Any]] = []
+    total_points = 0
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise ValueError("画布笔迹格式无效")
+        color = str(raw.get("color") or "#202522").strip().lower()
+        if not HEX_COLOR_PATTERN.fullmatch(color):
+            raise ValueError("画笔颜色无效")
+        raw_width = raw.get("width", 4)
+        if isinstance(raw_width, bool):
+            raise ValueError("画笔粗细无效")
+        try:
+            width = float(raw_width)
+        except (TypeError, ValueError):
+            raise ValueError("画笔粗细无效") from None
+        if not math.isfinite(width) or not 1 <= width <= 32:
+            raise ValueError("画笔粗细超出范围")
+        raw_points = raw.get("points")
+        if not isinstance(raw_points, list) or not raw_points:
+            raise ValueError("笔画没有有效坐标")
+        points: list[list[float]] = []
+        for point in raw_points:
+            if not isinstance(point, list) or len(point) != 2:
+                raise ValueError("笔画坐标格式无效")
+            if isinstance(point[0], bool) or isinstance(point[1], bool):
+                raise ValueError("笔画坐标格式无效")
+            try:
+                x, y = float(point[0]), float(point[1])
+            except (TypeError, ValueError):
+                raise ValueError("笔画坐标格式无效") from None
+            if not math.isfinite(x) or not math.isfinite(y) or not (0 <= x <= 1 and 0 <= y <= 1):
+                raise ValueError("笔画坐标超出画布")
+            points.append([round(x, 5), round(y, 5)])
+        total_points += len(points)
+        if total_points > MAX_DRAW_POINTS:
+            raise ValueError("画布坐标过多，请先清理部分内容")
+        normalized.append({"color": color, "width": round(width, 2), "points": points})
+    return normalized
 
 
 @dataclass(frozen=True, slots=True)
