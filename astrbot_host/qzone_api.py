@@ -8,6 +8,7 @@ provider directly, and no route accepts a target override.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from astrbot.api.web import request
@@ -18,6 +19,7 @@ from companion_v2.foundation.outcome import Outcome
 from companion_v2.qzone.comment_scan import candidate_for
 from companion_v2.qzone.images import (MAX_PUBLISH_BODY, PublishImage, album_images, candidate_image,
                                       image_batch)
+from companion_v2.storage.runtime import StorageOpenError
 
 from .management_identity import dashboard_operator
 
@@ -68,7 +70,9 @@ class QzoneWebAPI:
         )
 
     async def status(self):
-        return await self._run(lambda access, service, at: access.status(self._operator(at), at))
+        return await self._run_read(
+            lambda session, runtime, access, service, at, username, _cursor: access.status(
+                self._operator_for(runtime, username, at), at))
 
     async def configure(self):
         command = await self._command()
@@ -156,12 +160,11 @@ class QzoneWebAPI:
         return await self._run(publish)
 
     async def album(self):
-        def read_album(access, service, at):
+        def read_album(session, runtime, access, service, at, username, cursor):
             from companion_v2.references.management import ReferenceMaterialManagement
-            session = self.controller.session or self.controller.last_session
             return ReferenceMaterialManagement(session.application).album(
-                self._operator(at), self._context(), at=at, cursor=request.query.get("cursor"))
-        return await self._run(read_album)
+                self._operator_for(runtime, username, at), session.profile.target, at=at, cursor=cursor)
+        return await self._run_read(read_album, include_cursor=True)
 
     async def refresh(self):
         async def refresh_credentials(access, service, at):
@@ -229,11 +232,14 @@ class QzoneWebAPI:
 
     # ---- plumbing ------------------------------------------------------
 
-    def _operator(self, at):
-        username = request.username
+    @staticmethod
+    def _operator_for(runtime, username, at):
         if type(username) is not str or not username.strip() or username.startswith("api_key:"):
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
-        return dashboard_operator(self.controller.runtime, username, at=at)
+        return dashboard_operator(runtime, username, at=at)
+
+    def _operator(self, at):
+        return self._operator_for(self.controller.runtime, request.username, at)
 
     def _context(self):
         session = self.controller.session or self.controller.last_session
@@ -291,6 +297,33 @@ class QzoneWebAPI:
     async def _failed(self, code, reason):
         from .web_api import outcome_response
         return outcome_response(Outcome.failed(code, reason))
+
+    async def _run_read(self, call, *, include_cursor=False):
+        from .web_api import outcome_response
+        controller = self.controller
+        try:
+            username = request.username
+            cursor = request.query.get("cursor") if include_cursor else None
+            async with controller._control_lock:
+                if controller._terminated:
+                    raise TaskError("staging_host_terminated", "the V2 host has stopped")
+                session = controller.session or controller.last_session
+                runtime = controller.runtime
+                if session is None or runtime is None:
+                    raise TaskError("staging_not_initialized", "load the explicit V2 profile first")
+                service = getattr(session.application, "qzone", None)
+                if service is None:
+                    raise TaskError("qzone_unavailable", "QQ 空间扩展没有可用的宿主通道")
+                at = controller.now()
+                access = QzoneAccess(session.application, session.profile.target, service=service)
+            result = await asyncio.to_thread(call, session, runtime, access, service, at, username, cursor)
+            return outcome_response(Outcome.success(result))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("qzone_storage_unavailable", "the QQ Zone store is not available"))
+        except (ValueError, TypeError, KeyError, UnicodeError, OverflowError):
+            return outcome_response(Outcome.failed("qzone_request_invalid", "invalid QQ Zone request"))
 
     async def _run(self, call):
         from .web_api import outcome_response

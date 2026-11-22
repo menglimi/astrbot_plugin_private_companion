@@ -483,36 +483,76 @@ class ModelWebAPI:
         except Exception:
             return outcome_response(Outcome.failed("model_catalog_unavailable", "AstrBot provider list is unavailable"))
 
-    def _authorized(self, *, layer="role", include_status=False, authorize=True,
-                    session=None, runtime=None, allow_query_keys=()):
-        controller = self.controller
-        username = request.username
+    @staticmethod
+    def _validate_auth_inputs(*, layer="role", allow_query_keys=(), username=None, query=None):
+        if username is None:
+            username = request.username
+        if query is None:
+            query = request.query
         if type(username) is not str or not username.strip() or username.startswith("api_key:"):
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
         if layer not in ("role", "window"):
             raise TaskError("model_request_invalid", "select role defaults or this conversation window")
-        if request.query:
+        if query:
             if allow_query_keys:
                 allowed = set(allow_query_keys)
-                if (set(request.query.keys()) - allowed
-                        or (callable(getattr(request.query, "getlist", None))
-                            and any(len(request.query.getlist(key)) != 1 for key in request.query.keys()))):
+                if (set(query.keys()) - allowed
+                        or (callable(getattr(query, "getlist", None))
+                            and any(len(query.getlist(key)) != 1 for key in query.keys()))):
                     raise TaskError("model_request_invalid", "model routes do not accept target overrides")
-            elif (set(request.query.keys()) != {"layer"} or request.query.get("layer") != layer
-                  or callable(getattr(request.query, "getlist", None)) and len(request.query.getlist("layer")) != 1):
+            elif (set(query.keys()) != {"layer"} or query.get("layer") != layer
+                  or callable(getattr(query, "getlist", None)) and len(query.getlist("layer")) != 1):
                 raise TaskError("model_request_invalid", "model routes do not accept target overrides")
+        return username, query
+
+    def _authorized(self, *, layer="role", include_status=False, authorize=True,
+                    session=None, runtime=None, allow_query_keys=(),
+                    username=None, query=None, observed_at=None):
+        controller = self.controller
+        username, _query = self._validate_auth_inputs(
+            layer=layer, allow_query_keys=allow_query_keys, username=username, query=query)
         if controller._terminated:
             raise TaskError("staging_host_terminated", "plugin is stopped")
         session = session if session is not None else (controller.session or controller.last_session)
         runtime = runtime if runtime is not None else controller.runtime
         if session is None or runtime is None:
             raise TaskError("staging_not_initialized", "load the V2 profile first")
-        operator = dashboard_operator(runtime, username, at=controller.now())
+        at = observed_at if observed_at is not None else controller.now()
+        operator = dashboard_operator(runtime, username, at=at)
         manager = ModelManagement(session.application, session.profile.target)
         status = require(manager.status(operator, layer=layer)) if include_status else None
         if authorize and not include_status:
             require(manager.authorize(operator))
         return session, operator, manager, status
+
+    async def _run_authorized_read(self, work=None, *, layer="role", include_status=False,
+                                   authorize=True, allow_query_keys=()):
+        username, query = self._validate_auth_inputs(layer=layer, allow_query_keys=allow_query_keys)
+        controller = self.controller
+        async with controller._control_lock:
+            if controller._terminated:
+                raise TaskError("staging_host_terminated", "plugin is stopped")
+            session = controller.session or controller.last_session
+            runtime = controller.runtime
+            if session is None or runtime is None:
+                raise TaskError("staging_not_initialized", "load the V2 profile first")
+            observed_at = controller.now()
+
+        def execute():
+            auth = self._authorized(
+                layer=layer,
+                include_status=include_status,
+                authorize=authorize,
+                session=session,
+                runtime=runtime,
+                allow_query_keys=allow_query_keys,
+                username=username,
+                query=query,
+                observed_at=observed_at,
+            )
+            return work(*auth, observed_at) if work is not None else auth
+
+        return await asyncio.to_thread(execute)
 
     @staticmethod
     def _response(result):
@@ -656,9 +696,8 @@ class ModelWebAPI:
 
     async def memory_diagnostic(self):
         try:
-            async with self.controller._control_lock:
-                self._authorized()
-            return self._response(Outcome.success(process_memory_snapshot()))
+            payload = await self._run_authorized_read(lambda *_: process_memory_snapshot())
+            return self._response(Outcome.success(payload))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
         except (OSError, RuntimeError, ValueError, TypeError, KeyError, UnicodeError):
@@ -667,8 +706,7 @@ class ModelWebAPI:
 
     async def balance(self):
         try:
-            async with self.controller._control_lock:
-                self._authorized()
+            await self._run_authorized_read()
             async with self._balance_lock:
                 try:
                     port = configured_balance_port(self.controller.config, context=getattr(self.controller, "context", None))
@@ -707,14 +745,14 @@ class ModelWebAPI:
             data = _document(await request.body(), {"check"}, limit=1024)
             if data["check"] != "sqlite":
                 raise ValueError("unsupported storage check")
-            async with self.controller._control_lock:
-                _session, operator, manager, _status = self._authorized()
-                started = monotonic()
-                result = await asyncio.to_thread(manager.check_storage, operator)
-                if result.is_success:
-                    result = Outcome.success({**result.unwrap(),
-                        "elapsed_ms": round((monotonic() - started) * 1000)})
-                return self._response(result)
+            started = monotonic()
+            result = await self._run_authorized_read(
+                lambda _session, operator, manager, _status, _at: manager.check_storage(operator)
+            )
+            if result.is_success:
+                result = Outcome.success({**result.unwrap(),
+                    "elapsed_ms": round((monotonic() - started) * 1000)})
+            return self._response(result)
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
         except (StorageOpenError, sqlite3.Error) as error:
@@ -792,15 +830,13 @@ class ModelWebAPI:
 
     async def search_status(self):
         try:
-            async with self.controller._control_lock:
-                self._authorized()
-                status = self._search_status()
+            status = await self._run_authorized_read(lambda *_: self._search_status())
             return self._response(Outcome.success(status))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
         except SearchSettingsError as error:
             return self._response(Outcome.failed(error.code, str(error)))
-        except (OSError, ValueError):
+        except (StorageOpenError, OSError, ValueError):
             return self._response(Outcome.failed("search_config_unavailable", "无法读取搜索服务配置"))
 
     async def search_save(self):
@@ -1285,9 +1321,8 @@ class ModelWebAPI:
 
     async def laya_status(self):
         try:
-            async with self.controller._control_lock:
-                self._authorized()
-                return self._response(Outcome.success(self._laya_service().status()))
+            payload = await self._run_authorized_read(lambda *_: self._laya_service().status())
+            return self._response(Outcome.success(payload))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
         except (LayaSettingsError, OSError, ValueError) as error:
@@ -1313,16 +1348,19 @@ class ModelWebAPI:
 
     async def laya_logs(self):
         try:
-            async with self.controller._control_lock:
-                self._authorized(allow_query_keys={"scope"})
-                query = request.query or {}
-                scope = query.get("scope", "all")
+            query = request.query or {}
+            scope = query.get("scope", "all")
+
+            def load_logs(*_args):
                 if scope not in ("all", "current"):
                     raise TaskError("model_request_invalid", "invalid Laya log scope")
                 service = self._laya_service()
                 data = service.recent() if scope == "current" else service.recent(all_origins=True)
                 data["scope"] = scope
-                return self._response(Outcome.success(data))
+                return data
+
+            data = await self._run_authorized_read(load_logs, allow_query_keys={"scope"})
+            return self._response(Outcome.success(data))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
         except (LayaSettingsError, OSError, ValueError) as error:
@@ -1393,20 +1431,26 @@ class ModelWebAPI:
         让用户不必靠猜键名；真正的保存仍走既有配置接口。
         """
         try:
-            async with self.controller._control_lock:
-                self._authorized()
-                return self._response(Outcome.success({
-                    "image_provider_group": IMAGE_PROVIDER_GROUP}))
+            await self._run_authorized_read()
+            return self._response(Outcome.success({
+                "image_provider_group": IMAGE_PROVIDER_GROUP}))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return self._response(Outcome.failed(
+                "model_storage_unavailable", "model storage is temporarily unavailable"))
 
     async def voice(self):
         try:
-            async with self.controller._control_lock:
-                session, operator, _manager, _status = self._authorized()
-                return self._response(Outcome.success(self._voice_projection(session, operator)))
+            payload = await self._run_authorized_read(
+                lambda session, operator, _manager, _status, _at: self._voice_projection(session, operator)
+            )
+            return self._response(Outcome.success(payload))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return self._response(Outcome.failed(
+                "model_storage_unavailable", "model storage is temporarily unavailable"))
 
     async def voice_save(self):
         try:
@@ -1667,11 +1711,13 @@ class ModelWebAPI:
 
     async def image(self):
         try:
-            async with self.controller._control_lock:
-                self._authorized()
-                return self._response(Outcome.success(self._image_projection()))
+            payload = await self._run_authorized_read(lambda *_: self._image_projection())
+            return self._response(Outcome.success(payload))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return self._response(Outcome.failed(
+                "model_storage_unavailable", "model storage is temporarily unavailable"))
 
     async def image_save(self):
         try:
@@ -1941,9 +1987,7 @@ class ModelWebAPI:
 
     async def tts_providers(self):
         try:
-            async with self.controller._control_lock:
-                self._authorized()
-                payload = self._tts_provider_payload()
+            payload = await self._run_authorized_read(lambda *_: self._tts_provider_payload())
             return self._response(Outcome.success(payload))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
@@ -2154,14 +2198,16 @@ class ModelWebAPI:
 
     async def image_output(self):
         try:
-            async with self.controller._control_lock:
-                self._authorized()
+            def load_output(*_args):
                 api = self._image_extension_api()
                 reader = getattr(api, "output_configuration", None)
                 if not callable(reader):
                     raise TaskError("model_image_output_unavailable", "update the image extension to enable the V2 editor")
                 result = reader()
                 result["host_registered"] = self._image_host_registered()
+                return result
+
+            result = await self._run_authorized_read(load_output)
             return self._response(Outcome.success(result))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
@@ -2187,12 +2233,12 @@ class ModelWebAPI:
 
     async def image_review_providers(self):
         try:
-            async with self.controller._control_lock:
-                _session, _operator, _manager, _status = self._authorized()
-                session = self.controller.session or self.controller.last_session
-                providers = [{"id": identifier, "name": identifier}
-                    for identifier, provider in session.application.router.providers.items()
-                    if "image" in provider.capabilities]
+            def load_providers(session, *_args):
+                return [{"id": identifier, "name": identifier}
+                        for identifier, provider in session.application.router.providers.items()
+                        if "image" in provider.capabilities]
+
+            providers = await self._run_authorized_read(load_providers)
             return self._response(Outcome.success({"providers": providers}))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
@@ -2201,21 +2247,23 @@ class ModelWebAPI:
 
     async def image_observability(self):
         try:
-            async with self.controller._control_lock:
-                session, _operator, _manager, _status = self._authorized()
+            def load_observability(session, _operator, _manager, _status, observed_at):
                 context = session.profile.target
                 images = session.application.messages.generated_images.observability_page(
-                    context, self.controller.now())
+                    context, observed_at)
                 content = {"available": False, "works_count": None,
                            "candidate_count": None, "updated_at": None}
                 registry = self.controller.native_extensions
                 consumer = getattr(registry, "content", None) if registry is not None else None
                 if consumer is not None and consumer.application is session.application:
                     try:
-                        content = consumer.dashboard_summary(context, self.controller.now())
+                        content = consumer.dashboard_summary(context, observed_at)
                     except TaskError:
                         pass
-            return self._response(Outcome.success({"images": images, "content": content}))
+                return {"images": images, "content": content}
+
+            payload = await self._run_authorized_read(load_observability)
+            return self._response(Outcome.success(payload))
         except TaskError as error:
             return self._response(Outcome.failed(error.code, str(error)))
         except Exception:

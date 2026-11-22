@@ -6,6 +6,7 @@ import json
 from companion_v2.execution.models import TaskError, digest, encode, require, stamp
 from companion_v2.foundation.refs import OperationRef, VersionRef
 from companion_v2.identity_policy.private_domain import source_ref
+from companion_v2.sources.dependencies import active_validation_batch, validation_batch
 from .calendar_access import CalendarAccess
 from .models import AgendaTarget, Schedule
 from .records import CalendarRecords
@@ -140,13 +141,32 @@ class CalendarService:
                 expected_revision=expected_revision, parameters=[action, data, sources, actor] + ([planning] if planning is not None else []),
                 transform=transform, at=self.tasks.now(), storage_key=storage_key)
 
+    def _check_read_cached(self, context, operator, batch):
+        at = batch.at if batch is not None else self.tasks.now()
+        extras = (batch.extras if batch is not None and not getattr(self.runtime, "_write_depth", 0)
+                  else None)
+        if extras is not None:
+            op_key = (
+                (operator.subject, operator.binding_id, operator.binding_revision)
+                if operator is not None else None
+            )
+            key = ("calendar.read.checked", context.key, op_key, at)
+            if key in extras:
+                return at
+            self.access.check(context, "calendar.read", operator=operator, at=at)
+            extras[key] = True
+            return at
+        self.access.check(context, "calendar.read", operator=operator, at=at)
+        return at
+
     def inventory(self, context, *, after_id="", limit=30, operator=None, kinds=None, active_since=None):
-        self.access.check(context, "calendar.read", operator=operator)
+        batch = active_validation_batch(self.runtime)
+        at = self._check_read_cached(context, operator, batch)
         rows = self.records.list(context, after_id=after_id, limit=limit, kinds=kinds, active_since=active_since)
         items, skipped, skipped_reasons = [], 0, {"role_mismatch": 0, "source_unavailable": 0}
         for row in rows:
             try:
-                self._evidence(context, row["sources"])
+                self._evidence(context, row["sources"], at=at)
                 items.append(row)
             except TaskError as error:
                 skipped += 1
@@ -159,59 +179,63 @@ class CalendarService:
     def occurrences(self, context, *, start, end, operator=None, kinds=None, diagnostics=False):
         if not start < end or end - start > timedelta(days=31):
             raise TaskError("calendar_window_invalid", "query a positive window no longer than 31 days")
-        self.access.check(context, "calendar.read", operator=operator)
-        items, cursor, skipped, scanned, has_more = [], "", 0, 0, False
-        skipped_reasons = {"role_mismatch": 0, "source_unavailable": 0}
-        while scanned < 200:
-            page = self.inventory(context, after_id=cursor, limit=50, operator=operator, kinds=kinds,
-                                  active_since=start - timedelta(days=1))
-            skipped += page["skipped"]
-            for reason, count in page.get("skipped_reasons", {}).items():
-                skipped_reasons[reason] = skipped_reasons.get(reason, 0) + count
-            for row in page["items"]:
-                if row["state"] == "cancelled":
-                    continue
-                schedule = Schedule.restore(row["schedule"])
-                duration = timedelta(minutes=row["duration_minutes"])
-                seq = schedule.first_at_or_after(start - duration)
-                sequences = set()
-                while seq is not None and schedule.at(seq) is not None and schedule.at(seq) < end:
-                    sequences.add(seq)
-                    seq += 1
-                    if len(sequences) > 64:
-                        break
-                sequences.update(int(n) for n, moved in row["exceptions"].items()
-                                 if moved and start - duration <= datetime.fromisoformat(moved) < end)
-                for sequence in sorted(sequences):
-                    due = schedule.at(sequence)
-                    if str(sequence) in row["exceptions"]:
-                        value = row["exceptions"][str(sequence)]
-                        due = datetime.fromisoformat(value) if value else None
-                    if due and due < end and due + duration > start:
-                        items.append({"id": row["id"], "revision": row["revision"], "sequence": sequence,
-                            "kind": row["kind"], "state": row["state"], "title": row["title"],
-                            "detail": row.get("details", {}).get(str(sequence), row["detail"]),
-                            "start": stamp(due), "end": stamp(due + duration), "presence": row["presence"],
-                            "sources": row["sources"], "planning": row.get("planning")})
-            scanned += 50
-            if not page["next_cursor"]:
-                break
-            cursor = page["next_cursor"]
-            if scanned >= 200:
-                probe = self.inventory(context, after_id=cursor, limit=1, operator=operator, kinds=kinds,
-                                       active_since=start - timedelta(days=1))
-                skipped += probe["skipped"]
-                for reason, count in probe.get("skipped_reasons", {}).items():
+        outer = active_validation_batch(self.runtime)
+        batch_at = outer.at if outer is not None else self.tasks.now()
+        with validation_batch(self.runtime, batch_at):
+            batch = active_validation_batch(self.runtime, batch_at)
+            self._check_read_cached(context, operator, batch)
+            items, cursor, skipped, scanned, has_more = [], "", 0, 0, False
+            skipped_reasons = {"role_mismatch": 0, "source_unavailable": 0}
+            while scanned < 200:
+                page = self.inventory(context, after_id=cursor, limit=50, operator=operator, kinds=kinds,
+                                      active_since=start - timedelta(days=1))
+                skipped += page["skipped"]
+                for reason, count in page.get("skipped_reasons", {}).items():
                     skipped_reasons[reason] = skipped_reasons.get(reason, 0) + count
-                has_more = bool(probe["items"] or probe["skipped"])
-        items.sort(key=lambda item: (item["start"], item["id"], item["sequence"]))
-        occurrence_overflow = max(0, len(items) - 64)
-        result = {"items": items[:64], "partial": has_more or occurrence_overflow > 0 or bool(skipped),
-                  "skipped": skipped}
-        if diagnostics:
-            result.update(skipped_reasons={key: count for key, count in skipped_reasons.items() if count},
-                          scan_truncated=has_more, occurrences_truncated=occurrence_overflow)
-        return result
+                for row in page["items"]:
+                    if row["state"] == "cancelled":
+                        continue
+                    schedule = Schedule.restore(row["schedule"])
+                    duration = timedelta(minutes=row["duration_minutes"])
+                    seq = schedule.first_at_or_after(start - duration)
+                    sequences = set()
+                    while seq is not None and schedule.at(seq) is not None and schedule.at(seq) < end:
+                        sequences.add(seq)
+                        seq += 1
+                        if len(sequences) > 64:
+                            break
+                    sequences.update(int(n) for n, moved in row["exceptions"].items()
+                                     if moved and start - duration <= datetime.fromisoformat(moved) < end)
+                    for sequence in sorted(sequences):
+                        due = schedule.at(sequence)
+                        if str(sequence) in row["exceptions"]:
+                            value = row["exceptions"][str(sequence)]
+                            due = datetime.fromisoformat(value) if value else None
+                        if due and due < end and due + duration > start:
+                            items.append({"id": row["id"], "revision": row["revision"], "sequence": sequence,
+                                "kind": row["kind"], "state": row["state"], "title": row["title"],
+                                "detail": row.get("details", {}).get(str(sequence), row["detail"]),
+                                "start": stamp(due), "end": stamp(due + duration), "presence": row["presence"],
+                                "sources": row["sources"], "planning": row.get("planning")})
+                scanned += 50
+                if not page["next_cursor"]:
+                    break
+                cursor = page["next_cursor"]
+                if scanned >= 200:
+                    probe = self.inventory(context, after_id=cursor, limit=1, operator=operator, kinds=kinds,
+                                           active_since=start - timedelta(days=1))
+                    skipped += probe["skipped"]
+                    for reason, count in probe.get("skipped_reasons", {}).items():
+                        skipped_reasons[reason] = skipped_reasons.get(reason, 0) + count
+                    has_more = bool(probe["items"] or probe["skipped"])
+            items.sort(key=lambda item: (item["start"], item["id"], item["sequence"]))
+            occurrence_overflow = max(0, len(items) - 64)
+            result = {"items": items[:64], "partial": has_more or occurrence_overflow > 0 or bool(skipped),
+                      "skipped": skipped}
+            if diagnostics:
+                result.update(skipped_reasons={key: count for key, count in skipped_reasons.items() if count},
+                              scan_truncated=has_more, occurrences_truncated=occurrence_overflow)
+            return result
 
     def _target(self, context):
         return AgendaTarget(context.scope, context.role_binding.role, context.actor.subject)

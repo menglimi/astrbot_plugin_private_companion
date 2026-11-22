@@ -126,6 +126,60 @@ def context_rows(runtime, *, kind=None, open_only=False):
     return tuple(project(row) for row in rows)
 
 
+def latest_role_contexts(runtime, *, kind, limit=8):
+    """Newest ``context_json`` per distinct role binding of one scope kind.
+
+    Uses a loose index scan over the partial index
+    ``idx_native_turns_group_role_recent`` when ``kind == 'group'`` so group
+    discovery skips private turns entirely and reads ``context_json`` for at
+    most ``limit`` rows without touching large ``role_instruction`` blobs or
+    shadowing ``conversation_native_open_turn_idx``.
+    """
+    if not turns_available(runtime) or limit <= 0:
+        return ()
+    if kind == "group":
+        kind_clause = "json_extract(context_json, '$.audience.scope.kind') = 'group'"
+        t_kind_clause = "json_extract(t.context_json, '$.audience.scope.kind') = 'group'"
+        params = (limit,)
+    else:
+        kind_clause = "json_extract(context_json, '$.audience.scope.kind') = ?"
+        t_kind_clause = "json_extract(t.context_json, '$.audience.scope.kind') = ?"
+        params = (kind, kind, kind, kind, limit)
+    return tuple(runtime.read_all(f"""WITH RECURSIVE roles(rb) AS (
+            SELECT MIN(json_extract(context_json, '$.role_binding'))
+            FROM conversation_native_turns
+            WHERE {kind_clause}
+            UNION ALL
+            SELECT (
+                SELECT MIN(json_extract(t.context_json, '$.role_binding'))
+                FROM conversation_native_turns t
+                WHERE {t_kind_clause}
+                  AND json_extract(t.context_json, '$.role_binding') > roles.rb
+            )
+            FROM roles WHERE roles.rb IS NOT NULL
+        ),
+        top_roles(rid, obs) AS (
+            SELECT (
+                SELECT t.rowid FROM conversation_native_turns t
+                WHERE {t_kind_clause}
+                  AND json_extract(t.context_json, '$.role_binding') = roles.rb
+                ORDER BY t.observed_at DESC, t.rowid DESC LIMIT 1
+            ) AS rid,
+            (
+                SELECT t.observed_at FROM conversation_native_turns t
+                WHERE {t_kind_clause}
+                  AND json_extract(t.context_json, '$.role_binding') = roles.rb
+                ORDER BY t.observed_at DESC, t.rowid DESC LIMIT 1
+            ) AS obs
+            FROM roles WHERE roles.rb IS NOT NULL
+            ORDER BY obs DESC, rid DESC LIMIT ?
+        )
+        SELECT n.context_json
+        FROM top_roles l
+        JOIN conversation_native_turns n ON n.rowid = l.rid
+        ORDER BY l.obs DESC, l.rid DESC""", params))
+
+
 def foreground_busy(runtime, context):
     row = latest_scope(runtime, context.scope)
     return row is not None and row["generation_state"] in ("prepared", "running")

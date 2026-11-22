@@ -186,7 +186,7 @@ class ExpressionSampleCatalog:
     def input_handle(event):
         return "input:" + digest([event.scope, event.scoped_key])
 
-    def _input_rows(self, context, opened_at, at, *, limit):
+    def _input_rows(self, context, opened_at, at, *, limit, after_sequence=0):
         clause = ""
         values = [stamp(opened_at), stamp(at), context.scope.kind.value]
         if context.scope.kind is ScopeKind.PRIVATE:
@@ -195,6 +195,9 @@ class ExpressionSampleCatalog:
         else:
             clause = "AND json_extract(b.context_json, '$.role_binding') = ? "
             values.append(encode(context.role_binding))
+        if after_sequence > 0:
+            clause += "AND COALESCE(s.rowid, i.rowid) > ? "
+            values.append(after_sequence)
         values.append(limit)
         legacy = self.runtime.read_all("""SELECT COALESCE(s.rowid, i.rowid) AS input_sequence,
             i.event_key, i.event_json, b.context_json
@@ -207,13 +210,21 @@ class ExpressionSampleCatalog:
               AND json_extract(i.event_json, '$.scope.kind') = ?
               """ + clause + "ORDER BY json_extract(i.event_json, '$.received_at') DESC, i.rowid DESC LIMIT ?",
             tuple(values))
-        from companion_v2.conversation.native_observations import inbound_event, input_rows_for_context
-        native = input_rows_for_context(self.runtime, context, start=stamp(opened_at), end=stamp(at), limit=limit)
+        from companion_v2.conversation.messages import source_from_document
+        from companion_v2.conversation.models import InboundConversationEvent
+        from companion_v2.conversation.native_observations import input_rows_for_context
+        native = input_rows_for_context(self.runtime, context, start=stamp(opened_at), end=stamp(at),
+                                        after_sequence=after_sequence, limit=limit)
         if not native:
             return legacy
         rows = [dict(row) for row in legacy]
         for row in native:
-            event = inbound_event(row)
+            original = TaskContext.restore(json.loads(row["context_json"]))
+            event = InboundConversationEvent(
+                row["event_id"], original.actor.principal, original.scope,
+                source_from_document(json.loads(row["source_json"])), "text", row["content_hash"],
+                datetime.fromisoformat(row["observed_at"]),
+            )
             rows.append({"input_sequence": row["input_sequence"], "event_key": event.scoped_key,
                          "event_json": encode(event), "context_json": row["context_json"],
                          # Carried so a caller that only wants a few named samples can
@@ -222,16 +233,24 @@ class ExpressionSampleCatalog:
                          # page asked for every message in the window to match a
                          # handful of handles.
                          "sample_handle": self.input_handle(event),
-                         "native_observation": row})
-        rows.sort(key=lambda row: (json.loads(row["event_json"])["received_at"], row["input_sequence"]), reverse=True)
+                         "native_observation": row,
+                         "_received_at": stamp(event.received_at),
+                         "_parsed_context": original,
+                         "_parsed_event": event})
+        rows.sort(key=lambda row: (row.get("_received_at") or json.loads(row["event_json"])["received_at"],
+                                   row["input_sequence"]), reverse=True)
         return tuple(rows[:limit])
 
-    def _input_text(self, row, context, at, *, durable=False):
+    def _input_text(self, row, context, at, *, durable=False, _authorized_keys=None):
         from companion_v2.conversation.messages import event_from_document
 
         try:
-            original = TaskContext.restore(json.loads(row["context_json"]))
-            event = event_from_document(json.loads(row["event_json"]), original)
+            if isinstance(row, dict) and "_parsed_context" in row and "_parsed_event" in row:
+                original = row["_parsed_context"]
+                event = row["_parsed_event"]
+            else:
+                original = TaskContext.restore(json.loads(row["context_json"]))
+                event = event_from_document(json.loads(row["event_json"]), original)
         except (TypeError, ValueError, KeyError):
             raise TaskError("expression_sample_changed", "original conversation sample is invalid") from None
         if (original.scope != context.scope or original.role_binding != context.role_binding
@@ -242,11 +261,15 @@ class ExpressionSampleCatalog:
             raise TaskError("expression_sample_changed", "original conversation sample belongs to another scope")
         self._authorize(original, at)
         messages = self._owner()
-        messages.authorize(original, at)
+        if _authorized_keys is None or original.key not in _authorized_keys:
+            messages.authorize(original, at)
+            if _authorized_keys is not None:
+                _authorized_keys.add(original.key)
         if "native_observation" in row.keys():
             from companion_v2.conversation.native_observations import validate_observation
             from companion_v2.conversation.reset import source_current
-            validate_observation(self.runtime, row["native_observation"], original, event.source)
+            validate_observation(self.runtime, row["native_observation"], original, event.source,
+                                 original=original)
             # A reset only ends the temporary context: fresh learning samples
             # must belong to the current window, while a stored rule's evidence
             # rechecks its governed source below (state, expiry, hash, recall).
@@ -261,9 +284,10 @@ class ExpressionSampleCatalog:
                         review_enabled=None):
         rows = self._input_rows(context, opened_at, at, limit=512)
         samples = []
+        authorized_keys = set()
         for row in rows:
             try:
-                event, text = self._input_text(row, context, at)
+                event, text = self._input_text(row, context, at, _authorized_keys=authorized_keys)
             except TaskError:
                 continue
             if member_ids is not None and event.principal.native_account_id not in member_ids:
@@ -341,19 +365,22 @@ class ExpressionSampleCatalog:
 
     def new_inputs(self, context, at, *, after_sequence=0, window_hours=720, member_ids=None):
         """Count source-readable new messages, before the smaller learning sample cap."""
-        rows = self._input_rows(context, at - timedelta(hours=window_hours), at, limit=512)
-        count, latest = 0, after_sequence
-        for row in rows:
-            if row["input_sequence"] <= after_sequence:
-                continue
-            try:
-                event, text = self._input_text(row, context, at)
-            except TaskError:
-                continue
-            if text.strip() and (member_ids is None or event.principal.native_account_id in member_ids):
-                count += 1
-                latest = max(latest, row["input_sequence"])
-        return count, latest
+        with self.runtime.read_snapshot():
+            rows = self._input_rows(context, at - timedelta(hours=window_hours), at,
+                                    limit=512, after_sequence=after_sequence)
+            count, latest = 0, after_sequence
+            authorized_keys = set()
+            for row in rows:
+                if row["input_sequence"] <= after_sequence:
+                    continue
+                try:
+                    event, text = self._input_text(row, context, at, _authorized_keys=authorized_keys)
+                except TaskError:
+                    continue
+                if text.strip() and (member_ids is None or event.principal.native_account_id in member_ids):
+                    count += 1
+                    latest = max(latest, row["input_sequence"])
+            return count, latest
 
     def inspect_inputs(self, context, at, *, window_hours, sample_chars, member_ids=None):
         """Expose the bounded source pool, independently of the smaller learning batch."""

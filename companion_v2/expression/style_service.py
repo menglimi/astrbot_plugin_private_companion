@@ -66,13 +66,27 @@ from companion_v2.storage.models import OperationState
 from companion_v2.storage.repositories import OperationRepository
 
 from . import learning
+from . import private_scope as _private_scope
 from . import rule_details
 from . import rule_support
 from .configuration import (application_subject_allowed_for_context, read_settings,
                             source_subject_allowed_for_context)
+from .sample_review import PREFIX as SAMPLE_REVIEW_PREFIX
 from .style_evidence import (INPUT_SAMPLE_SOURCE, MAX_WINDOW_HOURS, sample_document,
                              sample_handles, sample_snapshot)
 from .window_scope import active_rule_count, row_usable
+
+_DEFAULT_ROLE_PRIVATE_CONTEXTS = _private_scope.role_private_contexts
+_CACHEABLE_EMPTY_PREPARE_STATES = frozenset({
+    "insufficient_samples",
+    "waiting_for_new_messages",
+    "waiting_for_sample_review",
+    "learning_disabled",
+    "source_not_selected",
+})
+MAX_EMPTY_PREPARE_WATERMARKS = 512
+PRIVATE_DISCOVERY_CACHE_SECONDS = 300
+MAX_PRIVATE_DISCOVERY_CACHE_ENTRIES = 32
 
 logger = getLogger(__name__)
 
@@ -351,7 +365,7 @@ def note_diagnosis(job, error):
 # short cache makes one resolution serve a whole pass while a newly rotated window
 # still joins its family within this many seconds. The cache holds only window keys
 # and their digests, never conversation text, and stays bounded.
-FAMILY_CACHE_SECONDS = 60
+FAMILY_CACHE_SECONDS = 300
 MAX_FAMILY_CACHE_ENTRIES = 256
 
 # One discovery pass serves every window that is due, not only the first one it
@@ -434,6 +448,11 @@ class ExpressionStyleService:
     # The look cursor belongs to the service, not to one pass, so the bound in
     # ``advance`` still hands the next pass the windows this one did not reach.
     _scan_look = 0
+    _advancing = False
+    _pending_launch = None
+    _live_bindings = None
+    _empty_prepare_watermarks = None
+    _private_discovery_cache = None
 
     def __init__(self, runtime, *, window_hours=720):
         self.runtime = runtime
@@ -441,6 +460,11 @@ class ExpressionStyleService:
         self.window_hours = window_hours
         self.pending, self.committed, self.workers, self.results = {}, set(), {}, {}
         self._family_cache = {}
+        self._empty_prepare_watermarks = {}
+        self._private_discovery_cache = {}
+        self._advancing = False
+        self._pending_launch = None
+        self._live_bindings = None
         self.next_checks = {}
         self._held_notes = set()
         self._scan_look = 0
@@ -473,6 +497,17 @@ class ExpressionStyleService:
         return context.key if context.scope.kind is ScopeKind.PRIVATE else (
             "group-expression:" + digest([self.samples.role_owner(context), context.scope]))
 
+    @staticmethod
+    def _family_cache_key(context):
+        scope = getattr(context, "scope", None)
+        role = getattr(getattr(context, "role_binding", None), "role", None)
+        if scope is not None and role is not None:
+            return (
+                scope.installation_id, scope.platform, scope.bot_id,
+                scope.account_id, scope.native_scope_id, scope.kind, role.subject_id,
+            )
+        return context.key
+
     def _family_keys(self, context):
         """Scope digests whose expression rules share this window's budget.
 
@@ -485,13 +520,16 @@ class ExpressionStyleService:
         window's family for every gate it passes.
         """
         now = self.tasks.now()
-        cached = self._family_cache.get(context.key)
-        if cached is not None and now - cached[0] < timedelta(seconds=FAMILY_CACHE_SECONDS):
+        cache_key = self._family_cache_key(context)
+        scope_digest = digest(context.scope) if getattr(context, "scope", None) is not None else None
+        cached = self._family_cache.get(cache_key)
+        if (cached is not None and now - cached[0] < timedelta(seconds=FAMILY_CACHE_SECONDS)
+                and (scope_digest is None or scope_digest in cached[1])):
             return cached[1]
         keys = scope_family_keys(self.runtime, context)
         if len(self._family_cache) >= MAX_FAMILY_CACHE_ENTRIES:
             self._family_cache.clear()
-        self._family_cache[context.key] = (now, keys)
+        self._family_cache[cache_key] = (now, keys)
         return keys
 
     def _active_signal_count(self, context, family_keys=None):
@@ -977,6 +1015,8 @@ class ExpressionStyleService:
         still holds this window, that binding is the current authority for it and
         must be scanned instead of the older copy.
         """
+        if self._live_bindings is not None:
+            return self._live_bindings.get(context.key)
         bound = self.app.state_maintenance.bindings.get(context.key)
         return None if bound is None else (bound[0], bound[1])
 
@@ -1590,8 +1630,7 @@ class ExpressionStyleService:
 
     def _cursor(self, context):
         key = self._cursor_key(context)
-        with self.runtime.transaction() as connection:
-            row = connection.execute("SELECT value FROM runtime_metadata WHERE key = ?", (key,)).fetchone()
+        row = self.runtime.read_one("SELECT value FROM runtime_metadata WHERE key = ?", (key,))
         if row is None:
             return key, None
         value = json.loads(row["value"])
@@ -1847,14 +1886,18 @@ class ExpressionStyleService:
 
     def _group_candidates(self, at, limit=8):
         """Reconstruct the latest admitted context per exact group role binding."""
-        rows = self.runtime.read_all("""SELECT b.context_json, MAX(b.rowid) AS newest
-            FROM conversation_batches b
-            WHERE json_extract(b.context_json, '$.audience.scope.kind') = ?
-            GROUP BY json_extract(b.context_json, '$.role_binding')
-            ORDER BY newest DESC LIMIT ?""", (ScopeKind.GROUP.value, limit))
+        rows = self.runtime.read_all("""SELECT b.context_json FROM conversation_batches b
+            WHERE b.rowid IN (
+                SELECT MAX(b2.rowid)
+                FROM conversation_batches b2
+                WHERE json_extract(b2.context_json, '$.audience.scope.kind') = 'group'
+                GROUP BY json_extract(b2.context_json, '$.role_binding')
+                ORDER BY MAX(b2.rowid) DESC LIMIT ?
+            )
+            ORDER BY b.rowid DESC""", (limit,))
         candidates = []
-        from companion_v2.conversation.native_turns import context_rows
-        native = context_rows(self.runtime, kind=ScopeKind.GROUP.value)
+        from companion_v2.conversation.native_turns import latest_role_contexts
+        native = latest_role_contexts(self.runtime, kind=ScopeKind.GROUP.value, limit=limit)
         seen = set()
         for row in (*native, *rows):
             try:
@@ -1868,6 +1911,166 @@ class ExpressionStyleService:
                 if len(candidates) >= limit:
                     break
         return tuple(candidates)
+
+    def _private_discovery_token(self):
+        """O(1) revision watermark covering private-scope discovery tables and policies."""
+        read_one = getattr(self.runtime, "read_one", None)
+        if not callable(read_one):
+            return None
+        try:
+            has_obs = read_one(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_native_observations'",
+                (),
+            ) is not None
+            obs_expr = (
+                "(SELECT COALESCE(MAX(rowid), 0) FROM conversation_native_observations)"
+                if has_obs else "0"
+            )
+            main_row = read_one(
+                f"""SELECT
+                        (SELECT COALESCE(MAX(rowid), 0) FROM conversation_batches),
+                        {obs_expr},
+                        (SELECT COALESCE(revision, 0) FROM identity_policy_metadata WHERE singleton = 1),
+                        (SELECT COALESCE(revision, 0) FROM object_policy_metadata WHERE singleton = 1)""",
+                (),
+            )
+            cfg_store = getattr(self.runtime, "configuration_store", self.runtime)
+            cfg_row = cfg_store.read_one(
+                "SELECT COUNT(*) || ':' || COALESCE(SUM(revision), 0) FROM configuration_targets",
+                (),
+            )
+        except Exception:
+            return None
+        return (
+            tuple(main_row) if main_row is not None else None,
+            tuple(cfg_row) if cfg_row is not None else None,
+        )
+
+    def _discover_private_candidates(self, context, at, pass_cache):
+        """Resolve authorized private candidates, caching unchanged roles across idle passes."""
+        from .private_scope import role_private_contexts
+
+        if role_private_contexts is not _DEFAULT_ROLE_PRIVATE_CONTEXTS:
+            return role_private_contexts(self.runtime, self.tasks.identity,
+                                         self.samples.messages, context, at)
+        role_binding = getattr(context, "role_binding", None)
+        role_subject = getattr(getattr(role_binding, "role", None), "subject_id", None)
+        if role_subject is None:
+            return role_private_contexts(self.runtime, self.tasks.identity,
+                                         self.samples.messages, context, at)
+        role_key = (context.scope.installation_id, context.scope.bot_id, role_subject)
+        if role_key in pass_cache:
+            return pass_cache[role_key]
+        cache = self._private_discovery_cache
+        if cache is None:
+            cache = {}
+            self._private_discovery_cache = cache
+        token = self._private_discovery_token()
+        if token is not None:
+            cached = cache.get(role_key)
+            if (cached is not None and cached[0] == token
+                    and at - cached[1] < timedelta(seconds=PRIVATE_DISCOVERY_CACHE_SECONDS)):
+                pass_cache[role_key] = cached[2]
+                return cached[2]
+        candidates = role_private_contexts(self.runtime, self.tasks.identity,
+                                           self.samples.messages, context, at)
+        pass_cache[role_key] = candidates
+        if token is not None:
+            if len(cache) >= MAX_PRIVATE_DISCOVERY_CACHE_ENTRIES:
+                cache.clear()
+            cache[role_key] = (token, at, candidates)
+        return candidates
+
+    def _is_default_prepare(self):
+        return ("prepare" not in self.__dict__
+                and type(self).prepare is ExpressionStyleService.prepare)
+
+    def _empty_prepare_watermark(self, context, policy, at):
+        """O(1) input/policy/review watermark to skip re-preparing unchanged empty windows."""
+        if not self._is_default_prepare():
+            return None
+        read_one = getattr(self.runtime, "read_one", None)
+        if not callable(read_one) or getattr(context, "role_binding", None) is None:
+            return None
+        try:
+            has_obs = read_one(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'conversation_native_observations'",
+                (),
+            ) is not None
+            if context.scope.kind is ScopeKind.PRIVATE:
+                obs_row = read_one(
+                    """SELECT observation_id, observed_at FROM conversation_native_observations
+                       WHERE context_key = ? AND kind = 'input' AND delivery_state = 'input_observed'
+                       ORDER BY observed_at DESC, observation_id ASC LIMIT 1""",
+                    (context.key,),
+                ) if has_obs else None
+                batch_row = read_one(
+                    "SELECT COALESCE(MAX(rowid), 0) FROM conversation_batches WHERE origin_key = ?",
+                    (context.key,),
+                )
+                input_marker = (
+                    (obs_row["observation_id"], obs_row["observed_at"]) if obs_row is not None else None,
+                    batch_row[0] if batch_row is not None else 0,
+                )
+            elif context.scope.kind is ScopeKind.GROUP:
+                obs_row = read_one(
+                    """SELECT observation_id, observed_at FROM conversation_native_observations
+                       WHERE json_extract(context_json, '$.role_binding') = ?
+                         AND kind = 'input' AND delivery_state = 'input_observed'
+                       ORDER BY observed_at DESC, observation_id ASC LIMIT 1""",
+                    (encode(context.role_binding),),
+                ) if has_obs else None
+                input_marker = (
+                    (obs_row["observation_id"], obs_row["observed_at"]) if obs_row is not None else None,
+                )
+            else:
+                return None
+            max_inputs = read_one("SELECT COALESCE(MAX(rowid), 0) FROM conversation_inputs", ())
+            max_runs = read_one("SELECT COALESCE(MAX(rowid), 0) FROM expression_style_runs", ())
+            review_marker = None
+            if getattr(policy, "sample_review_enabled", False):
+                owner = self.samples.role_owner(context)
+                prefix = SAMPLE_REVIEW_PREFIX + digest([owner, context.scope]) + ":"
+                prefix_end = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+                review_row = read_one(
+                    """SELECT COUNT(*),
+                              COALESCE(SUM(CASE WHEN json_valid(value)
+                                                THEN json_extract(value, '$.revision') ELSE 0 END), 0),
+                              COALESCE(MAX(CASE WHEN json_valid(value)
+                                                THEN json_extract(value, '$.decided_at') ELSE '' END), '')
+                       FROM runtime_metadata
+                       WHERE key >= ? AND key < ?""",
+                    (prefix, prefix_end),
+                )
+                review_marker = tuple(review_row) if review_row is not None else (0, 0, "")
+            cfg_store = getattr(self.runtime, "configuration_store", self.runtime)
+            cfg_row = cfg_store.read_one(
+                "SELECT COUNT(*) || ':' || COALESCE(SUM(revision), 0) FROM configuration_targets",
+                (),
+            )
+            policy_sig = (
+                getattr(policy, "private_learning_enabled", True),
+                getattr(policy, "group_learning_enabled", True),
+                getattr(policy, "window_hours", None),
+                getattr(policy, "sample_limit", None),
+                getattr(policy, "min_samples", None),
+                getattr(policy, "group_min_samples", None),
+                getattr(policy, "sample_chars", None),
+                getattr(policy, "sample_review_enabled", False),
+                getattr(policy, "group_new_messages", None),
+                getattr(policy, "group_member_mode", None),
+                getattr(policy, "group_member_ids", None),
+            )
+        except Exception:
+            return None
+        return (
+            input_marker,
+            max_inputs[0] if max_inputs is not None else 0,
+            max_runs[0] if max_runs is not None else 0,
+            review_marker,
+            cfg_row[0] if cfg_row is not None else "",
+            policy_sig,
+        )
 
     def _service_budget(self):
         """How many workers one discovery pass may start.
@@ -1912,14 +2115,21 @@ class ExpressionStyleService:
         budget = self._scan_budget
         if self.next_checks.get(context.key, at) > at:
             return False
-        if work_key in self.workers and not self.workers[work_key].done():
+        worker = self.workers.get(work_key)
+        if worker is not None and not worker.done():
             return False
         policy = self._policy(context, at)
+        scan_minutes = self._scan_interval_minutes(policy, context)
+        # Check the O(1) cursor gate before counting active rules (which resolves
+        # scope families and validates stored rule evidence).
+        if not self.due(context, at, scan_minutes=scan_minutes):
+            return False
         if self._active_signal_count(context) >= policy.active_signal_limit:
             self.results[work_key] = {"state": "capacity_reached", "limit": policy.active_signal_limit}
             return False
-        scan_minutes = self._scan_interval_minutes(policy, context)
-        if not self.due(context, at, scan_minutes=scan_minutes):
+        watermarks = self._empty_prepare_watermarks
+        watermark = self._empty_prepare_watermark(context, policy, at)
+        if watermark is not None and watermarks is not None and watermarks.get(context.key) == watermark:
             return False
         # Every window below this line is prepared, and a prepare is the pass'
         # only synchronous read: the look is spent here, before the read, so the
@@ -1930,7 +2140,17 @@ class ExpressionStyleService:
         self._scan_look += 1
         job = self.prepare(context, instruction, at)
         if job is None:
+            if (watermark is not None
+                    and (self.results.get(work_key) or {}).get("state") in _CACHEABLE_EMPTY_PREPARE_STATES):
+                if watermarks is None:
+                    watermarks = {}
+                    self._empty_prepare_watermarks = watermarks
+                if len(watermarks) >= MAX_EMPTY_PREPARE_WATERMARKS:
+                    watermarks.clear()
+                watermarks[context.key] = watermark
             return False
+        if watermarks is not None:
+            watermarks.pop(context.key, None)
         identifier, receipt, epoch = self._held_batch(context, job, work_key, at)
         if identifier is not None:
             # Nothing may spend a model call on these samples yet, so a worker
@@ -1946,9 +2166,12 @@ class ExpressionStyleService:
             self._note_held_once(context.key, identifier, job, receipt, epoch=epoch, at=at)
             return False
         self.next_checks[context.key] = at + timedelta(seconds=60)
-        self.workers[work_key] = asyncio.create_task(
-            self.run(context, instruction), name="companion:expression-learn")
-        self.workers[work_key].add_done_callback(lambda done: self.app.notify())
+        if self._pending_launch is not None:
+            self._pending_launch.append((work_key, context, instruction))
+        else:
+            self.workers[work_key] = asyncio.create_task(
+                self.run(context, instruction), name="companion:expression-learn")
+            self.workers[work_key].add_done_callback(lambda done: self.app.notify())
         if budget is not None:
             budget.note_served()
         return True
@@ -2131,9 +2354,7 @@ class ExpressionStyleService:
                 application_subject_allowed_for_context(self.runtime, context)),
         }
 
-    def advance(self):
-        if self.closed:
-            return
+    def _reap_workers(self):
         for key, worker in tuple(self.workers.items()):
             if worker.done():
                 del self.workers[key]
@@ -2150,6 +2371,37 @@ class ExpressionStyleService:
                         # No window key or text here.
                         logger.warning("[CompanionV2] 表达学习工作线程失败 stage=assemble code=%s retry=next_scan",
                                        getattr(error, "code", "expression_learn_failed"))
+
+    def _discover_and_scan_sync(self, bindings, at, *, defer_launch=False):
+        group_contexts = self._group_candidates(at)
+        if not bindings and not group_contexts:
+            self.next_checks.clear()
+            return ()
+        # A pass serves every window that is due, up to the number of workers the
+        # task layer runs at once, and looks at a bounded number of windows in all.
+        # Stopping at the first window it served is what made one already-learned
+        # window — which is always due, because only a commit moves its checkpoint —
+        # take the whole pass every minute and starve the retry that had just
+        # finished waiting. A held window is a look, not a service, so it cannot
+        # take that one worker either.
+        budget = _ScanBudget(self._service_budget())
+        pending_launch = [] if defer_launch else None
+        live_bindings = {entry[0].key: (entry[0], entry[1]) for entry in bindings} if defer_launch else None
+        self._scan_budget = budget
+        self._pending_launch = pending_launch
+        self._live_bindings = live_bindings
+        try:
+            self._scan_pass(budget, bindings, group_contexts)
+        finally:
+            self._scan_budget = None
+            self._pending_launch = None
+            self._live_bindings = None
+        return tuple(pending_launch) if pending_launch is not None else ()
+
+    def advance(self):
+        if self.closed:
+            return
+        self._reap_workers()
         if self.workers or KIND not in self.gateway.router.profiles:
             return
         at = self.tasks.now()
@@ -2159,23 +2411,38 @@ class ExpressionStyleService:
             return
         self._next_discovery_at = at + timedelta(seconds=60)
         bindings = tuple(self.app.state_maintenance.bindings.values())
-        group_contexts = self._group_candidates(at)
-        if not bindings and not group_contexts:
-            self.next_checks.clear()
+        self._discover_and_scan_sync(bindings, at, defer_launch=False)
+
+    async def advance_async(self):
+        """Offload SQLite discovery and preparation off the event loop; keep task creation on it."""
+        if self.closed or self._advancing:
             return
-        # A pass serves every window that is due, up to the number of workers the
-        # task layer runs at once, and looks at a bounded number of windows in all.
-        # Stopping at the first window it served is what made one already-learned
-        # window — which is always due, because only a commit moves its checkpoint —
-        # take the whole pass every minute and starve the retry that had just
-        # finished waiting. A held window is a look, not a service, so it cannot
-        # take that one worker either.
-        budget = _ScanBudget(self._service_budget())
-        self._scan_budget = budget
+        self._reap_workers()
+        if self.workers or KIND not in self.gateway.router.profiles:
+            return
+        at = self.tasks.now()
+        if self._next_discovery_at is not None and at < self._next_discovery_at:
+            return
+        self._next_discovery_at = at + timedelta(seconds=60)
+        bindings = tuple(self.app.state_maintenance.bindings.values())
+        self._advancing = True
         try:
-            self._scan_pass(budget, bindings, group_contexts)
+            to_launch = await asyncio.to_thread(
+                self._discover_and_scan_sync, bindings, at, defer_launch=True
+            )
         finally:
-            self._scan_budget = None
+            self._advancing = False
+        if self.closed or not to_launch:
+            return
+        for work_key, context, instruction in to_launch:
+            existing = self.workers.get(work_key)
+            if existing is not None and not existing.done():
+                continue
+            worker = asyncio.create_task(
+                self.run(context, instruction), name="companion:expression-learn"
+            )
+            self.workers[work_key] = worker
+            worker.add_done_callback(lambda done: self.app.notify())
 
     def _scan_pass(self, budget, bindings, group_contexts):
         """One discovery pass' window walk, bounded by `budget`.
@@ -2184,6 +2451,7 @@ class ExpressionStyleService:
         budget is set on the service for exactly the walk that spends it.
         """
         scanned_private = set()
+        role_discovery_cache = {}
         for _ in range(min(16, len(bindings))):
             if budget.spent:
                 break
@@ -2193,9 +2461,7 @@ class ExpressionStyleService:
             if context.scope.kind is not ScopeKind.PRIVATE:
                 continue
             try:
-                from .private_scope import role_private_contexts
-                candidates = role_private_contexts(self.runtime, self.tasks.identity,
-                    self.samples.messages, context, at)
+                candidates = self._discover_private_candidates(context, at, role_discovery_cache)
                 # The live binding is authoritative. Private-scope discovery can
                 # legitimately return nothing (identity bindings were rebuilt or
                 # the stored observation is gone); skipping the bound window would
@@ -2217,6 +2483,8 @@ class ExpressionStyleService:
                 if candidate.key in scanned_private:
                     continue
                 scanned_private.add(candidate.key)
+                if self.next_checks.get(candidate.key, at) > at:
+                    continue
                 # Restored candidates keep the policy revision they were
                 # stored with. Prefer the live binding for the same window so
                 # this scan never compares an older snapshot of a window the
@@ -2248,6 +2516,11 @@ class ExpressionStyleService:
             try:
                 live = self._live_window(candidate)
                 context = live[0] if live is not None else candidate
+                if self.next_checks.get(context.key, at) > at:
+                    continue
+                worker = self.workers.get(work_key)
+                if worker is not None and not worker.done():
+                    continue
                 instruction = self._group_instruction(context, at)
                 if instruction is None:
                     continue
@@ -2260,10 +2533,11 @@ class ExpressionStyleService:
         policy = self._policy(context, at)
         if not policy.group_learning_enabled:
             return None
-        row = self.runtime.read_one("""SELECT b.role_instruction FROM conversation_batches b
-            WHERE b.origin_key = ? ORDER BY b.rowid DESC LIMIT 1""", (context.key,))
         from companion_v2.conversation.native_turns import latest
-        row = latest(self.runtime, context.key) or row
+        row = latest(self.runtime, context.key)
+        if row is None:
+            row = self.runtime.read_one("""SELECT b.role_instruction FROM conversation_batches b
+                WHERE b.origin_key = ? ORDER BY b.rowid DESC LIMIT 1""", (context.key,))
         if row is None or not row["role_instruction"].strip():
             return None
         current = self.tasks.identity.resolve_role(context.scope, observed_at=at)

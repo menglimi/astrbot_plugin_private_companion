@@ -8,7 +8,7 @@ from companion_v2.capabilities.native import SCHEMA as NATIVE_SCHEMA
 from companion_v2.execution.models import ProviderBinding, SideEffect, TaskError, TaskSpec, digest, encode, require
 from companion_v2.conversation.media.models import CapturedImage, ImageDescriptor
 from companion_v2.conversation.messages import source_from_document
-from companion_v2.conversation.native_tool_results import PREFIX, operation_row
+from companion_v2.conversation.native_tool_results import PREFIX, PREFIX_END, operation_row
 from companion_v2.sources.models import GovernanceState
 from companion_v2.storage.image_payloads import load_image
 
@@ -82,8 +82,26 @@ def _origin_keys(owner, context):
     role = context.role_binding.role
     rows = ()
     try:
+        # Jump across distinct context_keys via loose index scan on
+        # conversation_native_turn_context_recent_idx instead of scanning the
+        # full table and its large role_instruction blobs.
         rows = owner.runtime.read_all(
-            "SELECT DISTINCT context_key, context_json FROM conversation_native_turns", ())
+            """WITH RECURSIVE keys(k) AS (
+                   SELECT MIN(context_key) FROM conversation_native_turns
+                   UNION ALL
+                   SELECT (SELECT MIN(t.context_key) FROM conversation_native_turns t WHERE t.context_key > keys.k)
+                   FROM keys WHERE keys.k IS NOT NULL
+               )
+               SELECT n.context_key, n.context_json
+               FROM conversation_native_turns n
+               WHERE n.rowid IN (
+                   SELECT (SELECT t.rowid FROM conversation_native_turns t
+                           WHERE t.context_key = keys.k
+                           ORDER BY t.observed_at DESC, t.rowid DESC LIMIT 1)
+                   FROM keys WHERE keys.k IS NOT NULL
+               )""",
+            (),
+        )
     except sqlite3.OperationalError:
         # Older fixtures/databases may not have the native-turn ledger yet.
         # The current key is still a valid album projection in that case.
@@ -119,14 +137,14 @@ def _origin_keys(owner, context):
     return tuple(keys)
 
 
-def _selection(owner, context):
+def _selection(owner, context, *, origin_keys=None):
     from .generated import IMAGE_ACTIONS
-    keys = _origin_keys(owner, context)
+    keys = _origin_keys(owner, context) if origin_keys is None else tuple(origin_keys)
     return ("""FROM runtime_metadata m JOIN execution_tasks t ON t.task_id = json_extract(m.value, '$.task_id')
-        WHERE substr(m.key, 1, ?) = ? AND json_extract(m.value, '$.origin_key') IN
+        WHERE m.key >= ? AND m.key < ? AND json_extract(m.value, '$.origin_key') IN
             (SELECT value FROM json_each(?))
         AND json_extract(m.value, '$.action') IN (?,?,?)""",
-            (len(PREFIX), PREFIX, encode(keys), *sorted(IMAGE_ACTIONS)))
+            (PREFIX, PREFIX_END, encode(keys), *sorted(IMAGE_ACTIONS)))
 
 
 def _album_descriptors(external, row):
@@ -159,7 +177,7 @@ def _album_descriptors(external, row):
     return original, current
 
 
-def _trusted_native_receipt(owner, context, at, row):
+def _trusted_native_receipt(owner, context, at, row, *, origin_keys=None):
     """Return the governed source receipt for one settled native operation.
 
     The provider's ``imgart_*`` identifier is only a transport handle.  The
@@ -184,7 +202,8 @@ def _trusted_native_receipt(owner, context, at, row):
         if current.get("state") != "succeeded" or current.get("action") not in {
                 "image.generate", "image.edit", "image.mask_edit"}:
             return None
-        if current["origin_key"] not in _origin_keys(owner, context):
+        allowed_origins = _origin_keys(owner, context) if origin_keys is None else origin_keys
+        if current["origin_key"] not in allowed_origins:
             return None
         external = owner._external()
         original_descriptor, current_descriptor = _album_descriptors(external, current)
@@ -252,8 +271,8 @@ def _trusted_native_receipt(owner, context, at, row):
         return None
 
 
-def _validated_native_images(owner, context, at, row):
-    receipt = _trusted_native_receipt(owner, context, at, row)
+def _validated_native_images(owner, context, at, row, *, origin_keys=None):
+    receipt = _trusted_native_receipt(owner, context, at, row, origin_keys=origin_keys)
     if receipt is None:
         return None
     parent, artifacts = receipt
@@ -282,6 +301,7 @@ def artifact(owner, context, at, artifact_id):
             or not 8 <= len(artifact_id) <= 180):
         raise TaskError("generated_image_missing", "the selected album image is unavailable")
     keys = _origin_keys(owner, context)
+    origin_set = frozenset(keys)
     actions = tuple(sorted(IMAGE_ACTIONS))
     query = (
         """WITH scoped_sources AS (
@@ -293,7 +313,7 @@ def artifact(owner, context, at, artifact_id):
               ON s.source_id = json_extract(m.value, '$.source.source_id')
              AND s.lineage_id = json_extract(m.value, '$.source.version.lineage_id')
              AND s.source_revision = json_extract(m.value, '$.source.version.revision')
-            WHERE substr(m.key, 1, ?) = ?
+            WHERE m.key >= ? AND m.key < ?
               AND json_extract(m.value, '$.origin_key') IN (SELECT value FROM json_each(?))
         """
         + " AND json_extract(m.value, '$.action') IN (" + ",".join("?" for _ in actions) + ")"
@@ -314,14 +334,14 @@ def artifact(owner, context, at, artifact_id):
                    THEN json_extract(artifact.value, '$.artifact_id') = ?
                    ELSE 0 END
         ORDER BY candidate_artifacts.invocation_id""")
-    rows = owner.runtime.read_all(query, (len(PREFIX), PREFIX, encode(keys), *actions, artifact_id))
+    rows = owner.runtime.read_all(query, (PREFIX, PREFIX_END, encode(keys), *actions, artifact_id))
     resolved = None
     for selected in rows:
         row = _operation_or_none(owner.runtime, selected["invocation_id"])
         if (row is None or row.get("state") != "succeeded"
                 or row.get("action") not in IMAGE_ACTIONS):
             continue
-        validated = _validated_native_images(owner, context, at, row)
+        validated = _validated_native_images(owner, context, at, row, origin_keys=origin_set)
         if validated is None:
             continue
         parent, captured, artifacts = validated
@@ -343,11 +363,13 @@ def artifact(owner, context, at, artifact_id):
 
 def page(owner, context, at, *, before=None, limit=24):
     from .generated import GeneratedAlbumImage
+    keys = _origin_keys(owner, context)
+    origin_set = frozenset(keys)
     items = []
     scan_before = before
     first_scan = True
     while True:
-        selection, values = _selection(owner, context)
+        selection, values = _selection(owner, context, origin_keys=keys)
         selection += " AND json_extract(m.value, '$.state') = 'succeeded'"
         if scan_before is not None:
             operator = "<=" if first_scan else "<"
@@ -360,7 +382,7 @@ def page(owner, context, at, *, before=None, limit=24):
             break
         for selected in rows:
             row = _operation_or_none(owner.runtime, selected["invocation_id"])
-            validated = _validated_native_images(owner, context, at, row)
+            validated = _validated_native_images(owner, context, at, row, origin_keys=origin_set)
             if validated is None:
                 continue
             parent, captured, _ = validated
@@ -383,12 +405,13 @@ def page(owner, context, at, *, before=None, limit=24):
 
 def image(owner, context, at, invocation_id, position):
     from .generated import GeneratedAlbumImage, IMAGE_ACTIONS
+    origin_set = frozenset(_origin_keys(owner, context))
     row = _operation_or_none(owner.runtime, invocation_id)
     if (row is None or row.get("state") != "succeeded"
-            or row["origin_key"] not in _origin_keys(owner, context)
+            or row["origin_key"] not in origin_set
             or row["action"] not in IMAGE_ACTIONS):
         raise TaskError("generated_image_missing", "the selected album image is unavailable")
-    validated = _validated_native_images(owner, context, at, row)
+    validated = _validated_native_images(owner, context, at, row, origin_keys=origin_set)
     if validated is None:
         raise TaskError("generated_image_missing", "the selected album image is unavailable")
     parent, images, _ = validated
@@ -400,7 +423,8 @@ def image(owner, context, at, invocation_id, position):
 
 
 def diagnostics(owner, context, *, limit):
-    selection, values = _selection(owner, context)
+    keys = _origin_keys(owner, context)
+    selection, values = _selection(owner, context, origin_keys=keys)
     count = owner.runtime.read_one("SELECT COUNT(*) AS total " + selection, values)
     rows = owner.runtime.read_all("SELECT json_extract(m.value, '$.invocation_id') AS invocation_id " + selection
         + " ORDER BY t.created_at DESC, invocation_id DESC LIMIT ?", (*values, limit))

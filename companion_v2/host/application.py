@@ -961,18 +961,32 @@ class CompanionApplication:
         with ``BACKGROUND_UNIT_PREFIX`` so the sleep calculation still finds them.
         """
 
-        def bound_activity() -> None:
-            self.memory.activity.advance_bound(self.state_maintenance.bindings.values())
+        async def bound_activity() -> None:
+            windows = tuple(self.state_maintenance.bindings.values())
+            if not self.memory.activity.has_due_bindings(windows):
+                return
+            await asyncio.to_thread(self.memory.activity.advance_bound, windows)
 
-        def bound_game() -> None:
-            if self.memory.game is not None:
-                self.memory.game.advance_bound(self.state_maintenance.bindings.values())
+        async def bound_game() -> None:
+            if self.memory.game is None:
+                return
+            windows = tuple(self.state_maintenance.bindings.values())
+            if not self.memory.game.has_due_bindings(windows):
+                return
+            await asyncio.to_thread(self.memory.game.advance_bound, windows)
 
         def advance_reflection() -> None:
             tools = self.messages.tools
             participation = getattr(tools, "group_participation", None) if tools is not None else None
             if participation is not None:
                 participation.advance_reflection()
+
+        async def advance_expression_style():
+            # Honor tests that patch ``application.expression_style.advance`` directly.
+            if ("advance" not in self.expression_style.__dict__
+                    and type(self.expression_style).advance is ExpressionStyleService.advance):
+                return await self.expression_style.advance_async()
+            return self.expression_style.advance()
 
         def advance_presence() -> None:
             if self.presence is not None:
@@ -1001,7 +1015,7 @@ class CompanionApplication:
             TickUnit("growth-progress", self.growth_progress.advance),
             TickUnit("self-review", self.self_review.advance),
             TickUnit("group-participation", advance_reflection),
-            TickUnit("expression-style", self.expression_style.advance),
+            TickUnit("expression-style", advance_expression_style),
             TickUnit("presence", advance_presence),
             TickUnit("proactive-deliveries", advance_contact_deliveries),
             TickUnit("journal-schedule", self.journal_schedule.advance),
