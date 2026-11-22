@@ -9,8 +9,12 @@ remain on their user, device or relationship routes.
 """
 
 import asyncio
+from collections import OrderedDict
+from contextlib import nullcontext
+from copy import deepcopy
 import json
 import logging
+import threading
 import time
 from types import SimpleNamespace
 
@@ -40,6 +44,8 @@ from companion_v2.execution.models import TaskError, digest
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind, ScopeRef
 from companion_v2.knowledge.configuration import KnowledgeSettings
+from companion_v2.model_gateway.maintenance_cache import has_active_write_transaction
+from companion_v2.relationships.account_links import KEY as ACCOUNT_LINKS_KEY
 from companion_v2.storage.runtime import StorageOpenError
 
 from .knowledge_sources import AstrBotKnowledgeSources
@@ -48,6 +54,8 @@ from .management_identity import dashboard_operator
 
 
 PREFIX = "/astrbot_plugin_private_companion/config"
+SECTION_CACHE_MAX_ENTRIES = 128
+SECTION_CACHE_TTL_SECONDS = 30.0
 logger = logging.getLogger(__name__)
 SECTIONS = {"quota": ImageQuotaManagement, "image_review": ImageReviewManagement,
             "image.output": ImageOutputManagement,
@@ -98,6 +106,8 @@ class ConfigurationWebAPI:
 
     def __init__(self, controller, *, allowed_sections=None):
         self.controller = controller
+        self._section_cache = OrderedDict()
+        self._section_cache_lock = threading.Lock()
         if allowed_sections is None:
             self.sections = SECTIONS
         else:
@@ -105,6 +115,10 @@ class ConfigurationWebAPI:
             if not names or set(names) - set(SECTIONS) or len(set(names)) != len(names):
                 raise ValueError("invalid configuration section allowlist")
             self.sections = {name: SECTIONS[name] for name in names}
+
+    def _invalidate_section_cache(self):
+        with self._section_cache_lock:
+            self._section_cache.clear()
 
     def routes(self):
         routes = [(PREFIX, self.status, ["GET"], "Read allowed configuration sections"),
@@ -177,7 +191,10 @@ class ConfigurationWebAPI:
                 operator = dashboard_operator(runtime, username, at=controller.now())
                 return PhoneManagement(session.application, context).connection(operator, data)
 
-            return outcome_response(await asyncio.to_thread(connect))
+            result = await asyncio.to_thread(connect)
+            if data.get("action") == "use":
+                self._invalidate_section_cache()
+            return outcome_response(result)
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except StorageOpenError:
@@ -200,19 +217,44 @@ class ConfigurationWebAPI:
                 if len(raw) > 4096:
                     raise ValueError("behavior command is too large")
                 data = _document(raw, expected={"group_key", "habit_id", "enabled", "revision"})
+            if not command:
+                async with self.controller._control_lock:
+                    controller = self.controller
+                    if controller._terminated:
+                        raise TaskError("staging_host_terminated", "plugin is stopped")
+                    session = controller.session or controller.last_session
+                    runtime = controller.runtime
+                    if session is None or runtime is None:
+                        raise TaskError("staging_not_initialized", "load the V2 profile first")
+                    observed_at = controller.now()
+
+                def load_behavior():
+                    operator = dashboard_operator(runtime, username, at=observed_at)
+                    manager = BehaviorManagement(session.application, session.profile.target)
+                    return manager.status(operator)
+
+                return outcome_response(Outcome.success(await asyncio.to_thread(load_behavior)))
             async with self.controller._control_lock:
                 controller = self.controller
                 if controller._terminated:
                     raise TaskError("staging_host_terminated", "plugin is stopped")
                 session = controller.session or controller.last_session
-                if session is None or controller.runtime is None:
+                runtime = controller.runtime
+                if session is None or runtime is None:
                     raise TaskError("staging_not_initialized", "load the V2 profile first")
-                operator = dashboard_operator(controller.runtime, username, at=controller.now())
-                manager = BehaviorManagement(session.application, session.profile.target)
-                payload = manager.command(operator, data) if command else manager.status(operator)
+                observed_at = controller.now()
+
+                def run_behavior_command():
+                    operator = dashboard_operator(runtime, username, at=observed_at)
+                    manager = BehaviorManagement(session.application, session.profile.target)
+                    return manager.command(operator, data)
+
+                payload = await asyncio.to_thread(run_behavior_command)
                 return outcome_response(Outcome.success(payload))
         except (TaskError, ConfigurationError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("configuration_storage_unavailable", "the configuration store is not available"))
         except (ValueError, TypeError, KeyError, UnicodeError):
             return outcome_response(Outcome.failed("group_behavior_command_invalid", "invalid behavior request"))
 
@@ -318,9 +360,15 @@ class ConfigurationWebAPI:
                 data.get("role_id", "") if isinstance(data, dict) else query.get("role_id", ""))
             observed_at = controller.now()
             if action == "status":
-                operator = await asyncio.to_thread(dashboard_operator, runtime, username, at=observed_at)
-                result = Outcome.success(await self._status(application, context, operator, query,
-                                                             host_context=controller.context))
+                requested = self._requested(query)
+
+                def read_all():
+                    operator = dashboard_operator(runtime, username, at=observed_at)
+                    return self._read_sections_sync(application, context, operator, requested)
+
+                sections, section_errors = await asyncio.to_thread(read_all)
+                await self._enrich_knowledge_section(sections, host_context=controller.context)
+                result = Outcome.success({"sections": sections, "section_errors": section_errors})
             else:
                 started = time.perf_counter()
                 def write():
@@ -340,6 +388,7 @@ class ConfigurationWebAPI:
                 # V2 存储是同步 SQLite（单连接 + 全局锁）。放到工作线程里执行，
                 # 事务再慢也只占用那个线程，不会卡住 AstrBot 的事件循环。
                 result = await asyncio.to_thread(write)
+                self._invalidate_section_cache()
                 elapsed_ms = round((time.perf_counter() - started) * 1000)
                 if elapsed_ms >= 500:
                     logger.warning("[CompanionV2] 配置保存耗时 section=%s ms=%s",
@@ -363,58 +412,165 @@ class ConfigurationWebAPI:
             raise TaskError("configuration_request_invalid", "unknown configuration section")
         return wanted
 
-    async def _status(self, app, context, operator, query, *, host_context=None, section_names=None):
+    @staticmethod
+    def _config_cache_token(app, runtime, config_store):
+        """Return an O(1) revision token covering configuration, identity, policy, and account links.
+
+        Unlike a whole-database write counter, unrelated background ticks or
+        conversation turns in the main store do not falsely invalidate cached
+        configuration sections.
+        """
+        if runtime is None or has_active_write_transaction(runtime):
+            return None
+        store = config_store if config_store is not None else runtime
+        read_main = getattr(runtime, "read_one", None)
+        read_cfg = getattr(store, "read_one", None)
+        if not callable(read_main) or not callable(read_cfg):
+            return None
+        try:
+            main_row = read_main(
+                """SELECT
+                       (SELECT COALESCE(revision, 0) FROM identity_policy_metadata WHERE singleton = 1),
+                       (SELECT COALESCE(revision, 0) FROM object_policy_metadata WHERE singleton = 1),
+                       (SELECT COALESCE(MAX(sequence), 0) FROM persona_binding_events),
+                       (SELECT COUNT(*) || ':' || COALESCE(SUM(revision), 0) FROM capability_settings)""",
+                (),
+            )
+            cfg_row = read_cfg(
+                """SELECT
+                       (SELECT COUNT(*) || ':' || COALESCE(SUM(revision), 0) FROM configuration_targets),
+                       (SELECT COALESCE(MAX(sequence), 0) FROM configuration_changes),
+                       (SELECT COUNT(*) || ':' || COALESCE(SUM(revision), 0) FROM configuration_values),
+                       (SELECT COALESCE(value, '') FROM runtime_metadata WHERE key = ?)""",
+                (ACCOUNT_LINKS_KEY,),
+            )
+        except Exception:
+            return None
+        registry = getattr(getattr(app, "configuration", None), "registry", None)
+        schema_fp = getattr(registry, "fingerprint", None)
+        return (
+            tuple(main_row) if main_row is not None else None,
+            tuple(cfg_row) if cfg_row is not None else None,
+            schema_fp,
+        )
+
+    def _read_sections_sync(self, app, context, operator, requested):
         sections, section_errors = {}, {}
+        runtime = getattr(app, "runtime", None)
+        config_store = getattr(getattr(app, "configuration", None), "store", None)
+        db_token = self._config_cache_token(app, runtime, config_store)
+        now = app.now() if callable(getattr(app, "now", None)) else None
+        context_key = getattr(context, "key", None)
+        op_key = (
+            getattr(operator, "subject", None),
+            getattr(operator, "binding_id", None),
+            getattr(operator, "binding_revision", None),
+        )
+        missed = []
+        if db_token is not None and now is not None:
+            with self._section_cache_lock:
+                for name in requested:
+                    cache_key = (id(app), context_key, op_key, name, self.sections[name])
+                    cached = self._section_cache.get(cache_key)
+                    if cached is not None:
+                        cached_token, cached_at, cached_payload = cached
+                        if (cached_token == db_token and cached_at <= now
+                                and (now - cached_at).total_seconds() <= SECTION_CACHE_TTL_SECONDS):
+                            self._section_cache.move_to_end(cache_key)
+                            sections[name] = deepcopy(cached_payload)
+                            continue
+                        self._section_cache.pop(cache_key, None)
+                    missed.append(name)
+        else:
+            missed = list(requested)
+
+        loaded_for_cache = []
+        if missed:
+            main_ctx = runtime.read_snapshot() if callable(getattr(runtime, "read_snapshot", None)) else nullcontext()
+            cfg_ctx = (
+                config_store.read_snapshot()
+                if (config_store is not None and config_store is not runtime
+                    and callable(getattr(config_store, "read_snapshot", None)))
+                else nullcontext()
+            )
+            with main_ctx, cfg_ctx:
+                for name in missed:
+                    try:
+                        started = time.perf_counter()
+                        result = self.sections[name](app, context).status(operator)
+                        elapsed_ms = round((time.perf_counter() - started) * 1000)
+                        if elapsed_ms >= 500:
+                            logger.warning("[CompanionV2] 配置读取耗时 section=%s ms=%s", name, elapsed_ms)
+                        if result.failure is not None:
+                            if len(requested) == 1:
+                                raise TaskError(result.failure.code, result.failure.reason)
+                            section_errors[name] = {"code": result.failure.code}
+                            continue
+                        payload = {**result.unwrap(), "section": name}
+                        sections[name] = payload
+                        if db_token is not None:
+                            loaded_for_cache.append((
+                                (id(app), context_key, op_key, name, self.sections[name]),
+                                deepcopy(payload),
+                            ))
+                    except (TaskError, ConfigurationError) as error:
+                        sections.pop(name, None)
+                        if len(requested) == 1:
+                            raise
+                        section_errors[name] = {"code": error.code}
+                    except Exception:
+                        sections.pop(name, None)
+                        logger.exception("[CompanionV2] 配置分区读取失败 section=%s", name)
+                        if len(requested) == 1:
+                            raise TaskError("configuration_section_read_failed",
+                                            "the configuration section could not be read") from None
+                        section_errors[name] = {"code": "configuration_section_read_failed"}
+
+        if (loaded_for_cache and db_token is not None and now is not None
+                and self._config_cache_token(app, runtime, config_store) == db_token):
+            with self._section_cache_lock:
+                for cache_key, payload_copy in loaded_for_cache:
+                    self._section_cache[cache_key] = (db_token, now, payload_copy)
+                    self._section_cache.move_to_end(cache_key)
+                while len(self._section_cache) > SECTION_CACHE_MAX_ENTRIES:
+                    self._section_cache.popitem(last=False)
+
+        ordered = {name: sections[name] for name in requested if name in sections}
+        return ordered, section_errors
+
+    @staticmethod
+    async def _enrich_knowledge_section(sections, *, host_context=None):
+        section = sections.get("knowledge")
+        if section is None:
+            return
+        try:
+            selected = KnowledgeSettings.from_values(section["settings"]).knowledge_source_ids()
+        except Exception:
+            selected = ()
+        try:
+            sources = await AstrBotKnowledgeSources(host_context).list_sources()
+            sources_available = bool(getattr(host_context, "kb_manager", None))
+        except Exception:
+            sources = []
+            sources_available = False
+        available = {item["id"] for item in sources}
+        available.update(doc["id"] for item in sources for doc in item.get("documents", ()))
+        for identifier in selected:
+            if identifier not in available:
+                sources.append({"id": identifier, "type": "missing", "kb_id": "",
+                                "name": "不可用来源 · " + identifier,
+                                "documents": []})
+        section["knowledge_sources"] = sources
+        section["knowledge_sources_available"] = sources_available
+
+    async def _status(self, app, context, operator, query, *, host_context=None, section_names=None):
         requested = tuple(section_names) if section_names is not None else self._requested(query)
-        for name in requested:
-            try:
-                # 分区状态同样是一次同步 SQLite 投影；放到工作线程里读，
-                # 读取再慢也不会把事件循环按住。knowledge 的扩展来源
-                # 仍是异步接口，留在事件循环上取。
-                started = time.perf_counter()
-                result = await asyncio.to_thread(self.sections[name](app, context).status, operator)
-                elapsed_ms = round((time.perf_counter() - started) * 1000)
-                if elapsed_ms >= 500:
-                    logger.warning("[CompanionV2] 配置读取耗时 section=%s ms=%s", name, elapsed_ms)
-                if result.failure is not None:
-                    if len(requested) == 1:
-                        raise TaskError(result.failure.code, result.failure.reason)
-                    section_errors[name] = {"code": result.failure.code}
-                    continue
-                sections[name] = {**result.unwrap(), "section": name}
-                if name == "knowledge":
-                    section = sections[name]
-                    try:
-                        selected = KnowledgeSettings.from_values(section["settings"]).knowledge_source_ids()
-                    except Exception:
-                        selected = ()
-                    try:
-                        sources = await AstrBotKnowledgeSources(host_context).list_sources()
-                        sources_available = bool(getattr(host_context, "kb_manager", None))
-                    except Exception:
-                        sources = []
-                        sources_available = False
-                    available = {item["id"] for item in sources}
-                    available.update(doc["id"] for item in sources for doc in item.get("documents", ()))
-                    for identifier in selected:
-                        if identifier not in available:
-                            sources.append({"id": identifier, "type": "missing", "kb_id": "",
-                                            "name": "不可用来源 · " + identifier,
-                                            "documents": []})
-                    section["knowledge_sources"] = sources
-                    section["knowledge_sources_available"] = sources_available
-            except (TaskError, ConfigurationError) as error:
-                sections.pop(name, None)
-                if len(requested) == 1:
-                    raise
-                section_errors[name] = {"code": error.code}
-            except Exception:
-                sections.pop(name, None)
-                logger.exception("[CompanionV2] 配置分区读取失败 section=%s", name)
-                if len(requested) == 1:
-                    raise TaskError("configuration_section_read_failed",
-                                    "the configuration section could not be read") from None
-                section_errors[name] = {"code": "configuration_section_read_failed"}
+        # 多分区读取放进同一工作线程与同一 MVCC 读快照，并结合写入令牌做轻量读缓存；
+        # knowledge 的扩展来源仍是异步接口，留在事件循环上取。
+        sections, section_errors = await asyncio.to_thread(
+            self._read_sections_sync, app, context, operator, requested
+        )
+        await self._enrich_knowledge_section(sections, host_context=host_context)
         return {"sections": sections, "section_errors": section_errors}
 
     async def status(self):

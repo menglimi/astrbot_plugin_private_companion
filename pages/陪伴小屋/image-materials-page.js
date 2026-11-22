@@ -363,15 +363,44 @@ window.CompanionImageMaterialsPage = (() => {
           ? ERRORS[value.code] || "这次穿搭图没有生成" : thumbnail ? "" : photo ? "今日穿搭图暂不可预览" : "今天还没有穿搭图");
     const weather = photo?.weather;
     const weatherText = weather ? [weather.role_location, weather.condition, `${weather.temperature_c}°C`].join(" · ") : "";
+    const outfitTip = photo?.filename ? `点击查看高清原图（${photo.filename}）` : "点击放大查看高清原图";
     return `<header class="image-materials-section-head"><h4>每日穿搭图</h4>
       <button type="button" class="button small primary" data-im-generate-outfit ${!enabled || !value || working || state.action ? "disabled" : ""}>
         <i data-lucide="${thumbnail ? "refresh-cw" : "image-plus"}" aria-hidden="true"></i>${thumbnail ? "重新生成" : "生成今日穿搭"}</button></header>
-      ${thumbnail ? `<div class="image-materials-outfit-body"><img src="${esc(thumbnail)}" alt="今日角色穿搭图"><dl>
+      ${thumbnail ? `<div class="image-materials-outfit-body"><button type="button" class="image-materials-outfit-trigger" data-im-open-outfit aria-label="放大查看今日穿搭原图" title="${esc(outfitTip)}"><img src="${esc(thumbnail)}" alt="今日角色穿搭图"><span class="image-materials-outfit-zoom" aria-hidden="true">${icon("zoom-in")}<span>查看原图</span></span></button><dl>
         <div><dt>日期</dt><dd>${esc(value.local_date)}</dd></div>
         ${weatherText ? `<div><dt>天气</dt><dd>${esc(weatherText)}</dd></div>` : ""}
         ${photo.activities?.length ? `<div><dt>当日安排</dt><dd>${esc(photo.activities.join("、"))}</dd></div>` : ""}
       </dl></div>` : ""}
       <p role="status" class="image-materials-outfit-status" ${status ? "" : "hidden"}>${esc(status)}</p>`;
+  }
+
+  function openOutfitLightbox() {
+    const value = state.outfitPhoto, photo = value?.photo;
+    const thumbnail = typeof photo?.thumbnail === "string" && photo.thumbnail.startsWith("data:image/jpeg;base64,")
+      ? photo.thumbnail : "";
+    if (!thumbnail) return;
+    let albumBase = "";
+    try {
+      if (photo.image_id) albumBase = apiPath("/album");
+    } catch {}
+    const localDate = photo.local_date || value.local_date || "";
+    const fallbackName = `daily-outfit-${localDate || "today"}.png`;
+    window.CompanionOutputPage?.openLightbox?.({
+      image_id: photo.image_id || `wardrobe-outfit-preview:${localDate || "today"}`,
+      filename: photo.filename || fallbackName,
+      mime_type: photo.mime_type || "",
+      width: photo.width ?? null,
+      height: photo.height ?? null,
+      size_bytes: photo.size_bytes ?? null,
+      created_at: photo.created_at || "",
+      action: "wardrobe.outfit",
+      local_date: localDate,
+      weather: photo.weather || null,
+      activities: Array.isArray(photo.activities) ? photo.activities : [],
+      thumbnail,
+      _albumEndpoint: albumBase,
+    });
   }
 
   function paintOutfitPhoto() {
@@ -385,12 +414,14 @@ window.CompanionImageMaterialsPage = (() => {
   async function loadOutfitPhoto(ticket) {
     if (!live(ticket)) return;
     clearTimeout(state.outfitTimer);
+    const wasWorking = outfitInProgress(state.outfitPhoto) || state.action === "generate-outfit";
     try {
       const value = await request("GET", apiPath("/daily-outfit/photo"));
       if (!live(ticket)) return;
       if (typeof value.state !== "string" || typeof value.local_date !== "string") throw makeError("invalid_response");
       state.outfitPhoto = value; state.outfitError = "";
       if (outfitInProgress(value)) state.outfitTimer = setTimeout(() => loadOutfitPhoto(ticket), 2200);
+      else if (wasWorking && value.state === "succeeded") window.CompanionOutputPage?.refreshAlbum?.();
     } catch (error) {
       if (live(ticket)) {
         state.outfitError = errorText(error, "今日穿搭图暂不可读。");
@@ -782,8 +813,10 @@ window.CompanionImageMaterialsPage = (() => {
     if (target.matches("[data-im-wardrobe-asset]")) { state.wardrobeAssetId = target.value; render(); }
   }
   function click(event) {
-    const target = event.target.closest("[data-im-refresh],[data-im-load-more],[data-im-select],[data-im-register],[data-im-upload],[data-im-save-gallery],[data-im-move-ref],[data-im-edit-ref],[data-im-quick-roles],[data-im-save-ref],[data-im-cancel-edit],[data-im-withdraw-ref],[data-im-wardrobe-submit],[data-im-withdraw-wardrobe],[data-im-daily],[data-im-toggle-upload],[data-im-toggle-wardrobe],[data-im-generate-outfit]");
-    if (!target || !state.root?.contains(target) || target.disabled || state.action) return;
+    const target = event.target.closest("[data-im-open-outfit],[data-im-refresh],[data-im-load-more],[data-im-select],[data-im-register],[data-im-upload],[data-im-save-gallery],[data-im-move-ref],[data-im-edit-ref],[data-im-quick-roles],[data-im-save-ref],[data-im-cancel-edit],[data-im-withdraw-ref],[data-im-wardrobe-submit],[data-im-withdraw-wardrobe],[data-im-daily],[data-im-toggle-upload],[data-im-toggle-wardrobe],[data-im-generate-outfit]");
+    if (!target || !state.root?.contains(target) || target.disabled) return;
+    if (target.matches("[data-im-open-outfit]")) { openOutfitLightbox(); return; }
+    if (state.action) return;
     if (target.matches("[data-im-toggle-upload]")) { state.uploadOpen = !state.uploadOpen; render(); return; }
     if (target.matches("[data-im-toggle-wardrobe]")) { state.wardrobeOpen = !state.wardrobeOpen; render(); return; }
     if (target.matches("[data-im-refresh]")) { refresh(); return; }

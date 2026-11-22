@@ -223,6 +223,56 @@ class KnowledgeImportTests(Fixture):
         self.assertEqual(observed, [("kb:kb-1",)])
         self.assertEqual([item.payload for item in on], ["米拉喜欢雨天散步"])
 
+    def test_semantic_official_retriever_preserves_order_and_falls_back_when_unavailable(self):
+        scan_called = []
+        semantic_calls = []
+
+        def official_reader(source_ids, **bounds):
+            scan_called.append(tuple(source_ids))
+            return (KnowledgeCandidate("astrbot:kb-1:doc-1:0", "降级字面命中内容",
+                knowledge_base_id="kb-1", document_id="doc-1", document_name="角色资料.md",
+                chunk_index=0),)
+
+        def semantic_retriever(query_text, source_ids, **bounds):
+            semantic_calls.append((query_text, tuple(source_ids)))
+            # Zero literal character overlap with query_text; must still be kept in rank order.
+            return (
+                KnowledgeCandidate("astrbot:kb-1:doc-9:2", "维也纳雪夜音乐会终章",
+                    knowledge_base_id="kb-1", document_id="doc-9", document_name="终章.md",
+                    chunk_index=2),
+                KnowledgeCandidate("astrbot:kb-1:doc-3:1", "空港离别的约定",
+                    knowledge_base_id="kb-1", document_id="doc-3", document_name="序章.md",
+                    chunk_index=1),
+            )
+
+        task = task_context(SCOPE)
+        settings = KnowledgeSettings.from_values({"source_ids": "kb:kb-1", "official_in_core": True})
+        ctx = KnowledgeContext(
+            KnowledgeRetriever(()), runtime=self.runtime,
+            settings_reader=lambda _: settings,
+            official_candidate_reader=official_reader,
+            official_semantic_retriever=semantic_retriever,
+        )
+        hits = ctx.core_background_contributions(
+            task, text="钢琴家后来去了哪", at=NOW, batch_id="semantic-ok",
+            sources=self.sources, audience=task.audience)
+        self.assertEqual([item.payload for item in hits], ["维也纳雪夜音乐会终章", "空港离别的约定"])
+        self.assertEqual(semantic_calls, [("钢琴家后来去了哪", ("kb:kb-1",))])
+        self.assertEqual(scan_called, [])
+
+        # When semantic retriever returns None (kb_manager unavailable), fall back to official_reader.
+        fallback_ctx = KnowledgeContext(
+            KnowledgeRetriever(()), runtime=self.runtime,
+            settings_reader=lambda _: settings,
+            official_candidate_reader=official_reader,
+            official_semantic_retriever=lambda *_a, **_kw: None,
+        )
+        fallback_hits = fallback_ctx.core_background_contributions(
+            task, text="降级字面", at=NOW, batch_id="semantic-fallback",
+            sources=self.sources, audience=task.audience)
+        self.assertEqual([item.payload for item in fallback_hits], ["降级字面命中内容"])
+        self.assertEqual(scan_called, [("kb:kb-1",)])
+
     def test_role_and_group_boundaries_isolate_imported_entries(self):
         importer = self.importer()
         importer.import_source(self.spec("worldbook:shared"), lambda item: worldbook(

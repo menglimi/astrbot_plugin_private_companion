@@ -27,6 +27,8 @@ const DEFAULTS = {
   group_wakeup_context_words: '[]', group_wakeup_interest_keywords: '[]',
   group_wakeup_question_enabled: false, group_wakeup_bot_name: '',
   group_wakeup_primary_member_ids: '[]', group_wakeup_owner_direct_words: '[]', group_tool_profile: 'full',
+  private_tool_profile: 'full',
+  private_tool_groups: 'agenda、calendar、memory、records、interaction、media、diagnostics、relay、extensions',
   group_wakeup_interest_probability: 0.18, group_wakeup_question_threshold: 65,
   group_wakeup_cold_group_enabled: false, group_wakeup_cold_group_threshold: 65,
   group_wakeup_cold_group_idle_minutes: 25, group_wakeup_cooldown_seconds: 90,
@@ -394,6 +396,8 @@ test('the card is split into labelled groups but keeps one save', async () => {
   /* 段落只是阅读顺序：仍然只有一个 edit_token、一次保存。 */
   assert.equal(instance.state.container.fields.enabled.editable.includes('window'), true);
   assert.equal(instance.state.container.fields.group_tool_profile, undefined);
+  assert.equal(instance.state.container.fields.private_tool_profile, undefined);
+  assert.equal(instance.state.container.fields.private_tool_groups, undefined);
   assert.ok(plain(instance.state.container.groups.find(group => group.id === 'segment').fields)
     .includes('part_gap_mode'), 'message spacing is part of the segmentation workspace');
   assert.equal(harnessed.page.selectSection('timing'), true, 'the old timing jump resolves to segmentation');
@@ -775,8 +779,15 @@ test('reply expression, perception, and decision settings partition every field 
   const decisionState = live(decisionHarness).state.container;
   const decision = plain(decisionState.groups.flatMap(group => group.fields));
   assert.ok(decision.includes('group_tool_profile'));
+  assert.ok(decision.includes('private_tool_profile'));
+  assert.ok(decision.includes('private_tool_groups'));
   assert.deepEqual(plain(decisionState.fields.group_tool_profile.choices),
     {full: '完整工具', standard: '常用工具', lean: '精简工具'});
+  assert.deepEqual(plain(decisionState.fields.private_tool_profile.choices),
+    {full: '完整工具', lean: '精简工具', custom: '按组自选', none: '关闭陪伴工具'});
+  assert.equal(decisionState.fields.private_tool_groups.input, 'chips');
+  assert.deepEqual(plain(decisionState.fields.private_tool_groups.chipOptions.options),
+    ['agenda', 'calendar', 'memory', 'records', 'interaction', 'media', 'diagnostics', 'relay', 'extensions']);
   assert.deepEqual(plain(decisionState.groups.map(group => group.id)),
     ['wakeup_direct', 'wakeup_interest', 'wakeup_members', 'wakeup_cold_group', 'wakeup_fatigue',
       'group_continuation', 'private_debounce', 'silence_policy', 'group_air_guard', 'private_closing', 'group_content_safety']);
@@ -1384,5 +1395,67 @@ test('text hero follows the segmentation draft', async () => {
   assert.match(h.slots.scope.innerHTML, /最多 4 条/);
   assert.match(h.slots.scope.innerHTML, /边生成边分段发送/);
   h.page.unmount();
+});
+
+test('switching between text, voice and platform dynamically toggles navigationLimit without hiding voice groups', async () => {
+  const h = harness();
+  h.page.mount(h.root, {view: 'expression', expressionModule: 'expression-text'});
+  await drains();
+  h.requests[0].resolve(status());
+  await drains();
+  const instance = live(h);
+  assert.ok(instance.state.container.navigationLimit > 0, 'text module starts with sidebar navigation');
+  assert.match(h.slots.settings.innerHTML, /class="wb-section-layout"/);
+  assert.match(h.slots.settings.innerHTML, /class="wb-section-sidebar"/);
+
+  h.page.setExpressionModule('expression-voice');
+  assert.equal(instance.state.container.navigationLimit, 0, 'voice module clears navigationLimit to expand all groups');
+  let html = h.slots.settings.innerHTML;
+  assert.doesNotMatch(html, /class="wb-section-layout"/);
+  assert.doesNotMatch(html, /class="wb-section-sidebar"/);
+  assert.doesNotMatch(html, /data-wb-section-panel/);
+  for (const id of ['voice', 'voice_render', 'voice_engine', 'voice_limits',
+    'voice_primary', 'voice_extra', 'voice_channels']) {
+    assert.match(html, new RegExp(`<section class="wb-group" data-wb-group="${id}">`));
+  }
+
+  /* Saving or refreshing while on voice must keep navigationLimit === 0. */
+  instance.state.draft.voice_enabled = true;
+  const saving = instance.save(false);
+  await drains();
+  h.requests.at(-1).resolve({
+    result: {operation_id: 'voice-keep-flat', replayed: false},
+    status: status({voice_enabled: true}, 'e'.repeat(64)),
+  });
+  await saving;
+  await drains();
+  assert.equal(instance.state.container.navigationLimit, 0, 'save rebuild keeps voice groups expanded');
+  assert.doesNotMatch(h.slots.settings.innerHTML, /class="wb-section-layout"/);
+
+  /* Switching back to text or platform restores section sidebar navigation. */
+  h.page.setExpressionModule('expression-platform');
+  assert.ok(instance.state.container.navigationLimit > 0, 'platform module restores navigationLimit');
+  assert.match(h.slots.settings.innerHTML, /class="wb-section-layout"/);
+  assert.match(h.slots.settings.innerHTML, /data-wb-section="components"/);
+  assert.match(h.slots.settings.innerHTML, /data-wb-section="checks"/);
+
+  h.page.setExpressionModule('expression-text');
+  assert.ok(instance.state.container.navigationLimit > 0, 'text module restores navigationLimit');
+  assert.match(h.slots.settings.innerHTML, /class="wb-section-layout"/);
+  assert.match(h.slots.settings.innerHTML, /data-wb-section="segment"/);
+  h.page.unmount();
+
+  /* Direct deep-link into voice also restores sidebar when switching away to text. */
+  const direct = harness();
+  direct.page.mount(direct.root, {view: 'expression', expressionModule: 'expression-voice'});
+  await drains();
+  direct.requests[0].resolve(status());
+  await drains();
+  assert.equal(live(direct).state.container.navigationLimit, 0);
+  assert.doesNotMatch(direct.slots.settings.innerHTML, /class="wb-section-layout"/);
+  direct.page.setExpressionModule('expression-text');
+  assert.ok(live(direct).state.container.navigationLimit > 0);
+  assert.match(direct.slots.settings.innerHTML, /class="wb-section-layout"/);
+  direct.page.unmount();
 });
 

@@ -182,10 +182,15 @@ def build_wire(envelope, *, model_name=""):
             "statement 必须是 text 的逐字连续原文，observed 使用提供的 evidence 句柄，"
             "subjective/question 的 evidence 为 null。" + stream_contract
             if request.output_format == "conversation" else BACKGROUND_OUTPUT_NOTES.get(request.output_format, "")))
+    user_document = {
+        "materials": materials,
+        "deferred": [{"owner": c.owner, "purpose": c.purpose} for c in request.context.deferred],
+        "unavailable": [{"owner": c.owner, "purpose": c.purpose} for c in request.context.unavailable],
+    }
+    if request.user_instruction:
+        user_document["round_guidance"] = request.user_instruction
     messages = [*composition.system_messages,
-                {"role": "user", "content": encode_prompt({"materials": materials,
-                    "deferred": [{"owner": c.owner, "purpose": c.purpose} for c in request.context.deferred],
-                    "unavailable": [{"owner": c.owner, "purpose": c.purpose} for c in request.context.unavailable]})}]
+                {"role": "user", "content": encode_prompt(user_document)}]
     if request.images:
         content = [{"type": "text", "text": messages[-1]["content"]}]
         for original in request.images:

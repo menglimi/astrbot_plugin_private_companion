@@ -1004,7 +1004,10 @@ class MaintenancePerfCacheTests(HostFixture, unittest.IsolatedAsyncioTestCase):
         plan = [row["detail"] for row in self.app.runtime.read_all(sql, ("acct-1", "conversation.reply", self.role_context.key))]
         joined = "\n".join(plan)
         self.assertIn("UNION", joined)
-        self.assertIn("execution_origin_idx", joined)
+        self.assertTrue(
+            "idx_execution_tasks_origin_kind_id" in joined or "execution_origin_idx" in joined,
+            f"expected execution_tasks origin index in query plan, got:\n{joined}",
+        )
         self.assertNotIn("CORRELATED SCALAR SUBQUERY", joined)
 
     async def test_synthetic_large_dataset_speedup_benchmark_and_parity(self):

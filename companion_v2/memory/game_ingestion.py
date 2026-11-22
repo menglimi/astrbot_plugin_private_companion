@@ -166,6 +166,24 @@ class MemoryGameIngestion:
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value""", (key, encode(cursor)))
             return report
 
+    def has_due_bindings(self, bindings) -> bool:
+        """Fast O(1) readiness probe so idle ticks skip worker-thread dispatch."""
+        if self.closed:
+            return False
+        windows = tuple(bindings)
+        if not windows:
+            return bool(self._last_advance)
+        now = self.tasks.now()
+        start, count = self._binding_offset % len(windows), min(16, len(windows))
+        for index in range(count):
+            context = windows[(start + index) % len(windows)][0]
+            if context.scope.kind is not ScopeKind.PRIVATE:
+                continue
+            previous = self._last_advance.get(context.key)
+            if previous is None or not (0 <= (now - previous).total_seconds() < 30):
+                return True
+        return False
+
     @outcome
     def advance_bound(self, bindings):
         self._active()
@@ -176,7 +194,7 @@ class MemoryGameIngestion:
             self._binding_offset = 0
             return report
         keys = {window[0].key for window in windows}
-        self._last_advance = {key: at for key, at in self._last_advance.items() if key in keys}
+        self._last_advance = {key: at for key, at in tuple(self._last_advance.items()) if key in keys}
         now = self.tasks.now()
         start, count = self._binding_offset % len(windows), min(16, len(windows))
         self._binding_offset = (start + count) % len(windows)

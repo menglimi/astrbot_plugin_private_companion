@@ -63,11 +63,23 @@ const navGroups = [
 ];
 const navItems = navGroups.flatMap(([,items])=>items);
 const lifeTabs=[['home','house','首页'],['state','activity','状态'],['diary','notebook-pen','日记'],['directory','armchair','家具与能力'],['observation','scan-eye','生活观察']];
-let route='life', lifeTab='home', manageTab='host', selfPane='profile', libraryFilter='all', memoryView='list', memoryWorkspaceRoute='records';
+const MODEL_TABS=['fn','voice','image','search','laya','pricing'];
+let route='life', lifeTab='home', manageTab='host', selfPane='profile', modelsPane='fn', libraryFilter='all', memoryView='list', memoryWorkspaceRoute='records';
 let navigationIntent=0;
 let outputTabId='visual';
 let selfProfileSection='identity';
-let personaRecreationMode=(()=>{try{const saved=localStorage.getItem('companion.persona-mode');return ['questionnaire','create','optimize'].includes(saved)?saved:'questionnaire';}catch{return 'questionnaire';}})();
+const PERSONA_MODE_IDS=['questionnaire','create','optimize'];
+function readPersonaRecreationMode(){
+  try{
+    const saved=typeof localStorage!=='undefined'&&localStorage?localStorage.getItem('companion.persona-mode'):null;
+    return PERSONA_MODE_IDS.includes(saved)?saved:'questionnaire';
+  }catch{return 'questionnaire';}
+}
+function savePersonaRecreationMode(mode){
+  if(!PERSONA_MODE_IDS.includes(mode))return;
+  try{if(typeof localStorage!=='undefined'&&localStorage)localStorage.setItem('companion.persona-mode',mode);}catch{}
+}
+let personaRecreationMode=readPersonaRecreationMode();
 let maintenancePane='';
 let dataPane='storage';
 let tokenTaskSettingsJump=0;
@@ -198,6 +210,7 @@ window.CompanionDisplayPreferences={
 function navHref(next,tab='',subtab=''){
   const path='#'+next+(tab&&tab!=='home'&&tab!=='host'?'/'+tab:'');
   const nested=next==='manage'&&tab==='governance'&&subtab&&subtab!=='profile'
+    ||next==='manage'&&tab==='models'&&subtab&&subtab!=='fn'&&MODEL_TABS.includes(subtab)
     ||next==='manage'&&tab==='expression'&&subtab
     ||next==='manage'&&tab==='learning'&&subtab
     ||next==='manage'&&tab==='maintenance'&&subtab&&subtab!=='overview'
@@ -264,6 +277,7 @@ function navigationDestination(next,tab='',subtab=''){
   }else if(next==='manage'){
     tab=manageTabs.some(item=>item[0]===tab)?tab:'host';
     subtab=tab==='learning'?(['overview','strategy','review','chain','expression','behavior','semantic','reflection'].includes(subtab)?subtab:'overview')
+      :tab==='models'?(MODEL_TABS.includes(subtab)?subtab:'fn')
       :tab==='expression'?(['text','segment','style','cleanup','voice','components','checks','timing','platform','reaction','group'].includes(subtab)?subtab:'')
       :tab==='maintenance'?(['diagnostics','delivery','reply-diagnostics','cache','efficiency','recent','prompts','patrol'].includes(subtab)?subtab:'')
         :tab==='data'?(['storage','backup','migration','port'].includes(subtab)?subtab:'storage')
@@ -294,12 +308,13 @@ function currentNavigationHref(){
     :'';
   const subtab=route==='life'
     ?(lifeTab==='state'?secondarySubtab():lifeWorkspaceTab)
-    :manageTab==='expression'?expressionRoute
-      :manageTab==='learning'?learningTab
-        :manageTab==='maintenance'?maintenancePane
-          :manageTab==='data'?dataPane
-            :manageTab==='memory'?secondarySubtab()
-              :manageTab==='perception'?secondarySubtab():selfPane;
+    :manageTab==='models'?modelsPane
+      :manageTab==='expression'?expressionRoute
+        :manageTab==='learning'?learningTab
+          :manageTab==='maintenance'?maintenancePane
+            :manageTab==='data'?dataPane
+              :manageTab==='memory'?secondarySubtab()
+                :manageTab==='perception'?secondarySubtab():selfPane;
   return navHref(route,route==='life'?lifeTab:manageTab,subtab);
 }
 function pageLeaveDecision(){
@@ -342,9 +357,13 @@ function navigate(next,tab,subtab='',{replace=false,scroll=true}={}){
   if(next==='library'||next==='activities'){furnitureFilter='extensions';furnitureQuery='';}
   const destination=navigationDestination(next,tab,subtab),shell=window.CompanionShell;
   const href=navHref(destination.next,destination.tab,destination.subtab);
-  const same=navigationInitialized&&currentNavigationHref()===href&&!shell?.furniture
+  const memorySubtabChanging=destination.next==='manage'&&destination.tab==='memory'&&destination.subtab&&destination.subtab!==memoryWorkspaceRoute;
+  const same=navigationInitialized&&currentNavigationHref()===href&&!shell?.furniture&&!memorySubtabChanging
     &&(destination.next==='manage'?shell?.section===destination.tab
       :!shell?.section&&shell?.view===(destination.tab==='home'?null:destination.tab));
+  const inPlaceModelsTab=navigationInitialized&&!shell?.furniture&&route==='manage'&&manageTab==='models'&&shell?.section==='models'
+    &&destination.next==='manage'&&destination.tab==='models'
+    &&typeof window.CompanionModelsPage?.selectTab==='function'&&Boolean(document.querySelector?.('#modelWorkspace'));
   const commit=()=>{
     closeDetail();route=destination.next;
     if(route==='life'){
@@ -354,6 +373,7 @@ function navigate(next,tab,subtab='',{replace=false,scroll=true}={}){
       }else shell?.selectView(lifeTab);
     }else{
       manageTab=destination.tab;
+      if(manageTab==='models')modelsPane=MODEL_TABS.includes(destination.subtab)?destination.subtab:'fn';
       maintenancePane=manageTab==='maintenance'?destination.subtab:'';
       if(manageTab==='data')dataPane=destination.subtab;
       selfPane=manageTab==='governance'?destination.subtab:'profile';
@@ -370,7 +390,10 @@ function navigate(next,tab,subtab='',{replace=false,scroll=true}={}){
       if(replace)history.replaceState(null,'',href);
       else if(location.hash!==href)history.pushState(null,'',href);
     }catch{}
-    if(!same){render();navigationInitialized=true;}
+    if(inPlaceModelsTab){
+      window.CompanionModelsPage.selectTab(modelsPane,{notify:false});
+      navigationInitialized=true;
+    }else if(!same){render();navigationInitialized=true;}
     /* 二级状态（感知分段、状态页图块）不在渲染函数里，渲染完再切一次，
        这样从地址栏进来也能落到同一屏。 */
     if(!same&&destination.next==='manage'&&destination.tab==='perception'&&destination.subtab)
@@ -383,9 +406,9 @@ function navigate(next,tab,subtab='',{replace=false,scroll=true}={}){
       requestAnimationFrame(()=>document.querySelector(`#contactWorkspace [data-view="${destination.subtab}"]`)?.click());
     if(!same&&destination.next==='life'&&destination.tab==='state'&&destination.subtab)
       requestAnimationFrame(()=>window.CompanionStatePage?.openFeature?.(destination.subtab));
-    if(scroll&&!same)window.scrollTo({top:0,behavior:'instant'});
+    if(scroll&&!same&&!inPlaceModelsTab)window.scrollTo({top:0,behavior:'instant'});
   };
-  if(same){commit();return true;}
+  if(same||inPlaceModelsTab){commit();return true;}
   return afterPageLeave(ticket,commit);
 }
 /* Cross-page modules and workspace iframes use this public entry point. */
@@ -397,6 +420,12 @@ function navigateToReplySection(next,tab,subtab,section){
   }
   if(navigation)requestAnimationFrame(()=>window.CompanionReplyPage?.selectSection?.(section,{scroll:true}));
   return navigation;
+}
+function onModelsTabChange(tab){
+  if(route!=='manage'||manageTab!=='models'||!MODEL_TABS.includes(tab))return;
+  modelsPane=tab;
+  const href=navHref('manage','models',modelsPane);
+  try{if(location.hash!==href)history.pushState(null,'',href);}catch{}
 }
 function onMaintenanceViewChange(view){
   if(route!=='manage'||manageTab!=='maintenance')return;
@@ -502,9 +531,9 @@ function onProductChanged(reason){
   if(arrangementDraft||reason?.kind==='host-mappings'&&($('.product-workspace-frame')||$('#legacyMigrationWorkspace'))){
     updateHostChrome();renderShellSide();return;
   }
-  if(reason?.kind==='state-refresh'){renderShellSide();renderHomeEnvironment();return;}
+  if(reason?.kind==='state-refresh'){renderShellSide();renderHomeEnvironment();syncFurniturePanelStatus();return;}
   if(reason?.kind==='integration-refresh'){
-    syncFurnitureScene();renderShellSide();
+    syncFurnitureScene();renderShellSide();syncFurniturePanelStatus();
     const grid=$('#directoryGrid');if(grid)grid.innerHTML=directoryCards();
     window.CompanionNativeExtensionPanel?.refreshStatus();
     return;
@@ -753,6 +782,7 @@ function renderShellSide(){
         agendaHost.innerHTML=nextSchedule;
         const current=agendaHost.querySelector?.('.home-agenda-scroll');
         if(current){current.scrollTop=scrollTop;if(restoreFocus)current.focus({preventScroll:true});}
+        window.CompanionHomeSidebar?.syncScrollFade?.(agendaHost);
       }
       shellSideAge=nextAge;
       shellSideSchedule=nextSchedule;
@@ -765,6 +795,7 @@ function renderShellSide(){
   shellSideAge=nextAge;
   shellSideSchedule=nextSchedule;
   icons(host);
+  window.CompanionHomeSidebar?.syncScrollFade?.(host);
 }
 let homeAgendaClockTimer=null;
 function refreshHomeStateAge(){
@@ -791,6 +822,7 @@ async function refreshHomeAgendaClock(refresh=false){
     shellSideSchedule=next;
     const current=host.querySelector('.home-agenda-scroll');
     if(current){current.scrollTop=scrollTop;if(restoreFocus)current.focus({preventScroll:true});}
+    window.CompanionHomeSidebar?.syncScrollFade?.(host);
   }
 }
 function armHomeAgendaClock(){
@@ -812,7 +844,8 @@ function armHomeAgendaClock(){
  * 看不出这页到底在管什么。现在补上。 */
 function panelHead(title,subtitle,icon,extra='',titleActions=''){
   const copy=`<div class="shell-panel-copy"><h2>${title}</h2>${subtitle?`<p>${subtitle}</p>`:''}</div>`;
-  return `<header class="shell-panel-head">${I(icon)}${copy}${titleActions}${extra?`<span class="panel-spacer"></span>${extra}`:''}</header>`;
+  const actions=`${titleActions}${extra}`;
+  return `<header class="shell-panel-head">${I(icon)}${copy}${actions?`<div class="shell-panel-actions">${actions}</div>`:''}</header>`;
 }
 
 /* 家具说明视图。速览条选中的家具，面板直接承载它的工作区（2026-09-29 设计稿）：
@@ -820,32 +853,200 @@ function panelHead(title,subtitle,icon,extra='',titleActions=''){
    还没有真实工作区的（创作书架/见闻电台/衣柜陈设）保留说明卡与真实入口，
    不放假工作区。 */
 const FURNITURE_WORKSPACES={desk:['life','archive'],bed:['life','sleep']};
+function furnitureStatusChip(id,label,tone=''){
+  return `<span class="pill${tone?' '+tone:''}" data-furniture-status-chip="${escapeHTML(id)}">${escapeHTML(label)}</span>`;
+}
+function furniturePanelStatus(id,entry){
+  const connectionState=product.connection?.()?.state||'';
+  const checking=connectionState==='checking';
+  const catalog=product.directory?.();
+  const currentRole=product.role?.();
+  const data=product.data||{};
+  if(id==='wardrobe'){
+    if(product.capability?.('image'))return capabilityStatus('image');
+    if(checking)return ['读取中…','gray'];
+    return ['基础陈设','gray'];
+  }
+  if(entry?.cap){
+    if(!product.manifest&&checking)return ['读取中…','gray'];
+    return capabilityStatus(entry.cap);
+  }
+  if(id==='desk'||id==='bed'){
+    const life=data.life;
+    if(life&&typeof life==='object'){
+      const sleeping=id==='bed'&&(Boolean(life.sleep_schedule?.active_wake_at)
+        ||data.state?.body_sleep?.state==='sleeping'
+        ||(Array.isArray(life.activities)&&life.activities.some(item=>item.kind==='sleep'&&item.state==='active')));
+      if(sleeping)return ['睡眠中','lavender'];
+      const host=life.host_state;
+      if(host==='stopped'||host==='new')return ['未启动','gray'];
+      if(host==='draining')return ['正在停止','amber'];
+      const routineEnabled=Boolean(life.config?.enabled);
+      if(id==='bed'){
+        const autoSleep=Boolean(life.config?.sleep_enabled||life.sleep_schedule?.enabled);
+        if(host==='running')return routineEnabled?(autoSleep?['运行中 · 已启用','']:['运行中 · 手动作息','']):['运行中 · 日程未启','gray'];
+        return routineEnabled?(autoSleep?['已启用','']:['手动作息','gray']):['未启用','gray'];
+      }
+      if(host==='running')return routineEnabled?['运行中 · 已启用','']:['运行中 · 日程未启','gray'];
+      return routineEnabled?['已启用','']:['未启用','gray'];
+    }
+    if(product.unavailableCode?.('life'))return ['读取待核对','amber'];
+    if(checking||(catalog&&currentRole?.life_api&&!data.life))return ['读取中…','gray'];
+    if(catalog&&!currentRole?.life_api)return ['未绑定工作区','gray'];
+    return ['配置未知','gray'];
+  }
+  if(id==='calendar'){
+    const stateData=data.state;
+    if(stateData&&typeof stateData==='object'){
+      const settings=stateData.settings||{};
+      if(settings.calendar_enabled===false)return ['日程已关闭','gray'];
+      if(settings.schedule_simulation_mode==='continuous')return ['连续日程 · 运行中',''];
+      if(settings.planning_enabled)return ['自动规划 · 已启用',''];
+      return ['手动日程 · 已启用',''];
+    }
+    if(product.unavailableCode?.('state'))return ['读取待核对','amber'];
+    if(checking||(catalog&&currentRole?.state_api&&!data.state))return ['读取中…','gray'];
+    if(catalog&&!currentRole?.state_api)return ['未绑定工作区','gray'];
+    return ['配置未知','gray'];
+  }
+  if(id==='garden'){
+    const growth=data.growth;
+    if(growth&&typeof growth==='object'){
+      const items=Array.isArray(growth.items)?growth.items:[];
+      const activeCount=items.filter(item=>item.state==='active').length;
+      if(activeCount>0)return [`进行中 ${activeCount} 项`,''];
+      if(items.length>0)return [`已记录 ${items.length} 项`,''];
+      return ['已就绪 · 暂无记录','gray'];
+    }
+    if(product.unavailableCode?.('growth'))return ['读取待核对','amber'];
+    if(checking||(catalog&&currentRole?.growth_api&&!data.growth))return ['读取中…','gray'];
+    if(catalog&&!currentRole?.growth_api)return ['未绑定工作区','gray'];
+    return ['配置未知','gray'];
+  }
+  if(id==='radio'){
+    if(catalog)return ['基础能力 · 可用',''];
+    if(checking)return ['读取中…','gray'];
+    return product.hosted?.()?['待连接','amber']:['配置未知','gray'];
+  }
+  return ['配置未知','gray'];
+}
+function syncFurniturePanelStatus(){
+  const chipEl=$('#shellPanel [data-furniture-status-chip]');
+  if(!chipEl)return;
+  const id=chipEl.dataset?.furnitureStatusChip;
+  if(!id)return;
+  const entry=directory.find(item=>item.station===id)||null;
+  const [label,tone]=furniturePanelStatus(id,entry);
+  chipEl.textContent=label;
+  chipEl.className=`pill${tone?' '+tone:''}`;
+}
+function renderWardrobeFurniturePanel(){
+  const [statusLabel,statusTone]=furniturePanelStatus('wardrobe',null);
+  const head=panelHead('衣柜陈设','每日穿搭、参考素材与衣柜陈设','door-open',
+    furnitureStatusChip('wardrobe',statusLabel,statusTone)+button('回到小屋','data-shell-home'));
+  const outfitSrc=outfitImageSrc();
+  const imageCap=product.capability?.('image');
+  const imageState=imageCap?capabilityStatus('image')[0]:'基础陈设';
+  const currentRoleLabel=product.roleLabel?.()||'当前角色';
+  const visual=outfitSrc
+    ? `<img class="furniture-wardrobe-thumb" src="${escapeHTML(outfitSrc)}" alt="当前穿搭图">`
+    : `<span class="furniture-brief-symbol" aria-hidden="true">${I('shirt')}</span>`;
+  return head+`<div class="shell-panel-body">
+    <div class="furniture-brief furniture-brief-structured">
+      <div class="furniture-brief-card">
+        <div class="furniture-brief-lead">
+          ${visual}
+          <div class="furniture-brief-copy">
+            <h3>穿搭与形象陈设</h3>
+            <p>管理角色参考图、每日穿搭图与外观风格，或在 3D 小屋中重新摆放衣柜位置。</p>
+          </div>
+        </div>
+        <dl class="furniture-brief-meta">
+          <div><dt>当前角色</dt><dd>${escapeHTML(currentRoleLabel)}</dd></div>
+          <div><dt>图像与穿搭能力</dt><dd>${escapeHTML(imageState)}</dd></div>
+        </dl>
+      </div>
+      <div class="furniture-brief-actions">
+        <button class="primary" type="button" data-go="manage" data-manage="output" data-output-target="materials">${I('shirt')}<span>参考素材与衣柜</span>${I('arrow-up-right')}</button>
+        <button type="button" data-detail="arrange">${I('armchair')}<span>布置衣柜</span></button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderShelfFurnitureBrief(entry,actions){
+  const item=product.extension?.('content')||product.capability?.('content');
+  const [statusLabel]=furniturePanelStatus('shelf',entry);
+  const readyLabel=item?.runtime_ready===true?'已就绪':item?.runtime_ready===false?'尚未就绪':'待核对';
+  const authLabel=item?.authorization?.ready===true?'已授权':item?.authorization?.ready===false?'待授权':'点开核对';
+  const summary=item?.reason||'装配 Content 内置拓展后，可在此查看角色的原稿、在架作品与版本状态。';
+  return `<div class="furniture-brief furniture-brief-structured">
+    <div class="furniture-brief-card">
+      <div class="furniture-brief-lead">
+        <span class="furniture-brief-symbol" aria-hidden="true">${I(entry.icon)}</span>
+        <div class="furniture-brief-copy">
+          <h3>Content 原稿与作品库</h3>
+          <p>${escapeHTML(summary)}</p>
+        </div>
+      </div>
+      <dl class="furniture-brief-meta furniture-brief-meta-3">
+        <div><dt>装配状态</dt><dd>${escapeHTML(statusLabel)}</dd></div>
+        <div><dt>运行就绪</dt><dd>${escapeHTML(readyLabel)}</dd></div>
+        <div><dt>角色授权</dt><dd>${escapeHTML(authLabel)}</dd></div>
+      </dl>
+    </div>
+    <div class="furniture-brief-actions">${actions.join('')}</div>
+  </div>`;
+}
+function renderRadioFurnitureBrief(entry,actions){
+  return `<div class="furniture-brief furniture-brief-structured">
+    <div class="furniture-brief-card">
+      <div class="furniture-brief-lead">
+        <span class="furniture-brief-symbol" aria-hidden="true">${I(entry.icon)}</span>
+        <div class="furniture-brief-copy">
+          <h3>资讯与日常发现</h3>
+          <p>管理外部新闻源、热点话题与网页阅读发现；对话与主动分享会参考已启用的资讯配置。</p>
+        </div>
+      </div>
+      <div class="furniture-brief-tiles">
+        <button type="button" class="furniture-brief-tile" data-detail="discoveries">
+          <span class="furniture-brief-tile-icon" aria-hidden="true">${I('newspaper')}</span>
+          <span class="furniture-brief-tile-copy"><strong>新闻与网页感知</strong><small>配置资讯源、检索范围与阅读能力</small></span>
+          <span class="furniture-brief-tile-arrow" aria-hidden="true">${I('chevron-right')}</span>
+        </button>
+        <button type="button" class="furniture-brief-tile" data-go="manage" data-manage="contact">
+          <span class="furniture-brief-tile-icon" aria-hidden="true">${I('sparkles')}</span>
+          <span class="furniture-brief-tile-copy"><strong>主动触发与热点</strong><small>调整资讯分享、每日热点与联系节奏</small></span>
+          <span class="furniture-brief-tile-arrow" aria-hidden="true">${I('chevron-right')}</span>
+        </button>
+      </div>
+    </div>
+    <div class="furniture-brief-actions">${actions.join('')}</div>
+  </div>`;
+}
 function renderFurniturePanel(id){
-  if(id==='wardrobe')return panelHead('衣柜陈设','','door-open',button('回到小屋','data-shell-home'))
-    +`<div class="shell-panel-body"><div class="furniture-brief-actions">${button(I('armchair')+' 布置衣柜','data-detail="arrange"')}${button(I('shirt')+' 参考素材与衣柜','data-go="manage" data-manage="output" data-output-target="materials"')}</div></div>`;
+  if(id==='wardrobe')return renderWardrobeFurniturePanel();
   const entry=directory.find(item=>item.station===id);
   if(!entry)return renderHomePanel();
-  const status=capabilityStatus(entry.cap)[0];
+  const [statusLabel,statusTone]=furniturePanelStatus(id,entry);
   const head=panelHead(entry.name,entry.text,entry.icon,
-    chip(status)+button('回到小屋','data-shell-home'));
+    furnitureStatusChip(id,statusLabel,statusTone)+button('回到小屋','data-shell-home'));
   if(id==='calendar')return head+`<div class="shell-panel-body">${renderRoleState('','planning')}</div>`;
   if(id==='garden')return head+`<div class="shell-panel-body">${product.growthMarkup()}</div>`;
   const ws=FURNITURE_WORKSPACES[id]?product.workspace(...FURNITURE_WORKSPACES[id]):'';
   if(ws)return head+`<div class="shell-panel-body">${ws}</div>`;
   const actions=[];
-  if(entry.tab)actions.push(`<button data-life="${entry.tab}">打开${entry.name} ${I('arrow-up-right')}</button>`);
-  else if(entry.detail)actions.push(`<button class="primary" data-detail="${entry.detail}">打开${entry.name} ${I('arrow-up-right')}</button>`);
+  if(entry.tab)actions.push(`<button type="button" data-life="${entry.tab}">打开${entry.name} ${I('arrow-up-right')}</button>`);
+  else if(entry.detail)actions.push(`<button type="button" class="primary" data-detail="${entry.detail}">打开${entry.name} ${I('arrow-up-right')}</button>`);
   if(entry.cap&&['screen','reality','image','together','game','live','content'].includes(entry.cap)){
     const section=({content:'output',image:'output',screen:'perception',reality:'perception'})[entry.cap]||'action';
-    actions.push(`<button data-go="manage" data-manage="${section}">相关配置 ${I('arrow-up-right')}</button>`);
+    const targetAttr=entry.cap==='content'?' data-output-target="creation"':'';
+    actions.push(`<button type="button" data-go="manage" data-manage="${section}"${targetAttr}>相关配置 ${I('arrow-up-right')}</button>`);
   }
-  actions.push(`<button data-detail="arrange">在房间里移动它 ${I('arrow-right')}</button>`);
-  return head
-    +`<div class="shell-panel-body">
-        <div class="furniture-brief">
-          <div class="furniture-brief-actions">${actions.join('')}</div>
-        </div>
-      </div>`;
+  actions.push(`<button type="button" data-detail="arrange">在房间里移动它 ${I('arrow-right')}</button>`);
+  const body=id==='shelf'?renderShelfFurnitureBrief(entry,actions)
+    :id==='radio'?renderRadioFurnitureBrief(entry,actions)
+      :`<div class="furniture-brief"><div class="furniture-brief-actions">${actions.join('')}</div></div>`;
+  return head+`<div class="shell-panel-body">${body}</div>`;
 }
 
 /* 默认面板（没选家具也没选分区）：小屋总览。
@@ -874,10 +1075,13 @@ function renderSectionPanel(id){
     all:renderAllFunctionsPage,
     data:renderData}[id];
   if(!renderer)return renderHomePanel();
-  const diagnosticsLink = id === 'expression' || id === 'decision'
-    ? '<a class="text-button reply-diagnostics-link" href="#manage/maintenance/reply-diagnostics">查看本会话回复诊断</a>' : '';
+  const headerActions = id === 'expression' || id === 'decision'
+    ? '<a class="text-button reply-diagnostics-link" href="#manage/maintenance/reply-diagnostics">查看本会话回复诊断</a>'
+    : id === 'maintenance' && maintenancePane !== 'patrol' && maintenancePane !== 'reply-diagnostics'
+      ? `<button class="button small shell-panel-secondary-action" type="button" data-maint-open-patrol>${I('clipboard-check')}<span>每日巡视设置</span></button>`
+      : '';
   const icon=id==='phone'?'smartphone':id==='mobile'?'link-2':'settings-2';
-  return panelHead(heading,subtitle,icon,button('回到小屋','data-shell-home'),diagnosticsLink)
+  return panelHead(heading,subtitle,icon,button('回到小屋','data-shell-home'),headerActions)
     +`<div class="shell-panel-body">${renderer()}</div>`;
 }
 
@@ -1140,7 +1344,8 @@ function mountPanelWorkspaces(){
   guarded('参考素材与衣柜',()=>imageMaterialsHost
     ?window.CompanionImageMaterialsPage?.mount(imageMaterialsHost)
     :window.CompanionImageMaterialsPage?.unmount());
-  if($('#modelWorkspace'))guarded('模型与连接',()=>window.CompanionModelsPage?.mount($('#modelWorkspace')));
+  if($('#modelWorkspace'))guarded('模型与连接',()=>window.CompanionModelsPage?.mount($('#modelWorkspace'),
+    route==='manage'&&manageTab==='models'?{initialTab:modelsPane,onTabChange:onModelsTabChange}:{}));
   const mobileConnectionHost=$('#mobileConnectionWorkspace');
   if(mobileConnectionHost)guarded('手机端连接',()=>
     window.CompanionNativeExtensionPanel?.mount(mobileConnectionHost,{extensionId:'reality',onlyGroup:'mobile'}));
@@ -1219,13 +1424,16 @@ function syncStageSpace(){
     const scene=$('#stageScene'),strip=$('#stageFurniture'),body=$('.shell-body');
     if(!scene||!strip||!body||window.CompanionShell?.section||arrangementDraft)return;
     const number=value=>parseFloat(value)||0;
-    const regionStyle=getComputedStyle(scene.parentElement);
+    const region=scene.parentElement,regionStyle=getComputedStyle(region);
+    const bodyStyle=getComputedStyle(body);
     const stripStyle=getComputedStyle(strip),sceneStyle=getComputedStyle(scene);
-    const reserved=scene.getBoundingClientRect().top+window.scrollY
+    const topChrome=(scene.getBoundingClientRect().top-region.getBoundingClientRect().top)+number(bodyStyle.paddingTop);
+    const reserved=topChrome
       +strip.getBoundingClientRect().height+number(regionStyle.rowGap)
       +number(sceneStyle.marginBottom)+number(stripStyle.marginTop)+number(stripStyle.marginBottom)
-      +number(getComputedStyle(body).paddingBottom);
+      +number(bodyStyle.paddingBottom);
     scene.style.setProperty('--shell-stage-chrome',`${Math.ceil(reserved)}px`);
+    window.CompanionHomeSidebar?.syncScrollFade?.();
   });
 }
 
@@ -1808,10 +2016,10 @@ function refreshHomeCapabilities(){
 function scheduleCard(){return product.scheduleCard();}
 function stateCard(){return product.stateCard();}
 /* 右栏延续 V1 的状态摘要与日程时间线；标题和导航仍由小屋外壳负责。 */
-function sideBand(title,body,action,meta=""){return `<section class="home-band home-side-band"><header class="home-band-head"><h2>${title}</h2>${meta}${action}</header>${body}</section>`;}
+function sideBand(title,body,action,meta="",extraClass=""){const cls=extraClass?`home-band home-side-band ${extraClass}`:'home-band home-side-band';return `<section class="${cls}"><header class="home-band-head"><h2>${title}</h2>${meta}${action}</header>${body}</section>`;}
 function stateAgeMarkup(){const age=product.stateAge?.()||"";return age?`<span class="home-side-age" data-home-state-age>${escapeHTML(age)}</span>`:"";}
 function homeStateBand(){return sideBand('此刻的状态',stateCard(),'<button type="button" class="text-button home-side-action" data-go="life" data-life-target="state">查看与更新</button>',stateAgeMarkup());}
-function homeScheduleBand(){return sideBand('今日安排',`<div data-home-agenda-clock>${scheduleCard()}</div>`,'<button type="button" class="text-button home-side-action" data-shell-furniture="calendar">翻开日历</button>');}
+function homeScheduleBand(){return sideBand('今日安排',`<div data-home-agenda-clock>${scheduleCard()}</div>`,'<button type="button" class="text-button home-side-action" data-shell-furniture="calendar">翻开日历</button>','','home-schedule-band');}
 const observationFilters=[['records','日记与梦境'],['timeline','生活轨迹'],['state','状态变化'],['impact','交互影响']];
 /* 生活观察。
  *
@@ -2169,7 +2377,7 @@ function activatePerceptionTab(destination,{focus=false,scroll=false,modelTab=''
     tab.setAttribute('aria-selected',String(active));
     tab.tabIndex=active?0:-1;
   });
-  if(id==='config-models'&&selectedSubpanel?.id==='perception-detail-model-route'&&['fn','voice','image'].includes(modelTab)){
+  if(id==='config-models'&&selectedSubpanel?.id==='perception-detail-model-route'&&['fn','voice','image','search','laya','pricing'].includes(modelTab)){
     panel.querySelector(`#modelWorkspace [data-model-tab="${modelTab}"]`)?.click();
   }
   window.CompanionPerceptionOverviewPage?.select?.(`${id}${selectedSubpanel?':'+selectedSubpanel.id:''}`,{modelTab,itemId});
@@ -4180,7 +4388,7 @@ function renderMaintenancePageOriginal(){
     <section class="content-panel" aria-labelledby="reply-diagnostics-heading"><h3 id="reply-diagnostics-heading">当前会话的回复诊断</h3>
       <div id="replyDiagnosticsWorkspace">${consoleLoading('正在打开回复诊断…')}</div></section></div>`;
   if(maintenancePane==='patrol')return `<div class="maintenance-page"><nav class="maint-subnav" aria-label="治理与维护二级导航"><button type="button" data-go="manage" data-manage="maintenance">返回运行诊断</button><button type="button" aria-current="page">每日巡视</button></nav><section id="roleStateWorkspace" data-state-section="patrol" aria-label="每日巡视维护设置"></section></div>`;
-  return `<div class="maintenance-page"><div class="maintenance-settings-entry"><button class="button small" type="button" data-maint-open-patrol>${I('clipboard-check')}每日巡视设置</button></div><section id="maintenanceWorkspace" aria-label="运行诊断与排障"></section></div>`;
+  return `<div class="maintenance-page"><section id="maintenanceWorkspace" aria-label="运行诊断与排障"></section></div>`;
 }
 function renderExpressionLearning(){
   return `<section id="expressionWorkspace" aria-label="表达学习设置">${consoleLoading('正在读取表达学习设置…')}</section>`;
@@ -4373,32 +4581,74 @@ function renderConfigEditors(){
   }
 }
 document.addEventListener('companion:role-profile-updated',()=>roleProfileConfigMount?.read?.());
+const PERSONA_HUB_MODES=[
+  {id:'questionnaire',label:'规范人格',kicker:'结构化核对',icon:'notebook-pen',
+    summary:'按字段整理、补齐已有设定，逐项审核后保存底稿。',
+    steps:['选人格或粘贴文本','按字段核对并选强度','生成基础稿审核保存']},
+  {id:'create',label:'创建人格',kicker:'从零共创',icon:'sparkles',
+    summary:'从一个想法出发，通过五阶段对话聊出性格、经历与说话方式。',
+    steps:['选模型并说出想法','五阶段推敲角色细节','整理成稿保存或复制']},
+  {id:'optimize',label:'拟人优化',kicker:'基于现有人设',icon:'sliders-horizontal',
+    summary:'载入现有人设，围绕“哪里不像”逐段微调，保留原来的她。',
+    steps:['载入人设指出痛点','逐段优化性格与口吻','对照原文确认后保存']},
+];
+function personaGuideStepsMarkup(mode){
+  const item=PERSONA_HUB_MODES.find(entry=>entry.id===mode)||PERSONA_HUB_MODES[0];
+  return item.steps.map((step,index)=>`<li><span>0${index+1}</span><p>${step}</p></li>`).join('');
+}
+function syncPersonaModeUI(mode){
+  if(!PERSONA_MODE_IDS.includes(mode))return;
+  document.querySelectorAll('[role="tab"][data-persona-recreation]').forEach(button=>{
+    const active=button.dataset.personaRecreation===mode;
+    button.classList.toggle('is-active',active);
+    button.setAttribute('aria-selected',String(active));
+    button.setAttribute('tabindex',active?'0':'-1');
+    const badge=button.querySelector('.persona-mode-current');
+    if(badge)badge.textContent=active?'当前':'';
+  });
+  document.querySelectorAll('[data-persona-switch]').forEach(button=>{
+    const active=button.dataset.personaSwitch===mode;
+    button.classList.toggle('is-active',active);
+    button.setAttribute('aria-pressed',String(active));
+  });
+  const panel=document.getElementById('persona-workspace-panel');
+  if(panel)panel.setAttribute('aria-labelledby','persona-mode-'+mode);
+  const stepsEl=document.getElementById('persona-guide-steps');
+  if(stepsEl)stepsEl.innerHTML=personaGuideStepsMarkup(mode);
+}
+function switchPersonaMode(mode,focusSelector){
+  if(!PERSONA_MODE_IDS.includes(mode))return;
+  personaRecreationMode=mode;
+  savePersonaRecreationMode(mode);
+  paintPanel();
+  product.mountWorkspace();
+  if(focusSelector)requestAnimationFrame(()=>document.querySelector(focusSelector)?.focus({preventScroll:true}));
+}
 function renderPersonaPage(){
-  const modes=[
-    {id:'questionnaire',label:'规范人格',kicker:'结构化核对',icon:'notebook-pen',
-      summary:'把已有设定按字段整理、补齐、校对，生成可保存的底稿。',
-      best:'适合：已有完整人设，想统一格式或补齐字段。',
-      steps:['选择 AstrBot 人格，或粘贴一份人格文本。','按字段核对并选择整理强度。','生成基础稿，审核后保存版本。']},
-    {id:'create',label:'创建人格',kicker:'从零共创',icon:'sparkles',
-      summary:'从一个想法开始，和助手逐步聊出性格、经历、关系与说话方式。',
-      best:'适合：还没有完整人设，或想重新设计一个角色。',
-      steps:['选一个模型，可以直接说出一个念头。','按五个阶段推敲，随时让助手给方向。','整理成稿，保存草稿或复制到 AstrBot。']},
-    {id:'optimize',label:'拟人优化',kicker:'基于现有人设',icon:'sliders-horizontal',
-      summary:'选一份现有人设，带着“哪里不像”逐段推敲，保留原来的她。',
-      best:'适合：已有人设，但说话、反应或关系处理不够像。',
-      steps:['载入现有人设，指出最想改的地方。','围绕身份、性格、说话方式逐段优化。','对照原文确认，再保存或复制正文。']},
-  ];
-  const current=modes.find(mode=>mode.id===personaRecreationMode)||modes[0];
+  const current=PERSONA_HUB_MODES.find(mode=>mode.id===personaRecreationMode)||PERSONA_HUB_MODES[0];
   const workspace=current.id==='questionnaire'?product.workspace('persona'):product.workspace('designer',current.id);
-  const cards=modes.map(mode=>{
+  const quickTabs=PERSONA_HUB_MODES.map(mode=>{
     const active=mode.id===current.id;
-    return `<button type="button" role="tab" id="persona-mode-${mode.id}" class="persona-mode-card${active?' is-active':''}" data-persona-recreation="${mode.id}" aria-selected="${active}" aria-controls="persona-workspace-panel"><span class="persona-mode-icon">${I(mode.icon)}</span><span class="persona-mode-copy"><small>${mode.kicker}</small><strong>${mode.label}</strong><span>${mode.summary}</span><em>${mode.best}</em></span><span class="persona-mode-current" aria-hidden="true">${active?'当前':''}</span></button>`;
+    return `<button type="button" class="persona-bar-tab${active?' is-active':''}" data-persona-switch="${mode.id}" aria-pressed="${active}">${I(mode.icon)}<span>${mode.label}</span></button>`;
   }).join('');
-  const steps=current.steps.map((step,index)=>`<li><span>0${index+1}</span><p>${step}</p></li>`).join('');
+  const cards=PERSONA_HUB_MODES.map(mode=>{
+    const active=mode.id===current.id;
+    return `<button type="button" role="tab" id="persona-mode-${mode.id}" class="persona-mode-card${active?' is-active':''}" data-persona-recreation="${mode.id}" aria-selected="${active}" tabindex="${active?'0':'-1'}" aria-controls="persona-workspace-panel"><span class="persona-mode-icon">${I(mode.icon)}</span><span class="persona-mode-copy"><span class="persona-mode-title"><strong>${mode.label}</strong><small>${mode.kicker}</small></span><span class="persona-mode-summary">${mode.summary}</span></span><span class="persona-mode-current" aria-hidden="true">${active?'当前':''}</span></button>`;
+  }).join('');
   return `<div class="persona-hub">
-    <header class="persona-hub-head"><div class="persona-hub-title"><span class="persona-hub-mark">${I('notebook-pen')}</span><div><p class="persona-hub-kicker">角色 · 人格</p><h2>人格处理</h2><p>按你手上有多少设定选择入口。三种方式共用同一个角色，先产出可核对的底稿/草稿，不会直接覆盖 AstrBot 人设。</p></div></div><span class="persona-hub-badge">三种方式 · 一个角色</span></header>
+    <header class="persona-hub-bar" aria-label="人格处理导航">
+      <div class="persona-hub-bar-lead">
+        <button type="button" class="persona-hub-back" data-self-pane="profile">${I('arrow-left')}<span>返回自我页</span></button>
+        <span class="persona-hub-divider" aria-hidden="true"></span>
+        <div class="persona-hub-bar-title"><h2>人格处理</h2><span class="persona-hub-role">${roleName()}</span></div>
+      </div>
+      <div class="persona-bar-switch" role="group" aria-label="快捷切换人格处理方式">${quickTabs}</div>
+    </header>
     <div class="persona-mode-grid" role="tablist" aria-label="人格处理方式">${cards}</div>
-    <section class="persona-guide" aria-live="polite"><div class="persona-guide-copy"><span class="persona-guide-kicker">当前路径 · ${current.kicker}</span><h3>${current.label}</h3><p>${current.summary}</p><small>${current.best}</small></div><ol class="persona-steps">${steps}</ol><details class="persona-helper"><summary>不知道选哪个？</summary><p>已有完整人格文本、想按字段核对 → 规范人格；只有零散想法、想从零聊出来 → 创建人格；已有人设、但说话或反应不够像 → 拟人优化。</p><p class="persona-helper-note">创建人格与拟人优化共用同一套 5 阶段共创，规范人格是 5 步结构化审核；三种入口都不会直接覆盖 AstrBot 人设，切换入口也不会丢已有草稿。</p></details></section>
+    <section class="persona-guide" aria-live="polite">
+      <ol class="persona-steps" id="persona-guide-steps">${personaGuideStepsMarkup(current.id)}</ol>
+      <details class="persona-helper"><summary>怎么选？</summary><div class="persona-helper-body"><p>已有完整文本、想按字段校对 → <strong>规范人格</strong>；只有想法、想从零聊出来 → <strong>创建人格</strong>；已有人设、但口吻不像 → <strong>拟人优化</strong>。</p><p class="persona-helper-note">三种入口都只产出可核对的底稿/草稿，不会直接覆盖当前 AstrBot 线上人设。</p></div></details>
+    </section>
     <section class="persona-workspace" id="persona-workspace-panel" role="tabpanel" aria-labelledby="persona-mode-${current.id}">${workspace}</section>
   </div>`;
 }
@@ -4406,13 +4656,10 @@ document.addEventListener('companion:persona-mode-change',event=>{
   const mode=event.detail?.mode;
   if(!['create','optimize'].includes(mode))return;
   personaRecreationMode=mode;
+  savePersonaRecreationMode(mode);
   // A restored draft already lives in the iframe. Update the entry without
   // remounting it and interrupting the restore operation.
-  document.querySelectorAll('[data-persona-recreation]').forEach(button=>{
-    const active=button.dataset.personaRecreation===mode;
-    button.classList.toggle('is-active',active);
-    button.setAttribute('aria-pressed',String(active));
-  });
+  syncPersonaModeUI(mode);
 });
 function renderHostWorkspace(){return product.workspace("host");}
 function renderAppearancePageOriginal(){
@@ -4884,6 +5131,7 @@ function openAllFeatureDetail(group, field=''){
   const body=`<p class="all-feature-detail-note">${escapeHTML(spec.note||'修改后会回到「全部功能」页显示；复杂字段在下方完整配置中编辑。')}</p>`
     +configEditors(id,[group],title);
   if(!openDetailDialog(title,body))return;
+  document.querySelector?.('#detailDialog')?.classList?.add('detail-dialog-settings');
   const targetSection=field?(spec.sections||[]).find(item=>Array.isArray(item.fields)&&item.fields.includes(field)):null;
   const views=targetSection?.id?{[group]:{initialSection:targetSection.id}}:{};
   allFeatureDialogMount?.unmount?.();
@@ -5534,47 +5782,141 @@ function openDetailDialog(title,body){
 }
 
 const searchIndex=[
-  ['手机使用','ADB 设备、输入方式与操作范围','smartphone','manage','phone'],
-  ['手机端连接','陪伴终端配对、网关与上报','link-2','manage','mobile'],
-  ['生活观察','日记、梦境、生活轨迹、状态与交互影响','scan-eye','home-section','observation'],['家具与能力','基础生活与拓展家具，启用状态和连接','armchair','home-section','furniture'],
-  ['跨窗口与跨群递话','私聊与群聊目标、确认和成员权限','corner-up-right','manage','identity-access'],
-  ['首页与小屋','生活总览、观察与家具能力','house','life','home'],['日记与生活','日记、睡眠、阅读与作息配置','notebook-pen','life','diary'],['关系网','只查看用户与群聊之间的连接关系','network','manage','identity'],['用户','用户目录、逐人资料与私聊默认权限','users-round','manage','identity-people'],['群聊','群聊目录、群内成员与成员线索','messages-square','manage','identity-groups'],['共同经历','本插件事实、原话与经历记录','orbit','manage','memory'],['作品与相册','原稿、照片与收藏','images','home-section','furniture'],['一起活动','共读、棋桌与通话','coffee','home-section','furniture'],['能力目录','可选拓展当前能不能用','blocks','home-section','furniture'],
-  ['感知','环境、消息与媒体来源','scan-eye','manage','perception'],['决策','本轮上下文与群聊参与判断','brain','manage','decision'],['行动','生活行为与社交发布','play','manage','action'],['产出','图像生成与创作作品','shapes','manage','output'],['表达','文本、语音、表情与投递','message-square-more','manage','expression'],['自我','世界知识、角色设定与自身档案','user-round','manage','governance'],
-  ['开始使用','首次连接、选择对象与决定是否发送','rocket','manage','setup'],['人格处理','规范人格、创建人格与拟人优化','notebook-pen','manage','persona'],['外观与设置','主题、密度、圆角、字号与动效','palette','manage','appearance'],['主动联系','主动契机、联系节奏与免打扰','heart-handshake','manage','contact'],['事实与经历','本插件事实、原话与群词义','orbit','manage','memory'],['模型与连接','公共模型与任务路由','sliders-horizontal','manage','models'],['运行诊断','运行状态与排障','settings-2','manage','maintenance'],['便签','下次去书店，找一本植物随笔','sticky-note',null,'notes'],['窗边的一页','照片与相关经历','image',null,'photo-window'],['创作书架','Content 能力状态','library-big',null,'cap-content'],['现实触及','Reality 设备与授权','radio','manage','perception'],
+  ['首页与小屋','生活总览、观察与家具能力','house','life','home',{aliases:['首页','小屋','总览']}],
+  ['状态与日程','身体与心情状态、生理期、睡眠与日程规划','activity','life','state',{aliases:['角色状态','日程','生理期','能量','健康','心情']}],
+  ['日记与生活','日记、睡眠、阅读与作息配置','notebook-pen','life','diary',{aliases:['日记','睡眠','阅读','作息','梦境']}],
+  ['生活观察','日记、梦境、生活轨迹、状态与交互影响','scan-eye','home-section','observation',{aliases:['轨迹','观察']}],
+  ['家具与能力','基础生活与拓展家具，启用状态和连接','armchair','home-section','furniture',{aliases:['能力目录','拓展','一起活动','共读','棋桌']}],
+  ['自我','角色档案、外貌口吻、相处资料与世界知识','user-round','manage','governance',{subtab:'profile',aliases:['角色档案','人设','角色设定']}],
+  ['相处资料','核心用户称呼、关系定位与相处方式','heart-handshake','manage','governance',{subtab:'relationship',aliases:['关系资料','核心用户']}],
+  ['人格处理','规范人格、创建人格与拟人优化','notebook-pen','manage','governance',{subtab:'questionnaire',aliases:['人格问卷','创建人格','拟人优化']}],
+  ['世界知识','世界设定、导入来源与注入上限','book-open-text','manage','governance',{subtab:'knowledge',aliases:['世界观','知识库']}],
+  ['关系网','查看用户与群聊之间的连接关系','network','manage','identity',{aliases:['人物关系']}],
+  ['用户','用户目录、逐人资料与私聊默认权限','users-round','manage','identity-people',{aliases:['用户目录','私聊权限','陌生号']}],
+  ['群聊','群聊目录、群内成员与成员线索','messages-square','manage','identity-groups',{aliases:['群聊目录','群成员','成员线索']}],
+  ['跨窗口与跨群递话','私聊与群聊目标、确认和成员权限','corner-up-right','manage','identity-access',{aliases:['访问规则','递话','转告']}],
+  ['关系与情感','角色关系记录、好感与情感状态','heart-handshake','manage','identity-feelings',{aliases:['情感','好感','关系记录']}],
+  ['事实与经历','本插件事实、原话、经历与冷归档','orbit','manage','memory',{subtab:'records',aliases:['记忆','共同经历','事实','冷归档']}],
+  ['整理策略','事实反思、对话情节与习惯学习设置','sliders-horizontal','manage','memory',{subtab:'settings',aliases:['记忆设置','反思设置','习惯学习']}],
+  ['学习与反思','成长进展、表达学习、行为学习与每日复盘','graduation-cap','manage','learning',{subtab:'overview',aliases:['复盘','成长','表达学习','行为学习']}],
+  ['感知','时空环境、模型能力、现实触及、健康与撤回记录','scan-eye','manage','perception',{aliases:['环境','历法','撤回','余额','健康感知']}],
+  ['现实触及','屏幕读取、手机摄像头授权与米家家居','radio','manage','perception',{perceptionTab:'config-screen',aliases:['屏幕','摄像头','米家','设备授权']}],
+  ['理解','图片、视频、文件、网页与合并转发理解','brain-circuit','manage','understanding',{understandingTab:'overview',aliases:['图片理解','视频理解','文件理解','网页理解','合并转发']}],
+  ['决策','本轮唤醒、回复节奏、安全防护与群聊参与判断','brain','manage','decision',{decisionView:'overview',aliases:['群聊参与','唤醒','插话','安全防护']}],
+  ['行动','QQ 空间动态互动、发说说与拓展行动能力','play','manage','action',{aliases:['QQ 空间','说说','好友动态','空间']}],
+  ['主动联系','主动契机、联系节律盘、晨间唤醒与开口闸门','heart-handshake','manage','contact',{contactView:'dial',aliases:['节律盘','免打扰','晨间唤醒','契机','开口闸门']}],
+  ['表达','文字风格与分段、语音朗读、表情配图与平台动作','message-square-more','manage','expression',{subtab:'text',aliases:['文字风格','分段','语音朗读','表情配图','平台动作','戳一戳']}],
+  ['产出','图像生成触发、额度审核与模型路线','shapes','manage','output',{outputTab:'visual',aliases:['生图','图像生成','生图触发']}],
+  ['产出图库','查看、导出与管理当前角色已生成的图片','images','manage','output',{outputTab:'gallery',aliases:['相册','图库','生图相册']}],
+  ['参考素材与衣柜','参考图、衣柜穿搭与素材管理','shirt','manage','output',{outputTab:'materials',aliases:['参考图','衣柜','穿搭','素材']}],
+  ['创作与作品','Content 作品库、原生创作与作品预览','book-open','manage','output',{outputTab:'creation',aliases:['作品库','创作书架','Content','原稿','小说']}],
+  ['模型与连接','功能任务路由、主备模型与后台任务预算','sliders-horizontal','manage','models',{subtab:'fn',aliases:['任务模型','功能模型','模型路由','模型管理']}],
+  ['语音模型','TTS 语音服务、发音人音色与试听','audio-lines','manage','models',{subtab:'voice',aliases:['TTS','发音人','音色','语音服务']}],
+  ['生图模型','在线生图、ComfyUI 与 SD WebUI 连接','image','manage','models',{subtab:'image',aliases:['ComfyUI','SD WebUI','文生图','改图']}],
+  ['计价与汇率','模型单价配置、币种显示与实时汇率','coins','manage','models',{subtab:'pricing',aliases:['模型单价','单价','汇率','费用','价格','成本']}],
+  ['Laya 决策模型','Laya 决策接口、连接测试与运行日志','cpu','manage','models',{subtab:'laya',aliases:['Laya','外置决策']}],
+  ['治理与维护','Token 费用统计、运行诊断、投递排障与缓存状态','settings-2','manage','maintenance',{aliases:['运行诊断','运行状态','排障','Token 统计','费用统计']}],
+  ['每日巡视','每日状态巡视时刻、记录与保留时长','scan-heart','manage','maintenance',{subtab:'patrol',aliases:['巡视','状态巡视']}],
+  ['回复诊断','当前会话最近回复的组成、耗时与诊断详情','stethoscope','manage','maintenance',{subtab:'reply-diagnostics',aliases:['消息诊断','回复排障']}],
+  ['资料与维护','插件存储空间占用与数据清理','database','manage','data',{subtab:'storage',aliases:['存储管理','插件存储','数据清理']}],
+  ['备份与还原','创建、校验与还原插件数据备份','archive','manage','data',{subtab:'backup',aliases:['备份','还原','恢复']}],
+  ['旧版资料迁入','从旧版数据目录迁入角色与历史资料','folder-input','manage','data',{subtab:'migration',aliases:['迁移','旧版数据']}],
+  ['配置导入导出','导出脱敏配置快照或从文件导入','arrow-up-down','manage','data',{subtab:'port',aliases:['导出配置','导入配置']}],
+  ['账号与会话','Bot 账号、角色映射、窗口绑定与启动状态','power','manage','host',{aliases:['Bot 账号','角色映射','会话','私聊目标']}],
+  ['开始使用','首次连接、选择对象与决定是否发送','rocket','manage','setup',{aliases:['首次连接','引导','新手配置']}],
+  ['手机使用','ADB 设备、输入方式与操作范围','smartphone','manage','phone',{aliases:['ADB','手机操作','安卓']}],
+  ['手机端连接','陪伴终端配对、网关与上报','link-2','manage','mobile',{aliases:['陪伴终端','配对','网关','手机上报']}],
+  ['外观与设置','主题、密度、圆角、字号与动效','palette','manage','appearance',{aliases:['主题','字号','圆角','动效','深色模式']}],
+  ['全部功能','全局功能开关地图与分域总览','layout-grid','manage','all',{aliases:['全部功能地图','功能开关','功能总览']}],
 ];
 const configSearchLocations={
   'device.phone':{next:'manage',tab:'phone',root:'#phoneAdbWorkspace'},
-  quota:{next:'manage',tab:'output',root:'#imageControlWorkspace'},image_review:{next:'manage',tab:'output',root:'#imageControlWorkspace'},
-  'image.output':{next:'manage',tab:'output',root:'#imageOutputWorkspace'},
+  quota:{next:'manage',tab:'output',outputTab:'visual',root:'#imageControlWorkspace'},
+  image_review:{next:'manage',tab:'output',outputTab:'visual',root:'#imageControlWorkspace'},
+  'image.output':{next:'manage',tab:'output',outputTab:'visual',root:'#imageOutputWorkspace'},
   reaction:{next:'manage',tab:'expression',expressionModule:'expression-reaction',root:'#reactionConfigWorkspace'},
-  busy_gate:{next:'manage',tab:'contact',contactView:'gates',root:'#replyGateConfigWorkspace'},budget:{next:'manage',tab:'models',root:'#budgetConfigWorkspace'},
-  recall:{next:'manage',tab:'perception',root:'#recallConfigWorkspace'},screen:{next:'manage',tab:'perception',root:'#screenConfigWorkspace'},
+  busy_gate:{next:'manage',tab:'contact',contactView:'gates',root:'#replyGateConfigWorkspace'},
+  budget:{next:'manage',tab:'models',modelsTab:'fn',root:'#budgetConfigWorkspace'},
+  recall:{next:'manage',tab:'perception',perceptionTab:'config-recall:perception-detail-recalls',root:'#recallConfigWorkspace'},
+  screen:{next:'manage',tab:'perception',perceptionTab:'config-screen:perception-detail-screen',root:'#screenConfigWorkspace'},
   web_understanding:{next:'manage',tab:'understanding',understandingTab:'web',root:'#webUnderstandingWorkspace'},
-  person:{next:'manage',tab:'identity-people',identitySettings:'person',root:'#personConfigWorkspace'},private_access:{next:'manage',tab:'identity-people',identitySettings:'private-access',root:'#privateAccessWorkspace'},private_access_installation:{next:'manage',tab:'identity-people',identitySettings:'stranger-access',root:'#identityStrangerAccessSettingsWorkspace'},
+  person:{next:'manage',tab:'identity-people',identitySettings:'person',root:'#personConfigWorkspace'},
+  private_access:{next:'manage',tab:'identity-people',identitySettings:'private-access',root:'#privateAccessWorkspace'},
+  private_access_installation:{next:'manage',tab:'identity-people',identitySettings:'stranger-access',root:'#identityStrangerAccessSettingsWorkspace'},
   relay:{next:'manage',tab:'identity-access',root:'#relayConfigWorkspace'},
   role_growth:{next:'manage',tab:'identity-people',identitySettings:'person'},
   'role.growth.skills':{next:'manage',tab:'learning',subtab:'strategy',root:'#growthConfigWorkspace'},
   'expression.learning':{next:'manage',tab:'learning',subtab:'strategy',root:'#expressionLearningConfigWorkspace'},
-  role_profile:{next:'manage',tab:'governance',root:'#roleProfileConfigWorkspace'},
-  relationship_profile:{next:'manage',tab:'governance',subtab:'relationship',root:'#relationshipProfileConfigWorkspace'},
+  role_profile:{next:'manage',tab:'governance',subtab:'profile',root:'#roleProfileConfigWorkspace'},
+  relationship_profile:{next:'manage',tab:'governance',subtab:'relationship',root:'#relationshipProfileConfigWorkspace',focusSection:'',fieldAttr:'data-self-relationship-field'},
   library:{next:'life',tab:'diary',subtab:'archive',root:'#libraryConfigWorkspace'},
-  'content.authoring':{next:'manage',tab:'output',root:'#contentAuthoringWorkspace'},
-  wardrobe:{next:'manage',tab:'output',root:'#materialControlWorkspace'},
-  'photo.reference':{next:'manage',tab:'output',root:'#materialControlWorkspace'},
-  'proactive.contact':{next:'manage',tab:'contact',root:'#contactPreferencesWorkspace'},
-  voice_reply:{next:'manage',tab:'expression',subtab:'voice',root:'#voiceReplyPolicyWorkspace'},
-  poke:{next:'manage',tab:'expression',subtab:'platform',root:'#pokePolicyWorkspace'},
+  'content.authoring':{next:'manage',tab:'output',outputTab:'creation',root:'#contentAuthoringWorkspace'},
+  wardrobe:{next:'manage',tab:'output',outputTab:'materials',root:'#materialControlWorkspace'},
+  'photo.reference':{next:'manage',tab:'output',outputTab:'materials',root:'#materialControlWorkspace'},
+  'proactive.contact':{next:'manage',tab:'contact',contactView:'dial',contactFocus:true,root:'#contactWorkspace'},
+  voice_reply:{next:'manage',tab:'expression',subtab:'voice',expressionModule:'expression-voice',root:'#voiceReplyPolicyWorkspace'},
+  poke:{next:'manage',tab:'expression',subtab:'platform',expressionModule:'expression-platform',root:'#pokePolicyWorkspace'},
   forward_intake:{next:'manage',tab:'understanding',understandingTab:'forwards',root:'#forwardIntakeWorkspace'},
   qzone:{next:'manage',tab:'action',root:'#qzoneConfigWorkspace'},
 };
+const NATIVE_PERCEPTION_CALENDAR_FIELDS=new Set(['calendar_enabled','calendar_timezone','holiday_enabled','holiday_country','lunar_enabled','automatic_solar_terms_enabled','almanac_enabled']);
+const ROLE_PROFILE_SECTION_IDS=new Set(['identity','appearance','personality','voice','motivations','boundaries','world','expression_learning']);
+const CONTACT_FIELD_VIEW_OVERRIDES={
+  note:'gates',pause_until:'gates',
+  max_contacts_24h:'budgets',enable_proactive_burst:'budgets',
+  proactive_burst_max_messages:'budgets',proactive_burst_gap_min_seconds:'budgets',
+  proactive_burst_gap_max_seconds:'budgets',proactive_closing_grace_minutes:'budgets',
+  proactive_closing_contacts_threshold:'budgets',proactive_share_probability:'budgets',
+  generation_mode:'sources',
+};
+const CONTACT_SECTION_VIEW_MAP={
+  morning:'morning',
+  bond:'purposes',daily:'purposes',share:'purposes',followup:'purposes',
+  dedup:'budgets',
+  meal:'sources',date:'sources',weather:'sources',news:'sources',web:'sources',
+  selflink:'sources',balance:'sources',screen:'sources',action:'sources',
+  appointment:'sources',context:'sources',judgement:'sources',prompts:'sources',
+  master:'dial',rhythm:'dial',intensity:'dial',quiet:'dial',greeting:'dial',freshness:'dial',
+};
+function contactSearchView(entry){
+  const field=entry?.field||'';
+  const section=entry?.section||'';
+  if(typeof window!=='undefined'&&typeof window.CompanionContactPage?.viewForField==='function'){
+    return window.CompanionContactPage.viewForField(field,section);
+  }
+  if(field&&Object.hasOwn(CONTACT_FIELD_VIEW_OVERRIDES,field))return CONTACT_FIELD_VIEW_OVERRIDES[field];
+  if(field&&/^[a-z0-9_]+\.(enabled|weight|pause_until)$/.test(field))return 'purposes';
+  if(section&&Object.hasOwn(CONTACT_SECTION_VIEW_MAP,section))return CONTACT_SECTION_VIEW_MAP[section];
+  return 'dial';
+}
 function configSearchLocation(entry){
-  /* 三个由专用编辑器承接的分区：跳到各自的页面/分段，再由模块自己的钩子聚焦。
-     它们不在 config-editor 的 spec 里，所以不能走 configSearchLocations 的通用流程。 */
+  /* 专用编辑器与多子签分区统一在此归口解析，确保全局搜索单一真源。 */
   if(entry.group==='role.state')return {next:'life',tab:'state',stateKind:entry.section,stateField:entry.field};
-  if(entry.group==='memory')return {next:'manage',tab:'memory',memoryRoute:'settings',
+  if(entry.group==='memory')return {next:'manage',tab:'memory',subtab:'settings',memoryRoute:'settings',
     root:'#memorySettingsHost',focusSection:entry.section};
-  if(entry.group==='conversation.perception')return {next:'manage',tab:'perception',
-    perceptionTab:'config-'+entry.section,perceptionSection:entry.section,perceptionField:entry.field};
+  if(entry.group==='conversation.perception'){
+    const isCalendar=entry.section==='environment'||NATIVE_PERCEPTION_CALENDAR_FIELDS.has(entry.field);
+    return isCalendar
+      ?{next:'manage',tab:'perception',perceptionTab:'config-environment:perception-detail-calendar',
+        perceptionSection:'environment',perceptionField:entry.field,root:'#nativeCalendarWorkspace',fieldAttr:'data-native-field'}
+      :{next:'manage',tab:'perception',perceptionTab:'config-models:perception-detail-context',
+        perceptionSection:'models',perceptionField:entry.field,root:'#nativeModelWorkspace',fieldAttr:'data-native-field'};
+  }
+  if(entry.group==='proactive.contact')return {next:'manage',tab:'contact',
+    contactView:contactSearchView(entry),contactFocus:true,contactField:entry.field,
+    contactSection:entry.section||'',root:'#contactWorkspace'};
+  if(entry.group==='image.output'){
+    if(entry.section==='scenes')return {next:'manage',tab:'output',outputTab:'capabilities',
+      root:'.output-scene-presets',focusSection:''};
+    if(entry.section==='style'||entry.section==='prompts')return {next:'manage',tab:'output',outputTab:'capabilities',
+      root:'#imageOutputWorkspace',focusSection:entry.section};
+    return {next:'manage',tab:'output',outputTab:'visual',root:'#imageOutputWorkspace',focusSection:entry.section||'triggers'};
+  }
+  if(entry.group==='role_profile'){
+    const selfSection=ROLE_PROFILE_SECTION_IDS.has(entry.section)?entry.section:'identity';
+    return {next:'manage',tab:'governance',subtab:'profile',selfSection,
+      root:'#roleProfileConfigWorkspace',focusSection:selfSection};
+  }
   if(entry.group==='knowledge')return entry.section==='members'
     ?{next:'manage',tab:'identity-groups',identitySettings:'group-clues',root:'#memberClueWorkspace',focusSection:''}
     :{next:'manage',tab:'governance',subtab:'knowledge',root:'#knowledgeConfigWorkspace'};
@@ -5585,7 +5927,8 @@ function configSearchLocation(entry){
   if(entry.group==='group_participation')return entry.section==='denoise'
     ?{next:'manage',tab:'expression',expressionModule:'expression-group',root:'#groupDenoiseWorkspace',focusSection:''}
     :entry.section==='interjection'
-      ?{next:'manage',tab:'decision',decisionView:'group',root:'#groupInterjectionConfigWorkspace'}
+      ?{next:'manage',tab:'decision',decisionView:'group',root:'#groupInterjectionConfigWorkspace',
+        scopeRequirement:'group',scopeHint:'本群主动插话为群聊专属设置；请先切换到群聊窗口后再编辑。'}
       :{next:'manage',tab:'decision',decisionView:entry.section==='joke_guard'?'safety':'group',
         root:'#groupParticipationConfigWorkspace'};
   return configSearchLocations[entry.group] || null;
@@ -5595,12 +5938,24 @@ function replySearchLocation(entry){
     :['group_continuation','private_debounce','wakeup_cold_group','wakeup_fatigue'].includes(entry.section)?'tempo'
       :['silence_policy','private_closing','group_air_guard','group_content_safety'].includes(entry.section)?'safety':'';
   if(decisionView)return {next:'manage',tab:'decision',decisionView,root:'#decisionReplyWorkspace'};
-  const understandingTab={media_permissions:'overview',context_image:'image',image_narration:'image',
+  const understandingTab={media_permissions:'overview',context_image:'image',native_image:'image',image_narration:'image',
     video_narration:'video',file_understanding:'file',forwards:'forwards'}[entry.section];
   if(understandingTab)return {next:'manage',tab:'understanding',understandingTab,root:'#contextImageWorkspace'};
-  const voiceSection=['voice','voice_channels'].includes(entry.section);
-  return {next:'manage',tab:'expression',subtab:voiceSection?'voice':'',root:'#replyWorkspace',
-    expressionModule:voiceSection?'expression-voice':''};
+  const voiceSections=['voice','voice_render','voice_engine','voice_limits','voice_primary','voice_extra','voice_channels'];
+  if(voiceSections.includes(entry.section))return {next:'manage',tab:'expression',subtab:'voice',root:'#replyWorkspace',
+    expressionModule:'expression-voice'};
+  const platformSections=['components','checks'];
+  if(platformSections.includes(entry.section))return {next:'manage',tab:'expression',subtab:entry.section,root:'#replyWorkspace',
+    expressionModule:'expression-platform'};
+  const textSubtab=['segment','style','cleanup'].includes(entry.section)?entry.section:'';
+  return {next:'manage',tab:'expression',subtab:textSubtab,root:'#replyWorkspace',
+    expressionModule:'expression-text'};
+}
+function resolveSettingTarget(entry){
+  if(!entry||typeof entry!=='object')return null;
+  return entry.group==='conversation.presentation'
+    ?replySearchLocation(entry)
+    :configSearchLocation(entry);
 }
 let visibleSearchResults=[];
 let activeSearchResultIndex=0;
@@ -5640,9 +5995,7 @@ function searchableConfigEntries(){
   const perceptions=window.CompanionNativePerceptionPage?.searchEntries?.()||[];
   const seen=new Set();
   const entries=[...editors,...replies,...hostOptions,...states,...memories,...perceptions].map(entry=>{
-    const location=entry.group==='conversation.presentation'
-      ?replySearchLocation(entry)
-      :configSearchLocation(entry);
+    const location=resolveSettingTarget(entry);
     if(!location)return null;
     const key=JSON.stringify([entry.group,entry.section,entry.field]);
     if(seen.has(key))return null;
@@ -5703,10 +6056,12 @@ function settingSearchScore(result,terms,query,location){
   return score;
 }
 function pageSearchScore(data,terms,query){
-  const [title,description]=data;
+  const [title,description,,,,opts]=data;
+  const aliases=Array.isArray(opts?.aliases)?opts.aliases:[];
   let score=0;
   for(const term of terms){
-    const best=Math.max(textSearchScore(title,term,[112,86,62]),textSearchScore(description,term,[24,19,15]));
+    let best=Math.max(textSearchScore(title,term,[112,86,62]),textSearchScore(description,term,[24,19,15]));
+    for(const alias of aliases)best=Math.max(best,textSearchScore(alias,term,[82,62,46]));
     if(!best)return -1;
     score+=best;
   }
@@ -5808,7 +6163,7 @@ function renderSearch(){
     const selected=index===activeSearchResultIndex;
     if(result.kind==='setting'){
       const {entry,location}=result;
-      const pageLabels={all:'全部功能',home:'首页与小屋',state:'状态与日程',diary:'日记与生活',identity:'关系网','identity-people':'用户','identity-groups':'群聊','identity-access':'访问规则','identity-feelings':'关系与情感',memory:'事实与经历',understanding:'理解',contact:'主动联系',expression:'表达',governance:'自我',output:'产出',models:'模型与连接',perception:'感知',decision:'决策',action:'行动',learning:'学习与反思',host:'账号与会话',maintenance:'治理与维护',data:'资料与维护',setup:'开始使用',persona:'人格处理',appearance:'外观与设置'};
+      const pageLabels={all:'全部功能',home:'首页与小屋',state:'状态与日程',diary:'日记与生活',identity:'关系网','identity-people':'用户','identity-groups':'群聊','identity-access':'访问规则','identity-feelings':'关系与情感',memory:'事实与经历',understanding:'理解',contact:'主动联系',expression:'表达',governance:'自我',output:'产出',models:'模型与连接',perception:'感知',decision:'决策',action:'行动',learning:'学习与反思',host:'账号与会话',maintenance:'治理与维护',data:'资料与维护',phone:'手机使用',mobile:'手机端连接',setup:'开始使用',persona:'人格处理',appearance:'外观与设置'};
       const context=['配置项',pageLabels[location.tab]||manageTabs.find(([tab])=>tab===location.tab)?.[2]||location.tab,
         entry.sectionTitle,entry.field].filter(Boolean).join(' · ');
       return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I('sliders-horizontal')}<span><strong>${highlightSearchText(entry.label,terms)}</strong><small>${highlightSearchText(context,terms)}</small></span></button>`;
@@ -5856,70 +6211,171 @@ const tokenTaskSettings={
   'screen.peek':{next:'manage',tab:'perception',perceptionTab:'config-screen:perception-detail-device-access',workbench:{root:'#screenConfigWorkspace',field:'interpretation_enabled'}},
 };
 function tokenTaskSettingsFor(kind){return tokenTaskSettings[kind]||{next:'manage',tab:'models'};}
-function focusTokenTaskElement(element){
+function expandAncestorDetails(node){
+  if(!node)return;
+  const nearest=node.closest?.('details');
+  if(nearest)nearest.open=true;
+  for(let parent=node.parentElement;parent;parent=parent.parentElement){
+    if(parent.tagName==='DETAILS')parent.open=true;
+  }
+}
+function applySearchHighlight(element){
+  if(!element)return;
+  const target=element.closest?.('.wb-field, .wb-row, .host-options-row, .self-relationship-field, .self-contact-switch, .perception-field, .native-perception-field, .ct-src-row, .ct-field, .ct-quota, .ct-purpose, .state-field, .state-edit-field, label')||element;
+  if(!target?.classList)return;
+  target.classList.remove('is-search-target');
+  void target.offsetWidth;
+  target.classList.add('is-search-target');
+  const timer=setTimeout(()=>target.classList?.remove?.('is-search-target'),2400);
+  timer?.unref?.();
+}
+window.CompanionSearchHighlight=applySearchHighlight;
+function focusTokenTaskElement(element,{highlight=false}={}){
   if(!element)return false;
-  const reduced=state.reduceMotion||window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    ||['low','off'].includes(document.documentElement.dataset.motion);
+  expandAncestorDetails(element);
+  const reduced=Boolean(state.reduceMotion||document.body?.classList?.contains('reduce-motion')
+    ||window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches
+    ||['low','off'].includes(document.documentElement?.dataset?.motion));
   element.scrollIntoView?.({behavior:reduced?'instant':'smooth',block:'center'});
+  const hostDialog=element.closest?.('dialog');
+  if(hostDialog&&hostDialog.classList?.contains('detail-dialog-settings'))hostDialog.scrollTop=0;
   if(element.matches?.('button,input,select,textarea,a'))element.focus?.({preventScroll:true});
+  else if(typeof element.focus==='function'){
+    if(!element.hasAttribute?.('tabindex'))element.tabIndex=-1;
+    element.focus({preventScroll:true});
+  }
+  if(highlight)applySearchHighlight(element);
   return true;
 }
-function focusTokenTaskWorkbench(target,jump,attempt=0){
-  if(jump!==tokenTaskSettingsJump)return;
-  const host=document.querySelector(target.root);
-  if(!host)return;
-  const disclosure=host.closest?.('details');
-  if(disclosure)disclosure.open=true;
-  const tabs=[...(host.querySelectorAll?.('[data-wb-section]')||[])];
-  const tab=target.section?tabs.find(item=>item.dataset.wbSection===target.section):null;
-  const groups=[...(host.querySelectorAll?.('[data-wb-group]')||[])];
-  const group=target.section?groups.find(item=>item.dataset.wbGroup===target.section):null;
-  if(target.section&&!tab&&!group){
-    if(attempt<50){setTimeout(()=>focusTokenTaskWorkbench(target,jump,attempt+1),100);return;}
-    focusTokenTaskElement(host);return;
+const SEARCH_EXTENDED_FIELD_SELECTOR='[data-self-relationship-field],[data-self-contact-field],[data-native-field],[data-perception-field],[data-field],[data-state-field],[data-guard-field]';
+const SEARCH_EXTENDED_FIELD_DATA_KEYS=['selfRelationshipField','selfContactField','nativeField','perceptionField','field','stateField','guardField'];
+function matchSearchField(host,fieldName,fieldAttr=''){
+  if(!host||!fieldName)return null;
+  const safe=globalThis.CSS?.escape?.(fieldName)||String(fieldName).replace(/["\\]/g,'\\$&');
+  if(fieldAttr&&typeof host.querySelector==='function'){
+    const direct=host.querySelector(`[${fieldAttr}="${safe}"]`);
+    if(direct)return direct;
   }
-  if(tab&&tab.getAttribute('aria-selected')!=='true')tab.click();
-  const fields=[...(host.querySelectorAll?.('[data-wb-field]')||[])];
-  const field=target.field?fields.find(item=>item.dataset.wbField===target.field):null;
-  if(field){focusTokenTaskElement(field);return;}
-  if(target.field&&attempt<50){setTimeout(()=>focusTokenTaskWorkbench(target,jump,attempt+1),100);return;}
-  focusTokenTaskElement(field||tab||group||host);
+  const wbFields=[...(host.querySelectorAll?.('[data-wb-field]')||[])];
+  const wbMatch=wbFields.find(item=>item?.dataset?.wbField===fieldName);
+  if(wbMatch)return wbMatch;
+  const candidates=[...(host.querySelectorAll?.(SEARCH_EXTENDED_FIELD_SELECTOR)||[])];
+  return candidates.find(item=>SEARCH_EXTENDED_FIELD_DATA_KEYS.some(key=>item?.dataset?.[key]===fieldName))||null;
 }
-function openSearchSetting(result){
-  const {entry,location}=result;
+function waitAndFocusTarget(spec,jump,attempt=0){
+  if(jump!==tokenTaskSettingsJump||!spec)return;
+  const maxAttempts=spec.maxAttempts||50;
+  const host=spec.root?document.querySelector(spec.root):null;
+  if(!host){
+    const shouldRetryHost=spec.root&&spec.waitForHost!==false&&(Boolean(document.body)||spec.waitForHost===true);
+    if(shouldRetryHost&&attempt<(spec.hostAttempts??25)){
+      const timer=setTimeout(()=>waitAndFocusTarget(spec,jump,attempt+1),80);
+      timer?.unref?.();
+    }
+    return;
+  }
+  expandAncestorDetails(host);
+  const safeGroup=spec.group?(globalThis.CSS?.escape?.(spec.group)||String(spec.group).replace(/["\\]/g,'\\$&')):'';
+  const scopeHost=(safeGroup&&typeof host.querySelector==='function'&&host.querySelector(`[data-config-host="${safeGroup}"]`))||host;
+  const tabs=[...(scopeHost.querySelectorAll?.('[data-wb-section]')||[])];
+  const tab=spec.section?tabs.find(item=>item.dataset.wbSection===spec.section):null;
+  const groups=[...(scopeHost.querySelectorAll?.('[data-wb-group]')||[])];
+  const group=spec.section?groups.find(item=>item.dataset.wbGroup===spec.section):null;
+  if(spec.section&&!tab&&!group){
+    if(attempt<maxAttempts){
+      const timer=setTimeout(()=>waitAndFocusTarget(spec,jump,attempt+1),80);
+      timer?.unref?.();
+      return;
+    }
+    focusTokenTaskElement(scopeHost,{highlight:Boolean(spec.highlight)});return;
+  }
+  if(tab&&tab.getAttribute?.('aria-selected')!=='true')tab.click();
+  const field=spec.field?matchSearchField(scopeHost,spec.field,spec.fieldAttr):null;
+  if(field){focusTokenTaskElement(field,{highlight:Boolean(spec.highlight)});return;}
+  if(spec.field&&attempt<maxAttempts){
+    const timer=setTimeout(()=>waitAndFocusTarget(spec,jump,attempt+1),80);
+    timer?.unref?.();
+    return;
+  }
+  focusTokenTaskElement(field||tab||group||scopeHost,{highlight:Boolean(spec.highlight)});
+}
+function focusTokenTaskWorkbench(target,jump,attempt=0){
+  return waitAndFocusTarget(target,jump,attempt);
+}
+async function openSearchPage(data){
+  if(!Array.isArray(data))return false;
+  const [,,,routeKind,tab,opts={}]=data;
+  if(routeKind==='home-section'){goHomeSection(tab);return true;}
+  if(!routeKind){showDetail(tab);return true;}
   const jump=++tokenTaskSettingsJump;
-  /* 记忆页有「记录 / 设置」两条路由，先切到设置再导航，否则落到记录页。 */
-  if(location.memoryRoute)memoryWorkspaceRoute=location.memoryRoute;
-  navigate(location.next,location.tab,location.subtab||'');
+  const subtab=opts.modelsTab||opts.subtab||'';
+  const nav=navigate(routeKind,tab,subtab);
+  const allowed=nav&&typeof nav.then==='function'?await nav:nav;
+  if(allowed===false||jump!==tokenTaskSettingsJump)return false;
   requestAnimationFrame(()=>{
     if(jump!==tokenTaskSettingsJump)return;
+    if(opts.modelsTab)window.CompanionModelsPage?.selectTab?.(opts.modelsTab,{notify:false});
+    if(opts.outputTab)activateOutputTab(opts.outputTab,{focus:true,scroll:true});
+    if(opts.perceptionTab)activatePerceptionTab(opts.perceptionTab,{focus:true,scroll:true});
+    if(opts.understandingTab)window.CompanionUnderstandingPage?.select?.(opts.understandingTab,{focus:true});
+    if(opts.decisionView)window.CompanionDecisionPage?.setView?.(opts.decisionView);
+    if(opts.contactView)document.querySelector(`#contactWorkspace [data-view="${opts.contactView}"]`)?.click();
+  });
+  return true;
+}
+async function openSearchSetting(result){
+  if(!result?.entry)return false;
+  const entry=result.entry;
+  const location=result.location||resolveSettingTarget(entry);
+  if(!location)return false;
+  const jump=++tokenTaskSettingsJump;
+  const targetSubtab=location.modelsTab||location.subtab||(location.memoryRoute||'');
+  const nav=navigate(location.next,location.tab,targetSubtab);
+  const allowed=nav&&typeof nav.then==='function'?await nav:nav;
+  if(allowed===false||jump!==tokenTaskSettingsJump)return false;
+  if(location.memoryRoute&&memoryWorkspaceRoute!==location.memoryRoute){
+    memoryWorkspaceRoute=location.memoryRoute;
+    if(route==='manage'&&manageTab==='memory')render();
+  }
+  /* 群聊专属设置（如本群主动插话）：若当前会话非群聊，先落到决策页并给出明确轻量提示。 */
+  if(location.scopeRequirement==='group'){
+    const currentScope=product?.target?.()?.scope_kind;
+    if(currentScope&&currentScope!=='group'){
+      if(location.decisionView)window.CompanionDecisionPage?.setView?.(location.decisionView);
+      toast(location.scopeHint||'此项为群聊专属设置；请先切换到群聊窗口后再编辑。');
+      return true;
+    }
+  }
+  requestAnimationFrame(()=>{
+    if(jump!==tokenTaskSettingsJump)return;
+    if(location.modelsTab)window.CompanionModelsPage?.selectTab?.(location.modelsTab,{notify:false});
+    if(location.outputTab)activateOutputTab(location.outputTab,{scroll:false});
     if(location.understandingTab)window.CompanionUnderstandingPage?.select?.(location.understandingTab);
     if(location.decisionView)window.CompanionDecisionPage?.setView?.(location.decisionView);
-    /* 状态页：切到对应图块并打开它的编辑表单，再把焦点落到那个输入框。 */
+    if(location.selfSection)selectSelfProfileSection(location.selfSection);
+    /* 状态页：切到对应图块并打开它的编辑表单（支持加载中排队与周期子视图自动切换）。 */
     if(location.stateKind){window.CompanionStatePage?.openEditor?.(location.stateKind,location.stateField);return;}
-    /* 感知页：先切到对应分段，再按 data-perception-field 聚焦。 */
+    /* 感知页：先切到对应分段并展开子面板，再统一走 waitAndFocusTarget（兼容 data-native-field 与 data-wb-field）。 */
     if(location.perceptionTab){
-      activatePerceptionTab(location.perceptionTab,{scroll:true});
-      const focusPerception=(tries=0)=>{
-        if(jump!==tokenTaskSettingsJump)return;
-        const input=document.querySelector(`#perception-page-${location.perceptionSection} [data-perception-field="${location.perceptionField}"]`)
-          ||document.querySelector(`[data-perception-field="${location.perceptionField}"]`);
-        if(input){input.focus({preventScroll:false});input.scrollIntoView({block:"center",behavior:"smooth"});return;}
-        if(tries<20)requestAnimationFrame(()=>focusPerception(tries+1));
-      };
-      requestAnimationFrame(()=>focusPerception());
+      activatePerceptionTab(location.perceptionTab,{scroll:false});
+      const perceptionRoot=location.root||`#perception-page-${location.perceptionSection}`;
+      waitAndFocusTarget({root:perceptionRoot,section:location.focusSection||'',field:location.perceptionField||entry.field,fieldAttr:location.fieldAttr||'',highlight:true},jump);
       return;
     }
     if(location.identitySettings){
       /* 旧的单元测试与极简嵌入上下文可能没有详情弹窗；保留旧挂载点作为
          无弹窗环境的兼容焦点，正式小屋始终走标题按钮打开的设置弹窗。 */
-      if(!$('#detailDialog')?.classList){focusTokenTaskWorkbench({root:location.root,section:location.focusSection!==undefined?location.focusSection:entry.section,field:entry.field},jump);return;}
+      if(!$('#detailDialog')?.classList){waitAndFocusTarget({root:location.root,section:location.focusSection!==undefined?location.focusSection:entry.section,field:entry.field,fieldAttr:location.fieldAttr||'',highlight:true},jump);return;}
       openIdentitySettings(location.identitySettings);
       const identityTarget=identitySettingsTarget(location.identitySettings,entry.field,location.focusSection||'');
-      if(identityTarget)focusTokenTaskWorkbench(identityTarget,jump);
+      if(identityTarget)waitAndFocusTarget({...identityTarget,highlight:true},jump);
       return;
     }
     if(location.expressionModule)activateExpressionModule(location.expressionModule);
+    if(location.contactFocus&&typeof window.CompanionContactPage?.focusField==='function'){
+      window.CompanionContactPage.focusField(location.contactField||entry.field,location.contactSection||entry.section||'');
+      return;
+    }
     if(location.contactView)document.querySelector(`#contactWorkspace [data-view="${location.contactView}"]`)?.click();
     if(entry.group==='conversation.presentation'){
       if(!location.understandingTab)window.CompanionReplyPage?.selectSection?.(entry.section,{scroll:false});
@@ -5928,10 +6384,11 @@ function openSearchSetting(result){
       const details=$('.phone-advanced');
       if(details)details.open=true;
     }
-    const section=location.understandingTab?'':location.focusSection!==undefined?location.focusSection
+    const section=location.understandingTab||location.selfSection?'':location.focusSection!==undefined?location.focusSection
       :entry.sectionCount>1?entry.section:'';
-    focusTokenTaskWorkbench({root:location.root,section,field:entry.field},jump);
+    waitAndFocusTarget({root:location.root,group:entry.group,section,field:entry.field,fieldAttr:location.fieldAttr||'',highlight:true},jump);
   });
+  return true;
 }
 function openTokenTaskSettings(kind){
   if(typeof kind!=='string'||!kind)return false;
@@ -5991,12 +6448,11 @@ document.addEventListener('click',event=>{
     if(scrollToPageAnchor(hash)){event.preventDefault();return;}
   }
   if(el.dataset.personaRecreation){
-    if(!['questionnaire','create','optimize'].includes(el.dataset.personaRecreation))return;
-    personaRecreationMode=el.dataset.personaRecreation;
-    try{localStorage.setItem('companion.persona-mode',personaRecreationMode);}catch{}
-    paintPanel();
-    product.mountWorkspace();
-    requestAnimationFrame(()=>document.querySelector('[data-persona-recreation="'+personaRecreationMode+'"]')?.focus({preventScroll:true}));
+    switchPersonaMode(el.dataset.personaRecreation,'[data-persona-recreation="'+el.dataset.personaRecreation+'"]');
+    return;
+  }
+  if(el.dataset.personaSwitch){
+    switchPersonaMode(el.dataset.personaSwitch,'[data-persona-switch="'+el.dataset.personaSwitch+'"]');
     return;
   }
   if(el.dataset.selfPane){
@@ -6109,12 +6565,13 @@ document.addEventListener('click',event=>{
   if(el.dataset.clearFurniture!==undefined){furnitureFilter='all';furnitureQuery='';$('[data-directory-search]').value='';updateFurnitureDirectory();return;}
   if(el.dataset.detail){showDetail(el.dataset.detail);return;}
   if(el.dataset.go){
+    const modelTabs=['fn','voice','image','search','laya','pricing'];
     if(el.dataset.setupReplySection)navigateToReplySection(el.dataset.go,el.dataset.lifeTarget||el.dataset.manage,
       el.dataset.manageSubtab,el.dataset.setupReplySection);
     else navigate(el.dataset.go,el.dataset.lifeTarget||el.dataset.manage,el.dataset.manageSubtab);
     if(el.dataset.outputTarget)activateOutputTab(el.dataset.outputTarget,{focus:true,scroll:true});
     if(el.dataset.contactView)requestAnimationFrame(()=>document.querySelector(`#contactWorkspace [data-view="${el.dataset.contactView}"]`)?.click());
-    if(['fn','voice','image'].includes(el.dataset.modelTabTarget))requestAnimationFrame(()=>document.querySelector(`#modelWorkspace [data-model-tab="${el.dataset.modelTabTarget}"]`)?.click());
+    if(modelTabs.includes(el.dataset.modelTabTarget))requestAnimationFrame(()=>document.querySelector(`#modelWorkspace [data-model-tab="${el.dataset.modelTabTarget}"]`)?.click());
     if(el.dataset.understandingTabTarget)requestAnimationFrame(()=>window.CompanionUnderstandingPage?.select?.(el.dataset.understandingTabTarget,{focus:true}));
     if(el.dataset.perceptionTabTarget)requestAnimationFrame(()=>activatePerceptionTab(el.dataset.perceptionTabTarget,{focus:true,scroll:true}));
     if(el.dataset.pageAnchor)requestAnimationFrame(()=>scrollToPageAnchor(el.dataset.pageAnchor));
@@ -6166,7 +6623,7 @@ document.addEventListener('click',event=>{
   if(el.dataset.albumPage!==undefined){showDetail('album');return;}
   if(el.dataset.capAction){const [key,action]=el.dataset.capAction.split(':');if(!capabilities.some(c=>c[0]===key)||state.modules[key]==='planned')return;state.modules[key]=({pause:'paused',enable:initial.modules[key],restore:initial.modules[key],remove:'removed'})[action]||state.modules[key];saved('本地预览状态已更新，真实插件配置未改变');refreshHomeCapabilities();showDetail('cap-'+key);return;}
   if(el.dataset.toggleActivity!==undefined){state.activityPaused=!state.activityPaused;saved(state.activityPaused?'示例活动已暂停，阅读位置保留':'示例活动已继续');render();showDetail('activity-reading');return;}
-  if(el.dataset.searchResult!==undefined){const result=visibleSearchResults[Number(el.dataset.searchResult)];$('#searchDialog').close();if(result?.kind==='setting')openSearchSetting(result);else if(result?.kind==='page'){const data=result.data;if(data[3]==='home-section')goHomeSection(data[4]);else if(data[3])navigate(data[3],data[4]);else showDetail(data[4]);}return;}
+  if(el.dataset.searchResult!==undefined){const result=visibleSearchResults[Number(el.dataset.searchResult)];$('#searchDialog').close();if(result?.kind==='setting')void openSearchSetting(result);else if(result?.kind==='page')void openSearchPage(result.data);return;}
   if(el.dataset.confirmReset!==undefined){state=structuredClone(initial);persist();libraryFilter='all';memoryView='list';observationFilter='records';furnitureFilter='all';furnitureQuery='';navigate('life');toast('已恢复初始预览');return;}
   if(el.dataset.export!==undefined){const blob=new Blob([JSON.stringify({kind:'ui-preview-only',version:2,configSnapshotVersion:configSnapshot.version,configSource:configSnapshot.source,settings:state},null,2)],{type:'application/json;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='陪伴拓展页V2-脱敏设置.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('已导出预览设置');}
 });
@@ -6269,6 +6726,19 @@ $('#globalSearch').addEventListener('compositionend',scheduleSearchRender);
 $('#globalSearch').addEventListener('keydown',handleGlobalSearchKeydown);
 document.addEventListener('keydown',event=>{
   if(arrangementDraft&&handleRoomEditorKey(event))return;
+  const personaTab=event.target.closest?.('[role="tab"][data-persona-recreation]');
+  if(personaTab&&['ArrowRight','ArrowLeft','Home','End'].includes(event.key)){
+    const tabs=$$('.persona-mode-grid [role="tab"][data-persona-recreation]');
+    const index=tabs.indexOf(personaTab);
+    if(index>=0&&tabs.length){
+      event.preventDefault();
+      const next=event.key==='Home'?0:event.key==='End'?tabs.length-1
+        :(index+(event.key==='ArrowRight'?1:tabs.length-1))%tabs.length;
+      const mode=tabs[next].dataset.personaRecreation;
+      switchPersonaMode(mode,'[role="tab"][data-persona-recreation="'+mode+'"]');
+    }
+    return;
+  }
   const selfTab=event.target.closest?.('[role="tab"][data-self-pane]');
   if(selfTab&&['ArrowRight','ArrowLeft','Home','End'].includes(event.key)){
     const tabs=$$('.deck-tabs [data-self-pane]');

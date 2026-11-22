@@ -482,15 +482,21 @@ window.CompanionNativePerceptionPage = (() => {
   }
   /* 全局搜索用：感知页自己的字段表（日期、节假日、农历、黄历、平台标识等）。
      这一组不在 config-editor 的 spec 里，此前整组搜不到。
+     渲染时 fields.model 前 7 项落在「时空与环境 / 日期与历法」（#nativeCalendarWorkspace），
+     后 4 项落在「模型能力 / 对话感知与表达偏好」（#nativeModelWorkspace），搜索分区必须与真实 DOM 一致。
      「资讯」段的字段其实是主动联系的 news.*，spec 里已经能搜到，这里不再重复索引。 */
-  const sectionTitles = {environment: "环境", model: "模型"};
+  const calendarFieldNames = new Set((fields.model || []).slice(0, 7).map(([name]) => name));
   function searchEntries() {
-    return Object.entries(fields).filter(([section]) => sectionTitles[section]).flatMap(([section, list]) => (list || []).map(([field, label, , help]) => ({
-      group: "conversation.perception", groupTitle: "感知", field,
-      label: label || field, help: help || "",
-      section, sectionTitle: sectionTitles[section],
-      sectionCount: Object.keys(sectionTitles).length,
-    })));
+    return (fields.model || []).map(([field, label, , help]) => {
+      const isCalendar = calendarFieldNames.has(field);
+      return {
+        group: "conversation.perception", groupTitle: "感知", field,
+        label: label || field, help: help || "",
+        section: isCalendar ? "environment" : "models",
+        sectionTitle: isCalendar ? "日期与历法" : "模型与表达",
+        sectionCount: 2,
+      };
+    });
   }
   return {mount, unmount, refresh:load, searchEntries, isDirty, changedFields, saveBeforeLeave, discardChanges, subscribe(listener) {
     if (typeof listener !== "function") return () => {};

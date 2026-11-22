@@ -576,7 +576,7 @@ class ModelManagement:
             scope = self.context.scope
             role_address = [scope.installation_id, scope.bot_id, asdict(self.context.role_binding.role)]
             role_address_key = digest(role_address)
-            pricing_catalog = PriceCatalogStore(runtime.data_root).read_safe()
+            pricing_catalog = PriceCatalogStore(runtime.data_root).read_safe(copy=False)
             if cache is not None and pricing_fingerprint(runtime, pricing_revision) != file_key:
                 cache = None
             usd_cny_rate = effective_usd_cny_rate(pricing_settings)
@@ -829,6 +829,7 @@ class ModelManagement:
                     history_cutoff=today,
                     tz_offset_seconds=tz_offset_seconds,
                     cache_version=cache_version,
+                    raw_cache_version=shared_token_before.generation,
                     enrich_core_rows=enrich_core_rows,
                     eff_start=eff_start,
                     eff_now=eff_now,

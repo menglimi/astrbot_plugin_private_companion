@@ -475,8 +475,9 @@ test("maintenance page currency formatter & switcher respect CNY/USD, FX pill, a
   await flush();
   assert.match(h.root.innerHTML, /1 USD = ¥7\.31/);
 
+  assert.match(h.root.innerHTML, /data-open-pricing-settings\s+data-go="manage"\s+data-manage="models"\s+data-manage-subtab="pricing"/);
   h.root.click("[data-open-pricing-settings]");
-  assert.equal(h.sessionStore.getItem("companion-models-pending-tab.v1"), "pricing");
+  assert.equal(h.sessionStore.getItem("companion-models-pending-tab.v1"), null);
   h.page.unmount();
 });
 

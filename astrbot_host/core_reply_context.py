@@ -16,6 +16,7 @@ from companion_v2.conversation.awareness_context import INSTRUCTION as CROSS_WIN
 from companion_v2.conversation.growth_context import ROLE_GROWTH_INSTRUCTION
 from companion_v2.conversation.health_context import HEALTH_INSTRUCTION
 from companion_v2.conversation.life_context import LIFE_INSTRUCTION
+from companion_v2.conversation.location_context import LOCATION_CONTEXT_INSTRUCTION
 from companion_v2.conversation.open_items_context import INSTRUCTION as OPEN_ITEMS_INSTRUCTION
 from companion_v2.conversation.phone_context import PHONE_CONTEXT_INSTRUCTION
 from companion_v2.conversation.relationship_context import RELATIONSHIP_INSTRUCTION
@@ -32,7 +33,7 @@ from companion_v2.system_prompts.catalog import (
 )
 from companion_v2.system_prompts.context import SystemPromptContext
 from .core_reply_health import health_perception_snapshot
-from .core_reply_mobile import phone_scene_snapshot
+from .core_reply_mobile import location_scene_snapshot, phone_scene_snapshot
 
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,14 @@ SENT_CONTINUATION_INSTRUCTION = (
     "管理员知情的合成演练所产生的正文仍确实已发送，但其中情境不证明现实经历或约定；"
     "可承接用户此刻明确表达的意愿，不能据此补造事实、已有授权或安排。"
 )
+LEGACY_MEMORY_INSTRUCTION = (
+    "这些是经过身份映射的旧版历史资料，保留各自时间与来源。旧偏好、旧情绪、未完话头和承诺只说明当时，"
+    "不恢复旧任务或授权，也不当作当前状态；结合本轮表达自然回忆，需要更多细节时继续查询历史记忆。"
+)
+PRIVATE_GROUP_CONTEXT_INSTRUCTION = (
+    "这段摘要只用于理解当前发言者，不要向群内其他人复述私聊原文、称呼、关系细节或时间；"
+    "不要声称这些内容是在群里说的，也不要据此推断其他人的私聊。"
+)
 
 
 @dataclass(frozen=True)
@@ -94,8 +103,11 @@ class _MaterialSection:
     title: str
     instruction: str
     materials: tuple[dict, ...]
+    instruction_only_render: bool = False
 
     def render(self):
+        if self.instruction_only_render:
+            return "\n\n【" + self.title + "】\n" + self.instruction
         payload = json.dumps(self.materials, ensure_ascii=False, sort_keys=True,
                              separators=(",", ":"), allow_nan=False)
         if self.instruction:
@@ -167,7 +179,8 @@ def _capture_materials(owner, context, at, *, runtime=None):
         return owner.contributions(snapshot, context, at)
 
 
-def _knowledge_materials(messages, context, native_input, at, *, members=False):
+def _knowledge_materials(messages, context, native_input, at, *, members=False,
+                         official_hits=None, include_official=None):
     """Reuse the knowledge owner without duplicating AstrBot's official KB path."""
     owner = getattr(messages, "knowledge", None)
     if owner is None:
@@ -180,6 +193,12 @@ def _knowledge_materials(messages, context, native_input, at, *, members=False):
     if members:
         clue = owner.member_contribution(context, **arguments)
         return (clue,) if clue is not None else ()
+    if include_official is not None:
+        return owner.background_contributions(
+            context, include_official=include_official, official_hits=official_hits, **arguments)
+    if official_hits is not None:
+        return owner.core_background_contributions(
+            context, official_hits=official_hits, **arguments)
     return owner.core_background_contributions(context, **arguments)
 
 
@@ -287,7 +306,8 @@ def _input_received_at(native_input, fallback):
 
 
 def build_core_reply_prompt(application, context, native_input, *, at, keyword_materials=(), health_material=None,
-                            external_memory=None, private_group_context="", group_trigger=None):
+                            external_memory=None, private_group_context="", group_trigger=None,
+                            official_knowledge_hits=None, include_official_knowledge=None):
     """Build optional background independently; no failed section blocks reply."""
     blocks, stable_blocks, context_blocks, sections, expression_signal_ids = [], [], [], [], []
     sent_rounds, sent_round_refs = {}, {}
@@ -397,8 +417,7 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
                                (messages.acquaintance.card_contribution(context, at),))))
     if context.scope.kind is ScopeKind.GROUP and isinstance(private_group_context, str) and private_group_context.strip():
         optional("private_group_context", lambda: "\n\n【当前发言者的私聊上下文摘要】\n"
-                 "这段摘要只用于理解当前发言者，不要向群内其他人复述私聊原文、称呼、关系细节或时间；"
-                 "不要声称这些内容是在群里说的，也不要据此推断其他人的私聊。\n"
+                 + PRIVATE_GROUP_CONTEXT_INSTRUCTION + "\n"
                  + private_group_context.strip())
     def account_link_context():
         from companion_v2.relationships.account_link_context import linked_context
@@ -409,7 +428,9 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
     optional("cross_window", lambda: _cross_window_section(
         messages, context, at, getattr(native_input, "text", "")))
     optional("knowledge_reference", lambda: _material_section("角色知识资料", system_text("knowledge", KNOWLEDGE_INSTRUCTION),
-        _knowledge_materials(messages, context, native_input, at)))
+        _knowledge_materials(messages, context, native_input, at,
+                             official_hits=official_knowledge_hits,
+                             include_official=include_official_knowledge)))
     optional("knowledge_member_clue", lambda: _material_section("本窗口成员资料", MEMBER_CLUE_INSTRUCTION,
         _knowledge_materials(messages, context, native_input, at, members=True)))
 
@@ -479,6 +500,10 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             if phone:
                 perception_data["phone_context"] = phone
                 instructions.append(PHONE_CONTEXT_INSTRUCTION)
+            location = location_scene_snapshot(application, context, at)
+            if location:
+                perception_data["location_context"] = location
+                instructions.append(LOCATION_CONTEXT_INSTRUCTION)
         # Personal birthdays are explicit profile data, so they remain available
         # even when generic calendar labels are disabled. User data is included
         # only for the identified private recipient; role data is safe to share
@@ -573,8 +598,7 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             from .external_memory import external_memory_section
             optional("external_memory", lambda: external_memory_section(external_memory, application, context))
         optional("legacy_memory", lambda: _material_section("迁入的历史资料",
-            "这些是经过身份映射的旧版历史资料，保留各自时间与来源。旧偏好、旧情绪、未完话头和承诺只说明当时，"
-            "不恢复旧任务或授权，也不当作当前状态；结合本轮表达自然回忆，需要更多细节时继续查询历史记忆。",
+            LEGACY_MEMORY_INSTRUCTION,
             _legacy_memory_materials(getattr(application, "memory", None), context, native_input, at,
                                      perception_settings()["calendar_timezone"])))
         captured("relationship", "相处背景", system_text("relationship", RELATIONSHIP_INSTRUCTION),
@@ -598,6 +622,11 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             snapshot = application.reply_settings.snapshot(context.actor, context, at)
             settings = {key.removeprefix(GROUP + "."): value for key, value in snapshot.values.items()}
             turn = native_participation_turn(owner, context, native_input, settings, group_trigger=group_trigger)
+            compact = turn.get("compact_facts")
+            if isinstance(compact, dict):
+                return _MaterialSection("群聊参与参考", turn["instruction"],
+                    ({"kind": "group_participation_facts", "content": compact},),
+                    instruction_only_render=True)
             return "\n\n【群聊参与参考】\n" + turn["instruction"]
 
         optional("group_participation", group_participation)

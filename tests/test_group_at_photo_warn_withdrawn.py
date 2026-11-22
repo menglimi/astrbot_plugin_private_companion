@@ -197,6 +197,30 @@ class GroupBareAtIntakeTests(unittest.IsolatedAsyncioTestCase):
         plugin._group_debounce_manager = lambda: NS(observe=Mock(), reserve_group=Mock(return_value=None))
         plugin._record_no_reply = Mock()
 
+        # Without conversation_manager, main.py falls back safely to SELF_MENTION so bare @ is never dropped.
+        event_fallback = self._group_event([{"type": "at", "data": {"qq": "100"}}], [At(qq="100")], message_str="")
+        with patch.object(ENTRY, "is_notice_event", return_value=False), \
+                patch.object(ENTRY, "competing_command_handler", return_value=None), \
+                patch.object(ENTRY, "receive_group_llm_command", AsyncMock(return_value=None)), \
+                patch.object(ENTRY, "prepare_core_reply_decision", AsyncMock(return_value={"suppress_reply": False})):
+            await plugin.receive_companion_message(event_fallback)
+
+        self.assertEqual(event_fallback.message_str, SELF_MENTION)
+        self.assertEqual(event_fallback.message_obj.message_str, SELF_MENTION)
+        self.assertIsNone(event_fallback.get_extra("provider_request"))
+        self.assertIs(event_fallback.get_extra("enable_streaming"), False)
+        self.assertTrue(event_fallback.is_wake)
+        self.assertTrue(event_fallback.is_at_or_wake_command)
+
+        # With conversation_manager, event.message_str stays empty and a conversation-bound request is attached.
+        conv = NS(cid="conv-9001", history="[]")
+        plugin.staging.context = NS(
+            conversation_manager=NS(
+                get_curr_conversation_id=AsyncMock(return_value="conv-9001"),
+                get_conversation=AsyncMock(return_value=conv),
+                new_conversation=AsyncMock(return_value="conv-new"),
+            )
+        )
         event = self._group_event([{"type": "at", "data": {"qq": "100"}}], [At(qq="100")], message_str="")
         with patch.object(ENTRY, "is_notice_event", return_value=False), \
                 patch.object(ENTRY, "competing_command_handler", return_value=None), \
@@ -204,8 +228,12 @@ class GroupBareAtIntakeTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(ENTRY, "prepare_core_reply_decision", AsyncMock(return_value={"suppress_reply": False})):
             await plugin.receive_companion_message(event)
 
-        self.assertEqual(event.message_str, SELF_MENTION)
-        self.assertEqual(event.message_obj.message_str, SELF_MENTION)
+        self.assertEqual(event.message_str, "")
+        self.assertEqual(event.message_obj.message_str, "")
+        provider_req = event.get_extra("provider_request")
+        self.assertIsNotNone(provider_req)
+        self.assertEqual(provider_req.prompt, " ")
+        self.assertIs(provider_req.conversation, conv)
         self.assertIs(event.get_extra("enable_streaming"), False)
         self.assertTrue(event.is_wake)
         self.assertTrue(event.is_at_or_wake_command)

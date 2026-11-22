@@ -53,7 +53,7 @@ def inbound_event(row):
         datetime.fromisoformat(row["observed_at"]))
 
 
-def input_rows_for_context(runtime, context, *, start=None, end=None, limit=512):
+def input_rows_for_context(runtime, context, *, start=None, end=None, after_sequence=0, limit=512):
     """Original member inputs in the exact current private window or group binding."""
     if not observations_available(runtime):
         return ()
@@ -73,6 +73,9 @@ def input_rows_for_context(runtime, context, *, start=None, end=None, limit=512)
     if end is not None:
         clauses.append("n.observed_at <= ?")
         values.append(end)
+    if after_sequence > 0:
+        clauses.append("s.rowid > ?")
+        values.append(after_sequence)
     values.append(limit)
     return runtime.read_all("""SELECT n.*, s.rowid AS input_sequence
         FROM conversation_native_observations n JOIN sources s
@@ -95,10 +98,11 @@ def source_row(runtime, reference):
         WHERE json_extract(source_json, '$.source_id') = ?""", (reference.source_id,))
 
 
-def validate_observation(runtime, row, context, reference):
+def validate_observation(runtime, row, context, reference, *, original=None):
     from companion_v2.memory.codec import source
 
-    original = TaskContext.restore(json.loads(row["context_json"]))
+    if original is None:
+        original = TaskContext.restore(json.loads(row["context_json"]))
     if (source(json.loads(row["source_json"])) != reference
             or original.scope != reference.scope or owner_key(original) != owner_key(context)
             or original.scope.kind is not context.scope.kind

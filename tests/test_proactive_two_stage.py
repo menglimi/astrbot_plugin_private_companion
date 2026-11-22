@@ -124,12 +124,13 @@ class TwoStageContactTests(ContactFixture, unittest.IsolatedAsyncioTestCase):
         diagnostic = {"_diagnostic": {"route_id": "synthetic_event", "purpose": "chat"}}
 
         async def staged(envelope):
-            instruction = envelope.original.instruction
-            self.assertIn("合成情境演练", instruction)
+            guidance = envelope.original.user_instruction
+            self.assertIn("合成情境演练", guidance)
+            self.assertNotIn("合成情境演练", envelope.original.instruction)
             if envelope.original.output_format == "proactive_plan":
                 return answered('{"decision":"send","decision_confidence":0.9,'
                                 '"angle":"聊颜色选择","facts":[],"avoid":[]}')
-            self.assertIn("QQ 的 text", instruction)
+            self.assertIn("QQ 的 text", guidance)
             return answered('{"text":"刚画完这张画，我还在想用哪种颜色更好。"}')
 
         self.model_behavior = staged

@@ -8,6 +8,7 @@ from astrbot.api.web import request
 from companion_v2.execution.models import TaskError
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.role_work.life.management import RoleLifeManagement
+from companion_v2.storage.runtime import StorageOpenError
 
 from .management_identity import dashboard_operator
 
@@ -22,7 +23,7 @@ class LifeWebAPI:
         return [(PREFIX, self.status, ["GET"], "Read private journals and role routines"),
                 (PREFIX + "/command", self.command, ["POST"], "Manage private journals and role routines")]
 
-    def manager(self, username=None):
+    def _snapshot(self, username=None):
         controller = self.controller
         if controller._terminated:
             raise TaskError("staging_host_terminated", "the plugin has stopped")
@@ -31,10 +32,26 @@ class LifeWebAPI:
         if type(username) is not str or not username.strip():
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
         session = controller.session or controller.last_session
-        if session is None or controller.runtime is None:
+        runtime = controller.runtime
+        if session is None or runtime is None:
             raise TaskError("staging_not_initialized", "load an initialized V2 profile first")
-        operator = dashboard_operator(controller.runtime, username, at=controller.now())
+        return (
+            session,
+            runtime,
+            controller.now(),
+            getattr(controller.settings, "profile_id", None),
+            getattr(controller, "target_id", None),
+            username,
+        )
+
+    @staticmethod
+    def _build_manager(session, runtime, username, observed_at):
+        operator = dashboard_operator(runtime, username, at=observed_at)
         return RoleLifeManagement(session.application, session.profile.target), operator
+
+    def manager(self, username=None):
+        session, runtime, observed_at, _profile_id, _target_id, resolved_username = self._snapshot(username)
+        return self._build_manager(session, runtime, resolved_username, observed_at)
 
     async def status(self):
         from .web_api import outcome_response
@@ -46,17 +63,21 @@ class LifeWebAPI:
             before = query.get("before") or None
             after_activity = query.get("after_activity") or None
             async with self.controller._control_lock:
-                def load():
-                    manager, operator = self.manager(username)
-                    return manager.status(operator, before=before, after_activity=after_activity)
+                session, runtime, observed_at, profile_id, target_id, resolved_username = self._snapshot(username)
 
-                result = await asyncio.to_thread(load)
-                result["profile_id"] = getattr(self.controller.settings, "profile_id", None)
-                if getattr(self.controller, "target_id", None) is not None:
-                    result["target_id"] = self.controller.target_id
-                return outcome_response(Outcome.success(result))
+            def load():
+                manager, operator = self._build_manager(session, runtime, resolved_username, observed_at)
+                return manager.status(operator, before=before, after_activity=after_activity)
+
+            result = await asyncio.to_thread(load)
+            result["profile_id"] = profile_id
+            if target_id is not None:
+                result["target_id"] = target_id
+            return outcome_response(Outcome.success(result))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("life_storage_unavailable", "the life store is not available"))
         except (ValueError, TypeError):
             return outcome_response(Outcome.failed("life_query_invalid", "invalid archive query"))
 
@@ -91,15 +112,19 @@ class LifeWebAPI:
             if type(data) is not dict or data.get("action") not in fields or set(data) - common - fields[data["action"]]:
                 raise ValueError("unknown command fields")
             async with self.controller._control_lock:
-                def prepare():
-                    manager, operator = self.manager(username)
-                    manager.authorize(operator)
-                    return manager, operator
+                session, runtime, observed_at, _profile_id, _target_id, resolved_username = self._snapshot(username)
 
-                manager, operator = await asyncio.to_thread(prepare)
+            def prepare():
+                manager, operator = self._build_manager(session, runtime, resolved_username, observed_at)
+                manager.authorize(operator)
+                return manager, operator
+
+            manager, operator = await asyncio.to_thread(prepare)
             # Model work uses its own task lifecycle; leave stop/withdraw routes responsive.
             return outcome_response(await manager.command(operator, data))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("life_storage_unavailable", "the life store is not available"))
         except (ValueError, TypeError, RecursionError):
             return outcome_response(Outcome.failed("life_command_invalid", "invalid UTF-8 life command"))

@@ -10,6 +10,7 @@ from .tool_failures import failure_guidance, retry_disposition_for
 
 
 PREFIX = "astrbot.core-tool."
+PREFIX_END = PREFIX[:-1] + chr(ord(PREFIX[-1]) + 1)
 
 
 def operation_row(runtime, invocation_id):
@@ -45,10 +46,10 @@ def operation_rows(runtime, context, actions, *, after=0, limit=128, newest_firs
                     + ",".join("?" for _ in states) + ")") if states else ""
     order = "DESC" if newest_first else "ASC"
     rows = runtime.read_all(f"""SELECT rowid AS scan_id, json_extract(value, '$.invocation_id') AS invocation_id
-        FROM runtime_metadata WHERE substr(key, 1, ?) = ? AND rowid > ?
+        FROM runtime_metadata WHERE key >= ? AND key < ? AND rowid > ?
         AND json_extract(value, '$.origin_key') = ? AND json_extract(value, '$.action') IN ({placeholders})
         AND json_extract(value, '$.task_id') IS NOT NULL{state_filter} ORDER BY rowid {order} LIMIT ?""",
-        (len(PREFIX), PREFIX, after, context.key, *actions, *states, limit))
+        (PREFIX, PREFIX_END, after, context.key, *actions, *states, limit))
     return tuple({**operation_row(runtime, row["invocation_id"]), "scan_id": row["scan_id"]} for row in rows)
 
 

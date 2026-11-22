@@ -48,11 +48,13 @@ class CycleState:
             (*prior_sources, *(sources if changed_decision else ()))))
         self.service.evidence.validate(context, dependencies, at=at, control=True)
         shared = self.service.records.storage(context) == "role" or self.service.evidence.shared(context, dependencies)
+        from .service import bound_state_dependencies
+        link_dependencies = bound_state_dependencies(self.service.runtime, dependencies, at=at)
         identifier = "role-cycle-" + digest([context.key, operation_key])
         source = SourceRef(identifier, "role.state.cycle", context.scope, VersionRef(identifier, 1), at)
         payload = encode(clock)
         require(self.service.access.sources.publish(SourceRecord(source, context.audience, digest(payload), payload), observed_at=at))
-        link(self.service.runtime, source, dependencies, at)
+        link(self.service.runtime, source, link_dependencies, at)
         return clock, (source,), shared
 
     def preview(self, context, settings, at):

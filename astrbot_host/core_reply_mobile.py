@@ -1,9 +1,10 @@
-"""Read the authorized phone foreground summary for one private core reply."""
+"""Read the authorized phone foreground and location summaries for one private core reply."""
 
 from __future__ import annotations
 
 import logging
 
+from companion_v2.conversation.location_context import project_location_context
 from companion_v2.conversation.phone_context import project_phone_context
 
 from .core_reply_health import authorized_mobile_snapshot
@@ -29,4 +30,20 @@ def phone_scene_snapshot(application, context, at):
         return None
 
 
-__all__ = ["phone_scene_snapshot"]
+def location_scene_snapshot(application, context, at):
+    """Return a bounded, desensitized mobile location summary for private chat only.
+
+    Shares the exact private-window, role-enablement and capability-consent gate
+    used by health and foreground phone activity; group chats always get None.
+    """
+    snapshot = authorized_mobile_snapshot(application, context)
+    if snapshot is None:
+        return None
+    try:
+        return project_location_context(snapshot, observed_at=at)
+    except Exception as error:
+        logger.warning("[CompanionV2] 核心回复手机位置降级 error_type=%s", type(error).__name__)
+        return None
+
+
+__all__ = ["location_scene_snapshot", "phone_scene_snapshot"]

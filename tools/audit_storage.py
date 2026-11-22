@@ -181,6 +181,7 @@ def _lock_facts() -> dict[str, Any]:
         "write_transaction_uses_runtime_rlock": uses_runtime_lock("transaction"),
         "write_transaction_begins_immediate": "BEGIN IMMEDIATE" in source,
         "synchronous_full": "PRAGMA synchronous = FULL" in source,
+        "synchronous_normal": "PRAGMA synchronous = NORMAL" in source,
         "busy_timeout_ms": 5000 if "PRAGMA busy_timeout = 5000" in source else None,
     }
 

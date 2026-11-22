@@ -751,7 +751,7 @@ window.CompanionWorkbench = (() => {
     return scopeHintMarkup(lines.join("\n"), `${item.label || name}的保存范围与来源`);
   }
 
-  function controlMarkup(item, value, locked, state) {
+  function controlMarkup(item, value, locked, state, container = null) {
     const dis = locked ? " disabled" : "";
     if (item.kind === "bool") {
       return `<label class="wb-switch"><input type="checkbox" data-wb-field="${e(item.name)}" ${value ? "checked" : ""}${dis}>`
@@ -1079,6 +1079,9 @@ window.CompanionWorkbench = (() => {
         return `<input type="time" data-wb-field="${e(item.name)}" value="${e(value)}"${dis}>`;
       }
       if (item.input === "line") {
+        if (container?.presentation === "journal" && !item.suggestions && item.name !== "avatar_data_url" && item.name !== "name") {
+          return `<textarea class="wb-line-grow" data-wb-field="${e(item.name)}" data-wb-autogrow="line" rows="1"${dis}>${e(value)}</textarea>`;
+        }
         const list = item.suggestions ? ` list="wb-list-${e(item.name)}"` : "";
         const options = item.suggestions
           ? `<datalist id="wb-list-${e(item.name)}">${item.suggestions.map(option =>
@@ -1086,7 +1089,8 @@ window.CompanionWorkbench = (() => {
         return `<input type="text" data-wb-field="${e(item.name)}" value="${e(value)}"${list}${dis}>${options}`;
       }
       const rows = item.rows || 3;
-      const textarea = `<textarea data-wb-field="${e(item.name)}" rows="${rows}"${dis}>${e(value)}</textarea>`;
+      const autogrow = container?.presentation === "journal" ? ` data-wb-autogrow="area"` : "";
+      const textarea = `<textarea data-wb-field="${e(item.name)}"${autogrow} rows="${rows}"${dis}>${e(value)}</textarea>`;
       if (item.maximumChars == null) return textarea;
       const count = Array.from(String(value ?? "")).length;
       return `<div class="wb-textarea-wrap">${textarea}<span class="wb-text-length${count > item.maximumChars ? " is-over-limit" : ""}" data-wb-counter="${e(item.name)}">${count} / ${e(item.maximumChars)} 字</span></div>`;
@@ -1127,7 +1131,7 @@ window.CompanionWorkbench = (() => {
       + (container.presentation === "journal" ? "" : railMarkup(state, name, item, state.status?.provenance, container))
       + `<div class="wb-field-main"><span class="wb-label">${label}${fieldScopeMarkup(state, name, item, state.status?.provenance, container)}</span>`
       + (item.help && container.presentation !== "journal" ? `<p class="wb-help" id="${e(helpId)}" title="${e(item.help)}">${e(item.help)}</p>` : "")
-      + `<div class="wb-control">${controlMarkup(item, value, locked, state)}</div>`
+      + `<div class="wb-control">${controlMarkup(item, value, locked, state, container)}</div>`
       + `<p class="wb-field-error" id="${e(errorId)}" data-wb-field-error></p></div>`
       + `<div class="wb-field-side">${reset}</div></div>`;
   }
@@ -1326,7 +1330,7 @@ window.CompanionWorkbench = (() => {
       notice: "", bad: false, ok: false, savedState: "", ticket: 0,
       drawRails: true, container: null, timer: null, restrictionCode: "",
       instanceId: `wb-${++instanceSequence}`, activeGroupId: initialSection, resetFields: [],
-      visibleGroupIds: null,
+      visibleGroupIds: null, navigationLimit,
     };
     /* 被显式「恢复继承」的字段：保存时要作为 reset_to_inherit 发出去，
        而不是留一份与继承值相同的显式副本。 */
@@ -1467,7 +1471,8 @@ window.CompanionWorkbench = (() => {
       const layers = Array.isArray(status.layers) && status.layers.length
         ? status.layers : ["installation", "role", "window"];
       return {
-        group, title, note, order: names, fields, layers, groups, scopeNote, navigationLimit,
+        group, title, note, order: names, fields, layers, groups, scopeNote,
+        navigationLimit: state.navigationLimit,
         scopeObject: typeof scopeObject === "function" ? scopeObject() : scopeObject || scopeObjectForEndpoint(endpoint),
         presentation, sectionTabPrefix,
         writeLayer: status.scope || layers[layers.length - 1],
@@ -1638,8 +1643,9 @@ window.CompanionWorkbench = (() => {
       }
       window.lucide?.createIcons({nodes: root.querySelectorAll("[data-lucide]")});
       wireFieldDescriptions(root);
-      /* 台词气泡的 textarea 按内容自动长高；重绘后统一量一次。 */
+      /* 台词气泡与手帐长描述字段按内容自动长高；重绘后统一量一次。 */
       growQuotes(root);
+      growAutoFields(root);
       /* 半选只能靠 DOM 属性设置，刚插入的元素要补一次。 */
       syncSourceIndeterminate(root);
     }
@@ -1695,8 +1701,15 @@ window.CompanionWorkbench = (() => {
       state.activeGroupId = id;
       if (presentation === "journal") {
         const panels = mountPoint()?.querySelectorAll?.("[data-wb-section-panel]") || [];
-        for (const panel of panels) panel.hidden = panel.dataset.wbSectionPanel !== id;
-        window.CompanionPageMotion?.reveal([...panels].find(panel=>!panel.hidden));
+        let activePanel = null;
+        for (const panel of panels) {
+          const isCurrent = panel.dataset.wbSectionPanel === id;
+          panel.hidden = !isCurrent;
+          if (isCurrent) activePanel = panel;
+        }
+        growQuotes(activePanel);
+        growAutoFields(activePanel);
+        window.CompanionPageMotion?.reveal(activePanel);
         return;
       }
       paint();
@@ -1704,9 +1717,13 @@ window.CompanionWorkbench = (() => {
       if (focus) focusSection(id);
     }
 
-    function setVisibleGroups(ids, preferredId = "") {
+    function setVisibleGroups(ids, preferredId = "", options = {}) {
       const requested = Array.isArray(ids) ? new Set(ids.map(String)) : null;
       state.visibleGroupIds = requested?.size ? requested : null;
+      if (options && typeof options.navigationLimit === "number" && Number.isFinite(options.navigationLimit)) {
+        state.navigationLimit = options.navigationLimit;
+        if (state.container) state.container.navigationLimit = options.navigationLimit;
+      }
       const groups = state.container?.groups || [];
       const visible = state.visibleGroupIds
         ? groups.filter(group => state.visibleGroupIds.has(group.id)) : groups;
@@ -1996,6 +2013,7 @@ window.CompanionWorkbench = (() => {
       const row = el.closest(".wb-field");
       if (row) row.classList.toggle("is-dirty", state.base && raw !== state.base[name]);
       if (item.input === "chips") refreshChipset(name);
+      if (el.dataset?.wbAutogrow) growAutoField(el);
       if (row && item.input === "line-list") {
         const words = parseStringList(raw) || [];
         const policy = item.listPolicy || {};
@@ -2507,11 +2525,29 @@ window.CompanionWorkbench = (() => {
         if (line) line.setAttribute("aria-label", `${label} 第 ${index + 1} 句`);
       });
     }
+    const supportsFieldSizing = () => typeof CSS !== "undefined"
+      && typeof CSS.supports === "function" && CSS.supports("field-sizing", "content");
     function growQuotes(scope) {
       scope?.querySelectorAll?.("[data-wb-quote-line]")?.forEach(node => {
         node.style.height = "auto";
-        node.style.height = `${node.scrollHeight}px`;
+        if (node.scrollHeight > 0) node.style.height = `${node.scrollHeight}px`;
       });
+    }
+    function growAutoField(node) {
+      if (!node || supportsFieldSizing()) return;
+      const mode = node.dataset?.wbAutogrow;
+      if (!mode) return;
+      const maxHeight = mode === "line" ? 180 : 360;
+      node.style.height = "auto";
+      if (node.scrollHeight > 0) {
+        const borderY = Number.isFinite(node.offsetHeight) && Number.isFinite(node.clientHeight)
+          ? Math.max(0, node.offsetHeight - node.clientHeight) : 0;
+        node.style.height = `${Math.min(node.scrollHeight + borderY, maxHeight)}px`;
+      }
+    }
+    function growAutoFields(scope) {
+      if (supportsFieldSizing()) return;
+      scope?.querySelectorAll?.("[data-wb-autogrow]")?.forEach(growAutoField);
     }
     function composeQuotes(name) {
       if (!state.draft || locked()) return;
@@ -3011,6 +3047,7 @@ window.CompanionWorkbench = (() => {
       state.ok = false; state.savedState = ""; state.drawRails = true;
       state.stale = false; state.conflicts = {};
       state.visibleGroupIds = null;
+      state.navigationLimit = navigationLimit;
       resets_ = [];
     }
 

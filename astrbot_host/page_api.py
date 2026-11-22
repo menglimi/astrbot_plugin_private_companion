@@ -13,6 +13,7 @@ from companion_v2.execution.models import TaskError, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind, ScopeRef
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
+from companion_v2.storage.runtime import StorageOpenError
 
 from .management_identity import dashboard_operator
 from .browser_preferences import (
@@ -223,7 +224,7 @@ class PageWebAPI:
         try:
             username = self._display_preferences_identity()
             async with self._display_preferences_lock:
-                preferences = self._read_display_preferences().get(username)
+                preferences = (await asyncio.to_thread(self._read_display_preferences)).get(username)
             return outcome_response(Outcome.success({"preferences": preferences}))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
@@ -257,9 +258,12 @@ class PageWebAPI:
                            "followLight": value["followLight"],
                            "largeText": value["largeText"]}
             async with self._display_preferences_lock:
-                rows = self._read_display_preferences()
-                rows[username] = preferences
-                self._write_display_preferences(rows)
+                def save():
+                    rows = self._read_display_preferences()
+                    rows[username] = preferences
+                    self._write_display_preferences(rows)
+
+                await asyncio.to_thread(save)
             return outcome_response(Outcome.success({"preferences": preferences}))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
@@ -335,11 +339,14 @@ class PageWebAPI:
                     raise TaskError("staging_not_initialized", "load the explicit V2 profile first")
                 runtime = controller.runtime
                 settings_snapshot = controller.settings
-                operator = dashboard_operator(runtime, username, at=controller.now())
+                observed_at = controller.now()
+                inventory = getattr(controller.web_api, "target_inventory", None)
+
+            def prepare_targets():
+                operator = dashboard_operator(runtime, username, at=observed_at)
                 require(ObjectAccessPolicy(runtime).feature_access(operator,
                     scope=ScopeRef(runtime.installation_id, "companion", ScopeKind.SYSTEM, "page.management"),
-                    action="memory.manage", observed_at=controller.now()))
-                inventory = getattr(controller.web_api, "target_inventory", None)
+                    action="memory.manage", observed_at=observed_at))
                 if callable(inventory):
                     targets = inventory()
                 else:
@@ -377,21 +384,31 @@ class PageWebAPI:
                                      "config", "perception_native", "reality_access", "screen_access", "game_access", "persona", "legacy",
                                      "qzone_extension", "image_material")}}
                                  for role in target["roles"]]} for target in targets]
-            public = await display_names(controller).targets(GroupRemarks(runtime).apply(public))
+                return operator, GroupRemarks(runtime).apply(public)
+
+            operator, remarked = await asyncio.to_thread(prepare_targets)
+            public = await display_names(controller).targets(remarked)
             async with controller._control_lock:
                 if controller.runtime is not runtime or controller.settings is not settings_snapshot:
                     raise TaskError("staging_not_initialized", "the profile changed while reading display names")
                 if controller._terminated:
                     raise TaskError("staging_host_terminated", "plugin is stopped")
+                recheck_at = controller.now()
+
+            def recheck_access():
                 require(ObjectAccessPolicy(runtime).feature_access(operator,
                     scope=ScopeRef(runtime.installation_id, "companion", ScopeKind.SYSTEM, "page.management"),
-                    action="memory.manage", observed_at=controller.now()))
-                return outcome_response(Outcome.success({"installation_id": runtime.installation_id,
-                    # Backups cover the whole installation, not one relationship, so the
-                    # endpoint sits beside the target list rather than inside a role.
-                    "backup_api": PREFIX + "/backup",
-                    "acquaintance_api": PREFIX + "/acquaintance",
-                    "accounts_api": PREFIX + "/accounts",
-                    "operator_id": operator.subject.subject_id, "operator_name": username, "targets": public}))
+                    action="memory.manage", observed_at=recheck_at))
+
+            await asyncio.to_thread(recheck_access)
+            return outcome_response(Outcome.success({"installation_id": runtime.installation_id,
+                # Backups cover the whole installation, not one relationship, so the
+                # endpoint sits beside the target list rather than inside a role.
+                "backup_api": PREFIX + "/backup",
+                "acquaintance_api": PREFIX + "/acquaintance",
+                "accounts_api": PREFIX + "/accounts",
+                "operator_id": operator.subject.subject_id, "operator_name": username, "targets": public}))
         except (TaskError, HostControlError) as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("page_storage_unavailable", "the page directory store is not available"))

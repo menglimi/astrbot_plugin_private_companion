@@ -433,6 +433,7 @@ EVENT_MARKERS = frozenset((
     "activity_event", "growth_event", "journal_event", "calendar_event",
     "reminiscence_event", "date_event", "meal_event",
     "weather_event", "weather_change_event", "official_alert_event", "balance_event", "news_event",
+    "reality_location_event",
 ))
 
 

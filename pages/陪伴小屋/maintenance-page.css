@@ -9,10 +9,6 @@
   min-width: 0;
 }
 
-.maintenance-page:has(> .maintenance-settings-entry) {
-  gap: var(--sp-2);
-}
-
 .maint-board {
   display: grid;
   gap:var(--sp-3);
@@ -1739,22 +1735,6 @@
   .maint-diagnostic-item > button { grid-column:2; justify-self:start; }
   .maint-faq article { grid-template-columns:minmax(0, 1fr); }
   .maint-faq article button { justify-self:start; }
-}
-.maintenance-settings-entry {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--sp-2);
-  margin: calc(var(--sp-1) * -1) 0 0;
-}
-.maintenance-settings-entry .button {
-  gap: var(--sp-1);
-  white-space: nowrap;
-}
-.maintenance-settings-entry .button svg {
-  width: 14px;
-  height: 14px;
-  flex: none;
 }
 
 .data-page { display:grid; gap:var(--sp-4); min-width:0; color:var(--t-text); container-type:inline-size; container-name:data-page; }

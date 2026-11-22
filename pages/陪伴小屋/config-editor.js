@@ -2042,8 +2042,11 @@ window.CompanionConfigEditors = (() => {
           .map(instance => instance.refresh()));
       },
       selectSection(id) { for (const instance of instances) instance.selectSection(id); },
-      setVisibleGroups(ids, preferredId) {
-        for (const instance of instances) instance.setVisibleGroups?.(ids, preferredId);
+      setVisibleGroups(ids, preferredId, options) {
+        for (const instance of instances) {
+          if (options === undefined) instance.setVisibleGroups?.(ids, preferredId);
+          else instance.setVisibleGroups?.(ids, preferredId, options);
+        }
       },
       saveField(kind, field, value) {
         const instance = instances.find(item => item.group === kind);

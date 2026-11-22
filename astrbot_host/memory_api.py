@@ -1,5 +1,6 @@
 """Authenticated memory administration for the explicitly selected host profile."""
 
+import asyncio
 import json
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from companion_v2.memory.models import AtomRef
 from companion_v2.memory.query import MemoryQuery
 from companion_v2.memory import codec
 from companion_v2.memory.reflection_management import ReflectionManagement
+from companion_v2.storage.runtime import StorageOpenError
 from .management_identity import dashboard_operator
 from .memory_linkage import read_external_memory_summary
 
@@ -47,18 +49,28 @@ class MemoryWebAPI:
                 (PREFIX + "/import/preview", self.import_preview, ["POST"], "Validate a portable bundle and show what would land"),
                 (PREFIX + "/import", self.import_commit, ["POST"], "Import the previewed portable bundle")]
 
-    def _reflection_manager(self):
+    def _snapshot(self, username=None, *, not_initialized_message="load the explicit V2 profile first"):
         controller = self.controller
         if controller._terminated:
             raise TaskError("staging_host_terminated", "plugin is stopped")
-        username = request.username
+        if username is None:
+            username = request.username
         if type(username) is not str or not username.strip():
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
         session = controller.session or controller.last_session
-        if session is None or controller.runtime is None:
-            raise TaskError("staging_not_initialized", "load the explicit V2 profile first")
-        operator = dashboard_operator(controller.runtime, username, at=controller.now())
+        runtime = controller.runtime
+        if session is None or runtime is None:
+            raise TaskError("staging_not_initialized", not_initialized_message)
+        return session, runtime, controller.now(), username
+
+    @staticmethod
+    def _build_reflection_manager(session, runtime, username, observed_at):
+        operator = dashboard_operator(runtime, username, at=observed_at)
         return ReflectionManagement(session.application, operator), session.profile.target
+
+    def _reflection_manager(self):
+        session, runtime, observed_at, username = self._snapshot()
+        return self._build_reflection_manager(session, runtime, username, observed_at)
 
     async def reflections(self):
         from .web_api import outcome_response
@@ -70,27 +82,46 @@ class MemoryWebAPI:
             history_value = query.get("history", "0")
             if history_value not in ("0", "1"):
                 raise ValueError()
+            batch_id = query.get("batch_id")
+            limit = int(query.get("limit", "20"))
+            after_id = query.get("after_id", "")
+            history = history_value == "1"
+            username = request.username
             async with self.controller._control_lock:
-                manager, context = self._reflection_manager()
-                return outcome_response(manager.list(context, batch_id=query.get("batch_id"), limit=int(query.get("limit", "20")),
-                                                     after_id=query.get("after_id", ""), history=history_value == "1"))
+                session, runtime, observed_at, resolved_username = self._snapshot(username)
+
+            def load():
+                manager, context = self._build_reflection_manager(session, runtime, resolved_username, observed_at)
+                return manager.list(context, batch_id=batch_id, limit=limit, after_id=after_id, history=history)
+
+            return outcome_response(await asyncio.to_thread(load))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("memory_storage_unavailable", "the memory store is not available"))
         except (ValueError, TypeError):
             return outcome_response(Outcome.failed("memory_request_invalid", "invalid reflection query"))
 
     async def overview(self):
         from .web_api import outcome_response
         try:
+            username = request.username
             async with self.controller._control_lock:
-                manager, context = self._reflection_manager()
-                local = manager.manager.overview(context)
+                session, runtime, observed_at, resolved_username = self._snapshot(username)
+
+            def load():
+                manager, context = self._build_reflection_manager(session, runtime, resolved_username, observed_at)
+                return manager.manager.overview(context), context
+
+            local, context = await asyncio.to_thread(load)
             if not local.is_success:
                 return outcome_response(local)
             linked = await read_external_memory_summary(self.controller, context)
             return outcome_response(Outcome.success({"local": local.unwrap(), "linkage": linked}))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("memory_storage_unavailable", "the memory store is not available"))
 
     async def retry_reflection(self):
         return await self._submit_reflection(background=False)
@@ -155,52 +186,77 @@ class MemoryWebAPI:
     async def _run(self, arguments, mutation=False, method=None):
         from .web_api import outcome_response
         controller = self.controller
-        async with controller._control_lock:
-            try:
-                if controller._terminated:
-                    raise TaskError("staging_host_terminated", "plugin is stopped")
-                username = request.username
-                if type(username) is not str or not username.strip():
-                    raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
-                session = controller.session or controller.last_session
-                if session is None or controller.runtime is None:
-                    raise TaskError("staging_not_initialized", "load the explicit V2 profile before managing memory")
-                operator = dashboard_operator(controller.runtime, username, at=controller.now())
-                manager = MemoryManagement(session.application.memory, operator)
-                selected = getattr(manager, method) if method else manager.command if mutation else manager.list
-                result = selected(session.profile.target, **arguments)
-                if mutation and result.is_success:
+        username = request.username
+        try:
+            if not mutation:
+                async with controller._control_lock:
+                    session, runtime, observed_at, resolved_username = self._snapshot(
+                        username, not_initialized_message="load the explicit V2 profile before managing memory")
+
+                def execute_read():
+                    operator = dashboard_operator(runtime, resolved_username, at=observed_at)
+                    manager = MemoryManagement(session.application.memory, operator)
+                    selected = getattr(manager, method) if method else manager.list
+                    return selected(session.profile.target, **arguments)
+
+                return outcome_response(await asyncio.to_thread(execute_read))
+            async with controller._control_lock:
+                session, runtime, observed_at, resolved_username = self._snapshot(
+                    username, not_initialized_message="load the explicit V2 profile before managing memory")
+
+                def execute_write():
+                    operator = dashboard_operator(runtime, resolved_username, at=observed_at)
+                    manager = MemoryManagement(session.application.memory, operator)
+                    selected = getattr(manager, method) if method else manager.command
+                    return selected(session.profile.target, **arguments)
+
+                result = await asyncio.to_thread(execute_write)
+                if result.is_success:
                     session.application.notify()
                 return outcome_response(result)
-            except TaskError as error:
-                return outcome_response(Outcome.failed(error.code, str(error)))
-            except (TypeError, ValueError, KeyError):
-                return outcome_response(Outcome.failed("memory_request_invalid", "invalid memory management arguments"))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("memory_storage_unavailable", "the memory store is not available"))
+        except (TypeError, ValueError, KeyError):
+            return outcome_response(Outcome.failed("memory_request_invalid", "invalid memory management arguments"))
 
     async def _run_archive(self, arguments, method, *, mutation=False):
         """Archive/portability share _run's identity rules but take a context."""
         from .web_api import outcome_response
         controller = self.controller
-        async with controller._control_lock:
-            try:
-                if controller._terminated:
-                    raise TaskError("staging_host_terminated", "plugin is stopped")
-                username = request.username
-                if type(username) is not str or not username.strip():
-                    raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
-                session = controller.session or controller.last_session
-                if session is None or controller.runtime is None:
-                    raise TaskError("staging_not_initialized", "load the explicit V2 profile before managing memory")
-                operator = dashboard_operator(controller.runtime, username, at=controller.now())
-                archive = MemoryArchive(session.application.memory, operator)
-                result = getattr(archive, method)(context=session.profile.target, **arguments)
-                if mutation and result.is_success:
+        username = request.username
+        try:
+            if not mutation:
+                async with controller._control_lock:
+                    session, runtime, observed_at, resolved_username = self._snapshot(
+                        username, not_initialized_message="load the explicit V2 profile before managing memory")
+
+                def execute_read():
+                    operator = dashboard_operator(runtime, resolved_username, at=observed_at)
+                    archive = MemoryArchive(session.application.memory, operator)
+                    return getattr(archive, method)(context=session.profile.target, **arguments)
+
+                return outcome_response(await asyncio.to_thread(execute_read))
+            async with controller._control_lock:
+                session, runtime, observed_at, resolved_username = self._snapshot(
+                    username, not_initialized_message="load the explicit V2 profile before managing memory")
+
+                def execute_write():
+                    operator = dashboard_operator(runtime, resolved_username, at=observed_at)
+                    archive = MemoryArchive(session.application.memory, operator)
+                    return getattr(archive, method)(context=session.profile.target, **arguments)
+
+                result = await asyncio.to_thread(execute_write)
+                if result.is_success:
                     session.application.notify()
                 return outcome_response(result)
-            except TaskError as error:
-                return outcome_response(Outcome.failed(error.code, str(error)))
-            except (TypeError, ValueError, KeyError):
-                return outcome_response(Outcome.failed("memory_request_invalid", "invalid memory archive arguments"))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("memory_storage_unavailable", "the memory store is not available"))
+        except (TypeError, ValueError, KeyError):
+            return outcome_response(Outcome.failed("memory_request_invalid", "invalid memory archive arguments"))
 
     @staticmethod
     def _bounded_body(raw, allowed):
@@ -449,21 +505,28 @@ class MemoryWebAPI:
                 raise ValueError()
             if cursor is not None and session_id is None:
                 raise ValueError()
+            username = request.username
             async with self.controller._control_lock:
-                reflection_manager, context = self._reflection_manager()
-                session = self.controller.session or self.controller.last_session
-                memory = session.application.memory
+                session, runtime, observed_at, resolved_username = self._snapshot(username)
+
+            def execute_query():
+                reflection_manager, context = self._build_reflection_manager(
+                    session, runtime, resolved_username, observed_at)
                 engine = MemoryQuery(reflection_manager.manager.writer)
                 engine.access.check(context, "memory.read")
-                session_id = session_id or "memory-page-query-" + uuid4().hex
+                resolved_session_id = session_id or "memory-page-query-" + uuid4().hex
                 if cursor is None:
-                    engine.begin(context, session_id)
-                result = engine.query(context, session_id, query_intent=query_text, kind=kind, cursor=cursor)
+                    engine.begin(context, resolved_session_id)
+                result = engine.query(context, resolved_session_id, query_intent=query_text, kind=kind, cursor=cursor)
                 if result.failure:
-                    return outcome_response(result)
-                return outcome_response(Outcome.success({"session_id": session_id, **result.unwrap()}))
+                    return result
+                return Outcome.success({"session_id": resolved_session_id, **result.unwrap()})
+
+            return outcome_response(await asyncio.to_thread(execute_query))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("memory_storage_unavailable", "the memory store is not available"))
         except (ValueError, TypeError, UnicodeError, RecursionError):
             return outcome_response(Outcome.failed("memory_request_invalid", "invalid private memory query"))
 
@@ -487,13 +550,17 @@ class MemoryWebAPI:
             atom_id, revision = arguments["atom_id"], arguments["revision"]
             if type(atom_id) is not str or not atom_id.strip() or len(atom_id) > 512 or type(revision) is not int or revision < 1:
                 raise ValueError()
+            username = request.username
             async with self.controller._control_lock:
-                reflection_manager, context = self._reflection_manager()
-                session = self.controller.session or self.controller.last_session
+                session, runtime, observed_at, resolved_username = self._snapshot(username)
+
+            def load_detail():
+                reflection_manager, context = self._build_reflection_manager(
+                    session, runtime, resolved_username, observed_at)
                 management = reflection_manager.manager
                 item = management.writer.read(context, AtomRef(atom_id, revision))
                 if item.failure:
-                    return outcome_response(item)
+                    return item
                 value = item.unwrap()
                 engine = MemoryQuery(management.writer)
                 session_id = "memory-page-query-" + uuid4().hex
@@ -506,9 +573,13 @@ class MemoryWebAPI:
                                     "source_kind": evidence.source_kind, "speaker_id": evidence.speaker_id,
                                     "start": evidence.start, "end": evidence.end})
                 value.pop("source", None)
-                return outcome_response(Outcome.success({"item": value, "sources": sources, "session_id": session_id}))
+                return Outcome.success({"item": value, "sources": sources, "session_id": session_id})
+
+            return outcome_response(await asyncio.to_thread(load_detail))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("memory_storage_unavailable", "the memory store is not available"))
         except (ValueError, TypeError, UnicodeError, RecursionError):
             return outcome_response(Outcome.failed("memory_request_invalid", "invalid fact detail request"))
 
@@ -540,14 +611,21 @@ class MemoryWebAPI:
                 raise ValueError()
             if maximum is not None and (type(maximum) is not int or not 1 <= maximum <= 24000):
                 raise ValueError()
+            username = request.username
             async with self.controller._control_lock:
-                reflection_manager, context = self._reflection_manager()
-                session = self.controller.session or self.controller.last_session
+                session, runtime, observed_at, resolved_username = self._snapshot(username)
+
+            def load_source():
+                reflection_manager, context = self._build_reflection_manager(
+                    session, runtime, resolved_username, observed_at)
                 engine = MemoryQuery(reflection_manager.manager.writer)
                 engine.access.check(context, "memory.read")
-                result = engine.source(context, session_id, handle=handle, start=start, max_chars=maximum)
-                return outcome_response(result)
+                return engine.source(context, session_id, handle=handle, start=start, max_chars=maximum)
+
+            return outcome_response(await asyncio.to_thread(load_source))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("memory_storage_unavailable", "the memory store is not available"))
         except (ValueError, TypeError, UnicodeError, RecursionError):
             return outcome_response(Outcome.failed("memory_request_invalid", "invalid authorized source request"))

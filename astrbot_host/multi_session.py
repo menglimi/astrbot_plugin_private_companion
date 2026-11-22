@@ -1228,6 +1228,8 @@ class MultiHostSession:
                         merged_event_ids=tuple((group_admission or {}).get("debounced_event_ids", ())))
                 segmentation_settings, presentation_settings = None, None
                 group_tool_profile = "full"
+                private_tool_profile = "full"
+                private_tool_groups = None
                 captured_voice_policy, voice_settings_available = None, False
                 captured_outbound_settings = None
                 astrbot_animated_image_understanding_enabled = False
@@ -1235,7 +1237,8 @@ class MultiHostSession:
                     try:
                         from companion_v2.conversation.segmentation import SegmentationPolicy
                         from companion_v2.conversation.reply_settings import (
-                            GROUP, OUTBOUND_DEFAULTS, VOICE_FIELDS, outbound_settings,
+                            GROUP, OUTBOUND_DEFAULTS, PRIVATE_TOOL_DEFAULTS, PRIVATE_TOOL_PROFILES,
+                            VOICE_FIELDS, outbound_settings, private_tool_groups_set,
                             voice_policy as parse_voice_policy,
                         )
                         from companion_v2.conversation.text_processing import OUTPUT_TEXT_FIELDS
@@ -1245,6 +1248,16 @@ class MultiHostSession:
                                                  for name in OUTPUT_TEXT_FIELDS}
                         profile = snapshot.values.get(GROUP + ".group_tool_profile", "full")
                         group_tool_profile = profile if profile in ("lean", "standard", "full") else "full"
+                        raw_private_profile = snapshot.values.get(
+                            GROUP + ".private_tool_profile", PRIVATE_TOOL_DEFAULTS["private_tool_profile"])
+                        private_tool_profile = (raw_private_profile if raw_private_profile in PRIVATE_TOOL_PROFILES
+                                                else "full")
+                        raw_private_groups = snapshot.values.get(
+                            GROUP + ".private_tool_groups", PRIVATE_TOOL_DEFAULTS["private_tool_groups"])
+                        try:
+                            private_tool_groups = tuple(sorted(private_tool_groups_set(raw_private_groups)))
+                        except Exception:
+                            private_tool_groups = None
                         astrbot_animated_image_understanding_enabled = (
                             snapshot.values.get(GROUP + ".astrbot_animated_image_understanding_enabled") is True)
                         names = {field.name for field in fields(SegmentationPolicy)} | {
@@ -1302,6 +1315,9 @@ class MultiHostSession:
                         from .external_memory import prepare_external_memory
                         external_memory = await prepare_external_memory(
                             self.bridge.context, self.application, context, captured)
+                        from .knowledge_sources import prepare_official_knowledge_hits
+                        official_knowledge_hits = await prepare_official_knowledge_hits(
+                            self.application, context, getattr(captured, "text", "") or "")
                         prompt_at = self.now()
                         private_group_context = await self._private_group_context(context, captured)
                         # 组装提示词要遍历来源依赖并逐节点读库；放在事件循环上会
@@ -1313,7 +1329,8 @@ class MultiHostSession:
                             health_material=health_material,
                             external_memory=external_memory,
                             group_trigger=group_trigger,
-                            private_group_context=private_group_context)
+                            private_group_context=private_group_context,
+                            official_knowledge_hits=official_knowledge_hits)
                         prompt_instruction = getattr(prompt, "context_instruction", prompt.instruction)
                         prompt_context_instruction = prompt_instruction
                         prompt_context_blocks = getattr(prompt, "context_blocks", ())
@@ -1428,6 +1445,8 @@ class MultiHostSession:
                     "segmentation_settings": segmentation_settings,
                     "presentation_settings": presentation_settings,
                     "group_tool_profile": group_tool_profile,
+                    "private_tool_profile": private_tool_profile,
+                    **({"private_tool_groups": private_tool_groups} if private_tool_groups is not None else {}),
                     "outbound_settings": captured_outbound_settings,
                     "astrbot_animated_image_understanding_enabled": astrbot_animated_image_understanding_enabled,
                     "voice_reply_policy": voice_policy,

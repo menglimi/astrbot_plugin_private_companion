@@ -26,6 +26,7 @@ from companion_v2.execution.models import TaskError, digest, require
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.foundation.refs import ScopeKind, ScopeRef
 from companion_v2.identity_policy.object_access import ObjectAccessPolicy
+from companion_v2.storage.runtime import StorageOpenError
 from companion_v2.knowledge.catalog import KnowledgeCatalog
 from companion_v2.knowledge.configuration import read_settings as read_knowledge_settings
 from companion_v2.knowledge.retrieval import KnowledgeCandidate, KnowledgeRetriever, query_for_context
@@ -228,21 +229,32 @@ class PersonaWorkshopWebAPI:
             raise ValueError("provide one command object")
         return data
 
-    def _authorized(self, controller):
-        """Resolve the Dashboard operator and require installation management."""
+    @staticmethod
+    def _snapshot(controller, username=None):
         if controller._terminated:
             raise TaskError("staging_host_terminated", "the plugin has stopped")
-        username = request.username
+        if username is None:
+            username = request.username
         if type(username) is not str or not username.strip() or username.startswith("api_key:"):
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
         session = controller.session or controller.last_session
-        if session is None or controller.runtime is None:
+        runtime = controller.runtime
+        if session is None or runtime is None:
             raise TaskError("staging_not_initialized", "load an initialized V2 profile first")
-        operator = dashboard_operator(controller.runtime, username, at=controller.now())
-        require(ObjectAccessPolicy(controller.runtime).feature_access(
-            operator, scope=management_scope(controller.runtime.installation_id),
-            action=MANAGEMENT_ACTION, observed_at=controller.now()))
+        return session, runtime, controller.now(), username
+
+    @staticmethod
+    def _authorize_snapshot(session, runtime, observed_at, username):
+        operator = dashboard_operator(runtime, username, at=observed_at)
+        require(ObjectAccessPolicy(runtime).feature_access(
+            operator, scope=management_scope(runtime.installation_id),
+            action=MANAGEMENT_ACTION, observed_at=observed_at))
         return session, operator
+
+    def _authorized(self, controller):
+        """Resolve the Dashboard operator and require installation management."""
+        session, runtime, observed_at, username = self._snapshot(controller)
+        return self._authorize_snapshot(session, runtime, observed_at, username)
 
     @staticmethod
     def _bridge(controller, session):
@@ -271,11 +283,15 @@ class PersonaWorkshopWebAPI:
         return PersonaSnapshot(projection["persona_id"], projection["name"], projection["text"],
                                projection["resolved"])
 
+    @staticmethod
+    def _workshop_for(runtime, session, now_fn) -> PersonaWorkshop:
+        return PersonaWorkshop(runtime, installation_id=runtime.installation_id,
+                               role_id=session.profile.target.role_binding.role.subject_id, now=now_fn)
+
     def _workshop(self, controller, session, snapshot) -> PersonaWorkshop:
         # ``controller.now`` is the clock itself, not a timestamp: the version time
         # must be read when the version is written, not when the request arrives.
-        return PersonaWorkshop(controller.runtime, installation_id=controller.runtime.installation_id,
-                               role_id=session.profile.target.role_binding.role.subject_id, now=controller.now)
+        return self._workshop_for(controller.runtime, session, controller.now)
 
     @staticmethod
     def _provider_for_id(controller, provider_id):
@@ -367,30 +383,36 @@ class PersonaWorkshopWebAPI:
                     len(query.getlist(key)) != 1 for key in query.keys()):
                 raise ValueError("unexpected query fields")
             limit = int(query.get("limit", "30"))
-            async with self.controller._control_lock:
-                controller = self.controller
-                session, _ = self._authorized(controller)
-                persona_id = query.get("persona_id")
-                snapshot = await self._read_persona(controller, session, persona_id=persona_id)
-                state = self._workshop(controller, session, snapshot).state(snapshot, limit=limit)
-                choices = await persona_choices(controller.context, selected=snapshot.persona_id)
-                if persona_id is not None and persona_id not in {item["value"] for item in choices}:
-                    raise TaskError("host_persona_unavailable", "the selected AstrBot persona is unavailable")
-                state["personas"] = choices
+            persona_id = query.get("persona_id")
+            username = request.username
+            controller = self.controller
+            async with controller._control_lock:
+                session, runtime, observed_at, resolved_username = self._snapshot(controller, username)
                 owner = getattr(controller, "controller", controller)
                 model_session = owner.session or owner.last_session
                 default_provider_id = str(getattr(getattr(model_session, "model", None),
                                                   "provider_id", "") or "")
-                try:
-                    from .model_api import text_provider_catalog
-                    providers = text_provider_catalog(controller)
-                except Exception:
-                    providers = []
-                state["providers"] = providers
-                state["default_provider_id"] = default_provider_id
-                return outcome_response(Outcome.success(state))
+            await asyncio.to_thread(self._authorize_snapshot, session, runtime, observed_at, resolved_username)
+            snapshot = await self._read_persona(controller, session, persona_id=persona_id)
+            state = await asyncio.to_thread(
+                lambda: self._workshop_for(runtime, session, controller.now).state(snapshot, limit=limit))
+            choices = await persona_choices(controller.context, selected=snapshot.persona_id)
+            if persona_id is not None and persona_id not in {item["value"] for item in choices}:
+                raise TaskError("host_persona_unavailable", "the selected AstrBot persona is unavailable")
+            state["personas"] = choices
+            try:
+                from .model_api import text_provider_catalog
+                providers = text_provider_catalog(controller)
+            except Exception:
+                providers = []
+            state["providers"] = providers
+            state["default_provider_id"] = default_provider_id
+            return outcome_response(Outcome.success(state))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("persona_workshop_storage_unavailable",
+                                                   "the persona workshop store is not available"))
         except (ValueError, TypeError, KeyError, OverflowError):
             return outcome_response(Outcome.failed("persona_workshop_request_invalid",
                                                    "invalid persona workshop request"))
@@ -438,13 +460,17 @@ class PersonaWorkshopWebAPI:
                                                    "invalid UTF-8 persona workshop command"))
 
     @staticmethod
-    def _role_profile_snapshot(controller, session):
+    def _role_profile_snapshot_for(runtime, session):
         target = role_profile_target_for(session.profile.target)
         fields = role_profile_configuration_fields()
-        snapshot = RoleProfileConfigurationOwner(controller.runtime).read(target, fields)
+        snapshot = RoleProfileConfigurationOwner(runtime).read(target, fields)
         values = {name: snapshot.fields[f"{ROLE_PROFILE_GROUP}.{name}"].value
                   for name in ROLE_PROFILE_FIELD_LIMITS}
         return target, fields, snapshot, values
+
+    @classmethod
+    def _role_profile_snapshot(cls, controller, session):
+        return cls._role_profile_snapshot_for(controller.runtime, session)
 
     @staticmethod
     def _import_document(data):
@@ -465,11 +491,17 @@ class PersonaWorkshopWebAPI:
         try:
             if request.query:
                 raise ValueError("role-profile export does not accept query fields")
-            async with self.controller._control_lock:
-                controller = self.controller
-                session, _ = self._authorized(controller)
-                _, _, snapshot, values = self._role_profile_snapshot(controller, session)
-                role_id = session.profile.target.role_binding.role.subject_id
+            username = request.username
+            controller = self.controller
+            async with controller._control_lock:
+                session, runtime, observed_at, resolved_username = self._snapshot(controller, username)
+
+            def load_export():
+                self._authorize_snapshot(session, runtime, observed_at, resolved_username)
+                _, _, _snapshot, values = self._role_profile_snapshot_for(runtime, session)
+                return values, session.profile.target.role_binding.role.subject_id
+
+            values, role_id = await asyncio.to_thread(load_export)
             excluded = set(CONTROL_FIELDS) | {"avatar_data_url"}
             document = {
                 "format": "companion.role-profile",
@@ -481,6 +513,9 @@ class PersonaWorkshopWebAPI:
             return outcome_response(Outcome.success(document))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("role_profile_storage_unavailable",
+                                                   "the role profile store is not available"))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError) as error:
             return outcome_response(Outcome.failed("role_profile_export_invalid", str(error)))
 
@@ -494,10 +529,17 @@ class PersonaWorkshopWebAPI:
             if set(data) != {"document"}:
                 raise ValueError("provide one import document")
             document = self._import_document(data)
-            async with self.controller._control_lock:
-                controller = self.controller
-                session, _ = self._authorized(controller)
-                _, _, _, current = self._role_profile_snapshot(controller, session)
+            username = request.username
+            controller = self.controller
+            async with controller._control_lock:
+                session, runtime, observed_at, resolved_username = self._snapshot(controller, username)
+
+            def load_current():
+                self._authorize_snapshot(session, runtime, observed_at, resolved_username)
+                _, _, _, current_values = self._role_profile_snapshot_for(runtime, session)
+                return current_values
+
+            current = await asyncio.to_thread(load_current)
             merged = {**current, **document["fields"]}
             validate_role_profile_values(merged)
             rows = []
@@ -515,6 +557,9 @@ class PersonaWorkshopWebAPI:
             }))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("role_profile_storage_unavailable",
+                                                   "the role profile store is not available"))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError) as error:
             return outcome_response(Outcome.failed("role_profile_import_invalid", str(error)))
 
@@ -854,17 +899,26 @@ class PersonaWorkshopWebAPI:
             if len(raw) > 8192:
                 raise ValueError("migration request too large")
             persona_id, _, _, _ = self._profile_migration_request(self._document(raw))
-            async with self.controller._control_lock:
-                controller = self.controller
-                session, operator = self._authorized(controller)
-                persona = await self._read_persona(controller, session, persona_id=persona_id)
-                if not persona.resolved:
-                    raise TaskError("role_profile_source_unavailable", "the selected AstrBot persona is unavailable")
+            username = request.username
+            controller = self.controller
+            async with controller._control_lock:
+                session, runtime, observed_at, resolved_username = self._snapshot(controller, username)
+            _, operator = await asyncio.to_thread(
+                self._authorize_snapshot, session, runtime, observed_at, resolved_username)
+            persona = await self._read_persona(controller, session, persona_id=persona_id)
+            if not persona.resolved:
+                raise TaskError("role_profile_source_unavailable", "the selected AstrBot persona is unavailable")
+
+            def build_plan():
                 mapped, source = self._profile_migration_source(persona_id, persona)
-                return outcome_response(Outcome.success(self._profile_migration_plan(
-                    session, mapped, source, operator)))
+                return self._profile_migration_plan(session, mapped, source, operator)
+
+            return outcome_response(Outcome.success(await asyncio.to_thread(build_plan)))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
+        except StorageOpenError:
+            return outcome_response(Outcome.failed("role_profile_storage_unavailable",
+                                                   "the role profile store is not available"))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
             return outcome_response(Outcome.failed("role_profile_migration_invalid", "invalid role-profile migration request"))
 

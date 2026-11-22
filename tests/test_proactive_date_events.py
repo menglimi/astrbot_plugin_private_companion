@@ -159,7 +159,8 @@ class DateContactTests(ContactScheduleFixture, unittest.IsolatedAsyncioTestCase)
         self.assertEqual(len(calls), 1)
         request = calls[0].original
         self.assertIn("共同纪念日", request.context.materials[0].payload)
-        self.assertIn("不证明对方生日", request.instruction)
+        self.assertIn("不证明对方生日", request.user_instruction)
+        self.assertNotIn("不证明对方生日", request.instruction)
         record = json.loads(self.contacts(app)[0]["record_json"])
         self.assertEqual(record["purpose"], "greeting")
         self.assertEqual(record["automatic_origin"]["date_event"]["entries"], [

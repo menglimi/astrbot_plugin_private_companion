@@ -7,6 +7,7 @@ pure ``adapt_*`` functions and persists snapshots through ``PriceCatalogStore``.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
@@ -1181,6 +1182,10 @@ def empty_catalog() -> dict[str, Any]:
     }
 
 
+_CATALOG_CACHE_MAX_ENTRIES = 16
+_CATALOG_CACHE: OrderedDict[Path, tuple[tuple[int, int, int], dict[str, Any]]] = OrderedDict()
+
+
 class PriceCatalogStore:
     """Atomic, stat-cached JSON store for synced price catalog at ``<runtime>/pricing/catalog.json``."""
 
@@ -1210,29 +1215,40 @@ class PriceCatalogStore:
         base["updated_at"] = data.get("updated_at") if type(data.get("updated_at")) is str else None
         return base
 
-    def read_safe(self) -> dict[str, Any]:
+    def read_safe(self, *, copy: bool = True) -> dict[str, Any]:
         with _CATALOG_LOCK:
             try:
                 st = self.path.stat()
             except OSError:
                 self._cache_stat = None
                 self._cache_value = None
+                _CATALOG_CACHE.pop(self.path, None)
                 return empty_catalog()
             sig = (st.st_mtime_ns, st.st_size, st.st_ino)
             if self._cache_value is not None and self._cache_stat == sig:
-                return deepcopy(self._cache_value)
+                return deepcopy(self._cache_value) if copy else self._cache_value
+            shared = _CATALOG_CACHE.get(self.path)
+            if shared is not None and shared[0] == sig:
+                _CATALOG_CACHE.move_to_end(self.path)
+                self._cache_stat = sig
+                self._cache_value = shared[1]
+                return deepcopy(shared[1]) if copy else shared[1]
             try:
                 value = self._read_uncached()
             except (OSError, UnicodeError, ValueError):
                 return empty_catalog()
             self._cache_stat = sig
-            self._cache_value = deepcopy(value)
-            return value
+            self._cache_value = value
+            _CATALOG_CACHE[self.path] = (sig, value)
+            _CATALOG_CACHE.move_to_end(self.path)
+            while len(_CATALOG_CACHE) > _CATALOG_CACHE_MAX_ENTRIES:
+                _CATALOG_CACHE.popitem(last=False)
+            return deepcopy(value) if copy else value
 
     def get_price(self, price_key: str) -> CatalogPrice | None:
         if type(price_key) is not str or not price_key:
             return None
-        raw = self.read_safe().get("prices", {}).get(price_key)
+        raw = self.read_safe(copy=False).get("prices", {}).get(price_key)
         return CatalogPrice.from_dict(raw) if isinstance(raw, dict) else None
 
     def save_source_result(
@@ -1279,6 +1295,7 @@ class PriceCatalogStore:
             self._write_atomic(current)
             self._cache_stat = None
             self._cache_value = None
+            _CATALOG_CACHE.pop(self.path, None)
             return deepcopy(current)
 
     def remove_source(self, source_id: str) -> dict[str, Any]:
@@ -1293,6 +1310,7 @@ class PriceCatalogStore:
             self._write_atomic(current)
             self._cache_stat = None
             self._cache_value = None
+            _CATALOG_CACHE.pop(self.path, None)
             return deepcopy(current)
 
     def _write_atomic(self, payload_obj: dict[str, Any]) -> None:

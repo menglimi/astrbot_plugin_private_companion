@@ -309,6 +309,9 @@ class PromptRequest:
     # the native role guard still compares the host window, not the self page.
     role_guard_instruction: str | None = None
     user_input_image_sources: tuple[SourceRef, ...] = ()
+    # Per-round guidance carried in the user message so the system prompt prefix
+    # stays byte-identical across turns and maximizes provider prompt caching.
+    user_instruction: str = ""
 
     @property
     def host_role_instruction(self) -> str:

@@ -103,10 +103,14 @@ class RealityHostContext:
         session, application, context, _service = original
         persona = await self.verified_persona(original, user_id, umo=umo)
         at = self.controller.now()
+        from astrbot_host.knowledge_sources import prepare_official_knowledge_hits
+        official_hits = await prepare_official_knowledge_hits(application, context, str(purpose))
         native_input = SimpleNamespace(text=str(purpose), event_id="reality-context-" + uuid4().hex)
 
         def read_context():
-            background = build_core_reply_prompt(application, context, native_input, at=at).instruction
+            background = build_core_reply_prompt(
+                application, context, native_input, at=at,
+                official_knowledge_hits=official_hits).instruction
             history = application.proactive.history.conversation
             snapshot = history.capture(context, at, action="conversation.reply", limit=8, max_chars=2400)
             items = history.read(snapshot, context, at, action="conversation.reply")

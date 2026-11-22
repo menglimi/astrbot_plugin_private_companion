@@ -156,7 +156,8 @@ class StorageRuntimeTests(unittest.TestCase):
             runtime = StorageRuntime.open(data_root=Path(temporary) / "v2-data", installation_id=INSTALLATION_ID)
             try:
                 self.assertEqual(runtime.read_one("PRAGMA wal_autocheckpoint", ())[0], 0)
-                self.assertEqual(runtime.read_one("PRAGMA synchronous", ())[0], 2)
+                self.assertEqual(runtime.read_one("PRAGMA journal_mode", ())[0].lower(), "wal")
+                self.assertEqual(runtime.read_one("PRAGMA synchronous", ())[0], 1)
                 result = runtime.checkpoint_passive()
                 self.assertEqual(len(result), 3)
                 self.assertGreaterEqual(result[1], result[2])

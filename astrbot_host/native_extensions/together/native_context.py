@@ -91,9 +91,13 @@ async def room_background(runtime, room, query):
     application = resolved.application
     if not runtime.enable_memory_context:
         application = _ApplicationView(application)
+    from astrbot_host.knowledge_sources import prepare_official_knowledge_hits
+    official_hits = await prepare_official_knowledge_hits(
+        application, resolved.context, str(query or ""), include_official=True)
     native_input = SimpleNamespace(text=query, event_id="together-background-" + uuid4().hex)
     prompt = await asyncio.to_thread(
-        build_core_reply_prompt, application, resolved.context, native_input, at=runtime.controller.now()
+        build_core_reply_prompt, application, resolved.context, native_input, at=runtime.controller.now(),
+        official_knowledge_hits=official_hits, include_official_knowledge=True,
     )
     return prompt.instruction
 

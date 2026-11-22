@@ -163,6 +163,15 @@ class PrivateReplyFollowUps:
                 removed = True
         return removed
 
+    def finish_event(self, event):
+        """Release only the merge window owned by this exact event object."""
+        removed = False
+        for key, active in tuple(self._active.items()):
+            if active.event is event:
+                self._active.pop(key, None)
+                removed = True
+        return removed
+
     def active_for(self, key):
         self._prune()
         return self._active.get(key)

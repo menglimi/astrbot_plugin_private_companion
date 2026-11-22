@@ -26,6 +26,7 @@ OWNER = "conversation.generated_images"
 VERSION = "conversation.generated_images.v1"
 IMAGE_ACTIONS = frozenset({"image.generate", "image.edit", "image.mask_edit"})
 GROUP_IMAGE_ACTIONS = frozenset({"image.generate", "image.edit"})
+ALBUM_MAX_LIMIT = 60
 REJECTED_ADOPTION = "image_adoption_unavailable:"
 INSTRUCTION = (
     "标记 generated 的图片是本轮能力提供方返回的生成或编辑产物，不是用户发来的照片，也不证明真实事件。edited 和 provider_operation 记录原操作归因，不据此声称人工原创、真实拍摄或第三方认可；产物已保存不等于角色已采用或已经发送，只有最终选择 sendable_image 后才进入授权投递。"
@@ -192,7 +193,7 @@ class GeneratedImages:
 
     def album_page(self, context, at, *, limit=24, cursor=None):
         """Read accepted Image output as a role-scoped, non-owning album projection."""
-        if type(limit) is not int or isinstance(limit, bool) or not 1 <= limit <= 32:
+        if type(limit) is not int or isinstance(limit, bool) or not 1 <= limit <= ALBUM_MAX_LIMIT:
             raise TaskError("generated_album_limit_invalid", "the album page size is outside its bounds")
         before = self._album_cursor(cursor)
         self.messages.authorize(context, at)
@@ -202,10 +203,11 @@ class GeneratedImages:
         if before is not None:
             where.append("(i.created_at < ? OR (i.created_at = ? AND i.invocation_id <= ?))")
             parameters.extend((before["created_at"], before["created_at"], before["invocation_id"]))
+        sql_limit = max(128, limit * 2 + 8)
         rows = self.runtime.read_all(
             """SELECT i.invocation_id, i.batch_id, i.action, i.created_at
                FROM extension_tool_invocations i JOIN conversation_batches b ON b.batch_id=i.batch_id
-               WHERE """ + " AND ".join(where) + " ORDER BY i.created_at DESC, i.invocation_id DESC LIMIT 128",
+               WHERE """ + " AND ".join(where) + f" ORDER BY i.created_at DESC, i.invocation_id DESC LIMIT {sql_limit}",
             tuple(parameters))
         from .native_generated_album import page as native_page
         native_items, native_more = native_page(self, context, at, before=before, limit=limit)
@@ -231,10 +233,54 @@ class GeneratedImages:
         items.extend(native_items)
         items.sort(key=lambda item: (item.created_at, item.image_id.split(":")[1], item.descriptor.position),
                     reverse=True)
-        more = len(items) > limit or len(rows) == 128 or native_more
+        more = len(items) > limit or len(rows) == sql_limit or native_more
         page = tuple(items[:limit])
         next_cursor = self._encode_album_cursor(page[-1]) if page and more else None
         return {"items": page, "next_cursor": next_cursor}
+
+    def album_count(self, context, at, *, hidden_ids=()):
+        """Count visible governed album images for one role without decoding image bytes."""
+        self.messages.authorize(context, at)
+        hidden = set(hidden_ids or ())
+        seen_ids = set()
+        rows = self.runtime.read_all(
+            """SELECT i.invocation_id, i.action, i.state, i.error_code, i.created_at
+               FROM extension_tool_invocations i JOIN conversation_batches b ON b.batch_id=i.batch_id
+               WHERE b.origin_key = ? AND b.state = 'ready' AND i.action IN (?,?,?) AND i.state = 'succeeded'""",
+            (context.key, *sorted(IMAGE_ACTIONS)),
+        )
+        for row in rows:
+            if self.rejected(row) is not None:
+                continue
+            reference = self.reference(row, context)
+            payload_rows = self.runtime.read_all(
+                """SELECT p.position FROM conversation_image_payloads p
+                   JOIN sources ps
+                     ON ps.source_id = p.parent_id
+                    AND ps.lineage_id = p.parent_lineage
+                    AND ps.source_revision = p.parent_revision
+                    AND ps.state = 'active'
+                   JOIN sources s
+                     ON s.source_id = p.source_id
+                    AND s.lineage_id = p.source_lineage
+                    AND s.source_revision = p.source_revision
+                    AND s.state = 'active'
+                   JOIN assets a
+                     ON a.asset_id = p.asset_id
+                    AND a.lineage_id = p.asset_lineage
+                    AND a.asset_revision = p.asset_revision
+                    AND a.state = 'active'
+                   WHERE p.parent_id = ? AND p.parent_lineage = ? AND p.parent_revision = ?""",
+                key(reference),
+            )
+            for payload_row in payload_rows:
+                image_id = f"generated-image:{row['invocation_id']}:{payload_row['position']}"
+                if image_id not in hidden:
+                    seen_ids.add(image_id)
+        from .native_generated_album import count as native_count
+        _, native_ids = native_count(self, context, hidden_ids=hidden)
+        seen_ids.update(native_ids)
+        return len(seen_ids)
 
     def observability_page(self, context, at, *, limit=20):
         """Read safe image invocation outcomes for the exact selected private route."""

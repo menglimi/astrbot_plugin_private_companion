@@ -1389,7 +1389,7 @@ window.CompanionProduct = (() => {
       sendWorkspaceContext(owner,context);
       send({kind:"appearance",appearance:{...appearance}});return;
     }
-    if(message.kind==="resize"){if(Number.isFinite(message.height))owner.style.height=Math.max(620,Math.min(2400,message.height+12))+"px";return;}
+    if(message.kind==="resize"){if(Number.isFinite(message.height)&&message.height>0)owner.style.height=Math.max(420,Math.min(16000,Math.ceil(message.height)+16))+"px";return;}
     /* 工作区是 opaque origin 的 sandbox iframe，开不出能盖住插件视口的模态层；
        确认由宿主这一层代开，工作区只等结论。没有 CompanionConfirm 时回
        unavailable，工作区据此退回自己的内联确认框。 */
@@ -1633,7 +1633,26 @@ window.CompanionProduct = (() => {
   }
   function growthMarkup() {
     const page=growthPage||data.growth;
-    return `<div class="settings-heading"><div><h2>目标与成长</h2></div><button class="button small" data-growth-load ${growthBusy?"disabled":""}>刷新</button></div><p id="growth-notice" role="status"></p>${page?`<div class="product-growth-list">${page.items.map((item,index)=>`<article class="panel content-panel"><div class="section-toolbar"><h3>${e(item.title||"来源暂不可用")}</h3><span class="pill">${e(states[item.state]||"状态待核对")}</span></div><p>${e(item.description||"")}</p><p>${e(item.progress_note||"")}</p><p class="product-muted">${item.kind==="goal"?"目标":"技能"} · ${item.source_count} 个来源 · 版本 ${item.revision}</p><div class="dialog-actions">${item.actions.map(action=>`<button class="button small" data-growth-index="${index}" data-growth-action="${action}" ${growthBusy?"disabled":""}>${({confirm:"确认",revise:"修订",pause:"暂停",resume:"继续",complete:"已完成",withdraw:"撤回",retire:"归档"})[action]||"其他操作"}</button>`).join("")}</div></article>`).join("")||empty("暂无目标或技能记录。")}</div><div class="dialog-actions"><button class="button small" data-growth-first>返回首批</button><button class="button small" data-growth-next ${!page.next_cursor||growthBusy?"disabled":""}>下一批</button></div>`:empty(unavailable("growth"))}<dialog id="growth-confirm" class="detail-dialog"><form id="growth-form" class="product-growth-form"><h2 id="growth-confirm-title"></h2><p id="growth-confirm-description"></p><div id="growth-edit-fields"><label>标题<input name="title" maxlength="200" required></label><label>描述<textarea name="description" rows="3"></textarea></label><label>进展<textarea name="progress_note" rows="3"></textarea></label></div><p id="growth-command-error" role="status"></p><div class="dialog-actions"><button type="submit" class="button primary">确认保存</button><button type="button" class="button" data-growth-close>取消</button></div></form></dialog>`;
+    const items=Array.isArray(page?.items)?page.items:[];
+    const goals=items.filter(item=>item.kind==="goal").length;
+    const skills=items.length-goals;
+    const active=items.filter(item=>item.state==="active").length;
+    const pillTone=value=>value==="active"?"":value==="proposed"?"amber":["achieved","completed"].includes(value)?"lavender":"gray";
+    const actionLabel=action=>({confirm:"确认",revise:"修订",pause:"暂停",resume:"继续",complete:"已完成",withdraw:"撤回",retire:"归档"})[action]||"其他操作";
+    const summary=page&&items.length
+      ? `<div class="product-growth-summary" aria-label="成长概览"><span class="product-growth-chip">共 ${items.length} 项</span><span class="product-growth-chip">目标 ${goals}</span><span class="product-growth-chip">技能 ${skills}</span>${active?`<span class="product-growth-chip is-active">进行中 ${active}</span>`:""}</div>`
+      : `<div class="product-growth-summary"><span class="product-growth-chip">角色目标与技能</span></div>`;
+    const listMarkup=items.length
+      ? `<div class="product-growth-list">${items.map((item,index)=>{
+          const kind=item.kind==="goal"?"goal":"skill";
+          const actions=(item.actions||[]).map(action=>`<button type="button" class="button small" data-growth-index="${index}" data-growth-action="${action}" ${growthBusy?"disabled":""}>${actionLabel(action)}</button>`).join("");
+          return `<article class="product-growth-card" data-kind="${kind}"><div class="product-growth-card-head"><div class="product-growth-title-group"><span class="product-growth-kind">${kind==="goal"?"目标":"技能"}</span><h3>${e(item.title||"来源暂不可用")}</h3></div><span class="pill ${pillTone(item.state)}">${e(states[item.state]||"状态待核对")}</span></div>${item.description?`<p class="product-growth-desc">${e(item.description)}</p>`:""}${item.progress_note?`<p class="product-growth-progress"><span>进展</span>${e(item.progress_note)}</p>`:""}<div class="product-growth-card-foot"><span class="product-growth-meta">${item.source_count} 个来源 · 版本 ${item.revision}</span>${actions?`<div class="product-growth-actions">${actions}</div>`:""}</div></article>`;
+        }).join("")}</div>`
+      : `<div class="product-growth-empty"><strong>暂无目标或技能记录</strong><p>随着日常相处与反思，角色会逐步沉淀个人目标与技能线索。</p></div>`;
+    const pagination=page&&(growthCursor||page.next_cursor)
+      ? `<div class="product-growth-pages"><button type="button" class="button small" data-growth-first ${!growthCursor||growthBusy?"disabled":""}>返回首批</button><button type="button" class="button small" data-growth-next ${!page.next_cursor||growthBusy?"disabled":""}>下一批</button></div>`
+      : "";
+    return `<div class="product-growth"><div class="product-growth-toolbar">${summary}<div class="product-growth-toolbar-actions"><button type="button" class="button small" data-go="manage" data-manage="learning">学习与反思</button><button type="button" class="button small" data-growth-load ${growthBusy?"disabled":""}>刷新</button></div></div><p id="growth-notice" class="product-growth-notice" role="status"></p>${page?listMarkup+pagination:empty(unavailable("growth"))}<dialog id="growth-confirm" class="detail-dialog"><form id="growth-form" class="product-growth-form"><header class="product-growth-dialog-head"><h2 id="growth-confirm-title"></h2><p id="growth-confirm-description"></p></header><div id="growth-edit-fields"><label>标题<input name="title" maxlength="200" required></label><label>描述<textarea name="description" rows="3"></textarea></label><label>进展<textarea name="progress_note" rows="3"></textarea></label></div><p id="growth-command-error" class="product-growth-error" role="status"></p><div class="dialog-actions"><button type="button" class="button" data-growth-close>取消</button><button type="submit" class="button primary">确认保存</button></div></form></dialog></div>`;
   }
   async function loadGrowth(cursor=null) {
     if(growthBusy||!role()?.growth_api)return;

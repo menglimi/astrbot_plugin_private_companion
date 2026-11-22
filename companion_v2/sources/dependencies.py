@@ -70,6 +70,7 @@ class _Batch:
     edges: dict = field(default_factory=dict)
     owner_required: dict = field(default_factory=dict)
     checked_unguarded: set = field(default_factory=set)
+    extras: dict = field(default_factory=dict)
     active: bool = True
 
 
@@ -79,6 +80,7 @@ def _clear_batch(batch):
     batch.edges.clear()
     batch.owner_required.clear()
     batch.checked_unguarded.clear()
+    batch.extras.clear()
 
 
 def _sync_batch(batch, runtime, guards=None):
@@ -109,9 +111,11 @@ def _invalidate_single_batch(batch, *, source_key=None, edge_target=None, owner=
         batch.rows.pop(source_key, None)
         batch.full_records.pop(source_key, None)
         batch.edges.pop(source_key, None)
+        batch.extras.clear()
         if had_key:
             batch.checked_unguarded.clear()
     if edge_target is not None:
+        batch.extras.clear()
         if edge_target in batch.rows or edge_target in batch.edges or edge_target in batch.checked_unguarded:
             batch.rows.pop(edge_target, None)
             batch.edges.pop(edge_target, None)
@@ -119,6 +123,7 @@ def _invalidate_single_batch(batch, *, source_key=None, edge_target=None, owner=
     if owner is not None:
         batch.owner_required.pop(owner, None)
         batch.checked_unguarded.clear()
+        batch.extras.clear()
 
 
 def invalidate_batch(runtime, *, source_key=None, edge_target=None, owner=None, clear_all=False):
@@ -188,33 +193,47 @@ def _batch_for(state):
     return None
 
 
+def active_validation_batch(runtime, at=None):
+    """Return the active validation batch for *runtime* on this thread/task, if any."""
+    batch = _BATCH.get()
+    if (batch is None or not batch.active or batch.runtime is not runtime
+            or (at is not None and batch.at != at)
+            or batch.thread != get_ident() or batch.task is not _task()):
+        return None
+    _sync_batch(batch, runtime, _guards(runtime))
+    return batch
+
+
 def is_unguarded_checked(runtime, reference, at):
     """Return True if this reference already completed unguarded in the active batch."""
-    batch = _BATCH.get()
-    if (batch is None or not batch.active or batch.runtime is not runtime or batch.at != at
-            or batch.thread != get_ident() or batch.task is not _task()):
+    batch = active_validation_batch(runtime, at)
+    if batch is None:
         return False
-    _sync_batch(batch, runtime, _guards(runtime))
     return key(reference) in batch.checked_unguarded
 
 
 def _prefetch(batch, root):
-    rows = batch.connection.execute(_REACHABLE + """SELECT r.id AS reach_id,
+    rows = batch.connection.execute(
+        _REACHABLE + """SELECT r.id AS reach_id,
         r.lineage AS reach_lineage, r.revision AS reach_revision,
-        s.source_id, s.lineage_id, s.source_revision, s.owner, s.state, s.issued_at, s.expires_at
-        FROM reachable r LEFT JOIN sources s ON s.source_id = r.id
-          AND s.lineage_id = r.lineage AND s.source_revision = r.revision""", root)
+        s.source_id, s.lineage_id, s.source_revision, s.owner, s.state, s.issued_at, s.expires_at,
+        d.input_id, d.input_lineage, d.input_revision
+        FROM reachable r
+        LEFT JOIN sources s ON s.source_id = r.id
+          AND s.lineage_id = r.lineage AND s.source_revision = r.revision
+        LEFT JOIN source_dependencies d ON d.dependent_id = r.id
+          AND d.dependent_lineage = r.lineage AND d.dependent_revision = r.revision""",
+        root,
+    )
+    prefetched = set()
     for row in rows:
         current = (row["reach_id"], row["reach_lineage"], row["reach_revision"])
-        batch.rows[current] = row if row["source_id"] is not None else None
-        batch.edges[current] = []
-    edges = batch.connection.execute(_REACHABLE + """SELECT d.dependent_id, d.dependent_lineage,
-        d.dependent_revision, d.input_id, d.input_lineage, d.input_revision
-        FROM source_dependencies d JOIN reachable r ON d.dependent_id = r.id
-          AND d.dependent_lineage = r.lineage AND d.dependent_revision = r.revision""", root)
-    for edge in edges:
-        current = (edge["dependent_id"], edge["dependent_lineage"], edge["dependent_revision"])
-        batch.edges[current].append((edge["input_id"], edge["input_lineage"], edge["input_revision"]))
+        if current not in prefetched:
+            prefetched.add(current)
+            batch.rows[current] = row if row["source_id"] is not None else None
+            batch.edges[current] = []
+        if row["input_id"] is not None:
+            batch.edges[current].append((row["input_id"], row["input_lineage"], row["input_revision"]))
 
 
 def _load_batch_node(batch, current):

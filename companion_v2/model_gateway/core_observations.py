@@ -161,11 +161,18 @@ def request_rows(observations, *, include_signature_json=True):
     """Translate observations into usage projections, never into the old ledger."""
     result = []
     provider_json_cache = {}
+    context_scope_cache = {}
     for observation in observations:
         requests = observation.get("requests", [])
         if not requests:
             continue
-        audience_scope = json.loads(observation["context_json"])["audience"]["scope"]
+        context_key = observation.get("context_key")
+        if context_key is not None and context_key in context_scope_cache:
+            audience_scope = context_scope_cache[context_key]
+        else:
+            audience_scope = json.loads(observation["context_json"])["audience"]["scope"]
+            if context_key is not None:
+                context_scope_cache[context_key] = audience_scope
         for request in requests:
             usage = request.get("usage") or {}
             at = request.get("finished_at") or request.get("started_at") or observation["received_at"]
@@ -176,10 +183,13 @@ def request_rows(observations, *, include_signature_json=True):
             latency = request.get("latency_ms")
             state = request.get("state", "unknown")
             provider = request.get("provider", "")
-            provider_json = provider_json_cache.get(provider)
-            if provider_json is None:
+            if type(provider) is str:
+                provider_json = provider_json_cache.get(provider)
+                if provider_json is None:
+                    provider_json = encode({"provider": provider})
+                    provider_json_cache[provider] = provider_json
+            else:
                 provider_json = encode({"provider": provider})
-                provider_json_cache[provider] = provider_json
             signature = request.get("signature")
             values = dict.fromkeys(USAGE_FIELDS, 0)
             values.update(calls=int(real_call), tokens=tokens or 0, unconfirmed_calls=int(real_call and tokens is None),

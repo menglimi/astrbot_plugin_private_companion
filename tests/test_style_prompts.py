@@ -157,17 +157,23 @@ class ProactiveStyleTests(unittest.TestCase):
         plain = request_for(self.contact_job(), (), ContactPreferences(None, plain_values, NOW))
         self.assertNotIn("主动表达风格补充", plain.instruction)
 
+    @staticmethod
+    def _guidance(request):
+        return "\n".join(part for part in (request.instruction, request.user_instruction) if part)
+
     def test_chat_prompt_allows_self_started_low_pressure_message(self):
         preferences = ContactPreferences(snapshot=None, values=PREF_VALUES, observed_at=NOW)
         request = request_for(self.contact_job(), (), preferences)
+        guidance = self._guidance(request)
 
-        self.assertIn("无需等待用户关键词、待办或事件", request.instruction)
-        self.assertIn("不给回应制造压力，不催促", request.instruction)
-        self.assertIn("也可顺势问一个轻问题", request.instruction)
-        self.assertIn("不编刚做过的事、共同经历或用户现状", request.instruction)
-        self.assertIn("角色状态摘要", request.instruction)
-        self.assertIn("不因角色自身状态询问用户是否好转", request.instruction)
-        self.assertIn("历史用于连续和避重，不是待回复队列", request.instruction)
+        self.assertIn("无需等待用户关键词、待办或事件", request.user_instruction)
+        self.assertNotIn("无需等待用户关键词、待办或事件", request.instruction)
+        self.assertIn("不给回应制造压力，不催促", guidance)
+        self.assertIn("也可顺势问一个轻问题", guidance)
+        self.assertIn("不编刚做过的事、共同经历或用户现状", guidance)
+        self.assertIn("角色状态摘要", guidance)
+        self.assertIn("不因角色自身状态询问用户是否好转", guidance)
+        self.assertIn("历史用于连续和避重，不是待回复队列", guidance)
 
     def test_daily_allowance_is_a_human_rhythm_signal_not_a_contact_target(self):
         preferences = ContactPreferences(snapshot=None, values=PREF_VALUES, observed_at=NOW)
@@ -178,11 +184,11 @@ class ProactiveStyleTests(unittest.TestCase):
 
         materials = {item.purpose: json.loads(item.payload) for item in request.context.materials}
         self.assertEqual(materials["contact_intent"]["rhythm"], rhythm)
-        self.assertIn("不是要完成的目标", request.instruction)
-        self.assertIn("联系偏密时", request.instruction)
-        self.assertIn("紧急时效信息", request.instruction)
-        self.assertIn("联系稀疏、间隔已经拉开时", request.instruction)
-        self.assertIn("无需提高到必须有重要事件的门槛", request.instruction)
+        self.assertIn("不是要完成的目标", request.user_instruction)
+        self.assertIn("联系偏密时", request.user_instruction)
+        self.assertIn("紧急时效信息", request.user_instruction)
+        self.assertIn("联系稀疏、间隔已经拉开时", request.user_instruction)
+        self.assertIn("无需提高到必须有重要事件的门槛", request.user_instruction)
 
     def test_recent_contact_timing_guides_short_gap_expression(self):
         preferences = ContactPreferences(snapshot=None, values=PREF_VALUES, observed_at=NOW)
@@ -220,9 +226,10 @@ class ProactiveStyleTests(unittest.TestCase):
         recent = [json.loads(item.payload)["text"] for item in request.context.materials
                   if item.purpose == "recent_private_dialogue"]
         self.assertEqual(recent, [item["text"] for item in dialogue])
-        self.assertIn("contact_intent.thought 只是待评估的一个开场方向", request.instruction)
-        self.assertIn("若还剩数小时，就不要说快到零点", request.instruction)
-        self.assertIn("不要把已经确认的事实演成刚发现的悬念、惊喜或遗漏", request.instruction)
+        guidance = self._guidance(request)
+        self.assertIn("contact_intent.thought 只是待评估的一个开场方向", guidance)
+        self.assertIn("若还剩数小时，就不要说快到零点", guidance)
+        self.assertIn("不要把已经确认的事实演成刚发现的悬念、惊喜或遗漏", guidance)
 
     def test_unselected_relationship_candidate_does_not_leak_into_chat_prompt(self):
         preferences = ContactPreferences(None, dict(PREF_VALUES, dedup_enabled=True), NOW)
@@ -231,11 +238,12 @@ class ProactiveStyleTests(unittest.TestCase):
             "mode": "slot", "purposes": ["affection", "care", "play", "repair", "invitation"]}}
 
         chat_request = request_for(job, (), preferences)
-        self.assertNotIn(ORIGIN_INSTRUCTIONS["relationship_event"], chat_request.instruction)
+        self.assertNotIn(ORIGIN_INSTRUCTIONS["relationship_event"], self._guidance(chat_request))
 
         job.intent.purpose = "care"
         relationship_request = request_for(job, (), preferences)
-        self.assertIn(ORIGIN_INSTRUCTIONS["relationship_event"], relationship_request.instruction)
+        self.assertIn(ORIGIN_INSTRUCTIONS["relationship_event"], relationship_request.user_instruction)
+        self.assertNotIn(ORIGIN_INSTRUCTIONS["relationship_event"], relationship_request.instruction)
 
     def test_administrator_diagnostic_omits_history_and_dedup_for_every_purpose(self):
         values = dict(PREF_VALUES, dedup_enabled=True)
@@ -245,7 +253,7 @@ class ProactiveStyleTests(unittest.TestCase):
 
         ordinary = request_for(self.contact_job(), (), preferences, history, last_reply=last_reply)
         self.assertIn("dedup_candidate", {item.purpose for item in ordinary.context.materials})
-        self.assertIn(DEDUP_INSTRUCTION, ordinary.instruction)
+        self.assertIn(DEDUP_INSTRUCTION, self._guidance(ordinary))
 
         for purpose in PURPOSES:
             with self.subTest(purpose=purpose):
@@ -257,6 +265,7 @@ class ProactiveStyleTests(unittest.TestCase):
                                       rhythm_snapshot={"delivered_today": 10})
                 material_purposes = {item.purpose for item in request.context.materials}
                 material_text = "\n".join(item.payload for item in request.context.materials)
+                guidance = self._guidance(request)
                 self.assertNotIn("communication_state", material_purposes)
                 self.assertNotIn("dedup_candidate", material_purposes)
                 self.assertNotIn("last_confirmed_reply", material_purposes)
@@ -264,9 +273,9 @@ class ProactiveStyleTests(unittest.TestCase):
                 self.assertNotIn("private last reply marker", material_text)
                 self.assertNotIn("private interaction marker", material_text)
                 self.assertNotIn('"rhythm"', material_text)
-                self.assertNotIn("每日上限是保护边界", request.instruction)
-                self.assertNotIn(DEDUP_INSTRUCTION, request.instruction)
-                self.assertIn("不要把缺少这些材料判为重复", request.instruction)
+                self.assertNotIn("每日上限是保护边界", guidance)
+                self.assertNotIn(DEDUP_INSTRUCTION, guidance)
+                self.assertIn("不要把缺少这些材料判为重复", request.user_instruction)
 
     def test_daily_greeting_gets_contextual_humanized_guidance(self):
         thought = SimpleNamespace(summary="早上有一个轻轻碰面的机会", opportunity=SimpleNamespace(
@@ -276,10 +285,10 @@ class ProactiveStyleTests(unittest.TestCase):
         job.automatic_origin = {"greeting_event": {"kind": "day_anchor", "anchor": "morning_greeting"}}
         preferences = ContactPreferences(snapshot=None, values=PREF_VALUES, observed_at=NOW)
         request = request_for(job, (), preferences)
-        self.assertIn("不是签到任务", request.instruction)
-        self.assertIn("时段本身就可成为由头", request.instruction)
-        self.assertIn("不要求有新事件", request.instruction)
-        self.assertIn("不固定套用", request.instruction)
+        self.assertIn("不是签到任务", request.user_instruction)
+        self.assertIn("时段本身就可成为由头", request.user_instruction)
+        self.assertIn("不要求有新事件", request.user_instruction)
+        self.assertIn("不固定套用", request.user_instruction)
 
     def test_overnight_news_prompt_uses_local_time_and_real_last_input(self):
         now = datetime(2026, 10, 14, 21, 12, tzinfo=timezone.utc)
@@ -323,8 +332,9 @@ class ProactiveStyleTests(unittest.TestCase):
     def test_dedup_prompt_distinguishes_same_topic_from_same_category(self):
         preferences = ContactPreferences(None, dict(PREF_VALUES, dedup_enabled=True), NOW)
         request = request_for(self.contact_job(), (), preferences)
-        self.assertIn("仅用途、领域、情绪、常用词或宽泛主题相同不算重复", request.instruction)
-        self.assertIn("可以从不同角度自然分享", request.instruction)
+        self.assertIn("仅用途、领域、情绪、常用词或宽泛主题相同不算重复", request.user_instruction)
+        self.assertIn("可以从不同角度自然分享", request.user_instruction)
+        self.assertNotIn("仅用途、领域、情绪、常用词或宽泛主题相同不算重复", request.instruction)
 
     def test_insomnia_greeting_keeps_the_low_pressure_rule(self):
         thought = SimpleNamespace(summary="夜间低压力问候", opportunity=SimpleNamespace(
@@ -334,9 +344,9 @@ class ProactiveStyleTests(unittest.TestCase):
         job.automatic_origin = {"greeting_event": {"kind": "insomnia_night"}}
         preferences = ContactPreferences(snapshot=None, values=PREF_VALUES, observed_at=NOW)
         request = request_for(job, (), preferences)
-        self.assertIn("夜间低压力问候机会", request.instruction)
-        self.assertIn("不报日期和星期", request.instruction)
-        self.assertIn("不要求对方回复", request.instruction)
+        self.assertIn("夜间低压力问候机会", request.user_instruction)
+        self.assertIn("不报日期和星期", request.user_instruction)
+        self.assertIn("不要求对方回复", request.user_instruction)
 
     def test_source_backed_diagnostic_keeps_the_selected_producer_boundary(self):
         preferences = ContactPreferences(snapshot=None, values=PREF_VALUES, observed_at=NOW)
@@ -347,10 +357,11 @@ class ProactiveStyleTests(unittest.TestCase):
         job.diagnostic_origin = {"news_event": {"event_id": "article-1"}, "_diagnostic": {}}
 
         request = request_for(job, (), preferences)
+        guidance = self._guidance(request)
 
-        self.assertIn(ORIGIN_INSTRUCTIONS["news_event"], request.instruction)
-        self.assertIn("只使用本次提供的已核验来源", request.instruction)
-        self.assertNotIn("测试不读取聊天历史、记忆或真实事件", request.instruction)
+        self.assertIn(ORIGIN_INSTRUCTIONS["news_event"], request.user_instruction)
+        self.assertIn("只使用本次提供的已核验来源", request.user_instruction)
+        self.assertNotIn("测试不读取聊天历史、记忆或真实事件", guidance)
 
     def test_synthetic_diagnostic_uses_the_fictional_scenario_without_claiming_real_sources(self):
         preferences = ContactPreferences(snapshot=None, values=PREF_VALUES, observed_at=NOW)
@@ -362,26 +373,32 @@ class ProactiveStyleTests(unittest.TestCase):
                                  "synthetic_event": {"test_id": "attempt-1"}}
 
         request = request_for(job, (), preferences)
+        guidance = self._guidance(request)
 
-        self.assertIn("管理员已确认且知情的合成情境演练", request.instruction)
-        self.assertIn("不代表真实用户输入、日历、活动或采集来源", request.instruction)
-        self.assertIn("也不声称程序取得了真实资讯、天气或屏幕", request.instruction)
-        self.assertIn("测试状态、合成标识和回执只在管理端呈现", request.instruction)
-        self.assertIn("QQ 的 text 按正式主动消息呈现", request.instruction)
-        self.assertNotIn("本轮素材仍来自所选目的的真实生产器", request.instruction)
+        self.assertIn("管理员已确认且知情的合成情境演练", request.user_instruction)
+        self.assertIn("不代表真实用户输入、日历、活动或采集来源", request.user_instruction)
+        self.assertIn("也不声称程序取得了真实资讯、天气或屏幕", request.user_instruction)
+        self.assertIn("测试状态、合成标识和回执只在管理端呈现", request.user_instruction)
+        self.assertIn("QQ 的 text 按正式主动消息呈现", request.user_instruction)
+        self.assertNotIn("本轮素材仍来自所选目的的真实生产器", guidance)
 
     def test_each_registered_purpose_has_its_own_evidence_guidance(self):
         self.assertEqual(set(PURPOSE_INSTRUCTIONS), set(PURPOSES))
+        system_instructions = set()
         for purpose, guidance in PURPOSE_INSTRUCTIONS.items():
             with self.subTest(purpose=purpose):
                 job = self.contact_job()
                 job.intent = SimpleNamespace(purpose=purpose, thought=job.intent.thought)
                 preferences = ContactPreferences(snapshot=None, values=PREF_VALUES, observed_at=NOW)
                 request = request_for(job, (), preferences)
-                self.assertIn(guidance, request.instruction)
+                system_instructions.add(request.instruction)
+                self.assertIn(guidance, request.user_instruction)
+                self.assertNotIn(guidance, request.instruction)
                 self.assertIn("仅输出一个 JSON 对象", request.instruction)
                 self.assertIn('"decision_confidence"', request.instruction)
                 self.assertIn('"skip_reason"', request.instruction)
+        # System prefix remains byte-identical across every contact purpose.
+        self.assertEqual(len(system_instructions), 1)
 
     def test_selected_thought_is_the_anchor_and_old_context_cannot_create_a_task(self):
         preferences = ContactPreferences(snapshot=None, values=PREF_VALUES, observed_at=NOW)
@@ -396,6 +413,7 @@ class ProactiveStyleTests(unittest.TestCase):
 
     def test_each_supported_event_origin_adds_its_scene_boundary(self):
         preferences = ContactPreferences(snapshot=None, values=PREF_VALUES, observed_at=NOW)
+        system_instructions = set()
         for marker, guidance in ORIGIN_INSTRUCTIONS.items():
             with self.subTest(marker=marker):
                 job = self.contact_job()
@@ -404,7 +422,10 @@ class ProactiveStyleTests(unittest.TestCase):
                 if marker == "relationship_event":
                     job.intent.purpose = "care"
                 request = request_for(job, (), preferences)
-                self.assertIn(guidance, request.instruction)
+                system_instructions.add(request.instruction)
+                self.assertIn(guidance, request.user_instruction)
+                self.assertNotIn(guidance, request.instruction)
+        self.assertEqual(len(system_instructions), 1)
 
     def test_relationship_and_followup_purposes_have_registered_producers(self):
         self.assertTrue(all(purpose in PURPOSE_INSTRUCTIONS

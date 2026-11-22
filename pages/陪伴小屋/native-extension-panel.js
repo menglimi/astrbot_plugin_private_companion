@@ -207,7 +207,7 @@ window.CompanionNativeExtensionPanel = (() => {
         control = `<input type="number" ${attrs} value="${escape(resolved ?? "")}" step="${escape(bounds.step ?? (kind === "int" ? 1 : "any"))}"${Number.isFinite(bounds.min) ? ` min="${bounds.min}"` : ""}${Number.isFinite(bounds.max) ? ` max="${bounds.max}"` : ""}>`;
       } else control = `<input type="${isSecret ? "password" : "text"}" ${attrs} value="${isSecret ? "" : escape(resolved || "")}" ${isSecret ? `autocomplete="new-password" placeholder="${this.isConfigured(path, resolved) ? "已配置，留空保持不变" : "尚未配置"}"` : ""} spellcheck="false">`;
       const notes = [hint, kind === "list" ? "每行一项；清空可移除所有条目。" : "", isSecret ? "留空保留已有密钥，填写新值才会替换。" : ""].filter(Boolean).join(" ");
-      return `<div class="native-extension-field ${kind === "bool" ? "is-switch" : ""}" data-native-field-label="${escape(title)}"><label for="${id}">${escape(title)}</label>${kind === "bool" ? `<label class="native-extension-switch" for="${id}" aria-label="${escape(title)}">${control}</label>` : control}<small id="${id}-hint">${escape(notes)}</small></div>`;
+      return `<div class="native-extension-field ${kind === "bool" ? "is-switch" : ""}" data-native-field-label="${escape(title)}" data-field="${escape(path.join("."))}"><label for="${id}">${escape(title)}</label>${kind === "bool" ? `<label class="native-extension-switch" for="${id}" aria-label="${escape(title)}">${control}</label>` : control}<small id="${id}-hint">${escape(notes)}</small></div>`;
     }
     isConfigured(path, value) {
       return at(this.record.settings, [...path.slice(0, -1), path.at(-1) + "_configured"]) === true || Boolean(value);
@@ -243,12 +243,14 @@ window.CompanionNativeExtensionPanel = (() => {
       const management = !mobileOnly && ["reality", "live"].includes(this.name)
         ? '<div data-native-management></div>' : "";
       const searchLabel = mobileOnly ? "查找手机端连接设置项" : `查找${names[this.name]}设置项`;
-      const search = `<label class="native-extension-search"><input type="search" placeholder="查找设置项" aria-label="${escape(searchLabel)}" data-native-search value="${escape(this.query)}"></label>`;
+      const search = mobileOnly
+        ? `<label class="native-extension-search is-mobile-search"><i data-lucide="search" aria-hidden="true"></i><input type="search" placeholder="查找设置项" aria-label="${escape(searchLabel)}" data-native-search value="${escape(this.query)}"><button type="button" class="mobile-search-clear" data-mobile-search-clear aria-label="清空搜索" ${this.query ? "" : "hidden"}><i data-lucide="x" aria-hidden="true"></i></button></label>`
+        : `<label class="native-extension-search"><input type="search" placeholder="查找设置项" aria-label="${escape(searchLabel)}" data-native-search value="${escape(this.query)}"></label>`;
       const navigation = this.onlyGroup ? "" : `<nav class="native-extension-nav" aria-label="${escape(names[this.name])}设置分组">${this.groups.map(group => `<button type="button" data-native-group="${escape(group.id)}" aria-pressed="${group.id === this.group}">${escape(group.title)}</button>`).join("")}</nav>`;
       this.root.innerHTML = `<div class="native-extension-panel${mobileOnly ? " is-mobile-connection" : ""}">
         ${mobile?.overview || ""}${heading}${mobileLink}${management}
         <form data-native-form>
-          ${mobileOnly ? `<header class="mobile-config-heading"><h3>连接设置</h3>${search}</header>` : search}
+          ${mobileOnly ? `<header class="mobile-config-heading"><div class="mobile-config-heading-copy"><h3>连接设置</h3></div>${search}</header>` : search}
           <div class="native-extension-workspace${this.onlyGroup ? " is-single" : ""}">${navigation}<div class="native-extension-settings">${controls}<p class="native-extension-no-results" hidden>没有匹配的设置项，换个关键词试试。</p></div></div>
           <footer class="native-extension-savebar"><p role="status" aria-live="polite" data-native-notice></p><div><button class="button small" type="button" data-native-reload>重新读取</button><button class="button small primary" type="submit" data-native-save ${this.dirty ? "" : "disabled"}>保存并应用</button></div></footer>
         </form>${mobile?.reports || ""}</div>`;
@@ -276,14 +278,14 @@ window.CompanionNativeExtensionPanel = (() => {
       const groups = mobileSettingGroups(field);
       return `<div class="mobile-config-sections">${groups.map(group => {
         const open = this.mobileOpen.has(group.id);
-        const body = group.fields.map(([child, descriptor]) =>
-          this.field(child, descriptor, value?.[child], [key, child], parent, value)).join("");
+        const rendered = group.fields.map(([child, descriptor]) =>
+          this.field(child, descriptor, value?.[child], [key, child], parent, value)).filter(Boolean);
         /* 整组字段都被 condition 隐藏时连折叠壳一起收起来，免得留下空分组。 */
-        if (!body) return "";
+        if (!rendered.length) return "";
         return `<details class="mobile-config-section" data-mobile-config-section="${escape(group.id)}" ${open ? "open" : ""}>`
-          + `<summary><span><strong>${escape(group.title)}</strong><small>${escape(group.summary)}</small></span>`
-          + `<span class="mobile-config-chevron" aria-hidden="true"></span></summary>`
-          + `<div class="mobile-config-section-body">${body}</div></details>`;
+          + `<summary><span class="mobile-config-summary-copy"><strong>${escape(group.title)}</strong><small>${escape(group.summary)}</small></span>`
+          + `<span class="mobile-config-summary-meta"><span class="mobile-config-count">${rendered.length} 项</span><span class="mobile-config-chevron" aria-hidden="true"></span></span></summary>`
+          + `<div class="mobile-config-section-body">${rendered.join("")}</div></details>`;
       }).join("")}</div>`;
     }
     mobileConnectionMarkup() {
@@ -321,10 +323,10 @@ window.CompanionNativeExtensionPanel = (() => {
             : latestConnection ? "已生成配对令牌。轮换后，已配对的手机需要重新连接。"
               : activeSessions ? "存在活动会话，请核对手机与插件使用的私聊账号。"
                 : "等待手机配对。健康检查成功只代表网关在线。";
-      const token = issued?.token ? `<div class="mobile-pairing-token"><input type="text" readonly aria-label="本次生成的手机配对令牌" value="${escape(issued.token)}"><button class="button small" type="button" data-mobile-copy-token>复制令牌</button></div>` : "";
+      const token = issued?.token ? `<div class="mobile-pairing-token"><input type="text" readonly aria-label="本次生成的手机配对令牌" value="${escape(issued.token)}"><button class="button small" type="button" data-mobile-copy-token><i data-lucide="copy" aria-hidden="true"></i>复制令牌</button></div>` : "";
       const action = configured
-        ? `<button class="button small" type="button" data-mobile-token-action="rotate">轮换配对令牌</button>`
-        : `<button class="button small primary" type="button" data-mobile-token-action="generate">生成并启用网关</button>`;
+        ? `<button class="button small" type="button" data-mobile-token-action="rotate"><i data-lucide="refresh-cw" aria-hidden="true"></i>轮换配对令牌</button>`
+        : `<button class="button small primary" type="button" data-mobile-token-action="generate"><i data-lucide="key-round" aria-hidden="true"></i>生成并启用网关</button>`;
       const recentItems = [];
       const device = observation.device || {};
       if (device.available) {
@@ -354,28 +356,35 @@ window.CompanionNativeExtensionPanel = (() => {
       const overview = `<div class="mobile-connection-overview">
         <section class="mobile-gateway-card" aria-labelledby="mobileGatewayTitle">
           <header class="mobile-gateway-head">
-            <h3 id="mobileGatewayTitle">连接状态</h3>
+            <div class="mobile-gateway-head-main">
+              <h3 id="mobileGatewayTitle">连接状态</h3>
+              <span class="mobile-scope-pill">全局</span>
+              <span class="native-extension-status ${state[1]}">${escape(state[0])}</span>
+            </div>
             <button class="button small" type="button" data-mobile-refresh><i data-lucide="refresh-cw" aria-hidden="true"></i>刷新状态</button>
           </header>
-          <div class="mobile-gateway-state"><span class="native-extension-status ${state[1]}">${escape(state[0])}</span><p role="status" data-mobile-status-notice></p></div>
+          <p class="mobile-gateway-feedback" role="status" data-mobile-status-notice></p>
           <dl class="mobile-gateway-facts mobile-gateway-status">
-            <div class="mobile-gateway-address"><dt>连接地址</dt><dd>${escape(address)}</dd></div>
-            <div><dt>默认连接对象</dt><dd>${escape(targetLabel)}</dd></div>
-            <div><dt>已配对终端</dt><dd>${escape(pairedDevice)}</dd></div>
-            <div><dt>最近心跳</dt><dd>${escape(lastSeen)}</dd></div>
-            <div><dt>监听端口</dt><dd>${escape(String(bound))}</dd></div>
-            <div class="mobile-gateway-address"><dt>健康检查</dt><dd>${escape(healthAddress)}</dd></div>
+            <div class="mobile-gateway-tile is-wide"><dt>连接地址</dt><dd class="is-mono">${escape(address)}</dd></div>
+            <div class="mobile-gateway-tile"><dt>监听端口</dt><dd class="is-mono">${escape(String(bound))}</dd></div>
+            <div class="mobile-gateway-tile"><dt>默认连接对象</dt><dd>${escape(targetLabel)}</dd></div>
+            <div class="mobile-gateway-tile"><dt>已配对终端</dt><dd>${escape(pairedDevice)}</dd></div>
+            <div class="mobile-gateway-tile"><dt>最近心跳</dt><dd>${escape(lastSeen)}</dd></div>
+            <div class="mobile-gateway-tile is-full mobile-gateway-address"><dt>健康检查</dt><dd class="is-mono">${escape(healthAddress)}</dd></div>
           </dl>
         </section>
         <section class="mobile-pairing-card" aria-labelledby="mobilePairingTitle">
-          <h3 id="mobilePairingTitle">配对令牌</h3>
-          <p data-mobile-token-result role="status">${escape(notice)}</p>
+          <header class="mobile-pairing-head">
+            <h3 id="mobilePairingTitle">配对令牌</h3>
+            <span class="mobile-pairing-chip ${configured ? "is-ready" : ""}">${configured ? "已配置" : "待生成"}</span>
+          </header>
+          <p class="mobile-pairing-desc" data-mobile-token-result role="status">${escape(notice)}</p>
           ${token}
           <div class="mobile-gateway-actions">${action}</div>
           <div class="mobile-gateway-lifecycle" data-native-lifecycle></div>
         </section>
       </div>`;
-      const reports = `<section class="mobile-recent-card" aria-labelledby="mobileRecentTitle"><h3 id="mobileRecentTitle">最近上报</h3>${recentMarkup}</section>`;
+      const reports = `<section class="mobile-recent-card" aria-labelledby="mobileRecentTitle"><header class="mobile-recent-head"><h3 id="mobileRecentTitle">最近上报</h3>${recentItems.length ? `<span class="mobile-config-count">${recentItems.length} 项</span>` : ""}</header>${recentMarkup}</section>`;
       return {overview, reports};
     }
     async refreshMobileStatus(button) {
@@ -607,6 +616,13 @@ window.CompanionNativeExtensionPanel = (() => {
       if (button.dataset.mobileTokenAction) { this.mobileToken(button.dataset.mobileTokenAction); return; }
       if (button.hasAttribute("data-mobile-refresh")) { this.refreshMobileStatus(button); return; }
       if (button.hasAttribute("data-mobile-copy-token")) { this.copyMobileToken(); return; }
+      if (button.hasAttribute("data-mobile-search-clear")) {
+        this.query = "";
+        const searchInput = this.root.querySelector("[data-native-search]");
+        if (searchInput) { searchInput.value = ""; searchInput.focus?.(); }
+        this.filter();
+        return;
+      }
       if (button.dataset.nativeAdd || button.dataset.nativeRemove) {
         try { this.draft = this.collect(); }
         catch (error) { this.notice(error.message, true); error.field?.focus(); return; }
@@ -676,9 +692,38 @@ window.CompanionNativeExtensionPanel = (() => {
     }
     onInput(event) {
       if (event.target.hasAttribute?.("data-native-search")) { this.query = event.target.value; this.filter(); return; }
-      if (event.target.hasAttribute?.("data-native-field")) { this.updateDirty(); this.notice(this.dirty ? "修改尚未保存。" : ""); }
+      if (event.target.hasAttribute?.("data-native-field")) {
+        const item = this.fields[Number(event.target.dataset.nativeField)];
+        if (item?.field?.type === "bool" && this.onlyGroup === "mobile") {
+          const pathKey = keyOf(item.path);
+          const checked = event.target.checked;
+          if (at(this.draft, item.path) === checked) {
+            this.updateDirty();
+            this.notice(this.dirty ? "修改尚未保存。" : "");
+            return;
+          }
+          try { this.draft = this.collect(); } catch (_) { put(this.draft, item.path, checked); }
+          if (item.path.join(".") === "mobile.enabled" && checked) {
+            this.mobileOpen.add("gateway");
+            this.mobileOpen.add("pairing");
+          }
+          this.updateDirty();
+          const wasDirty = this.dirty;
+          this.render();
+          this.dirty = wasDirty;
+          this.updateDirty();
+          this.notice(this.dirty ? "修改尚未保存。" : "");
+          const restored = this.fields.find(candidate => keyOf(candidate.path) === pathKey);
+          if (restored) this.root.querySelector(`#${restored.id}`)?.focus?.();
+          return;
+        }
+        this.updateDirty();
+        this.notice(this.dirty ? "修改尚未保存。" : "");
+      }
     }
     filter() {
+      const clearButton = this.root.querySelector("[data-mobile-search-clear]");
+      if (clearButton) clearButton.hidden = !this.query.trim();
       const query = this.query.trim().toLocaleLowerCase(), matched = [];
       for (const panel of this.root.querySelectorAll("[data-native-group-panel]")) {
         const group = this.groups.find(item => item.id === panel.dataset.nativeGroupPanel);

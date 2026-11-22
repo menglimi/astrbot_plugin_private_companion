@@ -13,10 +13,45 @@ from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
+from companion_v2.agenda.calendar_prompt import (
+    CONTINUOUS_SCHEDULE_RULES,
+    ORCHESTRATED_SCHEDULE_RULES,
+)
+from companion_v2.conversation.awareness_context import INSTRUCTION as CROSS_WINDOW_INSTRUCTION
+from companion_v2.conversation.date_context import (
+    ALMANAC_INSTRUCTION,
+    CALENDAR_INSTRUCTION,
+    PERSONAL_DATE_INSTRUCTION,
+)
+from companion_v2.conversation.growth_context import ROLE_GROWTH_INSTRUCTION
+from companion_v2.conversation.health_context import HEALTH_INSTRUCTION
+from companion_v2.conversation.life_context import LIFE_INSTRUCTION
+from companion_v2.conversation.location_context import LOCATION_CONTEXT_INSTRUCTION
 from companion_v2.conversation.media.understanding import ASTRBOT_ANIMATED_IMAGE_INSTRUCTION
-from companion_v2.conversation.voice_reply import VoiceReplyPolicy
+from companion_v2.conversation.open_items_context import INSTRUCTION as OPEN_ITEMS_INSTRUCTION
+from companion_v2.conversation.participation_prompts import STATIC_GROUP_PARTICIPATION_RULES
+from companion_v2.conversation.phone_context import PHONE_CONTEXT_INSTRUCTION
 from companion_v2.conversation.private_reply_context import INSTRUCTION as PRIVATE_REPLY_INSTRUCTION
-from companion_v2.system_prompts.catalog import CORE_REPLY_STYLE
+from companion_v2.conversation.relationship_context import RELATIONSHIP_INSTRUCTION
+from companion_v2.conversation.self_review_context import SELF_REVIEW_INSTRUCTION
+from companion_v2.conversation.style_context import EXPRESSION_STYLE_INSTRUCTION
+from companion_v2.conversation.voice_reply import VoiceReplyPolicy
+from companion_v2.foundation.refs import ScopeKind
+from companion_v2.knowledge.members import MEMBER_CLUE_INSTRUCTION
+from companion_v2.proactive.inspirations import INSTRUCTION as INSPIRATION_INSTRUCTION
+from companion_v2.role_work.state.cycle_prompts import (
+    INSTRUCTION as CYCLE_INSTRUCTION,
+    VARIATION as CYCLE_VARIATION,
+)
+from companion_v2.role_work.state.humanized import BAND_INSTRUCTION as STATE_BAND_INSTRUCTION
+from companion_v2.role_work.state.mood.prompts import REPLY as MOOD_REPLY_INSTRUCTION
+from companion_v2.role_work.state.service import INSTRUCTION as STATE_INSTRUCTION
+from companion_v2.system_prompts.catalog import (
+    CORE_REPLY_STYLE,
+    CORE_REPLY_TIME_STYLE,
+    KNOWLEDGE_INSTRUCTION,
+    MEMORY_INSTRUCTION,
+)
 from companion_v2.adapters.astrbot.voice_stt import (
     VOICE_TRANSCRIPT_PREFIX,
     trusted_stt_extra_transcript,
@@ -24,6 +59,13 @@ from companion_v2.adapters.astrbot.voice_stt import (
 )
 
 from .core_reply import CORE_REPLY_CONTEXT_EXTRA
+from .core_reply_context import (
+    CURRENT_TIME_MEANING,
+    GROUP_INSTRUCTION,
+    LEGACY_MEMORY_INSTRUCTION,
+    PRIVATE_GROUP_CONTEXT_INSTRUCTION,
+    SENT_CONTINUATION_INSTRUCTION,
+)
 
 
 _POLICY = """角色状态材料说的是角色自己，不是用户的身体、睡眠、情绪或近况。提到这类状态时用清楚的第一人称归属，例如“我今天有点困”；不要把角色的经历改写成用户的经历，也不要仅凭角色自己的状态追问用户“好点了吗”。只有对话历史明确记录用户本人披露了同一件状况且现在仍值得关心时，才自然跟进；没有这样的依据就说自己的感受或接着当前话题聊。
@@ -34,9 +76,147 @@ _POLICY = """角色状态材料说的是角色自己，不是用户的身体、�
 按本轮任务给出最终回复，不输出内部合同、资料 JSON、草稿、自我校对或编辑批注。本轮明确启用的媒体与分段格式仍按对应协议生成。""" + "\n" + PRIVATE_REPLY_INSTRUCTION
 _CONTEXT_PREFIX = "<companion_v2_context>\n"
 _CONTEXT_SUFFIX = "\n</companion_v2_context>"
+_HOST_KB_RESULTS_MARKER = "[Related Knowledge Base Results]:"
+_OFFICIAL_KB_MATERIAL_PREFIX = "knowledge_reference:astrbot:"
+_EMOJI_EXPRESSION_INSTRUCTION = (
+    "本轮对方用表情/表情包表达情绪，不是空白消息，也不是要你复述或识别表情。"
+    "结合上下文接住这份情绪，用一两句自然回应，或同样回一个表情；"
+    "不要问「你发了什么」「发个表情是什么意思」，也不要要求对方改用文字。"
+)
 _MODALITY_LABELS = {
     "text": "文本", "image": "图片", "audio": "音频", "video": "视频", "tools": "工具调用",
 }
+
+# Channel-level static contracts hoisted once into the cacheable system_prompt
+# prefix. Every entry is an immutable module constant (no timestamps, toggles,
+# or speaker-specific text), so system_hash stays byte-identical across turns
+# while <companion_v2_context> carries only compact dynamic facts.
+_COMMON_HOISTED_RULES = (
+    CURRENT_TIME_MEANING + "\n" + CORE_REPLY_TIME_STYLE,
+    CURRENT_TIME_MEANING,
+    CORE_REPLY_TIME_STYLE,
+    CALENDAR_INSTRUCTION,
+    ALMANAC_INSTRUCTION,
+    PERSONAL_DATE_INSTRUCTION,
+    STATE_INSTRUCTION,
+    MOOD_REPLY_INSTRUCTION,
+    CYCLE_INSTRUCTION,
+    CYCLE_VARIATION,
+    STATE_BAND_INSTRUCTION,
+    ORCHESTRATED_SCHEDULE_RULES,
+    CONTINUOUS_SCHEDULE_RULES,
+    EXPRESSION_STYLE_INSTRUCTION,
+    CROSS_WINDOW_INSTRUCTION,
+    MEMORY_INSTRUCTION,
+    KNOWLEDGE_INSTRUCTION,
+    MEMBER_CLUE_INSTRUCTION,
+    _EMOJI_EXPRESSION_INSTRUCTION,
+)
+_PRIVATE_HOISTED_RULES = tuple(sorted(set(_COMMON_HOISTED_RULES + (
+    SENT_CONTINUATION_INSTRUCTION,
+    INSPIRATION_INSTRUCTION,
+    RELATIONSHIP_INSTRUCTION,
+    LIFE_INSTRUCTION,
+    ROLE_GROWTH_INSTRUCTION,
+    SELF_REVIEW_INSTRUCTION,
+    OPEN_ITEMS_INSTRUCTION,
+    HEALTH_INSTRUCTION,
+    PHONE_CONTEXT_INSTRUCTION,
+    LOCATION_CONTEXT_INSTRUCTION,
+    LEGACY_MEMORY_INSTRUCTION,
+)), key=len, reverse=True))
+_GROUP_HOISTED_RULES = tuple(sorted(set(_COMMON_HOISTED_RULES + (
+    GROUP_INSTRUCTION,
+    PRIVATE_GROUP_CONTEXT_INSTRUCTION,
+)), key=len, reverse=True))
+
+_COMMON_STATIC_CONTRACT = "\n".join((
+    "【陪伴上下文静态规则】下列规则固定适用于 <companion_v2_context> 中对应的动态事实块，后续轮次不再重复：",
+    CURRENT_TIME_MEANING + "\n" + CORE_REPLY_TIME_STYLE,
+    CALENDAR_INSTRUCTION,
+    ALMANAC_INSTRUCTION,
+    PERSONAL_DATE_INSTRUCTION,
+    STATE_INSTRUCTION,
+    MOOD_REPLY_INSTRUCTION,
+    CYCLE_INSTRUCTION,
+    CYCLE_VARIATION,
+    STATE_BAND_INSTRUCTION,
+    ORCHESTRATED_SCHEDULE_RULES,
+    CONTINUOUS_SCHEDULE_RULES,
+    EXPRESSION_STYLE_INSTRUCTION,
+    CROSS_WINDOW_INSTRUCTION,
+    MEMORY_INSTRUCTION,
+    KNOWLEDGE_INSTRUCTION,
+    MEMBER_CLUE_INSTRUCTION,
+    _EMOJI_EXPRESSION_INSTRUCTION,
+))
+_PRIVATE_STATIC_CONTRACT = "\n".join((
+    _COMMON_STATIC_CONTRACT,
+    SENT_CONTINUATION_INSTRUCTION,
+    INSPIRATION_INSTRUCTION,
+    RELATIONSHIP_INSTRUCTION,
+    LIFE_INSTRUCTION,
+    ROLE_GROWTH_INSTRUCTION,
+    SELF_REVIEW_INSTRUCTION,
+    OPEN_ITEMS_INSTRUCTION,
+    HEALTH_INSTRUCTION,
+    PHONE_CONTEXT_INSTRUCTION,
+    LOCATION_CONTEXT_INSTRUCTION,
+    LEGACY_MEMORY_INSTRUCTION,
+))
+_GROUP_STATIC_CONTRACT = "\n".join((
+    _COMMON_STATIC_CONTRACT,
+    GROUP_INSTRUCTION,
+    PRIVATE_GROUP_CONTEXT_INSTRUCTION,
+    STATIC_GROUP_PARTICIPATION_RULES,
+))
+
+
+def _strip_hoisted_rules(text, hoisted_rules):
+    """Remove fixed rules already hoisted into system_prompt; keep any dynamic/custom text."""
+    if not isinstance(text, str) or not text or not hoisted_rules:
+        return text
+    remaining = text
+    for rule in hoisted_rules:
+        if rule and rule in remaining:
+            remaining = remaining.replace(rule, "")
+    lines = [line.strip() for line in remaining.splitlines() if line.strip()]
+    return "\n".join(lines)
+
+
+def _compact_group_participation_hint(prepared):
+    """Compact dynamic admission facts paired with STATIC_GROUP_PARTICIPATION_RULES."""
+    admission = prepared.get("group_admission")
+    if not isinstance(admission, Mapping) or admission.get("mentioned"):
+        return None
+    from companion_v2.conversation.group_admission import REASONS
+
+    reason = admission.get("reason")
+    hint = {
+        "mentioned": False,
+        "reason": reason or "autonomous",
+        "reason_label": REASONS.get(reason, "原人格自主判断参与"),
+    }
+    if reason in ("active_follow_up", "reply_follow_up"):
+        continuation = admission.get("continuation") or {}
+        if continuation.get("enabled"):
+            used, maximum = continuation["used_turns"], continuation["max_turns"]
+            hint["continuation"] = {
+                "used_turns": used,
+                "max_turns": maximum,
+                "near_limit": used >= maximum - 1,
+            }
+    policy = admission.get("participation_policy")
+    policy = policy if isinstance(policy, Mapping) else {}
+    if policy.get("question_enabled") is False:
+        hint["question_enabled"] = False
+    if policy.get("interjection_enabled") is False:
+        hint["interjection_enabled"] = False
+    reference = admission.get("question_reference")
+    if isinstance(reference, Mapping):
+        hint["question_score"] = reference.get("score", 0)
+        hint["question_threshold"] = policy.get("question_threshold", 65)
+    return hint
 
 
 def _single_line(value, limit=120):
@@ -226,11 +406,26 @@ def inject_core_reply_perception_policy(event, request):
     style = prepared.get("perception_style")
     if not isinstance(style, str):
         style = CORE_REPLY_STYLE
-    block = "\n\n【陪伴感知与自然表达】\n" + "\n".join(filter(None, (style, _POLICY)))
+    scope_kind = getattr(getattr(prepared.get("context"), "scope", None), "kind", None)
+    if scope_kind is ScopeKind.PRIVATE:
+        static_contract = _PRIVATE_STATIC_CONTRACT
+        hoisted_rules = _PRIVATE_HOISTED_RULES
+        hoisted_channel = "private"
+    elif scope_kind is ScopeKind.GROUP:
+        static_contract = _GROUP_STATIC_CONTRACT
+        hoisted_rules = _GROUP_HOISTED_RULES
+        hoisted_channel = "group"
+    else:
+        static_contract = ""
+        hoisted_rules = ()
+        hoisted_channel = ""
+    block = "\n\n【陪伴感知与自然表达】\n" + "\n".join(filter(None, (style, _POLICY, static_contract)))
     if block not in prompt:
         prompt = prompt.rstrip() + block
     request.system_prompt = prompt
     state["_perception_policy"] = block
+    state["_hoisted_static_rules"] = hoisted_rules
+    state["_hoisted_channel"] = hoisted_channel
 
 
 async def _selected_provider(native_context, event):
@@ -493,34 +688,65 @@ def _confirmed_contact(material):
     return None
 
 
-def _structured_background(prepared, turn_context, private_context=None):
+def request_has_host_kb_results(request) -> bool:
+    """Return True when AstrBot core already injected official KB results into this request."""
+    for part in getattr(request, "extra_user_content_parts", ()) or ():
+        text = _part_text(part)
+        if isinstance(text, str) and _HOST_KB_RESULTS_MARKER in text:
+            return True
+    return False
+
+
+def _structured_background(prepared, turn_context, private_context=None, *,
+                           skip_official_kb=False, hoisted_rules=(), hoisted_channel=""):
     base = prepared.get("prompt_context_instruction")
     blocks = prepared.get("prompt_context_blocks")
     current = turn_context.strip()
     if not isinstance(base, str) or not base.strip() or not isinstance(blocks, (list, tuple)) or not blocks:
-        return current
+        return _strip_hoisted_rules(current, hoisted_rules) if hoisted_rules else current
     prefix = base.strip()
     if not current.startswith(prefix):
-        return current
+        return _strip_hoisted_rules(current, hoisted_rules) if hoisted_rules else current
     timeline_parts = {(entry["sent_ref"], entry["part"]["sequence"])
                       for group in ("before_input", "after_input")
                       for entry in (private_context or {}).get(group, ()) if "sent_ref" in entry}
     sections = []
     for block in blocks:
-        if not timeline_parts or "materials" not in block:
-            sections.append(block)
+        section = dict(block)
+        if hoisted_channel == "group" and section.get("title") == "群聊参与参考" and "materials" in section:
+            # STATIC_GROUP_PARTICIPATION_RULES is already in cached system_prompt;
+            # keep only the compact per-turn JSON facts in <companion_v2_context>.
+            section.pop("instruction", None)
+        elif hoisted_rules:
+            if isinstance(section.get("instruction"), str):
+                remaining = _strip_hoisted_rules(section["instruction"], hoisted_rules)
+                if remaining:
+                    section["instruction"] = remaining
+                else:
+                    section.pop("instruction", None)
+            if isinstance(section.get("text"), str):
+                section["text"] = _strip_hoisted_rules(section["text"], hoisted_rules)
+        if "materials" not in section:
+            sections.append(section)
             continue
         materials = []
-        for material in block["materials"]:
-            content = _confirmed_contact(material)
+        for material in section["materials"]:
+            if (skip_official_kb and isinstance(material, Mapping)
+                    and str(material.get("kind") or "").startswith(_OFFICIAL_KB_MATERIAL_PREFIX)):
+                continue
+            content = _confirmed_contact(material) if timeline_parts else None
             if content is not None and (content["ref"], content["part"]["sequence"]) in timeline_parts:
                 reduced = dict(content, text_in_private_reply_context=True)
                 del reduced["text"]
                 material = dict(material, content=reduced)
             materials.append(material)
-        sections.append(dict(block, materials=materials))
-    result = {"sections": sections}
+        if materials:
+            section["materials"] = materials
+            sections.append(section)
     additional = current[len(prefix):].strip()
+    if not sections and not additional:
+        return None
+    result = {"sections": sections}
     if additional:
         result["additional_guidance"] = additional
     return result
@@ -600,18 +826,21 @@ async def inject_core_reply_perception_context(event, request, *, native_context
         except Exception:
             # Optional chronological evidence must not block the ordinary reply.
             pass
-    from .core_reply_mentions import restore_group_mentions
+    from .core_reply_mentions import restore_bare_mention_prompt, restore_group_mentions
     restore_group_mentions(event, request, original, native_context)
+    restore_bare_mention_prompt(request, prepared)
+    hoisted_rules = state.get("_hoisted_static_rules", ())
+    hoisted_channel = state.get("_hoisted_channel", "")
     original_text = getattr(original, "group_message_text", None) or getattr(original, "text", None)
     if isinstance(original_text, str) and "[表情" in original_text:
         # Stickers are how people send a feeling without words. Tell the model
         # explicitly, or it treats the turn as empty text and asks "你发了什么".
-        details["emoji_expression"] = {
-            "present": True,
-            "instruction": "本轮对方用表情/表情包表达情绪，不是空白消息，也不是要你复述或识别表情。"
-                           "结合上下文接住这份情绪，用一两句自然回应，或同样回一个表情；"
-                           "不要问「你发了什么」「发个表情是什么意思」，也不要要求对方改用文字。",
-        }
+        details["emoji_expression"] = (
+            {"present": True} if _EMOJI_EXPRESSION_INSTRUCTION in hoisted_rules else {
+                "present": True,
+                "instruction": _EMOJI_EXPRESSION_INSTRUCTION,
+            }
+        )
     prompt_text = getattr(request, "prompt", None)
     query_text = original_text if isinstance(original_text, str) and original_text.strip() else prompt_text
     if application is not None and _asks_recalled_messages(query_text):
@@ -662,19 +891,30 @@ async def inject_core_reply_perception_context(event, request, *, native_context
         if getattr(original, "group_message_text", None) in (None, getattr(original, "text", None)):
             _restore_wake_prefix(event, request, original_text, prompt_text, native_context)
     turn_context = prepared.get("prompt_instruction")
+    host_kb_injected = request_has_host_kb_results(request)
     if isinstance(turn_context, str) and turn_context.strip():
-        details["companion_background"] = _structured_background(
-            prepared, turn_context, details.get("private_reply_context"))
-    participation_hint = _group_participation_hint(prepared)
+        background = _structured_background(
+            prepared, turn_context, details.get("private_reply_context"),
+            skip_official_kb=host_kb_injected, hoisted_rules=hoisted_rules,
+            hoisted_channel=hoisted_channel)
+        if background:
+            details["companion_background"] = background
+    participation_hint = (_compact_group_participation_hint(prepared) if hoisted_channel == "group"
+                          else _group_participation_hint(prepared))
     if participation_hint:
         details["group_participation_hint"] = participation_hint
 
     instructions = _setting_instructions(prepared)
+    if hoisted_rules:
+        instructions = tuple(
+            cleaned for item in instructions
+            if (cleaned := _strip_hoisted_rules(item, hoisted_rules))
+        )
     guidance = prepared.get("perception_guidance")
     guidance = guidance.strip() if isinstance(guidance, str) else ""
     if instructions or guidance:
-        details["expression_guidance"] = "\n".join((*instructions,
-            (("当前角色感知表达补充：" + guidance) if guidance else "")))
+        details["expression_guidance"] = "\n".join(filter(None, (*instructions,
+            (("当前角色感知表达补充：" + guidance) if guidance else ""))))
 
     core = state if isinstance(state, dict) else {}
     image_material = core.get("_image_reference_material")
@@ -760,8 +1000,7 @@ async def inject_core_reply_perception_context(event, request, *, native_context
     from astrbot.core.agent.message import TextPart
 
     parts.append(TextPart(text=text).mark_as_temp())
-    state["_perception_background_injected"] = bool(
-        isinstance(turn_context, str) and turn_context.strip())
+    state["_perception_background_injected"] = bool(details.get("companion_background"))
     state["_perception_material_injected"] = bool(
         details.get("conversation") or details.get("expression_guidance")
         or details.get("image_reference_material") or details.get("private_reply_context")
@@ -800,6 +1039,10 @@ def _apply_external_stt_to_request(event, request, parts, details):
         parts.append(TextPart(text=f"[语音消息转写：{transcript}]").mark_as_temp())
     if isinstance(getattr(request, "prompt", None), str) and request.prompt.strip() in ("", "[语音消息]"):
         request.prompt = f"{VOICE_TRANSCRIPT_PREFIX}{transcript}"
+    if hasattr(request, "retrieval_query"):
+        current_query = getattr(request, "retrieval_query", None)
+        if not isinstance(current_query, str) or not current_query.strip():
+            request.retrieval_query = transcript
     details["audio_transcription"] = {
         "state": "transcribed",
         "source": source or "hear_voice",

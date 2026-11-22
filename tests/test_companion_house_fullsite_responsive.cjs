@@ -388,9 +388,12 @@ test("视觉打磨 P1 回归：模型页签不拆字、感知时钟单行不折�
   );
 });
 
-test("治理与维护页顶栏回归：收敛 .maintenance-page 与 .maintenance-settings-entry 叠加纵向留白", () => {
-  const css = stripComments(read("pages/陪伴小屋/maintenance-page.css"));
-  const pageBlock = css.match(/\.maintenance-page\s*\{([^}]*)\}/);
+test("治理与维护页顶栏回归：「每日巡视设置」收纳进 .shell-panel-actions 顶栏，移除独立 .maintenance-settings-entry 占行", () => {
+  const maintCss = stripComments(read("pages/陪伴小屋/maintenance-page.css"));
+  const shellCss = stripComments(read("pages/陪伴小屋/shell.css"));
+  const appJs = read("pages/陪伴小屋/app.js");
+
+  const pageBlock = maintCss.match(/\.maintenance-page\s*\{([^}]*)\}/);
   assert.ok(pageBlock, "maintenance-page.css 应定义 .maintenance-page");
   assert.match(pageBlock[1], /grid-template-columns:\s*minmax\(\s*0\s*,\s*1fr\s*\)/);
   assert.match(pageBlock[1], /gap:\s*var\(--sp-[23]\)/);
@@ -399,25 +402,38 @@ test("治理与维护页顶栏回归：收敛 .maintenance-page 与 .maintenance
     /gap:\s*var\(--sp-[5678]\)/,
     ".maintenance-page 顶层网格间距不得再使用 --sp-5/6 造成顶部空白断层",
   );
-  assert.match(
-    css,
-    /\.maintenance-page:has\(\s*>\s*\.maintenance-settings-entry\s*\)\s*\{[^}]*gap:\s*var\(--sp-2\)/,
-    "含「每日巡视设置」入口条时 .maintenance-page 应收紧至 var(--sp-2) 紧凑间距",
-  );
-  const entryBlock = css.match(/\.maintenance-settings-entry\s*\{([^}]*)\}/);
-  assert.ok(entryBlock, "maintenance-page.css 应定义 .maintenance-settings-entry");
   assert.doesNotMatch(
-    entryBlock[1],
-    /margin-bottom\s*:\s*var\(--sp-/,
-    ".maintenance-settings-entry 不得再叠加底边距与网格 gap 形成双重留白",
-  );
-  assert.match(
-    entryBlock[1],
-    /margin:\s*calc\(\s*var\(--sp-1\)\s*\*\s*-1\s*\)\s+0\s+0/,
-    ".maintenance-settings-entry 应通过负上边距收紧顶部呼吸距并清零底边距",
+    maintCss,
+    /\.maintenance-settings-entry\b/,
+    "maintenance-page.css 不应再保留独立占行的 .maintenance-settings-entry 样式",
   );
   assert.doesNotMatch(
-    css,
+    appJs,
+    /maintenance-settings-entry/,
+    "app.js 不应再在正文顶部渲染独立占行的 .maintenance-settings-entry",
+  );
+  assert.match(
+    appJs,
+    /class="shell-panel-actions"/,
+    "panelHead 应使用统一的右侧 .shell-panel-actions 操作簇",
+  );
+  assert.doesNotMatch(
+    appJs,
+    /class="panel-spacer"/,
+    "panelHead 不应再使用割裂的 .panel-spacer",
+  );
+  assert.match(
+    shellCss,
+    /\.shell-panel-actions\s*\{[^}]*margin-left:\s*auto[^}]*display:\s*flex/s,
+    "shell.css 应将 .shell-panel-actions 右对齐并横向排布",
+  );
+  assert.match(
+    shellCss,
+    /@media\s*\(\s*max-width:\s*720px\s*\)\s*\{[\s\S]*?\.shell-panel-actions\s*\{[^}]*margin-left:\s*0[^}]*justify-content:\s*flex-start/s,
+    "shell.css 在 <= 720px 窄屏应自然换行并左对齐 .shell-panel-actions",
+  );
+  assert.doesNotMatch(
+    maintCss,
     /@media\s*\(\s*max-width:\s*740px\s*\)\s*\{[^@]*\.maintenance-page\s*\{[^}]*gap:\s*var\(--sp-[5678]\)/,
     "740px 以下移动端的 .maintenance-page 不得回退到 --sp-5/6 大间距",
   );
