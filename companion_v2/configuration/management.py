@@ -419,6 +419,16 @@ class ContentAuthoringManagement(GroupEditor):
     layers = authoring_fields()[0].layers
     error_prefix = "content_authoring"
 
+    def _after_configure(self, operator, data, result):
+        from ..conversation.content.authoring_service import effective_settings
+        from ..conversation.content.provisioning import ensure_content_access
+
+        if getattr(self.context, "role_binding", None) is None:
+            return
+        if not effective_settings(self.runtime, self.context).enabled:
+            return
+        ensure_content_access(self.runtime, self.context, observed_at=self.app.now())
+
 
 class AcquaintanceManagement(GroupEditor):
     """Role defaults for acquaintance cards, shared by that role's contacts."""

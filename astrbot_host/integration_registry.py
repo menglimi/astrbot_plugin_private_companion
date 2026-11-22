@@ -17,6 +17,7 @@ from companion_v2.configuration.models import ConfigLayer, ConfigTarget
 from companion_v2.adapters.astrbot.memory_providers import (
     PROVIDER_API_VERSION, shared_memory_provider_registry)
 from companion_v2.diagnostics.readonly_status import read_p6_readonly_status
+from .content_access import CONTENT_EXTENSION, content_authorization_status
 from .memory_page_api import MemoryPageAPI
 from .integration_catalog import BUNDLED_EXTENSIONS, EXTERNAL_PROVIDERS
 
@@ -134,12 +135,24 @@ class IntegrationRegistry:
             if runtime_status["state"] == "failed":
                 item.update(integration_state="degraded", execution_issue=runtime_status.get("error_code"),
                             reason="模块启动失败，请检查该模块设置后保存并重试")
-            elif runtime_status["state"] == "starting":
-                item.update(integration_state="connected", reason="模块正在后台启动")
-            elif getattr(application, "state", None) != "running":
+            elif getattr(application, "state", None) != "running" and runtime_status["state"] != "starting":
                 item.update(integration_state="stopped", reason="模块已装配，等待 V2 启动")
             else:
-                item.update(integration_state="connected", reason="V2 原生模块已启用")
+                if extension_id == CONTENT_EXTENSION:
+                    authorization = content_authorization_status(runtime)
+                    item["authorization"] = authorization
+                    if not authorization["ready"]:
+                        reason = (
+                            "模块已装配，但尚未对角色启用 Content 权限；请保存创作设置或在私聊中自动补齐授权"
+                            if authorization["issue"] == "capability_role_not_enabled"
+                            else "模块已装配且角色已启用，但尚无已授权的私聊会话；请保存创作设置或在私聊中完成授权"
+                        )
+                        item.update(integration_state="waiting", reason=reason)
+                        return item
+                if runtime_status["state"] == "starting":
+                    item.update(integration_state="connected", reason="模块正在后台启动")
+                else:
+                    item.update(integration_state="connected", reason="V2 原生模块已启用")
         elif installed.desired_state is CapabilityDesiredState.PAUSED:
             item.update(integration_state="disabled", reason="拓展已暂停")
         else:

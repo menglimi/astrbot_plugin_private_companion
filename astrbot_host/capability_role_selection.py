@@ -14,10 +14,11 @@ from companion_v2.execution.models import TaskError, require
 from companion_v2.foundation.refs import OperationRef, SubjectKind, SubjectRef, VersionRef
 
 
-# Only the privacy-sensitive native modules need this bridge: they are the
-# capabilities whose core consent is implicit, so a missing role row otherwise
-# looks permanently disabled after a successful assembly.
-AUTO_ROLE_EXTENSIONS = frozenset(("reality", "companion.screen.native"))
+# Native modules whose role-level opt-in follows Dashboard assembly: privacy
+# modules rely on implicit core consent, and Content authoring is gated by
+# ``content.authoring.enabled`` rather than a separate role-selection panel, so
+# a missing role row otherwise leaves an assembled module permanently disabled.
+AUTO_ROLE_EXTENSIONS = frozenset(("content", "reality", "companion.screen.native"))
 
 ROLE_SELECTION_FIELDS = frozenset(("operation_key", "expected_revision", "enabled"))
 
