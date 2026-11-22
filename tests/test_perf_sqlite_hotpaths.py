@@ -22,11 +22,18 @@ from companion_v2.conversation.native_tool_results import (
     PREFIX as TOOL_RESULT_PREFIX,
     PREFIX_END as TOOL_RESULT_PREFIX_END,
 )
+from companion_v2.conversation.native_turns import NativeConversationTurns, latest_role_contexts
+from companion_v2.conversation.scope_family import private_scope_keys
 from companion_v2.execution.models import TaskContext, digest, encode
 from companion_v2.expression.private_scope import private_people, role_private_contexts
-from companion_v2.foundation.refs import AudienceRef
+from companion_v2.expression.style_service import (
+    KIND as EXPRESSION_LEARN_KIND,
+    ExpressionStyleService,
+)
+from companion_v2.foundation.refs import AudienceRef, ScopeKind, ScopeRef, SubjectKind, SubjectRef
 from companion_v2.host import tick_budget
 from companion_v2.host.tick_budget import TickScheduler, TickUnit
+from companion_v2.identity_policy.models import AuthenticatedHostPrincipal, ResolvedIdentity, RoleBinding
 from companion_v2.model_gateway.core_observations import record_observation
 from companion_v2.model_gateway.maintenance_cache import (
     clear_maintenance_cache,
@@ -525,6 +532,356 @@ class TickBudgetAndPrivateScopeTests(HostFixture, unittest.IsolatedAsyncioTestCa
             contexts = role_private_contexts(runtime, app.tasks.identity, app.messages, context, NOW)
             self.assertLessEqual(restore_spy.call_count, 1)
             self.assertTrue(all(item.key == context.key for item in contexts))
+
+    async def test_expression_style_not_due_fast_path_skips_active_signal_count_and_write_tx(self):
+        host = self.host()
+        app = host.application
+        context = TaskContext(
+            self.important,
+            self.identity.resolve_role(SCOPE, observed_at=NOW).unwrap(),
+            AudienceRef(SCOPE, (self.important.subject,)),
+        )
+        service = app.expression_style
+        service._advance_cursor(service._cursor_key(context), NOW)
+        check_at = NOW + timedelta(minutes=10)
+
+        with patch.object(service, "_active_signal_count", wraps=service._active_signal_count) as count_spy, \
+                patch.object(service, "prepare", wraps=service.prepare) as prepare_spy, \
+                patch.object(app.runtime, "transaction", wraps=app.runtime.transaction) as tx_spy:
+            started = service._scan(context, "role prompt", check_at)
+
+        self.assertFalse(started)
+        self.assertEqual(count_spy.call_count, 0)
+        self.assertEqual(prepare_spy.call_count, 0)
+        self.assertEqual(tx_spy.call_count, 0)
+        self.assertNotIn(context.key, service.next_checks)
+
+    async def test_expression_style_unchanged_empty_window_skips_repeat_prepare_until_new_input(self):
+        host = self.host()
+        app = host.application
+        app.tasks.start(expected_generation=0).unwrap()
+        app.state = "running"
+        NativeConversationObservations(app.messages)
+        context = TaskContext(
+            self.important,
+            self.identity.resolve_role(SCOPE, observed_at=NOW).unwrap(),
+            AudienceRef(SCOPE, (self.important.subject,)),
+        )
+        with app.runtime.transaction() as connection:
+            connection.execute(
+                """INSERT INTO conversation_batches (
+                       batch_id, origin_key, context_json, role_instruction,
+                       state, revision, created_at, contributions_json
+                   ) VALUES (?, ?, ?, ?, 'ready', 1, ?, '[]')""",
+                ("batch-empty-1", context.key, encode(context), "role prompt", encode_timestamp(NOW)),
+            )
+        app.state_maintenance.bindings[context.key] = (context, "role prompt", None)
+        service = app.expression_style
+        service.gateway = type("G", (), {"router": type("R", (), {"profiles": {EXPRESSION_LEARN_KIND: object()}})()})()
+
+        original_prepare = ExpressionStyleService.prepare
+        prepare_calls = []
+
+        def tracked_prepare(self_obj, ctx, instruction, at):
+            prepare_calls.append(ctx.key)
+            return original_prepare(self_obj, ctx, instruction, at)
+
+        with patch.object(ExpressionStyleService, "prepare", autospec=True, side_effect=tracked_prepare):
+            # Pass 1: prepares once and records insufficient_samples without mutating next_checks.
+            service._next_discovery_at = None
+            service.advance()
+            self.assertEqual(len(prepare_calls), 1)
+            self.assertEqual(service.results[service._work_key(context)]["state"], "insufficient_samples")
+            self.assertNotIn(context.key, service.next_checks)
+
+            # Pass 2: unchanged window watermark skips prepare completely.
+            self.clock.advance(timedelta(seconds=61))
+            service.advance()
+            self.assertEqual(len(prepare_calls), 1)
+            self.assertNotIn(context.key, service.next_checks)
+
+            # Pass 3: a new input observation invalidates the watermark immediately.
+            with app.runtime.transaction() as connection:
+                connection.execute(
+                    """INSERT INTO conversation_native_observations (
+                           observation_id, context_key, memory_owner, conversation_owner,
+                           turn_id, event_id, kind, delivery_state, context_json,
+                           source_json, content_hash, observed_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, 'input', 'input_observed', ?, '{}', 'h', ?)""",
+                    (
+                        "obs-new-1",
+                        context.key,
+                        "mem-owner",
+                        "conv-owner",
+                        "turn-new-1",
+                        "evt-new-1",
+                        encode(context),
+                        encode_timestamp(self.clock.now()),
+                    ),
+                )
+            self.clock.advance(timedelta(seconds=61))
+            service.advance()
+            self.assertEqual(len(prepare_calls), 2)
+
+            # Approving a sample with a lexicographically smaller content_hash while a
+            # larger-hash sample remains pending must still invalidate review_marker immediately.
+            review_policy = type(
+                "ReviewPolicy",
+                (),
+                {
+                    "private_learning_enabled": True,
+                    "group_learning_enabled": False,
+                    "window_hours": 720,
+                    "sample_limit": 25,
+                    "min_samples": 2,
+                    "group_min_samples": 20,
+                    "sample_chars": 300,
+                    "sample_review_enabled": True,
+                    "group_new_messages": 20,
+                    "group_member_mode": "all",
+                    "group_member_ids": "",
+                },
+            )()
+            reviews = service.samples.reviews
+            reviews.write(
+                context,
+                {
+                    "handle": "input:sample-high",
+                    "content_hash": "ffff" + "0" * 60,
+                    "state": "pending",
+                    "revision": 1,
+                    "seen_at": encode_timestamp(self.clock.now()),
+                    "decided_at": None,
+                    "decided_by": None,
+                    "decision_key": None,
+                },
+            )
+            sample_low = {
+                "handle": "input:sample-low",
+                "content_hash": "0001" + "0" * 60,
+                "state": "pending",
+                "revision": 1,
+                "seen_at": encode_timestamp(self.clock.now()),
+                "decided_at": None,
+                "decided_by": None,
+                "decision_key": None,
+            }
+            reviews.write(context, sample_low)
+            before_wm = service._empty_prepare_watermark(context, review_policy, self.clock.now())
+            self.assertIsNotNone(before_wm)
+            self.clock.advance(timedelta(seconds=5))
+            reviews.write(
+                context,
+                {
+                    **sample_low,
+                    "state": "approved",
+                    "revision": 2,
+                    "decided_at": encode_timestamp(self.clock.now()),
+                    "decided_by": "operator",
+                    "decision_key": "dec-low-1",
+                },
+            )
+            after_wm = service._empty_prepare_watermark(context, review_policy, self.clock.now())
+            self.assertNotEqual(before_wm, after_wm)
+
+    async def test_expression_style_advance_async_offloads_scan_off_event_loop(self):
+        host = self.host()
+        app = host.application
+        app.state = "running"
+        context = TaskContext(
+            self.important,
+            self.identity.resolve_role(SCOPE, observed_at=NOW).unwrap(),
+            AudienceRef(SCOPE, (self.important.subject,)),
+        )
+        app.state_maintenance.bindings[context.key] = (context, "role prompt", None)
+        service = app.expression_style
+        service.gateway = type("G", (), {"router": type("R", (), {"profiles": {EXPRESSION_LEARN_KIND: object()}})()})()
+        main_thread_id = threading.get_ident()
+        scan_thread_ids = []
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocking_group_candidates(at, limit=8):
+            scan_thread_ids.append(threading.get_ident())
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("offloaded expression scan was not released")
+            return ()
+
+        async def fake_run(ctx, instruction):
+            return {"state": "succeeded"}
+
+        fake_job = {
+            "context": context,
+            "instruction": "role prompt",
+            "at": NOW,
+            "policy": type("P", (), {"learning_mode": "balanced"})(),
+            "material_hash": "mat-async-1",
+        }
+        loop_ticks = 0
+        with patch.object(service, "_group_candidates", side_effect=blocking_group_candidates), \
+                patch.object(service, "prepare", return_value=fake_job), \
+                patch.object(service, "run", side_effect=fake_run):
+            service._next_discovery_at = None
+            task = asyncio.create_task(service.advance_async())
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+                for _ in range(3):
+                    await asyncio.sleep(0.005)
+                    loop_ticks += 1
+                self.assertEqual(loop_ticks, 3)
+                self.assertFalse(task.done())
+            finally:
+                release.set()
+            await task
+
+        self.assertEqual(len(scan_thread_ids), 1)
+        self.assertNotEqual(scan_thread_ids[0], main_thread_id)
+        self.assertIn(service._work_key(context), service.workers)
+        await asyncio.gather(*tuple(service.workers.values()), return_exceptions=True)
+
+    async def test_group_candidates_uses_partial_group_indexes_and_scope_family_deduplicates_keys(self):
+        host = self.host()
+        app = host.application
+        runtime = app.runtime
+        NativeConversationTurns(runtime)
+
+        priv_ctx = TaskContext(
+            self.important,
+            self.identity.resolve_role(SCOPE, observed_at=NOW).unwrap(),
+            AudienceRef(SCOPE, (self.important.subject,)),
+        )
+        group_scope = ScopeRef(
+            SCOPE.installation_id, SCOPE.platform, ScopeKind.GROUP, "group-9001",
+            SCOPE.bot_id, SCOPE.account_id, "group-conv-1", "group-sess-1",
+        )
+        group_actor = ResolvedIdentity(
+            AuthenticatedHostPrincipal(
+                SCOPE.installation_id, "host-a", SCOPE.platform, "member-1", SCOPE.bot_id, SCOPE.account_id,
+            ),
+            SubjectRef(SCOPE.installation_id, SubjectKind.HUMAN, "human-group-1"),
+            "binding-g1", 1, 1,
+        )
+        group_ctx = TaskContext(
+            group_actor,
+            RoleBinding(group_scope, priv_ctx.role_binding.role, 1),
+            AudienceRef(group_scope, (group_actor.subject,)),
+        )
+        with runtime.transaction() as connection:
+            for idx in range(25):
+                connection.execute(
+                    """INSERT INTO conversation_native_turns (
+                           turn_id, context_key, context_json, role_instruction,
+                           input_observation_id, observed_at, generation_state, phase_at, last_sent_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, NULL)""",
+                    (
+                        f"priv-turn-{idx}",
+                        priv_ctx.key,
+                        encode(priv_ctx),
+                        "P" * 4096,
+                        f"in-p-{idx}",
+                        encode_timestamp(NOW - timedelta(minutes=idx)),
+                        encode_timestamp(NOW - timedelta(minutes=idx)),
+                    ),
+                )
+            for idx in range(4):
+                connection.execute(
+                    """INSERT INTO conversation_native_turns (
+                           turn_id, context_key, context_json, role_instruction,
+                           input_observation_id, observed_at, generation_state, phase_at, last_sent_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, NULL)""",
+                    (
+                        f"grp-turn-{idx}",
+                        group_ctx.key,
+                        encode(group_ctx),
+                        "G" * 4096,
+                        f"in-g-{idx}",
+                        encode_timestamp(NOW - timedelta(minutes=idx)),
+                        encode_timestamp(NOW - timedelta(minutes=idx)),
+                    ),
+                )
+
+        captured_sql = []
+        original_read_all = runtime.read_all
+
+        def spy_read_all(statement, parameters):
+            captured_sql.append((statement, tuple(parameters)))
+            return original_read_all(statement, parameters)
+
+        with patch.object(runtime, "read_all", side_effect=spy_read_all):
+            rows = latest_role_contexts(runtime, kind="group", limit=8)
+            candidates = app.expression_style._group_candidates(NOW, limit=8)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].key, group_ctx.key)
+        turn_plans = [
+            " | ".join(_query_plan_lines(runtime, stmt, params))
+            for stmt, params in captured_sql
+            if "FROM conversation_native_turns" in stmt
+        ]
+        batch_plans = [
+            " | ".join(_query_plan_lines(runtime, stmt, params))
+            for stmt, params in captured_sql
+            if "FROM conversation_batches" in stmt
+        ]
+        self.assertTrue(turn_plans and all("idx_native_turns_group_role_recent" in p for p in turn_plans), turn_plans)
+        self.assertTrue(batch_plans and all("idx_conversation_batches_group_role" in p for p in batch_plans), batch_plans)
+
+        # scope_family deduplicates repeated context_key rows before TaskContext.restore.
+        with patch.object(TaskContext, "restore", wraps=TaskContext.restore) as restore_spy:
+            keys = private_scope_keys(runtime, priv_ctx.scope, priv_ctx.role_binding.role)
+        self.assertEqual(len(keys), 1)
+        self.assertEqual(restore_spy.call_count, 1)
+
+    async def test_tick_scheduler_supports_async_units_aggregates_slow_warnings_and_activity_readiness(self):
+        # Async unit using to_thread does not emit a false main-thread slow warning.
+        async def async_offloaded():
+            await asyncio.to_thread(time.sleep, 0.025)
+            return "async-ok"
+
+        async_scheduler = TickScheduler((TickUnit("async-unit", async_offloaded),), budget_seconds=1.0)
+        with patch.object(tick_budget, "SLOW_UNIT_WARNING_SECONDS", 0.01):
+            with self.assertNoLogs(tick_budget.logger, level=logging.WARNING):
+                report = await async_scheduler.advance()
+        self.assertTrue(report.completed)
+        self.assertEqual(report.results["async-unit"], "async-ok")
+
+        # Repeated slow sync warnings are rate-limited to 300s and report suppressed count on next emit.
+        self.assertGreaterEqual(tick_budget.SLOW_UNIT_LOG_INTERVAL_SECONDS, 300.0)
+
+        def slow_sync():
+            time.sleep(0.02)
+            return "slow"
+
+        sync_scheduler = TickScheduler((TickUnit("slow-sync", slow_sync),), budget_seconds=1.0)
+        with patch.object(tick_budget, "SLOW_UNIT_WARNING_SECONDS", 0.01), \
+                patch.object(tick_budget, "SLOW_UNIT_LOG_INTERVAL_SECONDS", 300.0), \
+                self.assertLogs(tick_budget.logger, level=logging.WARNING) as captured:
+            await sync_scheduler.advance()  # logged immediately
+            await sync_scheduler.advance()  # suppressed #1
+            await sync_scheduler.advance()  # suppressed #2
+            # Force interval expiry to verify aggregated suppressed count.
+            sync_scheduler._slow_log_at["slow-sync"] -= 301.0
+            await sync_scheduler.advance()  # logged with suppressed=2
+
+        self.assertEqual(len(captured.output), 2)
+        self.assertIn("suppressed=2", captured.output[1])
+
+        # MemoryActivityIngestion.has_due_bindings gates idle 1s ticks cleanly during the 30s cooldown.
+        host = self.host()
+        app = host.application
+        context = TaskContext(
+            self.important,
+            self.identity.resolve_role(SCOPE, observed_at=NOW).unwrap(),
+            AudienceRef(SCOPE, (self.important.subject,)),
+        )
+        windows = ((context, "prompt", None),)
+        self.assertTrue(app.memory.activity.has_due_bindings(windows))
+        app.memory.activity._last_advance[context.key] = self.clock.now()
+        self.assertFalse(app.memory.activity.has_due_bindings(windows))
+        self.clock.advance(timedelta(seconds=31))
+        self.assertTrue(app.memory.activity.has_due_bindings(windows))
 
 
 if __name__ == "__main__":

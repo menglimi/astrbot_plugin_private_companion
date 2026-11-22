@@ -24,6 +24,7 @@ source by participant and role.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import json
 
 from companion_v2.execution.models import digest
@@ -65,7 +66,7 @@ def window_rotated(context, scope_key, source_kind):
     return context.scope.kind is ScopeKind.GROUP and source_kind not in NAMED_SOURCES
 
 
-def rule_reason(context, scope_key, window, handles, *, samples=None, at=None):
+def rule_reason(context, scope_key, window, handles, *, samples=None, at=None, _cache=None):
     """Why reply injection would skip this stored rule here, or ``None``.
 
     ``samples`` is the source catalogue: it resolves the window the samples were
@@ -95,17 +96,41 @@ def rule_reason(context, scope_key, window, handles, *, samples=None, at=None):
             except Exception:
                 return SAMPLE_CHANGED
         return None
-    try:
-        source = samples.evidence_context(window, context)
-    except Exception:
-        # The window the samples were captured in no longer resolves for this
-        # conversation, so the rule cannot be re-read from it.
-        return SAMPLE_CHANGED
-    if at is not None and context.scope.kind is ScopeKind.PRIVATE:
+    context_cache = _cache["evidence"] if _cache is not None else None
+    window_ctx_key = window.get("context_key")
+    cache_key = (
+        (context.scope.kind, window_ctx_key)
+        if context_cache is not None and window_ctx_key is not None
+        else None
+    )
+    if cache_key is not None and cache_key in context_cache:
+        source = context_cache[cache_key]
+        if source is None:
+            return SAMPLE_CHANGED
+    else:
         try:
-            if not samples.private_source_available(source, context, at):
-                return SAMPLE_CHANGED
+            source = samples.evidence_context(window, context)
         except Exception:
+            # The window the samples were captured in no longer resolves for this
+            # conversation, so the rule cannot be re-read from it.
+            if cache_key is not None:
+                context_cache[cache_key] = None
+            return SAMPLE_CHANGED
+        if cache_key is not None:
+            context_cache[cache_key] = source
+    if at is not None and context.scope.kind is ScopeKind.PRIVATE:
+        avail_cache = _cache["private_available"] if _cache is not None else None
+        source_key = getattr(source, "key", None)
+        if avail_cache is not None and source_key is not None and source_key in avail_cache:
+            available = avail_cache[source_key]
+        else:
+            try:
+                available = bool(samples.private_source_available(source, context, at))
+            except Exception:
+                available = False
+            if avail_cache is not None and source_key is not None:
+                avail_cache[source_key] = available
+        if not available:
             return SAMPLE_CHANGED
     if kind == "conversation_input":
         # ``allows_handles`` is the approval gate injection applies last: a
@@ -148,24 +173,31 @@ def rule_scope_counts(runtime, context, owner_key, family_keys, *, samples=None,
         WHERE s.owner_key = ? AND s.scope_key IN ({placeholders})
           AND s.state IN ('pending', 'adopted')"""
     parameters = (owner_key, *keys)
-    rows = (connection.execute(statement, parameters).fetchall()
-            if connection is not None else runtime.read_all(statement, parameters))
-    counts, rotated = {}, 0
-    for row in rows:
-        try:
-            window = json.loads(row["sample_json"])
-            handles = json.loads(row["evidence_json"])
-        except (TypeError, ValueError):
-            continue
-        kind = source_kind(window)
-        if kind is None:
-            continue
-        if rule_reason(context, row["scope_key"], window, handles,
-                       samples=samples, at=at) is None:
-            counts[row["state"]] = counts.get(row["state"], 0) + 1
-        elif window_rotated(context, row["scope_key"], kind):
-            rotated += 1
-    return counts, rotated
+    snapshot = (
+        runtime.read_snapshot()
+        if connection is None and callable(getattr(runtime, "read_snapshot", None))
+        else nullcontext()
+    )
+    with snapshot:
+        rows = (connection.execute(statement, parameters).fetchall()
+                if connection is not None else runtime.read_all(statement, parameters))
+        counts, rotated = {}, 0
+        cache = {"evidence": {}, "private_available": {}}
+        for row in rows:
+            try:
+                window = json.loads(row["sample_json"])
+                handles = json.loads(row["evidence_json"])
+            except (TypeError, ValueError):
+                continue
+            kind = source_kind(window)
+            if kind is None:
+                continue
+            if rule_reason(context, row["scope_key"], window, handles,
+                           samples=samples, at=at, _cache=cache) is None:
+                counts[row["state"]] = counts.get(row["state"], 0) + 1
+            elif window_rotated(context, row["scope_key"], kind):
+                rotated += 1
+        return counts, rotated
 
 
 def usable_rule_counts(runtime, context, owner_key, family_keys, *, samples=None,

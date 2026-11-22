@@ -90,6 +90,16 @@ STATEMENTS = (
         json_extract(context_json, '$.role_binding.role.subject_id'),
         json_extract(context_json, '$.role_binding.scope.bot_id'),
         json_extract(context_json, '$.role_binding.scope.installation_id'))""",
+    # ``ExpressionStyleService._group_candidates`` discovers distinct group role
+    # bindings newest-first without scanning private turns, reading 15 KB
+    # role_instruction blobs, or shadowing ``conversation_native_open_turn_idx``.
+    "CREATE INDEX IF NOT EXISTS idx_native_turns_group_role_recent "
+    "ON conversation_native_turns("
+    "json_extract(context_json, '$.role_binding'), observed_at) "
+    "WHERE json_extract(context_json, '$.audience.scope.kind') = 'group'",
+    "CREATE INDEX IF NOT EXISTS idx_conversation_batches_group_role "
+    "ON conversation_batches(json_extract(context_json, '$.role_binding')) "
+    "WHERE json_extract(context_json, '$.audience.scope.kind') = 'group'",
     # ``scope_family._windows`` resolves both group and private scope families
     # across conversation_native_turns and conversation_batches ORDER BY rowid DESC.
     *(

@@ -395,9 +395,25 @@ class StorageRuntime:
     SLOW_OPERATION_STATEMENT_CHARS = 160
     _PERFORMANCE_INDEX_STATEMENTS = (
         (
+            "execution_tasks",
             "idx_execution_tasks_origin_kind_id",
             "CREATE INDEX IF NOT EXISTS idx_execution_tasks_origin_kind_id "
             "ON execution_tasks(origin_key, kind, task_id)",
+        ),
+        (
+            "conversation_batches",
+            "idx_conversation_batches_group_role",
+            "CREATE INDEX IF NOT EXISTS idx_conversation_batches_group_role "
+            "ON conversation_batches(json_extract(context_json, '$.role_binding')) "
+            "WHERE json_extract(context_json, '$.audience.scope.kind') = 'group'",
+        ),
+        (
+            "conversation_native_turns",
+            "idx_native_turns_group_role_recent",
+            "CREATE INDEX IF NOT EXISTS idx_native_turns_group_role_recent "
+            "ON conversation_native_turns("
+            "json_extract(context_json, '$.role_binding'), observed_at) "
+            "WHERE json_extract(context_json, '$.audience.scope.kind') = 'group'",
         ),
     )
 
@@ -1838,14 +1854,20 @@ class StorageRuntime:
 
     @staticmethod
     def _ensure_performance_indexes(connection: sqlite3.Connection) -> None:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IS NOT NULL"
+            )
+        }
         existing = {
             row[0]
             for row in connection.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'index' AND name IS NOT NULL"
             )
         }
-        for name, statement in StorageRuntime._PERFORMANCE_INDEX_STATEMENTS:
-            if name not in existing:
+        for table_name, name, statement in StorageRuntime._PERFORMANCE_INDEX_STATEMENTS:
+            if table_name in tables and name not in existing:
                 connection.execute(statement)
 
     @staticmethod

@@ -7,6 +7,7 @@ private participants and group ownership -- lives in
 injection share one implementation instead of two entries.
 """
 
+from contextlib import nullcontext
 import json
 
 from companion_v2.execution.models import TaskContext
@@ -100,27 +101,39 @@ def private_people(runtime, identity, context, at):
 
 
 def role_private_contexts(runtime, identity, messages, context, at):
-    from .configuration import read_settings, source_subject_allowed_for_context
+    from .configuration import read_settings, resolve_role_source_gate, source_subject_allowed
 
     if context.scope.kind is not ScopeKind.PRIVATE:
         return ()
-    distinct_contexts = _distinct_role_private_contexts(runtime, context)
-    people = _bound_private_people(identity, context, at, distinct_contexts)
-    allowed_ids = {item["subject_id"] for item in people}
-    contexts = {}
-    for candidate in distinct_contexts:
-        subject_id = candidate.actor.subject.subject_id
-        if candidate.key in contexts or subject_id not in allowed_ids:
-            continue
-        try:
-            messages.authorize(candidate, at)
-            policy = read_settings(runtime, candidate)
-            if (policy.private_learning_enabled
-                    and source_subject_allowed_for_context(runtime, candidate)):
-                contexts[candidate.key] = candidate
-        except Exception:
-            continue
-    return tuple(contexts.values())
+    snapshot = runtime.read_snapshot() if callable(getattr(runtime, "read_snapshot", None)) else nullcontext()
+    with snapshot:
+        distinct_contexts = _distinct_role_private_contexts(runtime, context)
+        if not distinct_contexts:
+            return ()
+        people = _bound_private_people(identity, context, at, distinct_contexts)
+        allowed_ids = {item["subject_id"] for item in people}
+        if not allowed_ids:
+            return ()
+        role_scope, owner_subject = resolve_role_source_gate(runtime, context)
+        permitted_ids = {
+            subject_id for subject_id in allowed_ids
+            if source_subject_allowed(role_scope, subject_id, owner_subject)
+        }
+        if not permitted_ids:
+            return ()
+        contexts = {}
+        for candidate in distinct_contexts:
+            subject_id = candidate.actor.subject.subject_id
+            if candidate.key in contexts or subject_id not in permitted_ids:
+                continue
+            try:
+                messages.authorize(candidate, at)
+                policy = read_settings(runtime, candidate)
+                if policy.private_learning_enabled:
+                    contexts[candidate.key] = candidate
+            except Exception:
+                continue
+        return tuple(contexts.values())
 
 
 def current_private_context(runtime, key, role_binding):

@@ -149,9 +149,12 @@ def scope_family_keys(runtime, context):
 
 def _windows(runtime, filter_sql, parameters):
     """Restore the stored turn contexts matching one SQL filter, newest first."""
+    seen_keys = set()
+    seen_raw = set()
     for table in _WINDOW_TABLES:
+        key_column = "context_key" if table == "conversation_native_turns" else "origin_key"
         try:
-            rows = runtime.read_all(f"""SELECT context_json FROM {table} WHERE {filter_sql}
+            rows = runtime.read_all(f"""SELECT {key_column} AS ctx_key, context_json FROM {table} WHERE {filter_sql}
                 ORDER BY rowid DESC LIMIT ?""", (*parameters, MAX_FAMILY_WINDOWS))
         except (sqlite3.Error, TypeError, ValueError, KeyError) as error:
             # A missing table or a schema drift is not fatal for a family: the
@@ -161,6 +164,16 @@ def _windows(runtime, filter_sql, parameters):
                          table, type(error).__name__)
             continue
         for row in rows:
+            ctx_key = row["ctx_key"]
+            if ctx_key:
+                if ctx_key in seen_keys:
+                    continue
+                seen_keys.add(ctx_key)
+            else:
+                raw_json = row["context_json"]
+                if raw_json in seen_raw:
+                    continue
+                seen_raw.add(raw_json)
             try:
                 yield TaskContext.restore(json.loads(row["context_json"]))
             except (TypeError, ValueError, KeyError):
