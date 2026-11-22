@@ -276,6 +276,17 @@ test("成长链路：growth_view_stale/growth_progress_decided 自动刷新、�
   await settle(() => !page.state.data.loading);
   assert.deepEqual([...page.state.data.items.map(r => r.growth_id)], ["g-b1"]);
   assert.match(page.state.data.notice, /来源乙/);
+
+  // 来源列表通过 getSources() 归零后点击刷新：清空旧列表/审阅/详情并给出中文提示
+  activeSources.length = 0;
+  listeners.get("click")?.({target: {closest: probe => (probe === "[data-action]" ? {dataset: {action: "refresh"}} : null)}});
+  await flush();
+  assert.equal(page.state.data.items.length, 0, "来源归零刷新后旧记录必须清空");
+  assert.equal(page.state.data.reviews.length, 0, "来源归零刷新后旧审阅必须清空");
+  assert.equal(page.state.data.detail, null);
+  assert.equal(page.state.data.refreshedAt, "");
+  assert.match(page.state.data.notice, /没有可读取的成长记录来源/);
+  assert.match(root.innerHTML, /还没有可读取的成长记录/);
   page.unmount();
 });
 
@@ -395,11 +406,21 @@ test("原生感知：刷新防连点并发、显示回执，且节点断连后�
     setInterval: fn => { timerFn = fn; return 42; },
     clearInterval: () => { cleared += 1; },
   };
-  const doc = {visibilityState: "visible", addEventListener() {}};
+  const activeField = {tagName: "INPUT"};
+  const doc = {visibilityState: "visible", activeElement: null, addEventListener() {}};
   vm.runInNewContext(source, {window: win, document: doc, AbortController, crypto: {}, TextEncoder, setTimeout, clearTimeout, Intl, Date});
   const makeNode = () => {
     const handlers = {};
-    return {isConnected: true, innerHTML: "", addEventListener(t, fn) { handlers[t] = fn; }, click(a) { handlers.click?.({target: {closest: () => ({dataset: {nativeAction: a}})}}); }};
+    let html = "", writes = 0;
+    return {
+      isConnected: true,
+      get innerHTML() { return html; },
+      set innerHTML(v) { html = v; writes += 1; },
+      get writes() { return writes; },
+      contains(target) { return target === activeField; },
+      addEventListener(t, fn) { handlers[t] = fn; },
+      click(a) { handlers.click?.({target: {closest: () => ({dataset: {nativeAction: a}})}}); },
+    };
   };
   const env = makeNode(), cal = makeNode(), mod = makeNode(), news = makeNode();
   win.CompanionNativePerceptionPage.mount({environment: env, calendar: cal, model: mod, news});
@@ -417,10 +438,23 @@ test("原生感知：刷新防连点并发、显示回执，且节点断连后�
   await flush();
   assert.match(env.innerHTML, makeClockRegex());
 
+  // 30s 静默后台轮询：按钮不得闪灰或变「读取中…」，且焦点在表单内时不重写该表单 innerHTML
+  doc.activeElement = activeField;
+  const calWritesBefore = cal.writes;
+  const envWritesBefore = env.writes;
+  timerFn?.();
+  assert.equal(gets, 3);
+  assert.equal(env.writes, envWritesBefore, "静默后台轮询请求前不应重绘闪灰按钮");
+  assert.doesNotMatch(env.innerHTML, /is-refreshing|读取中…/);
+  pendingResolve({status: "ok", data: payload});
+  await flush();
+  assert.equal(cal.writes, calWritesBefore, "焦点位于表单内时后台轮询不得重写表单打断输入");
+  doc.activeElement = null;
+
   // 节点全部断开连接后，30s 定时器触发应自动卸载且不再发请求
   env.isConnected = cal.isConnected = mod.isConnected = news.isConnected = false;
   timerFn?.();
-  assert.equal(gets, 2, "游离 DOM 不得继续发轮询请求");
+  assert.equal(gets, 3, "游离 DOM 不得继续发轮询请求");
   assert.equal(cleared, 1, "游离 DOM 应自动清理 30s 定时器");
 });
 
@@ -481,6 +515,7 @@ test("产出页观测刷新：即使作品列表已载入，重新读取仍同�
       return [];
     },
   };
+  let obsGate = null;
   const win = {
     CompanionProduct: {
       scopeKey: () => "s1",
@@ -489,7 +524,14 @@ test("产出页观测刷新：即使作品列表已载入，重新读取仍同�
       relative: v => v.slice(PREFIX.length),
       request: async (_m, ep) => {
         if (ep === "works/library") return {works: [{title: "旧作", state: "writing", created_at: "2026-10-01T00:00:00Z"}]};
-        if (ep === "model/image/observability") return {images: {total: 3, items: []}, content: {available: true, works_count: worksCount, candidate_count: 1, updated_at: "2026-10-12T04:05:00Z"}};
+        if (ep === "model/image/observability") {
+          if (obsGate) {
+            const wait = obsGate;
+            obsGate = null;
+            await wait;
+          }
+          return {images: {total: 3, items: [{action: "image.generate", state: "succeeded", created_at: "2026-10-12T04:00:00Z", elapsed_ms: 1200}]}, content: {available: true, works_count: worksCount, candidate_count: 1, updated_at: "2026-10-12T04:05:00Z"}};
+        }
         if (ep === "model/image/output") return {settings: {backend: "auto", enabled: false, endpoints: [], comfyui: {}, sd_webui: {}}, revision: "r1", host_registered: false};
         return {providers: []};
       },
@@ -504,9 +546,18 @@ test("产出页观测刷新：即使作品列表已载入，重新读取仍同�
   page.showWorks();
   await flush();
   assert.equal(statNodes.works.textContent, "1");
+  assert.match(obsHost.innerHTML, /3 次调用/);
 
   worksCount = 5;
-  await page.refreshObservability(true);
+  let releaseObs;
+  obsGate = new Promise(r => { releaseObs = r; });
+  const refreshing = page.refreshObservability(true);
+  assert.match(obsHost.innerHTML, /3 次调用/, "已有观测记录时刷新期间不得闪白清空塌陷");
+  assert.doesNotMatch(obsHost.innerHTML, /正在读取最近调用/);
+  assert.equal(obsBtn.classes.has("is-refreshing"), true);
+  assert.equal(obsBtn.attrs["aria-busy"], "true");
+  releaseObs();
+  await refreshing;
   assert.equal(statNodes.works.textContent, "5", "worksLoaded 为 true 时观测刷新仍必须更新内容摘要");
   assert.match(obsHost.innerHTML, makeClockRegex());
   page.unmount();
@@ -665,25 +716,21 @@ test("脚本补引、HTTP UUID 回退、维护深链、SDK 失败清理与 postM
   assert.match(draftJs, /personaChoicesSeq/);
 });
 
-test("群聊记忆页：缺失 ID 不全行误选、竞态乱序丢弃与公开 refresh()", async () => {
+test("群聊记忆页：手动刷新并发去重、单次列表渲染、缺失 ID 不全行误选与竞态乱序丢弃", async () => {
   const source = read("pages", "关系与记忆", "group-memory.js");
-  let resolveFirst, resolveSecond;
-  let call = 0;
+  const resolvers = [];
   const bridge = {
-    apiGet: () => {
-      call += 1;
-      if (call === 1) return new Promise(r => { resolveFirst = r; });
-      return new Promise(r => { resolveSecond = r; });
-    },
+    apiGet: () => new Promise(r => resolvers.push(r)),
     apiPost: async () => ({status: "ok", data: {}}),
   };
   const makeEl = (tag = "div") => {
+    const handlers = {};
     const el = {
       tagName: tag.toUpperCase(), innerHTML: "", textContent: "", className: "", hidden: false, disabled: false, value: "",
-      dataset: {}, attrs: {}, children: [], classes: new Set(),
+      dataset: {}, attrs: {}, children: [], classes: new Set(), replaceCount: 0, handlers,
       setAttribute(k, v) { el.attrs[k] = v; },
-      addEventListener() {},
-      replaceChildren(...items) { el.children = [...items]; },
+      addEventListener(type, fn) { handlers[type] = fn; },
+      replaceChildren(...items) { el.replaceCount += 1; el.children = [...items]; },
       append(...items) { el.children.push(...items); },
     };
     el.classList = {toggle(c, on) { on ? el.classes.add(c) : el.classes.delete(c); }};
@@ -705,19 +752,35 @@ test("群聊记忆页：缺失 ID 不全行误选、竞态乱序丢弃与公开 
   vm.runInNewContext(source, {window: win, document: doc, Date, Math, Number, Object, Array, String, Set, Map, Promise, setTimeout, clearTimeout});
   const gm = win.CompanionGroupMemoryPage;
   gm.mount(bridge, {display: {target_label: "测试群", role_name: "角色"}});
-  gm.refresh();
-  assert.equal(call, 2);
+  assert.equal(resolvers.length, 1);
 
-  // 第二次先返回（含缺失 memory_id 的行），第一次慢响应后返回 -> 第一次必须被丢弃，且无 ID 行不误全选
-  resolveSecond({status: "ok", data: {items: [{summary: "条目一"}, {summary: "条目二"}], next_cursor: null}});
+  // 在途时手动 refresh() 必须被并发去重，不发第二次 GET
+  gm.refresh();
+  assert.equal(resolvers.length, 1, "加载在途时手动 refresh() 不得并发重复拉取");
+
+  // 切换筛选触发第二次非手动加载（与第一次并发），模拟第二次先返回、第一次后返回
+  byId.get("gm-filter").value = "retracted";
+  byId.get("gm-filter").handlers.change?.();
+  assert.equal(resolvers.length, 2);
+  const replaceBefore = byId.get("gm-list").replaceCount;
+  resolvers[1]({status: "ok", data: {items: [{summary: "条目一"}, {summary: "条目二"}], next_cursor: null}});
   await flush();
-  resolveFirst({status: "ok", data: {items: [{memory_id: "old", summary: "过时条目"}], next_cursor: null}});
+  assert.equal(byId.get("gm-list").replaceCount - replaceBefore, 1, "成功路径应只重建一次列表 DOM");
+
+  resolvers[0]({status: "ok", data: {items: [{memory_id: "old", summary: "过时条目"}], next_cursor: null}});
   await flush();
   const listChildren = byId.get("gm-list").children;
   const serialized = JSON.stringify(listChildren);
   assert.doesNotMatch(serialized, /过时条目/, "慢响应不得覆盖新结果");
   assert.equal(listChildren.filter(row => /selected|active/.test(row.className) || row.attrs["aria-pressed"] === "true").length, 0,
     "undefined === undefined 不得误选所有行");
+
+  // 空闲态调用公开 refresh() 正常触发并产出时间回执
+  gm.refresh();
+  assert.equal(resolvers.length, 3);
+  resolvers[2]({status: "ok", data: {items: [{memory_id: "m1", summary: "最新条目"}], next_cursor: null}});
+  await flush();
+  assert.match(byId.get("gm-refresh-stamp").textContent, makeClockRegex());
 });
 
 test("华为健康：链式 setTimeout 轮询且登录阶段未变化时不重绘 DOM 抢焦点", async () => {

@@ -795,7 +795,7 @@ window.CompanionOutputPage=(()=>{
     });
     const host=root.querySelector("#outputObservationWorkspace");
     if(!host)return;
-    if(observationBusy){host.innerHTML='<span class="output-observation-muted">正在读取最近调用…</span>';return;}
+    if(observationBusy&&!observation){host.innerHTML='<span class="output-observation-muted">正在读取最近调用…</span>';return;}
     if(!observation){
       host.innerHTML=`<div class="output-observation-empty" role="status">${esc(observationError||"还没有读取到生图记录")}<button type="button" class="output-inline-link" data-output-native-action="observability">重新读取 ${icon("refresh-cw")}</button></div>`;
       return;

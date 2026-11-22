@@ -53,7 +53,7 @@ window.CompanionNativePerceptionPage = (() => {
       ["news_source_url","RSS / JSON 地址","text","仅在来源选择 RSS / Atom 或 HTTPS JSON 时填写地址。"],
     ],
   };
-  let nodes = null, path = "", scope = "", status = null, drafts = {}, notices = {}, busy = false, loading = false, refreshedAt = "";
+  let nodes = null, path = "", scope = "", status = null, drafts = {}, notices = {}, busy = false, loading = false, refreshing = false, refreshedAt = "";
   let generation = 0, abort = null;
   let refreshTimer = null;
   const subscribers = new Set();
@@ -240,12 +240,16 @@ window.CompanionNativePerceptionPage = (() => {
     }).join("")}</ol>` : `<p class="memory-notice native-news-feed-empty">${diagnostic.network_status === "failed" ? "最近同步失败；后台会按间隔自动重试。" : "后台正在维护来源，首次同步完成后会在这里显示。"}</p>`;
     return `<section class="native-news-feed" aria-label="已获取资讯"><header><div><span class="perception-section-index">PERSISTED FEED</span><h4>${isDaily ? "AI 日报" : "已获取资讯"}</h4><p>${esc(label)} · ${lastText} · 已保留 ${items.length} 条</p></div><span class="native-news-feed-state">后台自动维护</span></header>${itemMarkup}</section>`;
   }
-  function renderSection(section) {
+  function renderSection(section, options = {}) {
     const node = nodes?.[section]; if (!node) return;
+    if (options.background && status && (section === "calendar" || section === "model")
+        && typeof document !== "undefined" && document.activeElement && node.contains?.(document.activeElement)) {
+      return;
+    }
     if (!product.hosted()) { node.innerHTML = '<p class="memory-notice" role="status">角色与会话目录暂未读到。</p><div class="native-perception-actions"><button class="button small" type="button" data-workspace-retry>重新读取</button></div>'; return; }
     if(section==="news"&&!selectedWindowRole()){node.innerHTML='<p class="memory-notice">请先选择当前角色的私聊窗口，再查看资讯与联系状态。</p>';return;}
     if (!path) { node.innerHTML = '<p class="memory-notice">请选择有管理权限的私聊对象和角色。</p>'; return; }
-    const refreshButton = label => `<span class="refresh-cluster">${refreshedAt ? `<span class="refresh-stamp" role="status">刚刚已刷新 ${esc(refreshedAt)}</span>` : ""}<button class="button small${loading ? " is-refreshing" : ""}" type="button" data-native-action="refresh" aria-busy="${loading ? "true" : "false"}" ${busy || loading ? "disabled" : ""}>${loading ? "读取中…" : label}</button></span>`;
+    const refreshButton = label => `<span class="refresh-cluster">${refreshedAt ? `<span class="refresh-stamp" role="status">刚刚已刷新 ${esc(refreshedAt)}</span>` : ""}<button class="button small${refreshing ? " is-refreshing" : ""}" type="button" data-native-action="refresh" aria-busy="${refreshing ? "true" : "false"}" ${busy || refreshing ? "disabled" : ""}>${refreshing ? "读取中…" : label}</button></span>`;
     if (!status) {
       node.innerHTML = `<p class="memory-notice" role="status">${esc(notices.load || "正在读取当前配置…")}</p>${refreshButton("重新读取")}`;
       return;
@@ -281,25 +285,35 @@ window.CompanionNativePerceptionPage = (() => {
     </form>`;
     node.innerHTML = `${context(section)}<details class="perception-settings-disclosure" open><summary><span>${title}</span></summary>${formMarkup}</details>`;
   }
-  function render() { for (const section of ["environment","calendar","model","news"]) renderSection(section); }
+  function render(options) { for (const section of ["environment","calendar","model","news"]) renderSection(section, options); }
   async function load(options = {}) {
     if (!anyConnected()) { unmount(); return; }
-    if (!path || busy || loading) return;
     const manual = options?.manual === true;
+    if (!path || busy) return;
+    if (loading) {
+      if (manual && !refreshing) {
+        refreshing = true;
+        notices.load = "";
+        for (const section of Object.keys(fields)) notices[section] = "";
+        render();
+      }
+      return;
+    }
     const ticket = ++generation;
     loading = true;
+    refreshing = manual;
     notices.load = "";
     if (manual) {
       for (const section of Object.keys(fields)) notices[section] = "";
     }
-    render();
+    if (manual || !status) render();
     try {
       const next = await api("GET");
       if (active(ticket)) {
         merge(next);
         notices.load = "";
         for (const section of Object.keys(fields)) notices[section] = "";
-        if (manual) refreshedAt = formatClock();
+        if (manual || refreshing) refreshedAt = formatClock();
       }
     } catch (failure) {
       if (active(ticket)) {
@@ -317,8 +331,10 @@ window.CompanionNativePerceptionPage = (() => {
       }
     } finally {
       if (active(ticket)) {
+        const foreground = manual || refreshing;
         loading = false;
-        render();
+        refreshing = false;
+        render({background: !foreground});
       }
     }
   }
@@ -363,6 +379,7 @@ window.CompanionNativePerceptionPage = (() => {
     }
     const ticket = ++generation;
     loading = false;
+    refreshing = false;
     busy = true; notices[section] = "正在保存…"; render();
     try {
       const response = await api("POST", {section, command:draft.pending});
@@ -469,7 +486,7 @@ window.CompanionNativePerceptionPage = (() => {
       if (cancel) cancel(refreshTimer);
       refreshTimer = null;
     }
-    nodes = null; path = ""; scope = ""; status = null; drafts = {}; notices = {}; busy = false; loading = false; refreshedAt = "";
+    nodes = null; path = ""; scope = ""; status = null; drafts = {}; notices = {}; busy = false; loading = false; refreshing = false; refreshedAt = "";
     publishStatus();
   }
   /* 页面级未保存守卫（page-guards.js）用：只要有一段还有改过但没提交的字段就算脏。

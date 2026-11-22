@@ -306,7 +306,16 @@ window.CompanionLearningPage = (() => {
     if (data.loading) return;
     const reset = mode === "reset", refresh = mode === "refresh";
     if (refresh) syncSources();
-    if (!data.sources.length) return;
+    if (!data.sources.length) {
+      listTicket += 1;
+      data.items = []; data.detailId = null; data.detail = null; data.form = null;
+      data.next = null; data.listCursors = {}; data.listPages = {}; data.accesses = {};
+      data.evidence = []; data.evidenceId = ""; data.evidenceLoading = false; data.evidenceError = false;
+      data.refreshedAt = ""; data.refreshing = false; data.ready = false;
+      notice("当前没有可读取的成长记录来源。", true);
+      render();
+      return;
+    }
     const ticket = version;
     const request = ++listTicket;
     const previous = reset ? [] : data.items.slice();
@@ -476,7 +485,12 @@ window.CompanionLearningPage = (() => {
     if (data.loadingReviews) return;
     const reset = mode === "reset";
     if (!reset) syncSources();
-    if (!data.sources.length) return;
+    if (!data.sources.length) {
+      reviewTicket += 1;
+      data.reviews = []; data.reviewNext = null; data.reviewCursors = {}; data.reviewPages = {};
+      render();
+      return;
+    }
     const ticket = version;
     const request = ++reviewTicket;
     const previous = reset ? [] : data.reviews.slice();

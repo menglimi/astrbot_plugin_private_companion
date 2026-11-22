@@ -156,32 +156,35 @@ window.CompanionGroupMemoryPage = (() => {
       }
     }
     async function load({manual = false} = {}) {
+      if (manual && state.busy) return;
       const seq = ++state.loadSeq;
       state.detailSeq += 1;
       const view = state.view;
       const keepId = manual ? itemId(state.selected) : null;
-      state.busy=true;notice("");$("gm-list").setAttribute("aria-busy","true");
+      let failed = false;
+      state.busy = true; notice(""); $("gm-list").setAttribute("aria-busy", "true");
       syncRefreshButton(manual);
       try {
-        const path=view==="archive"?"group-memory":"group-memory/safety";
-        const params={limit:20,...(state.after?{after_id:state.after}:{})};
-        if(view==="archive")params.state=state.filter;
-        else if(state.reviewFilter)params.review_state=state.reviewFilter;
-        const result=await get(path,params);
+        const path = view === "archive" ? "group-memory" : "group-memory/safety";
+        const params = {limit: 20, ...(state.after ? {after_id: state.after} : {})};
+        if (view === "archive") params.state = state.filter;
+        else if (state.reviewFilter) params.review_state = state.reviewFilter;
+        const result = await get(path, params);
         if (seq !== state.loadSeq || state.view !== view) return;
-        state.items=result.items||[];state.cursor=result.next_cursor||null;
+        state.items = result.items || []; state.cursor = result.next_cursor || null;
         state.selected = keepId ? (state.items.find(row => itemId(row) === keepId) || null) : null;
         if (!state.selected) state.detail = null;
         if (manual) state.refreshedAt = clockNow();
-        renderList();renderDetail();
-        if (state.selected && view === "archive" && !state.detail) void loadDetail(state.selected);
-      } catch(error) {
+      } catch (error) {
         if (seq !== state.loadSeq || state.view !== view) return;
-        state.items=[];state.selected=null;state.detail=null;renderList();renderDetail();
-        notice("当前账号或群档案不可用，请确认已登录且拥有本体管理权限后刷新。",true);
+        failed = true;
+        state.items = []; state.selected = null; state.detail = null;
+        notice("当前账号或群档案不可用，请确认已登录且拥有本体管理权限后刷新。", true);
       } finally {
         if (seq !== state.loadSeq) return;
-        state.busy=false;$("gm-list").setAttribute("aria-busy","false");renderList();
+        state.busy = false; $("gm-list").setAttribute("aria-busy", "false");
+        renderList(); renderDetail();
+        if (!failed && state.selected && view === "archive" && !state.detail) void loadDetail(state.selected);
       }
     }
     async function retractItem(item) {
