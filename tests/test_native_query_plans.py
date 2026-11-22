@@ -124,13 +124,14 @@ class NativeQueryPlanTests(unittest.TestCase):
         self._seed_observation("obs-2", ctx, NOW + timedelta(seconds=1),
                                kind="assistant", delivery_state="send_returned")
 
-        # 1) Live query with conversation_native_sends present: outer table seeks via index (no full SCAN).
+        # 1) Live query with conversation_native_sends present: outer table seeks via effective_at index with zero TEMP B-TREE.
         rows, calls = self._capture_calls("read_all", lambda: native_history.rows(self.runtime, ctx, limit=10))
         self.assertEqual(len(rows), 2)
         stmt, params = calls[-1]
         plan = self._explain(stmt, params)
-        self.assertIn("SEARCH n USING INDEX conversation_native_obs_context_delivery_idx", plan)
+        self.assertIn("SEARCH n USING INDEX idx_native_obs_ctx_effective", plan)
         self.assertNotIn("SCAN n", plan)
+        self.assertNotIn("TEMP B-TREE", plan)
 
         # 2) Same query on conversation_native_observations alone (no sends table): zero TEMP B-TREE too.
         no_sends_plan = self._explain(

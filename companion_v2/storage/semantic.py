@@ -4,8 +4,121 @@ from contextlib import contextmanager
 import json
 import math
 import sqlite3
+import struct
+
+try:
+    import numpy as _NP
+except Exception:  # pragma: no cover - optional acceleration
+    _NP = None
 
 from companion_v2.execution.models import TaskError, digest, encode
+from companion_v2.storage.sqlite_tuning import apply_sidecar_pragmas, tuning_profile
+
+
+VECTOR_BLOB_MAGIC = b"F16\x00"
+
+
+def encode_vector_blob(vector) -> bytes:
+    """Pack a finite embedding vector as a compact little-endian float16 BLOB."""
+    if _NP is not None:
+        arr = _NP.asarray(vector, dtype="<f2")
+        return VECTOR_BLOB_MAGIC + arr.tobytes()
+    return VECTOR_BLOB_MAGIC + struct.pack("<" + "e" * len(vector), *vector)
+
+
+def decode_vector_f32(raw):
+    """Decode either a float16 BLOB or legacy JSON vector into a float32 array or tuple."""
+    if raw is None:
+        return None
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        mv = memoryview(raw)
+        if len(mv) >= 4 and mv[:4].tobytes() == VECTOR_BLOB_MAGIC:
+            payload = mv[4:]
+            if len(payload) % 2 != 0:
+                return None
+            if _NP is not None:
+                return _NP.frombuffer(payload, dtype="<f2").astype(_NP.float32)
+            count = len(payload) // 2
+            return struct.unpack("<" + "e" * count, payload)
+        try:
+            values = json.loads(bytes(mv).decode("utf-8"))
+        except (TypeError, ValueError, UnicodeDecodeError):
+            return None
+        return _NP.asarray(values, dtype=_NP.float32) if _NP is not None else tuple(values)
+    if isinstance(raw, str):
+        try:
+            values = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(values, (list, tuple)):
+            return None
+        return _NP.asarray(values, dtype=_NP.float32) if _NP is not None else tuple(values)
+    if _NP is not None and isinstance(raw, _NP.ndarray):
+        return raw.astype(_NP.float32, copy=False)
+    if isinstance(raw, (list, tuple)):
+        return _NP.asarray(raw, dtype=_NP.float32) if _NP is not None else tuple(raw)
+    return None
+
+
+def decode_vector_tuple(raw) -> tuple[float, ...] | None:
+    """Decode a stored semantic vector (float16 BLOB or legacy JSON) into a Python tuple."""
+    decoded = decode_vector_f32(raw)
+    if decoded is None:
+        return None
+    if _NP is not None and isinstance(decoded, _NP.ndarray):
+        return tuple(decoded.tolist())
+    return tuple(float(v) for v in decoded)
+
+
+def batch_semantic_dots(query_vector, candidate_vectors):
+    """Compute dot products between *query_vector* and decoded candidate vectors.
+
+    *candidate_vectors* is a sequence of ``(index, raw_or_vector)`` pairs.
+    Returns ``{index: float_cosine}`` using NumPy ``float32`` matrix multiply
+    when available, with pure-Python fallback.
+    """
+    if not candidate_vectors or not query_vector:
+        return {}
+    dims = len(query_vector)
+    np = _NP
+    if np is not None:
+        valid_indices = []
+        f16_blobs = []
+        fallback_rows = []
+        for idx, raw in candidate_vectors:
+            if isinstance(raw, (bytes, bytearray, memoryview)):
+                mv = memoryview(raw)
+                if len(mv) == 4 + dims * 2 and mv[:4].tobytes() == VECTOR_BLOB_MAGIC:
+                    valid_indices.append(idx)
+                    f16_blobs.append(bytes(mv[4:]))
+                    continue
+            arr = decode_vector_f32(raw)
+            if arr is not None and arr.ndim == 1 and arr.shape[0] == dims:
+                fallback_rows.append((idx, arr))
+        q_vec = np.asarray(query_vector, dtype=np.float32)
+        results = {}
+        if f16_blobs:
+            mat = np.frombuffer(b"".join(f16_blobs), dtype="<f2").reshape(len(f16_blobs), dims).astype(np.float32)
+            scores = mat @ q_vec
+            for idx, score in zip(valid_indices, scores.tolist()):
+                if math.isfinite(score):
+                    results[idx] = float(score)
+        if fallback_rows:
+            mat = np.vstack([arr for _, arr in fallback_rows]).astype(np.float32, copy=False)
+            scores = mat @ q_vec
+            for (idx, _), score in zip(fallback_rows, scores.tolist()):
+                if math.isfinite(score):
+                    results[idx] = float(score)
+        return results
+
+    results = {}
+    for idx, raw in candidate_vectors:
+        vec = decode_vector_tuple(raw)
+        if vec is not None and len(vec) == dims:
+            score = sum(a * b for a, b in zip(query_vector, vec))
+            if math.isfinite(score):
+                results[idx] = float(score)
+    return results
 
 
 DEFAULTS = {"enabled": True, "embedding_provider": "", "rerank_provider": "", "analysis_provider": "",
@@ -36,9 +149,12 @@ SETTING_OPTIONS = {
 
 
 class SemanticStore:
+    BUSY_TIMEOUT_MS = 5000
+
     def __init__(self, root):
         self.path = root / "semantic-catalog.sqlite3"
-        with self.db() as db:
+        self._profile = tuning_profile()
+        with self.db(enable_wal=True) as db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version not in (0, 1, 2, 3, 4, 5, 6, 7, 8):
                 raise ValueError("unsupported semantic catalog version")
@@ -125,10 +241,18 @@ class SemanticStore:
                            (encode(configured), row["revision"]))
 
     @contextmanager
-    def db(self):
-        db = sqlite3.connect(self.path, timeout=1)
+    def db(self, *, enable_wal=False, read_only=False):
+        db = sqlite3.connect(self.path, timeout=self.BUSY_TIMEOUT_MS / 1000.0)
         db.row_factory = sqlite3.Row
         try:
+            apply_sidecar_pragmas(
+                db,
+                profile=self._profile,
+                enable_wal=enable_wal,
+                read_only=read_only,
+                busy_timeout_ms=self.BUSY_TIMEOUT_MS,
+                foreign_keys=False,
+            )
             with db:
                 yield db
         finally:
@@ -140,7 +264,7 @@ class SemanticStore:
 
     def configuration_snapshot(self):
         """Return semantic settings and which values were explicitly configured."""
-        with self.db() as db:
+        with self.db(read_only=True) as db:
             row = db.execute("SELECT revision, payload, explicit FROM settings WHERE id=1").fetchone()
         configured = json.loads(row["payload"])
         return {"revision": row["revision"], "values": {**DEFAULTS, **configured},
@@ -192,14 +316,14 @@ class SemanticStore:
         return self.settings()
 
     def get(self, owner, kind, identifier):
-        with self.db() as db:
+        with self.db(read_only=True) as db:
             row = db.execute("SELECT * FROM items WHERE owner=? AND kind=? AND id=?", (owner, kind, identifier)).fetchone()
             if row is None:
                 raise TaskError("semantic_item_missing", "catalog item is unavailable")
             return {**dict(row), "payload": json.loads(row["payload"])}
 
     def list(self, owner, kind, *, after="", limit=64):
-        with self.db() as db:
+        with self.db(read_only=True) as db:
             rows = db.execute("SELECT * FROM items WHERE owner=? AND kind=? AND id>? ORDER BY id LIMIT ?",
                               (owner, kind, after, limit)).fetchall()
             return [{**dict(r), "payload": json.loads(r["payload"])} for r in rows]
@@ -208,7 +332,7 @@ class SemanticStore:
         """Return up to ``limit`` items newest-first plus the next opaque cursor."""
         if type(after) is not str or type(limit) is not int or limit < 1:
             raise ValueError("invalid catalog pagination")
-        with self.db() as db:
+        with self.db(read_only=True) as db:
             if after:
                 if not after.startswith("r:") or not after[2:].isascii() or not after[2:].isdigit():
                     raise ValueError("invalid catalog cursor")
@@ -395,18 +519,45 @@ class SemanticStore:
         return tuple(row["owner"] for row in rows)
 
     def vector(self, item, model):
-        with self.db() as db:
+        with self.db(read_only=True) as db:
             row = db.execute("SELECT * FROM vectors WHERE owner=? AND kind=? AND id=? AND model=?",
                              (item["owner"], item["kind"], item["id"], model)).fetchone()
-            return tuple(json.loads(row["vector"])) if row and row["revision"] == item["revision"] and row["hash"] == digest(item["payload"]) else None
+            if row and row["revision"] == item["revision"] and row["hash"] == digest(item["payload"]):
+                return decode_vector_tuple(row["vector"])
+            return None
+
+    def vectors_for_items(self, owner, kind, model, items):
+        """Batch-fetch fresh raw vector payloads (float16 BLOB or legacy JSON) for *items*."""
+        if not items or not model:
+            return {}
+        expected = {
+            item["id"]: (item["revision"], digest(item["payload"]))
+            for item in items
+        }
+        identifiers = tuple(expected)
+        marks = ",".join("?" for _ in identifiers)
+        with self.db(read_only=True) as db:
+            rows = db.execute(
+                f"SELECT id, revision, hash, vector FROM vectors "
+                f"WHERE owner=? AND kind=? AND model=? AND id IN ({marks})",
+                (owner, kind, model, *identifiers),
+            ).fetchall()
+        matched = {}
+        for row in rows:
+            item_id = row["id"]
+            rev_hash = expected.get(item_id)
+            if rev_hash is not None and row["revision"] == rev_hash[0] and row["hash"] == rev_hash[1]:
+                matched[item_id] = row["vector"]
+        return matched
 
     def put_vector(self, item, model, vector):
         current = self.get(item["owner"], item["kind"], item["id"])
         if current["revision"] != item["revision"] or current["payload"] != item["payload"] or not current["enabled"]:
             return False
+        encoded_blob = encode_vector_blob(vector)
         with self.db() as db:
             db.execute("INSERT OR REPLACE INTO vectors VALUES (?,?,?,?,?,?,?)", (item["owner"], item["kind"],
-                       item["id"], item["revision"], model, digest(item["payload"]), encode(vector)))
+                       item["id"], item["revision"], model, digest(item["payload"]), encoded_blob))
         return True
 
     def offer(self, batch, call, owner, payload):
@@ -417,6 +568,6 @@ class SemanticStore:
             db.execute("INSERT OR IGNORE INTO offers VALUES (?,?,?,?)", (batch, call, owner, encode(payload)))
 
     def offers(self, batch, owner):
-        with self.db() as db:
+        with self.db(read_only=True) as db:
             return [(r["call"], json.loads(r["payload"])) for r in db.execute(
                 "SELECT * FROM offers WHERE batch=? AND owner=? ORDER BY call", (batch, owner))]

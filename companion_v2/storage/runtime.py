@@ -11,9 +11,11 @@ import re
 from pathlib import Path
 import sqlite3
 import sys
-from threading import Condition, Lock, RLock, Thread, current_thread, get_ident, local
+from threading import Condition, Lock, RLock, get_ident, local
 import time
 from typing import Iterator
+
+from .sqlite_tuning import SqliteTuningProfile, tuning_profile
 
 from .schema import (
     SCHEMA_VERSION_V69, MIGRATION_V68_TO_V69_ID, MIGRATION_V68_TO_V69_FINGERPRINT,
@@ -368,6 +370,26 @@ _EARLY_V70_MIGRATIONS = (
 )
 
 
+def table_exists(runtime: object, table_name: str) -> bool:
+    """Return whether *table_name* exists on *runtime*, using the runtime cache when available."""
+    checker = getattr(runtime, "has_table", None)
+    if callable(checker):
+        return bool(checker(table_name))
+    reader = getattr(runtime, "read_one", None)
+    if callable(reader):
+        return reader(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ) is not None
+    read_all = getattr(runtime, "read_all", None)
+    if callable(read_all):
+        return bool(read_all(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ))
+    return False
+
+
 class StorageRuntime:
     """Own the V2 database connection; repositories never open their own connection."""
 
@@ -393,6 +415,8 @@ class StorageRuntime:
     # parameters, so it is safe to log and it is what makes the next stall name
     # itself. Truncated so one slow event stays one line.
     SLOW_OPERATION_STATEMENT_CHARS = 160
+    OPTIMIZE_INTERVAL_SECONDS = 21600.0
+    OPTIMIZE_ANALYSIS_LIMIT = 400
     _PERFORMANCE_INDEX_STATEMENTS = (
         (
             "execution_tasks",
@@ -407,14 +431,6 @@ class StorageRuntime:
             "ON conversation_batches(json_extract(context_json, '$.role_binding')) "
             "WHERE json_extract(context_json, '$.audience.scope.kind') = 'group'",
         ),
-        (
-            "conversation_native_turns",
-            "idx_native_turns_group_role_recent",
-            "CREATE INDEX IF NOT EXISTS idx_native_turns_group_role_recent "
-            "ON conversation_native_turns("
-            "json_extract(context_json, '$.role_binding'), observed_at) "
-            "WHERE json_extract(context_json, '$.audience.scope.kind') = 'group'",
-        ),
     )
 
     def __init__(self, *, data_root: Path, installation_id: str) -> None:
@@ -425,13 +441,23 @@ class StorageRuntime:
         self._database_path = self._data_root / self.DATABASE_FILENAME
         self._connection: sqlite3.Connection | None = None
         self._lock = RLock()
+        self._tuning_profile: SqliteTuningProfile = tuning_profile()
+        self._reader_pool_size: int = self._tuning_profile.reader_pool_size
         self._read_snapshot_diagnostics = local()
         self._read_connections = local()
         self._reader_condition = Condition()
-        # Keep ownership until close, even after a temporary worker exits.
-        self._reader_connections: dict[Thread, sqlite3.Connection] = {}
+        # Bounded shared pool of read-only WAL connections (2-4 depending on host RAM).
+        self._idle_readers: list[sqlite3.Connection] = []
+        self._all_readers: list[sqlite3.Connection] = []
+        self._creating_readers = 0
         self._active_readers = 0
         self._reader_closing = False
+        self._meta_cache_lock = Lock()
+        self._table_exists_cache: dict[str, bool | tuple[bool, int]] = {}
+        self._initialized_schemas: set[str] = set()
+        self._write_epoch = 0
+        self._last_optimize_at = 0.0
+        self._schema_indexes_changed = False
         self._savepoint_sequence = 0
         self._slow_operation_log_state: dict[tuple[str, str], _SlowOperationLogState] = {}
         # A plain Lock, not the connection RLock: _report_slow_operation runs
@@ -446,6 +472,75 @@ class StorageRuntime:
         self._transaction_rollback_epoch = 0
         self._configuration_only = False
         self._configuration_store: StorageRuntime | None = None
+
+    @property
+    def tuning_profile(self) -> SqliteTuningProfile:
+        return self._tuning_profile
+
+    @property
+    def reader_pool_size(self) -> int:
+        return self._reader_pool_size
+
+    def has_table(self, table_name: str) -> bool:
+        """Return whether *table_name* exists, caching hits across hot read paths."""
+        in_own_write = self._write_owner_thread_id == get_ident()
+        with self._meta_cache_lock:
+            cached = self._table_exists_cache.get(table_name)
+            if cached is True:
+                return True
+            if not in_own_write and isinstance(cached, tuple) and cached[1] == self._write_epoch:
+                return False
+            epoch_before = self._write_epoch
+        exists = self.read_one(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ) is not None
+        if not in_own_write:
+            with self._meta_cache_lock:
+                self._table_exists_cache[table_name] = True if exists else (False, epoch_before)
+        return exists
+
+    def invalidate_table_cache(self) -> None:
+        """Drop cached table-existence probes after optional DDL changes."""
+        with self._meta_cache_lock:
+            self._table_exists_cache.clear()
+
+    def ensure_schema(self, schema_key: str, initializer) -> bool:
+        """Run an optional-table DDL initializer at most once per open runtime."""
+        with self._meta_cache_lock:
+            if schema_key in self._initialized_schemas:
+                return False
+        with self._lock:
+            with self._meta_cache_lock:
+                if schema_key in self._initialized_schemas:
+                    return False
+            with self.transaction() as connection:
+                initializer(connection)
+            with self._meta_cache_lock:
+                self._initialized_schemas.add(schema_key)
+                self._table_exists_cache.clear()
+            return True
+
+    def _run_pragma_optimize(self, connection: sqlite3.Connection) -> bool:
+        if connection.in_transaction:
+            return False
+        try:
+            connection.execute(f"PRAGMA analysis_limit = {int(self.OPTIMIZE_ANALYSIS_LIMIT)}")
+            connection.execute("PRAGMA optimize")
+            self._last_optimize_at = time.monotonic()
+            return True
+        except sqlite3.Error:
+            return False
+
+    def optimize(self, *, force: bool = False) -> bool:
+        """Run bounded SQLite planner optimization if due or forced."""
+        if not force and (time.monotonic() - self._last_optimize_at) < self.OPTIMIZE_INTERVAL_SECONDS:
+            return False
+        with self._lock:
+            connection = self._connection
+            if connection is None or connection.in_transaction:
+                return False
+            return self._run_pragma_optimize(connection)
 
     @property
     def configuration_store(self) -> "StorageRuntime":
@@ -598,19 +693,25 @@ class StorageRuntime:
         started = time.perf_counter()
         with self._reader_condition:
             self._reader_closing = True
-            while self._active_readers:
+            self._reader_condition.notify_all()
+            while self._active_readers or self._creating_readers:
                 self._reader_condition.wait()
         self._lock.acquire()
         lock_acquired = time.perf_counter()
         try:
             with self._reader_condition:
-                readers = tuple(self._reader_connections.values())
-                self._reader_connections.clear()
+                readers = tuple(self._all_readers)
+                self._all_readers.clear()
+                self._idle_readers.clear()
             for reader in readers:
                 reader.close()
             if self._connection is not None:
+                self._run_pragma_optimize(self._connection)
                 self._connection.close()
                 self._connection = None
+            with self._meta_cache_lock:
+                self._table_exists_cache.clear()
+                self._initialized_schemas.clear()
             configuration_store = self._configuration_store
             self._configuration_store = None
         finally:
@@ -638,6 +739,8 @@ class StorageRuntime:
             checkpoint.execute("PRAGMA synchronous = NORMAL")
             row = checkpoint.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
             result = tuple(int(value) for value in row)
+            if (time.monotonic() - self._last_optimize_at) >= self.OPTIMIZE_INTERVAL_SECONDS:
+                self._run_pragma_optimize(checkpoint)
             return result
         finally:
             if checkpoint is not None:
@@ -685,6 +788,9 @@ class StorageRuntime:
                 commit_started = time.perf_counter()
                 connection.execute(f"RELEASE SAVEPOINT {savepoint}" if nested else "COMMIT")
                 commit_ms = round((time.perf_counter() - commit_started) * 1000)
+                if not nested:
+                    with self._meta_cache_lock:
+                        self._write_epoch += 1
             except BaseException:
                 body_ms = round((time.perf_counter() - body_started) * 1000)
                 if connection.in_transaction:
@@ -757,46 +863,80 @@ class StorageRuntime:
 
     @contextmanager
     def _reader_connection(self) -> Iterator[sqlite3.Connection]:
-        with self._reader_condition:
-            if self._reader_closing or self._connection is None:
-                raise StorageOpenError("V2 storage runtime is closed")
-            self._active_readers += 1
-        try:
+        depth = getattr(self._read_connections, "depth", 0)
+        if depth > 0:
             connection = getattr(self._read_connections, "connection", None)
-            if connection is None:
-                with self._reader_condition:
-                    # A dead owner cannot be using its connection. Reap it
-                    # before adding new readers so worker churn stays bounded.
-                    for owner in tuple(self._reader_connections):
-                        if not owner.is_alive():
-                            self._reader_connections[owner].close()
-                            del self._reader_connections[owner]
+            if connection is not None:
+                self._read_connections.depth = depth + 1
                 try:
-                    connection = sqlite3.connect(
-                        str(self._database_path), timeout=5.0, isolation_level=None,
-                        check_same_thread=False)
-                    connection.row_factory = sqlite3.Row
-                    connection.execute("PRAGMA foreign_keys = ON")
-                    connection.execute("PRAGMA synchronous = NORMAL")
-                    connection.execute("PRAGMA busy_timeout = 5000")
-                    connection.execute("PRAGMA wal_autocheckpoint = 0")
-                    connection.execute("PRAGMA query_only = ON")
-                    connection.execute("PRAGMA cache_size = -65536")
-                    connection.execute("PRAGMA mmap_size = 268435456")
-                    connection.execute("PRAGMA temp_store = MEMORY")
-                except sqlite3.Error as error:
-                    if connection is not None:
-                        connection.close()
-                    raise StorageOpenError("unable to read V2 SQLite store") from error
-                self._read_connections.connection = connection
+                    yield connection
+                finally:
+                    self._read_connections.depth = depth
+                return
+
+        connection: sqlite3.Connection | None = None
+        need_create = False
+        with self._reader_condition:
+            while True:
+                if self._reader_closing or self._connection is None:
+                    raise StorageOpenError("V2 storage runtime is closed")
+                if self._idle_readers:
+                    connection = self._idle_readers.pop()
+                    self._active_readers += 1
+                    break
+                if len(self._all_readers) + self._creating_readers < self._reader_pool_size:
+                    self._creating_readers += 1
+                    self._active_readers += 1
+                    need_create = True
+                    break
+                self._reader_condition.wait()
+
+        if need_create:
+            created: sqlite3.Connection | None = None
+            try:
+                created = sqlite3.connect(
+                    str(self._database_path), timeout=5.0, isolation_level=None,
+                    check_same_thread=False)
+                created.row_factory = sqlite3.Row
+                created.execute("PRAGMA foreign_keys = ON")
+                created.execute("PRAGMA synchronous = NORMAL")
+                created.execute("PRAGMA busy_timeout = 5000")
+                created.execute("PRAGMA wal_autocheckpoint = 0")
+                created.execute("PRAGMA query_only = ON")
+                created.execute(f"PRAGMA cache_size = -{int(self._tuning_profile.cache_size_kib)}")
+                created.execute(f"PRAGMA mmap_size = {int(self._tuning_profile.mmap_size)}")
+                created.execute("PRAGMA temp_store = MEMORY")
+            except sqlite3.Error as error:
+                if created is not None:
+                    created.close()
                 with self._reader_condition:
-                    self._reader_connections[current_thread()] = connection
+                    self._creating_readers -= 1
+                    self._active_readers -= 1
+                    self._reader_condition.notify_all()
+                raise StorageOpenError("unable to read V2 SQLite store") from error
+            connection = created
+            with self._reader_condition:
+                self._all_readers.append(connection)
+                self._creating_readers -= 1
+                self._reader_condition.notify_all()
+
+        assert connection is not None
+        self._read_connections.connection = connection
+        self._read_connections.depth = 1
+        try:
             yield connection
         finally:
+            self._read_connections.depth = 0
+            self._read_connections.connection = None
+            try:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
             with self._reader_condition:
+                self._idle_readers.append(connection)
                 self._active_readers -= 1
-                if self._active_readers == 0:
-                    self._reader_condition.notify_all()
+                self._reader_condition.notify_all()
 
     @contextmanager
     def _snapshot_on(self, connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
@@ -875,13 +1015,10 @@ class StorageRuntime:
             connection.execute("PRAGMA synchronous = NORMAL")
             connection.execute("PRAGMA busy_timeout = 5000")
             connection.execute("PRAGMA wal_autocheckpoint = 0")
-            # The store is routinely hundreds of MB because generated images
-            # still live in BLOB columns.  SQLite's 2 MB default page cache
-            # makes every lookup re-read those pages; 64 MB plus a read-only
-            # mmap keeps hot metadata and payload pages resident without
-            # changing the on-disk format.
-            connection.execute("PRAGMA cache_size = -65536")
-            connection.execute("PRAGMA mmap_size = 268435456")
+            # Bound cache_size and mmap_size to host RAM so low-memory VPS hosts
+            # stay well within budget while mid/high-RAM hosts retain hot pages.
+            connection.execute(f"PRAGMA cache_size = -{int(self._tuning_profile.cache_size_kib)}")
+            connection.execute(f"PRAGMA mmap_size = {int(self._tuning_profile.mmap_size)}")
             connection.execute("PRAGMA temp_store = MEMORY")
         except (OSError, sqlite3.Error) as error:
             if connection is not None:
@@ -909,6 +1046,11 @@ class StorageRuntime:
                     self._initialize_schema()
             finally:
                 connection.execute("PRAGMA foreign_keys = ON")
+            if not self._configuration_only:
+                if self._schema_indexes_changed:
+                    self._run_pragma_optimize(connection)
+                else:
+                    self._last_optimize_at = time.monotonic()
         except sqlite3.Error as error:
             self.close()
             raise StorageOpenError("V2 schema validation or migration failed") from error
@@ -1850,10 +1992,11 @@ class StorageRuntime:
             self._validate_v68_migration_record(connection)
             if not early_v70:
                 self._validate_v69_migration_record(connection)
-            self._ensure_performance_indexes(connection)
+            self._schema_indexes_changed = self._ensure_performance_indexes(connection)
 
     @staticmethod
-    def _ensure_performance_indexes(connection: sqlite3.Connection) -> None:
+    def _ensure_performance_indexes(connection: sqlite3.Connection) -> bool:
+        changed = False
         tables = {
             row[0]
             for row in connection.execute(
@@ -1869,6 +2012,12 @@ class StorageRuntime:
         for table_name, name, statement in StorageRuntime._PERFORMANCE_INDEX_STATEMENTS:
             if table_name in tables and name not in existing:
                 connection.execute(statement)
+                changed = True
+        if "conversation_native_turns" in tables or "conversation_native_observations" in tables:
+            from .native_conversation_schema import ensure_native_conversation_migrations
+            if ensure_native_conversation_migrations(connection):
+                changed = True
+        return changed
 
     @staticmethod
     def _prepare_early_v70_laya_schema(connection):

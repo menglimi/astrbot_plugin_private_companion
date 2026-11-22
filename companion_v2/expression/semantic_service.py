@@ -9,7 +9,7 @@ import time
 from companion_v2.execution.models import encode_prompt
 from companion_v2.execution.models import TaskContext, TaskError, digest, encode, require
 from companion_v2.foundation.refs import RoleOwnerRef, ScopeKind
-from companion_v2.model_gateway.embedding import EmbeddingGateway
+from companion_v2.model_gateway.embedding import EmbeddingGateway, shared_query_embedding_cache
 from companion_v2.model_gateway.semantic_search import CatalogSearch
 from companion_v2.model_gateway.models import ToolSpec
 from companion_v2.storage.semantic import SemanticStore
@@ -42,7 +42,12 @@ class SemanticService:
         self.app = app
         self.reaction_role_count = reaction_role_count
         self.store = SemanticStore(app.runtime.data_root)
-        self.gateway = EmbeddingGateway(port, timeout=self.store.settings()["timeout_seconds"])
+        cache_namespace = str(app.runtime.data_root.resolve())
+        self.gateway = EmbeddingGateway(
+            port,
+            timeout=self.store.settings()["timeout_seconds"],
+            cache=shared_query_embedding_cache(cache_namespace),
+        )
         self.memory = MemorySemanticRecall(app.memory, self.gateway, self.store.settings)
         self.slang = GroupSlang(self)
         self.reactions = ReactionLibrary(self)
