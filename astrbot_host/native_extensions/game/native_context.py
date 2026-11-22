@@ -146,11 +146,14 @@ async def room_background(runtime, room, visitor_qq, query, *, resolved=None):
     if resolved is None:
         return ""
     controller = runtime.controller
+    from astrbot_host.knowledge_sources import prepare_official_knowledge_hits
+    official_hits = await prepare_official_knowledge_hits(
+        resolved.application, resolved.context, str(query), include_official=True)
     native_input = SimpleNamespace(text=str(query), event_id="game-background-" + uuid4().hex)
     try:
         prompt = await asyncio.to_thread(
             build_core_reply_prompt, resolved.application, resolved.context, native_input,
-            at=controller.now(),
+            at=controller.now(), official_knowledge_hits=official_hits, include_official_knowledge=True,
         )
         return prompt.instruction
     except Exception as error:

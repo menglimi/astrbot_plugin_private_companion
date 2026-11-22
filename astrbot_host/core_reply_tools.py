@@ -45,12 +45,17 @@ LEAN_GROUP_TOOL_ORDER = ("group.participation.choose", "group.memory.query",
                          "group.memory.remember", "acquaintance.recall",
                          "reaction.search", "slang.search")
 LEAN_GROUP_ACTIONS = frozenset(LEAN_GROUP_TOOL_ORDER)
+LEAN_PRESERVED_HOST_TOOLS = frozenset({"astr_kb_search"})
 STANDARD_GROUP_ACTIONS = LEAN_GROUP_ACTIONS | frozenset((
     "group.behavior.learn", "group.behavior.feedback", "slang.learn", "turn.evidence",
     POKE_ACTION))
 LEAN_GROUP_INSTRUCTION = ("【群聊精简工具】本轮工具集固定且很小。决定接话时直接写出回复，不要先调用 "
     "group.participation.choose；只有决定旁听或等待时才调用 choose(mode=skip)。"
     "不要因为缺少某个工具就声称无法回应，先用自然语言把当前能说的说完。")
+KB_TOOL_INSTRUCTION = (
+    "需要查设定、文档、作品剧情、百科等知识库资料时，调用 astr_kb_search 并传入简短关键词；"
+    "回忆与当前对话者的私人往事、偏好或群内历史发言时，使用记忆相关工具，不要混用。"
+)
 
 
 def group_tool_manifest(offered, profile, *, allow_camera=False):
@@ -810,8 +815,11 @@ def inject_core_reply_tools(event, req, *, application):
     existing = [tool for tool in existing if not isinstance(tool, CoreReplyFunctionTool)]
     if session.group_tool_profile == "lean" and session.context.scope.kind is ScopeKind.GROUP:
         # The lean manifest owns the group tool surface.  Host shell, file,
-        # python and search schemas are large and rarely needed for banter.
-        existing = []
+        # python and search schemas are large and rarely needed for banter,
+        # while read-only knowledge base search stays preserved on a stable
+        # window-level allowlist.
+        existing = [tool for tool in existing
+                    if getattr(tool, "name", "") in LEAN_PRESERVED_HOST_TOOLS]
     names = {tool.name for tool in existing}
     appended = [CoreReplyFunctionTool(session, item) for item in offered
                 if native_tool_name(item.spec.action) not in names]
@@ -838,6 +846,11 @@ def inject_core_reply_tools(event, req, *, application):
                 req.system_prompt += "\n\n" + DIAGNOSTIC_INSTRUCTION
     elif getattr(req, "func_tool", None) is not None:
         req.func_tool = ToolSet(tools=sorted(existing, key=lambda tool: tool.name))
+    mounted_tools = getattr(getattr(req, "func_tool", None), "tools", ())
+    if (any(getattr(tool, "name", "") in LEAN_PRESERVED_HOST_TOOLS for tool in mounted_tools)
+            and KB_TOOL_INSTRUCTION not in (getattr(req, "system_prompt", "") or "")):
+        current = getattr(req, "system_prompt", "") or ""
+        req.system_prompt = (current.rstrip() + "\n\n" + KB_TOOL_INSTRUCTION).lstrip()
     inject_core_image_prompt(session, req, offered, image_values)
     return tuple(tool._action for tool in appended)
 

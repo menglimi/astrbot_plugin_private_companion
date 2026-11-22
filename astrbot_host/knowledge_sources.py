@@ -16,9 +16,12 @@ is no implicit global lookup in this module.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Mapping
 import json
 import logging
 from pathlib import Path
+import re
 import sqlite3
 
 from companion_v2.storage.sqlite_path import readonly_uri
@@ -45,6 +48,53 @@ WORLDBOOK_DEFAULTS = (
 )
 KNOWLEDGE_BASE_DIR = "knowledge_base"
 SOURCE_PREFIXES = ("kb:", "doc:")
+_CONTEXT_BLOCK_RE = re.compile(r"<companion_v2_context>.*?</companion_v2_context>", re.DOTALL)
+_PLACEHOLDER_TOKEN_RE = re.compile(
+    r"(?:<提及自己>|\[提及机器人\]|<attachment>|\[图片\]|\[语音\]|\[音频\]|\[视频\]|\[文件\]"
+    r"|\[Image unavailable\]|\[Voice unavailable\])"
+)
+
+
+def clean_retrieval_query(text, *, max_chars: int = 800) -> str:
+    """Extract clean user query text; reject JSON material packs and bare placeholders."""
+    if not isinstance(text, str):
+        return ""
+    stripped = _CONTEXT_BLOCK_RE.sub(" ", text).strip()
+    if not stripped:
+        return ""
+    if stripped[0] in "{[":
+        try:
+            decoded = json.loads(stripped)
+        except ValueError:
+            decoded = None
+        if isinstance(decoded, (dict, list)):
+            return ""
+    cleaned = " ".join(_PLACEHOLDER_TOKEN_RE.sub(" ", stripped).split())
+    if not cleaned:
+        return ""
+    return cleaned[:max(1, int(max_chars))]
+
+
+def _parse_source_ids(source_ids, source_limit: int):
+    identifiers = []
+    for value in source_ids or ():
+        identifier = str(value or "").strip()
+        if identifier.startswith(SOURCE_PREFIXES) and identifier not in identifiers:
+            identifiers.append(identifier)
+        if len(identifiers) >= max(1, int(source_limit)):
+            break
+    selected_kbs = {item[3:] for item in identifiers if item.startswith("kb:")}
+    selected_docs = {}
+    for item in identifiers:
+        if item.startswith("doc:"):
+            parts = item.split(":", 2)
+            if len(parts) == 3 and parts[1] not in selected_kbs:
+                selected_docs.setdefault(parts[1], set()).add(parts[2])
+    ordered_kbs = list(dict.fromkeys(
+        [item[3:] for item in identifiers if item.startswith("kb:")]
+        + [item.split(":", 2)[1] for item in identifiers if item.startswith("doc:") and len(item.split(":", 2)) == 3]
+    ))
+    return identifiers, selected_kbs, selected_docs, ordered_kbs
 
 
 def worldbook_paths(data_root, settings):
@@ -239,12 +289,173 @@ class KnowledgeSourceReader:
 
 
 class AstrBotKnowledgeSources:
-    """Read the official AstrBot knowledge bases selected in Companion V2."""
+    """Read and retrieve official AstrBot knowledge bases selected in Companion V2."""
 
-    def __init__(self, host_context) -> None:
+    def __init__(self, host_context, *, loop=None) -> None:
         self.manager = getattr(host_context, "kb_manager", None)
         database = getattr(getattr(self.manager, "kb_db", None), "db_path", None)
         self.data_root = Path(database).parent.parent if database else None
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+        self._loop = loop
+        self._document_names = {}
+
+    async def _resolve_kb_names(self, ordered_kbs):
+        id_to_name = {}
+        unavailable_ids = set()
+        get_kb = getattr(self.manager, "get_kb", None)
+        if callable(get_kb):
+            for kb_id in ordered_kbs:
+                try:
+                    helper = await get_kb(kb_id)
+                except Exception:
+                    unavailable_ids.add(kb_id)
+                    continue
+                if helper is None:
+                    continue
+                if getattr(helper, "init_error", None):
+                    unavailable_ids.add(kb_id)
+                    continue
+                kb_obj = getattr(helper, "kb", None)
+                kb_name = str(getattr(kb_obj, "kb_name", "") or "").strip()
+                if kb_name:
+                    id_to_name[kb_id] = kb_name
+        missing = [kb_id for kb_id in ordered_kbs if kb_id not in id_to_name and kb_id not in unavailable_ids]
+        list_kbs = getattr(self.manager, "list_kbs", None)
+        if missing and callable(list_kbs):
+            try:
+                listed = await list_kbs()
+            except Exception:
+                listed = ()
+            for kb in listed or ():
+                kb_id = str(getattr(kb, "kb_id", "") or "").strip()
+                kb_name = str(getattr(kb, "kb_name", "") or "").strip()
+                if kb_id in missing and kb_name:
+                    id_to_name[kb_id] = kb_name
+        missing = [kb_id for kb_id in ordered_kbs if kb_id not in id_to_name and kb_id not in unavailable_ids]
+        if missing and self.data_root is not None:
+            try:
+                for kb_id, kb_name in self._names(missing).items():
+                    if kb_name:
+                        id_to_name[kb_id] = str(kb_name).strip()
+            except (OSError, sqlite3.Error):
+                pass
+        name_to_id = {name: kb_id for kb_id, name in id_to_name.items()}
+        return id_to_name, name_to_id, len(unavailable_ids)
+
+    async def retrieve(self, query, source_ids, *, source_limit=16, max_hits=8,
+                       entry_char_limit=1200, char_budget=6000, fusion_top_k=None):
+        """Delegate semantic+BM25+RRF+Rerank lookup to AstrBot's ``kb_manager``.
+
+        Returns ``None`` when ``kb_manager`` is unavailable or fails, signaling
+        the caller to fall back to the bounded SQLite candidate reader.
+        Returns ``()`` when the query is empty/placeholder/JSON or yields no
+        hits without falling back to lexical sampling.
+        """
+        retriever = getattr(self.manager, "retrieve", None)
+        if self.manager is None or not callable(retriever):
+            return None
+        identifiers, selected_kbs, selected_docs, ordered_kbs = _parse_source_ids(source_ids, source_limit)
+        if not identifiers or max_hits < 1 or entry_char_limit < 1 or char_budget < 1:
+            return ()
+        cleaned_query = clean_retrieval_query(query)
+        if not cleaned_query:
+            return ()
+        id_to_name, name_to_id, unavailable = await self._resolve_kb_names(ordered_kbs)
+        kb_names = [id_to_name[kb_id] for kb_id in ordered_kbs if kb_id in id_to_name]
+        if not kb_names:
+            return None if unavailable else ()
+        has_doc_filter = bool(selected_docs)
+        fetch_final = min(max(int(max_hits) * 3, 20), 60) if has_doc_filter else max(1, int(max_hits))
+        top_k_fusion = max(fetch_final, int(fusion_top_k) if fusion_top_k else max(20, fetch_final * 3))
+        try:
+            payload = await retriever(
+                query=cleaned_query,
+                kb_names=kb_names,
+                top_k_fusion=top_k_fusion,
+                top_m_final=fetch_final,
+            )
+        except Exception as error:
+            logger.warning("[CompanionV2] 官方知识库语义检索降级 error_type=%s", type(error).__name__)
+            return None
+        if not isinstance(payload, Mapping):
+            return ()
+        items = payload.get("results")
+        if not isinstance(items, (list, tuple)) or not items:
+            return ()
+        candidates = []
+        seen_text = set()
+        used_chars = 0
+        for index, item in enumerate(items):
+            if len(candidates) >= int(max_hits):
+                break
+            if not isinstance(item, Mapping):
+                continue
+            kb_id = str(item.get("kb_id") or "").strip()
+            kb_name = str(item.get("kb_name") or "").strip()
+            if not kb_id and kb_name:
+                kb_id = name_to_id.get(kb_name, "")
+            if not kb_id:
+                continue
+            doc_id = str(item.get("doc_id") or "").strip()
+            if kb_id not in selected_kbs:
+                allowed_docs = selected_docs.get(kb_id)
+                if not allowed_docs or doc_id not in allowed_docs:
+                    continue
+            content = str(item.get("content") or "").strip()[:int(entry_char_limit)]
+            if not content:
+                continue
+            remaining = int(char_budget) - used_chars
+            if remaining <= 0:
+                break
+            content = content[:remaining].strip()
+            if not content:
+                break
+            normalized = " ".join(content.casefold().split())
+            if normalized in seen_text:
+                continue
+            chunk_index = item.get("chunk_index", index)
+            try:
+                chunk_index = max(0, int(chunk_index))
+            except (TypeError, ValueError):
+                chunk_index = index
+            doc_name = str(item.get("doc_name") or "").strip() or doc_id or "资料"
+            candidates.append(KnowledgeCandidate(
+                f"astrbot:{kb_id}:{doc_id}:{chunk_index}",
+                content,
+                knowledge_base_id=kb_id,
+                document_id=doc_id,
+                document_name=doc_name,
+                chunk_index=chunk_index,
+                name=kb_name or id_to_name.get(kb_id, kb_id),
+            ))
+            seen_text.add(normalized)
+            used_chars += len(content)
+        return tuple(candidates)
+
+    def retrieve_sync(self, query, source_ids, *, timeout: float = 10.0, **kwargs):
+        """Bridge worker-thread domain calls onto the host asyncio loop."""
+        if self.manager is None or not callable(getattr(self.manager, "retrieve", None)):
+            return None
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return None
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            return None
+        future = asyncio.run_coroutine_threadsafe(self.retrieve(query, source_ids, **kwargs), loop)
+        try:
+            return future.result(timeout=timeout)
+        except Exception as error:
+            future.cancel()
+            logger.warning("[CompanionV2] 官方知识库同步桥接检索降级 error_type=%s", type(error).__name__)
+            return None
 
     async def list_sources(self):
         """List official knowledge bases and documents through the host manager."""
@@ -289,27 +500,9 @@ class AstrBotKnowledgeSources:
         """Return bounded chunks for the selected official sources, without importing them."""
         if self.data_root is None:
             return ()
-        identifiers = []
-        for value in source_ids or ():
-            identifier = str(value or "").strip()
-            if identifier.startswith(SOURCE_PREFIXES) and identifier not in identifiers:
-                identifiers.append(identifier)
-            if len(identifiers) >= max(1, int(source_limit)):
-                break
+        identifiers, selected_kbs, selected_docs, ordered_kbs = _parse_source_ids(source_ids, source_limit)
         if not identifiers or entry_limit < 1 or entry_char_limit < 1 or char_budget < 1:
             return ()
-
-        selected_kbs = {item[3:] for item in identifiers if item.startswith("kb:")}
-        selected_docs = {}
-        for item in identifiers:
-            if item.startswith("doc:"):
-                parts = item.split(":", 2)
-                if len(parts) == 3 and parts[1] not in selected_kbs:
-                    selected_docs.setdefault(parts[1], set()).add(parts[2])
-        ordered_kbs = list(dict.fromkeys(
-            [item[3:] for item in identifiers if item.startswith("kb:")]
-            + [item.split(":", 2)[1] for item in identifiers if item.startswith("doc:") and len(item.split(":", 2)) == 3]
-        ))
 
         try:
             available = available_source_ids(self.data_root)
@@ -378,13 +571,49 @@ class AstrBotKnowledgeSources:
 
 
 def attach_official_knowledge(application, host_context):
-    """Inject the host-side reader into the core conversation collaborator."""
+    """Inject the host-side reader and semantic retriever into the knowledge collaborator."""
     sources = AstrBotKnowledgeSources(host_context)
     messages = getattr(application, "messages", None)
     knowledge = getattr(messages, "knowledge", None)
     if knowledge is not None and sources.manager is not None:
         knowledge.official_candidate_reader = sources.candidates
+        knowledge.official_semantic_retriever = sources.retrieve_sync
+        knowledge.official_sources = sources
     return sources
+
+
+async def prepare_official_knowledge_hits(application, context, text, *, include_official=None):
+    """Pre-fetch official KB hits asynchronously on the event loop before sync prompt building."""
+    messages = getattr(application, "messages", None)
+    owner = getattr(messages, "knowledge", None)
+    if owner is None:
+        return None
+    try:
+        settings = owner.settings(context)
+    except Exception:
+        return None
+    if not settings.inject_enabled or not settings.source_ids:
+        return None
+    if include_official is None:
+        include_official = settings.official_in_core
+    if not include_official:
+        return None
+    sources = getattr(owner, "official_sources", None)
+    retriever = getattr(sources, "retrieve", None)
+    if not callable(retriever):
+        return None
+    try:
+        return await retriever(
+            text,
+            settings.knowledge_source_ids(),
+            source_limit=settings.source_limit,
+            max_hits=settings.inject_max_entries,
+            entry_char_limit=settings.entry_char_limit,
+            char_budget=settings.inject_max_chars,
+        )
+    except Exception as error:
+        logger.warning("[CompanionV2] 官方知识库异步预检索降级 error_type=%s", type(error).__name__)
+        return None
 
 
 def import_configured_sources(runtime, *, data_root, binding: SourceBinding, at, settings=None,
@@ -535,7 +764,8 @@ def _connect(path: Path):
 __all__ = [
     "AstrBotKnowledgeSources", "KNOWLEDGE_BASE_DIR", "KnowledgeSourceReader", "SOURCE_PREFIXES", "WORLDBOOK_DEFAULTS",
     "attach_official_knowledge",
-    "available_source_ids", "import_configured_sources", "import_configured_sources_at_startup",
-    "import_plan", "knowledge_base_ids",
+    "available_source_ids", "clean_retrieval_query", "import_configured_sources",
+    "import_configured_sources_at_startup",
+    "import_plan", "knowledge_base_ids", "prepare_official_knowledge_hits",
     "worldbook_paths",
 ]

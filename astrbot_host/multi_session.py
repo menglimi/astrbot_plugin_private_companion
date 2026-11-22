@@ -1302,6 +1302,9 @@ class MultiHostSession:
                         from .external_memory import prepare_external_memory
                         external_memory = await prepare_external_memory(
                             self.bridge.context, self.application, context, captured)
+                        from .knowledge_sources import prepare_official_knowledge_hits
+                        official_knowledge_hits = await prepare_official_knowledge_hits(
+                            self.application, context, getattr(captured, "text", "") or "")
                         prompt_at = self.now()
                         private_group_context = await self._private_group_context(context, captured)
                         # 组装提示词要遍历来源依赖并逐节点读库；放在事件循环上会
@@ -1313,7 +1316,8 @@ class MultiHostSession:
                             health_material=health_material,
                             external_memory=external_memory,
                             group_trigger=group_trigger,
-                            private_group_context=private_group_context)
+                            private_group_context=private_group_context,
+                            official_knowledge_hits=official_knowledge_hits)
                         prompt_instruction = getattr(prompt, "context_instruction", prompt.instruction)
                         prompt_context_instruction = prompt_instruction
                         prompt_context_blocks = getattr(prompt, "context_blocks", ())

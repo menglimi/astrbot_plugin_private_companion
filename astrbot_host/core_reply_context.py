@@ -168,7 +168,8 @@ def _capture_materials(owner, context, at, *, runtime=None):
         return owner.contributions(snapshot, context, at)
 
 
-def _knowledge_materials(messages, context, native_input, at, *, members=False):
+def _knowledge_materials(messages, context, native_input, at, *, members=False,
+                         official_hits=None, include_official=None):
     """Reuse the knowledge owner without duplicating AstrBot's official KB path."""
     owner = getattr(messages, "knowledge", None)
     if owner is None:
@@ -181,6 +182,12 @@ def _knowledge_materials(messages, context, native_input, at, *, members=False):
     if members:
         clue = owner.member_contribution(context, **arguments)
         return (clue,) if clue is not None else ()
+    if include_official is not None:
+        return owner.background_contributions(
+            context, include_official=include_official, official_hits=official_hits, **arguments)
+    if official_hits is not None:
+        return owner.core_background_contributions(
+            context, official_hits=official_hits, **arguments)
     return owner.core_background_contributions(context, **arguments)
 
 
@@ -288,7 +295,8 @@ def _input_received_at(native_input, fallback):
 
 
 def build_core_reply_prompt(application, context, native_input, *, at, keyword_materials=(), health_material=None,
-                            external_memory=None, private_group_context="", group_trigger=None):
+                            external_memory=None, private_group_context="", group_trigger=None,
+                            official_knowledge_hits=None, include_official_knowledge=None):
     """Build optional background independently; no failed section blocks reply."""
     blocks, stable_blocks, context_blocks, sections, expression_signal_ids = [], [], [], [], []
     sent_rounds, sent_round_refs = {}, {}
@@ -410,7 +418,9 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
     optional("cross_window", lambda: _cross_window_section(
         messages, context, at, getattr(native_input, "text", "")))
     optional("knowledge_reference", lambda: _material_section("角色知识资料", system_text("knowledge", KNOWLEDGE_INSTRUCTION),
-        _knowledge_materials(messages, context, native_input, at)))
+        _knowledge_materials(messages, context, native_input, at,
+                             official_hits=official_knowledge_hits,
+                             include_official=include_official_knowledge)))
     optional("knowledge_member_clue", lambda: _material_section("本窗口成员资料", MEMBER_CLUE_INSTRUCTION,
         _knowledge_materials(messages, context, native_input, at, members=True)))
 
