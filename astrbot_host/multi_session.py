@@ -1082,9 +1082,10 @@ class MultiHostSession:
                             "question_enabled": wakeup["group_wakeup_enabled"] and wakeup["group_wakeup_question_enabled"],
                             "question_threshold": wakeup["group_wakeup_question_threshold"],
                             "interjection_enabled": wakeup["group_wakeup_enabled"] and values["enable_group_interjection"],
-                            "mention_force_reply_enabled": bool(values["mention_force_reply_enabled"]),
                             "interest_probability": wakeup["group_wakeup_interest_probability"],
                             "cooldown_seconds": wakeup["group_wakeup_cooldown_seconds"],
+                            **({"mention_force_reply_enabled": True}
+                               if values["mention_force_reply_enabled"] else {}),
                         },
                         "question_reference": participation.admission.question_reference(context,
                             text=captured.text, instruction=captured.instruction, at=captured.at,

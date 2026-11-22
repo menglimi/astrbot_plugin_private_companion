@@ -161,6 +161,21 @@ class CoreReplyMentionGuardTests(CoreReplyToolFixture, unittest.IsolatedAsyncioT
         decision = self._choose(session, {"mode": "skip", "reason": "@我但明说不用理我"}, event=event)
         self.assertEqual(decision["payload"]["mode"], "skip")
 
+    def test_rendered_policy_omits_mention_force_reply_when_disabled(self):
+        # Issue #836: the policy dict only carries mention_force_reply_enabled
+        # when the window opted in, so the off (default) rendering stays
+        # byte-identical to the pre-switch model state.
+        from companion_v2.decision.prompt import build_state, render_model_state
+        base = {"scope_kind": "group", "user_text": "x",
+                "group_participation_policy": {"question_enabled": True, "interjection_enabled": True}}
+        off = json.loads(render_model_state(build_state(dict(base))))
+        self.assertNotIn("mention_force_reply_enabled", off["facts"]["group_participation_policy"])
+        on = json.loads(render_model_state(build_state({**base, "mentioned": True,
+                "group_participation_policy": {**base["group_participation_policy"],
+                                               "mention_force_reply_enabled": True}})))
+        self.assertIs(on["facts"]["group_participation_policy"]["mention_force_reply_enabled"], True)
+        self.assertIn("被@强制应答", on["facts"]["address_context"])
+
 
 if __name__ == "__main__":
     unittest.main()
