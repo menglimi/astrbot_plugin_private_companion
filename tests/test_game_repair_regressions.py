@@ -394,6 +394,101 @@ class DrawGuessRepairTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("太阳", json.dumps(closed2["result"]["game"], ensure_ascii=False))
             self.assertNotIn("answer", closed2["result"]["game"]["state"])
 
+    async def test_slow_llm_and_vision_awaits_do_not_block_other_rooms_and_preserve_concurrent_strokes(self):
+        with TemporaryDirectory() as root:
+            turtle_entered = asyncio.Event()
+            turtle_release = asyncio.Event()
+            vision_entered = asyncio.Event()
+            vision_release = asyncio.Event()
+
+            async def slow_turtle(**_kwargs):
+                turtle_entered.set()
+                await turtle_release.wait()
+                return None
+
+            async def slow_vision(_game, _img, **_kwargs):
+                vision_entered.set()
+                await vision_release.wait()
+                return "香蕉"
+
+            plugin = enabled_plugin(
+                native_v2_tictactoe_enabled=True,
+                generate_native_turtle_soup_puzzle=slow_turtle,
+                native_guess_drawing=slow_vision,
+            )
+            provider = game_provider.NativeGameProvider(plugin, Path(root), version=PRODUCT_VERSION)
+
+            # Create an unrelated TicTacToe room to probe server responsiveness
+            ttt = await provider.execute(
+                game_request(provider, game_provider.CREATE, {"difficulty": "easy"}, "ttt-1", subject="other-player"),
+                before_dispatch=lambda: True,
+            )
+            ttt_ticket = provider.issue_web_ticket(ttt["result"]["game"]["game_id"])
+
+            # 1. Slow TURTLE_CREATE must not block other room's web_state / web_action
+            turtle_task = asyncio.create_task(provider.execute(
+                game_request(provider, game_provider.TURTLE_CREATE, {}, "slow-soup"),
+                before_dispatch=lambda: True,
+            ))
+            await asyncio.wait_for(turtle_entered.wait(), 2)
+            state_during_turtle = await asyncio.wait_for(provider.web_state(ttt_ticket), 1)
+            self.assertEqual(state_during_turtle["game"]["game_type"], "tictactoe")
+            moved_during_turtle = await asyncio.wait_for(
+                provider.web_action(ttt_ticket, {"action": "move", "row": 1, "column": 1}), 1,
+            )
+            self.assertEqual(moved_during_turtle["game"]["game_type"], "tictactoe")
+            turtle_release.set()
+            turtle_res = await asyncio.wait_for(turtle_task, 2)
+            self.assertEqual(turtle_res["state"], "succeeded")
+
+            # 2. Slow create_mobile_game("turtle_soup") must not block other rooms
+            turtle_entered.clear()
+            turtle_release.clear()
+            mobile_task = asyncio.create_task(provider.create_mobile_game("mobile-owner-1", "turtle_soup"))
+            await asyncio.wait_for(turtle_entered.wait(), 2)
+            state_during_mobile = await asyncio.wait_for(provider.web_state(ttt_ticket), 1)
+            self.assertEqual(state_during_mobile["game"]["game_type"], "tictactoe")
+            turtle_release.set()
+            mobile_res = await asyncio.wait_for(mobile_task, 2)
+            self.assertEqual(mobile_res["game"]["game_type"], "turtle_soup")
+
+            # 3. Slow WEB_DRAW_BOT_GUESS must not block other rooms AND must preserve concurrent strokes
+            with patch.object(game_provider.random, "choice", return_value=DrawWord("苹果")):
+                draw = await provider.execute(
+                    game_request(provider, game_provider.DRAW_CREATE, {"difficulty": "easy"}, "draw-conc"),
+                    before_dispatch=lambda: True,
+                )
+            draw_ticket = provider.issue_web_ticket(draw["result"]["game"]["game_id"], role="drawer")
+            stroke1 = [{"color": "#1c2420", "width": 6, "points": [[0.1, 0.1], [0.2, 0.2]]}]
+            await provider.web_action(draw_ticket, {"action": "strokes", "strokes": stroke1})
+
+            bot_guess_task = asyncio.create_task(
+                provider.web_action(draw_ticket, {"action": "bot_guess", "image_data_url": VALID_PNG_DATA_URL})
+            )
+            await asyncio.wait_for(vision_entered.wait(), 2)
+            # Other room stays responsive
+            self.assertEqual((await asyncio.wait_for(provider.web_state(ttt_ticket), 1))["game"]["game_type"], "tictactoe")
+            # Drawer adds a second stroke while vision model is thinking
+            stroke2 = stroke1 + [{"color": "#d9483b", "width": 8, "points": [[0.4, 0.4], [0.8, 0.8]]}]
+            await asyncio.wait_for(provider.web_action(draw_ticket, {"action": "strokes", "strokes": stroke2}), 1)
+            vision_release.set()
+            guessed = await asyncio.wait_for(bot_guess_task, 2)
+            self.assertEqual(len(guessed["game"]["state"]["guesses"]), 1)
+            self.assertEqual(len(guessed["game"]["state"]["strokes"]), 2)
+
+            # 4. Closing the draw_guess room while bot_guess awaits fails cleanly without resurrecting room
+            vision_entered.clear()
+            vision_release.clear()
+            bot_guess_task2 = asyncio.create_task(
+                provider.web_action(draw_ticket, {"action": "bot_guess", "image_data_url": VALID_PNG_DATA_URL})
+            )
+            await asyncio.wait_for(vision_entered.wait(), 2)
+            await asyncio.wait_for(provider.web_action(draw_ticket, {"action": "close"}), 1)
+            vision_release.set()
+            with self.assertRaisesRegex(game_provider.NativeGameError, "game_not_active"):
+                await asyncio.wait_for(bot_guess_task2, 2)
+            self.assertEqual((await provider.web_state(draw_ticket))["game"]["status"], "closed")
+
     def test_normalize_strokes_bounds_and_sanitizes(self):
         cleaned = normalize_strokes([
             {"color": "#ABC123", "width": 6, "points": [[0.1234567, 0.9876543], [0.25, 0.75]]},
@@ -645,6 +740,16 @@ class GameConversationCarryoverAndAccessTests(MultiFixture, unittest.IsolatedAsy
         offered_core = {item.action for item in app.tools.external.catalog_for(rotated_core)}
         self.assertTrue(GROUPS["gomoku"].issubset(offered_core))
         self.assertTrue(GROUPS["tictactoe"].isdisjoint(offered_core))
+
+        # projection() failure must fail-closed even for core admin
+        from companion_v2.foundation.outcome import Outcome
+        with patch.object(
+            app.tools.external.capabilities,
+            "projection",
+            return_value=Outcome.failed("capability_descriptor_missing", "missing"),
+        ):
+            offered_broken = {item.action for item in app.tools.external.catalog_for(rotated_core)}
+        self.assertFalse(any(action.startswith("game.") for action in offered_broken))
 
         # Pausing the game module must block even core admin
         cap_repo = CapabilityRepository(app.runtime)

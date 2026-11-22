@@ -53,6 +53,7 @@ class Element {
   toDataURL(mime = "image/png") {
     return this.tag === "canvas" ? `data:${mime};base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aFxoAAAAASUVORK5CYII=` : "";
   }
+  setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
 }
 
 function descendants(element) { return [element, ...element.children.flatMap(descendants)]; }
@@ -64,9 +65,23 @@ async function render(game, {confirm = false, fetchAction, fetchState} = {}) {
   const requests = [];
   const events = {};
   let poll;
-  const document = {getElementById: $, activeElement: null, createElement: tag => {
-    const element = new Element(tag); element.onFocus = value => { document.activeElement = value; }; return element;
-  }};
+  const document = {
+    getElementById: $,
+    activeElement: null,
+    createElement: tag => {
+      const element = new Element(tag); element.onFocus = value => { document.activeElement = value; }; return element;
+    },
+    querySelector: selector => {
+      const focusMatch = selector.match(/^\[data-focus-key="([^"]+)"\]$/);
+      if (focusMatch) {
+        for (const root of elements.values()) {
+          const hit = descendants(root).find(node => node.dataset.focusKey === focusMatch[1]);
+          if (hit) return hit;
+        }
+      }
+      return null;
+    },
+  };
   document.createElementNS = (_, tag) => document.createElement(tag);
   const context = vm.createContext({document,
     window: {location: {pathname: "/native/fixture-ticket"}, matchMedia: () => ({matches: confirm}),
@@ -541,4 +556,126 @@ test("你画我猜猜测方不暴露题词，仅展示只读画布与猜词输�
   await flush();
   const post = requests.find(r => r.options.method === "POST");
   assert.deepEqual(JSON.parse(post.options.body), {action: "guess", guess: "向日葵"});
+});
+
+test("你画我猜画布同步失败时中止递归重试，不会触发无限请求风暴", async () => {
+  const drawerGame = {
+    game_type: "draw_guess", status: "active", outcome: null, moves: [],
+    state: {
+      viewer_role: "drawer", answer: "向日葵", guess_count: 0, max_guesses: 5,
+      remaining_seconds: 120, revision: 0, strokes: [], guesses: [],
+    },
+  };
+  let failSync = true;
+  const {$, requests} = await render(drawerGame, {
+    fetchAction: body => {
+      if (body.action === "strokes" && failSync) throw new Error("network down");
+      const next = JSON.parse(JSON.stringify(drawerGame));
+      next.state.revision = 1;
+      next.state.strokes = body.strokes || [];
+      return {game: next};
+    },
+  });
+  const canvas = descendants($("gameBoard")).find(el => el.tag === "canvas");
+  canvas.listeners.pointerdown(pointer(160, 220));
+  canvas.listeners.pointerup(pointer(320, 340));
+  for (let i = 0; i < 10; i += 1) await flush();
+  const failedPosts = requests.filter(r => r.options.method === "POST");
+  assert.equal(failedPosts.length, 1);
+  assert.match($("notice").textContent, /画布同步失败/);
+
+  // 网络恢复后，继续落笔可正常同步
+  failSync = false;
+  const canvasAfter = descendants($("gameBoard")).find(el => el.tag === "canvas");
+  canvasAfter.listeners.pointerdown(pointer(200, 240));
+  canvasAfter.listeners.pointerup(pointer(360, 360));
+  for (let i = 0; i < 6; i += 1) await flush();
+  const allPosts = requests.filter(r => r.options.method === "POST").map(r => JSON.parse(r.options.body));
+  assert.equal(allPosts.length, 2);
+  assert.equal(allPosts[1].strokes.length, 2);
+});
+
+test("连续快速作画时上一笔同步返回不会卸载正在绘制的画布", async () => {
+  const drawerGame = {
+    game_type: "draw_guess", status: "active", outcome: null, moves: [],
+    state: {
+      viewer_role: "drawer", answer: "猫", guess_count: 0, max_guesses: 5,
+      remaining_seconds: 120, revision: 0, strokes: [], guesses: [],
+    },
+  };
+  let resolveFirst;
+  let postCount = 0;
+  const {$, requests} = await render(drawerGame, {
+    fetchAction: body => {
+      postCount += 1;
+      const next = JSON.parse(JSON.stringify(drawerGame));
+      next.state.revision = postCount;
+      next.state.strokes = body.strokes;
+      if (postCount === 1) return new Promise(resolve => { resolveFirst = () => resolve({game: next}); });
+      return {game: next};
+    },
+  });
+  const canvas = descendants($("gameBoard")).find(el => el.tag === "canvas");
+  // 第 1 笔结束，触发同步（挂起中）
+  canvas.listeners.pointerdown(pointer(150, 150));
+  canvas.listeners.pointerup(pointer(250, 250));
+  // 立即按下第 2 笔，尚未抬起
+  canvas.listeners.pointerdown(pointer(300, 300));
+  canvas.listeners.pointermove(pointer(350, 350));
+  // 第 1 笔响应返回，必须保持当前 canvas DOM 不被卸载
+  resolveFirst();
+  await flush();
+  assert.equal(descendants($("gameBoard")).find(el => el.tag === "canvas"), canvas);
+  // 第 2 笔抬起，顺畅同步全部 2 笔
+  canvas.listeners.pointerup(pointer(400, 400));
+  for (let i = 0; i < 6; i += 1) await flush();
+  const posts = requests.filter(r => r.options.method === "POST").map(r => JSON.parse(r.options.body));
+  assert.equal(posts.length, 2);
+  assert.equal(posts[1].strokes.length, 2);
+});
+
+test("猜词方输入框在倒计时轮询重绘后保留草稿、焦点与光标选区，提交成功后清空草稿", async () => {
+  let seconds = 90;
+  const makeState = () => ({
+    game_id: "draw-1", game_type: "draw_guess", status: "active", outcome: null, moves: [],
+    state: {
+      viewer_role: "guesser", guess_count: 0, max_guesses: 5,
+      remaining_seconds: seconds, revision: 1,
+      strokes: [{color: "#1c2420", width: 6, points: [[0.2, 0.2], [0.8, 0.8]]}], guesses: [],
+    },
+  });
+  const {$, poll, document} = await render(makeState(), {
+    fetchState: () => ({game: makeState()}),
+    fetchAction: body => {
+      const next = makeState();
+      next.state.guess_count = 1;
+      next.state.guesses = [{number: 1, guess: body.guess, correct: false}];
+      return {game: next};
+    },
+  });
+  const input1 = descendants($("actionControls")).find(el => el.tag === "input");
+  input1.focus();
+  input1.value = "向日";
+  input1.setSelectionRange(2, 2);
+  input1.listeners.input();
+  assert.equal(document.activeElement, input1);
+
+  // 1.8s 轮询倒计时变化触发重绘
+  seconds = 88;
+  await poll();
+  const input2 = descendants($("actionControls")).find(el => el.tag === "input");
+  assert.equal(input2.value, "向日");
+  assert.equal(document.activeElement, input2);
+  assert.equal(input2.dataset.focusKey, "draw-guess-input");
+  assert.equal(input2.selectionStart, 2);
+  assert.equal(input2.selectionEnd, 2);
+
+  // 提交猜测成功后清空草稿
+  input2.value = "向日葵";
+  input2.listeners.input();
+  const form = descendants($("actionControls")).find(el => el.tag === "form");
+  form.listeners.submit({preventDefault() {}});
+  await flush();
+  const input3 = descendants($("actionControls")).find(el => el.tag === "input");
+  assert.equal(input3.value, "");
 });

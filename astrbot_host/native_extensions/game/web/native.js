@@ -42,6 +42,8 @@
     syncing: false,
     dirty: false,
     canvas: null,
+    guessDraft: "",
+    gameId: "",
   };
   const gomoku = window.CompanionGomokuRoom.create({node, $, getGame: () => game,
     isBusy: () => busy, getSelectedPiece: () => selectedPiece,
@@ -473,6 +475,7 @@
     if (!drawState.dirty || drawState.syncing || game?.status !== "active") return true;
     drawState.syncing = true;
     drawState.dirty = false;
+    let succeeded = false;
     const snapshot = drawState.strokes.map((stroke) => ({
       color: stroke.color,
       width: stroke.width,
@@ -487,6 +490,7 @@
       game = result.game;
       drawState.revision = Number(game.state?.revision ?? drawState.revision);
       setNotice("");
+      succeeded = true;
       return true;
     } catch (error) {
       drawState.dirty = true;
@@ -494,7 +498,9 @@
       return false;
     } finally {
       drawState.syncing = false;
-      if (drawState.dirty && !drawState.activeStroke && game?.status === "active") {
+      if (drawState.activeStroke) {
+        // 正在连续绘制新一笔时禁止重建画布，等待 pointerup 结束后统一同步与重绘。
+      } else if (succeeded && drawState.dirty && game?.status === "active") {
         void flushDrawStrokes();
       } else {
         render({force: true});
@@ -754,6 +760,11 @@
           input.autocomplete = "off";
           input.placeholder = "输入你的猜测";
           input.setAttribute("aria-label", "输入你的猜测");
+          input.dataset.focusKey = "draw-guess-input";
+          input.value = drawState.guessDraft;
+          input.addEventListener("input", () => {
+            drawState.guessDraft = input.value;
+          });
           const button = node("button", "control-button primary");
           button.type = "submit";
           button.innerHTML = '<i data-lucide="send" aria-hidden="true"></i><span>提交猜测</span>';
@@ -761,6 +772,7 @@
           form.append(input, button);
           form.addEventListener("submit", (event) => {
             event.preventDefault();
+            drawState.guessDraft = input.value;
             const guess = input.value.trim();
             if (guess) sendAction({action: "guess", guess});
           });
@@ -848,10 +860,20 @@
 
   function render({force = true} = {}) {
     if (!game) return;
+    if (game.game_type === "draw_guess") {
+      const currentId = String(game.game_id || "");
+      if ((drawState.gameId && currentId && drawState.gameId !== currentId) || game.status !== "active") {
+        drawState.guessDraft = "";
+      }
+      drawState.gameId = currentId;
+    }
     const signature = JSON.stringify([game, busy, selected, game.game_type === "gomoku" ? null : selectedPiece]);
     if (!force && signature === renderedSignature) return;
     renderedSignature = signature;
-    const focusKey = document.activeElement?.dataset?.focusKey;
+    const activeEl = document.activeElement;
+    const focusKey = activeEl?.dataset?.focusKey;
+    const selectionStart = typeof activeEl?.selectionStart === "number" ? activeEl.selectionStart : null;
+    const selectionEnd = typeof activeEl?.selectionEnd === "number" ? activeEl.selectionEnd : null;
     const label = labels[game.game_type] || "V2 原生对局";
     $("gameTitle").textContent = label;
     $("gameCode").textContent = game.game_type === "gomoku" ? "15 × 15 · 黑棋先行 · 无禁手" : "一起玩 · 游戏房间";
@@ -864,7 +886,18 @@
     renderPieceTray(game.state || {});
     renderControls(game.state || {});
     renderHistory();
-    if (focusKey) document.querySelector?.(`[data-focus-key="${focusKey}"]`)?.focus({preventScroll: true});
+    if (focusKey) {
+      const restored = document.querySelector?.(`[data-focus-key="${focusKey}"]`);
+      if (restored) {
+        restored.focus?.({preventScroll: true});
+        if (selectionStart !== null && typeof restored.setSelectionRange === "function") {
+          const length = String(restored.value || "").length;
+          try {
+            restored.setSelectionRange(Math.min(selectionStart, length), Math.min(selectionEnd ?? selectionStart, length));
+          } catch (_) {}
+        }
+      }
+    }
   }
 
   async function fetchJSON(url, options = {}) {
@@ -928,9 +961,14 @@
         body: JSON.stringify(payload),
       });
       game = result.game;
-      if (game?.game_type === "draw_guess" && ["undo", "clear"].includes(payload?.action)) {
-        drawState.dirty = false;
-        drawState.revision = -1;
+      if (game?.game_type === "draw_guess") {
+        if (["undo", "clear"].includes(payload?.action)) {
+          drawState.dirty = false;
+          drawState.revision = -1;
+        }
+        if (payload?.action === "guess") {
+          drawState.guessDraft = "";
+        }
       }
       setNotice("");
     } catch (error) {

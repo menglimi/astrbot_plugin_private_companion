@@ -386,10 +386,9 @@ class ExternalToolExecutor:
                 role=context.role_binding.role,
                 scope=context.scope,
             )
-            if projected.is_success:
-                selection = projected.unwrap().role_selection
-                if selection is not None and not selection.enabled:
-                    raise TaskError("capability_role_not_enabled", "game is disabled for this role")
+            selection = require(projected).role_selection
+            if selection is not None and not selection.enabled:
+                raise TaskError("capability_role_not_enabled", "game is disabled for this role")
             consent = self.capabilities.consent(
                 extension_id=package.extension_id,
                 capability_id=current.binding.capability,

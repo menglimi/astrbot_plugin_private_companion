@@ -1408,64 +1408,70 @@ class NativeGameProvider:
         return self._receipt(request, operation)
 
     async def _execute_turtle_create(self, request: dict[str, Any], *, before_dispatch) -> dict[str, Any]:
-        scope, _args = self._request(request)
-        if not getattr(self.plugin, "native_v2_turtle_soup_enabled", False):
-            raise NativeGameError("game_turtle_soup_disabled")
-        self._checked(before_dispatch)
-        identity = _identity(request)
-        with self.store.lock:
-            previous = self.store.data["operations"].get(request["invocation_id"])
-            if previous is not None:
-                if previous["identity"] != identity or previous["scope"] != scope:
-                    raise NativeGameError("game_original_invocation_mismatch")
-                return self._receipt(request, previous)
-            rooms = self.store.data["scopes"].get(scope, {})
-            existing_active = next(
-                (room for room in rooms.values()
-                 if _record_kind(room) == "turtle_soup" and room["status"] == "active"),
-                None,
-            )
-        prepared_puzzle: SoupPuzzle | None = None
-        if existing_active is None:
+        async with self._async_lock:
+            scope, _args = self._request(request)
+            if not getattr(self.plugin, "native_v2_turtle_soup_enabled", False):
+                raise NativeGameError("game_turtle_soup_disabled")
+            self._checked(before_dispatch)
+            identity = _identity(request)
+            with self.store.lock:
+                previous = self.store.data["operations"].get(request["invocation_id"])
+                if previous is not None:
+                    if previous["identity"] != identity or previous["scope"] != scope:
+                        raise NativeGameError("game_original_invocation_mismatch")
+                    return self._receipt(request, previous)
+                rooms = self.store.data["scopes"].get(scope, {})
+                existing_active = next(
+                    (room for room in rooms.values()
+                     if _record_kind(room) == "turtle_soup" and room["status"] == "active"),
+                    None,
+                )
             level = normalize_content_level(getattr(self.plugin,
                 "native_v2_turtle_soup_content_level", "normal"))
             scope_doc = request.get("context", {}).get("scope") if isinstance(request.get("context"), dict) else None
             session_id = str(scope_doc.get("session_id") or "") if isinstance(scope_doc, dict) else ""
-            prepared_puzzle = await self._prepare_turtle_puzzle(scope, level, session_id=session_id)
-        self._request(request)
-        if not getattr(self.plugin, "native_v2_turtle_soup_enabled", False):
-            raise NativeGameError("game_turtle_soup_disabled")
-        self._checked(before_dispatch)
-        with self.store.lock:
-            previous = self.store.data["operations"].get(request["invocation_id"])
-            if previous is not None:
-                if previous["identity"] != identity or previous["scope"] != scope:
-                    raise NativeGameError("game_original_invocation_mismatch")
-                return self._receipt(request, previous)
-            draft = copy.deepcopy(self.store.data)
-            operation = {"id": "game-op-" + uuid.uuid4().hex, "scope": scope,
-                         "identity": identity, "state": "succeeded", "effect": "committed", "result": None}
-            try:
-                operation["result"] = {"game": self._apply(draft, scope, request, prepared_puzzle=prepared_puzzle)}
-            except NativeGameError as exc:
-                draft = copy.deepcopy(self.store.data)
-                draft["scopes"].setdefault(scope, {})
-                operation.update(state="failed", effect="not_committed", error=exc.code)
-            draft["operations"][request["invocation_id"]] = operation
-            self._checked(before_dispatch)
-            self.store.commit(draft)
-            return self._receipt(request, operation)
 
-    async def execute(self, request: dict[str, Any], *, before_dispatch) -> dict[str, Any]:
-        # Keep all game commits serialized without holding a thread lock across engine awaits.
+        prepared_puzzle: SoupPuzzle | None = None
+        if existing_active is None:
+            prepared_puzzle = await self._prepare_turtle_puzzle(scope, level, session_id=session_id)
+
         async with self._async_lock:
             self._request(request)
-            if request["action"] in XIANGQI_ACTIONS:
-                result = await self._execute_xiangqi(request, before_dispatch=before_dispatch)
-            elif request["action"] == TURTLE_CREATE:
-                result = await self._execute_turtle_create(request, before_dispatch=before_dispatch)
-            else:
-                result = self._execute_sync(request, before_dispatch=before_dispatch)
+            if not getattr(self.plugin, "native_v2_turtle_soup_enabled", False):
+                raise NativeGameError("game_turtle_soup_disabled")
+            self._checked(before_dispatch)
+            with self.store.lock:
+                previous = self.store.data["operations"].get(request["invocation_id"])
+                if previous is not None:
+                    if previous["identity"] != identity or previous["scope"] != scope:
+                        raise NativeGameError("game_original_invocation_mismatch")
+                    return self._receipt(request, previous)
+                draft = copy.deepcopy(self.store.data)
+                operation = {"id": "game-op-" + uuid.uuid4().hex, "scope": scope,
+                             "identity": identity, "state": "succeeded", "effect": "committed", "result": None}
+                try:
+                    operation["result"] = {"game": self._apply(draft, scope, request, prepared_puzzle=prepared_puzzle)}
+                except NativeGameError as exc:
+                    draft = copy.deepcopy(self.store.data)
+                    draft["scopes"].setdefault(scope, {})
+                    operation.update(state="failed", effect="not_committed", error=exc.code)
+                draft["operations"][request["invocation_id"]] = operation
+                self._checked(before_dispatch)
+                self.store.commit(draft)
+                return self._receipt(request, operation)
+
+    async def execute(self, request: dict[str, Any], *, before_dispatch) -> dict[str, Any]:
+        # Release _async_lock across external LLM calls; keep store commits serialized.
+        self._request(request)
+        if request["action"] == TURTLE_CREATE:
+            result = await self._execute_turtle_create(request, before_dispatch=before_dispatch)
+        else:
+            async with self._async_lock:
+                self._request(request)
+                if request["action"] in XIANGQI_ACTIONS:
+                    result = await self._execute_xiangqi(request, before_dispatch=before_dispatch)
+                else:
+                    result = self._execute_sync(request, before_dispatch=before_dispatch)
         return await self._with_room_access(request, result, before_dispatch=before_dispatch)
 
     async def _with_room_access(self, request, result, *, before_dispatch):
@@ -1747,6 +1753,7 @@ class NativeGameProvider:
 
     async def web_action(self, ticket: str, payload: Any) -> dict[str, Any]:
         terminal_event: tuple[str, str, dict[str, Any]] | None = None
+        bot_guess_job: tuple[dict[str, Any], str, DrawGuessGame, Any, str, str, str, str] | None = None
         async with self._async_lock:
             with self.store.lock:
                 session = dict(self._web_session(ticket))
@@ -1779,20 +1786,15 @@ class NativeGameProvider:
                     ctx = self._game_contexts.get(session["game_id"]) or self._scope_contexts.get(session["scope"])
                     user_id = str(getattr(getattr(getattr(ctx, "actor", None), "principal", None), "native_account_id", "") or "")
                     session_id = str(getattr(getattr(ctx, "scope", None), "session_id", "") or "")
-                    guess_text = await guesser(
+                    bot_guess_job = (
+                        session,
+                        role,
                         draw_game,
+                        guesser,
                         request["arguments"]["image_data_url"],
-                        user_id=user_id,
-                        session_id=session_id,
-                    )
-                    guess_request = {
-                        "action": DRAW_GUESS,
-                        "arguments": {"game_id": session["game_id"], "guess": guess_text},
-                        "invocation_id": request["invocation_id"],
-                    }
-                    result = self._apply(
-                        draft, session["scope"], guess_request,
-                        viewer=role, include_strokes=True,
+                        request["invocation_id"],
+                        user_id,
+                        session_id,
                     )
             elif request["action"] == XIANGQI_MOVE or request["action"] == XIANGQI_CLOSE:
                 try:
@@ -1805,17 +1807,50 @@ class NativeGameProvider:
                     draft, session["scope"], request,
                     viewer=role, include_strokes=True,
                 )
-            with self.store.lock:
-                self.store.commit(draft)
-                if kind == "xiangqi":
-                    self._cache_xiangqi(room, game)
-                if was_active and result.get("status") == "finished":
-                    committed = draft["scopes"][session["scope"]][session["game_id"]]
-                    public_result = (
-                        result if kind == "xiangqi"
-                        else _view(committed, viewer="guesser", include_strokes=False)
+            if bot_guess_job is None:
+                with self.store.lock:
+                    self.store.commit(draft)
+                    if kind == "xiangqi":
+                        self._cache_xiangqi(room, game)
+                    if was_active and result.get("status") == "finished":
+                        committed = draft["scopes"][session["scope"]][session["game_id"]]
+                        public_result = (
+                            result if kind == "xiangqi"
+                            else _view(committed, viewer="guesser", include_strokes=False)
+                        )
+                        terminal_event = (session["scope"], session["game_id"], public_result)
+        if bot_guess_job is not None:
+            session, role, draw_game, guesser, image_data_url, invocation_id, user_id, session_id = bot_guess_job
+            guess_text = await guesser(
+                draw_game,
+                image_data_url,
+                user_id=user_id,
+                session_id=session_id,
+            )
+            async with self._async_lock:
+                with self.store.lock:
+                    session = dict(self._web_session(ticket))
+                    live_room = self._web_game(session)
+                    if live_room.get("status") != "active":
+                        raise NativeGameError("game_not_active")
+                    fresh_draft = copy.deepcopy(self.store.data)
+                    guess_request = {
+                        "action": DRAW_GUESS,
+                        "arguments": {"game_id": session["game_id"], "guess": guess_text},
+                        "invocation_id": invocation_id,
+                    }
+                    result = self._apply(
+                        fresh_draft, session["scope"], guess_request,
+                        viewer=role, include_strokes=True,
                     )
-                    terminal_event = (session["scope"], session["game_id"], public_result)
+                    self.store.commit(fresh_draft)
+                    if result.get("status") == "finished":
+                        committed = fresh_draft["scopes"][session["scope"]][session["game_id"]]
+                        terminal_event = (
+                            session["scope"],
+                            session["game_id"],
+                            _view(committed, viewer="guesser", include_strokes=False),
+                        )
         if terminal_event is not None:
             await self._notify_web_terminal(*terminal_event)
         return {"game": result, "expires_at": session["expires_at"]}
@@ -1839,22 +1874,26 @@ class NativeGameProvider:
             args["human_side"] = XIANGQI_RED
         request = {"action": create_actions[kind], "arguments": args,
                    "invocation_id": "mobile-" + uuid.uuid4().hex}
-        async with self._async_lock:
-            if not getattr(self.plugin, f"native_v2_{kind}_enabled", False):
-                raise NativeGameError(f"game_{kind}_disabled")
-            prepared_puzzle: SoupPuzzle | None = None
-            if kind == "turtle_soup":
+        prepared_puzzle: SoupPuzzle | None = None
+        if kind == "turtle_soup":
+            async with self._async_lock:
+                if not getattr(self.plugin, "native_v2_turtle_soup_enabled", False):
+                    raise NativeGameError("game_turtle_soup_disabled")
                 with self.store.lock:
                     existing_active = next(
                         (item for item in self.store.data["scopes"].get(scope, {}).values()
                          if _record_kind(item) == "turtle_soup" and item["status"] == "active"),
                         None,
                     )
-                if existing_active is None:
-                    level = normalize_content_level(getattr(self.plugin,
-                        "native_v2_turtle_soup_content_level", "normal"))
-                    prepared_puzzle = await self._prepare_turtle_puzzle(scope, level, difficulty=difficulty)
-            draft = copy.deepcopy(self.store.data)
+                level = normalize_content_level(getattr(self.plugin,
+                    "native_v2_turtle_soup_content_level", "normal"))
+            if existing_active is None:
+                prepared_puzzle = await self._prepare_turtle_puzzle(scope, level, difficulty=difficulty)
+        async with self._async_lock:
+            if not getattr(self.plugin, f"native_v2_{kind}_enabled", False):
+                raise NativeGameError(f"game_{kind}_disabled")
+            with self.store.lock:
+                draft = copy.deepcopy(self.store.data)
             if kind == "xiangqi":
                 try:
                     room, game = await self._apply_xiangqi(draft, scope, request)
