@@ -55,7 +55,6 @@ DECLARATION = re.compile(r"--([a-z0-9-]+)\s*:")
 # 每迁移一个文件就把它删掉。人数看得见，债才还得动。
 HARDCODED_BASELINE = {
     "styles.css": 272,          # 外壳 + 未迁移旧页面的共用样式，最大一块，留到最后
-    "product-page.css": 22,
     "shell.css": 2,
     "contact-page.css": 1,
     # 缓存分析图的数据序列色（绿/青/紫/金四色）。它们是图表数据编码，

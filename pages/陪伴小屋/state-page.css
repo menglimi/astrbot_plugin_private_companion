@@ -642,3 +642,20 @@ body.state-connected{min-width:320px}
   .state-workspace-overview{padding:var(--sp-2) 0 var(--sp-3)}
 }
 @container state-workspace (max-width:720px){.state-phase-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.state-config-content-schedule,.state-config-content-presentation{grid-template-columns:minmax(0,1fr)}}
+/* 嵌入家具面板（生活挂历）时随实际容器宽度收放，避免宽屏左栏内 4 列入口卡片和 3 列看板被挤压。 */
+.shell-panel-body #roleStateWorkspace .state-page-heading{margin:0 0 var(--sp-3);padding-bottom:var(--sp-3);border-bottom:1px solid var(--t-line);align-items:center}
+@container state-workspace (max-width:860px){
+  .state-dashboard-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .state-extra-nav{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2);margin:var(--sp-3) 0}
+  .state-extra-nav button{min-height:0;padding:var(--sp-3)}
+}
+@container state-workspace (max-width:680px){
+  .state-page-heading{align-items:flex-start;flex-wrap:wrap;gap:var(--sp-2)}
+  .state-workspace-overview{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}
+  .state-workspace-current{padding:0 0 var(--sp-2);border-right:0;border-bottom:1px solid var(--t-line)}
+}
+@container state-workspace (max-width:460px){
+  .state-dashboard-grid{grid-template-columns:minmax(0,1fr)}
+  .state-board-point.tone-mood,.state-board-point.tone-busy{grid-column:auto}
+  .state-extra-nav{grid-template-columns:minmax(0,1fr)}
+}

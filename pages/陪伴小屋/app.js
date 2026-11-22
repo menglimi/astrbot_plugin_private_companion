@@ -502,9 +502,9 @@ function onProductChanged(reason){
   if(arrangementDraft||reason?.kind==='host-mappings'&&($('.product-workspace-frame')||$('#legacyMigrationWorkspace'))){
     updateHostChrome();renderShellSide();return;
   }
-  if(reason?.kind==='state-refresh'){renderShellSide();renderHomeEnvironment();return;}
+  if(reason?.kind==='state-refresh'){renderShellSide();renderHomeEnvironment();syncFurniturePanelStatus();return;}
   if(reason?.kind==='integration-refresh'){
-    syncFurnitureScene();renderShellSide();
+    syncFurnitureScene();renderShellSide();syncFurniturePanelStatus();
     const grid=$('#directoryGrid');if(grid)grid.innerHTML=directoryCards();
     window.CompanionNativeExtensionPanel?.refreshStatus();
     return;
@@ -820,32 +820,200 @@ function panelHead(title,subtitle,icon,extra='',titleActions=''){
    还没有真实工作区的（创作书架/见闻电台/衣柜陈设）保留说明卡与真实入口，
    不放假工作区。 */
 const FURNITURE_WORKSPACES={desk:['life','archive'],bed:['life','sleep']};
+function furnitureStatusChip(id,label,tone=''){
+  return `<span class="pill${tone?' '+tone:''}" data-furniture-status-chip="${escapeHTML(id)}">${escapeHTML(label)}</span>`;
+}
+function furniturePanelStatus(id,entry){
+  const connectionState=product.connection?.()?.state||'';
+  const checking=connectionState==='checking';
+  const catalog=product.directory?.();
+  const currentRole=product.role?.();
+  const data=product.data||{};
+  if(id==='wardrobe'){
+    if(product.capability?.('image'))return capabilityStatus('image');
+    if(checking)return ['读取中…','gray'];
+    return ['基础陈设','gray'];
+  }
+  if(entry?.cap){
+    if(!product.manifest&&checking)return ['读取中…','gray'];
+    return capabilityStatus(entry.cap);
+  }
+  if(id==='desk'||id==='bed'){
+    const life=data.life;
+    if(life&&typeof life==='object'){
+      const sleeping=id==='bed'&&(Boolean(life.sleep_schedule?.active_wake_at)
+        ||data.state?.body_sleep?.state==='sleeping'
+        ||(Array.isArray(life.activities)&&life.activities.some(item=>item.kind==='sleep'&&item.state==='active')));
+      if(sleeping)return ['睡眠中','lavender'];
+      const host=life.host_state;
+      if(host==='stopped'||host==='new')return ['未启动','gray'];
+      if(host==='draining')return ['正在停止','amber'];
+      const routineEnabled=Boolean(life.config?.enabled);
+      if(id==='bed'){
+        const autoSleep=Boolean(life.config?.sleep_enabled||life.sleep_schedule?.enabled);
+        if(host==='running')return routineEnabled?(autoSleep?['运行中 · 已启用','']:['运行中 · 手动作息','']):['运行中 · 日程未启','gray'];
+        return routineEnabled?(autoSleep?['已启用','']:['手动作息','gray']):['未启用','gray'];
+      }
+      if(host==='running')return routineEnabled?['运行中 · 已启用','']:['运行中 · 日程未启','gray'];
+      return routineEnabled?['已启用','']:['未启用','gray'];
+    }
+    if(product.unavailableCode?.('life'))return ['读取待核对','amber'];
+    if(checking||(catalog&&currentRole?.life_api&&!data.life))return ['读取中…','gray'];
+    if(catalog&&!currentRole?.life_api)return ['未绑定工作区','gray'];
+    return ['配置未知','gray'];
+  }
+  if(id==='calendar'){
+    const stateData=data.state;
+    if(stateData&&typeof stateData==='object'){
+      const settings=stateData.settings||{};
+      if(settings.calendar_enabled===false)return ['日程已关闭','gray'];
+      if(settings.schedule_simulation_mode==='continuous')return ['连续日程 · 运行中',''];
+      if(settings.planning_enabled)return ['自动规划 · 已启用',''];
+      return ['手动日程 · 已启用',''];
+    }
+    if(product.unavailableCode?.('state'))return ['读取待核对','amber'];
+    if(checking||(catalog&&currentRole?.state_api&&!data.state))return ['读取中…','gray'];
+    if(catalog&&!currentRole?.state_api)return ['未绑定工作区','gray'];
+    return ['配置未知','gray'];
+  }
+  if(id==='garden'){
+    const growth=data.growth;
+    if(growth&&typeof growth==='object'){
+      const items=Array.isArray(growth.items)?growth.items:[];
+      const activeCount=items.filter(item=>item.state==='active').length;
+      if(activeCount>0)return [`进行中 ${activeCount} 项`,''];
+      if(items.length>0)return [`已记录 ${items.length} 项`,''];
+      return ['已就绪 · 暂无记录','gray'];
+    }
+    if(product.unavailableCode?.('growth'))return ['读取待核对','amber'];
+    if(checking||(catalog&&currentRole?.growth_api&&!data.growth))return ['读取中…','gray'];
+    if(catalog&&!currentRole?.growth_api)return ['未绑定工作区','gray'];
+    return ['配置未知','gray'];
+  }
+  if(id==='radio'){
+    if(catalog)return ['基础能力 · 可用',''];
+    if(checking)return ['读取中…','gray'];
+    return product.hosted?.()?['待连接','amber']:['配置未知','gray'];
+  }
+  return ['配置未知','gray'];
+}
+function syncFurniturePanelStatus(){
+  const chipEl=$('#shellPanel [data-furniture-status-chip]');
+  if(!chipEl)return;
+  const id=chipEl.dataset?.furnitureStatusChip;
+  if(!id)return;
+  const entry=directory.find(item=>item.station===id)||null;
+  const [label,tone]=furniturePanelStatus(id,entry);
+  chipEl.textContent=label;
+  chipEl.className=`pill${tone?' '+tone:''}`;
+}
+function renderWardrobeFurniturePanel(){
+  const [statusLabel,statusTone]=furniturePanelStatus('wardrobe',null);
+  const head=panelHead('衣柜陈设','每日穿搭、参考素材与衣柜陈设','door-open',
+    furnitureStatusChip('wardrobe',statusLabel,statusTone)+button('回到小屋','data-shell-home'));
+  const outfitSrc=outfitImageSrc();
+  const imageCap=product.capability?.('image');
+  const imageState=imageCap?capabilityStatus('image')[0]:'基础陈设';
+  const currentRoleLabel=product.roleLabel?.()||'当前角色';
+  const visual=outfitSrc
+    ? `<img class="furniture-wardrobe-thumb" src="${escapeHTML(outfitSrc)}" alt="当前穿搭图">`
+    : `<span class="furniture-brief-symbol" aria-hidden="true">${I('shirt')}</span>`;
+  return head+`<div class="shell-panel-body">
+    <div class="furniture-brief furniture-brief-structured">
+      <div class="furniture-brief-card">
+        <div class="furniture-brief-lead">
+          ${visual}
+          <div class="furniture-brief-copy">
+            <h3>穿搭与形象陈设</h3>
+            <p>管理角色参考图、每日穿搭图与外观风格，或在 3D 小屋中重新摆放衣柜位置。</p>
+          </div>
+        </div>
+        <dl class="furniture-brief-meta">
+          <div><dt>当前角色</dt><dd>${escapeHTML(currentRoleLabel)}</dd></div>
+          <div><dt>图像与穿搭能力</dt><dd>${escapeHTML(imageState)}</dd></div>
+        </dl>
+      </div>
+      <div class="furniture-brief-actions">
+        <button class="primary" type="button" data-go="manage" data-manage="output" data-output-target="materials">${I('shirt')}<span>参考素材与衣柜</span>${I('arrow-up-right')}</button>
+        <button type="button" data-detail="arrange">${I('armchair')}<span>布置衣柜</span></button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderShelfFurnitureBrief(entry,actions){
+  const item=product.extension?.('content')||product.capability?.('content');
+  const [statusLabel]=furniturePanelStatus('shelf',entry);
+  const readyLabel=item?.runtime_ready===true?'已就绪':item?.runtime_ready===false?'尚未就绪':'待核对';
+  const authLabel=item?.authorization?.ready===true?'已授权':item?.authorization?.ready===false?'待授权':'点开核对';
+  const summary=item?.reason||'装配 Content 内置拓展后，可在此查看角色的原稿、在架作品与版本状态。';
+  return `<div class="furniture-brief furniture-brief-structured">
+    <div class="furniture-brief-card">
+      <div class="furniture-brief-lead">
+        <span class="furniture-brief-symbol" aria-hidden="true">${I(entry.icon)}</span>
+        <div class="furniture-brief-copy">
+          <h3>Content 原稿与作品库</h3>
+          <p>${escapeHTML(summary)}</p>
+        </div>
+      </div>
+      <dl class="furniture-brief-meta furniture-brief-meta-3">
+        <div><dt>装配状态</dt><dd>${escapeHTML(statusLabel)}</dd></div>
+        <div><dt>运行就绪</dt><dd>${escapeHTML(readyLabel)}</dd></div>
+        <div><dt>角色授权</dt><dd>${escapeHTML(authLabel)}</dd></div>
+      </dl>
+    </div>
+    <div class="furniture-brief-actions">${actions.join('')}</div>
+  </div>`;
+}
+function renderRadioFurnitureBrief(entry,actions){
+  return `<div class="furniture-brief furniture-brief-structured">
+    <div class="furniture-brief-card">
+      <div class="furniture-brief-lead">
+        <span class="furniture-brief-symbol" aria-hidden="true">${I(entry.icon)}</span>
+        <div class="furniture-brief-copy">
+          <h3>资讯与日常发现</h3>
+          <p>管理外部新闻源、热点话题与网页阅读发现；对话与主动分享会参考已启用的资讯配置。</p>
+        </div>
+      </div>
+      <div class="furniture-brief-tiles">
+        <button type="button" class="furniture-brief-tile" data-detail="discoveries">
+          <span class="furniture-brief-tile-icon" aria-hidden="true">${I('newspaper')}</span>
+          <span class="furniture-brief-tile-copy"><strong>新闻与网页感知</strong><small>配置资讯源、检索范围与阅读能力</small></span>
+          <span class="furniture-brief-tile-arrow" aria-hidden="true">${I('chevron-right')}</span>
+        </button>
+        <button type="button" class="furniture-brief-tile" data-go="manage" data-manage="contact">
+          <span class="furniture-brief-tile-icon" aria-hidden="true">${I('sparkles')}</span>
+          <span class="furniture-brief-tile-copy"><strong>主动触发与热点</strong><small>调整资讯分享、每日热点与联系节奏</small></span>
+          <span class="furniture-brief-tile-arrow" aria-hidden="true">${I('chevron-right')}</span>
+        </button>
+      </div>
+    </div>
+    <div class="furniture-brief-actions">${actions.join('')}</div>
+  </div>`;
+}
 function renderFurniturePanel(id){
-  if(id==='wardrobe')return panelHead('衣柜陈设','','door-open',button('回到小屋','data-shell-home'))
-    +`<div class="shell-panel-body"><div class="furniture-brief-actions">${button(I('armchair')+' 布置衣柜','data-detail="arrange"')}${button(I('shirt')+' 参考素材与衣柜','data-go="manage" data-manage="output" data-output-target="materials"')}</div></div>`;
+  if(id==='wardrobe')return renderWardrobeFurniturePanel();
   const entry=directory.find(item=>item.station===id);
   if(!entry)return renderHomePanel();
-  const status=capabilityStatus(entry.cap)[0];
+  const [statusLabel,statusTone]=furniturePanelStatus(id,entry);
   const head=panelHead(entry.name,entry.text,entry.icon,
-    chip(status)+button('回到小屋','data-shell-home'));
+    furnitureStatusChip(id,statusLabel,statusTone)+button('回到小屋','data-shell-home'));
   if(id==='calendar')return head+`<div class="shell-panel-body">${renderRoleState('','planning')}</div>`;
   if(id==='garden')return head+`<div class="shell-panel-body">${product.growthMarkup()}</div>`;
   const ws=FURNITURE_WORKSPACES[id]?product.workspace(...FURNITURE_WORKSPACES[id]):'';
   if(ws)return head+`<div class="shell-panel-body">${ws}</div>`;
   const actions=[];
-  if(entry.tab)actions.push(`<button data-life="${entry.tab}">打开${entry.name} ${I('arrow-up-right')}</button>`);
-  else if(entry.detail)actions.push(`<button class="primary" data-detail="${entry.detail}">打开${entry.name} ${I('arrow-up-right')}</button>`);
+  if(entry.tab)actions.push(`<button type="button" data-life="${entry.tab}">打开${entry.name} ${I('arrow-up-right')}</button>`);
+  else if(entry.detail)actions.push(`<button type="button" class="primary" data-detail="${entry.detail}">打开${entry.name} ${I('arrow-up-right')}</button>`);
   if(entry.cap&&['screen','reality','image','together','game','live','content'].includes(entry.cap)){
     const section=({content:'output',image:'output',screen:'perception',reality:'perception'})[entry.cap]||'action';
-    actions.push(`<button data-go="manage" data-manage="${section}">相关配置 ${I('arrow-up-right')}</button>`);
+    const targetAttr=entry.cap==='content'?' data-output-target="creation"':'';
+    actions.push(`<button type="button" data-go="manage" data-manage="${section}"${targetAttr}>相关配置 ${I('arrow-up-right')}</button>`);
   }
-  actions.push(`<button data-detail="arrange">在房间里移动它 ${I('arrow-right')}</button>`);
-  return head
-    +`<div class="shell-panel-body">
-        <div class="furniture-brief">
-          <div class="furniture-brief-actions">${actions.join('')}</div>
-        </div>
-      </div>`;
+  actions.push(`<button type="button" data-detail="arrange">在房间里移动它 ${I('arrow-right')}</button>`);
+  const body=id==='shelf'?renderShelfFurnitureBrief(entry,actions)
+    :id==='radio'?renderRadioFurnitureBrief(entry,actions)
+      :`<div class="furniture-brief"><div class="furniture-brief-actions">${actions.join('')}</div></div>`;
+  return head+`<div class="shell-panel-body">${body}</div>`;
 }
 
 /* 默认面板（没选家具也没选分区）：小屋总览。

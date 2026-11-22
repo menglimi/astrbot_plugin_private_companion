@@ -10,9 +10,54 @@
     configuration_revision_conflict: "设置已变化，请刷新后重新保存。", core_access_required: "当前账号没有本体管理权限。", source_revoked: "原文已撤回，依赖它的内容已停止使用。", life_activity_not_removable: "只有已完成或已取消的阅读记录可以删除。" };
   let bridge, state, selected, dialogAction, dialogItem, busy = false, dirty = false, tab = "archive";
   let datePages = [null], datePage = 0, activityCursor = null, polling = null;
-  const renderedKeys = { journalList: null, journalDetail: null, reading: null, sleep: null, receipts: null };
+  let embedded = false, sleepOverviewUserToggled = false, settingSleepOverview = false;
+  const renderedKeys = { journalList: null, journalDetail: null, reading: null, sleep: null, receipts: null, sleepSummary: null };
   const animatedLists = new Set();
   const pending = new Map();
+  function setTone(id, tone) {
+    const el = $(id);
+    if (!el?.dataset) return;
+    if (tone) el.dataset.tone = tone;
+    else delete el.dataset.tone;
+  }
+  function setMeter(id, ratio) {
+    const bar = $(id);
+    if (!bar?.style) return;
+    const clamped = Number.isFinite(ratio) ? Math.max(0, Math.min(100, Math.round(ratio))) : 0;
+    bar.style.width = `${clamped}%`;
+  }
+  function syncEmbeddedMode() {
+    const context = bridge?.getContext?.();
+    embedded = Boolean(context?.pageName === "life") || $("start-host")?.hidden === true;
+    if (document.documentElement?.dataset) {
+      if (embedded) document.documentElement.dataset.embedded = "true";
+      else delete document.documentElement.dataset.embedded;
+    }
+  }
+  function syncSleepOverviewForTab(currentTab) {
+    if (document.documentElement?.dataset) document.documentElement.dataset.focusTab = currentTab;
+    const details = $("sleep-overview");
+    if (!details || sleepOverviewUserToggled) return;
+    const shouldOpen = !embedded || currentTab === "sleep";
+    if (details.open !== shouldOpen) {
+      settingSleepOverview = true;
+      details.open = shouldOpen;
+      settingSleepOverview = false;
+    }
+  }
+  function renderSleepSummaryPills(pills) {
+    const host = $("sleep-summary-pills");
+    if (!host) return;
+    const key = JSON.stringify(pills);
+    if (key === renderedKeys.sleepSummary) return;
+    renderedKeys.sleepSummary = key;
+    host.replaceChildren();
+    for (const [text, tone] of pills) {
+      const pill = node("span", text, "sleep-pill");
+      if (tone && pill.dataset) pill.dataset.tone = tone;
+      host.append(pill);
+    }
+  }
   function resetRenderKeys() {
     for (const key of Object.keys(renderedKeys)) renderedKeys[key] = null;
   }
@@ -254,7 +299,12 @@
       $("sleep-scope").textContent = "暂不可用"; $("sleep-executor").textContent = "—";
       $("sleep-next").textContent = "—"; $("sleep-active-wake").textContent = "—";
       $("sleep-pressure").textContent = "—"; $("sleep-debt").textContent = "—";
-      $("sleep-workload").textContent = "—"; $("sleep-recommended").textContent = "—"; return;
+      $("sleep-workload").textContent = "—"; $("sleep-recommended").textContent = "—";
+      setMeter("sleep-pressure-bar", 0); setMeter("sleep-workload-bar", 0);
+      for (const id of ["sleep-pressure-card", "sleep-debt-card", "sleep-workload-card", "sleep-recommended-card", "sleep-active-wake-card"]) setTone(id, "");
+      $("sleep-debt-hint").textContent = "累计睡眠缺口";
+      renderSleepSummaryPills([]);
+      return;
     }
     $("sleep-scope").textContent = plan.enabled ? "当前角色 · 各会话共享" : "未启用";
     const executorName = plan.executor_is_current ? "当前私聊窗口" : "同一角色的其他私聊窗口";
@@ -264,19 +314,47 @@
     $("sleep-next").textContent = plan.next_sleep_at
       ? `${date(plan.next_sleep_at)} · ${date(plan.next_wake_at)}` : "未安排";
     $("sleep-active-wake").textContent = plan.active_wake_at ? date(plan.active_wake_at) : "当前没有进行中的睡眠";
+    setTone("sleep-active-wake-card", plan.active_wake_at ? "active" : "");
     const profile = plan.physiology || {};
-    $("sleep-pressure").textContent = profile.sleep_pressure == null ? "暂无记录" : `${profile.sleep_pressure} / 100`;
-    $("sleep-debt").textContent = profile.has_sleep_history ? `${Math.round(profile.sleep_debt_minutes || 0)} 分钟` : "暂无记录";
-    $("sleep-workload").textContent = `${Math.round(profile.workload_score || 0)} / 100`;
-    $("sleep-recommended").textContent = plan.recommended_duration_minutes
-      ? `${Math.round(plan.recommended_duration_minutes / 60 * 10) / 10} 小时` : "—";
+    const pressure = profile.sleep_pressure == null ? null : Number(profile.sleep_pressure);
+    const pressureTone = pressure == null ? "" : pressure >= 90 ? "danger" : pressure >= 75 ? "warn" : pressure >= 45 ? "accent" : "ok";
+    $("sleep-pressure").textContent = pressure == null ? "暂无记录" : `${profile.sleep_pressure} / 100`;
+    setTone("sleep-pressure-card", pressureTone);
+    setMeter("sleep-pressure-bar", pressure ?? 0);
+    const debt = Math.round(profile.sleep_debt_minutes || 0);
+    const debtTone = !profile.has_sleep_history ? "" : debt >= 90 ? "warn" : debt > 0 ? "accent" : "ok";
+    $("sleep-debt").textContent = profile.has_sleep_history ? `${debt} 分钟` : "暂无记录";
+    setTone("sleep-debt-card", debtTone);
+    $("sleep-debt-hint").textContent = !profile.has_sleep_history ? "累计睡眠缺口"
+      : debt >= 90 ? "建议尽早补觉" : debt > 0 ? "轻度睡眠缺口" : "作息充足稳定";
+    const workload = Math.round(profile.workload_score || 0);
+    const workloadTone = workload >= 75 ? "warn" : workload >= 45 ? "accent" : "ok";
+    $("sleep-workload").textContent = `${workload} / 100`;
+    setTone("sleep-workload-card", workloadTone);
+    setMeter("sleep-workload-bar", workload);
+    const recommendedHours = plan.recommended_duration_minutes
+      ? Math.round(plan.recommended_duration_minutes / 60 * 10) / 10 : null;
+    $("sleep-recommended").textContent = recommendedHours != null ? `${recommendedHours} 小时` : "—";
+    setTone("sleep-recommended-card", recommendedHours != null ? "accent" : "");
+    const summaryPills = [];
+    if (plan.active_wake_at) summaryPills.push(["睡眠中", "accent"]);
+    if (pressure != null) summaryPills.push([`压力 ${profile.sleep_pressure}/100`, pressureTone]);
+    if (profile.has_sleep_history) summaryPills.push([`欠睡 ${debt} 分钟`, debtTone]);
+    if (recommendedHours != null) summaryPills.push([`推荐 ${recommendedHours} 小时`, ""]);
+    renderSleepSummaryPills(summaryPills);
   }
   function render(background = false) {
     $("role").textContent = roleName();
     $("participant").textContent = display().subject_name || "当前聊天对象";
     $("host-state").textContent = names[state.host_state] || "状态待核对";
     $("routine-state").textContent = state.config.enabled ? "已启用" : "未启用";
-    $("next-routines").textContent = [state.next_diary_at ? "下次日记：" + date(state.next_diary_at) : "", state.next_sleep_at ? "下次入睡：" + date(state.next_sleep_at) : ""].filter(Boolean).join(" · ");
+    const hostTone = state.host_state === "running" ? "ok" : state.host_state === "draining" ? "warn" : "muted";
+    setTone("life-toolbar", hostTone);
+    setTone("host-state-card", hostTone);
+    setTone("routine-state-card", state.config.enabled ? "ok" : "muted");
+    const nextText = [state.next_diary_at ? "下次日记：" + date(state.next_diary_at) : "", state.next_sleep_at ? "下次入睡：" + date(state.next_sleep_at) : ""].filter(Boolean).join(" · ");
+    $("next-routines").textContent = nextText;
+    $("next-routines").hidden = !nextText;
     renderSleepPlan();
     if (!dirty) configFields.forEach(k => {
       const input = $(k);
@@ -299,10 +377,19 @@
       ["journal-list", "journal-detail", "reading-list", "sleep-list", "receipt-list", "retry-id", "dream-retry"].forEach(id => $(id).replaceChildren());
       $("retry-form").hidden = true;
       for (const id of ["role", "participant", "sleep-scope", "sleep-executor", "sleep-next", "sleep-active-wake", "sleep-pressure", "sleep-debt", "sleep-workload", "sleep-recommended"]) $(id).textContent = "—";
+      $("next-routines").textContent = "";
+      $("next-routines").hidden = true;
+      setMeter("sleep-pressure-bar", 0); setMeter("sleep-workload-bar", 0);
+      for (const id of ["sleep-pressure-card", "sleep-debt-card", "sleep-workload-card", "sleep-recommended-card", "sleep-active-wake-card"]) setTone(id, "");
+      $("sleep-debt-hint").textContent = "累计睡眠缺口";
+      renderSleepSummaryPills([]);
       /* 配置/状态没读到时给出明确状态，而不是一排“—”：用户能分清是
          「没有配置」还是「这次没读到」，也知道下一步点哪里。 */
       $("routine-state").textContent = "读取失败";
       $("host-state").textContent = "暂不可用";
+      setTone("life-toolbar", "danger");
+      setTone("host-state-card", "danger");
+      setTone("routine-state-card", "danger");
       $("settings").open = true;
       $("editor").close();
       notice(`${error.message} 配置暂时无法读取或保存，请点「刷新记录」重试。`, true);
@@ -323,9 +410,13 @@
     $("minutes").value = state.config.sleep_minutes; $("dialog-error").hidden = true;
     $("editor").showModal();
   }
+  $("sleep-overview")?.addEventListener?.("toggle", () => {
+    if (!settingSleepOverview) sleepOverviewUserToggled = true;
+  });
   document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => {
     tab = b.dataset.tab; document.querySelectorAll("[data-tab]").forEach(x => x.setAttribute("aria-current", x === b ? "page" : "false"));
     document.querySelectorAll(".tab-panel").forEach(p => { p.hidden = p.id !== tab; }); $("activity-pages").hidden = !["reading", "sleep"].includes(tab);
+    syncSleepOverviewForTab(tab);
   }));
   $("config-form").addEventListener("input", () => { dirty = true; });
   $("config-form").addEventListener("submit", e => {
@@ -376,5 +467,20 @@
     if (bridge && !busy) load(true, true);
   });
   document.addEventListener("companion-mappings-change", () => { if (bridge && !busy) void load(true, true); });
-  (async () => { try { await window.AstrBotPluginPage.ready(); bridge = window.AstrBotPluginPage; await load(); } catch (_) { notice("无法连接管理界面，请从 AstrBot 插件页面重新打开。", true); } })();
+  document.addEventListener("companion-context-change", event => {
+    syncEmbeddedMode();
+    if (event?.detail?.tab) {
+      sleepOverviewUserToggled = false;
+      syncSleepOverviewForTab(event.detail.tab);
+    }
+  });
+  (async () => {
+    try {
+      await window.AstrBotPluginPage.ready();
+      bridge = window.AstrBotPluginPage;
+      syncEmbeddedMode();
+      syncSleepOverviewForTab(bridge?.getContext?.()?.tab || tab);
+      await load();
+    } catch (_) { notice("无法连接管理界面，请从 AstrBot 插件页面重新打开。", true); }
+  })();
 })();
