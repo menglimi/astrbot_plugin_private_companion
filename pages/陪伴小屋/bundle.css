@@ -20959,38 +20959,47 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
 .ring-num{color:var(--t-text-faint);font-size:var(--fs-micro);white-space:nowrap}
 .ring-num b{color:var(--t-accent-ink);font-family:var(--numeric-font);font-size:var(--fs-body)}
 .deck-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--sp-1);padding:var(--sp-1);
-  border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-veil)}
-.deck-tab{display:flex;align-items:center;justify-content:center;min-width:0;min-height:34px;padding:var(--sp-1) var(--sp-2);
-  border:1px solid transparent;border-radius:var(--r-xs);background:transparent;color:var(--t-text-soft);
+  border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-soft)}
+.deck-tab{display:flex;align-items:center;justify-content:center;gap:var(--sp-2);min-width:0;min-height:38px;padding:var(--sp-1) var(--sp-2);
+  border:1px solid transparent;border-radius:calc(var(--r-md) - 3px);background:transparent;color:var(--t-text-soft);
   font:inherit;font-size:var(--fs-tiny);font-weight:600;cursor:pointer}
+.deck-tab-icon{display:inline-flex;align-items:center;justify-content:center;flex:none}
+.deck-tab-icon svg{width:15px;height:15px}
+.deck-tab-copy{min-width:0}
+.deck-tab-copy strong{display:block;font-weight:inherit;overflow-wrap:anywhere}
 .deck-tab.is-active{border-color:var(--t-line);background:var(--t-surface-raised);color:var(--t-accent-ink);box-shadow:var(--t-shadow)}
-.deck-panels{display:grid;min-height:560px;min-width:0}
+.deck-panels{--self-sticky-clearance:76px;display:grid;min-height:520px;min-width:0}
 .self-workspace-panel{min-width:0}
-.section-chips{position:sticky;top:8px;z-index:20;display:flex;gap:calc(var(--sp-1) * 1.5);min-width:0;overflow-x:auto;
-  padding:calc(var(--sp-1) * 1.5);margin:0 0 var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-md);
-  background:var(--t-veil);backdrop-filter:blur(8px);scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent}
+.section-chips{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:var(--sp-2);min-width:0;overflow-x:auto;
+  padding:var(--sp-2) var(--sp-3);margin:0 0 var(--sp-4);border:1px solid var(--t-line-firm);border-radius:var(--r-md);
+  background:color-mix(in srgb,var(--t-surface) 95%,var(--t-canvas));backdrop-filter:blur(12px);box-shadow:var(--t-shadow);
+  scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent}
 @container self-journal (min-width:651px){.section-chips{flex-wrap:wrap;overflow-x:visible}}
-.section-chip{flex:none;display:inline-flex;align-items:center;gap:calc(var(--sp-1) * 1.5);min-height:34px;padding:0 var(--sp-3);
-  border:1px solid transparent;border-radius:var(--r-pill);background:var(--t-surface);color:var(--t-text-soft);
-  font:inherit;font-size:var(--fs-tiny);cursor:pointer;white-space:nowrap}
-.section-chip.is-active{border-color:color-mix(in srgb,var(--t-accent) 55%,var(--t-line));background:var(--t-accent-quiet);color:var(--t-accent-ink)}
+.section-chip{flex:none;display:inline-flex;align-items:center;gap:calc(var(--sp-1) * 1.5);min-height:34px;padding:var(--sp-1) var(--sp-3);
+  border:1px solid var(--t-line);border-radius:var(--r-pill);background:var(--t-surface-raised);color:var(--t-text-soft);
+  font:inherit;font-size:var(--fs-tiny);font-weight:500;cursor:pointer;white-space:nowrap;
+  transition:border-color var(--dur-fast) ease,background var(--dur-fast) ease,color var(--dur-fast) ease}
+.section-chip.is-active{border-color:color-mix(in srgb,var(--t-accent) 55%,var(--t-line-firm));background:var(--t-accent-quiet);color:var(--t-accent-ink);font-weight:600}
+.section-chip[data-role-profile-organize-jump]{border-style:dashed;border-color:color-mix(in srgb,var(--t-accent) 42%,var(--t-line-firm));background:var(--t-surface-soft);color:var(--t-accent-ink)}
 .section-chip-no{color:var(--t-text-faint);font-family:var(--numeric-font);font-size:var(--fs-micro)}
+.section-chip.is-active .section-chip-no,.section-chip[data-role-profile-organize-jump] .section-chip-no{color:var(--t-accent-ink)}
 .section-chip-dot{width:6px;height:6px;border-radius:50%;background:var(--t-line-firm)}
 .section-chip[data-complete="true"] .section-chip-dot{background:var(--t-ok);box-shadow:0 0 0 2px var(--t-ok-quiet)}
 :is(.sticker,.deck-tab,.section-chip):hover{border-color:var(--t-line-firm);color:var(--t-accent-ink)}
 :is(.sticker,.deck-tab,.section-chip):focus-visible{outline:2px solid var(--t-accent);outline-offset:2px}
 .self-chapter-deck{min-height:480px;min-width:0}
-.self-page .wb{gap:var(--sp-3)}
+.self-page .wb{gap:var(--sp-4)}
 .self-page .wb-journal{overflow:visible;min-width:0}
 .self-page .wb-journal .wb-card-body{padding:0;min-width:0}
 .self-page .wb-journal .wb-section-panel,
 .self-page .wb-journal .wb-card-body>.wb-group{min-width:0;padding:var(--sp-5);border:1px solid var(--t-line);
   border-radius:var(--r-md);background:var(--t-surface);box-shadow:var(--t-shadow)}
 .self-page .wb-journal .wb-section-panel{min-height:480px}
-.self-page .wb-journal .wb-card-body>.wb-group+.wb-group{margin-top:var(--sp-3)}
+.self-page .wb-journal .wb-card-body>.wb-group+.wb-group{margin-top:var(--sp-4)}
 .self-page .wb-journal .wb-group-head{margin:0 0 var(--sp-4);padding-bottom:var(--sp-3);border-bottom:1px dashed var(--t-line-firm);
-  color:var(--t-text-strong);font-size:var(--fs-lead);font-weight:650}
-#roleProfileConfigWorkspace .wb-section-panel::before{display:block;margin:0 0 var(--sp-1);color:var(--t-accent-ink);font:750 var(--fs-micro)/1.4 var(--numeric-font)}
+  color:var(--t-text-strong);font-size:var(--fs-title);font-weight:650;letter-spacing:.01em}
+#roleProfileConfigWorkspace .wb-section-panel::before{display:block;margin:0 0 var(--sp-1);color:var(--t-accent-ink);
+  font-family:var(--numeric-font);font-size:var(--fs-micro);font-weight:700;line-height:1.4;letter-spacing:.12em}
 #roleProfileConfigWorkspace [data-wb-section-panel="identity"]::before{content:"01 / IDENTITY"}
 #roleProfileConfigWorkspace [data-wb-section-panel="appearance"]::before{content:"02 / APPEARANCE"}
 #roleProfileConfigWorkspace [data-wb-section-panel="personality"]::before{content:"03 / PERSONALITY"}
@@ -20998,64 +21007,92 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
 #roleProfileConfigWorkspace [data-wb-section-panel="motivations"]::before{content:"05 / MOTIVATION"}
 #roleProfileConfigWorkspace [data-wb-section-panel="boundaries"]::before{content:"06 / BOUNDARY"}
 #roleProfileConfigWorkspace [data-wb-section-panel="world"]::before{content:"07 / WORLD"}
-#roleProfileConfigWorkspace [data-wb-section-panel="platform_names"]::before{content:"08 / PLATFORM"}
-.self-page .wb-journal .wb-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3)}
-.self-page .wb-journal .wb-field{display:grid;grid-template-columns:minmax(0,1fr);align-content:start;grid-column:auto;gap:var(--sp-1);
-  min-width:0;padding:var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}
-.self-page .wb-journal .wb-field-main{grid-template-columns:minmax(0,1fr);gap:var(--sp-1);min-width:0}
-.self-page .wb-journal .wb-field-main>.wb-label{grid-column:1;grid-row:auto;min-width:0}
-.self-page .wb-journal .wb-field-main>.wb-control{grid-column:1;grid-row:auto;justify-self:stretch;justify-content:flex-start;width:100%;max-width:none;min-width:0}
+#roleProfileConfigWorkspace [data-wb-section-panel="expression_learning"]::before{content:"08 / EXPRESSION"}
+.self-page .wb-journal .wb-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-4)}
+.self-page .wb-journal .wb-field{display:grid;grid-template-columns:minmax(0,1fr);align-content:start;grid-column:auto;gap:var(--sp-2);
+  min-width:0;padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}
+.self-page .wb-journal .wb-field-main{grid-template-columns:minmax(0,1fr);gap:var(--sp-2);min-width:0}
+.self-page .wb-journal .wb-field-main>.wb-label{grid-column:1;grid-row:auto;display:inline-flex;align-items:center;gap:var(--sp-1);min-width:0}
+.self-page .wb-journal .wb-field-main>.wb-control{grid-column:1;grid-row:auto;justify-self:stretch;justify-content:flex-start;width:100%;max-width:none;min-width:0;margin-top:0}
 .self-page .wb-journal .wb-field-main>.wb-control>.wb-number{justify-content:flex-start}
-.self-page .wb-journal .wb-label{color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:650}
+.self-page .wb-journal .wb-label{color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:650;line-height:1.45}
 .self-page .wb-journal .wb-field-side{grid-column:1;flex-wrap:wrap;justify-content:flex-start;padding:0;min-width:0}
 .self-page .wb-journal .wb-chip{max-width:100%;white-space:normal}
-.self-page .wb-journal .wb-control :is(input[type=text],textarea){min-width:0;max-width:100%;border-color:transparent;background:var(--t-surface)}
-.self-page .wb-journal .wb-control :is(input[type=text],textarea):hover{border-color:var(--t-line)}
-.self-page .wb-journal .wb-control :is(input[type=text],textarea):focus-visible{border-color:var(--t-accent);box-shadow:var(--focus-ring)}
-.self-page .wb-journal .wb-control textarea{min-height:64px}
+.self-page .wb-journal .wb-control :is(input[type=text],textarea,select){min-width:0;max-width:100%;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised);color:var(--t-text)}
+.self-page .wb-journal .wb-control :is(input[type=text],textarea,select):hover{border-color:var(--t-line-firm)}
+.self-page .wb-journal .wb-control :is(input[type=text],textarea,select):focus-visible{border-color:var(--t-accent);box-shadow:var(--focus-ring)}
+.self-page .wb-journal .wb-control :is(input[type=text],select){min-height:40px;line-height:1.55}
+.self-page .wb-journal .wb-control textarea:not(.wb-line-grow):not([data-wb-quote-line]){min-height:156px;max-height:360px;field-sizing:content;padding:var(--sp-3);line-height:1.68;overflow-y:auto;resize:vertical}
+.self-page .wb-journal .wb-control textarea.wb-line-grow{min-height:40px;max-height:180px;field-sizing:content;padding:var(--sp-2) var(--sp-3);line-height:1.55;resize:none;overflow-y:auto}
+.self-page .wb-journal :is([data-wb-row="key_lore"],[data-wb-row="appearance"],[data-wb-row="social_distance"],[data-wb-row="reaction_patterns"],[data-wb-row="motivations"],[data-wb-row="boundaries"]) .wb-control textarea:not(.wb-line-grow){min-height:188px}
+.self-page .wb-journal :is([data-wb-row="identity"],[data-wb-row="personality"],[data-wb-row="world"]) .wb-control textarea:not(.wb-line-grow){min-height:204px}
+.self-page .wb-journal .wb-textarea-wrap{gap:var(--sp-2)}
+.self-page .wb-journal .wb-text-length{justify-self:end;display:inline-flex;align-items:center;padding:2px var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-pill);background:var(--t-surface);color:var(--t-text-faint);font-family:var(--numeric-font);font-size:var(--fs-micro);font-variant-numeric:tabular-nums}
+.self-page .wb-journal .wb-text-length.is-over-limit{border-color:color-mix(in srgb,var(--t-risk) 45%,var(--t-line));background:var(--t-risk-quiet);color:var(--t-risk-ink);font-weight:650}
 .self-page .wb-journal [data-wb-row]:is([data-wb-row="key_lore"],[data-wb-row="identity"],[data-wb-row="character_extra"],
-  [data-wb-row="appearance_points"],[data-wb-row="image_identity_hint"],[data-wb-row="appearance"],
-  [data-wb-row="personality"],[data-wb-row="daily_habits"],[data-wb-row="voice_examples"],
+  [data-wb-row="appearance_points"],[data-wb-row="clothing"],[data-wb-row="image_identity_hint"],[data-wb-row="appearance"],
+  [data-wb-row="personality"],[data-wb-row="daily_habits"],[data-wb-row="voice_examples"],[data-wb-row="signature_phrases"],[data-wb-row="first_person"],
   [data-wb-row="social_distance"],[data-wb-row="reaction_patterns"],[data-wb-row="hobbies"],[data-wb-row="motivations"],
-  [data-wb-row="boundaries"],[data-wb-row="taboos"],[data-wb-row="tone"],[data-wb-row="world_extra"],[data-wb-row="world"],
-  [data-wb-row="platform_names"],[data-wb-row="world_adaptation_mode"],[data-wb-row="world_adaptation"],
-  [data-wb-row="interaction"],[data-wb-row="extra"],[data-wb-row="import_paths"],[data-wb-row="source_ids"]){grid-column:1/-1}
-.self-page [data-wb-section-panel="platform_names"] .wb-fields{grid-template-columns:repeat(3,minmax(0,1fr))}
+  [data-wb-row="boundaries"],[data-wb-row="taboos"],[data-wb-row="tone"],[data-wb-row="network"],[data-wb-row="world_extra"],[data-wb-row="world"],
+  [data-wb-row="main_companion_subject"],[data-wb-row="interaction"],[data-wb-row="extra"],[data-wb-row="import_paths"],[data-wb-row="source_ids"]){grid-column:1/-1}
+.self-page [data-wb-row="main_companion_subject"] .wb-control select{max-width:min(100%,420px)}
 .wb-identity-card{grid-column:1/-1;display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-4);align-items:start;
-  min-width:0;padding:var(--sp-4);border:1px solid var(--t-line-firm);border-radius:var(--r-sm);background:var(--t-surface-soft)}
-.wb-identity-rows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2) var(--sp-4);min-width:0}
-.self-page .wb-journal .wb-identity-rows .wb-field{padding:0;border:0;background:transparent}
-.self-page .wb-journal .wb-identity-rows .wb-field-main{display:grid;grid-template-columns:76px minmax(0,1fr);gap:var(--sp-2);align-items:center}
-.self-page .wb-journal .wb-identity-rows .wb-label{margin:0;color:var(--t-text-faint);font-size:var(--fs-micro);font-weight:400}
-.self-page .wb-journal .wb-identity-rows .wb-field-side{padding-left:calc(96px + var(--sp-4))}
-.self-page .wb-journal .wb-chipset{display:flex;flex-wrap:wrap;align-items:center;gap:calc(var(--sp-1) * 1.5)}
-.self-page .wb-journal .wb-chip-opts{display:contents}
-.self-page .wb-journal .wb-chipset input[type=text]{flex:1 1 90px;width:90px;min-width:0;min-height:28px;padding:3px calc(var(--sp-2) * 1.25);border:1px dashed var(--t-line);border-radius:var(--r-pill)}
-.self-page .wb-journal .wb-chip-opt{min-height:28px;padding:3px var(--sp-3)}
-.self-page .wb-journal .wb-date input[type=date]{flex:1 1 130px;width:130px;min-width:0;max-width:100%;min-height:32px;border-color:transparent;background:var(--t-surface)}
-.self-page .wb-journal .wb-date-flag{min-height:32px;padding:var(--sp-1) calc(var(--sp-2) * 1.25)}
+  min-width:0;padding:var(--sp-4) var(--sp-5);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-soft)}
+.self-page .wb-journal .wb-identity-card::before{content:"基础资料";display:block;padding-bottom:var(--sp-2);border-bottom:1px solid var(--t-line);
+  color:var(--t-accent-ink);font-family:var(--numeric-font);font-size:var(--fs-micro);font-weight:700;line-height:1.4;letter-spacing:.12em}
+.wb-identity-rows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-4) var(--sp-5);align-items:start;min-width:0}
+.self-page .wb-journal .wb-identity-rows .wb-field{padding:0;border:0;border-radius:0;background:transparent}
+.self-page .wb-journal .wb-identity-rows .wb-field-main{display:grid;grid-template-columns:minmax(0,1fr);gap:calc(var(--sp-1) * 1.5);align-items:start}
+.self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-label{grid-column:1;grid-row:auto;margin:0;color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:600;line-height:1.4}
+.self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-control{grid-column:1;grid-row:auto;justify-self:stretch;justify-content:flex-start;width:100%;max-width:none;margin-top:0}
+.self-page .wb-journal .wb-identity-rows .wb-field-side{padding-left:0}
+.self-page .wb-journal .wb-identity-rows :is(.wb-field:has(.wb-date),[data-wb-row="birthday"],[data-wb-row="age"],[data-wb-row="occupation"],[data-wb-row="species"]){grid-column:1/-1}
+.self-page .wb-journal .wb-chipset{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2)}
+.self-page .wb-journal .wb-chip-opts{display:inline-flex;flex-wrap:wrap;align-items:center;gap:calc(var(--sp-1) * 1.5)}
+.self-page .wb-journal .wb-chipset input[type=text]{flex:1 1 112px;width:auto;min-width:96px;min-height:40px;padding:var(--sp-1) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised)}
+.self-page .wb-journal .wb-chip-opt{min-height:36px;padding:var(--sp-1) var(--sp-3);border-color:var(--t-line);background:var(--t-surface-raised)}
+.self-page .wb-journal .wb-chip-opt.is-on{border-color:var(--t-accent);background:var(--t-accent-quiet);color:var(--t-accent-ink)}
+.self-page .wb-journal .wb-date{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2);width:100%;min-width:0}
+.self-page .wb-journal .wb-date-text{flex:1 1 220px;min-height:40px}
+.self-page .wb-journal .wb-date-solar{flex:0 1 180px;min-width:min(160px,100%)}
+.self-page .wb-journal .wb-date input[type=date]{flex:1 1 160px;width:100%;min-width:0;max-width:none;min-height:40px;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised)}
+.self-page .wb-journal .wb-date-lunar{flex:1 1 100%;order:2;gap:var(--sp-2);padding-top:var(--sp-1);align-items:flex-end}
+.self-page .wb-journal .wb-date-lunar :is(input,select){min-height:40px;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised)}
+.self-page .wb-journal .wb-date-flag{min-height:40px;padding:0 var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised)}
+.self-page .wb-journal .wb-date-flag:has(input:checked){border-color:color-mix(in srgb,var(--t-accent) 45%,var(--t-line-firm));background:var(--t-accent-quiet);color:var(--t-accent-ink)}
+.self-page .wb-journal .wb-date-clear{width:40px;height:40px;flex:none;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised)}
+.self-page .wb-journal .wb-date-error{order:3}
+.self-page .wb-journal .wb-date-error:empty{display:none}
+.self-page .wb-journal .wb-segmented{background:var(--t-surface);border-color:var(--t-line)}
+.self-page .wb-journal .wb-identity-picker{padding:var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised)}
 .self-page .wb-journal .wb-tag>span:first-child{min-width:0;white-space:normal;overflow-wrap:anywhere}
-.self-page .wb-journal .wb-tag-form input[type=text]{flex:1 1 90px;min-width:0}
+.self-page .wb-journal .wb-tag-form input[type=text]{flex:1 1 120px;min-width:0;min-height:38px}
 .self-page .wb-journal .wb-quote{grid-template-columns:auto minmax(0,1fr) auto}
+.self-page .wb-journal .wb-quote textarea{min-height:40px;padding:var(--sp-2) var(--sp-3)}
 .self-page .wb-journal .wb-quote-remove{grid-column:auto;margin-top:var(--sp-1)}
 .self-page .wb-journal .wb-quote-tools{flex-wrap:wrap}
 .self-page .wb-journal .wb-segmented-option span{white-space:normal;overflow-wrap:anywhere}
-.self-page .wb-journal .wb-actions{flex-wrap:wrap;gap:var(--sp-2);margin-top:var(--sp-3);padding-top:var(--sp-3);min-width:0}
+.self-page .wb-journal .wb-actions{position:static;bottom:auto;flex-wrap:wrap;gap:var(--sp-2);margin-top:var(--sp-4);padding-top:var(--sp-4);min-width:0}
 .self-page .wb-journal .wb-actions .wb-scope{margin-left:auto;max-width:100%;white-space:normal;overflow-wrap:anywhere}
 .self-page .wb-journal .wb-scope{display:none}
 .self-page .wb-journal .wb-actions-note{flex-basis:auto;margin-left:0;font-size:var(--fs-micro)}
 .self-page .wb-journal .wb-actions :is(.button,.wb-save){min-width:0;white-space:normal}
 .self-organizer{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);min-width:0;margin-top:var(--sp-5);
-  padding:var(--sp-3) 0;border-top:1px solid var(--t-line)}
+  padding:var(--sp-4) 0;border-top:1px solid var(--t-line)}
 .self-organizer-head{min-width:0}
 .self-organizer-head h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-body);font-weight:650;overflow-wrap:anywhere}
 .self-organizer-actions{display:flex;flex:none;gap:var(--sp-2);flex-wrap:wrap}
+.self-knowledge-heading{display:grid;gap:var(--sp-1);margin:0 0 var(--sp-4);padding:var(--sp-3) var(--sp-4);
+  border:1px solid var(--t-line);border-radius:var(--r-sm);
+  background:linear-gradient(120deg,color-mix(in srgb,var(--t-accent-quiet) 46%,transparent),transparent 62%),var(--t-surface-soft)}
+.self-knowledge-heading span{display:block;color:var(--t-accent-ink);font-family:var(--numeric-font);font-size:var(--fs-micro);font-weight:700;line-height:1.4;letter-spacing:.12em}
+.self-knowledge-heading h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-title);line-height:1.3}
 .self-relationship-heading{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap;margin-bottom:var(--sp-3);min-width:0}
 .self-relationship-heading h3{margin:0;font-size:var(--fs-body);color:var(--t-text-strong);overflow-wrap:anywhere}
 .self-relationship-target{min-width:0;color:var(--t-text-faint);font-size:var(--fs-tiny);overflow-wrap:anywhere}
 .self-relationship-scope-note{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap;padding:var(--sp-4);
   border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-text-faint);font-size:var(--fs-tiny)}
-.self-relationship-workspace{display:grid;gap:var(--sp-4);min-width:0;padding:var(--sp-4);border:1px solid var(--t-line);
+.self-relationship-workspace{display:grid;gap:var(--sp-5);min-width:0;padding:var(--sp-5);border:1px solid var(--t-line);
   border-radius:var(--r-md);background:var(--t-surface);box-shadow:var(--t-shadow)}
 .self-relationship-identity{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:var(--sp-3);align-items:start;
   min-width:0;padding-bottom:var(--sp-4);border-bottom:1px solid var(--t-line)}
@@ -21072,32 +21109,33 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
   border-radius:var(--r-xs);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-micro);overflow-wrap:anywhere}
 .self-relationship-meta b{color:var(--t-text-faint);font-weight:500}
 .self-relationship-picker{display:flex;align-items:center;gap:calc(var(--sp-1) * 1.5);min-width:min(100%,250px);max-width:100%;color:var(--t-text-faint);font-size:var(--fs-micro)}
-.self-relationship-picker select{min-width:0;max-width:100%;min-height:30px;padding:var(--sp-1) calc(var(--sp-3) * 13 / 6) var(--sp-1) calc(var(--sp-3) * .75);border:1px solid var(--t-line-firm);
+.self-relationship-picker select{min-width:0;max-width:100%;min-height:32px;padding:var(--sp-1) calc(var(--sp-3) * 13 / 6) var(--sp-1) calc(var(--sp-3) * .75);border:1px solid var(--t-line-firm);
   border-radius:var(--r-xs);background:var(--t-surface);color:var(--t-text);font:inherit}
 .self-relationship-refresh{display:grid;place-items:center;width:34px;aspect-ratio:1;border:1px solid var(--t-line);border-radius:var(--r-xs);
   background:var(--t-surface-soft);color:var(--t-text-soft);cursor:pointer}
 .self-relationship-refresh:hover{border-color:var(--t-line-firm);color:var(--t-accent-ink)}
 .self-relationship-refresh:focus-visible,.self-relationship-picker select:focus-visible{outline:2px solid var(--t-accent);outline-offset:2px}
 .self-relationship-refresh svg{width:16px;height:16px}
-.self-relationship-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3);min-width:0}
-.self-relationship-field{display:grid;gap:calc(var(--sp-1) * 1.5);min-width:0;color:var(--t-text-soft);font-size:var(--fs-tiny);font-weight:600}
+.self-relationship-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-4);min-width:0}
+.self-relationship-field{display:grid;align-content:start;gap:calc(var(--sp-1) * 1.5);min-width:0;color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:600}
 .self-relationship-field.is-wide{grid-column:1/-1}
-.self-relationship-field :is(input,textarea){width:100%;min-width:0;max-width:100%;padding:calc(var(--sp-3) * .75) calc(var(--sp-2) * 1.375);border:1px solid var(--t-line);
-  border-radius:var(--r-xs);background:var(--t-surface-soft);color:var(--t-text);font:inherit;font-weight:400;line-height:1.55;resize:vertical}
-.self-relationship-field input{min-height:38px}
-.self-relationship-field textarea{min-height:84px}
-.self-relationship-field :is(input,textarea):focus-visible{outline:2px solid var(--t-accent);outline-offset:1px;border-color:var(--t-accent)}
+.self-relationship-field :is(input,textarea){width:100%;min-width:0;max-width:100%;padding:var(--sp-2) var(--sp-3);border:1px solid var(--t-line);
+  border-radius:var(--r-sm);background:var(--t-surface-raised);color:var(--t-text);font:inherit;font-size:var(--fs-body);font-weight:400;line-height:1.68;resize:vertical}
+.self-relationship-field :is(input,textarea):hover{border-color:var(--t-line-firm)}
+.self-relationship-field input{min-height:40px;line-height:1.55}
+.self-relationship-field textarea{min-height:152px;max-height:320px;field-sizing:content;padding:var(--sp-3);overflow-y:auto}
+.self-relationship-field :is(input,textarea):focus-visible{outline:none;border-color:var(--t-accent);box-shadow:var(--focus-ring)}
 .self-relationship-field :is(input,textarea):disabled{opacity:.68}
 .self-relationship-actions{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);min-width:0;padding-top:var(--sp-3);
   border-top:1px solid var(--t-line);color:var(--t-text-faint);font-size:var(--fs-micro)}
 .self-relationship-actions>span{min-width:0;overflow-wrap:anywhere}
-.self-contact-settings{display:grid;gap:var(--sp-3);min-width:0;padding-top:var(--sp-4);border-top:1px solid var(--t-line)}
+.self-contact-settings{display:grid;gap:var(--sp-4);min-width:0;padding-top:var(--sp-5);border-top:1px solid var(--t-line)}
 .self-contact-heading{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap}
-.self-contact-heading h4{margin:0;color:var(--t-text-strong);font-size:var(--fs-body);font-weight:650}
+.self-contact-heading h4{margin:0;color:var(--t-text-strong);font-size:var(--fs-lead);font-weight:650}
 .self-contact-heading span{color:var(--t-text-faint);font-size:var(--fs-micro)}
-.self-contact-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3);min-width:0}
-.self-contact-switch{display:flex;align-items:center;gap:var(--sp-2);min-width:0;min-height:42px;padding:var(--sp-2) var(--sp-3);
-  border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface-soft);color:var(--t-text-soft);cursor:pointer}
+.self-contact-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-3);min-width:0}
+.self-contact-switch{display:flex;align-items:center;gap:var(--sp-2);min-width:0;min-height:44px;padding:var(--sp-2) var(--sp-3);
+  border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft);color:var(--t-text-soft);cursor:pointer}
 .self-contact-switch input{flex:none;width:18px;height:18px;accent-color:var(--t-accent)}
 .self-contact-switch>label{display:flex;align-items:center;gap:var(--sp-2);flex:1;min-width:0}
 .self-contact-field-label,.self-save-actions{display:flex;align-items:center;gap:var(--sp-2)}
@@ -21111,47 +21149,6 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
 .self-relationship-empty{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap;min-width:0;
   padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft);color:var(--t-text-soft)}
 .self-relationship-empty strong{color:var(--t-text-strong);font-size:var(--fs-body)}
-@container self-journal (max-width:900px){
-  .journal-side{flex-direction:column;gap:2px}
-  .self-page [data-wb-section-panel="platform_names"] .wb-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
-}
-@container self-journal (max-width:650px){
-  .journal-cover{padding:var(--sp-3);grid-template-columns:auto minmax(0,1fr);gap:var(--sp-2)}
-  .portrait{width:48px}
-  .journal-side{grid-column:1/-1;flex-direction:row;justify-content:flex-end}
-  .ring{width:28px}
-  .deck-tabs{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .deck-tab{min-height:38px}
-  .self-page .wb-journal .wb-fields,.self-page [data-wb-section-panel="platform_names"] .wb-fields{grid-template-columns:minmax(0,1fr)}
-  .self-page .wb-journal .wb-section-panel,.self-page .wb-journal .wb-card-body>.wb-group{padding:var(--sp-3)}
-  .wb-identity-card{grid-template-columns:minmax(0,1fr);padding:var(--sp-3);gap:var(--sp-3)}
-  .self-page .wb-journal .wb-identity-rows{grid-template-columns:minmax(0,1fr)}
-  .self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:minmax(0,1fr);gap:var(--sp-1)}
-  .self-page .wb-journal .wb-identity-rows .wb-field-side{padding-left:0}
-  .self-page .wb-journal .wb-actions .wb-scope{flex-basis:100%;margin-left:0}
-  .self-organizer{align-items:flex-start;flex-direction:column}
-  .self-organizer-actions{width:100%}
-  .self-organizer-actions .button{max-width:100%;white-space:normal}
-  .self-relationship-workspace{padding:var(--sp-3)}
-  .self-relationship-identity{grid-template-columns:auto minmax(0,1fr);gap:var(--sp-2)}
-  .self-relationship-avatar{width:40px}
-  .self-relationship-refresh{grid-column:2;grid-row:1;justify-self:end}
-  .self-relationship-meta{grid-column:1/-1}
-  .self-relationship-picker{flex-basis:100%;align-items:flex-start;flex-direction:column}
-  .self-relationship-picker select{width:100%}
-  .self-relationship-fields{grid-template-columns:minmax(0,1fr)}
-  .self-contact-fields{grid-template-columns:minmax(0,1fr)}
-  .self-relationship-field.is-wide{grid-column:auto}
-}
-@container self-journal (max-width:380px){
-  .journal-name-row h2{font-size:var(--fs-lead)}
-  .journal-cover{padding:var(--sp-2)}
-  .self-page .wb-journal .wb-actions :is(.button,.wb-save){flex-basis:100%;justify-content:center}
-  .self-page .wb-journal .wb-number{gap:var(--sp-1)}
-  .self-page .wb-journal .wb-number input{min-width:0;flex-basis:100%}
-  .self-organizer-actions{flex-direction:column}
-}
-@media(prefers-reduced-motion:reduce){.self-page .wb-section-panel:not([hidden]){animation:none!important}}
 
 .models-management-page{display:grid;gap:var(--sp-5);min-width:0}
 .models-budget-section{display:grid;grid-template-columns:minmax(200px,.65fr) minmax(0,1.35fr);gap:var(--sp-5);align-items:start;
@@ -21373,7 +21370,7 @@ body.reduce-motion .role-profile-draft-dialog *,body.reduce-motion .role-profile
 body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
 
 @media(max-width:720px){
-  .role-profile-draft-source-picks{grid-template-columns:1fr}
+  .role-profile-draft-source-picks{grid-template-columns:minmax(0,1fr)}
 }
 .role-profile-transfer-body{min-height:0;overflow:auto;padding:var(--sp-4) var(--sp-5)}
 .role-profile-transfer-note{margin:0 0 var(--sp-3);color:var(--t-text-faint);font-size:var(--fs-tiny);line-height:1.6}
@@ -21405,106 +21402,122 @@ body.reduce-motion .role-profile-draft-dialog *::after{transition:none}
 
 /* 2026-11 视觉校准：自我页以一张安静的档案卡开场，信息层级向 7.1.8 的 hero 靠拢。 */
 .self-page{max-width:1180px;gap:var(--sp-5)}
+.self-page:not(.is-questionnaire-focus){padding-bottom:calc(max(var(--shell-pip-h,112px),112px) + var(--sp-2));
+  scroll-padding-bottom:calc(max(var(--shell-pip-h,112px),112px) + var(--sp-4))}
 .journal-cover{position:relative;padding:var(--sp-4) var(--sp-5);border:1px solid var(--t-line);
   border-radius:var(--r-lg);background:linear-gradient(120deg,var(--t-surface-raised),var(--t-surface) 70%);
-  box-shadow:0 18px 36px -30px color-mix(in srgb,var(--t-text-strong) 45%,transparent)}
+  box-shadow:var(--t-shadow)}
 .journal-cover::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;border-radius:var(--r-lg) 0 0 var(--r-lg);
   background:linear-gradient(var(--t-accent),color-mix(in srgb,var(--t-accent) 30%,transparent))}
-.portrait{width:76px;border-radius:var(--r-md);box-shadow:0 8px 20px -14px color-mix(in srgb,var(--t-text-strong) 60%,transparent)}
-.journal-name-row h2{font-size:clamp(21px,2.2vw,27px);letter-spacing:.02em}
+.portrait{width:76px;border-radius:var(--r-md);box-shadow:var(--t-shadow)}
+.journal-name-row h2{font-size:clamp(var(--fs-head),2.2vw,var(--fs-display));letter-spacing:.02em}
 .journal-id{gap:var(--sp-2)}
-.deck-tabs{background:var(--t-surface-soft);border-radius:var(--r-md);padding:4px;border:1px solid var(--t-line)}
-.deck-tab{min-height:38px;border-radius:calc(var(--r-md) - 3px)}
-.deck-panels{min-height:520px}
-.section-chips{top:12px;padding-bottom:var(--sp-1)}
-@media (max-width:720px){
-  .journal-cover{padding:var(--sp-3);grid-template-columns:auto minmax(0,1fr)}
-  .journal-side{grid-column:1/-1;justify-content:flex-start}
-  .portrait{width:56px}
-}
 .deck-tabs{max-width:760px}
-@media (max-width:720px){
-  .deck-tabs{max-width:none}
-}
-/* 自我页档案行：标签列略放宽，控件从统一左边界起排，避免长昵称/日期组被挤到右边缘。 */
-.self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:96px minmax(0,1fr);column-gap:var(--sp-4);align-items:center}
-.self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-label{grid-column:1;grid-row:1}
-.self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-control{grid-column:2;grid-row:1;justify-self:stretch;justify-content:flex-start;width:100%;max-width:none}
-.self-page .wb-journal .wb-identity-rows .wb-chip-opts{gap:calc(var(--sp-1) * 1.5)}
-.self-page .wb-journal .wb-identity-rows .wb-date{width:100%}
-@container self-journal (max-width:740px){
-  .self-page .wb-journal .wb-identity-rows{grid-template-columns:minmax(0,1fr)}
-  .self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:minmax(0,1fr);row-gap:var(--sp-1)}
-  .self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-label{grid-column:1;grid-row:auto}
-  .self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-control{grid-column:1;grid-row:auto;width:100%}
-  .self-page .wb-journal .wb-identity-rows .wb-field-side{padding-left:0}
-}
-@media (max-width:720px){
-  .self-page .wb-journal .wb-identity-rows{grid-template-columns:minmax(0,1fr)}
-  .self-page .wb-journal .wb-identity-rows .wb-field-main{grid-template-columns:minmax(0,1fr);row-gap:var(--sp-1)}
-  .self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-label{grid-column:1;grid-row:auto}
-  .self-page .wb-journal .wb-identity-rows .wb-field-main>.wb-control{grid-column:1;grid-row:auto;width:100%}
-  .self-page .wb-journal .wb-identity-rows .wb-field-side{padding-left:0}
-}
+:root:is([data-type-scale="l"],[data-type-scale="xl"]) .self-page .deck-panels,
+body.large-text .self-page .deck-panels{--self-sticky-clearance:128px}
+#selfChapterIntro,
+#roleProfileConfigWorkspace,
+#roleProfileConfigWorkspace .wb-section-panel,
+#roleProfileConfigWorkspace .wb-group,
+#roleProfileConfigWorkspace .wb-field,
+#selfProfileOrganizer,
+#relationshipProfileConfigWorkspace,
+#relationshipProfileConfigWorkspace .self-relationship-field,
+#knowledgeConfigWorkspace,
+#knowledgeConfigWorkspace .wb-group{scroll-margin-top:var(--self-sticky-clearance,84px)}
 
-/* ===== 自我页 · 身份章节 2026-11-21 ===== */
+/* ===== 自我页 · 章节页眉与经历分段 ===== */
 .self-chapter-intro{display:grid;grid-template-columns:minmax(120px,160px) minmax(0,1fr);align-items:start;
-  gap:var(--sp-4);margin-bottom:var(--sp-3);padding:var(--sp-3) var(--sp-4);
+  gap:var(--sp-4);margin:0 0 var(--sp-4);padding:var(--sp-3) var(--sp-4);
   border:1px solid var(--t-line);border-radius:var(--r-sm);
   background:linear-gradient(120deg,color-mix(in srgb,var(--t-accent-quiet) 46%,transparent),transparent 62%),
     var(--t-surface-soft);min-width:0}
 .self-chapter-kicker{flex:none;margin:0;color:var(--t-accent-ink);
-  font:650 var(--fs-micro)/1.4 var(--numeric-font);letter-spacing:.12em}
+  font-family:var(--numeric-font);font-size:var(--fs-micro);font-weight:700;line-height:1.4;letter-spacing:.12em}
 .self-chapter-copy{display:grid;gap:var(--sp-1);min-width:0}
 .self-chapter-copy h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-title);line-height:1.3}
 .self-chapter-copy p{margin:0;max-width:72ch;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.7}
 
-/* 基础资料卡：姓名/性别并排，生日与种族整行，日期控件不再挤成多行。 */
-.self-page .wb-journal .wb-identity-card{padding:var(--sp-3) var(--sp-4);
-  border-color:var(--t-line);background:var(--t-surface-soft)}
-.self-page .wb-journal .wb-identity-card::before{content:"基础资料";
-  color:var(--t-text-faint);font:650 var(--fs-micro)/1.4 var(--numeric-font);
-  letter-spacing:.12em}
-.self-page .wb-journal .wb-identity-rows{gap:var(--sp-2) var(--sp-5)}
-.self-page .wb-journal .wb-identity-rows .wb-field:has(.wb-date),
-.self-page .wb-journal .wb-identity-rows [data-wb-row="birthday"],
-.self-page .wb-journal .wb-identity-rows [data-wb-row="species"]{grid-column:1/-1}
-.self-page .wb-journal .wb-identity-rows [data-wb-row="birthday"] .wb-date{flex-wrap:wrap}
-.self-page .wb-journal .wb-identity-rows [data-wb-row="birthday"] .wb-date-text{flex:1 1 240px}
-
-/* 经历类文字单独成段。 */
-.self-page .wb-journal .wb-group[data-wb-group="identity"] .wb-field[data-wb-row="key_lore"]{
-  margin-top:var(--sp-3);padding-top:var(--sp-4);border-top:1px dashed var(--t-line-firm)}
-.self-page .wb-journal .wb-group[data-wb-group="identity"] :is(
-  [data-wb-row="key_lore"],[data-wb-row="identity"],[data-wb-row="character_extra"]) textarea{
-  min-height:112px}
-.self-page .wb-journal .wb-actions{position:static;bottom:auto}
-
-@media(max-width:760px){
-  .self-chapter-intro{grid-template-columns:minmax(0,1fr);gap:var(--sp-1)}
-  .self-page .wb-journal .wb-identity-card{padding:var(--sp-2)}
-  .self-page .wb-journal .wb-identity-rows{gap:var(--sp-2)}
-}
-
-/* 生日是 .wb-date，工作台为日期控件统一把控件放到标签列；在身份行里要放回第二列。 */
-.self-page .wb-journal .wb-identity-rows .wb-field:has(.wb-date) .wb-field-main > .wb-control{
-  grid-column:2;grid-row:1 / span 2;width:100%;max-width:none;justify-content:flex-start}
-@container self-journal (max-width:740px){
-  .self-page .wb-journal .wb-identity-rows .wb-field:has(.wb-date) .wb-field-main > .wb-control{
-    grid-column:1;grid-row:auto}
-}
-@media(max-width:720px){
-  .self-page .wb-journal .wb-identity-rows .wb-field:has(.wb-date) .wb-field-main > .wb-control{
-    grid-column:1;grid-row:auto}
-}
-
 /* 设定与经历的分段标题：复用 wb-field 的 ::before 前必须完整复位，
    否则会继承「改动竖线」的绝对定位和 2px 宽度。 */
+.self-page .wb-journal .wb-group[data-wb-group="identity"] .wb-field[data-wb-row="key_lore"]{
+  margin-top:var(--sp-2);padding-top:var(--sp-4);border-top:1px dashed var(--t-line-firm)}
 .self-page .wb-journal .wb-group[data-wb-group="identity"] .wb-field[data-wb-row="key_lore"]::before{
   content:"设定与经历";position:static;display:block;width:auto;height:auto;
-  top:auto;bottom:auto;left:auto;margin:0 0 var(--sp-1);padding:0;
+  top:auto;bottom:auto;left:auto;margin:0 0 var(--sp-2);padding:0 0 var(--sp-2);border-bottom:1px solid var(--t-line);
   background:none;opacity:1;transform:none;grid-column:1/-1;
-  color:var(--t-text-faint);font:650 var(--fs-micro)/1.4 var(--numeric-font);letter-spacing:.12em}
+  color:var(--t-accent-ink);font-family:var(--numeric-font);font-size:var(--fs-micro);font-weight:700;line-height:1.4;letter-spacing:.12em}
+
+@media (min-width:761px){
+  #homeShell[data-away="true"] .self-organizer,
+  #homeShell[data-away="true"] .self-relationship-actions{padding-right:calc(var(--shell-pip-w,176px) + var(--sp-4))}
+}
+@container self-journal (max-width:1080px){
+  .deck-panels{--self-sticky-clearance:118px}
+}
+@container self-journal (max-width:900px){
+  .journal-side{flex-direction:column;gap:2px}
+}
+@media (max-width:760px){
+  .self-chapter-intro{grid-template-columns:minmax(0,1fr);gap:var(--sp-1)}
+}
+@media (max-width:720px){
+  .journal-cover{padding:var(--sp-3);grid-template-columns:auto minmax(0,1fr)}
+  .journal-side{grid-column:1/-1;justify-content:flex-start}
+  .portrait{width:56px}
+  .deck-tabs{max-width:none}
+  .self-page .wb-journal .wb-identity-rows{grid-template-columns:minmax(0,1fr)}
+}
+@container self-journal (max-width:740px){
+  .self-page .wb-journal .wb-identity-rows{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}
+  .self-chapter-intro{grid-template-columns:minmax(0,1fr);gap:var(--sp-1)}
+}
+@container self-journal (max-width:650px){
+  .deck-panels{--self-sticky-clearance:72px}
+  .journal-cover{padding:var(--sp-3);grid-template-columns:auto minmax(0,1fr);gap:var(--sp-2)}
+  .portrait{width:48px}
+  .journal-side{grid-column:1/-1;flex-direction:row;justify-content:flex-end}
+  .ring{width:28px}
+  .deck-tabs{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .deck-tab{min-height:38px}
+  .section-chips{padding:var(--sp-2)}
+  .self-page .wb-journal .wb-fields,.self-page [data-wb-section-panel="expression_learning"] .wb-fields{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}
+  .self-page .wb-journal .wb-section-panel,.self-page .wb-journal .wb-card-body>.wb-group{padding:var(--sp-3)}
+  .self-page .wb-journal .wb-field{padding:var(--sp-3)}
+  .wb-identity-card{grid-template-columns:minmax(0,1fr);padding:var(--sp-3);gap:var(--sp-3)}
+  .self-page .wb-journal .wb-identity-rows{grid-template-columns:minmax(0,1fr)}
+  .self-page .wb-journal .wb-date-solar{flex:1 1 100%}
+  .self-page .wb-journal .wb-actions .wb-scope{flex-basis:100%;margin-left:0}
+  .self-organizer{align-items:flex-start;flex-direction:column}
+  .self-organizer-actions{width:100%}
+  .self-organizer-actions .button{max-width:100%;white-space:normal}
+  .self-relationship-workspace{padding:var(--sp-3);gap:var(--sp-4)}
+  .self-relationship-identity{grid-template-columns:auto minmax(0,1fr);gap:var(--sp-2)}
+  .self-relationship-avatar{width:40px}
+  .self-relationship-refresh{grid-column:2;grid-row:1;justify-self:end}
+  .self-relationship-meta{grid-column:1/-1}
+  .self-relationship-picker{flex-basis:100%;align-items:flex-start;flex-direction:column}
+  .self-relationship-picker select{width:100%}
+  .self-relationship-fields{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}
+  .self-contact-fields{grid-template-columns:minmax(0,1fr)}
+  .self-relationship-field.is-wide{grid-column:auto}
+}
+@container self-journal (max-width:380px){
+  .journal-name-row h2{font-size:var(--fs-lead)}
+  .journal-cover{padding:var(--sp-2)}
+  .self-page .wb-journal .wb-actions :is(.button,.wb-save){flex-basis:100%;justify-content:center}
+  .self-page .wb-journal .wb-number{gap:var(--sp-1)}
+  .self-page .wb-journal .wb-number input{min-width:0;flex-basis:100%}
+  .self-organizer-actions{flex-direction:column}
+}
+@media(prefers-reduced-motion:reduce){
+  .self-page .wb-section-panel:not([hidden]){animation:none!important}
+  .section-chip,.self-relationship-field :is(input,textarea,select){transition:none!important}
+}
+:root:is([data-motion="low"],[data-motion="off"]) .self-page .wb-section-panel:not([hidden]),
+body.reduce-motion .self-page .wb-section-panel:not([hidden]){animation:none}
+:root:is([data-motion="low"],[data-motion="off"]) :is(.section-chip,.self-relationship-field :is(input,textarea,select)),
+body.reduce-motion :is(.section-chip,.self-relationship-field :is(input,textarea,select)){transition:none}
 
 /* theme-skins.css */
 /* 主题的结构语言：页面基底、标题、导航、面板边界和常用控件共用一组皮肤令牌。 */
