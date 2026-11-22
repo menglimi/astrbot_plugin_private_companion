@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from datetime import datetime
 import json
 from typing import Mapping
@@ -156,10 +157,19 @@ class ConfigurationService:
         reset_to_inherit: tuple[str, ...] = (), observed_at: datetime,
     ) -> Outcome[ConfigurationReceipt]:
         try:
-            with self.store.transaction() as connection:
+            definitions = self.registry.group(group_id)
+            owner = self._owners[definitions[0].owner_id]
+            needs_main_runtime = self.store is not self.runtime and (
+                getattr(owner, "store_independent", False)
+                or getattr(owner, "writes_main_runtime", False)
+            )
+            # Enforce the global runtime -> store lock order whenever an owner
+            # writes to the main runtime (grants or store-independent tables).
+            with ExitStack() as stack:
+                if needs_main_runtime:
+                    stack.enter_context(self.runtime.transaction())
+                connection = stack.enter_context(self.store.transaction())
                 snapshot = self._snapshot(actor, target, group_id, observed_at, "configuration.write")
-                definitions = self.registry.group(group_id)
-                owner = self._owners[definitions[0].owner_id]
                 if operation.scope != target.authorization_scope:
                     raise ConfigurationError("operation_scope_mismatch", "operation is not owned by this configuration target")
                 if operation.owner != owner.owner_id:

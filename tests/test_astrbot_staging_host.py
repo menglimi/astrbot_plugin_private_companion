@@ -9,7 +9,7 @@ import sqlite3
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace as NS
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 # AstrBot resolves its data directory during import.  Redirect that import-time
 # state before loading the real SDK so this contract test cannot create a data/
@@ -170,39 +170,40 @@ class AstrBotStagingHostTests(unittest.IsolatedAsyncioTestCase):
         self.controller.register_routes()
         handler = next(handler for route, handler, _, _ in self.native.registered_web_apis
                        if route == API_PREFIX + "/prepare-screen")
-        self.assertEqual((await handler())["data"]["code"], "staging_not_initialized")
-        (await self.controller.initialize_profile()).unwrap()
-        first = await handler()
-        self.assertEqual(first["status"], "ok", first)
-        self.assertFalse(first["data"]["replayed"])
-        self.assertFalse(first["data"]["started"])
-        self.assertEqual(self.controller.session.application.state, "new")
-        self.assertFalse(self.controller.status()["accepting"])
-        repository = CapabilityRepository(self.controller.runtime)
-        config = self.controller.configuration
-        self.assertEqual(repository.installation(extension_id=SCREEN_EXTENSION).unwrap().package_version, "3.3.0")
-        self.assertTrue(repository.require_role_enabled(extension_id=SCREEN_EXTENSION,
-            role=config.persona.role, bot_id=config.scope.bot_id).is_success)
-        for capability in (SCREEN_READ, SCREEN_PROCESS):
-            self.assertTrue(repository.authorize(extension_id=SCREEN_EXTENSION,
-                capability_id=capability, subject=config.subject, scope=config.scope).is_success)
-        grants = self.controller.bootstrap.identity.snapshot().grants
-        self.assertEqual({grant.capability for grant in grants} - set(config.capabilities),
-                         {SCREEN_READ, SCREEN_PROCESS, "extension.tool.invoke"})
-        before = database_contents(self.controller.runtime)
-        self.assertTrue((await handler())["data"]["replayed"])
-        self.assertEqual(database_contents(self.controller.runtime), before)
-        self.assertEqual(self.native.provider.client.state.calls, [])
-        self.assertEqual(self.native.platform.client._api._wsr_api.calls, [])
+        with patch("astrbot_host.web_api.request", NS(username="admin", query={})):
+            self.assertEqual((await handler())["data"]["code"], "staging_not_initialized")
+            (await self.controller.initialize_profile()).unwrap()
+            first = await handler()
+            self.assertEqual(first["status"], "ok", first)
+            self.assertFalse(first["data"]["replayed"])
+            self.assertFalse(first["data"]["started"])
+            self.assertEqual(self.controller.session.application.state, "new")
+            self.assertFalse(self.controller.status()["accepting"])
+            repository = CapabilityRepository(self.controller.runtime)
+            config = self.controller.configuration
+            self.assertEqual(repository.installation(extension_id=SCREEN_EXTENSION).unwrap().package_version, "3.3.0")
+            self.assertTrue(repository.require_role_enabled(extension_id=SCREEN_EXTENSION,
+                role=config.persona.role, bot_id=config.scope.bot_id).is_success)
+            for capability in (SCREEN_READ, SCREEN_PROCESS):
+                self.assertTrue(repository.authorize(extension_id=SCREEN_EXTENSION,
+                    capability_id=capability, subject=config.subject, scope=config.scope).is_success)
+            grants = self.controller.bootstrap.identity.snapshot().grants
+            self.assertEqual({grant.capability for grant in grants} - set(config.capabilities),
+                             {SCREEN_READ, SCREEN_PROCESS, "extension.tool.invoke"})
+            before = database_contents(self.controller.runtime)
+            self.assertTrue((await handler())["data"]["replayed"])
+            self.assertEqual(database_contents(self.controller.runtime), before)
+            self.assertEqual(self.native.provider.client.state.calls, [])
+            self.assertEqual(self.native.platform.client._api._wsr_api.calls, [])
 
-        repository.set_authorization(extension_id=SCREEN_EXTENSION, capability_id=SCREEN_PROCESS,
-            subject=config.subject, scope=config.scope, state=CapabilityAuthorizationState.REVOKED,
-            expected_revision=1, observed_at=NOW).unwrap()
-        before = database_contents(self.controller.runtime)
-        self.assertEqual((await handler())["data"]["code"], "capability_consent_revoked")
-        self.assertEqual(database_contents(self.controller.runtime), before)
-        screen.close()
-        self.assertEqual((await handler())["data"]["code"], "staging_screen_provider_changed")
+            repository.set_authorization(extension_id=SCREEN_EXTENSION, capability_id=SCREEN_PROCESS,
+                subject=config.subject, scope=config.scope, state=CapabilityAuthorizationState.REVOKED,
+                expected_revision=1, observed_at=NOW).unwrap()
+            before = database_contents(self.controller.runtime)
+            self.assertEqual((await handler())["data"]["code"], "capability_consent_revoked")
+            self.assertEqual(database_contents(self.controller.runtime), before)
+            screen.close()
+            self.assertEqual((await handler())["data"]["code"], "staging_screen_provider_changed")
 
     async def test_prepare_screen_rolls_back_partial_authority(self):
         self.load_screen_provider()
@@ -359,23 +360,28 @@ class AstrBotStagingHostTests(unittest.IsolatedAsyncioTestCase):
         self.controller.register_routes()
         routes = {route.removeprefix(API_PREFIX): handler
                   for route, handler, _, _ in self.native.registered_web_apis}
-        self.assertFalse((await routes["/status"]())["data"]["accepting"])
-        self.assertEqual((await routes["/probe"]())["status"], "ok")
-        for route in ("/authorize-delivery", "/revoke-delivery"):
-            response = await routes[route]()
-            self.assertEqual(response["status"], "ok")
-            self.assertFalse(response["data"]["required"])
-        self.assertEqual((await routes["/start"]())["status"], "ok")
+        with patch("astrbot_host.web_api.request", NS(username="admin", query={})), \
+             patch("astrbot_host.web_api.display_names",
+                   return_value=NS(targets=AsyncMock(side_effect=lambda rows: rows))):
+            self.assertFalse((await routes["/status"]())["data"]["accepting"])
+        with patch("astrbot_host.web_api.request", NS(username="admin", query={})):
+            self.assertEqual((await routes["/probe"]())["status"], "ok")
+            for route in ("/authorize-delivery", "/revoke-delivery"):
+                response = await routes[route]()
+                self.assertEqual(response["status"], "ok")
+                self.assertFalse(response["data"]["required"])
+            self.assertEqual((await routes["/start"]())["status"], "ok")
         batch = (await self.controller.receive_claimed(FakeEvent(self.native))).unwrap()
         await wait_for_batch(self.controller.session, batch)
-        with patch("astrbot_host.web_api.request", NS(query={"batch_id": batch})):
+        with patch("astrbot_host.web_api.request", NS(username="admin", query={"batch_id": batch})):
             preview = await routes["/preview"]()
             report = await routes["/inspect"]()
         self.assertEqual(preview["status"], "error")
         self.assertEqual(preview["data"]["code"], "staging_preview_disabled")
         self.assertTrue(report["data"]["confirmed_delivery"])
         self.assertEqual(report["data"]["delivery_receipts"][0]["state"], "delivered")
-        stopped = await routes["/stop"]()
+        with patch("astrbot_host.web_api.request", NS(username="admin", query={})):
+            stopped = await routes["/stop"]()
         self.assertEqual(stopped["data"]["state"], "stopped")
         self.assertEqual(stopped["data"]["pending_handles"], [])
         self.assertEqual(len(self.native.provider.client.state.calls), 1)
@@ -453,7 +459,7 @@ class AstrBotStagingHostTests(unittest.IsolatedAsyncioTestCase):
         await wait_for_batch(self.controller.session, batch)
         handler = next(handler for route, handler, _, _ in self.native.registered_web_apis
                        if route == API_PREFIX + "/inspect")
-        with patch("astrbot_host.web_api.request", NS(query={"batch_id": batch})):
+        with patch("astrbot_host.web_api.request", NS(username="admin", query={"batch_id": batch})):
             response = await handler()
         self.assertEqual(response["status"], "ok")
         call = response["data"]["model"]["calls"][0]

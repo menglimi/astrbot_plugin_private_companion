@@ -53,13 +53,19 @@ class Reservation:
         return self.pending.key
 
 
+DEFAULT_RESOLUTION_TIMEOUT_SECONDS = 30.0
+
+
 class PrivateDebounce:
     """Shared per-target debounce state for one running plugin instance."""
 
-    def __init__(self, policy=None, *, clock=time.monotonic, log_enabled=True):
+    def __init__(self, policy=None, *, clock=time.monotonic, log_enabled=True,
+                 resolution_timeout=DEFAULT_RESOLUTION_TIMEOUT_SECONDS):
         self.policy = policy
         self._clock = clock
         self._log_enabled = log_enabled
+        self._resolution_timeout = (float(resolution_timeout)
+                                    if resolution_timeout is not None and resolution_timeout > 0 else None)
         self._pending: dict[str, Pending] = {}
         self._lock = asyncio.Lock()
         self._sequence = 0
@@ -119,6 +125,17 @@ class PrivateDebounce:
         received = self._clock() if received_at is None else received_at
         pending = self._pending.get(key)
         created_at = getattr(event, "created_at", None)
+        stale_collecting = (
+            pending is not None
+            and pending.state == "collecting"
+            and self._resolution_timeout is not None
+            and (received - pending.latest_received) >= self._resolution_timeout
+        )
+        if stale_collecting:
+            pending.state = "aborted"
+            pending.wake.set()
+            self._pending.pop(key, None)
+            pending = None
         if pending is None or pending.state in {"finished", "aborted", "closed", "bypass"}:
             policy = self.policy
             pending = Pending(
@@ -251,10 +268,13 @@ class PrivateDebounce:
             self._ensure_wake_logged(pending)
             return "active"
 
-    async def wait_for_resolution(self, reservation, event):
+    async def wait_for_resolution(self, reservation, event, *, timeout=None):
         """Wait until the latest event installs a policy or releases the burst."""
         pending = reservation.pending
+        limit = self._resolution_timeout if timeout is None else timeout
+        deadline = (self._clock() + float(limit)) if (limit is not None and limit > 0) else None
         while True:
+            remaining = None
             async with self._lock:
                 if self._closed or pending.state == "closed":
                     return "closed"
@@ -263,13 +283,38 @@ class PrivateDebounce:
                     pending.wake.clear()
                     if pending.version != version:
                         continue
+                    if deadline is not None:
+                        remaining = deadline - self._clock()
+                        if remaining <= 0:
+                            if self._pending.get(pending.key) is pending:
+                                self._pending.pop(pending.key, None)
+                            pending.state = "aborted"
+                            pending.wake.set()
+                            return "aborted"
                 elif pending.state == "active":
                     return "active" if (pending.owner_ticket == reservation.ticket
                                          and pending.owner is event) else "superseded"
                 else:
                     return pending.state
             try:
-                await pending.wake.wait()
+                if remaining is None:
+                    await pending.wake.wait()
+                else:
+                    await asyncio.wait_for(pending.wake.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                async with self._lock:
+                    if self._closed or pending.state == "closed":
+                        return "closed"
+                    if pending.state == "collecting":
+                        if self._pending.get(pending.key) is pending:
+                            self._pending.pop(pending.key, None)
+                        pending.state = "aborted"
+                        pending.wake.set()
+                        return "aborted"
+                    if pending.state == "active":
+                        return "active" if (pending.owner_ticket == reservation.ticket
+                                             and pending.owner is event) else "superseded"
+                    return pending.state
             except asyncio.CancelledError:
                 raise
 

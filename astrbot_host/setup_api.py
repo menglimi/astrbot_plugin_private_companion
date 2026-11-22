@@ -88,8 +88,6 @@ PROACTIVE_TEST_SUGGESTIONS = {
     "contact_delivery_budget": "到「主动联系 → 每日额度」查看实际联系上限；已确认发送计联系次数，待回执发送暂时预占，明确未发送后释放。模型跳过不计联系。",
     "contact_purpose_paused": "检查所选目的的暂停状态和恢复时间。",
     "contact_quiet_hours": "当前处于静默时段；结束后再运行测试。",
-    "delivery_result_unknown": "投递结果未知；先核对核心管理员私聊，不要重放这次尝试。",
-    "delivery_failed": "检查 OneBot 私聊连接、机器人在线状态和平台返回错误。",
     "contact_diagnostic_source_required": "展开技术详情查看本次没有测试机会的原因。关系表达类使用已完成的私聊窗口和用途设置；事件类需要当前有效事件来源。没有候选时不会调用模型。若是首次使用：请用核心管理员账号私聊 bot，完成一次问答后回到这里重试。",
     "contact_weather_unavailable": "检查角色地点与天气观测设置，并确认 Open-Meteo 或已配置的和风凭据可访问；刷新后先在状态页确认出现当前观测。",
     "contact_news_unavailable": "检查当前资讯源的网络抓取结果与条目发布时间；真实测试不会用合成新闻替代。",
@@ -334,6 +332,24 @@ class SetupWebAPI:
         self._test_lock = asyncio.Lock()
         self._test_task = None
 
+    def cancel_background_tasks(self) -> None:
+        task = self._test_task
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def aclose(self) -> None:
+        task = self._test_task
+        self._test_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as error:
+                logger.debug("[CompanionV2] 设置测试任务停机清理异常 error_type=%s",
+                             type(error).__name__)
+
     def routes(self):
         return [
             (PREFIX + "/status", self.status, ["GET"], "Read persistent Companion V2 setup progress"),
@@ -426,11 +442,6 @@ class SetupWebAPI:
                 item["id"] == selection.provider_id for item in providers):
             providers.append({"id": selection.provider_id, "name": selection.name or selection.provider_id})
         return providers
-
-    def _configured_provider_id(self) -> str:
-        config = getattr(self.controller, "config", {})
-        section = config.get("model", {}) if isinstance(config, dict) else {}
-        return str(section.get("provider_id", "")) if isinstance(section, dict) else ""
 
     def _status_document(self) -> dict:
         state = self.progress.read()

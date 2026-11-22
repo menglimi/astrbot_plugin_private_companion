@@ -1262,6 +1262,10 @@ class PrivateCompanionV2StagingPlugin(Star):
             reply_enabled = True
             logger.warning("[CompanionV2] 会话回复开关暂不可读，继续核心授权检查 event_ref=%s error_type=%s",
                            event_ref, type(error).__name__)
+        except BaseException:
+            if debounce_pending is not None:
+                await debounce_manager.abort(debounce_pending, event=event)
+            raise
         if not reply_enabled:
             if debounce_pending is not None:
                 await debounce_manager.abort(debounce_pending, event=event)
@@ -1304,48 +1308,52 @@ class PrivateCompanionV2StagingPlugin(Star):
         core_reply_plan = None
         debounced_entries = None
         if debounce_pending is not None:
-            prepare_context = getattr(self.staging, "prepare_core_reply_context", None)
-            context_result = None
-            if callable(prepare_context):
-                try:
-                    context_result = await prepare_context(event, target, group_admission=None)
-                except Exception as error:
-                    logger.warning("[CompanionV2] 私聊防抖上下文读取失败，保留原核心回复 event_ref=%s error_type=%s",
-                                   event_ref, type(error).__name__)
-            if context_result is not None and context_result.failure is None:
-                core_reply_plan = context_result.unwrap()
-                policy = getattr(core_reply_plan, "debounce", None)
-            else:
-                policy = None
-            status = await debounce_manager.configure(debounce_pending, event, policy)
-            if status == "configuring":
-                status = await debounce_manager.wait_for_resolution(debounce_pending, event)
-            if status == "active":
-                status = await debounce_manager.wait_for_quiet(debounce_pending, event)
-                if status == "ready":
-                    debounced_entries = await debounce_manager.finish(debounce_pending, event)
-                    if debounced_entries is None:
-                        status = "superseded"
-                if status == "ready" and debounced_entries:
-                    merged_text = debounce_manager.combined(debounce_pending, debounced_entries)
-                    if not PrivateDebounce.replace_private_plain_text(event, merged_text):
-                        suppress_default_reply(event)
-                        self._record_no_reply(event, "private_debounce_merge_failed", origin_key=origin_key,
-                                              channel="private", event_ref=event_ref, stage="intake",
-                                              turn=event_ref)
-                        logger.warning("[CompanionV2] 私聊防抖合并失败 event_ref=%s", event_ref)
-                        return
-                    if core_reply_plan is not None:
-                        core_reply_plan = self._core_reply_plan_with_text(core_reply_plan, merged_text)
-            if status == "superseded":
-                self._suppress_debounced_private_event(
-                    event, target, event_ref, debounce_manager, debounce_pending)
-                return
-            if status in {"closed", "aborted", "finished"}:
-                self._suppress_debounced_private_event(
-                    event, target, event_ref, debounce_manager, debounce_pending,
-                    reason="private_debounce_cancelled")
-                return
+            try:
+                prepare_context = getattr(self.staging, "prepare_core_reply_context", None)
+                context_result = None
+                if callable(prepare_context):
+                    try:
+                        context_result = await prepare_context(event, target, group_admission=None)
+                    except Exception as error:
+                        logger.warning("[CompanionV2] 私聊防抖上下文读取失败，保留原核心回复 event_ref=%s error_type=%s",
+                                       event_ref, type(error).__name__)
+                if context_result is not None and context_result.failure is None:
+                    core_reply_plan = context_result.unwrap()
+                    policy = getattr(core_reply_plan, "debounce", None)
+                else:
+                    policy = None
+                status = await debounce_manager.configure(debounce_pending, event, policy)
+                if status == "configuring":
+                    status = await debounce_manager.wait_for_resolution(debounce_pending, event)
+                if status == "active":
+                    status = await debounce_manager.wait_for_quiet(debounce_pending, event)
+                    if status == "ready":
+                        debounced_entries = await debounce_manager.finish(debounce_pending, event)
+                        if debounced_entries is None:
+                            status = "superseded"
+                    if status == "ready" and debounced_entries:
+                        merged_text = debounce_manager.combined(debounce_pending, debounced_entries)
+                        if not PrivateDebounce.replace_private_plain_text(event, merged_text):
+                            suppress_default_reply(event)
+                            self._record_no_reply(event, "private_debounce_merge_failed", origin_key=origin_key,
+                                                  channel="private", event_ref=event_ref, stage="intake",
+                                                  turn=event_ref)
+                            logger.warning("[CompanionV2] 私聊防抖合并失败 event_ref=%s", event_ref)
+                            return
+                        if core_reply_plan is not None:
+                            core_reply_plan = self._core_reply_plan_with_text(core_reply_plan, merged_text)
+                if status == "superseded":
+                    self._suppress_debounced_private_event(
+                        event, target, event_ref, debounce_manager, debounce_pending)
+                    return
+                if status in {"closed", "aborted", "finished"}:
+                    self._suppress_debounced_private_event(
+                        event, target, event_ref, debounce_manager, debounce_pending,
+                        reason="private_debounce_cancelled")
+                    return
+            except BaseException:
+                await debounce_manager.abort(debounce_pending, event=event)
+                raise
         if (channel == "group" and group_admission is not None
                 and group_admission.get("reason") != "repeat"):
             debounce_log.wake(
@@ -2355,12 +2363,34 @@ class PrivateCompanionV2StagingPlugin(Star):
         if retire_reset_marker is not None:
             retire_reset_marker()
             self._retire_context_reset_marker = None
+        setup_api = (getattr(self.staging, "_setup_api", None)
+                     or getattr(getattr(self.staging, "web_api", None), "setup", None))
+        if setup_api is not None and callable(getattr(setup_api, "aclose", None)):
+            try:
+                await setup_api.aclose()
+            except Exception as error:
+                logger.warning("[CompanionV2] 设置测试任务停机清理失败 error_type=%s", type(error).__name__)
         try:
-            await self.staging.terminate()
-            from .astrbot_host.laya_client import cancel_laya_warmup
-            await cancel_laya_warmup()
-            logger.info("[CompanionV2] 共享宿主已停止" if self.staging.runtime is None
-                        else "[CompanionV2] 共享宿主正在收尾")
+            try:
+                await self.staging.terminate()
+                logger.info("[CompanionV2] 共享宿主已停止" if self.staging.runtime is None
+                            else "[CompanionV2] 共享宿主正在收尾")
+            finally:
+                try:
+                    from .astrbot_host.huawei_health.service import close_all_huawei_health_services
+                    await close_all_huawei_health_services()
+                except Exception as error:
+                    logger.warning("[CompanionV2] 华为健康服务停机清理失败 error_type=%s", type(error).__name__)
+                try:
+                    from .astrbot_host.laya_client import shutdown_laya_resources
+                    await shutdown_laya_resources()
+                except Exception as error:
+                    logger.warning("[CompanionV2] Laya 资源停机清理失败 error_type=%s", type(error).__name__)
+                try:
+                    from .astrbot_host.service_balance_script import shutdown_balance_script_workers
+                    shutdown_balance_script_workers()
+                except Exception as error:
+                    logger.warning("[CompanionV2] 余额脚本线程池停机清理失败 error_type=%s", type(error).__name__)
         finally:
             global _ACTIVE_EXTENSION_API
             if _ACTIVE_EXTENSION_API is getattr(self, "extension_api", None):

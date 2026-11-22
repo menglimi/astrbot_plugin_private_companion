@@ -35,7 +35,7 @@ from companion_v2.storage.backup import (
 )
 from companion_v2.storage.management import retention_policy
 
-from .management_identity import dashboard_operator
+from .management_identity import current_request_username, require_management_operator
 
 
 logger = logging.getLogger(__name__)
@@ -146,13 +146,13 @@ class BackupWebAPI:
             try:
                 if controller._terminated:
                     raise TaskError("staging_host_terminated", "plugin is stopped")
-                username = request.username
-                if type(username) is not str or not username.strip():
+                username = current_request_username(request)
+                if type(username) is not str or not username.strip() or username.startswith("api_key:"):
                     raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
                 session = controller.session or controller.last_session
                 if session is None or controller.runtime is None:
                     raise TaskError("staging_not_initialized", "load the explicit V2 profile before managing backups")
-                dashboard_operator(controller.runtime, username, at=controller.now())
+                require_management_operator(controller.runtime, username, at=controller.now())
                 backup = InstallationBackup(controller.runtime, now=controller.now,
                                             **retention_policy(controller.config))
             except TaskError as error:

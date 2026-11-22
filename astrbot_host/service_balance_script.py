@@ -11,6 +11,7 @@ from decimal import Decimal
 import importlib.util
 import json
 import re
+import threading
 from urllib.parse import unquote, urlsplit
 
 import aiohttp
@@ -21,8 +22,27 @@ from .service_balance import MAX_RESPONSE_BYTES, ServiceBalancePort, _amount
 
 MAX_SCRIPT_BYTES = 16384
 MAX_REQUEST_BYTES = 16384
-SCRIPT_WORKERS = ThreadPoolExecutor(max_workers=2, thread_name_prefix="balance-script")
+_SCRIPT_WORKERS_LOCK = threading.Lock()
+SCRIPT_WORKERS: ThreadPoolExecutor | None = None
 RESULT_FIELDS = ("isValid", "invalidMessage", "remaining", "unit", "planName", "total", "used", "extra")
+
+
+def _get_script_workers() -> ThreadPoolExecutor:
+    global SCRIPT_WORKERS
+    with _SCRIPT_WORKERS_LOCK:
+        if SCRIPT_WORKERS is None:
+            SCRIPT_WORKERS = ThreadPoolExecutor(max_workers=2, thread_name_prefix="balance-script")
+        return SCRIPT_WORKERS
+
+
+def shutdown_balance_script_workers() -> None:
+    """Shut down the shared balance-script worker pool; lazily recreated on next use."""
+    global SCRIPT_WORKERS
+    with _SCRIPT_WORKERS_LOCK:
+        executor = SCRIPT_WORKERS
+        SCRIPT_WORKERS = None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 class BalanceQueryError(ValueError):
@@ -209,7 +229,7 @@ class ScriptServiceBalancePort:
             gate = asyncio.Semaphore(2)
             setattr(loop, "_companion_balance_script_gate", gate)
         async with gate:
-            return await loop.run_in_executor(SCRIPT_WORKERS, _execute, self.script, response, self.variables)
+            return await loop.run_in_executor(_get_script_workers(), _execute, self.script, response, self.variables)
 
     async def fetch(self):
         try:

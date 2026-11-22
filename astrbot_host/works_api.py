@@ -21,7 +21,7 @@ from companion_v2.execution.models import TaskError, digest
 from companion_v2.foundation.outcome import Outcome
 from companion_v2.role_work.life.management import RoleLifeManagement
 
-from .management_identity import dashboard_operator
+from .management_identity import current_request_username, dashboard_operator, require_management_operator
 
 PREFIX = "/astrbot_plugin_private_companion/works"
 
@@ -68,7 +68,7 @@ class WorksWebAPI:
         controller = self.controller
         if controller._terminated:
             raise TaskError("staging_host_terminated", "plugin is stopped")
-        username = request.username
+        username = current_request_username(request)
         if type(username) is not str or not username.strip() or username.startswith("api_key:"):
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
         target, role_id = self._selected(fields=fields, target_values=target_values)
@@ -158,15 +158,14 @@ class WorksWebAPI:
     async def list_works(self):
         from .web_api import outcome_response
         try:
-            username = request.username
-            if type(username) is not str or not username.strip() or username.startswith("api_key:"):
-                raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
+            username = current_request_username(request)
             async with self.controller._control_lock:
                 if self.controller._terminated:
                     raise TaskError("staging_host_terminated", "plugin is stopped")
                 runtime = self.controller.runtime
                 if runtime is None:
                     raise TaskError("staging_not_initialized", "load the V2 profile first")
+                require_management_operator(runtime, username, at=self.controller.now())
                 target, role_id = self._selected()
             path = content_database(runtime.data_root)
             result = await asyncio.to_thread(read_works, path,
@@ -174,6 +173,6 @@ class WorksWebAPI:
             return outcome_response(Outcome.success(result))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
-        except (OSError, ValueError, TypeError, KeyError):
+        except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
             return outcome_response(Outcome.failed(
                 "works_unavailable", "the works catalogue is unavailable"))

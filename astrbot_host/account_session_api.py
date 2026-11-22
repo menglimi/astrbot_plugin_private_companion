@@ -12,6 +12,7 @@ from astrbot.core import sp
 
 from companion_v2.adapters.astrbot.native import native_client_connected, route_id
 from companion_v2.execution.models import TaskError, digest
+from .management_identity import current_request_username, require_controller_management_operator
 from .multi_settings import MultiHostSettings
 from .native import remember_session_settings
 from .settings import HostControlError, repair_host_policy_sections
@@ -42,11 +43,9 @@ class AccountSessionWebAPI:
                  "Enable or disable one discovered group target"),
                 (PREFIX + "/session", self.save_session, ["POST"], "Manage a discovered native session")]
 
-    @staticmethod
-    def _admin():
-        username = request.username
-        if type(username) is not str or not username.strip() or username.startswith("api_key:"):
-            raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard as an administrator")
+    def _admin(self):
+        username = current_request_username(request)
+        require_controller_management_operator(self.controller, username)
         if request.query:
             raise TaskError("account_config_invalid", "query fields are not allowed")
 
@@ -99,7 +98,7 @@ class AccountSessionWebAPI:
             # is shared by several Bot accounts on one role id in the editor too.
             # The controller already holds the parsed settings; only reparse when
             # the host has not assembled them yet.
-            parsed = controller.settings
+            parsed = getattr(controller, "settings", None)
             if parsed is None or not hasattr(parsed, "personas"):
                 parsed = MultiHostSettings.parse(controller.config)
             personas = [asdict(mapping) for mapping in parsed.personas]
@@ -116,7 +115,8 @@ class AccountSessionWebAPI:
 
     async def _discovered(self):
         from .setup_api import SetupWebAPI
-        response = await SetupWebAPI(self.controller).api_targets()
+        setup = getattr(self.controller, "_setup_api", None) or SetupWebAPI(self.controller)
+        response = await setup.api_targets()
         if response.get("status") != "ok":
             data = response.get("data") if isinstance(response.get("data"), dict) else {}
             code = data.get("code") or response.get("message") or "setup_targets_unavailable"

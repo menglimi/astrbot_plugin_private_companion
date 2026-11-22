@@ -95,7 +95,7 @@ class LibraryConfigurationOwner(SparseConfigurationOwner):
         return result
 
     def write(self, target, fields, *, changes, reset, expected_revision, observed_at):
-        with self.runtime.transaction():
+        with self.store.transaction():
             result = super().write(target, fields, changes=changes, reset=reset,
                                    expected_revision=expected_revision, observed_at=observed_at)
             validate({key.removeprefix(GROUP + "."): item.value

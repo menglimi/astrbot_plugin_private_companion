@@ -37,8 +37,18 @@ _LOCAL_ROUTER_LOCK = threading.Lock()
 _LOCAL_ROUTERS: dict[str, tuple[object, threading.Lock]] = {}
 _LOCAL_WARMUP_TASKS = {}
 _LOCAL_READY = set()
-_LOCAL_INFERENCE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="companion-laya")
+_LOCAL_INFERENCE_EXECUTOR: ThreadPoolExecutor | None = None
 _LOCAL_PREDICTION_TRACE = threading.local()
+
+
+def _get_local_inference_executor() -> ThreadPoolExecutor:
+    global _LOCAL_INFERENCE_EXECUTOR
+    with _LOCAL_ROUTER_LOCK:
+        if _LOCAL_INFERENCE_EXECUTOR is None:
+            _LOCAL_INFERENCE_EXECUTOR = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="companion-laya",
+            )
+        return _LOCAL_INFERENCE_EXECUTOR
 MAX_RESPONSE_BYTES = 1024 * 1024
 DEFAULT_MODEL = MODE_MODELS["local"]
 SYSTEMONE_PATH = "/v1/systemone"
@@ -243,13 +253,13 @@ async def _run_local_predict(state: str, questions: dict, *, local_model_path=""
             profile["worker_ms"] = round((perf_counter() - started) * 1000)
             _LOCAL_PREDICTION_TRACE.value = {}
 
-    result = await loop.run_in_executor(_LOCAL_INFERENCE_EXECUTOR, run)
+    result = await loop.run_in_executor(_get_local_inference_executor(), run)
     return result, profile
 
 
 async def _run_local_load(local_model_path=""):
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_LOCAL_INFERENCE_EXECUTOR, _load_local_model, local_model_path)
+    return await loop.run_in_executor(_get_local_inference_executor(), _load_local_model, local_model_path)
 
 
 def _load_local_model(local_model_path=""):
@@ -366,6 +376,43 @@ async def cancel_laya_warmup():
         if not task.done():
             task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def shutdown_laya_resources():
+    """Cancel warmup, release cached local routers/VRAM, and shut down the executor."""
+    global _LOCAL_INFERENCE_EXECUTOR
+    await cancel_laya_warmup()
+    with _LOCAL_ROUTER_LOCK:
+        routers = list(_LOCAL_ROUTERS.values())
+        _LOCAL_ROUTERS.clear()
+        _LOCAL_READY.clear()
+        executor = _LOCAL_INFERENCE_EXECUTOR
+        _LOCAL_INFERENCE_EXECUTOR = None
+    for router, _lock in routers:
+        for method_name in ("unload_all", "close", "unload"):
+            method = getattr(router, method_name, None)
+            if callable(method):
+                try:
+                    method()
+                except Exception:
+                    pass
+                break
+    routers.clear()
+    if executor is not None:
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except Exception as error:
+            logger.warning("[CompanionV2] Laya 推理线程池关闭失败 error_type=%s", type(error).__name__)
+    torch_module = sys.modules.get("torch")
+    if torch_module is not None:
+        try:
+            cuda = getattr(torch_module, "cuda", None)
+            if cuda is not None and callable(getattr(cuda, "is_available", None)) and cuda.is_available():
+                empty_cache = getattr(cuda, "empty_cache", None)
+                if callable(empty_cache):
+                    empty_cache()
+        except Exception:
+            pass
 
 
 def _cloudflare_result(document: dict) -> dict:

@@ -227,9 +227,10 @@ class PrivateMemberSettings:
         store = self.app.configuration.store
         operations = OperationRepository(store)
         # Validate every original token before shared owner revisions advance.
-        # All section writes and the receipt must share the configuration store
-        # transaction; the main runtime no longer owns these rows.
-        with store.transaction():
+        # Acquire the main runtime lock before the configuration store lock so
+        # multi-section edits share the global runtime -> store lock order with
+        # GroupEditor.configure() and grant-syncing owners.
+        with self.app.runtime.transaction(), store.transaction():
             snapshots = {name: require(editor.status(operator)) for name, editor in editors.items()}
             require(self.app.tasks.check_generation())
             receipt = require(operations.reserve(operation, parameter_hash=digest([

@@ -36,31 +36,50 @@ class SubtitleServer:
     async def start(self) -> None:
         if self._runner:
             return
-        self._app = web.Application()
-        self._app.router.add_get("/", self._handle_index)
-        self._app.router.add_get("/ws", self._handle_ws)
-        self._app.router.add_get("/health", self._handle_health)
-        self._app.router.add_get("/show", self._handle_show)
-        self._app.router.add_post("/show", self._handle_show)
-        self._app.router.add_get("/clear", self._handle_clear)
-        self._app.router.add_get("/audio/{token}", self._handle_audio)
-        self._runner = web.AppRunner(self._app)
-        await self._runner.setup()
-        self._site = web.TCPSite(self._runner, self.host, self.port)
-        await self._site.start()
+        app = web.Application()
+        app.router.add_get("/", self._handle_index)
+        app.router.add_get("/ws", self._handle_ws)
+        app.router.add_get("/health", self._handle_health)
+        app.router.add_get("/show", self._handle_show)
+        app.router.add_post("/show", self._handle_show)
+        app.router.add_get("/clear", self._handle_clear)
+        app.router.add_get("/audio/{token}", self._handle_audio)
+        runner = web.AppRunner(app)
+        try:
+            await runner.setup()
+            site = web.TCPSite(runner, self.host, self.port)
+            await site.start()
+        except BaseException:
+            try:
+                await runner.cleanup()
+            except Exception:
+                pass
+            self._app = None
+            self._runner = None
+            self._site = None
+            raise
+        self._app = app
+        self._runner = runner
+        self._site = site
         logger.info(f"[字幕] 字幕 overlay 已启动: {self.url}")
 
     async def stop(self) -> None:
         clients = list(self._clients)
-        for ws in clients:
-            await ws.close()
         self._clients.clear()
-        if self._runner:
-            await self._runner.cleanup()
+        runner = self._runner
         self._app = None
         self._runner = None
         self._site = None
         self._audio_files.clear()
+        try:
+            for ws in clients:
+                try:
+                    await ws.close()
+                except Exception as exc:
+                    logger.debug(f"[字幕] 关闭 overlay WebSocket 失败: {exc}")
+        finally:
+            if runner:
+                await runner.cleanup()
         logger.info("[字幕] 字幕 overlay 已停止")
 
     async def show(self, text: str) -> None:
@@ -116,6 +135,8 @@ class SubtitleServer:
             try:
                 data = await request.json()
             except Exception:
+                data = {}
+            if not isinstance(data, dict):
                 data = {}
             text = str(data.get("text") or "")
         else:
