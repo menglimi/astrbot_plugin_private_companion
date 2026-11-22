@@ -167,10 +167,15 @@
   border-color:var(--t-accent);background:var(--t-accent-quiet);color:var(--t-accent-ink);
 }
 
-/* 居中智能悬浮保存胶囊：仅存在未保存修改时出现，天然避开右下角小屋画中画 */
+/* 居中智能悬浮保存胶囊：仅存在未保存修改时出现，同步扣除左栏与右下角画中画安全区 */
 .learning-policy-dock{
-  position:fixed;left:50%;bottom:20px;z-index:12;transform:translateX(-50%);
-  width:min(560px,calc(100vw - 32px));max-width:560px;pointer-events:none;
+  --lp-dock-left:var(--sp-4);
+  --lp-dock-right:var(--sp-4);
+  position:fixed;
+  left:calc(var(--lp-dock-left) + (100vw - var(--lp-dock-left) - var(--lp-dock-right)) / 2);
+  bottom:20px;z-index:12;transform:translateX(-50%);
+  width:min(560px,calc(100vw - var(--lp-dock-left) - var(--lp-dock-right)));
+  max-width:560px;pointer-events:none;
 }
 .learning-policy-dock[hidden]{display:none}
 .learning-policy-dock-inner{
@@ -196,11 +201,21 @@
   border-radius:var(--r-pill);min-height:34px;padding:var(--sp-1) var(--sp-3);white-space:nowrap;
 }
 
-/* 中等宽度桌面若右下角展示小屋浮窗，则自动向左让位确保零重叠 */
-@media(min-width:761px) and (max-width:1180px){
+/* 桌面端：完整左栏（220px）与右下角画中画（176px + 外壳边距）安全区双向避让，全宽零碰撞 */
+@media(min-width:1121px){
   #homeShell[data-away="true"] .learning-policy-dock{
-    left:calc(50% - var(--shell-pip-w, 0px) / 2);
-    width:min(560px,calc(100vw - var(--shell-pip-w, 0px) - 56px));
+    --lp-dock-left:calc(var(--shell-rail, 220px) + var(--sp-4));
+    --lp-dock-right:calc(var(--shell-pip-w, 176px) + var(--shell-pad, 18px) + var(--sp-4));
+  }
+}
+/* 平板/中屏（761–1120px）：同步适配收起态 68px / 展开态 220px 左栏与右侧画中画 */
+@media(min-width:761px) and (max-width:1120px){
+  #homeShell[data-away="true"] .learning-policy-dock{
+    --lp-dock-left:calc(var(--shell-rail-collapsed, 68px) + var(--sp-4));
+    --lp-dock-right:calc(var(--shell-pip-w, 176px) + var(--shell-pad, 18px) + var(--sp-4));
+  }
+  #homeShell[data-away="true"][data-rail="expanded"] .learning-policy-dock{
+    --lp-dock-left:calc(var(--shell-rail, 220px) + var(--sp-4));
   }
 }
 
@@ -209,8 +224,13 @@
   .learning-policy-workspaces .wb-policy .wb-field{padding:var(--sp-3)}
 }
 @media(max-width:760px){
+  .learning-policy-workspaces .wb-policy .wb-card-body{padding:0}
+  .learning-policy-workspaces .wb-policy .wb-segmented{
+    width:100%;display:grid;grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);
+  }
+  .learning-policy-workspaces .wb-policy .wb-segmented-option span{width:100%;padding:0 var(--sp-2)}
   .learning-policy-workspaces .wb-actions{margin-inline:0;padding-inline:0}
-  .learning-policy-dock{bottom:12px;width:calc(100vw - 24px)}
+  .learning-policy-dock{--lp-dock-left:12px;--lp-dock-right:12px;bottom:12px}
   .learning-policy-dock-inner{flex-wrap:wrap;border-radius:var(--r-md);padding:var(--sp-3)}
   .learning-policy-dock-actions{width:100%;justify-content:flex-end}
 }

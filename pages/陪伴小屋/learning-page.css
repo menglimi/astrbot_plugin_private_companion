@@ -513,12 +513,15 @@
 
 /* ===== 学习工作台分区 ===== */
 .learning-hub-nav{
-  display:flex;flex-wrap:nowrap;align-items:center;gap:var(--sp-1);min-width:0;
-  margin-bottom:var(--sp-4);padding:var(--sp-1);
+  display:block;min-width:0;margin-bottom:var(--sp-4);padding:var(--sp-1);
   border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-soft);
+  overflow:hidden;
+}
+.learning-hub-tabs{
+  display:flex;flex-wrap:nowrap;align-items:center;gap:var(--sp-1);min-width:0;
   overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;
 }
-.learning-hub-nav::-webkit-scrollbar{display:none}
+.learning-hub-tabs::-webkit-scrollbar{display:none}
 .learning-hub-tab{
   flex:1 0 auto;display:inline-flex;align-items:center;justify-content:center;
   min-width:max-content;min-height:36px;padding:var(--sp-1) var(--sp-3);

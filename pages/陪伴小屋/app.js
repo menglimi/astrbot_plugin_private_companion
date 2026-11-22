@@ -4453,32 +4453,59 @@ function mountLearningPolicyDock(){
   const dock=$('#learningPolicySaveDock');
   if(!dock)return;
   const groups=new Set(['role.growth.skills','expression.learning']);
-  let busy=false;
+  let busy=false,inner=null,countEl=null,namesEl=null,discardBtn=null,saveBtn=null;
   const dirtyPolicies=()=>(window.CompanionWorkbench?.dirtyEditors?.()||[]).filter(item=>groups.has(item.group));
+  const ensureInner=()=>{
+    if(inner&&inner.parentNode===dock)return;
+    const wrap=document.createElement('div');
+    wrap.className='learning-policy-dock-inner';
+    const copy=document.createElement('div');
+    copy.className='learning-policy-dock-copy';
+    const dot=document.createElement('span');
+    dot.className='learning-policy-dock-dot';
+    dot.setAttribute('aria-hidden','true');
+    countEl=document.createElement('strong');
+    namesEl=document.createElement('span');
+    copy.appendChild(dot);copy.appendChild(countEl);copy.appendChild(namesEl);
+    const actions=document.createElement('div');
+    actions.className='learning-policy-dock-actions';
+    discardBtn=document.createElement('button');
+    discardBtn.type='button';discardBtn.className='button small';
+    discardBtn.dataset.policyDock='discard';discardBtn.textContent='放弃修改';
+    saveBtn=document.createElement('button');
+    saveBtn.type='button';saveBtn.className='button small primary';
+    saveBtn.dataset.policyDock='save';
+    actions.appendChild(discardBtn);actions.appendChild(saveBtn);
+    wrap.appendChild(copy);wrap.appendChild(actions);
+    dock.textContent='';
+    dock.appendChild(wrap);
+    inner=wrap;
+  };
   const sync=()=>{
     if(!dock.isConnected)return;
     const dirty=dirtyPolicies();
     if(!dirty.length&&!busy){
       dock.hidden=true;
       dock.classList.remove('is-visible');
-      dock.innerHTML='';
+      if(inner){
+        inner.remove?.();
+        dock.textContent='';
+        inner=countEl=namesEl=discardBtn=saveBtn=null;
+      }
       return;
     }
+    ensureInner();
     const count=dirty.reduce((sum,item)=>sum+(Array.isArray(item.fields)?item.fields.length:0),0);
     const names=dirty.map(item=>item.title).join('、');
+    if(countEl)countEl.textContent=busy?'正在保存修改…':`已修改 ${count||dirty.length} 项`;
+    if(namesEl){namesEl.textContent=names;namesEl.hidden=!names;}
+    if(discardBtn)discardBtn.disabled=busy;
+    if(saveBtn){
+      saveBtn.textContent=busy?'保存中…':dirty.length>1?'保存全部更改':'保存更改';
+      saveBtn.disabled=busy;
+    }
     dock.hidden=false;
     dock.classList.add('is-visible');
-    dock.innerHTML=`<div class="learning-policy-dock-inner">
-      <div class="learning-policy-dock-copy">
-        <span class="learning-policy-dock-dot" aria-hidden="true"></span>
-        <strong>${busy?'正在保存修改…':`已修改 ${count||dirty.length} 项`}</strong>
-        ${names?`<span>${escapeHTML(names)}</span>`:''}
-      </div>
-      <div class="learning-policy-dock-actions">
-        <button type="button" class="button small" data-policy-dock="discard"${busy?' disabled':''}>放弃修改</button>
-        <button type="button" class="button small primary" data-policy-dock="save"${busy?' disabled':''}>${busy?'保存中…':dirty.length>1?'保存全部更改':'保存更改'}</button>
-      </div>
-    </div>`;
   };
   const onClick=async event=>{
     const btn=event.target?.closest?.('[data-policy-dock]');
@@ -5514,8 +5541,8 @@ window.addEventListener('companion:learning-open',async event=>{
 function renderLearningPage(){
   const sections=[['overview','总览'],['strategy','角色策略'],['review','审阅中心'],['chain','成长链路'],['expression','表达学习'],['behavior','行为模仿'],['semantic','语义目录'],['reflection','每日复盘']];
   const titles=Object.fromEntries(sections);
-  const nav=`<nav class="learning-hub-nav" aria-label="学习与反思">${sections.map(([key,label])=>
-    `<a class="learning-hub-tab${learningTab===key?' is-active':''}" href="${navHref('manage','learning',key)}" ${learningTab===key?'aria-current="page"':''}><span>${label}</span></a>`).join('')}</nav>`;
+  const nav=`<nav class="learning-hub-nav" aria-label="学习与反思"><div class="learning-hub-tabs">${sections.map(([key,label])=>
+    `<a class="learning-hub-tab${learningTab===key?' is-active':''}" href="${navHref('manage','learning',key)}" ${learningTab===key?'aria-current="page"':''}><span>${label}</span></a>`).join('')}</div></nav>`;
   let content='';
   if(learningTab==='overview'){
     content=`<section id="learningOverviewWorkspace" class="learning-overview-workspace" aria-label="学习总览">${consoleLoading('正在读取学习状态…')}</section>`;

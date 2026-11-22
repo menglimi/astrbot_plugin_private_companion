@@ -395,11 +395,12 @@ test("learning-hub.css 清理串扰、非法 -var()、双栏独立滚动、对�
   assert.match(hubCss, /\.learning-review-workspace \.lh-review-type\.is-style\{background:var\(--t-warn-quiet\);color:var\(--t-warn-ink\)\}/);
   assert.match(hubCss, /\.learning-review-workspace \.lh-review-type\.is-self\{background:var\(--t-ok-quiet\);color:var\(--t-ok-ink\)\}/);
 
-  // 学习工作台通用响应式修复：8 页签单行胶囊导航 + 窄容器横向丝滑滚动边缘渐隐 + 5 列看板 auto-fit 防挤压
+  // 学习工作台通用响应式修复：外框圆角与内层单行滚动轨解耦 + 窄容器尾部柔和渐隐 + 5 列看板 auto-fit 防挤压
   assert.match(hubCss, /\.learning-hub\{[^}]*container-type:inline-size;container-name:learning-hub/);
-  assert.match(hubCss, /\.learning-hub-nav\{[^}]*display:flex;flex-wrap:nowrap[^}]*overflow-x:auto/);
+  assert.match(hubCss, /\.learning-hub-nav\{[^}]*border:1px solid var\(--t-line\);border-radius:var\(--r-md\)/);
+  assert.match(hubCss, /\.learning-hub-tabs\{[^}]*display:flex;flex-wrap:nowrap[^}]*overflow-x:auto/);
   assert.match(hubCss, /\.learning-hub-tab\.is-active,\.learning-hub-tab\.is-active:hover\{[^}]*background:var\(--t-accent-solid\);color:var\(--t-on-solid\)/);
-  assert.match(hubCss, /@container learning-hub \(max-width:740px\)\{[\s\S]*?\.learning-hub-nav\{[\s\S]*?mask-image:linear-gradient/);
+  assert.match(hubCss, /@container learning-hub \(max-width:740px\)\{[\s\S]*?\.learning-hub-tabs\{[\s\S]*?mask-image:linear-gradient\(to right,black 0,black calc\(100% - 22px\),transparent 100%\)/);
   assert.match(hubCss, /\.lh-overview-lanes\{[^}]*grid-template-columns:repeat\(auto-fit,minmax\(min\(220px,100%\),1fr\)\)/);
   const posMedia1320 = hubCss.indexOf("@media(max-width:1320px)");
   const posMedia880 = hubCss.indexOf("@media(max-width:880px)");
