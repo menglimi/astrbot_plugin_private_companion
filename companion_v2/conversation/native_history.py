@@ -168,57 +168,65 @@ def _dialogue_batched(messages, context, at, *, start=None, end=None, limit=32, 
         if not parsed:
             return ()
 
-        # 1. Batch recall lookup for all input rows in one SQL query.
+        # 1. Batch recall lookup for all input rows in chunked SQL queries.
+        in_chunk = 500
         recalled_set: set[str] = set()
         if recall_keys:
             unique_recalls = tuple(dict.fromkeys(recall_keys))
-            marks = ",".join("?" for _ in unique_recalls)
-            recalled_set = {
-                r["event_id"]
+            for start in range(0, len(unique_recalls), in_chunk):
+                chunk = unique_recalls[start:start + in_chunk]
+                marks = ",".join("?" for _ in chunk)
                 for r in runtime.read_all(
                     f"SELECT event_id FROM inbox WHERE consumer = ? AND event_id IN ({marks})",
-                    (RECALL_CONSUMER, *unique_recalls),
-                )
-            }
+                    (RECALL_CONSUMER, *chunk),
+                ):
+                    recalled_set.add(r["event_id"])
 
         # 2. Single window reset boundary check (plus optional batch input check if reset exists).
         saved_reset = reset_boundary(runtime, context.scope)
         reset_batch_by_source: dict[str, str] = {}
         if saved_reset is not None:
             unique_ids = tuple(dict.fromkeys(source_ids))
-            marks = ",".join("?" for _ in unique_ids)
-            for input_row in runtime.read_all(
-                f"SELECT json_extract(event_json, '$.source.source_id') AS sid, batch_id "
-                f"FROM conversation_inputs "
-                f"WHERE json_extract(event_json, '$.source.source_id') IN ({marks})",
-                unique_ids,
-            ):
-                sid = input_row["sid"]
-                if sid is not None and sid not in reset_batch_by_source:
-                    reset_batch_by_source[sid] = input_row["batch_id"]
+            for start in range(0, len(unique_ids), in_chunk):
+                chunk = unique_ids[start:start + in_chunk]
+                marks = ",".join("?" for _ in chunk)
+                for input_row in runtime.read_all(
+                    f"SELECT json_extract(event_json, '$.source.source_id') AS sid, batch_id "
+                    f"FROM conversation_inputs "
+                    f"WHERE json_extract(event_json, '$.source.source_id') IN ({marks})",
+                    chunk,
+                ):
+                    sid = input_row["sid"]
+                    if sid is not None and sid not in reset_batch_by_source:
+                        reset_batch_by_source[sid] = input_row["batch_id"]
 
         # 3. Batch-load sources and leaf dependency edges into the active validation batch.
         unique_source_ids = tuple(dict.fromkeys(source_ids))
-        marks = ",".join("?" for _ in unique_source_ids)
         source_rows_by_key: dict[tuple[str, str, int], object] = {}
         source_records_by_key: dict[tuple[str, str, int], object] = {}
-        for src_row in runtime.read_all(
-            f"SELECT * FROM sources WHERE source_id IN ({marks})",
-            unique_source_ids,
-        ):
-            src_key = (src_row["source_id"], src_row["lineage_id"], src_row["source_revision"])
-            source_rows_by_key[src_key] = src_row
-            source_records_by_key[src_key] = _source_from_row(src_row)
+        for start in range(0, len(unique_source_ids), in_chunk):
+            chunk = unique_source_ids[start:start + in_chunk]
+            marks = ",".join("?" for _ in chunk)
+            for src_row in runtime.read_all(
+                f"SELECT * FROM sources WHERE source_id IN ({marks})",
+                chunk,
+            ):
+                src_key = (src_row["source_id"], src_row["lineage_id"], src_row["source_revision"])
+                source_rows_by_key[src_key] = src_row
+                source_records_by_key[src_key] = _source_from_row(src_row)
 
         batch = source_dependencies.active_validation_batch(runtime, observed_at)
         if batch is not None:
             has_deps: set[tuple[str, str, int]] = set()
-            for dep_row in runtime.read_all(
-                f"SELECT DISTINCT dependent_id, dependent_lineage, dependent_revision "
-                f"FROM source_dependencies WHERE dependent_id IN ({marks})",
-                unique_source_ids,
-            ):
-                has_deps.add((dep_row["dependent_id"], dep_row["dependent_lineage"], dep_row["dependent_revision"]))
+            for start in range(0, len(unique_source_ids), in_chunk):
+                chunk = unique_source_ids[start:start + in_chunk]
+                marks = ",".join("?" for _ in chunk)
+                for dep_row in runtime.read_all(
+                    f"SELECT DISTINCT dependent_id, dependent_lineage, dependent_revision "
+                    f"FROM source_dependencies WHERE dependent_id IN ({marks})",
+                    chunk,
+                ):
+                    has_deps.add((dep_row["dependent_id"], dep_row["dependent_lineage"], dep_row["dependent_revision"]))
             for _, _, _, src_key in parsed:
                 if src_key in source_rows_by_key:
                     batch.rows[src_key] = source_rows_by_key[src_key]

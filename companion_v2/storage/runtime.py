@@ -453,7 +453,7 @@ class StorageRuntime:
         self._active_readers = 0
         self._reader_closing = False
         self._meta_cache_lock = Lock()
-        self._table_exists_cache: dict[str, bool | tuple[bool, int]] = {}
+        self._table_exists_cache: dict[str, tuple[bool, int]] = {}
         self._initialized_schemas: set[str] = set()
         self._write_epoch = 0
         self._last_optimize_at = 0.0
@@ -482,22 +482,62 @@ class StorageRuntime:
         return self._reader_pool_size
 
     def has_table(self, table_name: str) -> bool:
-        """Return whether *table_name* exists, caching hits across hot read paths."""
+        """Return whether *table_name* exists, caching hits across hot read paths.
+
+        Inside a WAL ``read_snapshot`` the connection may be pinned to an older
+        write epoch than the live writer. Snapshot readers therefore never
+        populate the shared cache (preventing negative-cache poisoning), and
+        only trust shared positive entries confirmed at or before the snapshot's
+        opening epoch (preventing stale-snapshot false positives).
+        """
         in_own_write = self._write_owner_thread_id == get_ident()
-        with self._meta_cache_lock:
-            cached = self._table_exists_cache.get(table_name)
-            if cached is True:
-                return True
-            if not in_own_write and isinstance(cached, tuple) and cached[1] == self._write_epoch:
-                return False
-            epoch_before = self._write_epoch
+        snapshot_diag = getattr(self._read_snapshot_diagnostics, "current", None)
+        in_read_snapshot = snapshot_diag is not None and not snapshot_diag.get("writer_owned", False)
+
+        if in_read_snapshot:
+            local_cache = snapshot_diag.get("table_cache")
+            if local_cache is not None and table_name in local_cache:
+                return local_cache[table_name]
+            snapshot_epoch = snapshot_diag.get("snapshot_epoch", -1)
+            with self._meta_cache_lock:
+                cached = self._table_exists_cache.get(table_name)
+                if (
+                    isinstance(cached, tuple)
+                    and cached[0] is True
+                    and cached[1] <= snapshot_epoch
+                ):
+                    if local_cache is not None:
+                        local_cache[table_name] = True
+                    return True
+            exists = self.read_one(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table_name,),
+            ) is not None
+            if local_cache is not None:
+                local_cache[table_name] = exists
+            return exists
+
+        if not in_own_write:
+            with self._meta_cache_lock:
+                cached = self._table_exists_cache.get(table_name)
+                if isinstance(cached, tuple):
+                    if cached[0] is True:
+                        return True
+                    if cached[0] is False and cached[1] == self._write_epoch:
+                        return False
+                epoch_before = self._write_epoch
         exists = self.read_one(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
             (table_name,),
         ) is not None
         if not in_own_write:
             with self._meta_cache_lock:
-                self._table_exists_cache[table_name] = True if exists else (False, epoch_before)
+                if exists:
+                    # Record the latest epoch so older open snapshots do not
+                    # assume a table created after they started is visible.
+                    self._table_exists_cache[table_name] = (True, self._write_epoch)
+                elif self._write_epoch == epoch_before:
+                    self._table_exists_cache[table_name] = (False, epoch_before)
         return exists
 
     def invalidate_table_cache(self) -> None:
@@ -506,7 +546,12 @@ class StorageRuntime:
             self._table_exists_cache.clear()
 
     def ensure_schema(self, schema_key: str, initializer) -> bool:
-        """Run an optional-table DDL initializer at most once per open runtime."""
+        """Run an optional-table DDL initializer at most once per open runtime.
+
+        Only records *schema_key* as initialized after an outermost write
+        transaction commits, so a rolled-back enclosing transaction never
+        leaves ``_initialized_schemas`` poisoned.
+        """
         with self._meta_cache_lock:
             if schema_key in self._initialized_schemas:
                 return False
@@ -516,9 +561,10 @@ class StorageRuntime:
                     return False
             with self.transaction() as connection:
                 initializer(connection)
-            with self._meta_cache_lock:
-                self._initialized_schemas.add(schema_key)
-                self._table_exists_cache.clear()
+            if self._write_depth == 0:
+                with self._meta_cache_lock:
+                    self._initialized_schemas.add(schema_key)
+                    self._table_exists_cache.clear()
             return True
 
     def _run_pragma_optimize(self, connection: sqlite3.Connection) -> bool:
@@ -848,7 +894,14 @@ class StorageRuntime:
                     connection = stack.enter_context(self._reader_connection())
                 lock_acquired = time.perf_counter()
                 if owns_diagnostic:
-                    diagnostic = {"slow_child": False, "writer_owned": writer_owned}
+                    with self._meta_cache_lock:
+                        snapshot_epoch = self._write_epoch
+                    diagnostic = {
+                        "slow_child": False,
+                        "writer_owned": writer_owned,
+                        "snapshot_epoch": snapshot_epoch,
+                        "table_cache": {},
+                    }
                     self._read_snapshot_diagnostics.current = diagnostic
                 with self._snapshot_on(connection):
                     yield connection
@@ -906,14 +959,19 @@ class StorageRuntime:
                 created.execute(f"PRAGMA cache_size = -{int(self._tuning_profile.cache_size_kib)}")
                 created.execute(f"PRAGMA mmap_size = {int(self._tuning_profile.mmap_size)}")
                 created.execute("PRAGMA temp_store = MEMORY")
-            except sqlite3.Error as error:
+            except BaseException as error:
                 if created is not None:
-                    created.close()
+                    try:
+                        created.close()
+                    except Exception:
+                        pass
                 with self._reader_condition:
                     self._creating_readers -= 1
                     self._active_readers -= 1
                     self._reader_condition.notify_all()
-                raise StorageOpenError("unable to read V2 SQLite store") from error
+                if isinstance(error, sqlite3.Error):
+                    raise StorageOpenError("unable to read V2 SQLite store") from error
+                raise
             connection = created
             with self._reader_condition:
                 self._all_readers.append(connection)

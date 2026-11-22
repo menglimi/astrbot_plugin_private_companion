@@ -26,6 +26,26 @@ def encode_vector_blob(vector) -> bytes:
     return VECTOR_BLOB_MAGIC + struct.pack("<" + "e" * len(vector), *vector)
 
 
+def _coerce_f32_sequence(values):
+    if not isinstance(values, (list, tuple)) or not values:
+        return None
+    if _NP is not None:
+        try:
+            arr = _NP.asarray(values, dtype=_NP.float32)
+        except (TypeError, ValueError):
+            return None
+        if arr.ndim != 1 or not _NP.all(_NP.isfinite(arr)):
+            return None
+        return arr
+    try:
+        converted = tuple(float(v) for v in values)
+    except (TypeError, ValueError):
+        return None
+    if any(not math.isfinite(v) for v in converted):
+        return None
+    return converted
+
+
 def decode_vector_f32(raw):
     """Decode either a float16 BLOB or legacy JSON vector into a float32 array or tuple."""
     if raw is None:
@@ -34,29 +54,35 @@ def decode_vector_f32(raw):
         mv = memoryview(raw)
         if len(mv) >= 4 and mv[:4].tobytes() == VECTOR_BLOB_MAGIC:
             payload = mv[4:]
-            if len(payload) % 2 != 0:
+            if len(payload) == 0 or len(payload) % 2 != 0:
                 return None
             if _NP is not None:
-                return _NP.frombuffer(payload, dtype="<f2").astype(_NP.float32)
+                arr = _NP.frombuffer(payload, dtype="<f2").astype(_NP.float32)
+                return arr if _NP.all(_NP.isfinite(arr)) else None
             count = len(payload) // 2
-            return struct.unpack("<" + "e" * count, payload)
+            values = struct.unpack("<" + "e" * count, payload)
+            return values if all(math.isfinite(v) for v in values) else None
         try:
             values = json.loads(bytes(mv).decode("utf-8"))
         except (TypeError, ValueError, UnicodeDecodeError):
             return None
-        return _NP.asarray(values, dtype=_NP.float32) if _NP is not None else tuple(values)
+        return _coerce_f32_sequence(values)
     if isinstance(raw, str):
         try:
             values = json.loads(raw)
         except (TypeError, ValueError):
             return None
-        if not isinstance(values, (list, tuple)):
-            return None
-        return _NP.asarray(values, dtype=_NP.float32) if _NP is not None else tuple(values)
+        return _coerce_f32_sequence(values)
     if _NP is not None and isinstance(raw, _NP.ndarray):
-        return raw.astype(_NP.float32, copy=False)
+        try:
+            arr = raw.astype(_NP.float32, copy=False)
+        except (TypeError, ValueError):
+            return None
+        if arr.ndim != 1 or arr.size == 0 or not _NP.all(_NP.isfinite(arr)):
+            return None
+        return arr
     if isinstance(raw, (list, tuple)):
-        return _NP.asarray(raw, dtype=_NP.float32) if _NP is not None else tuple(raw)
+        return _coerce_f32_sequence(raw)
     return None
 
 
@@ -391,7 +417,7 @@ class SemanticStore:
         return {row["term"]: row["occurrences"] for row in rows}
 
     def slang_candidate_counts(self, owner):
-        with self.db() as db:
+        with self.db(read_only=True) as db:
             rows = db.execute("SELECT term,occurrences FROM slang_candidates WHERE owner=?",
                               (owner,)).fetchall()
         return {row["term"]: row["occurrences"] for row in rows}
@@ -453,7 +479,7 @@ class SemanticStore:
         scopes = ("private_capture", "group_capture")
         statuses = ("added", "pending_confirmation", "duplicate", "rejected", "failed", "cancelled")
         summary = {scope: {status: 0 for status in statuses} for scope in scopes}
-        with self.db() as db:
+        with self.db(read_only=True) as db:
             for row in db.execute("SELECT scope,status,count FROM reaction_collection_totals WHERE owner=?", (owner,)):
                 if row["scope"] in summary and row["status"] in statuses:
                     summary[row["scope"]][row["status"]] = row["count"]
@@ -507,7 +533,7 @@ class SemanticStore:
 
     def unclaimed_legacy_reaction_owners(self, target_owner):
         """Return unclaimed catalogs made entirely from explicit V1 imports."""
-        with self.db() as db:
+        with self.db(read_only=True) as db:
             rows = db.execute("""SELECT i.owner FROM items i
                 WHERE i.kind='reaction' AND i.owner<>?
                 GROUP BY i.owner
@@ -535,19 +561,22 @@ class SemanticStore:
             for item in items
         }
         identifiers = tuple(expected)
-        marks = ",".join("?" for _ in identifiers)
-        with self.db(read_only=True) as db:
-            rows = db.execute(
-                f"SELECT id, revision, hash, vector FROM vectors "
-                f"WHERE owner=? AND kind=? AND model=? AND id IN ({marks})",
-                (owner, kind, model, *identifiers),
-            ).fetchall()
         matched = {}
-        for row in rows:
-            item_id = row["id"]
-            rev_hash = expected.get(item_id)
-            if rev_hash is not None and row["revision"] == rev_hash[0] and row["hash"] == rev_hash[1]:
-                matched[item_id] = row["vector"]
+        chunk_size = 500
+        with self.db(read_only=True) as db:
+            for start in range(0, len(identifiers), chunk_size):
+                chunk = identifiers[start:start + chunk_size]
+                marks = ",".join("?" for _ in chunk)
+                rows = db.execute(
+                    f"SELECT id, revision, hash, vector FROM vectors "
+                    f"WHERE owner=? AND kind=? AND model=? AND id IN ({marks})",
+                    (owner, kind, model, *chunk),
+                ).fetchall()
+                for row in rows:
+                    item_id = row["id"]
+                    rev_hash = expected.get(item_id)
+                    if rev_hash is not None and row["revision"] == rev_hash[0] and row["hash"] == rev_hash[1]:
+                        matched[item_id] = row["vector"]
         return matched
 
     def put_vector(self, item, model, vector):

@@ -629,6 +629,189 @@ class SidecarWalAndVectorAccelerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider_calls, 1)
         self.assertGreaterEqual(gateway.metrics["cache_hits"], 1)
 
+    def test_has_table_wal_read_snapshot_prevents_negative_poisoning_and_stale_false_positive(self):
+        with TemporaryDirectory(prefix="pr02-snap-cache-") as tmp:
+            runtime = StorageRuntime.open(data_root=Path(tmp) / "v2", installation_id="pr02-inst")
+            try:
+                # 1. Negative-cache poisoning guard: snapshot pinned at epoch 0 must NOT poison shared cache.
+                snap_pinned = threading.Event()
+                ddl_committed = threading.Event()
+                snap_results: dict[str, bool] = {}
+
+                def reader_in_epoch_0():
+                    with runtime.read_snapshot() as conn:
+                        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+                        snap_pinned.set()
+                        ddl_committed.wait(timeout=3)
+                        snap_results["saw_alpha"] = runtime.has_table("late_alpha_tbl")
+
+                t = threading.Thread(target=reader_in_epoch_0)
+                t.start()
+                try:
+                    self.assertTrue(snap_pinned.wait(timeout=2))
+                    with runtime.transaction() as conn:
+                        conn.execute("CREATE TABLE late_alpha_tbl (id INTEGER PRIMARY KEY)")
+                    ddl_committed.set()
+                finally:
+                    t.join(timeout=3)
+
+                self.assertFalse(snap_results["saw_alpha"])
+                # Main thread at epoch 1 MUST observe True (never poisoned with False!).
+                self.assertTrue(runtime.has_table("late_alpha_tbl"))
+
+                # 2. Stale-snapshot false-positive guard: positive cache written at epoch 2
+                # must NOT mislead a snapshot pinned at epoch 1.
+                snap2_pinned = threading.Event()
+                cached_epoch2 = threading.Event()
+                snap2_results: dict[str, bool] = {}
+
+                def reader_in_epoch_1():
+                    with runtime.read_snapshot() as conn:
+                        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+                        snap2_pinned.set()
+                        cached_epoch2.wait(timeout=3)
+                        snap2_results["saw_beta"] = runtime.has_table("late_beta_tbl")
+
+                t2 = threading.Thread(target=reader_in_epoch_1)
+                t2.start()
+                try:
+                    self.assertTrue(snap2_pinned.wait(timeout=2))
+                    with runtime.transaction() as conn:
+                        conn.execute("CREATE TABLE late_beta_tbl (id INTEGER PRIMARY KEY)")
+                    self.assertTrue(runtime.has_table("late_beta_tbl"))
+                    cached_epoch2.set()
+                finally:
+                    t2.join(timeout=3)
+
+                self.assertFalse(snap2_results["saw_beta"])
+                self.assertTrue(runtime.has_table("late_beta_tbl"))
+            finally:
+                runtime.close()
+
+    def test_ensure_schema_outer_rollback_does_not_poison_initialized_schemas(self):
+        with TemporaryDirectory(prefix="pr02-rollback-schema-") as tmp:
+            runtime = StorageRuntime.open(data_root=Path(tmp) / "v2", installation_id="pr02-inst")
+            try:
+                def init_temp_table(conn):
+                    conn.execute("CREATE TABLE rollback_probe_tbl (id INTEGER PRIMARY KEY)")
+
+                with self.assertRaises(RuntimeError):
+                    with runtime.transaction():
+                        runtime.ensure_schema("rollback_probe.v1", init_temp_table)
+                        raise RuntimeError("abort outer tx")
+
+                self.assertFalse(runtime.has_table("rollback_probe_tbl"))
+                # Calling ensure_schema again at outermost depth MUST recreate the table.
+                ran = runtime.ensure_schema("rollback_probe.v1", init_temp_table)
+                self.assertTrue(ran)
+                self.assertTrue(runtime.has_table("rollback_probe_tbl"))
+                # Subsequent call is now a cached no-op.
+                self.assertFalse(runtime.ensure_schema("rollback_probe.v1", init_temp_table))
+            finally:
+                runtime.close()
+
+    def test_reader_connection_non_sqlite_error_releases_counters_and_does_not_deadlock_close(self):
+        with TemporaryDirectory(prefix="pr02-reader-err-") as tmp:
+            runtime = StorageRuntime.open(data_root=Path(tmp) / "v2", installation_id="pr02-inst")
+            try:
+                with patch("companion_v2.storage.runtime.sqlite3.connect", side_effect=OSError("fd limit")):
+                    with self.assertRaises(OSError):
+                        runtime.read_one("SELECT 1", ())
+                self.assertEqual(runtime._creating_readers, 0)
+                self.assertEqual(runtime._active_readers, 0)
+            finally:
+                # Must return promptly without deadlocking on leaked counters.
+                runtime.close()
+
+    async def test_embedding_singleflight_leader_cancel_and_error_handling(self):
+        first_started = asyncio.Event()
+        first_release = asyncio.Event()
+        calls = 0
+
+        class CancelPort:
+            def binding(self, identifier, kind):
+                return "emb-cancel"
+            async def embed(self, identifier, texts):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    first_started.set()
+                    await first_release.wait()
+                return [[0.0, 1.0] for _ in texts]
+
+        gateway = EmbeddingGateway(CancelPort())
+        t1 = asyncio.create_task(gateway.embed("owner-c", ["retry-me"]))
+        await first_started.wait()
+        t2 = asyncio.create_task(gateway.embed("owner-c", ["retry-me"]))
+        await asyncio.sleep(0)
+        t1.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await t1
+        # Innocent waiter t2 must NOT receive CancelledError and must succeed by re-fetching cleanly.
+        binding, vectors = await t2
+        self.assertEqual(binding, "emb-cancel")
+        self.assertEqual(len(vectors), 1)
+        self.assertAlmostEqual(vectors[0][1], 1.0, places=5)
+        self.assertEqual(calls, 2)
+        self.assertEqual(gateway.metrics["cache_hits"], 0)
+
+        # Provider failure must not falsely increment cache_hits for concurrent waiters.
+        err_started = asyncio.Event()
+        err_release = asyncio.Event()
+
+        class FailingPort:
+            def binding(self, identifier, kind):
+                return "emb-fail"
+            async def embed(self, identifier, texts):
+                err_started.set()
+                await err_release.wait()
+                raise RuntimeError("upstream down")
+
+        fail_gw = EmbeddingGateway(FailingPort())
+        f1 = asyncio.create_task(fail_gw.embed("owner-c", ["boom"]))
+        await err_started.wait()
+        f2 = asyncio.create_task(fail_gw.embed("owner-c", ["boom"]))
+        await asyncio.sleep(0)
+        err_release.set()
+        with self.assertRaises(RuntimeError):
+            await f1
+        with self.assertRaises(RuntimeError):
+            await f2
+        self.assertEqual(fail_gw.metrics["cache_hits"], 0)
+
+    def test_decode_vector_f32_rejects_malformed_json_and_vectors_for_items_chunks_in(self):
+        from companion_v2.storage.semantic import decode_vector_f32
+
+        for corrupt in (
+            b'{"not": "a list"}',
+            b'["bad", "num"]',
+            b"123",
+            b"[]",
+            '{"not": "a list"}',
+            '["bad", "num"]',
+            "[null, 1.0]",
+            '["NaN"]',
+            VECTOR_BLOB_MAGIC + b"\x00",
+            VECTOR_BLOB_MAGIC,
+        ):
+            self.assertIsNone(decode_vector_f32(corrupt), f"expected None for {corrupt!r}")
+
+        with TemporaryDirectory(prefix="pr02-sem-chunk-") as tmp:
+            store = SemanticStore(Path(tmp))
+            # Test >500 items to exercise IN (...) chunking cleanly.
+            items = []
+            vec = (1.0, 0.0, 0.0, 0.0)
+            for i in range(550):
+                it = store.put("o-chunk", "reaction", f"r-{i}", {"text": f"t-{i}"})
+                store.put_vector(it, "emb-c", vec)
+                items.append(it)
+            fetched = store.vectors_for_items("o-chunk", "reaction", "emb-c", items)
+            self.assertEqual(len(fetched), 550)
+            # Verify the 3 read_only methods work cleanly.
+            self.assertEqual(store.slang_candidate_counts("o-chunk"), {})
+            self.assertIn("totals", store.reaction_collection_summary("o-chunk"))
+            self.assertEqual(store.unclaimed_legacy_reaction_owners("o-chunk"), ())
+
 
 if __name__ == "__main__":
     unittest.main()

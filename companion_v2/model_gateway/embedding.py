@@ -127,8 +127,8 @@ class EmbeddingGateway:
         keys = [(owner, binding, digest(t)) for t in texts]
         resolved: dict[tuple, tuple[float, ...]] = {}
         key_to_text: dict[tuple, str] = {}
-        missing_to_fetch: list[tuple] = []
-        waiting_holders: list[tuple[tuple, dict]] = []
+        duplicate_count = 0
+        pending_keys: list[tuple] = []
 
         for key, text in zip(keys, texts):
             cached = self.cache.get(key)
@@ -137,62 +137,89 @@ class EmbeddingGateway:
                 self.metrics["cache_hits"] += 1
                 continue
             if key in key_to_text:
-                # Duplicate text within the same batch shares one provider slot.
-                self.metrics["cache_hits"] += 1
+                # Duplicate text within the same batch shares one provider slot;
+                # counted as a cache hit only after resolution succeeds.
+                duplicate_count += 1
                 continue
             key_to_text[key] = text
-            holder = self._inflight.get(key)
-            if holder is not None:
-                waiting_holders.append((key, holder))
-                self.metrics["cache_hits"] += 1
-            else:
-                missing_to_fetch.append(key)
+            pending_keys.append(key)
 
-        own_holders: dict[tuple, dict] = {}
-        if missing_to_fetch:
-            for key in missing_to_fetch:
-                holder = {"event": asyncio.Event(), "value": None, "error": None}
-                self._inflight[key] = holder
-                own_holders[key] = holder
-            documents = [key_to_text[key] for key in missing_to_fetch]
-            try:
-                async with self.slots:
-                    self.metrics["calls"] += 1
-                    self.metrics["texts"] += len(documents)
-                    values = await asyncio.wait_for(self.port.embed(provider_id, documents), self.timeout)
-                if self.port.binding(provider_id, "embedding") != binding:
-                    raise TaskError("embedding_provider_changed", "embedding model changed during the request")
-                if len(values) != len(documents):
-                    raise ValueError("embedding batch length mismatch")
-                vectors = [unit(v) for v in values]
-                if len({len(v) for v in vectors}) != 1:
-                    raise ValueError("inconsistent embedding dimensions")
-                for key, vector in zip(missing_to_fetch, vectors):
-                    self.cache.put(key, vector)
-                    resolved[key] = vector
-                    own_holders[key]["value"] = vector
-                self.metrics["last_error"] = None
-            except asyncio.CancelledError as error:
-                for holder in own_holders.values():
-                    holder["error"] = error
-                raise
-            except Exception as error:
-                self.metrics["failures"] += 1
-                self.metrics["last_error"] = getattr(error, "code", type(error).__name__)
-                for holder in own_holders.values():
-                    holder["error"] = error
-                raise
-            finally:
-                for key, holder in own_holders.items():
-                    if self._inflight.get(key) is holder:
-                        del self._inflight[key]
-                    holder["event"].set()
+        while pending_keys:
+            missing_to_fetch: list[tuple] = []
+            waiting_holders: list[tuple[tuple, dict]] = []
+            for key in pending_keys:
+                cached = self.cache.get(key)
+                if cached is not None:
+                    resolved[key] = cached
+                    self.metrics["cache_hits"] += 1
+                    continue
+                holder = self._inflight.get(key)
+                if holder is not None:
+                    waiting_holders.append((key, holder))
+                else:
+                    missing_to_fetch.append(key)
 
-        for key, holder in waiting_holders:
-            await holder["event"].wait()
-            if holder["error"] is not None:
-                raise holder["error"]
-            resolved[key] = holder["value"]
+            own_holders: dict[tuple, dict] = {}
+            if missing_to_fetch:
+                for key in missing_to_fetch:
+                    holder = {"event": asyncio.Event(), "value": None, "error": None, "cancelled": False}
+                    self._inflight[key] = holder
+                    own_holders[key] = holder
+                documents = [key_to_text[key] for key in missing_to_fetch]
+                try:
+                    async with self.slots:
+                        self.metrics["calls"] += 1
+                        self.metrics["texts"] += len(documents)
+                        values = await asyncio.wait_for(self.port.embed(provider_id, documents), self.timeout)
+                    if self.port.binding(provider_id, "embedding") != binding:
+                        raise TaskError("embedding_provider_changed", "embedding model changed during the request")
+                    if len(values) != len(documents):
+                        raise ValueError("embedding batch length mismatch")
+                    vectors = [unit(v) for v in values]
+                    if len({len(v) for v in vectors}) != 1:
+                        raise ValueError("inconsistent embedding dimensions")
+                    for key, vector in zip(missing_to_fetch, vectors):
+                        self.cache.put(key, vector)
+                        resolved[key] = vector
+                        own_holders[key]["value"] = vector
+                    self.metrics["last_error"] = None
+                except asyncio.CancelledError:
+                    # Do not poison innocent waiters with our own cancellation;
+                    # let them wake up and retry or elect a new leader.
+                    for holder in own_holders.values():
+                        holder["cancelled"] = True
+                    raise
+                except Exception as error:
+                    self.metrics["failures"] += 1
+                    self.metrics["last_error"] = getattr(error, "code", type(error).__name__)
+                    for holder in own_holders.values():
+                        holder["error"] = error
+                    raise
+                except BaseException as error:
+                    for holder in own_holders.values():
+                        holder["error"] = error
+                    raise
+                finally:
+                    for key, holder in own_holders.items():
+                        if self._inflight.get(key) is holder:
+                            del self._inflight[key]
+                        holder["event"].set()
+
+            retry_keys: list[tuple] = []
+            for key, holder in waiting_holders:
+                await holder["event"].wait()
+                if holder["value"] is not None:
+                    resolved[key] = holder["value"]
+                    self.metrics["cache_hits"] += 1
+                elif holder["error"] is not None:
+                    raise holder["error"]
+                else:
+                    # Leader was cancelled before producing a vector; retry cleanly.
+                    retry_keys.append(key)
+            pending_keys = retry_keys
+
+        if duplicate_count:
+            self.metrics["cache_hits"] += duplicate_count
 
         return binding, tuple(resolved[key] for key in keys)
 
