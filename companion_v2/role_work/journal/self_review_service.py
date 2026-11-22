@@ -205,7 +205,12 @@ class SelfReviewService:
                 raise
         try:
             result = require(await self.runner.run(context, identifier))
-            report = {"state": result.task.state, "task_id": identifier, "code": result.task.reason}
+            state = result.task.state
+            # ``owner_result`` is the supervisor's success receipt, not a reason
+            # the page should show next to a completed run.
+            reason = (None if state in ("succeeded", "completed")
+                      or result.task.reason == "owner_result" else result.task.reason)
+            report = {"state": state, "task_id": identifier, "code": reason}
             self.results[context.key] = report
             return report
         finally:
@@ -380,9 +385,12 @@ class SelfReviewService:
             due = self.due(context, at)
         except TaskError:
             due = False
+        # ``owner_result`` is the supervisor's success receipt, not a reason
+        # the page should show next to a completed run.
+        visible_code = None if state in ("succeeded", "completed") or code == "owner_result" else code
         return {
             "state": state,
-            "code": code,
+            "code": visible_code,
             "enabled": self.enabled(),
             "last_run_at": stamp(closed_at) if closed_at is not None else None,
             "due": due,

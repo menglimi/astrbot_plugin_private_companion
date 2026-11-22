@@ -4442,10 +4442,71 @@ function outputConfigView(kind,overrides={}){
   const definition=window.CompanionConfigEditors?.spec?.[kind]||{};
   return {note:'',navigationLimit:0,helps:Object.fromEntries(Object.keys(definition.helps||{}).map(key=>[key,''])),...overrides};
 }
+let learningPolicyDockCleanup=null;
 function unmountConfigEditors(){
+  if(learningPolicyDockCleanup){learningPolicyDockCleanup();learningPolicyDockCleanup=null;}
   for(const mount of configEditorMounts)mount?.unmount?.();
   configEditorMounts=[];
   roleProfileConfigMount=null;
+}
+function mountLearningPolicyDock(){
+  const dock=$('#learningPolicySaveDock');
+  if(!dock)return;
+  const groups=new Set(['role.growth.skills','expression.learning']);
+  let busy=false;
+  const dirtyPolicies=()=>(window.CompanionWorkbench?.dirtyEditors?.()||[]).filter(item=>groups.has(item.group));
+  const sync=()=>{
+    if(!dock.isConnected)return;
+    const dirty=dirtyPolicies();
+    if(!dirty.length&&!busy){
+      dock.hidden=true;
+      dock.classList.remove('is-visible');
+      dock.innerHTML='';
+      return;
+    }
+    const count=dirty.reduce((sum,item)=>sum+(Array.isArray(item.fields)?item.fields.length:0),0);
+    const names=dirty.map(item=>item.title).join('、');
+    dock.hidden=false;
+    dock.classList.add('is-visible');
+    dock.innerHTML=`<div class="learning-policy-dock-inner">
+      <div class="learning-policy-dock-copy">
+        <span class="learning-policy-dock-dot" aria-hidden="true"></span>
+        <strong>${busy?'正在保存修改…':`已修改 ${count||dirty.length} 项`}</strong>
+        ${names?`<span>${escapeHTML(names)}</span>`:''}
+      </div>
+      <div class="learning-policy-dock-actions">
+        <button type="button" class="button small" data-policy-dock="discard"${busy?' disabled':''}>放弃修改</button>
+        <button type="button" class="button small primary" data-policy-dock="save"${busy?' disabled':''}>${busy?'保存中…':dirty.length>1?'保存全部更改':'保存更改'}</button>
+      </div>
+    </div>`;
+  };
+  const onClick=async event=>{
+    const btn=event.target?.closest?.('[data-policy-dock]');
+    if(!btn||busy)return;
+    const action=btn.dataset.policyDock;
+    const targets=dirtyPolicies();
+    if(!targets.length){sync();return;}
+    if(action==='discard'){
+      for(const item of targets)item.discard?.();
+      sync();
+      return;
+    }
+    if(action==='save'){
+      busy=true;sync();
+      try{
+        for(const item of targets)await item.save?.();
+      }finally{
+        busy=false;sync();
+      }
+    }
+  };
+  dock.addEventListener('click',onClick);
+  window.addEventListener('companion:workbench-state',sync);
+  sync();
+  learningPolicyDockCleanup=()=>{
+    dock.removeEventListener('click',onClick);
+    window.removeEventListener('companion:workbench-state',sync);
+  };
 }
 function renderConfigEditors(){
   unmountConfigEditors();
@@ -4496,15 +4557,33 @@ function renderConfigEditors(){
      与私聊默认权限同页，缺挂载点会让这组字段在页面上完全点不到。 */
   if($('#relayConfigWorkspace'))configEditorMounts.push(mountConfigEditor('relayConfigWorkspace',['relay']));
   if($('#growthConfigWorkspace'))configEditorMounts.push(mountConfigEditor('growthConfigWorkspace',['role.growth.skills'],{
-    'role.growth.skills':outputConfigView('role.growth.skills',{title:'技能与日程影响',presentation:'journal',
+    'role.growth.skills':{
+      title:'技能与日程影响',
+      note:'按角色保存，控制技能成长提案、自定义领域及排定日程时的参考权重。',
+      scopeNote:'全会话共享',
+      presentation:'policy',
+      navigationLimit:0,
+      resetKey:'reset',
       labels:{enabled:'启用技能域',custom_skills:'自定义技能域',schedule_influence_strength:'日程影响强度'},
-      inputs:{custom_skills:'word-list'},listFields:{custom_skills:{maxItems:8,maxLength:24}},
-    }),
+      helps:{schedule_influence_strength:'决定已激活的技能与成长目标在排定每日日程时的参考强度。'},
+      inputs:{custom_skills:'word-list'},
+      listFields:{custom_skills:{maxItems:8,maxLength:24,trim:true,placeholder:'输入技能领域后按 Enter 添加…'}},
+    },
   }));
   if($('#expressionLearningConfigWorkspace'))configEditorMounts.push(mountConfigEditor(
     'expressionLearningConfigWorkspace',['expression.learning'],{
-      'expression.learning':outputConfigView('expression.learning',{presentation:'journal',navigationLimit:0}),
+      'expression.learning':{
+        title:'表达学习策略',
+        note:'按角色保存，控制表达学习强度、采样门槛与每轮回复中的规则注入上限。',
+        scopeNote:'全会话共享',
+        presentation:'policy',
+        navigationLimit:0,
+        resetKey:'reset',
+        segmentedChoices:['learning_mode'],
+        helps:{learning_mode:'轻量更克制，均衡适合日常，深入会更积极归纳语气与句式。'},
+      },
     }));
+  if($('#learningPolicySaveDock'))mountLearningPolicyDock();
   if($('#knowledgeConfigWorkspace'))configEditorMounts.push(mountConfigEditor('knowledgeConfigWorkspace',['knowledge'],{
     knowledge:{sectionIds:['import','inject'],presentation:'journal',navigationLimit:0}
   }));
@@ -5435,8 +5514,8 @@ window.addEventListener('companion:learning-open',async event=>{
 function renderLearningPage(){
   const sections=[['overview','总览'],['strategy','角色策略'],['review','审阅中心'],['chain','成长链路'],['expression','表达学习'],['behavior','行为模仿'],['semantic','语义目录'],['reflection','每日复盘']];
   const titles=Object.fromEntries(sections);
-  const nav=`<nav class="learning-hub-nav" aria-label="学习与反思">${sections.map(([key,label],index)=>
-    `<a class="learning-hub-tab${learningTab===key?' is-active':''}" href="${navHref('manage','learning',key)}" ${learningTab===key?'aria-current="page"':''}><span>${String(index+1).padStart(2,'0')} ${label}</span></a>`).join('')}</nav>`;
+  const nav=`<nav class="learning-hub-nav" aria-label="学习与反思">${sections.map(([key,label])=>
+    `<a class="learning-hub-tab${learningTab===key?' is-active':''}" href="${navHref('manage','learning',key)}" ${learningTab===key?'aria-current="page"':''}><span>${label}</span></a>`).join('')}</nav>`;
   let content='';
   if(learningTab==='overview'){
     content=`<section id="learningOverviewWorkspace" class="learning-overview-workspace" aria-label="学习总览">${consoleLoading('正在读取学习状态…')}</section>`;
@@ -5444,6 +5523,7 @@ function renderLearningPage(){
     content=`<div class="learning-policy-workspaces">
       ${configEditors('growthConfigWorkspace',['role.growth.skills'],'成长与技能')}
       ${configEditors('expressionLearningConfigWorkspace',['expression.learning'],'表达学习策略')}
+      <div id="learningPolicySaveDock" class="learning-policy-dock" role="region" aria-label="未保存的角色策略更改" hidden></div>
     </div>`;
   }else if(learningTab==='review'){
     content=`<section id="learningReviewWorkspace" class="learning-review-workspace" aria-label="学习审阅中心">${consoleLoading('正在汇总待审阅内容…')}</section>`;

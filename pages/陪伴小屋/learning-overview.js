@@ -14,6 +14,8 @@ window.CompanionLearningOverviewPage = (() => {
   let root = null, ticket = 0, readTicket = 0, sources = [], semantic = null, data = null;
   const when = value => typeof value === "string" && Number.isFinite(Date.parse(value))
     ? new Date(value).toLocaleString("zh-CN",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false}) : "时间未知";
+  const clockOf = value => typeof value === "string" && Number.isFinite(Date.parse(value))
+    ? new Date(value).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit",hour12:false}) : "";
   function routeFor(source, base, suffix = "") {
     return base + suffix;
   }
@@ -126,6 +128,7 @@ window.CompanionLearningOverviewPage = (() => {
       data.learning = valid.map(result=>result.learning).find(item=>item&&typeof item==="object"&&item.state)||null;
       data.review = valid.map(result=>result.review).find(item=>item&&typeof item==="object"&&item.state)||null;
       data.access = valid.map(result=>result.access).find(item=>item&&typeof item==="object"&&item.settings)||null;
+      data.updatedAt = new Date().toISOString();
     }
     data.settled = true;
     data.loading=false;
@@ -138,6 +141,9 @@ window.CompanionLearningOverviewPage = (() => {
     if (seconds % 60 === 0) return `${seconds / 60} 分钟`;
     return `${seconds} 秒`;
   }
+
+  const INTERNAL_SENTINEL_CODES = new Set(["owner_result", "ok", "succeeded", "completed", "done"]);
+  const isInternalCode = value => typeof value === "string" && /^[a-z][a-z0-9_]{2,}$/.test(value.trim());
 
   const LEARNING_STATES = {
     not_run: "还没运行过",
@@ -155,30 +161,54 @@ window.CompanionLearningOverviewPage = (() => {
     failed: "上次学习失败",
     blocked: "来源校验未通过",
   };
+  const HEALTHY_LEARNING_STATES = new Set(["succeeded", "already_attempted", "waiting_for_new_messages"]);
+  const NEUTRAL_LEARNING_STATES = new Set(["not_run", "waiting_for_sample_review", "insufficient_samples"]);
   // 重试相关状态的中文文案已经把处置说清楚（等待或停止），不再回显
   // expression_retry_exhausted 这类机器码，否则同一行会同时出现中文与机器码。
   const RETRY_STATES = new Set(["retry_exhausted", "retry_backoff"]);
-  // 失败码的中文原因：只解释稳定 code 的含义与处置动作，原始 code 仍照常显示，
-  // 便于和日志、台账对照。
+  const FAILURE_STATES = new Set(["failed", "blocked"]);
+  // 失败码的中文原因：向用户直接说明原因与处置动作，原始 code 仅作为诊断属性留档对照，
+  // 绝不向用户裸露下划线英文标识符。
   const LEARNING_FAILURE_CODES = {
-    model_estimation_failed: "本地预估没能完成，先按日志里的 error_type 排查",
+    model_estimation_failed: "本地预估没能完成，请结合运行日志排查",
     host_model_limit_input: "要发送的材料超过本地输入上限；请调大「最大输入估算」或减少参考规则",
     host_model_limit_output: "输出上限不足以写完这次结果；请调高该任务的输出上限",
     model_output_truncated: "模型没写完就被输出上限截断：思考型模型会把上限大量花在思考上，可见输出只占一小部分。可把「模型 → 学习 → 表达学习」的「单次输出上限」调到约 4 倍以上（例如 4096 → 16384，仍失败就继续加倍），或在 Provider 处调低思考等级/关闭思考、改用非思考模型，也可减少参考规则与样本；改完到「表达学习 → 观察素材」点「立即学习」重试。",
+    model_task_unregistered: "后台学习任务配置未就绪，请检查模型路由",
+    bridge_timeout: "请求超时，稍后将自动重试",
+    bridge_unavailable: "服务连接暂不可用",
   };
-  function learningLine(item) {
-    if (!item || typeof item !== "object" || !item.state) return "";
-    const label = LEARNING_STATES[item.state] || item.state;
-    const counts = item.state === "capacity_reached" && Number.isInteger(item.active)
+  function diagnosticCode(state, code) {
+    if (!FAILURE_STATES.has(state) || RETRY_STATES.has(state)) return "";
+    const trimmed = typeof code === "string" ? code.trim() : "";
+    if (!trimmed || INTERNAL_SENTINEL_CODES.has(trimmed)) return "";
+    return trimmed;
+  }
+  function learningStatusItem(item) {
+    if (!item || typeof item !== "object" || !item.state) return null;
+    const rawState = String(item.state);
+    const label = LEARNING_STATES[rawState] || (isInternalCode(rawState) ? "状态更新中" : rawState);
+    const counts = rawState === "capacity_reached" && Number.isInteger(item.active)
       ? `（${item.active}/${item.limit ?? "?"} 条规则）`
       : Number.isInteger(item.available)
         ? `（${item.available}/${Number.isInteger(item.required) ? item.required : "?"} 条样本）` : "";
-    const reason = item.code && LEARNING_FAILURE_CODES[item.code] ? `（${e(LEARNING_FAILURE_CODES[item.code])}）` : "";
-    // 重试类状态的中文文案已经说明了该怎么办；同一行再挂上
-    // expression_retry_exhausted 只会让「已停止、等待新素材」看起来像故障码。
-    const failure = item.code && !RETRY_STATES.has(item.state) ? ` · ${item.code}` : "";
+    const code = diagnosticCode(rawState, item.code);
+    const mappedReason = code && LEARNING_FAILURE_CODES[code]
+      ? LEARNING_FAILURE_CODES[code]
+      : (code && !isInternalCode(code) ? code : "");
+    const reason = mappedReason ? `（${e(mappedReason)}）` : "";
     const last = item.last_run_at ? ` · 上次 ${when(item.last_run_at)}` : "";
-    return `表达学习：${e(label)}${e(counts)}${reason}${e(failure)}${e(last)}`;
+    const tone = rawState === "failed" ? "is-error"
+      : HEALTHY_LEARNING_STATES.has(rawState) ? "is-ok"
+        : NEUTRAL_LEARNING_STATES.has(rawState) ? "is-neutral" : "is-warn";
+    return {
+      text: `表达学习：${e(label)}${e(counts)}${reason}${e(last)}`,
+      tone,
+      code,
+    };
+  }
+  function learningLine(item) {
+    return learningStatusItem(item)?.text || "";
   }
 
   const REVIEW_STATES = {
@@ -190,24 +220,80 @@ window.CompanionLearningOverviewPage = (() => {
     succeeded: "最近一次已产出",
     completed: "最近一次已产出",
   };
-  function reviewLine(item) {
-    if (!item || typeof item !== "object" || !item.state) return "";
-    const label = REVIEW_STATES[item.state] || item.state;
-    const failure = item.code ? ` · ${item.code}` : "";
+  const HEALTHY_REVIEW_STATES = new Set(["succeeded", "completed", "already_attempted"]);
+  const NEUTRAL_REVIEW_STATES = new Set(["not_run", "no_reviewable_window"]);
+  const REVIEW_FAILURE_CODES = {
+    self_review_output_invalid: "复盘输出格式不完整",
+    self_review_material_changed: "复盘依据在运行期间发生了变化",
+    self_review_binding_changed: "角色绑定已变化，等待重新同步",
+    self_review_job_unavailable: "原始复盘任务材料暂不可用",
+    self_review_closed: "复盘服务已停止",
+    model_task_unregistered: "复盘模型路由尚未配置",
+    model_estimation_failed: "本地预估没能完成，请结合运行日志排查",
+    host_model_limit_input: "复盘材料超过模型输入上限",
+    host_model_limit_output: "复盘模型输出上限不足",
+    model_output_truncated: "复盘结果被模型输出上限截断",
+    source_scope_mismatch: "复盘来源与当前会话范围不一致",
+    relationship_required: "当前角色尚未开启复盘权限",
+    bridge_timeout: "请求超时，稍后将自动重试",
+    bridge_unavailable: "服务连接暂不可用",
+  };
+  function reviewStatusItem(item) {
+    if (!item || typeof item !== "object" || !item.state) return null;
+    const rawState = String(item.state);
+    const label = REVIEW_STATES[rawState] || (isInternalCode(rawState) ? "状态更新中" : rawState);
+    const code = diagnosticCode(rawState, item.code);
+    const mappedReason = code && REVIEW_FAILURE_CODES[code]
+      ? REVIEW_FAILURE_CODES[code]
+      : (code && !isInternalCode(code) ? code : "");
+    const reason = mappedReason ? `（${e(mappedReason)}）` : "";
     const last = item.last_run_at ? ` · 上次 ${when(item.last_run_at)}` : "";
-    const next = item.state === "failed" && item.next_check_at
+    const next = rawState === "failed" && item.next_check_at
       ? ` · 下次 ${when(item.next_check_at)}` : "";
-    return `每日复盘：${e(label)}${e(failure)}${e(last)}${e(next)}`;
+    const tone = rawState === "failed" ? "is-error"
+      : HEALTHY_REVIEW_STATES.has(rawState) ? "is-ok"
+        : NEUTRAL_REVIEW_STATES.has(rawState) ? "is-neutral" : "is-warn";
+    return {
+      text: `每日复盘：${e(label)}${reason}${e(last)}${e(next)}`,
+      tone,
+      code,
+    };
+  }
+  function reviewLine(item) {
+    return reviewStatusItem(item)?.text || "";
   }
 
+  const GROWTH_REASONS = {
+    authorization_missing: "未授权",
+    disabled: "未开启",
+    proposals_disabled: "未开启成长提案",
+    read_disabled: "未开启读取权限",
+    relationship_required: "尚未建立对应关系",
+    scope_not_private: "仅私聊支持成长提案",
+    scope_mismatch: "会话范围不匹配",
+    core_access_required: "需要管理员权限",
+    binding_revoked: "账号授权已撤销",
+  };
   function growthLine(access) {
     if (!access || typeof access !== "object" || !access.settings) return "";
     const effective = access.effective || {};
     if (effective.proposals_enabled?.allowed) return "";
-    const reason = effective.proposals_enabled?.reason || effective.read_enabled?.reason || "";
+    const rawReason = effective.proposals_enabled?.reason || effective.read_enabled?.reason || "";
+    const reason = rawReason
+      ? (GROWTH_REASONS[rawReason] || (isInternalCode(rawReason) ? "权限尚未开启" : rawReason))
+      : "";
     return reason
-      ? `成长链路：成长提案权限不可用（${reason}）；开启后角色才会提出技能或长期目标。`
+      ? `成长链路：成长提案权限不可用（${e(reason)}）；开启后角色才会提出技能或长期目标。`
       : "成长链路：尚未开启成长提案权限；开启后角色才会提出技能或长期目标。";
+  }
+  function growthStatusItem(access) {
+    const text = growthLine(access);
+    return text ? {text, tone: "is-warn", code: ""} : null;
+  }
+  function renderStatusLine(item) {
+    if (!item || !item.text) return "";
+    const codeAttr = item.code ? ` data-status-code="${e(item.code)}" title="诊断码：${e(item.code)}"` : "";
+    return `<p class="lh-inline-status ${item.tone}" role="status"${codeAttr}><span class="lh-status-dot" aria-hidden="true"></span><span>${item.text}</span></p>`;
   }
 
   function growthCard(item) {
@@ -253,14 +339,20 @@ window.CompanionLearningOverviewPage = (() => {
         ? `<section class="lh-overview-track is-empty"><header><h2>培育轨道</h2><a href="#manage/learning/chain">全部记录</a></header><div class="lh-track-empty"><strong>成长记录暂不可读</strong><p>来源读取失败，请先重新读取；已有记录不会因为这次失败被清空。</p></div></section>`
         : `<section class="lh-overview-track is-empty"><header><h2>培育轨道</h2><a href="#manage/learning/chain">全部记录</a></header>
         <div class="lh-track-empty"><strong>${nothingYet?"学习还没有产出":"还没有成长记录"}</strong><p>${counts.pending?`有 ${counts.pending} 条待裁决，先到审阅中心处理；成长记录会在通过后进入轨道。`:"每日复盘会在后台自动运行，表达学习可在「表达学习」点「立即学习」，成长记录需要先给对应用户开启成长提案权限。"}</p><div class="lh-track-actions"><a href="#manage/learning/review">去审阅中心</a><a href="#manage/learning/expression">去表达学习</a></div></div></section>`;
+    const updated = data.updatedAt ? clockOf(data.updatedAt) : "";
+    const statusItems = [
+      learningStatusItem(data.learning),
+      reviewStatusItem(data.review),
+      growthStatusItem(data.access),
+    ].filter(Boolean);
+    const statusStack = statusItems.length
+      ? `<div class="lh-status-stack">${statusItems.map(renderStatusLine).join("")}</div>` : "";
     root.setAttribute?.("aria-busy",data.loading?"true":"false");
-    root.innerHTML=`<div class="lh-overview-toolbar"><span>${summary}</span>
-      <button type="button" class="lh-refresh" data-lh-refresh aria-label="重新读取" title="重新读取" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></div>
-      ${allFailed?`<p class="lh-inline-status is-error" role="status">来源读取失败，请检查来源配置后重新读取。<button type="button" class="lh-command" data-lh-refresh ${data.loading||data.writing?"disabled":""}>重新读取</button></p>`
-        :data.notice?`<p class="lh-inline-status${data.error?" is-error":""}" role="status">${e(data.notice)}</p>`:""}
-      ${data.learning?`<p class="lh-inline-status" role="status">${learningLine(data.learning)}</p>`:""}
-      ${data.review?`<p class="lh-inline-status" role="status">${reviewLine(data.review)}</p>`:""}
-      ${data.access?`<p class="lh-inline-status" role="status">${growthLine(data.access)}</p>`:""}
+    root.innerHTML=`<div class="lh-overview-toolbar"><span>${summary}${updated?` · 更新于 ${e(updated)}`:""}</span>
+      <button type="button" class="lh-refresh${data.loading?" is-loading":""}" data-lh-refresh aria-label="重新读取" title="重新读取" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></div>
+      ${allFailed?`<p class="lh-inline-status is-error" role="status"><span class="lh-status-dot" aria-hidden="true"></span><span>来源读取失败，请检查来源配置后重新读取。</span><button type="button" class="lh-command" data-lh-refresh ${data.loading||data.writing?"disabled":""}>重新读取</button></p>`
+        :data.notice?`<p class="lh-inline-status ${data.error?"is-error":"is-ok"}" role="status"><span class="lh-status-dot" aria-hidden="true"></span><span>${e(data.notice)}</span></p>`:""}
+      ${statusStack}
       <section class="lh-kpis" aria-label="学习数据">${cards.map(([label,value,detail,icon,route])=>`<a class="lh-kpi" href="#manage/learning/${route}">
         <span class="lh-kpi-icon" aria-hidden="true"><i data-lucide="${icon}"></i></span><span class="lh-kpi-label">${label}</span>
         <strong>${e(value)}</strong><small>${label==="规则注入"?e(detail):label==="待裁决"?"进展 · 表达 · 指导":label==="培育中"?"技能与目标":"群词义整理间隔"}</small></a>`).join("")}</section>
@@ -302,7 +394,11 @@ window.CompanionLearningOverviewPage = (() => {
       else render();
       return;
     }
-    if (event.target.closest("[data-lh-refresh]")) { void read(ticket); return; }
+    if (event.target.closest("[data-lh-refresh]")) {
+      if (data) { data.notice = ""; data.error = false; }
+      void read(ticket);
+      return;
+    }
     const action=event.target.closest("[data-lh-action]");
     if(action){
       const item=data?.growth.find(row=>row.growth_id===action.dataset.lhId&&row._source.key===action.dataset.lhScope);

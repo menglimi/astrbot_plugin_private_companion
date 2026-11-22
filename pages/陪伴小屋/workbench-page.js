@@ -906,7 +906,7 @@ window.CompanionWorkbench = (() => {
         + "<div class=\"wb-keywords\" role=\"group\" aria-label=\"" + e(item.label || item.name) + "\">"
         + chips + "<input class=\"wb-keyword-input\" type=\"text\" data-wb-word-input=\""
         + e(item.name) + "\" maxlength=\"" + e(policy.maxLength || 200)
-        + "\" aria-label=\"添加" + e(item.label || "词条") + "\" placeholder=\"添加词条\""
+        + "\" aria-label=\"添加" + e(item.label || "词条") + "\" placeholder=\"" + e(policy.placeholder || "添加词条") + "\""
         + " title=\"按 Enter 添加\"" + (locked || words.length >= limit ? " disabled" : "") + ">"
         + "<button type=\"button\" class=\"wb-keyword-add\" data-wb-word-add=\"" + e(item.name) + "\""
         + (locked || words.length >= limit ? " disabled" : "") + ">"
@@ -1127,6 +1127,19 @@ window.CompanionWorkbench = (() => {
        （见 wireFieldDescriptions）。只写 aria-invalid 不告诉读屏「为什么无效」。 */
     const helpId = `${state.instanceId}-help-${name}`;
     const errorId = `${state.instanceId}-error-${name}`;
+    if (container.presentation === "policy") {
+      const writeLayer = item.writeLayer || container.writeLayer;
+      const overridden = provenance.explicit === true && provenance.layer === writeLayer
+        && container.layers.length > 1;
+      const pendingReset = Array.isArray(state.resetFields) && state.resetFields.includes(name);
+      const policyReset = !locked && (overridden || pendingReset)
+        ? `<button type="button" class="wb-reset wb-policy-reset${pendingReset ? " is-pending" : ""}" data-wb-reset="${e(name)}">${icon("undo-2")}<span>${pendingReset ? "已标记恢复继承" : "恢复继承"}</span></button>` : "";
+      return `<div class="wb-field${dirty}${inheritClass}${overridden ? " is-overridden" : ""}${pendingReset ? " is-reset-pending" : ""}${layerEditable ? "" : " is-layer-locked"}" data-wb-row="${e(name)}"${visible ? "" : " hidden"}>`
+        + `<div class="wb-field-main"><div class="wb-field-head"><span class="wb-label">${label}${fieldScopeMarkup(state, name, item, state.status?.provenance, container)}</span>${policyReset}</div>`
+        + (item.help ? `<p class="wb-help" id="${e(helpId)}" title="${e(item.help)}">${e(item.help)}</p>` : "")
+        + `<div class="wb-control">${controlMarkup(item, value, locked, state, container)}</div>`
+        + `<p class="wb-field-error" id="${e(errorId)}" data-wb-field-error></p></div></div>`;
+    }
     return `<div class="wb-field${dirty}${inheritClass}${layerEditable ? "" : " is-layer-locked"}" data-wb-row="${e(name)}"${visible ? "" : " hidden"}>`
       + (container.presentation === "journal" ? "" : railMarkup(state, name, item, state.status?.provenance, container))
       + `<div class="wb-field-main"><span class="wb-label">${label}${fieldScopeMarkup(state, name, item, state.status?.provenance, container)}</span>`
@@ -1145,6 +1158,7 @@ window.CompanionWorkbench = (() => {
       : container.groups;
     const grouped = groups.length > 1;
     const journal = container.presentation === "journal";
+    const policy = container.presentation === "policy";
     const groupMarkup = (group, index) => {
       const names = group.fields.filter(name => container.fields[name]);
       if (!names.length) return "";
@@ -1220,7 +1234,7 @@ window.CompanionWorkbench = (() => {
     const body = s.status ? blocks
       : `<div class="wb-skeleton" role="status" aria-label="正在读取设置">`
         + `<div class="wb-skeleton-row"></div><div class="wb-skeleton-row"></div><div class="wb-skeleton-row"></div></div>`;
-    const legend = !journal && s.status && container.layers.length > 1
+    const legend = !journal && !policy && s.status && container.layers.length > 1
       ? `<div class="wb-rail-legend">${container.layers.map(layer =>
           `<b>${e(LAYER_SHORT_LABELS[layer] || layer)}</b>`).join("<span>·</span>")}`
         + `</div>` : "";
@@ -1236,10 +1250,24 @@ window.CompanionWorkbench = (() => {
       .map(layer => saveScopeLabel(layer, container.scopeObject)).join("、")
       + (container.scopeNote ? " · " + container.scopeNote : "") : "";
     const apply = s.status?.apply_mode === "next_task" ? "下一个任务生效" : "立即生效";
+    const hasOverridden = policy && s.status && container.layers.length > 1
+      && Object.entries(container.fields).some(([name, item]) => {
+        const prov = s.status?.provenance?.[name];
+        return prov?.explicit === true && prov.layer === (item.writeLayer || container.writeLayer);
+      });
+    const policyMeta = policy && s.status
+      ? `<div class="wb-card-meta">${scopeLabel ? `<span class="wb-policy-scope">${e(scopeLabel)}</span>` : ""}`
+        + `<span class="wb-policy-apply">${e(apply)}</span>`
+        + (container.resettable && hasOverridden
+          ? `<button type="button" class="wb-policy-inherit-all" data-wb-action="inherit"${s.locked() ? " disabled" : ""}>${icon("undo-2")}<span>全部恢复继承</span></button>`
+          : "")
+        + `</div>`
+      : "";
     const heading = journal ? "" : `<header class="wb-card-head"><div class="wb-card-copy">`
       + `${titleAbove === container.title ? "" : `<h3>${e(container.title)}</h3>`}${container.note ? `<p>${e(container.note)}</p>` : ""}</div>`
-      + `</header>`;
-    return `<section class="wb-card${journal ? " wb-journal" : ""}" data-wb-card="${e(container.group)}">`
+      + `${policyMeta}</header>`;
+    const actionsDirty = s.dirty() || s.stale || Object.keys(s.conflicts).length > 0 || s.busy;
+    return `<section class="wb-card${journal ? " wb-journal" : policy ? " wb-policy" : ""}" data-wb-card="${e(container.group)}">`
       + heading + `<div class="wb-card-body">`
        + (s.pending ? `<div class="wb-pending"><p>${e(pendingText)}</p>`
            + `<div class="wb-pending-actions">`
@@ -1248,7 +1276,7 @@ window.CompanionWorkbench = (() => {
            + ` title="不再核对这次请求，读取服务端当前值；草稿会保留">放弃核对并重新读取</button>`
            + `</div></div>` : "")
       + legend + body
-      + `<div class="wb-actions">`
+      + `<div class="wb-actions${actionsDirty ? " is-dirty" : ""}">`
       + `<span class="wb-save-context"><button type="button" class="wb-save${s.busy ? " is-busy" : ""}${s.savedState || ""}"`
       + ` data-wb-action="save"${s.locked() || Object.keys(s.conflicts).length ? " disabled" : ""}>`
       + `<span class="wb-save-label">${e(s.busy ? "保存中…" : s.stale ? "核对最新配置" : "保存")}</span>`
@@ -1256,7 +1284,7 @@ window.CompanionWorkbench = (() => {
       + `<svg class="wb-check" viewBox="0 0 19 19" aria-hidden="true"><path d="M4 10l4 4 7-9"></path></svg>`
       + `</button>${scopeLabel ? scopeHintMarkup(`保存到：${scopeLabel}\n${apply}`) : ""}</span>`
       + `<button type="button" class="button" data-wb-action="reset"${s.locked() || !s.dirty() ? " disabled" : ""}>使用已保存配置</button>`
-      + (container.resettable
+      + (container.resettable && !policy
         ? `<button type="button" class="button" data-wb-action="inherit"${s.locked() ? " disabled" : ""}>全部恢复继承</button>`
         : "")
       + `<span class="wb-actions-note">${e(Object.keys(s.conflicts).length ? `${Object.keys(s.conflicts).length} 项修改待核对` : s.stale ? "改动已保留，待核对当前配置" : s.dirty() ? "有未保存的改动" : "与已保存一致")}</span>`
@@ -1344,6 +1372,16 @@ window.CompanionWorkbench = (() => {
         || Object.keys(state.draft).some(name => state.draft[name] !== state.base[name]));
     state.locked = locked;
     state.dirty = dirty;
+    const emitState = () => {
+      if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
+      try {
+        if (typeof CustomEvent === "function") {
+          window.dispatchEvent(new CustomEvent("companion:workbench-state", {detail: {group}}));
+        } else if (typeof Event === "function") {
+          window.dispatchEvent(new Event("companion:workbench-state"));
+        }
+      } catch {}
+    };
 
      const storageKey = () => {
      const identity = window.CompanionProduct?.identity?.() || {};
@@ -1648,6 +1686,7 @@ window.CompanionWorkbench = (() => {
       growAutoFields(root);
       /* 半选只能靠 DOM 属性设置，刚插入的元素要补一次。 */
       syncSourceIndeterminate(root);
+      emitState();
     }
 
     function conflictMarkup() {
@@ -2052,8 +2091,10 @@ window.CompanionWorkbench = (() => {
         if (note) note.textContent = dirty() ? "有未保存的改动" : "与已保存一致";
         const reset = actions.querySelector('[data-wb-action="reset"]');
         if (reset) reset.disabled = !dirty();
+        actions.classList?.toggle?.("is-dirty", dirty() || state.stale || Object.keys(state.conflicts).length > 0 || state.busy);
       }
       updateSectionCounts();
+      emitState();
     }
 
     function onClick(event) {
@@ -2174,7 +2215,17 @@ window.CompanionWorkbench = (() => {
       }
       if (action === "inherit") {
         /* 全部字段恢复继承：draft 回到已保存值，并整体标记为待重置。 */
-        resets_ = Object.keys(state.draft);
+        if (presentation === "policy" && state.status?.provenance && state.container?.layers?.length > 1) {
+          const overriddenKeys = Object.entries(state.container.fields || {})
+            .filter(([name, item]) => {
+              const prov = state.status.provenance[name];
+              return prov?.explicit === true && prov.layer === (item.writeLayer || state.container.writeLayer);
+            })
+            .map(([name]) => name);
+          resets_ = overriddenKeys.length ? overriddenKeys : Object.keys(state.draft);
+        } else {
+          resets_ = Object.keys(state.draft);
+        }
         state.notice = "已标记为全部恢复继承；保存后这些字段由低层配置决定。";
         state.bad = false; state.ok = false;
         paint();
@@ -2599,6 +2650,13 @@ window.CompanionWorkbench = (() => {
        记进 resets_ 以便保存时发 reset_to_inherit，而不是写一份重复值。 */
     function revertField(name) {
       if (!state.status || locked()) return;
+      if (presentation === "policy" && resets_.includes(name)) {
+        resets_ = resets_.filter(item => item !== name);
+        state.notice = "";
+        state.bad = false; state.ok = false;
+        paint();
+        return;
+      }
       if (!resets_.includes(name)) resets_.push(name);
       state.draft[name] = state.base[name];
       state.notice = `${labels[name] || name} 已改为恢复继承；保存后低层配置重新生效。`;
@@ -3049,6 +3107,7 @@ window.CompanionWorkbench = (() => {
       state.visibleGroupIds = null;
       state.navigationLimit = navigationLimit;
       resets_ = [];
+      emitState();
     }
 
     function changedFields() {

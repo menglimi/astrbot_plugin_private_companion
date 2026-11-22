@@ -213,3 +213,121 @@ test('学习记录与表情库只跟随小屋的 Bot 和角色，成长记录要
   assert.deepEqual(Array.from(context.learningReviewSources({includeGroups: true}), source => source.target.target_id), ['b-private']);
   assert.equal(context.learningChoices('growth').some(item => item.target.target_id === 'a-private'), false);
 });
+
+test('学习工作台顶部 8 Tab 胶囊导航、总览间距语义色与角色策略政策卡片契约', () => {
+  const app = fs.readFileSync(path.join(PAGE, 'app.js'), 'utf8');
+  const hubCss = fs.readFileSync(path.join(PAGE, 'learning-hub.css'), 'utf8');
+  const pageCss = fs.readFileSync(path.join(PAGE, 'learning-page.css'), 'utf8');
+  const policyCss = fs.readFileSync(path.join(PAGE, 'learning-policy.css'), 'utf8');
+
+  // 1. 顶部 8 Tab 去掉 01..08 编号前缀，单行胶囊导航，消除悬停双选中错觉
+  const rendererStart = app.indexOf('function renderLearningPage(){');
+  const rendererEnd = app.indexOf('/* 2026-09-30 接回：', rendererStart);
+  const renderer = app.slice(rendererStart, rendererEnd);
+  assert.doesNotMatch(renderer, /padStart\(2,'0'\)/, '学习工作台顶部 8 Tab 不应再带 01..08 序号前缀');
+  assert.match(hubCss, /\.learning-hub-tab:hover:not\(\.is-active\)\{[^}]*color-mix\(in srgb,var\(--t-accent\) 9%,transparent\)/);
+  assert.doesNotMatch(hubCss, /\.learning-hub-tab:hover\{background:var\(--t-surface\)/);
+  assert.doesNotMatch(pageCss, /\.learning-hub-tab:hover\{background:var\(--t-surface\)/);
+
+  // 2. 总览容器拼写修复与语义状态色
+  assert.doesNotMatch(hubCss, /\.lh-overview-workspace\b/, '必须修复 .lh-overview-workspace 拼写错误');
+  assert.match(hubCss, /\.learning-overview-workspace\{display:flex;flex-direction:column;gap:var\(--sp-3\);min-width:0\}/);
+  assert.match(hubCss, /\.lh-inline-status\.is-ok\{[^}]*background:var\(--t-ok-quiet\);color:var\(--t-ok-ink\)/);
+
+  // 3. 角色策略停用 journal 与 outputConfigView，改用 policy 卡片、静态底栏与单一居中悬浮保存胶囊
+  assert.doesNotMatch(app, /'role\.growth\.skills':outputConfigView/);
+  assert.doesNotMatch(app, /'expression\.learning':outputConfigView/);
+  assert.match(app, /'role\.growth\.skills':\{[\s\S]*?presentation:'policy'[\s\S]*?listFields:\{custom_skills:\{maxItems:8,maxLength:24/);
+  assert.match(app, /'expression\.learning':\{[\s\S]*?presentation:'policy'/);
+  assert.match(renderer, /id="learningPolicySaveDock" class="learning-policy-dock"/);
+  assert.match(policyCss, /\.learning-policy-workspaces\{[^}]*padding-bottom:96px/);
+  assert.match(policyCss, /\.learning-policy-workspaces \.wb-actions\{[^}]*position:static/);
+  assert.match(policyCss, /#homeShell\[data-away="true"\] \.learning-policy-workspaces \.wb-actions\{padding-right:0\}/);
+  assert.match(policyCss, /\.learning-policy-dock\{[^}]*left:50%[^}]*max-width:560px/);
+});
+
+test('角色策略居中悬浮保存胶囊仅在有未保存改动时出现，并可联动放弃与保存全部更改', async () => {
+  const app = fs.readFileSync(path.join(PAGE, 'app.js'), 'utf8');
+  const start = app.indexOf('let learningPolicyDockCleanup=null;');
+  const end = app.indexOf('function renderConfigEditors(){', start);
+  assert.ok(start >= 0 && end > start);
+
+  let dirtyList = [];
+  let discarded = [];
+  let saved = [];
+  const windowListeners = new Map();
+  const dockListeners = new Map();
+  const classes = new Set();
+  const dock = {
+    isConnected: true,
+    hidden: true,
+    innerHTML: '',
+    classList: {
+      add: name => classes.add(name),
+      remove: name => classes.delete(name),
+      toggle: (name, flag) => (flag ? classes.add(name) : classes.delete(name)),
+    },
+    addEventListener: (type, fn) => dockListeners.set(type, fn),
+    removeEventListener: type => dockListeners.delete(type),
+  };
+  const context = vm.createContext({
+    configEditorMounts: [],
+    roleProfileConfigMount: null,
+    $: selector => (selector === '#learningPolicySaveDock' ? dock : null),
+    escapeHTML: value => String(value ?? ''),
+    window: {
+      CompanionWorkbench: {dirtyEditors: () => dirtyList},
+      addEventListener: (type, fn) => windowListeners.set(type, fn),
+      removeEventListener: type => windowListeners.delete(type),
+    },
+  });
+  vm.runInContext(app.slice(start, end), context);
+  context.mountLearningPolicyDock();
+
+  // 无修改时保持隐藏
+  assert.equal(dock.hidden, true);
+  assert.equal(dock.innerHTML, '');
+
+  // 编辑两张策略卡后浮现，并汇总项数与卡片名
+  const makeDirty = (group, title, fields) => ({
+    group, title, fields,
+    discard: () => { discarded.push(group); dirtyList = dirtyList.filter(item => item.group !== group); return true; },
+    save: async () => { saved.push(group); dirtyList = dirtyList.filter(item => item.group !== group); return true; },
+  });
+  dirtyList = [
+    makeDirty('role.growth.skills', '技能与日程影响', ['启用技能域', '自定义技能域']),
+    makeDirty('expression.learning', '表达学习策略', ['学习强度']),
+    makeDirty('unrelated.section', '其他页面', ['字段']),
+  ];
+  windowListeners.get('companion:workbench-state')?.();
+  assert.equal(dock.hidden, false);
+  assert.equal(classes.has('is-visible'), true);
+  assert.match(dock.innerHTML, /已修改 3 项/);
+  assert.match(dock.innerHTML, /技能与日程影响、表达学习策略/);
+  assert.doesNotMatch(dock.innerHTML, /其他页面/);
+  assert.match(dock.innerHTML, /保存全部更改/);
+
+  // 放弃修改：清掉策略卡草稿并隐藏胶囊
+  await dockListeners.get('click')?.({
+    target: {closest: sel => (sel === '[data-policy-dock]' ? {dataset: {policyDock: 'discard'}} : null)},
+  });
+  assert.deepEqual(discarded, ['role.growth.skills', 'expression.learning']);
+  assert.equal(dock.hidden, true);
+
+  // 再次修改单卡并保存
+  dirtyList = [makeDirty('role.growth.skills', '技能与日程影响', ['自定义技能域'])];
+  windowListeners.get('companion:workbench-state')?.();
+  assert.equal(dock.hidden, false);
+  assert.match(dock.innerHTML, /已修改 1 项/);
+  assert.match(dock.innerHTML, />保存更改</);
+  await dockListeners.get('click')?.({
+    target: {closest: sel => (sel === '[data-policy-dock]' ? {dataset: {policyDock: 'save'}} : null)},
+  });
+  assert.deepEqual(saved, ['role.growth.skills']);
+  assert.equal(dock.hidden, true);
+
+  // 卸载清理事件监听
+  context.unmountConfigEditors();
+  assert.equal(dockListeners.size, 0);
+  assert.equal(windowListeners.size, 0);
+});

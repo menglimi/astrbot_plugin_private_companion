@@ -2613,3 +2613,83 @@ test('configuration cards label the actual write layer instead of their inherite
   assert.match(windowScope, /当前窗口覆盖/);
   assert.doesNotMatch(windowScope, /角色共享/);
 });
+
+test('config-editor 透传 listFields，自定义技能域恢复 0 / 8 上限与 24 字校验', async () => {
+  const h = harness(['role.growth.skills'], {
+    'role.growth.skills': {
+      title: '技能与日程影响',
+      presentation: 'policy',
+      inputs: {custom_skills: 'word-list'},
+      listFields: {custom_skills: {maxItems: 8, maxLength: 24, trim: true}},
+    },
+  });
+  const [instance] = await loaded(h, ['role.growth.skills']);
+  const html = h.painted['role.growth.skills'];
+  assert.match(html, />0 \/ 8</, '自定义技能域计数上限应为 0 / 8 而非默认 0 / 80');
+  assert.doesNotMatch(html, />0 \/ 80</);
+  assert.match(html, /data-wb-word-input="custom_skills"[^>]*maxlength="24"/);
+  assert.equal(instance.state.container.fields.custom_skills.listPolicy.maxItems, 8);
+  assert.equal(instance.state.container.fields.custom_skills.listPolicy.maxLength, 24);
+
+  // 超出 8 项在本地校验即被拦截，不发出写请求
+  instance.state.draft.custom_skills = JSON.stringify(['1', '2', '3', '4', '5', '6', '7', '8', '9']);
+  await instance.save(false);
+  assert.equal(instance.state.bad, true);
+  assert.equal(h.requests.length, 1);
+
+  // 单项超过 24 字在本地校验即被拦截
+  instance.state.draft.custom_skills = JSON.stringify(['超过二十四个字的技能域名称测试一二三四五六七八九十']);
+  await instance.save(false);
+  assert.equal(instance.state.bad, true);
+  assert.equal(h.requests.length, 1);
+
+  // 8 项以内且每项 <= 24 字可通过校验并保存
+  const validSkills = JSON.stringify(['水彩', '烘焙', '吉他弹唱']);
+  instance.state.draft.custom_skills = validSkills;
+  const saving = instance.save(false);
+  await drains();
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.requests[1].body.changes.custom_skills, validSkills);
+  h.requests[1].resolve({result: {operation_id: 'skills-ok', replayed: false},
+    status: newSection('role.growth.skills', {custom_skills: validSkills}, TOKEN('b'))});
+  await saving;
+  await drains();
+  assert.equal(instance.state.bad, false);
+});
+
+test('policy 政策卡片展示主标题、作用范围徽章、全部字段说明，且恢复继承仅在已覆写时内嵌于标题行', async () => {
+  const inheritedPayload = payload('role.growth.skills');
+  inheritedPayload.sections['role.growth.skills'].provenance = {
+    enabled: {layer: 'installation', explicit: false, revision: 1},
+    schedule_influence_strength: {layer: 'role', explicit: true, revision: 2},
+    custom_skills: {layer: 'installation', explicit: false, revision: 1},
+  };
+  const h = harness(['role.growth.skills'], {
+    'role.growth.skills': {
+      title: '技能与日程影响',
+      note: '按角色保存，控制技能成长提案与日程影响。',
+      scopeNote: '全会话共享',
+      presentation: 'policy',
+      navigationLimit: 0,
+      resetKey: 'reset',
+      inputs: {custom_skills: 'word-list'},
+      listFields: {custom_skills: {maxItems: 8, maxLength: 24, trim: true}},
+    },
+  });
+  const [instance] = await loaded(h, ['role.growth.skills'], {
+    'role.growth.skills': {response: inheritedPayload},
+  });
+  const html = h.painted['role.growth.skills'];
+  assert.match(html, /class="wb-card wb-policy"/);
+  assert.match(html, /<h3>技能与日程影响<\/h3>/);
+  assert.match(html, /class="wb-policy-scope"[^>]*>当前角色默认 · 全会话共享</);
+  assert.match(html, /class="wb-help"[^>]*>关闭后暂停技能进展提案/);
+  assert.match(html, /class="wb-help"[^>]*>最多 8 项，每项不超过 24 字/);
+  assert.doesNotMatch(html, /class="wb-rail"/, 'policy 卡片不画冗余层轨');
+  assert.doesNotMatch(html, /class="wb-field-side"/, 'policy 卡片不再另起 .wb-field-side 占行制造空洞');
+  assert.match(html, /data-wb-row="schedule_influence_strength"[\s\S]*?class="wb-field-head"[\s\S]*?data-wb-reset="schedule_influence_strength"/);
+  assert.doesNotMatch(html, /data-wb-reset="enabled"/, '未覆写的继承字段不展示恢复继承按钮');
+  assert.doesNotMatch(html, /data-wb-reset="custom_skills"/, '未覆写的自定义技能域不渲染透明占位按钮');
+  assert.match(html, /class="wb-policy-inherit-all" data-wb-action="inherit"/);
+  assert.ok(instance.state.container.resettable);
+});

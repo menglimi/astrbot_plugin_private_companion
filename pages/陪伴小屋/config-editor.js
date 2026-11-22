@@ -1925,7 +1925,7 @@ window.CompanionConfigEditors = (() => {
         for (const key of ["title", "note", "scopeNote", "navigationLimit", "segmentedChoices", "onStatus", "presentation", "sectionTabPrefix", "initialSection", "query", "requestSection", "savePath", "resetKey", "normalizeDraft"]) {
           if (Object.hasOwn(view, key)) current = {...current, [key]:view[key]};
         }
-        for (const key of ["labels", "helps", "rows", "inputs", "catalogs"]) {
+        for (const key of ["labels", "helps", "rows", "inputs", "catalogs", "listFields"]) {
           if (view[key]) current = {...current, [key]:{...current[key], ...view[key]}};
         }
       }
@@ -1958,8 +1958,9 @@ window.CompanionConfigEditors = (() => {
       inputs: current.inputs || {},
       catalogs: current.catalogs || {},
       rows: current.rows || {},
-      /* 分段条、词条快选同样由 spec 声明；漏传时内核退回普通文本框。 */
+      /* 分段条、词条限制与词条快选同样由 spec/view 声明；漏传时内核退回默认值或普通文本框。 */
       segmentedChoices: current.segmentedChoices || [],
+      listFields: current.listFields || {},
       chipOptions: current.chipOptions || {},
       audit: current.audit || null,
       onStatus: current.onStatus || null,
