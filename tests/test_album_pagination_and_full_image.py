@@ -204,7 +204,62 @@ class GeneratedAlbumLimitTests(unittest.TestCase):
                             (parent_id, parent_id, 1, pos, src_id, "lin-1", 1, asset_id, "lin-1", 1, "{}", b"raw"),
                         )
 
-                    # 2. Native operation with 1 active image.
+                    # 2. Native operation using real production $.source object format (2 active + 1 revoked).
+                    prod_native_parent = SourceRef(
+                        "native-parent-prod-1", "native.image", scope, VersionRef("native-parent-prod-1", 1), at
+                    )
+                    insert_source(
+                        seed_conn,
+                        prod_native_parent.source_id,
+                        lineage=prod_native_parent.version.lineage_id,
+                        rev=1,
+                    )
+                    for pos, asset_state in ((0, "active"), (1, "active"), (2, "revoked")):
+                        src_id = f"native-prod-src-{pos}"
+                        asset_id = f"native-prod-asset-{pos}"
+                        insert_source(seed_conn, src_id, state="active")
+                        insert_asset(seed_conn, asset_id, state=asset_state)
+                        seed_conn.execute(
+                            """INSERT INTO conversation_image_payloads VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                prod_native_parent.source_id,
+                                prod_native_parent.version.lineage_id,
+                                1,
+                                pos,
+                                src_id,
+                                "lin-1",
+                                1,
+                                asset_id,
+                                "lin-1",
+                                1,
+                                "{}",
+                                b"raw",
+                            ),
+                        )
+                    seed_conn.execute(
+                        """INSERT INTO execution_tasks(
+                               task_id, origin_key, kind, lane, dedupe_key, request_hash, revision,
+                               state, generation, attempt_no, attempt_id, next_run_at, deadline_at,
+                               created_at, updated_at, record_json
+                           ) VALUES('native-task-prod-1', ?, 'native', 'foreground', 'dedupe-prod-1', 'req-h', 1,
+                                    'succeeded', 1, 1, 'att-1', ?, ?, ?, ?, '{}')""",
+                        (context.key, at.isoformat(), at.isoformat(), at.isoformat(), at.isoformat()),
+                    )
+                    prod_meta_doc = {
+                        "invocation_id": "native-prod-inv-1",
+                        "task_id": "native-task-prod-1",
+                        "origin_key": context.key,
+                        "action": "image.generate",
+                        "state": "succeeded",
+                        "source": json.loads(encode(prod_native_parent)),
+                        "images": [{"position": 0}, {"position": 1}, {"position": 2}],
+                    }
+                    seed_conn.execute(
+                        "INSERT INTO runtime_metadata(key, value) VALUES(?, ?)",
+                        (NATIVE_PREFIX + "native-prod-inv-1", json.dumps(prod_meta_doc)),
+                    )
+
+                    # 3. Native operation using fallback result_source_json string format (1 active image).
                     native_parent = SourceRef("native-parent-1", "native.image", scope, VersionRef("native-parent-1", 1), at)
                     insert_source(seed_conn, native_parent.source_id, lineage=native_parent.version.lineage_id, rev=1)
                     insert_source(seed_conn, "native-src-0", state="active")
@@ -240,12 +295,12 @@ class GeneratedAlbumLimitTests(unittest.TestCase):
                 finally:
                     seed_conn.close()
 
-                # 2 active legacy + 1 active native = 3 (revoked pos=2 excluded).
-                self.assertEqual(generated.album_count(context, at), 3)
-                # Hiding one legacy item + one native item drops count accordingly.
+                # 2 active legacy + 2 active prod native ($.source) + 1 active fallback native = 5 (revoked excluded).
+                self.assertEqual(generated.album_count(context, at), 5)
+                # Hiding one legacy item + one prod $.source native item + one fallback native item drops count accurately.
                 self.assertEqual(
-                    generated.album_count(context, at, hidden_ids={"generated-image:legacy-inv-1:1"}),
-                    2,
+                    generated.album_count(context, at, hidden_ids={"generated-image:native-prod-inv-1:1"}),
+                    4,
                 )
                 self.assertEqual(
                     generated.album_count(
@@ -253,10 +308,104 @@ class GeneratedAlbumLimitTests(unittest.TestCase):
                         at,
                         hidden_ids={
                             "generated-image:legacy-inv-1:1",
+                            "generated-image:native-prod-inv-1:0",
                             "generated-image:native-inv-1:0",
                         },
                     ),
-                    1,
+                    2,
+                )
+            finally:
+                runtime.close()
+
+    def test_album_count_reads_production_native_source_object_without_result_source_json(self):
+        import json
+        import sqlite3
+        from companion_v2.conversation.native_tool_results import PREFIX as NATIVE_PREFIX
+        from companion_v2.execution.models import encode
+        from companion_v2.foundation.refs import SourceRef, VersionRef
+        from companion_v2.storage.runtime import StorageRuntime
+
+        with tempfile.TemporaryDirectory(prefix="companion-v2-album-count-prod-") as temporary:
+            runtime = StorageRuntime.open(data_root=Path(temporary), installation_id="inst-1")
+            try:
+                at = datetime(2026, 11, 18, 13, 9, 56, tzinfo=timezone.utc)
+                scope = ScopeRef("inst-1", "onebot", ScopeKind.PRIVATE, "private-prod")
+                context = SimpleNamespace(
+                    key="ctx-prod-source-1",
+                    scope=scope,
+                    role_binding=SimpleNamespace(
+                        scope=scope,
+                        role=SubjectRef("inst-1", SubjectKind.BOT, "role-prod"),
+                    ),
+                )
+                fake_messages = SimpleNamespace(runtime=runtime, authorize=lambda ctx, when: None)
+                generated = GeneratedImages(fake_messages)
+
+                seed_conn = sqlite3.connect(str(runtime.database_path))
+                try:
+                    seed_conn.execute("PRAGMA foreign_keys = OFF")
+                    for idx in range(3):
+                        inv_id = f"native-tool-prod-{idx}"
+                        task_id = f"native-task-{idx}"
+                        parent = SourceRef(f"prod-parent-{idx}", "native.image", scope, VersionRef(f"prod-parent-{idx}", 1), at)
+                        src_id = f"prod-src-{idx}"
+                        asset_id = f"prod-asset-{idx}"
+                        for sid, lineage in ((parent.source_id, parent.version.lineage_id), (src_id, "lin-prod")):
+                            seed_conn.execute(
+                                """INSERT INTO sources(
+                                       source_id, lineage_id, source_revision, owner, installation_id, platform,
+                                       scope_kind, native_scope_id, bot_id, account_id, conversation_id, session_id,
+                                       issued_at, expires_at, recipients_json, content_hash, payload_json,
+                                       state, governance_revision, created_at, updated_at
+                                   ) VALUES(?, ?, 1, 'native.image', 'inst-1', 'onebot', 'private', 'private-prod',
+                                            'bot-1', 'acc-1', 'conv-1', 'sess-1', ?, NULL, '[]', 'h', '{}', 'active', 1, ?, ?)""",
+                                (sid, lineage, at.isoformat(), at.isoformat(), at.isoformat()),
+                            )
+                        seed_conn.execute(
+                            """INSERT INTO assets(
+                                   asset_id, lineage_id, asset_revision, owner, installation_id, platform,
+                                   scope_kind, native_scope_id, bot_id, account_id, conversation_id, session_id,
+                                   recipients_json, content_hash, state, governance_revision, created_at, updated_at
+                               ) VALUES(?, 'lin-prod', 1, 'native.image', 'inst-1', 'onebot', 'private', 'private-prod',
+                                        'bot-1', 'acc-1', 'conv-1', 'sess-1', '[]', 'h', 'active', 1, ?, ?)""",
+                            (asset_id, at.isoformat(), at.isoformat()),
+                        )
+                        seed_conn.execute(
+                            """INSERT INTO conversation_image_payloads VALUES(?, ?, 1, 0, ?, 'lin-prod', 1, ?, 'lin-prod', 1, '{}', ?)""",
+                            (parent.source_id, parent.version.lineage_id, src_id, asset_id, b"raw"),
+                        )
+                        seed_conn.execute(
+                            """INSERT INTO execution_tasks(
+                                   task_id, origin_key, kind, lane, dedupe_key, request_hash, revision,
+                                   state, generation, attempt_no, attempt_id, next_run_at, deadline_at,
+                                   created_at, updated_at, record_json
+                               ) VALUES(?, ?, 'native', 'foreground', ?, 'req-h', 1,
+                                        'succeeded', 1, 1, 'att-1', ?, ?, ?, ?, '{}')""",
+                            (task_id, context.key, f"dedupe-{idx}", at.isoformat(), at.isoformat(), at.isoformat(), at.isoformat()),
+                        )
+                        # Exact production runtime_metadata schema: nested "source" object, no "result_source_json".
+                        doc = {
+                            "invocation_id": inv_id,
+                            "task_id": task_id,
+                            "origin_key": context.key,
+                            "action": "image.generate",
+                            "state": "succeeded",
+                            "source": json.loads(encode(parent)),
+                            "images": [{"position": 0}],
+                        }
+                        self.assertNotIn("result_source_json", doc)
+                        seed_conn.execute(
+                            "INSERT INTO runtime_metadata(key, value) VALUES(?, ?)",
+                            (NATIVE_PREFIX + inv_id, json.dumps(doc)),
+                        )
+                    seed_conn.commit()
+                finally:
+                    seed_conn.close()
+
+                self.assertEqual(generated.album_count(context, at), 3)
+                self.assertEqual(
+                    generated.album_count(context, at, hidden_ids={"generated-image:native-tool-prod-1:0"}),
+                    2,
                 )
             finally:
                 runtime.close()

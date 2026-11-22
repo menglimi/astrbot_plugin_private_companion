@@ -405,7 +405,7 @@ def count(owner, context, *, hidden_ids=()):
     selection += " AND json_extract(m.value, '$.state') = 'succeeded' AND t.state = 'succeeded'"
     rows = owner.runtime.read_all(
         "SELECT json_extract(m.value, '$.invocation_id') AS invocation_id, "
-        "json_extract(m.value, '$.result_source_json') AS result_source_json, "
+        "COALESCE(json_extract(m.value, '$.source'), json_extract(m.value, '$.result_source_json')) AS result_source_json, "
         "json_extract(m.value, '$.images') AS images_json " + selection,
         values,
     )
