@@ -75,7 +75,9 @@ window.CompanionPhoneSetup = (() => {
     function syncStatus(status = handle()?.state.status) {
       const label = one("[data-phone-enabled]");
       label.hidden = !status?.settings;
-      label.textContent = status?.settings?.enabled ? "已启用" : "未启用";
+      const enabled = status?.settings?.enabled === true;
+      label.textContent = enabled ? "已启用" : "未启用";
+      label.classList.toggle("is-enabled", enabled);
     }
 
     function drawResults() {
