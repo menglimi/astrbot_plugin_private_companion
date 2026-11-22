@@ -123,8 +123,8 @@ test("页面入口能被搜到，排序按相关度且标题命中高于说明�
   assert.ok(results[descriptionOnly].score < results[0].score, "标题命中排在说明命中之前");
 
   /* 标题完全相同比标题前缀命中更相关：同一套权重表里的精确加成。 */
-  const exact = page.api.rankedSearchResults("便签")[0];
-  assert.equal(exact.data[0], "便签");
+  const exact = page.api.rankedSearchResults("感知")[0];
+  assert.equal(exact.data[0], "感知");
   assert.ok(exact.score > results[0].score);
 });
 

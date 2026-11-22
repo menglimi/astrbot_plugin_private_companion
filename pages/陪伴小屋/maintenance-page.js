@@ -19,7 +19,6 @@ window.CompanionMaintenancePage = (() => {
     return Number.isFinite(amount) ? new Intl.NumberFormat("zh-CN", {maximumFractionDigits: 6}).format(amount) : "—";
   };
   const PRICING_DISPLAY_CACHE_KEY = "companion-pricing-display.v1";
-  const MODELS_PENDING_TAB_KEY = "companion-models-pending-tab.v1";
   function pricingMeta(data = state?.data) {
     const raw = data?.pricing;
     if (!raw || typeof raw !== "object") return null;
@@ -99,7 +98,7 @@ window.CompanionMaintenancePage = (() => {
       '<span class="maint-rate-pill" title="1 USD = ¥' + rate.toFixed(4) + escapeHtml(updatedHint) + '">1 USD = ¥' + rate.toFixed(2) + ' · ' + escapeHtml(modeLabel) +
         '<button type="button" class="maint-rate-sync" data-pricing-sync-rates ' + (syncBusy ? "disabled" : "") + ' aria-label="刷新实时汇率" title="刷新实时汇率">' +
           '<i data-lucide="refresh-cw" aria-hidden="true"></i><span>' + (syncBusy ? "刷新中" : "刷新汇率") + '</span></button></span>' +
-      '<button type="button" class="maint-pricing-link" data-open-pricing-settings data-go="manage" data-manage="models"><i data-lucide="sliders-horizontal" aria-hidden="true"></i><span>设置模型单价</span></button>' +
+      '<button type="button" class="maint-pricing-link" data-open-pricing-settings data-go="manage" data-manage="models" data-manage-subtab="pricing"><i data-lucide="sliders-horizontal" aria-hidden="true"></i><span>设置模型单价</span></button>' +
       notice + '</div>';
   }
   const percent = value => value == null ? "—" : Math.max(0, Number(value) || 0).toFixed(1) + "%";
@@ -4781,10 +4780,6 @@ window.CompanionMaintenancePage = (() => {
     const currencyBtn = target.closest("[data-currency-switch]");
     if (currencyBtn && state) { void switchCurrency(currencyBtn.dataset.currencySwitch); return; }
     if (target.closest("[data-pricing-sync-rates]")) { void syncExchangeRates(); return; }
-    if (target.closest("[data-open-pricing-settings]")) {
-      try { sessionStorage.setItem(MODELS_PENDING_TAB_KEY, "pricing"); } catch (_) {}
-      return;
-    }
     if (target.closest("[data-balance-refresh]")) { void refreshBalance(); return; }
     if (target.closest("[data-memory-start]")) { startMemoryDiagnostic(); return; }
     if (target.closest("[data-memory-stop]")) { stopMemoryDiagnostic(); return; }

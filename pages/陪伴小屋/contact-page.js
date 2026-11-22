@@ -335,7 +335,7 @@ window.CompanionContactPage = (() => {
     enabled:"center", automatic_enabled:"center",
     proactive_intensity_preset:"tier",
   };
-  let root = null, bridge = null, version = 0, data = null;
+  let root = null, bridge = null, version = 0, data = null, pendingFocus = null;
   /* 联系设置有不少页面内筛选与未保存草稿。路由切换会卸载本页，按安装
      和管理账号在内存保留这些普通字段；令牌不进入缓存，回来后由真实接口
      重新读取。 */
@@ -624,6 +624,11 @@ window.CompanionContactPage = (() => {
       if (live(ticket)) {
         data.contractLoading = false; render();
         if (settingsAvailable() && data.pendingWrite) schedulePendingRecovery(ticket);
+        if (data.ready && pendingFocus && root && root.isConnected !== false) {
+          const queued = pendingFocus;
+          pendingFocus = null;
+          focusField(queued.field, queued.section);
+        }
       }
     }
   }
@@ -2426,6 +2431,159 @@ window.CompanionContactPage = (() => {
     target.focus({preventScroll: true});
     return true;
   }
+  const FIELD_VIEW_OVERRIDES = {
+    note: "gates",
+    pause_until: "gates",
+    max_contacts_24h: "budgets",
+    enable_proactive_burst: "budgets",
+    proactive_burst_max_messages: "budgets",
+    proactive_burst_gap_min_seconds: "budgets",
+    proactive_burst_gap_max_seconds: "budgets",
+    proactive_closing_grace_minutes: "budgets",
+    proactive_closing_contacts_threshold: "budgets",
+    proactive_share_probability: "budgets",
+    generation_mode: "sources",
+  };
+  const SECTION_VIEW_MAP = {
+    morning: "morning",
+    bond: "purposes",
+    daily: "purposes",
+    share: "purposes",
+    followup: "purposes",
+    dedup: "budgets",
+    meal: "sources",
+    date: "sources",
+    weather: "sources",
+    news: "sources",
+    web: "sources",
+    selflink: "sources",
+    balance: "sources",
+    screen: "sources",
+    action: "sources",
+    appointment: "sources",
+    context: "sources",
+    judgement: "sources",
+    prompts: "sources",
+    master: "dial",
+    rhythm: "dial",
+    intensity: "dial",
+    quiet: "dial",
+    greeting: "dial",
+    freshness: "dial",
+  };
+  function viewForField(field = "", section = "") {
+    if (field && Object.hasOwn(FIELD_VIEW_OVERRIDES, field)) return FIELD_VIEW_OVERRIDES[field];
+    if (field && /^[a-z0-9_]+\.(enabled|weight|pause_until)$/.test(field)) return "purposes";
+    if (section && Object.hasOwn(SECTION_VIEW_MAP, section)) return SECTION_VIEW_MAP[section];
+    return "dial";
+  }
+  function sourceGroupFor(field = "", section = "") {
+    if (section === "weather") return String(field).startsWith("official_") ? "weather-alert" : "weather";
+    if (section === "news") return "news";
+    if (section === "meal" || section === "date") return "meal";
+    if (section === "web" || section === "selflink") return "explore";
+    if (section === "screen" || section === "action") return "screen";
+    if (section === "balance") return "balance";
+    if (["appointment", "context", "judgement", "prompts"].includes(section) || field === "generation_mode") return "context";
+    return "";
+  }
+  function expandContactDetails(node) {
+    if (!node) return;
+    const nearest = node.closest?.("details");
+    if (nearest) nearest.open = true;
+    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+      if (parent.tagName === "DETAILS") parent.open = true;
+    }
+  }
+  function highlightContactTarget(node) {
+    if (!node) return;
+    if (typeof window.CompanionSearchHighlight === "function") { window.CompanionSearchHighlight(node); return; }
+    if (!node.classList) return;
+    node.classList.remove("is-search-target");
+    void node.offsetWidth;
+    node.classList.add("is-search-target");
+    const timer = setTimeout(() => node.classList?.remove?.("is-search-target"), 2400);
+    timer?.unref?.();
+  }
+  function findContactTarget(field, section, view) {
+    if (!root) return null;
+    const safe = field ? (globalThis.CSS?.escape?.(field) || String(field).replace(/["\\]/g, "\\$&")) : "";
+    if (safe) {
+      const direct = root.querySelector(`[data-field="${safe}"]`);
+      if (direct) return direct;
+    }
+    if (field === "proactive_intensity_preset") {
+      const tiers = root.querySelector(".ct-tiers, [data-tier]");
+      if (tiers) return tiers;
+    }
+    const purposeMatch = /^([a-z0-9_]+)\.(enabled|weight|pause_until)$/.exec(field || "");
+    if (purposeMatch) {
+      const card = root.querySelector(`[data-purpose="${purposeMatch[1]}"]`);
+      if (card) return card;
+    }
+    if (section === "followup") {
+      const card = root.querySelector('[data-purpose="followup"]');
+      if (card) return card;
+    }
+    if (section === "greeting") {
+      const greetingToggle = root.querySelector('[data-field="enable_daily_greetings"], .ct-dial-stage');
+      if (greetingToggle) return greetingToggle;
+    }
+    if (view === "sources") {
+      const groupId = sourceGroupFor(field, section);
+      if (groupId) {
+        const group = root.querySelector(`[data-source="${groupId}"]`);
+        if (group) return group;
+      }
+    }
+    return root.querySelector(".ct-view") || root;
+  }
+  function focusField(field = "", section = "") {
+    const targetView = viewForField(field, section);
+    if (!root || !data || !data.ready || data.contractLoading) {
+      pendingFocus = {field: field || "", section: section || ""};
+      if (data && targetView && data.view !== targetView) {
+        switchView(targetView);
+        render();
+      }
+      return true;
+    }
+    pendingFocus = null;
+    const needsResetFilters = targetView === "purposes"
+      && (data.purposeQuery || data.purposeBucket !== "all" || data.purposeFilter !== "all");
+    if (needsResetFilters) {
+      data.purposeQuery = "";
+      data.purposeBucket = "all";
+      data.purposeFilter = "all";
+    }
+    if (data.view !== targetView) {
+      switchView(targetView);
+      render();
+    } else if (needsResetFilters) {
+      render();
+    }
+    const locate = (tries = 0) => {
+      if (!root || root.isConnected === false) return;
+      const target = findContactTarget(field, section, targetView);
+      if (target) {
+        expandContactDetails(target);
+        const reduced = Boolean(document.body?.classList?.contains("reduce-motion")
+          || ["low", "off"].includes(document.documentElement?.dataset?.motion)
+          || window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+        target.scrollIntoView?.({behavior: reduced ? "instant" : "smooth", block: "center"});
+        if (target.matches?.("button, input, select, textarea, a")) target.focus?.({preventScroll: true});
+        else {
+          if (!target.hasAttribute?.("tabindex")) target.tabIndex = -1;
+          target.focus?.({preventScroll: true});
+        }
+        highlightContactTarget(target.closest?.(".ct-src-row, .ct-field, .ct-quota, .ct-purpose, .ct-block, .ct-src-group") || target);
+        return;
+      }
+      if (tries < 20) requestAnimationFrame(() => locate(tries + 1));
+    };
+    requestAnimationFrame(() => locate());
+    return true;
+  }
   function openGateSettingsView() {
     if (!root || !data) return false;
     if (data.view !== "gates") { switchView("gates"); render(); }
@@ -2840,6 +2998,7 @@ window.CompanionContactPage = (() => {
   function unmount() {
     window.CompanionScreenObservation?.unmount();
     ++version;
+    pendingFocus = null;
     if (autoRecoveryTimer !== null) clearTimeout(autoRecoveryTimer);
     autoRecoveryTimer = null;
     autoRecoveryKey = "";
@@ -2858,7 +3017,7 @@ window.CompanionContactPage = (() => {
   }
   /* `state` 只为测试驱动而暴露：这一页的 data 是模块私有的，
      测试要断言环的几何与阈值时没有别的入口。 */
-  return {mount, unmount, openGateSettingsView,
+  return {mount, unmount, openGateSettingsView, focusField, viewForField,
     get state() { return {data}; },
     _internals:{minutes, hm, angle, point, curveOf, curveText, tierOf, arc, quietSpan}};
 })();

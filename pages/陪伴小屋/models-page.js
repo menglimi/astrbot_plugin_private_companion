@@ -2,6 +2,7 @@
 "use strict";
 window.CompanionModelsPage = (() => {
   const PREFIX = "/astrbot_plugin_private_companion/";
+  const MODEL_TABS = new Set(["fn", "voice", "image", "search", "laya", "pricing"]);
   const routing = ["provider", "fallback", "max_output_tokens"];
   const MAX_MODEL_OUTPUT_TOKENS = 65536;
   const TASK_CONFIG_TIMEOUT_MS = 30000;
@@ -102,7 +103,7 @@ window.CompanionModelsPage = (() => {
     try { const scopeKey = state.__scopeKey; if (!scopeKey) return;
       localStorage.setItem(expandStorageKey(scopeKey), JSON.stringify(state.expOpen || {})); } catch { }
   }
-  let root = null, path = null, taskPath = null, key = null, state = null, version = 0, windowAvailable = true;
+  let root = null, path = null, taskPath = null, key = null, state = null, version = 0, windowAvailable = true, onTabChange = null;
   const current = (ticket, s) => ticket === version && state === s && root?.isConnected;
   const taskOf = (s, kind) => s.status?.tasks.find(task => task.kind === kind) || null;
   const configSource = source => ({ default: "插件默认", host_conversation: "AstrBot 会话", installation: "全局默认", role: "角色默认", window: "会话设置" }[source] || "上级配置");
@@ -2816,12 +2817,34 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (s.tab === "laya") { layaInput(s, event); return; }
     if (s.tab === "pricing") { pricingWorkbench()?.handleInput?.(pricingCtx(s), event); return; }
     fnInput(event); }
+  function loadTabData(s, id) {
+    if (!s) return;
+    if (id === "fn") {
+      if (!s.status && !s.loading) refresh().catch(() => {});
+      return;
+    }
+    if (!path) return;
+    if (id === "voice" && !s.voice.loaded) voiceRefresh(s);
+    else if (id === "image" && !s.image.loaded) imageRefresh(s);
+    else if (id === "search" && !s.search.loaded) searchRefresh(s);
+    else if (id === "laya" && !s.laya.loaded) layaRefresh(s);
+    else if (id === "pricing" && !s.pricing?.loaded) pricingWorkbench()?.refresh?.(pricingCtx(s));
+  }
+  function selectTab(id, { notify = true } = {}) {
+    if (!MODEL_TABS.has(id) || !state || !root?.isConnected) return false;
+    if (state.tab !== id) {
+      state.tab = id;
+      if (notify) onTabChange?.(id);
+      loadTabData(state, id);
+      render();
+    } else {
+      loadTabData(state, id);
+    }
+    return true;
+  }
   function click(event) { if (window.CompanionWorkbench.scopeHintClick(event)) return; const s = state; if (!s || !root?.isConnected) return;
     const tab = event.target.closest("[data-model-tab]");
-    if (tab) { const id = tab.dataset.modelTab; if (s.tab !== id) { s.tab = id;
-        if (id !== "fn" && !path) { render(); return; }
-        if (id === "voice" && !state.voice.loaded) voiceRefresh(s); else if (id === "image" && !state.image.loaded) imageRefresh(s); else if (id === "search" && !state.search.loaded) searchRefresh(s); else if (id === "laya" && !state.laya.loaded) layaRefresh(s); else if (id === "pricing" && !state.pricing?.loaded) pricingWorkbench()?.refresh?.(pricingCtx(s));
-        render(); } return; }
+    if (tab) { selectTab(tab.dataset.modelTab); return; }
     if (s.tab === "voice") { voiceClick(s, event); return; }
     if (s.tab === "image") { imageClick(s, event); return; }
     if (s.tab === "search") { searchClick(s, event); return; }
@@ -2847,8 +2870,8 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   /* ---------- lifecycle ---------- */
   function unmount() { version++; if (root) { window.CompanionWorkbench.dismissScopeHints(root); root.removeEventListener("input", input); root.removeEventListener("change", input); root.removeEventListener("click", click); root.removeEventListener("pointerover", providerHover); root.removeEventListener("pointerout", providerHover); root.removeEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.removeEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.removeEventListener("focusout", window.CompanionWorkbench.scopeHintReset); }
     if (state) { state.loading = false; state.busy = false; }
-    root = null; state = null; path = taskPath = key = null; }
-  function mount(element, options = {}) { unmount(); root = element; if (!root) return; const product = window.CompanionProduct;
+    root = null; state = null; path = taskPath = key = null; onTabChange = null; }
+  function mount(element, options = {}) { unmount(); root = element; if (!root) return; onTabChange = typeof options.onTabChange === "function" ? options.onTabChange : null; const product = window.CompanionProduct;
     /* 这里原先先判断 hosted()，桥还没注入时直接写「从 AstrBot 管理界面打开陪伴小屋后…」。
        桥的注入晚于脚本执行是正常时序，所以那句话在正经的拓展页里也出现过。
        现在改成读不到就说读不到，并给一个重新读取的入口——刷新之后桥通常就在了。 */
@@ -2886,12 +2909,19 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     /* 展开状态按对象保存：刷新、切任务、切页回来都保持上次展开的分组，
        不再每次回到“全收起”或“全展开”。 */
     state.expOpen = { ...restoreExpanded(key), ...(state.expOpen || {}) }; state.voice.lastTest ||= null; state.voice.editorValues ||= {}; state.voice.ttsTestResults ||= {}; state.voice.ttsTesting ||= false; state.voice.createDraft ||= { type: "", id: "" }; state.image.endpointTests ||= {}; state.image.endpointTestKeys ||= {}; state.image.endpointTesting ||= null; state.configDraft ||= null; state.peak ||= { on: true, provider: "", start: "09:00", end: "12:00" }; state.testing ||= new Set(); state.peak.windows ||= "09:00-12:00\n14:00-18:00"; state.laya ||= { data: null, draft: null, logs: [], logsScope: "all", logsScopeKind: "", logsLoading: false, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "", test: null, preview: null, previewText: "" }; state.laya.logsScope ||= "all"; state.laya.logsScopeKind ||= ""; state.search ||= { data: null, draft: null, loaded: false, loading: false, busy: false, stale: false, bad: false, notice: "" }; state.pricing ||= pricingWorkbench()?.createState?.() || { loaded: false, loading: false, busy: false, data: null, draft: null }; state.hoverProvider = "";
-    if (pricingWorkbench()?.consumePendingTab?.()) state.tab = "pricing";
+    const requestedTab = typeof options.initialTab === "string" && MODEL_TABS.has(options.initialTab) ? options.initialTab : "";
+    if (requestedTab) {
+      state.tab = requestedTab;
+      pricingWorkbench()?.consumePendingTab?.();
+    } else if (pricingWorkbench()?.consumePendingTab?.()) {
+      state.tab = "pricing";
+    } else if (!MODEL_TABS.has(state.tab)) {
+      state.tab = "fn";
+    }
     states.set(key, state);
     state.sub = ["map", "cfg", "pol"].includes(options.sub) ? options.sub : "map";
     root.addEventListener("input", input); root.addEventListener("change", input); root.addEventListener("click", click); root.addEventListener("pointerover", providerHover); root.addEventListener("pointerout", providerHover); root.addEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.addEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.addEventListener("focusout", window.CompanionWorkbench.scopeHintReset); render();
-    if (state.tab && state.tab !== "fn") { if (!path) { render(); return; } if (state.tab === "voice" && !state.voice.loaded) voiceRefresh(state); else if (state.tab === "image" && !state.image.loaded) imageRefresh(state); else if (state.tab === "search" && !state.search.loaded) searchRefresh(state); else if (state.tab === "laya" && !state.laya.loaded) layaRefresh(state); else if (state.tab === "pricing" && !state.pricing?.loaded) pricingWorkbench()?.refresh?.(pricingCtx(state)); }
-    else { refresh().catch(() => {}); } }
+    loadTabData(state, state.tab); }
   /* Only the mounted scope can block navigation. Retained drafts belonging to
      another role or a closed page must not trigger a warning on every route. */
   function imageChangedFields(i) {
@@ -3007,5 +3037,5 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   }
   const isBusy = () => Boolean(state && (state.busy || state.voice?.busy || state.voice?.ttsBusy
     || state.voice?.ttsTesting || state.image?.busy || state.image?.configSaving || state.laya?.busy || state.search?.busy || pricingWorkbench()?.isBusy?.(state.pricing)));
-  return { mount, unmount, isDirty, isBusy, changedFields, saveBeforeLeave, discardChanges };
+  return { mount, unmount, selectTab, isDirty, isBusy, changedFields, saveBeforeLeave, discardChanges };
 })();

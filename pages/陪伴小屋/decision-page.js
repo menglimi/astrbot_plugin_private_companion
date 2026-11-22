@@ -325,7 +325,7 @@ window.CompanionDecisionPage = (() => {
     window.CompanionReplyPage?.setDecisionView?.(view);
     const groupEditor = root.querySelector?.("#groupParticipationConfigWorkspace")?.companionConfigEditor;
     const groupSections = view === "safety" ? ["joke_guard"]
-      : view === "group" ? ["topics", "atmosphere", "repeat"] : [];
+      : view === "group" ? ["topics", "atmosphere", "repeat", "history"] : [];
     groupEditor?.setVisibleGroups?.(groupSections, groupSections[0] || "");
     renderPanels();
     return true;

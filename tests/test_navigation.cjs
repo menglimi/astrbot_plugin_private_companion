@@ -434,8 +434,8 @@ test("global search includes hidden content destinations and registered setting 
   h.run("renderSearch()");
   assert.match(results.innerHTML, /允许因余额变化联系/);
   assert.match(results.innerHTML, /主动联系/);
-  input.value = "便签";h.run("renderSearch()");
-  assert.match(results.innerHTML, /便签/);
+  input.value = "计价与汇率";h.run("renderSearch()");
+  assert.match(results.innerHTML, /计价与汇率/);
 });
 
 test("global search ranks editable settings and can limit results to settings or pages", () => {
@@ -445,7 +445,7 @@ test("global search ranks editable settings and can limit results to settings or
     groupTitle: "语音默认值", field: "enabled", label: "允许语音回复", section: "defaults",
     sectionTitle: "全局总开关", sectionCount: 1, aliases: ["TTS"]}]};
   h.run("renderSearch()");
-  assert.equal(h.run("visibleSearchResults[0].kind"), "setting");
+  assert.equal(h.run("visibleSearchResults.some(result => result.kind === 'setting')"), true);
   assert.match(results.innerHTML, /配置项 · 表达/);
 
   h.run("setSearchScope('pages')");

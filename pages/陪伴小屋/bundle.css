@@ -513,10 +513,18 @@ dialog{padding:0;color:var(--ink);border:1px solid #ffffffe0;box-shadow:0 20px 8
 /* 关系目录的辅助设置从正文移到标题操作区；弹窗提供足够宽度让配置字段保持清晰。 */
 .page-heading-copy{min-width:0}
 .page-heading-copy .subtitle{max-width:72ch}
-.detail-dialog.detail-dialog-settings{width:min(760px,calc(100vw - 40px))}
-.identity-settings-dialog>p{margin-bottom:var(--sp-5)}
+.detail-dialog.detail-dialog-settings{width:min(760px,calc(100vw - 40px));overflow:hidden;overflow:clip}
+.detail-dialog.detail-dialog-settings[open]{display:flex;flex-direction:column}
+.detail-dialog.detail-dialog-settings>#dialogContent{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;overflow:hidden;overflow:clip}
+.detail-dialog.detail-dialog-settings .dialog-head{flex:0 0 auto;position:static;align-items:center;gap:var(--sp-3);padding:var(--sp-4) var(--sp-5);background:var(--t-surface-soft);border-bottom:1px solid var(--t-line)}
+.detail-dialog.detail-dialog-settings .dialog-head h2{margin:0;font-size:var(--fs-head);line-height:1.4;min-width:0;overflow-wrap:anywhere}
+.detail-dialog.detail-dialog-settings .dialog-head>.icon-button{flex:0 0 auto;border:1px solid transparent;color:var(--t-text-soft)}
+.detail-dialog.detail-dialog-settings .dialog-head>.icon-button:hover{background:var(--t-surface-sunken);border-color:var(--t-line);color:var(--t-text-strong)}
+.detail-dialog.detail-dialog-settings .dialog-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:var(--sp-5);scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent}
+.identity-settings-dialog>p{margin:0 0 var(--sp-4);color:var(--t-text-soft)}
 .identity-settings-dialog .config-editor-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(max-width:900px){.detail-dialog.detail-dialog-settings{width:100%;max-width:100%}}
+@media(max-width:650px){.detail-dialog.detail-dialog-settings .dialog-head{padding:var(--sp-4) var(--sp-4) var(--sp-3)}.detail-dialog.detail-dialog-settings .dialog-body{padding:var(--sp-4);scrollbar-gutter:auto}}
 @media(max-width:640px){.identity-settings-dialog .config-editor-fields{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:900px){.page-heading{align-items:flex-start;flex-wrap:wrap}.page-heading-copy{flex:1 1 100%}.page-heading .page-actions{width:100%;justify-content:flex-start;flex-wrap:wrap}}
 
@@ -5193,6 +5201,7 @@ body.state-connected{min-width:320px}
 .state-config-page .state-workspace-current meter::-moz-meter-bar{border-radius:var(--r-pill);background:var(--t-ok)}
 .state-config-page .state-feature-editor{margin:0;padding:0;border:0;background:transparent;box-shadow:none}
 .state-config-page .state-config-form{display:grid;gap:var(--sp-5);min-width:0}
+.state-config-page .state-config-body{display:grid;gap:var(--sp-5);min-width:0}
 .state-config-page .state-config-fields{display:grid;gap:var(--sp-5);padding:0;margin:0;border:0;min-width:0}
 .state-config-page .state-config-group,.state-config-page .state-calendar-section{min-width:0;padding:var(--sp-5);margin:0;border:1px solid var(--t-line);border-radius:var(--r-lg);background:var(--t-surface);box-shadow:none}
 .state-config-page .state-config-group>header{display:flex;gap:var(--sp-3);align-items:flex-start;margin:0 0 var(--sp-4);padding:0;border:0}
@@ -5337,53 +5346,7 @@ body.state-connected{min-width:320px}
   .state-config-page .state-weather-location-advanced{grid-template-columns:minmax(0,1fr)}
   .state-config-page .state-presentation .state-receipts li{flex-direction:column;gap:var(--sp-2)}
 }
-@media(prefers-reduced-motion:reduce){.state-config-page .state-config-toggle>span,.state-config-page .state-config-toggle>span:after{transition:none}}
-
-/* 标题旁的状态设置；弹窗内的分项开关保持成行，移动端展开为两列。 */
-.state-title-settings{display:inline-flex;align-items:center;justify-content:center;flex:none;width:36px;height:36px;padding:0;border:1px solid var(--t-line-firm);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-text-soft);cursor:pointer}
-.state-title-settings svg{width:18px;height:18px}
-.state-title-settings:hover:not(:disabled),.state-title-settings[aria-expanded=true]{color:var(--t-ok-ink);border-color:var(--t-ok);background:var(--t-ok-quiet)}
-.state-title-settings:focus-visible{outline:2px solid var(--t-accent);outline-offset:3px}
-.state-title-settings:disabled{opacity:.45;cursor:default}
-.state-home-settings{box-sizing:border-box;width:min(900px,calc(100vw - 40px));max-width:none;max-height:min(90dvh,1000px);padding:0;border:1px solid var(--t-line-firm);border-radius:var(--r-lg);background:var(--t-canvas);color:var(--t-text-strong);box-shadow:var(--shadow);overflow:hidden}
-.state-home-settings[open]{display:flex;flex-direction:column}
-.state-home-settings::backdrop{background:color-mix(in srgb,var(--t-text-strong) 28%,transparent);backdrop-filter:blur(3px)}
-.state-home-settings.state-config-page>header{display:flex;align-items:flex-start;justify-content:space-between;flex:none;gap:var(--sp-4);padding:var(--sp-5);border-bottom:1px solid var(--t-line);background:var(--t-surface-soft)}
-.state-home-settings>header>div{min-width:0}
-.state-home-settings h3{display:flex;align-items:center;margin:var(--sp-2) 0;font-size:var(--fs-head);line-height:1.5}
-.state-home-settings>header p{margin:0;font-size:var(--fs-body);line-height:1.7;color:var(--t-text-soft)}
-.state-home-settings .state-home-settings-body{min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:var(--sp-4) var(--sp-5) 0;scrollbar-gutter:stable}
-.state-home-settings .state-feature-close{display:grid;place-items:center;border:0;border-radius:var(--r-sm);background:transparent;color:var(--t-text-soft);cursor:pointer}
-.state-home-settings .state-feature-close:hover{background:var(--t-surface-sunken)}
-.state-home-settings .state-feature-close svg{width:18px;height:18px}
-.state-home-settings .state-home-display-summary{display:flex;flex-wrap:wrap;gap:var(--sp-2) var(--sp-4);align-items:center;justify-content:space-between;margin-bottom:var(--sp-3);font-size:var(--fs-tiny);color:var(--t-ok-ink)}
-.state-home-settings .state-home-display-summary small{color:var(--t-text-faint);font-size:inherit}
-.state-home-settings .state-home-feature-list{display:grid;min-width:0}
-.state-home-settings .state-home-feature{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:var(--sp-4);padding:var(--sp-4) 0;border-top:1px solid var(--t-line)}
-.state-home-settings .state-home-feature-copy{display:flex;align-items:flex-start;gap:var(--sp-3);min-width:0}
-.state-home-settings .state-home-feature-copy>svg{flex:none;width:20px;height:20px;margin-top:2px;color:var(--t-ok-ink)}
-.state-home-settings .state-home-feature-copy h5{margin:0 0 var(--sp-1);font-size:var(--fs-body);line-height:1.5;font-weight:600}
-.state-home-settings .state-home-feature-copy p{margin:0;max-width:28ch;font-size:var(--fs-tiny);line-height:1.7;color:var(--t-text-faint)}
-.state-home-settings .state-home-feature-controls{display:grid;grid-template-columns:100px 132px 164px;align-items:center;gap:var(--sp-3)}
-.state-home-settings .state-home-feature-controls .state-config-row{min-height:36px;gap:var(--sp-2);padding:0;border:0;border-radius:0;background:transparent}
-.state-home-settings .state-home-feature-controls .state-config-copy{font-size:var(--fs-tiny);white-space:nowrap}
-.state-home-settings .state-home-display-policy{display:block;min-width:0}
-.state-home-settings .state-home-display-policy select{width:100%;box-sizing:border-box;min-height:38px;padding:var(--sp-2);border:1px solid var(--t-line-firm);border-radius:var(--r-xs);background:var(--t-surface);color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny)}
-.state-home-settings .state-home-display-policy-note{font-size:var(--fs-tiny);color:var(--t-text-faint);text-align:center}
-.state-home-settings .state-home-special-note{padding-top:var(--sp-3);margin:0;border-top:1px solid var(--t-line);font-size:var(--fs-tiny);line-height:1.8;color:var(--t-text-soft)}
-.state-home-settings .state-config-actions{padding:var(--sp-4) 0}
-@media(max-width:700px){
-  .state-home-settings{width:calc(100vw - 24px);max-height:92dvh}
-  .state-home-settings.state-config-page>header{padding:var(--sp-4);gap:var(--sp-3)}
-  .state-home-settings h3{font-size:var(--fs-lead)}
-  .state-home-settings .state-home-settings-body{padding:var(--sp-3) var(--sp-3) 0;scrollbar-gutter:auto}
-  .state-home-settings .state-config-group{padding:var(--sp-3)}
-  .state-home-settings .state-home-feature{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}
-  .state-home-settings .state-home-feature-copy p{max-width:none}
-  .state-home-settings .state-home-feature-controls{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3) var(--sp-5)}
-  .state-home-settings .state-home-display-policy,.state-home-settings .state-home-display-policy-note{grid-column:1/-1;text-align:left}
-  .state-home-settings .state-home-feature-controls .state-config-row{flex-wrap:nowrap}
-}
+@media(prefers-reduced-motion:reduce){.state-config-page .state-config-toggle>span,.state-config-page .state-config-toggle>span:after,.state-home-settings .state-feature-close{transition:none}}
 
 /* 窄屏：状态详情页收紧外边距、概览与分组，避免手机上左右各留一圈厚边。 */
 @media(max-width:700px){
@@ -5400,6 +5363,71 @@ body.state-connected{min-width:320px}
   .state-config-page .state-config-note{padding:var(--sp-3);margin:var(--sp-3) 0}
   .state-config-page .state-config-link{padding:var(--sp-3)}
   .state-config-page .state-config-phase-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
+/* 标题旁的状态设置按钮与三段式状态设置弹窗（固定顶栏 / 滚动正文 / 贴底操作栏）。
+   外层 dialog 使用 overflow:clip 防止搜索定位 scrollIntoView 滚动弹窗框架本身而裁切标题或露白。 */
+.state-title-settings{display:inline-flex;align-items:center;justify-content:center;flex:none;width:36px;height:36px;padding:0;border:1px solid var(--t-line-firm);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-text-soft);cursor:pointer}
+.state-title-settings svg{width:18px;height:18px}
+.state-title-settings:hover:not(:disabled),.state-title-settings[aria-expanded=true]{color:var(--t-ok-ink);border-color:var(--t-ok);background:var(--t-ok-quiet)}
+.state-title-settings:focus-visible{outline:2px solid var(--t-accent);outline-offset:3px}
+.state-title-settings:disabled{opacity:.45;cursor:default}
+.state-home-settings{box-sizing:border-box;width:min(860px,calc(100vw - 40px));max-width:none;max-height:min(86dvh,780px);margin:auto;padding:0;border:1px solid var(--t-line-firm);border-radius:var(--r-lg);background:var(--t-canvas);color:var(--t-text-strong);box-shadow:var(--t-shadow-lift);overflow:hidden;overflow:clip}
+.state-home-settings[open]{display:flex;flex-direction:column}
+.state-home-settings::backdrop{background:var(--scrim);backdrop-filter:blur(3px)}
+.state-home-settings.state-config-page>header{display:flex;align-items:center;justify-content:space-between;flex:0 0 auto;gap:var(--sp-3);padding:var(--sp-4) var(--sp-5);border-bottom:1px solid var(--t-line);background:var(--t-surface-soft)}
+.state-home-settings .state-home-settings-title{display:grid;gap:var(--sp-1);min-width:0}
+.state-home-settings .state-eyebrow{display:inline-flex;align-items:center;gap:var(--sp-1);margin:0;color:var(--t-ok-ink);font-size:var(--fs-micro);font-weight:600;line-height:1.35}
+.state-home-settings h3{display:flex;align-items:center;gap:var(--sp-2);margin:0;color:var(--t-text-strong);font-size:var(--fs-title);font-weight:650;line-height:1.35}
+.state-home-settings h3 svg{width:20px;height:20px;flex:none;color:var(--t-ok-ink)}
+.state-home-settings>header p{margin:0;font-size:var(--fs-body);line-height:1.7;color:var(--t-text-soft)}
+.state-home-settings .state-feature-close{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:36px;height:36px;padding:0;border:1px solid transparent;border-radius:var(--r-sm);background:transparent;color:var(--t-text-soft);cursor:pointer;transition:background-color .16s ease,border-color .16s ease,color .16s ease}
+.state-home-settings .state-feature-close:hover:not(:disabled){background:var(--t-surface-sunken);border-color:var(--t-line);color:var(--t-text-strong)}
+.state-home-settings .state-feature-close:focus-visible{outline:2px solid var(--t-focus);outline-offset:2px}
+.state-home-settings .state-feature-close svg{width:18px;height:18px}
+.state-home-settings .state-home-settings-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:0;overflow:hidden;overflow:clip}
+.state-home-settings .state-home-settings-body:not(:has(#state-edit-form)){overflow-y:auto;overscroll-behavior:contain;padding:var(--sp-5);gap:var(--sp-3)}
+.state-home-settings .state-home-settings-fallback{display:grid;gap:var(--sp-3);justify-items:start}
+.state-home-settings .state-feature-editor{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;margin:0;padding:0;border:0;background:transparent;box-shadow:none}
+.state-home-settings .state-feature-editor>:is(.memory-notice,.state-pending){flex:0 0 auto;margin:var(--sp-4) var(--sp-5) 0}
+.state-home-settings .state-config-form{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:0;min-width:0}
+.state-home-settings .state-config-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:var(--sp-4);overflow-y:auto;overscroll-behavior:contain;padding:var(--sp-5);scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent}
+.state-home-settings .state-config-body::-webkit-scrollbar{width:6px}
+.state-home-settings .state-config-body::-webkit-scrollbar-track{background:transparent}
+.state-home-settings .state-config-body::-webkit-scrollbar-thumb{border-radius:var(--r-pill);background:var(--t-line-firm)}
+.state-home-settings .state-config-body::-webkit-scrollbar-thumb:hover{background:var(--t-text-faint)}
+.state-home-settings .state-config-fields{display:grid;gap:var(--sp-4);padding:0;margin:0;border:0;min-width:0}
+.state-home-settings .state-home-display-summary{display:flex;flex-wrap:wrap;gap:var(--sp-2) var(--sp-4);align-items:center;justify-content:space-between;margin-bottom:var(--sp-3);font-size:var(--fs-tiny);color:var(--t-ok-ink)}
+.state-home-settings .state-home-display-summary small{color:var(--t-text-faint);font-size:inherit}
+.state-home-settings .state-home-feature-list{display:grid;min-width:0}
+.state-home-settings .state-home-feature{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:var(--sp-4);padding:var(--sp-4) 0;border-top:1px solid var(--t-line)}
+.state-home-settings .state-home-feature-copy{display:flex;align-items:flex-start;gap:var(--sp-3);min-width:0}
+.state-home-settings .state-home-feature-copy>svg{flex:none;width:20px;height:20px;margin-top:2px;color:var(--t-ok-ink)}
+.state-home-settings .state-home-feature-copy h5{margin:0 0 var(--sp-1);font-size:var(--fs-body);line-height:1.5;font-weight:600}
+.state-home-settings .state-home-feature-copy p{margin:0;max-width:28ch;font-size:var(--fs-tiny);line-height:1.7;color:var(--t-text-faint)}
+.state-home-settings .state-home-feature-controls{display:grid;grid-template-columns:100px 132px 164px;align-items:center;gap:var(--sp-3)}
+.state-home-settings .state-home-feature-controls .state-config-row{min-height:36px;gap:var(--sp-2);padding:0;border:0;border-radius:0;background:transparent}
+.state-home-settings .state-home-feature-controls .state-config-copy{font-size:var(--fs-tiny);white-space:nowrap}
+.state-home-settings .state-home-display-policy{display:block;min-width:0}
+.state-home-settings .state-home-display-policy select{width:100%;box-sizing:border-box;min-height:38px;padding:var(--sp-2);border:1px solid var(--t-line-firm);border-radius:var(--r-xs);background:var(--t-surface);color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny)}
+.state-home-settings .state-home-display-policy-note{font-size:var(--fs-tiny);color:var(--t-text-faint);text-align:center}
+.state-home-settings .state-home-special-note{padding-top:var(--sp-3);margin:0;border-top:1px solid var(--t-line);font-size:var(--fs-tiny);line-height:1.8;color:var(--t-text-soft)}
+.state-home-settings .state-config-actions{position:static;flex:0 0 auto;display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:var(--sp-3);margin:0;padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--t-line);background:var(--t-surface-soft)}
+.state-home-settings .state-config-actions .memory-button{min-height:38px;min-width:84px;padding:var(--sp-2) var(--sp-4)}
+@media(max-width:700px){
+  .state-home-settings.state-config-page{width:calc(100vw - 24px);max-height:90dvh;margin:auto;padding:0}
+  .state-home-settings.state-config-page>header{display:flex;align-items:center;justify-content:space-between;padding:var(--sp-3) var(--sp-4);gap:var(--sp-2)}
+  .state-home-settings h3{font-size:var(--fs-lead)}
+  .state-home-settings .state-config-body{padding:var(--sp-4);scrollbar-gutter:auto}
+  .state-home-settings .state-home-settings-body:not(:has(#state-edit-form)){padding:var(--sp-4)}
+  .state-home-settings .state-config-actions{padding:var(--sp-3) var(--sp-4);gap:var(--sp-2)}
+  .state-home-settings .state-config-actions .memory-button{min-height:42px;min-width:76px;padding:var(--sp-2) var(--sp-3)}
+  .state-home-settings .state-config-group{padding:var(--sp-3)}
+  .state-home-settings .state-home-feature{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}
+  .state-home-settings .state-home-feature-copy p{max-width:none}
+  .state-home-settings .state-home-feature-controls{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3) var(--sp-5)}
+  .state-home-settings .state-home-display-policy,.state-home-settings .state-home-display-policy-note{grid-column:1/-1;text-align:left}
+  .state-home-settings .state-home-feature-controls .state-config-row{flex-wrap:nowrap}
 }
 
 /* weather-source.css */
@@ -21839,12 +21867,42 @@ kbd{color:var(--t-text-faint);background:var(--t-surface-soft);border-color:var(
   @starting-style { #detailDialog[open] { transform: translateY(16px); } }
 }
 
+@keyframes search-target-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--t-accent) 42%, transparent);
+    background-color: color-mix(in srgb, var(--t-accent-quiet) 85%, transparent);
+  }
+  28% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--t-accent) 32%, transparent);
+    background-color: color-mix(in srgb, var(--t-accent-quiet) 65%, transparent);
+  }
+  65% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--t-accent) 18%, transparent);
+    background-color: color-mix(in srgb, var(--t-accent-quiet) 32%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+    background-color: transparent;
+  }
+}
+.is-search-target {
+  border-radius: var(--r-sm, 8px);
+  outline: 2px solid color-mix(in srgb, var(--t-accent) 68%, transparent);
+  outline-offset: 2px;
+  animation: search-target-pulse 2.4s var(--ease-control) 1;
+}
+
 /* 减弱只保留短淡入；关闭或系统减少动效立即提交最终状态。 */
 :root:is([data-motion="low"], [data-motion="off"]), body.reduce-motion {
   --control-hover-y: 0px;
   --control-press-y: 0px;
   --control-press-scale: 1;
   --control-icon-x: 0px;
+}
+:root:is([data-motion="low"], [data-motion="off"]) .is-search-target,
+body.reduce-motion .is-search-target {
+  animation: none !important;
+  background-color: color-mix(in srgb, var(--t-accent-quiet) 50%, transparent);
 }
 :root[data-motion="low"] #homeShell :is(.shell-nav-link, .stage-overlay-button, .stage-furniture-strip button):is(:hover, :active),
 :root[data-motion="low"] #homeShell .shell-nav-link:hover svg,
@@ -21862,6 +21920,10 @@ body.reduce-motion :is(#detailDialog, #searchDialog, #navigationDialog) { transi
 body.reduce-motion :is(#detailDialog, #searchDialog, #navigationDialog)::backdrop { transition: none !important; }
 @media (prefers-reduced-motion: reduce) {
   :root { --control-hover-y: 0px; --control-press-y: 0px; --control-press-scale: 1; --control-icon-x: 0px; }
+  .is-search-target {
+    animation: none !important;
+    background-color: color-mix(in srgb, var(--t-accent-quiet) 50%, transparent);
+  }
   :is(#homeShell, #detailDialog, #searchDialog, #navigationDialog) *,
   #homeShell details::details-content,
   :is(#detailDialog, #searchDialog, #navigationDialog),
