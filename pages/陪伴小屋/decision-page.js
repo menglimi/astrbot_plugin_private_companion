@@ -625,7 +625,7 @@ window.CompanionDecisionPage = (() => {
   }
 
   function guardLive(ticket, endpoint) {
-    return ticket === harassmentTicket && Boolean(root?.isConnected) && harassment.endpoint === endpoint;
+    return ticket === harassmentTicket && Boolean(root) && root.isConnected !== false && harassment.endpoint === endpoint;
   }
 
   function guardAdopt(snapshot) {
