@@ -87,6 +87,20 @@ class CoreReplyMentionGuardTests(CoreReplyToolFixture, unittest.IsolatedAsyncioT
         self.assertEqual(captured.exception.code, "group_participation_mention_skip_rejected")
         self.assertNotIn("group_participation", session.state)
 
+    async def test_repeated_unopted_skip_is_bounded(self):
+        # Issue #836: the first unopted skip is rejected, but a second one
+        # after the forced re-judgement must not raise again.
+        event, _ = self.prepare("bounded-skip")
+        session = self._group_session(event, {"group_trigger": dict(WAKE_FACTS)})
+        with self.assertRaises(TaskError) as captured:
+            self._choose(session, {"mode": "skip", "reason": "他们在讨论运维，与我无关"},
+                         event=event)
+        self.assertEqual(captured.exception.code, "group_participation_mention_skip_rejected")
+        decision = self._choose(session, {"mode": "skip", "reason": "他们在讨论运维，与我无关"},
+                                event=event)
+        self.assertEqual(decision["payload"]["mode"], "skip")
+        self.assertEqual(session.state.get("_mention_skip_rejections"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

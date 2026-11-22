@@ -493,8 +493,18 @@ class CoreReplyToolSession:
                 reason = arguments.get("reason", "")
                 if not (isinstance(reason, str)
                         and re.search(r"不用|别理|无需回复|不要打扰|不要理|不用理|不理|无需打扰|忙着|稍后|暂时不回复|不要回应", reason)):
-                    raise TaskError("group_participation_mention_skip_rejected",
-                                    "the batch contains an explicit mention of the bot; decide on the mentioned message itself")
+                    # Issue #836: bounded rejection.  Allow the skip once the
+                    # model has already been forced to reconsider and still
+                    # chooses skip, so a stubborn re-judgement cannot loop the
+                    # whole turn.  _latch_group_skip never latches mention
+                    # batches, so a bypassed skip stays non-persistent.
+                    rejections = self.state.get("_mention_skip_rejections", 0)
+                    if rejections < 1:
+                        self.state["_mention_skip_rejections"] = rejections + 1
+                        raise TaskError("group_participation_mention_skip_rejected",
+                                        "the batch contains an explicit mention of the bot; decide on the mentioned message itself")
+                    logger.warning("mention skip re-rejection bypassed after bounded retries reason=%s",
+                                   " ".join(str(reason).split())[:120])
         else:
             admission = _field(self.prepared, "group_admission", {}) or {}
             group_trigger = _field(self.prepared, "group_trigger")
