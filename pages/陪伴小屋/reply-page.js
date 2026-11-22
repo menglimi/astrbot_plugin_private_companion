@@ -1445,9 +1445,13 @@ window.CompanionReplyPage = (() => {
     if (!root || !instance) return false;
     const wasVoice = root.dataset.expressionModule === "expression-voice";
     const allowed = expressionModuleSections[module] || activeSections.map(section => section.id);
-    instance.setVisibleGroups?.(allowed, expressionModuleDefaults[module] || allowed[0] || "");
-    root.dataset.expressionModule = module || "";
     const voice = module === "expression-voice";
+    instance.setVisibleGroups?.(
+      allowed,
+      expressionModuleDefaults[module] || allowed[0] || "",
+      {navigationLimit: voice ? 0 : activeSections.length},
+    );
+    root.dataset.expressionModule = module || "";
     const text = module === "expression-text";
     const scopeNote = anchor("scope");
     if (scopeNote) {

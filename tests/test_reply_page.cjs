@@ -1397,3 +1397,65 @@ test('text hero follows the segmentation draft', async () => {
   h.page.unmount();
 });
 
+test('switching between text, voice and platform dynamically toggles navigationLimit without hiding voice groups', async () => {
+  const h = harness();
+  h.page.mount(h.root, {view: 'expression', expressionModule: 'expression-text'});
+  await drains();
+  h.requests[0].resolve(status());
+  await drains();
+  const instance = live(h);
+  assert.ok(instance.state.container.navigationLimit > 0, 'text module starts with sidebar navigation');
+  assert.match(h.slots.settings.innerHTML, /class="wb-section-layout"/);
+  assert.match(h.slots.settings.innerHTML, /class="wb-section-sidebar"/);
+
+  h.page.setExpressionModule('expression-voice');
+  assert.equal(instance.state.container.navigationLimit, 0, 'voice module clears navigationLimit to expand all groups');
+  let html = h.slots.settings.innerHTML;
+  assert.doesNotMatch(html, /class="wb-section-layout"/);
+  assert.doesNotMatch(html, /class="wb-section-sidebar"/);
+  assert.doesNotMatch(html, /data-wb-section-panel/);
+  for (const id of ['voice', 'voice_render', 'voice_engine', 'voice_limits',
+    'voice_primary', 'voice_extra', 'voice_channels']) {
+    assert.match(html, new RegExp(`<section class="wb-group" data-wb-group="${id}">`));
+  }
+
+  /* Saving or refreshing while on voice must keep navigationLimit === 0. */
+  instance.state.draft.voice_enabled = true;
+  const saving = instance.save(false);
+  await drains();
+  h.requests.at(-1).resolve({
+    result: {operation_id: 'voice-keep-flat', replayed: false},
+    status: status({voice_enabled: true}, 'e'.repeat(64)),
+  });
+  await saving;
+  await drains();
+  assert.equal(instance.state.container.navigationLimit, 0, 'save rebuild keeps voice groups expanded');
+  assert.doesNotMatch(h.slots.settings.innerHTML, /class="wb-section-layout"/);
+
+  /* Switching back to text or platform restores section sidebar navigation. */
+  h.page.setExpressionModule('expression-platform');
+  assert.ok(instance.state.container.navigationLimit > 0, 'platform module restores navigationLimit');
+  assert.match(h.slots.settings.innerHTML, /class="wb-section-layout"/);
+  assert.match(h.slots.settings.innerHTML, /data-wb-section="components"/);
+  assert.match(h.slots.settings.innerHTML, /data-wb-section="checks"/);
+
+  h.page.setExpressionModule('expression-text');
+  assert.ok(instance.state.container.navigationLimit > 0, 'text module restores navigationLimit');
+  assert.match(h.slots.settings.innerHTML, /class="wb-section-layout"/);
+  assert.match(h.slots.settings.innerHTML, /data-wb-section="segment"/);
+  h.page.unmount();
+
+  /* Direct deep-link into voice also restores sidebar when switching away to text. */
+  const direct = harness();
+  direct.page.mount(direct.root, {view: 'expression', expressionModule: 'expression-voice'});
+  await drains();
+  direct.requests[0].resolve(status());
+  await drains();
+  assert.equal(live(direct).state.container.navigationLimit, 0);
+  assert.doesNotMatch(direct.slots.settings.innerHTML, /class="wb-section-layout"/);
+  direct.page.setExpressionModule('expression-text');
+  assert.ok(live(direct).state.container.navigationLimit > 0);
+  assert.match(direct.slots.settings.innerHTML, /class="wb-section-layout"/);
+  direct.page.unmount();
+});
+

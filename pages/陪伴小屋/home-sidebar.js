@@ -6,10 +6,66 @@ window.CompanionHomeSidebar = (() => {
   const stamp = value => typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
   const kinds = {sleep:"睡眠休息", reading:"阅读", diary:"整理日记", dream:"梦境"};
   let schedulePastExpanded = false;
-  if (typeof document !== "undefined") document.addEventListener("click", event => {
-    const past = event.target?.closest?.("details[data-home-agenda-past] > summary");
-    if (past) schedulePastExpanded = !past.parentElement.open;
-  });
+  let scheduleListOpen = true;
+  const expandedDetailKeys = new Set();
+  const DETAIL_CLAMP_CHARS = 44;
+
+  function updateScrollFade(scroller) {
+    if (!scroller || !scroller.dataset) return;
+    const scrollable = (scroller.scrollHeight - scroller.clientHeight) > 4;
+    scroller.dataset.fadeTop = scrollable && scroller.scrollTop > 2 ? "true" : "false";
+    scroller.dataset.fadeBottom = scrollable
+      && (scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 2) ? "true" : "false";
+  }
+
+  function syncScrollFade(root) {
+    const scope = root && typeof root.querySelectorAll === "function" ? root
+      : (typeof document !== "undefined" && typeof document.querySelectorAll === "function" ? document : null);
+    if (!scope) return;
+    const run = () => {
+      for (const scroller of scope.querySelectorAll(".home-agenda-scroll")) updateScrollFade(scroller);
+    };
+    run();
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+  }
+
+  if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+    document.addEventListener("click", event => {
+      const past = event.target?.closest?.("details[data-home-agenda-past] > summary");
+      if (past) {
+        schedulePastExpanded = !past.parentElement.open;
+        return;
+      }
+      const toggle = event.target?.closest?.("button[data-agenda-detail-key]");
+      if (!toggle) return;
+      const key = toggle.dataset?.agendaDetailKey;
+      if (!key) return;
+      const expanded = !expandedDetailKeys.has(key);
+      if (expanded) expandedDetailKeys.add(key);
+      else expandedDetailKeys.delete(key);
+      const detail = toggle.previousElementSibling;
+      if (detail?.classList?.contains?.("home-agenda-row-detail")) {
+        detail.classList.toggle("is-clamped", !expanded);
+      }
+      toggle.setAttribute?.("aria-expanded", String(expanded));
+      toggle.textContent = expanded ? "收起详情" : "展开全文";
+      const scroller = toggle.closest?.(".home-agenda-scroll");
+      if (scroller) updateScrollFade(scroller);
+    });
+    document.addEventListener("toggle", event => {
+      const details = event.target;
+      if (!details?.classList?.contains?.("home-agenda-list")) return;
+      scheduleListOpen = Boolean(details.open);
+      syncScrollFade(details);
+    }, true);
+    document.addEventListener("scroll", event => {
+      const scroller = event.target;
+      if (scroller?.classList?.contains?.("home-agenda-scroll")) updateScrollFade(scroller);
+    }, {capture: true, passive: true});
+  }
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("resize", () => syncScrollFade());
+  }
   function zoneOf({state, life}) {
     const zone = state?.settings?.planning_timezone || life?.config?.timezone || "Asia/Shanghai";
     try { new Intl.DateTimeFormat("zh-CN", {timeZone:zone}); return zone; }
@@ -271,7 +327,8 @@ window.CompanionHomeSidebar = (() => {
     const rows = visible.filter(([kind]) => kind !== "sleep").map(row => {
       const options = {sleeping, disabled:row[3], loading, unreadable};
       const item = vital(row[0], row[2], options);
-      return {row, options, wide: ["mood","busy","location"].includes(row[0]) || item.label.length > 5};
+      const compactLimit = row[0] === "cycle" ? 13 : row[0] === "location" ? 10 : 6;
+      return {row, options, wide: ["mood","busy"].includes(row[0]) || item.label.length > compactLimit};
     });
     const shortRows = rows.filter(item => !item.wide);
     if (shortRows.length % 2) shortRows[shortRows.length - 1].wide = true;
@@ -427,22 +484,35 @@ window.CompanionHomeSidebar = (() => {
       const end = item.end != null ? clock(item.end, zone) : "";
       const temporary = item.temporary === true;
       const tone = toneOf(item);
-      return `<li class="home-agenda-row" data-tone="${tone}"${temporary ? ' data-temporary="true"' : ""} style="--agenda-index:${index}">
+      const isCurrent = tone === "current";
+      const detailText = text(item.detail);
+      const isLongDetail = Boolean(detailText)
+        && (detailText.length > DETAIL_CLAMP_CHARS || detailText.includes("\n"));
+      const detailExpanded = !isLongDetail || expandedDetailKeys.has(item.key);
+      const detailMarkup = detailText
+        ? `<p class="home-agenda-row-detail${detailExpanded ? "" : " is-clamped"}">${e(detailText)}</p>`
+          + (isLongDetail
+            ? `<button type="button" class="home-agenda-detail-more" data-agenda-detail-key="${e(item.key)}" aria-expanded="${detailExpanded}">${detailExpanded ? "收起详情" : "展开全文"}</button>`
+            : "")
+        : "";
+      return `<li class="home-agenda-row" data-tone="${tone}"${isCurrent ? ' data-current="true" aria-current="time"' : ""}${temporary ? ' data-temporary="true"' : ""} style="--agenda-index:${index}">
         <div class="home-agenda-row-time"><time${item.start == null ? "" : ` datetime="${new Date(item.start).toISOString()}"`}>${e(start)}</time>${end ? `<small>${e(end)}</small>` : ""}</div>
         <span class="home-agenda-row-marker" aria-hidden="true"></span>
         <div class="home-agenda-row-copy">
-          ${tone === "current" && item === currentItem ? "" : `<div class="home-agenda-row-heading"><strong>${e(item.title)}</strong>${temporary ? `<span class="home-agenda-temp">临时</span>` : ""}</div>`}
+          <div class="home-agenda-row-heading"><strong>${e(item.title)}</strong>${isCurrent ? `<span class="home-agenda-now-badge">进行中</span>` : ""}${temporary ? `<span class="home-agenda-temp">临时</span>` : ""}</div>
           ${temporary ? `<small class="home-agenda-row-note">临时插入 · 不在原计划内</small>` : ""}
-          ${item.detail ? `<p class="home-agenda-row-detail">${e(item.detail)}</p>` : ""}
+          ${detailMarkup}
         </div>
       </li>`;
     };
     const sorted = [...items].sort((a, b) => (b.start ?? 0) - (a.start ?? 0)
       || b.order - a.order || a.key.localeCompare(b.key));
     const signature = `${status.tone}|${items.map(item=>`${item.key}:${item.tone}:${item.start ?? ""}`).join("|")}`;
-    const list = items.length ? `<details class="home-agenda-list" open>
-      <summary class="home-agenda-list-head"><span>已结束 <b>${endedCount}</b></span><span class="home-agenda-list-toggle"><span class="is-open">收起</span><span class="is-closed">展开</span></span></summary>
-      <ol class="home-agenda-rows" aria-label="今日安排">${sorted.map((item,index)=>scheduleRow(item,index)).join("")}</ol>
+    const list = items.length ? `<details class="home-agenda-list"${scheduleListOpen ? " open" : ""}>
+      <summary class="home-agenda-list-head"><span>已结束 <b>${endedCount}</b> / 共 <b>${items.length}</b></span><span class="home-agenda-list-toggle"><span class="is-open">收起</span><span class="is-closed">展开</span></span></summary>
+      <div class="home-agenda-scroll" tabindex="0" aria-label="今日安排时间轴">
+        <ol class="home-agenda-rows" aria-label="今日安排">${sorted.map((item,index)=>scheduleRow(item,index)).join("")}</ol>
+      </div>
     </details>` : "";
     return `<span class="home-agenda-signature" hidden>${e(signature)}</span>${progress}
       <div class="home-agenda-status" data-tone="${status.tone}" role="status">
@@ -454,5 +524,5 @@ window.CompanionHomeSidebar = (() => {
       ${runtimeMissing ? `<button class="text-button home-side-action" data-go="manage" data-manage="host">前往账号与会话</button>` : ""}
       <p class="home-side-caption">${planningNote ? `${e(planningNote)} · ` : ""}时间按 ${e(zone)} 显示</p>`;
   }
-  return {renderState, renderSchedule, stateAge, vital, specialState};
+  return {renderState, renderSchedule, stateAge, vital, specialState, syncScrollFade};
 })();

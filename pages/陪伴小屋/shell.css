@@ -601,9 +601,10 @@
 .shell-panel-copy {
   display: grid;
   gap:calc(var(--sp-1) * .5);
+  flex: 1 1 auto;
   min-width: 0;
 }
-.shell-panel-head > i {
+.shell-panel-head > :is(i, svg) {
   flex: none;
   color: var(--t-accent);
 }
@@ -615,12 +616,72 @@
   /* 璇存槑鏂囧瓧鍦?760px 浠ヤ笅鎹㈣鑰屼笉鏄瑁佹帀銆?*/
   overflow-wrap: anywhere;
 }
-.shell-panel-head .panel-spacer { margin-left:auto; }
+.shell-panel-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.shell-panel-head .shell-panel-secondary-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: 35px;
+  padding: var(--sp-1) var(--sp-3);
+  border-color: var(--t-line);
+  background: color-mix(in srgb, var(--t-surface) 78%, var(--t-surface-soft));
+  color: var(--t-text-soft);
+  font-size: var(--fs-tiny);
+  font-weight: 500;
+}
+.shell-panel-head .shell-panel-secondary-action:hover {
+  border-color: var(--t-accent);
+  background: var(--t-accent-quiet);
+  color: var(--t-accent-ink);
+}
+.shell-panel-head .shell-panel-secondary-action :is(i, svg) {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.shell-panel-head .reply-diagnostics-link {
+  min-height: 35px;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--t-text-soft);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.shell-panel-head .reply-diagnostics-link:hover {
+  background: var(--t-accent-quiet);
+  color: var(--t-accent-ink);
+}
 /* 鏍囬鏍忛噷鐨勬搷浣滄寜閽笉璁告姌琛岋細绐勫睆涓娿€屽洖鍒板皬灞嬨€嶆浘琚帇鎴愮珫鎺掍袱琛屻€?*/
 .shell-panel-head .button { flex: none; white-space: nowrap; }
 @media (max-width: 760px) {
   .shell-panel-head { padding: var(--sp-3); gap: var(--sp-2); }
   .shell-panel-head p { font-size: var(--fs-micro); }
+}
+@media (max-width: 720px) {
+  .shell-panel-head {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    row-gap: var(--sp-2);
+  }
+  .shell-panel-head > :is(i, svg) {
+    margin-top: 3px;
+  }
+  .shell-panel-copy {
+    flex: 1 1 calc(100% - 32px);
+  }
+  .shell-panel-actions {
+    margin-left: 0;
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
 .shell-panel-body { padding:var(--sp-4); }
 .shell-panel-body > :first-child { margin-top:0; }
@@ -724,6 +785,32 @@
   body:not(.room-editing) #homeShell[data-away="false"]:has(#shellPanel[hidden]) .shell-body {
     grid-template-rows: auto;
     grid-template-areas: "stage side";
+  }
+  body:not(.room-editing) #homeShell[data-away="false"]:not(:has(#shellPanel:not([hidden]))) .stage-region {
+    position: sticky;
+    top: var(--shell-pad);
+    align-self: start;
+  }
+  body:not(.room-editing) #homeShell[data-away="false"]:has(#shellPanel:not([hidden])) .shell-body {
+    grid-template-rows: auto minmax(min-content, 1fr);
+    grid-template-areas:
+      "stage side"
+      "panel side";
+  }
+  body:not(.room-editing) #homeShell[data-away="false"] .shell-side {
+    align-self: start;
+  }
+  body:not(.room-editing) #homeShell[data-away="false"]:has(#shellPanel:not([hidden])) .shell-side {
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+  }
+  body:not(.room-editing) #homeShell[data-away="false"]:has(#shellPanel:not([hidden])) .shell-side > .home-schedule-band {
+    position: sticky;
+    top: var(--shell-pad);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
   body:not(.room-editing) #homeShell[data-away="false"]:has(#shellPanel[hidden]) .stage-region .room-stage {
     height: max(var(--shell-stage-min), calc(100dvh - var(--shell-stage-chrome, 192px)));
