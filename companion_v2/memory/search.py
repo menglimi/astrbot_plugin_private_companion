@@ -102,7 +102,12 @@ class SearchIndex:
     def _connect(self):
         # This cache is optional recall. Waiting here would hold the synchronous
         # host loop (and the caller's authoritative transaction) for seconds.
-        db = sqlite3.connect(str(self.path), timeout=0, uri=True)
+        target = str(self.path)
+        if target == ":memory:":
+            db = sqlite3.connect(target, timeout=0)
+        else:
+            from companion_v2.storage.sqlite_path import file_uri
+            db = sqlite3.connect(file_uri(self.path), timeout=0, uri=True)
         db.row_factory = sqlite3.Row
         return db
 

@@ -218,7 +218,7 @@ class ConversationQuotedForwardTests(ForwardFixture, unittest.IsolatedAsyncioTes
         self.raw = quoted_forward_raw(nodes=[node_raw(images=(animation_bytes(),))])
         snapshots = []
         async def respond(payload, _):
-            content = payload["messages"][2]["content"]
+            content = next(m["content"] for m in payload["messages"] if m["role"] == "user")
             materials = json.loads(content[0]["text"])["materials"]
             snapshots.append((content[1:], [m for m in materials if m["evidence"] is not None
                                            and m["owner"].startswith("conversation.")]))

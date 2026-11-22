@@ -826,7 +826,7 @@ class OutputRoutingBackend:
         if selected in {"auto", "online_api"}:
             for endpoint in self.config.get("endpoints", []):
                 if endpoint.get("enabled"):
-                    yield OnlineImageBackend(endpoint)
+                    yield OnlineImageBackend(endpoint, self.config.get("network", {}))
         for name in ("comfyui", "sd_webui"):
             if selected in {"auto", name}:
                 try:

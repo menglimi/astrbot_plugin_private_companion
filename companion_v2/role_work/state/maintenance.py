@@ -568,16 +568,25 @@ class StateMaintenance:
         except TaskError:
             return {"state": "unavailable"}
 
-    @staticmethod
-    def _today(settings, at):
+    def _today(self, settings, at, context=None):
         """The same date projection the chat and planner use, including makeup days."""
         from companion_v2.agenda.planning_config import configured_annual_calendars
         from companion_v2.conversation.date_context import project_local_date
+        from companion_v2.conversation.perception_settings import read_perception_values
 
         try:
             calendars = configured_annual_calendars(settings.get("planning_annual_calendars") or "")
-            return project_local_date(at, settings.get("planning_timezone") or "Asia/Shanghai",
-                                      calendars, holiday_country="CN")
+            perception = read_perception_values(self.app, context, at)
+            solar_term_port = getattr(getattr(self.app, "messages", None), "solar_term_port", None)
+            return project_local_date(
+                at,
+                settings.get("planning_timezone") or "Asia/Shanghai",
+                calendars,
+                holiday_enabled=perception["holiday_enabled"],
+                holiday_country=perception["holiday_country"],
+                automatic_solar_terms_enabled=perception["automatic_solar_terms_enabled"],
+                solar_term_port=solar_term_port,
+            )
         except Exception:
             return None
 
@@ -748,7 +757,7 @@ class StateMaintenance:
             "previous": previous,
             "settings": settings, "token": token, "sources": sources, "materials": materials,
             "calendar": calendar, "activities": activities, "cycle_timeline": cycle_timeline,
-            "today": self._today(settings, now),
+            "today": self._today(settings, now, context),
             "mood_round": mood_round, "sleep_execution": self.service.body_clock.read(context, now=now),
             "sleep_profile": self.service.body_clock.profile(context, now=now),
             "simulation_history": maintenance_context.simulation_history(self.service, context, now),
@@ -970,14 +979,25 @@ class StateMaintenance:
         for key, worker in tuple(self.workers.items()):
             if worker.done():
                 del self.workers[key]
+                schedule_key = self.worker_schedules.pop(key, None)
                 if not worker.cancelled():
                     error = worker.exception()
-                    self.results[key] = {"state": "failed", "code": getattr(error, "code", "state_worker_failed")} if error else worker.result()
-                    schedule_key = self.worker_schedules.pop(key, None)
+                    result = ({"state": "failed", "code": getattr(error, "code", "state_worker_failed"),
+                               "retryable": True} if error else worker.result())
+                    failed = error is not None or (isinstance(result, dict) and result.get("state") == "failed")
+                    if failed and isinstance(result, dict):
+                        result = {**result, "retryable": True}
+                    self.results[key] = result
                     if schedule_key is not None:
                         with self.runtime.transaction() as connection:
-                            connection.execute("UPDATE role_state_schedules SET result_json = ? WHERE context_key = ?",
-                                (encode(self.results[key]), schedule_key))
+                            if failed:
+                                retry_at = stamp(self.tasks.now() + timedelta(minutes=5))
+                                connection.execute(
+                                    "UPDATE role_state_schedules SET result_json = ?, next_at = ? WHERE context_key = ?",
+                                    (encode(self.results[key]), retry_at, schedule_key))
+                            else:
+                                connection.execute("UPDATE role_state_schedules SET result_json = ? WHERE context_key = ?",
+                                    (encode(self.results[key]), schedule_key))
         if self.workers:
             return
         # Seek past visited records, including retired/unavailable/disabled ones.

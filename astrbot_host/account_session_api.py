@@ -99,7 +99,7 @@ class AccountSessionWebAPI:
             # is shared by several Bot accounts on one role id in the editor too.
             # The controller already holds the parsed settings; only reparse when
             # the host has not assembled them yet.
-            parsed = controller.settings
+            parsed = getattr(controller, "settings", None)
             if parsed is None or not hasattr(parsed, "personas"):
                 parsed = MultiHostSettings.parse(controller.config)
             personas = [asdict(mapping) for mapping in parsed.personas]

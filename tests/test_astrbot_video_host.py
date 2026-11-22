@@ -68,7 +68,7 @@ class AstrBotVideoHostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(preview["parts"][0]["text"], "我在这里。")
 
         payload = self.native.provider.client.state.calls[0][0]
-        content = payload["messages"][2]["content"]
+        content = next(m["content"] for m in payload["messages"] if m["role"] == "user")
         images = [part for part in content if part["type"] == "image_url"]
         self.assertEqual(len(images), 4)
         self.assertTrue(all(part["image_url"]["url"].startswith("data:image/png;base64,") for part in images))

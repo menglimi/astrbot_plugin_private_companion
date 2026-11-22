@@ -119,6 +119,7 @@ class RelationshipProfileConfigurationOwner(SparseConfigurationOwner):
 
 class ConversationRelationshipProfileContext:
     def __init__(self, runtime: StorageRuntime):
+        self.runtime = runtime
         self.owner = RelationshipProfileConfigurationOwner(runtime)
         self.fields = configuration_fields()
 

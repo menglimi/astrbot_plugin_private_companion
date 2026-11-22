@@ -127,6 +127,7 @@ class ScreenInterpretationService:
         self.screens = None
         self.settings = None
         self.pending: dict[str, dict] = {}
+        self.error_codes: dict[str, str] = {}
         self.results: dict[str, str] = {}
         self._workers: dict[str, object] = {}
         self._active_run = None
@@ -274,6 +275,7 @@ class ScreenInterpretationService:
                 continue
             task = self.tasks.read(job["context"], task_id)
             if task.is_success and task.unwrap().state in ("succeeded", "failed", "cancelled", "expired", "uncertain", "dead_letter"):
+                self.pending.pop(task_id, None)
                 continue
             if task.failure is not None:
                 # A retired or cancelled original request is never resubmitted.
@@ -287,10 +289,18 @@ class ScreenInterpretationService:
             started += 1
         return started > 0
 
+    def _record_error_code(self, task_id, code):
+        self.error_codes[task_id] = code
+        while len(self.error_codes) > 64:
+            self.error_codes.pop(next(iter(self.error_codes)))
+
     async def _run(self, context, task_id):
         result = await self.runner.run(context, task_id)
         if result.is_success and result.unwrap().failure_code:
-            self.pending[task_id]["error_code"] = result.unwrap().failure_code
+            code = result.unwrap().failure_code
+            self._record_error_code(task_id, code)
+            if task_id in self.pending:
+                self.pending[task_id]["error_code"] = code
         if result.failure is not None or result.unwrap().task is not None:
             self.notify()
         return result
@@ -322,6 +332,7 @@ class ScreenInterpretationService:
                     FROM model_calls WHERE task_id = ? ORDER BY position""", (run.task.task_id,))
                 if calls and all(row["state"] == "not_started" and row["receipt_ref"]
                                  and row["actual_tokens"] == 0 and row["actual_cost"] in (0, None) for row in calls):
+                    self._record_error_code(run.task.task_id, result.failure.code)
                     job["error_code"] = result.failure.code
                     return TaskResult("failed", "not_committed", receipt_ref=calls[-1]["receipt_ref"])
             raise TaskError(result.failure.code, result.failure.reason)

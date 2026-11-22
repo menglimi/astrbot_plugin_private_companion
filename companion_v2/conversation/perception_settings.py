@@ -114,3 +114,30 @@ class PerceptionSettings:
         settings = validate({key.removeprefix(GROUP + "."): value
                              for key, value in snapshot.values.items()})
         return {"settings": settings, "configuration_token": snapshot.resolution_token}
+
+
+def read_perception_values(app, context, at=None, *, role_only=False):
+    """Read validated perception settings for trusted internal date projections."""
+    service = getattr(app, "perception_settings", None)
+    if service is None or context is None:
+        return dict(DEFAULTS)
+    if not role_only and at is not None and callable(getattr(service, "capture", None)):
+        try:
+            captured = service.capture(context, at)
+            if isinstance(captured, dict) and isinstance(captured.get("settings"), dict):
+                return validate_snapshot(captured["settings"])
+        except Exception:
+            pass
+    configuration = getattr(service, "configuration", None)
+    if configuration is not None:
+        try:
+            target = role_target_for(context) if role_only else target_for(context)
+            with configuration.store.read_snapshot():
+                definitions = configuration.registry.group(GROUP)
+                owner = configuration._owners[definitions[0].owner_id]
+                snapshot = owner.read(target, definitions)
+            return validate({key.removeprefix(GROUP + "."): field.value
+                             for key, field in snapshot.fields.items()})
+        except Exception:
+            pass
+    return dict(DEFAULTS)

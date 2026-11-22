@@ -1,4 +1,4 @@
-﻿"""Agenda rows share the V2 transaction and operation authority."""
+"""Agenda rows share the V2 transaction and operation authority."""
 
 from __future__ import annotations
 

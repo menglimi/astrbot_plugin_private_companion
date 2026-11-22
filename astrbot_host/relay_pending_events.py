@@ -62,12 +62,33 @@ async def process_group_presence(controller, event, target, context):
     """Deliver delayed relays when their target member speaks in the group."""
     target_user_id = str(context.actor.principal.native_account_id)
     tasks = await asyncio.to_thread(claim_group, controller.runtime, str(target.group_id), target_user_id)
-    for task in tasks:
-        result = await _send_group(controller, event, platform_id=target.platform_id,
-            login=target.account_id, peer=target.group_id,
-            text=_text(task.get("text")), mention_id=str(task.get("mention_id") or ""))
-        await asyncio.to_thread(finish, controller.runtime, task["id"],
-                                "sent" if result.get("state") == "delivered" else "failed")
+    settled: set[str] = set()
+    in_flight: str | None = None
+    try:
+        for task in tasks:
+            in_flight = task["id"]
+            try:
+                result = await _send_group(controller, event, platform_id=target.platform_id,
+                    login=target.account_id, peer=target.group_id,
+                    text=_text(task.get("text")), mention_id=str(task.get("mention_id") or ""))
+                state = "sent" if isinstance(result, dict) and result.get("state") == "delivered" else "failed"
+            except Exception:
+                state = "failed"
+            in_flight = None
+            await asyncio.to_thread(finish, controller.runtime, task["id"], state)
+            settled.add(task["id"])
+    finally:
+        for task in tasks:
+            task_id = task["id"]
+            if task_id in settled:
+                continue
+            try:
+                if task_id == in_flight:
+                    finish(controller.runtime, task_id, "failed")
+                else:
+                    requeue(controller.runtime, task_id, state="waiting")
+            except Exception:
+                pass
     # 带话一直没等到目标成员出现时，告诉发起窗口“已经撤回”，
     # 而不是让那条委托在队列里无声过期。
     expired = await asyncio.to_thread(claim_expired, controller.runtime, str(target.group_id))
@@ -77,12 +98,15 @@ async def process_group_presence(controller, event, target, context):
         if not source_id:
             continue
         text = "你让我在群里带的那句话，对方一直没出现，我先撤回了。"
-        if source_kind == "group":
-            await _send_group(controller, event, platform_id=target.platform_id,
-                login=target.account_id, peer=source_id, text=text)
-        else:
-            await _send_private(controller, event, platform_id=target.platform_id,
-                login=target.account_id, peer=source_id, text=text)
+        try:
+            if source_kind == "group":
+                await _send_group(controller, event, platform_id=target.platform_id,
+                    login=target.account_id, peer=source_id, text=text)
+            else:
+                await _send_private(controller, event, platform_id=target.platform_id,
+                    login=target.account_id, peer=source_id, text=text)
+        except Exception:
+            continue
 
 
 async def _report_receipt(controller, event, target, task, reply_text):
@@ -117,28 +141,76 @@ async def process_private_receipts(controller, event, target):
 
     permission_tasks = await asyncio.to_thread(claim_private_receipts, controller.runtime,
                                                target_user_id, permission=True)
-    for task in permission_tasks:
-        if rejected:
-            await asyncio.to_thread(finish, controller.runtime, task["id"], "declined")
-        elif confirmed:
-            ok = await _report_receipt(controller, event, target, task,
-                                       _text(task.get("reply_text"), 800))
-            await asyncio.to_thread(finish, controller.runtime, task["id"],
-                                    "reported" if ok else "failed")
-        else:
-            await asyncio.to_thread(requeue, controller.runtime, task["id"])
+    settled_permission: set[str] = set()
+    in_flight_permission: str | None = None
+    try:
+        for task in permission_tasks:
+            task_id = task["id"]
+            if rejected:
+                await asyncio.to_thread(finish, controller.runtime, task_id, "declined")
+            elif confirmed:
+                in_flight_permission = task_id
+                try:
+                    ok = await _report_receipt(controller, event, target, task,
+                                               _text(task.get("reply_text"), 800))
+                except Exception:
+                    ok = False
+                in_flight_permission = None
+                await asyncio.to_thread(finish, controller.runtime, task_id,
+                                        "reported" if ok else "failed")
+            else:
+                await asyncio.to_thread(requeue, controller.runtime, task_id, state="waiting_permission")
+            settled_permission.add(task_id)
+    finally:
+        for task in permission_tasks:
+            task_id = task["id"]
+            if task_id in settled_permission:
+                continue
+            try:
+                if task_id == in_flight_permission:
+                    finish(controller.runtime, task_id, "failed")
+                else:
+                    requeue(controller.runtime, task_id, state="waiting_permission")
+            except Exception:
+                pass
 
     reply_tasks = await asyncio.to_thread(claim_private_receipts, controller.runtime, target_user_id)
-    for task in reply_tasks:
-        if task.get("confirm_before_report"):
-            if await _ask_permission(controller, event, target, task):
-                await asyncio.to_thread(mark_waiting_permission, controller.runtime, task["id"], text)
+    settled_reply: set[str] = set()
+    in_flight_report: str | None = None
+    try:
+        for task in reply_tasks:
+            task_id = task["id"]
+            if task.get("confirm_before_report"):
+                try:
+                    asked = await _ask_permission(controller, event, target, task)
+                except Exception:
+                    asked = False
+                if asked:
+                    await asyncio.to_thread(mark_waiting_permission, controller.runtime, task_id, text)
+                else:
+                    await asyncio.to_thread(requeue, controller.runtime, task_id, state="waiting_reply")
             else:
-                await asyncio.to_thread(requeue, controller.runtime, task["id"])
-        else:
-            ok = await _report_receipt(controller, event, target, task, text)
-            await asyncio.to_thread(finish, controller.runtime, task["id"],
-                                    "reported" if ok else "failed")
+                in_flight_report = task_id
+                try:
+                    ok = await _report_receipt(controller, event, target, task, text)
+                except Exception:
+                    ok = False
+                in_flight_report = None
+                await asyncio.to_thread(finish, controller.runtime, task_id,
+                                        "reported" if ok else "failed")
+            settled_reply.add(task_id)
+    finally:
+        for task in reply_tasks:
+            task_id = task["id"]
+            if task_id in settled_reply:
+                continue
+            try:
+                if task_id == in_flight_report:
+                    finish(controller.runtime, task_id, "failed")
+                else:
+                    requeue(controller.runtime, task_id, state="waiting_reply")
+            except Exception:
+                pass
 
 
 __all__ = ["process_group_presence", "process_private_receipts"]

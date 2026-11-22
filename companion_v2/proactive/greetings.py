@@ -175,7 +175,7 @@ class GreetingContactEvents:
             return None
         midnight = datetime.combine(night, datetime.min.time(), tzinfo=zone)
         opened = midnight + timedelta(hours=start.hour, minutes=start.minute)
-        closed = midnight + timedelta(days=1, hours=end.hour, minutes=end.minute)
+        closed = midnight + timedelta(days=0 if start < end else 1, hours=end.hour, minutes=end.minute)
         width = (closed - opened) / limit
         index = min(limit - 1, max(0, int((local.astimezone(zone) - opened) / width)))
         return {"night_key": night.isoformat(), "slot": index, "limit": limit, "zone": zone.key,

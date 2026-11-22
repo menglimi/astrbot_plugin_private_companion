@@ -647,13 +647,14 @@ class ContactSchedulingTests(ContactScheduleFixture, unittest.IsolatedAsyncioTes
         self.model_behavior = held
         first = asyncio.create_task(self.contact(app))
         await asyncio.wait_for(entered.wait(), 3)
-        second = (await self.contact(app, self.opportunity("busy"))).unwrap().task
-        self.assertEqual(second.state, "cancelled")
+        second_outcome = await self.contact(app, self.opportunity("busy"))
+        self.assertEqual(second_outcome.failure.code, "task_lane_full")
         self.assertEqual(len(self.called), 1)
         release.set()
         task = (await first).unwrap().task
         await self.delivery_state(app, task.task_id, "delivered")
-        self.assertEqual((await self.contact(app, self.opportunity("busy"))).unwrap().task.task_id, second.task_id)
+        replayed = (await self.contact(app, self.opportunity("busy"))).unwrap().task
+        self.assertEqual(replayed.state, "cancelled")
         self.assertEqual(len(self.called), 1)
 
     async def test_known_delivery_releases_its_allowance_at_the_rolling_boundary(self):

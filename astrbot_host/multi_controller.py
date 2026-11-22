@@ -1062,6 +1062,8 @@ class AstrBotMultiController:
             parked = self._parked_binding()
             core_target = self._core_target(parked) if parked is not None else None
             core_target_id = core_target.target_id if core_target is not None else None
+            if core_target is not None and core_target.participant_id != "*":
+                self.authority.ensure_core_admin_tier(core_target)
             for conversation in conversations.values():
                 target = conversation["target"]
                 for role_id in conversation["role_ids"]:

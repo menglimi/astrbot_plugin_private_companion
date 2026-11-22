@@ -503,6 +503,7 @@ def _check_text(result: subprocess.CompletedProcess) -> str:
 
 _IME_RESTORE_LOCK = threading.Lock()
 _IME_RESTORE_TIMERS: dict[tuple[str, str], threading.Timer] = {}
+_IME_RESTORE_TOKENS: dict[tuple[str, str], object] = {}
 _IME_PENDING_RESTORE: dict[tuple[str, str], str] = {}
 _IME_RESTORE_ERRORS: dict[tuple[str, str], AdbError] = {}
 
@@ -523,10 +524,11 @@ def _restore_input_method(client: "AdbClient", previous: str) -> None:
         return
 
 
-def _default_scheduler(delay: float, fire) -> None:
+def _default_scheduler(delay: float, fire) -> threading.Timer:
     timer = threading.Timer(delay, fire)
     timer.daemon = True
     timer.start()
+    return timer
 
 
 def schedule_ime_restore(client: "AdbClient", previous: str, delay: float, *, scheduler=None) -> None:
@@ -534,9 +536,13 @@ def schedule_ime_restore(client: "AdbClient", previous: str, delay: float, *, sc
     if not previous or previous == ADB_KEYBOARD_IME:
         return
     key = _ime_key(client)
+    token = object()
 
     def fire():
         with _IME_RESTORE_LOCK:
+            if _IME_RESTORE_TOKENS.get(key) is not token:
+                return
+            _IME_RESTORE_TOKENS.pop(key, None)
             _IME_RESTORE_TIMERS.pop(key, None)
             _IME_PENDING_RESTORE.pop(key, None)
         _restore_input_method(client, previous)
@@ -545,8 +551,15 @@ def schedule_ime_restore(client: "AdbClient", previous: str, delay: float, *, sc
         old = _IME_RESTORE_TIMERS.pop(key, None)
         if old is not None:
             old.cancel()
+        _IME_RESTORE_TOKENS[key] = token
         _IME_PENDING_RESTORE[key] = previous
-    (scheduler or _default_scheduler)(float(delay), fire)
+    handle = (scheduler or _default_scheduler)(float(delay), fire)
+    if handle is not None and callable(getattr(handle, "cancel", None)):
+        with _IME_RESTORE_LOCK:
+            if _IME_RESTORE_TOKENS.get(key) is token:
+                _IME_RESTORE_TIMERS[key] = handle
+            else:
+                handle.cancel()
 
 
 def take_ime_restore_error(client: "AdbClient") -> AdbError | None:

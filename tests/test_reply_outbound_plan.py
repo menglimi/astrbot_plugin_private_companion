@@ -1,4 +1,4 @@
-﻿"""T45/T51: the sealed outbound plan, its configuration, encoding and delivery."""
+"""T45/T51: the sealed outbound plan, its configuration, encoding and delivery."""
 
 import asyncio
 from dataclasses import replace

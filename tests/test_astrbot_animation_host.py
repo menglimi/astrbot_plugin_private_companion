@@ -58,7 +58,8 @@ class AstrBotAnimationHostTests(unittest.IsolatedAsyncioTestCase):
                 report = (await self.controller.inspect(batch)).unwrap()
                 self.assertTrue(report["confirmed_delivery"])
                 self.assertEqual(report["delivery_receipts"][0]["state"], "delivered")
-                content = self.native.provider.client.state.calls[-1][0]["messages"][2]["content"]
+                content = next(m["content"] for m in self.native.provider.client.state.calls[-1][0]["messages"]
+                               if m["role"] == "user")
                 urls = [p["image_url"]["url"] for p in content if p["type"] == "image_url"]
                 self.assertEqual(len(urls), 3)
                 self.assertTrue(all(url.startswith("data:image/png;base64,") for url in urls))
@@ -95,7 +96,8 @@ class AstrBotAnimationHostTests(unittest.IsolatedAsyncioTestCase):
         event.message_obj.message = [Reply(id="345", chain=[Plain("伪造正文")], sender_id="999", time=1), Plain("解释这段动画")]
         batch = (await self.controller.receive_claimed(event)).unwrap()
         await wait_for_batch(self.controller.session, batch)
-        content = self.native.provider.client.state.calls[0][0]["messages"][2]["content"]
+        content = next(m["content"] for m in self.native.provider.client.state.calls[0][0]["messages"]
+                       if m["role"] == "user")
         materials = json.loads(content[0]["text"])["materials"]
         frames = [json.loads(m["text"]) for m in materials if m["purpose"].startswith("quoted_image:frame:")]
         self.assertEqual([frame["sender"] for frame in frames], ["100"] * 3)

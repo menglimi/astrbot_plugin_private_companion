@@ -237,6 +237,7 @@ class ExplorationEvents:
         self.contacts, self.runtime = contacts, contacts.runtime
         self.date_events, self.port = date_events, port
         self._workers = {}
+        self._closing_workers = []
         self._closed = False
 
     def _key(self, context):
@@ -272,9 +273,22 @@ class ExplorationEvents:
 
     def close(self):
         self._closed = True
-        for worker in tuple(self._workers.values()):
+        workers = tuple(self._workers.values())
+        for worker in workers:
             worker.cancel()
+        self._closing_workers.extend(worker for worker in workers if not worker.done())
         self._workers.clear()
+        return workers
+
+    async def aclose(self):
+        self.close()
+        workers = tuple(self._closing_workers)
+        self._closing_workers.clear()
+        if workers:
+            await asyncio.wait(workers, timeout=0.25)
+            for worker in workers:
+                if worker.done() and not worker.cancelled():
+                    worker.exception()
 
     def _due(self, context, values, at):
         if not values.get("web_exploration_enabled") is True:
@@ -355,6 +369,8 @@ class ExplorationEvents:
                 self._save(context, state)
                 return
             items = await self._search(context, values, queries)
+            if self._closed:
+                return
             scored = []
             seen = set()
             for item in items:
@@ -392,6 +408,8 @@ class ExplorationEvents:
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            if self._closed:
+                return
             state.update(last_run_at=stamp(at), last_result="failed")
             state["last_error"] = type(error).__name__[:80]
             self._save(context, state)

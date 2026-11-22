@@ -336,10 +336,6 @@ class GroupImageReview:
     def applies(context, images, *, enabled):
         return bool(images and enabled and context.scope.kind is ScopeKind.GROUP)
 
-    @staticmethod
-    def review_key(batch_id, part_id):
-        return "group-image-review:" + digest([batch_id, part_id])
-
     # -- ledger --------------------------------------------------------
 
     @staticmethod

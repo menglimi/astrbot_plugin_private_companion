@@ -262,25 +262,6 @@ class RealityExtensionAPI:
                 'time': _single_line(alarm.get('time'), 8),
                 'contact_session': safe}
 
-    def wakeup_snapshot(self, user_id: str='') -> dict[str, Any]:
-        """Return only the wake session state; never message bodies or feedback text."""
-        user = self._plugin._user(user_id, create=False)
-        if not isinstance(user, dict):
-            return {}
-        alarm = user.get('wakeup_alarm')
-        alarm = alarm if isinstance(alarm, dict) else {}
-        session = alarm.get('contact_session')
-        session = session if isinstance(session, dict) else {}
-        safe = {}
-        for key in ('id', 'status', 'attempt', 'max_attempts', 'triggered_at',
-                    'feedback_at', 'completed_at', 'next_attempt_at'):
-            value = session.get(key)
-            if isinstance(value, (str, int, float)) and not isinstance(value, bool):
-                safe[key] = value
-        return {'enabled': bool(alarm.get('enabled')),
-                'time': _single_line(alarm.get('time'), 8),
-                'contact_session': safe}
-
     def snapshot_owner(self, host_api: Any) -> Any:
         """Bind the native RV-1 owner to the current trusted host authority."""
         owner = self._plugin._mobile_snapshot_owner

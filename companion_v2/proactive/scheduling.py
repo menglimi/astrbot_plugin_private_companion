@@ -1278,8 +1278,6 @@ class ContactSchedule:
             if (self.runtime.read_one("SELECT 1 FROM execution_tasks WHERE task_id = ?", (task_id,))
                     or self.runtime.read_one("SELECT 1 FROM proactive_contacts WHERE task_id = ?", (task_id,))):
                 continue
-            if not agenda.repository.claim_open_loop_followup(memo.memo_id, at=at):
-                continue
             marker = {"memo_id": memo.memo_id, "memo_revision": memo.revision,
                       "opened_at": stamp(opened), "expires_at": stamp(expires)}
             record = json.dumps({"title": memo.title, "body": memo.body}, ensure_ascii=False,
@@ -1386,7 +1384,8 @@ class ContactSchedule:
         if not sleep.get("resting"):
             return None
         grace = rest_gate.awake_grace(rest_gate.document(self.runtime, context), now=at)
-        if grace.get("active") and grace.get("sleep") == sleep.get("sleep"):
+        grace_key = rest_gate.sleep_grace_key(sleep)
+        if grace.get("active") and grace_key is not None and grace.get("sleep") == grace_key:
             return None
         wake_at = sleep.get("wake_at")
         if isinstance(wake_at, datetime) and wake_at > at:
@@ -1665,6 +1664,13 @@ class ContactSchedule:
             return available
         if row["origin_key"] in self._workers:
             return available
+        open_loop = origin.get("open_loop_event") if isinstance(origin, dict) else None
+        if isinstance(open_loop, dict) and open_loop.get("memo_id"):
+            agenda = AgendaService(self.runtime)
+            if not agenda.repository.claim_open_loop_followup(open_loop["memo_id"], at=now):
+                self._note_window(context, row, now, "open_loop", "skipped", "open_loop_already_claimed",
+                                  purpose=purpose)
+                return available
         worker = asyncio.create_task(self._run(plan), name="companion:automatic-contact:" + row["origin_key"])
         self._workers[row["origin_key"]] = worker
         self._note_window(context, row, now, "task_queue", "queued", "candidate_queued", purpose=purpose)
@@ -1683,8 +1689,10 @@ class ContactSchedule:
         if prepared is None:
             return
         now, rows, available, legacy_count, native_count = prepared
+        exhausted = True
         for row in rows:
             if self._closed or available <= 0:
+                exhausted = False
                 break
             self._row_cursor(row)
             if not self._row_available(row, now):
@@ -1696,10 +1704,11 @@ class ContactSchedule:
                 continue
             if plan is not None:
                 available = self._activate_plan(row, plan, available, now)
-        if legacy_count < 16:
-            self._cursor = 0
-        if native_count < 16:
-            self._native_cursor = 0
+        if exhausted:
+            if legacy_count < 16:
+                self._cursor = 0
+            if native_count < 16:
+                self._native_cursor = 0
         self._note_coordinator(self.tasks.now(), "running", "contact_schedule_running")
 
     async def advance_async(self):
@@ -1712,8 +1721,10 @@ class ContactSchedule:
             if prepared is None:
                 return
             now, rows, available, legacy_count, native_count = prepared
+            exhausted = True
             for row in rows:
                 if self._closed or available <= 0:
+                    exhausted = False
                     break
                 self._row_cursor(row)
                 if not self._row_available(row, now):
@@ -1729,13 +1740,15 @@ class ContactSchedule:
                     if self._planning is planning and planning.done():
                         self._planning = None
                 if self._closed:
+                    exhausted = False
                     break
                 if plan is not None:
                     available = self._activate_plan(row, plan, available, now)
-            if legacy_count < 16:
-                self._cursor = 0
-            if native_count < 16:
-                self._native_cursor = 0
+            if exhausted:
+                if legacy_count < 16:
+                    self._cursor = 0
+                if native_count < 16:
+                    self._native_cursor = 0
             self._note_coordinator(self.tasks.now(), "running", "contact_schedule_running")
         finally:
             self._advancing = False
@@ -1800,6 +1813,11 @@ class ContactSchedule:
             except Exception:
                 pass
         self._close_sources()
+        if hasattr(self.news_events, "aclose"):
+            await self.news_events.aclose()
+        exploration = getattr(self, "exploration", None)
+        if exploration is not None and hasattr(exploration, "aclose"):
+            await exploration.aclose()
         workers = tuple(self._workers.values()) + tuple(self._judges.values())
         if workers:
             await asyncio.wait(workers, timeout=0.25)

@@ -70,7 +70,7 @@ class BusyGateJudgementTests(unittest.TestCase):
         for field in fields.values():
             self.assertEqual((field.group_id, field.consumer_id, field.owner_id),
                              (busy_gate.GROUP, busy_gate.GROUP, busy_gate.OWNER))
-            self.assertEqual(field.layers, (ConfigLayer.WINDOW,))
+            self.assertEqual(field.layers, (ConfigLayer.ROLE, ConfigLayer.WINDOW))
         self.assertIs(fields[busy_gate.GROUP + ".busy_reply_gate_enabled"].kind, ValueKind.BOOLEAN)
         for name in ("busy_reply_min_delay_seconds", "busy_reply_max_delay_seconds",
                      "busy_reply_proactive_resume_buffer_minutes"):
@@ -488,7 +488,8 @@ class BusyGateProactiveTests(ContactScheduleFixture, unittest.IsolatedAsyncioTes
         manager = StateManagement(app, context)
         before = manager.status(self.core).unwrap()
         manager.command(self.core, dict(action="configure", operation_key="enable-calendar",
-            edit_token=before["edit_token"], changes={"calendar_enabled": True})).unwrap()
+            edit_token=before["edit_token"], role_edit_token=before["role_edit_token"],
+            changes={"calendar_enabled": True})).unwrap()
         due = self.clock.now() + timedelta(minutes=minutes)
         app.calendar.command(context, identifier=identifier, action="create", expected_revision=0,
             operation_key="create-" + identifier,

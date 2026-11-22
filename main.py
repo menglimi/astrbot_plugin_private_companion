@@ -2202,7 +2202,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         activate_core_reply_segmentation(event)
         prepare_core_result_decoration(event)
 
-    @filter.on_decorating_result(priority=999999)
+    @filter.on_decorating_result(priority=-1000001)
     async def suppress_companion_native_tool_repeat(self, event: AstrMessageEvent):
         """Check the complete final result before AstrBot splits or speaks it."""
         state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)

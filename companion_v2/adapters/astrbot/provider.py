@@ -305,17 +305,6 @@ def provider_fingerprint(native):
                    sorted(getattr(native, "default_params", {}))])
 
 
-def provider_class_matches(provider, classes):
-    """Class identity that also survives AstrBot re-importing provider modules."""
-    if provider is None:
-        return False
-    if isinstance(provider, classes):
-        return True
-    actual = type(provider)
-    return any(actual.__module__ == expected.__module__
-               and actual.__qualname__ == expected.__qualname__ for expected in classes)
-
-
 def provider_config_drift(expected, provider, auto_resolved=None):
     """Compare captured keys, including host-resolved automatic limits, without exposing values."""
     config = getattr(provider, "provider_config", None)

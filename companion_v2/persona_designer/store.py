@@ -21,7 +21,8 @@ class DraftStore:
         self.path = Path(root) / "persona_designer" / "drafts.sqlite3"
 
     def _read(self):
-        return sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.25)
+        from companion_v2.storage.sqlite_path import readonly_uri
+        return sqlite3.connect(readonly_uri(self.path), uri=True, timeout=0.25)
 
     def list(self, owner, before=0):
         if not self.path.exists():

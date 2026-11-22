@@ -169,7 +169,7 @@ class CoreReplyVoiceTests(unittest.IsolatedAsyncioTestCase):
 
         async def renderer(actual_context, text, *, provider_id, timeout_seconds):
             self.assertIs(actual_context, context)
-            self.assertEqual((text, provider_id, timeout_seconds), ("你好", "", 30))
+            self.assertEqual((text, provider_id, timeout_seconds), ("你好", "", 120))
             order.append("render")
             return {"type": "record", "data": {"file": "base64://YQ=="}}
 

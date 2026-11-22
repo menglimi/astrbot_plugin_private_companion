@@ -17,7 +17,7 @@ from .model_api import ModelWebAPI, PREFIX as MODEL_PREFIX
 from .life_api import LifeWebAPI, PREFIX as LIFE_PREFIX
 from .relationships_api import RelationshipWebAPI, MANAGEMENT_PREFIX as RELATIONSHIP_PREFIX
 from .growth_api import GrowthWebAPI, PREFIX as GROWTH_PREFIX
-from .web_api import StagingWebAPI, outcome_response
+from .web_api import StagingWebAPI, http_handler, outcome_response
 from .group_settings import GroupTarget
 from .group_memory_api import GroupMemoryWebAPI
 from .group_model_api import GroupModelWebAPI
@@ -147,8 +147,9 @@ class MultiHostWebAPI:
         snapshot = list(registered) if isinstance(registered, list) else None
         try:
             for route, handler, methods, description in routes:
-                register(route, handler, methods, description)
-                self._registered_routes.append((route, handler))
+                wrapped = http_handler(handler)
+                register(route, wrapped, methods, description)
+                self._registered_routes.append((route, wrapped))
         except Exception:
             if snapshot is not None:
                 registered[:] = snapshot

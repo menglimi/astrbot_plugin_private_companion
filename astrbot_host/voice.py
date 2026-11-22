@@ -398,7 +398,7 @@ class NativeVoiceReply:
             return await asyncio.to_thread(_read_audio, path, allow_data=allow_data)
         return await asyncio.wait_for(synthesize(), timeout=timeout_seconds)
 
-    async def render(self, task_context, text, *, provider_id="", timeout_seconds=30,
+    async def render(self, task_context, text, *, provider_id="", timeout_seconds=120,
                      model_override="", voice_override="", singing=False, singing_umo="", singing_config_umo=None):
         scope = task_context.scope
         kind = "GroupMessage" if scope.kind is ScopeKind.GROUP else "FriendMessage"
