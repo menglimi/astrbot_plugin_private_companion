@@ -429,23 +429,38 @@ class UnifiedCompanionExtensionAPI:
 
     async def companion_v2_mobile_together_create(self, session_token: str, request_id: str, mode: str,
                                                   *, via_mobile_gateway: bool = False):
-        result = await self._mobile_together.invoke(session_token, request_id=request_id,
-                                                    operation="create", arguments={"mode": mode})
+        result = await self._mobile_together.invoke(
+            session_token,
+            request_id=request_id,
+            operation="create",
+            arguments={"mode": mode},
+            via_mobile_gateway=via_mobile_gateway,
+        )
         return self._mobile_together.mobile_result("create", result)
 
     async def companion_v2_mobile_together_invite(self, session_token: str, request_id: str,
                                                   expires_in_seconds: int | None = None,
                                                   *, via_mobile_gateway: bool = False):
         arguments = {} if expires_in_seconds is None else {"expires_in_seconds": expires_in_seconds}
-        result = await self._mobile_together.invoke(session_token, request_id=request_id,
-                                                    operation="invite", arguments=arguments)
+        result = await self._mobile_together.invoke(
+            session_token,
+            request_id=request_id,
+            operation="invite",
+            arguments=arguments,
+            via_mobile_gateway=via_mobile_gateway,
+        )
         return self._mobile_together.mobile_result("invite", result)
 
     async def companion_v2_mobile_together_join(self, session_token: str, request_id: str,
                                                 invitation_id: str,
                                                 *, via_mobile_gateway: bool = False):
-        result = await self._mobile_together.invoke(session_token, request_id=request_id,
-            operation="join", arguments={"invitation_id": invitation_id})
+        result = await self._mobile_together.invoke(
+            session_token,
+            request_id=request_id,
+            operation="join",
+            arguments={"invitation_id": invitation_id},
+            via_mobile_gateway=via_mobile_gateway,
+        )
         return self._mobile_together.mobile_result("join", result)
 
     def manifest(self):

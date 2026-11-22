@@ -586,18 +586,27 @@ class RealityHostGlueTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(phone, repr(body))
                 self.assertNotIn(phone, repr(logger.mock_calls))
 
-    async def prepare_native_mobile_rooms(self):
+    async def prepare_native_mobile_rooms(
+        self,
+        *,
+        public_base_url='https://room.example.invalid',
+        mock_prepare_access=True,
+        capabilities=('together.room.create',),
+    ):
         self.allow_snapshot()
         together = self.registry.service('together')
         together.config['enabled'] = True
         together.server_enabled = True
-        together.public_base_url = 'https://room.example.invalid'
-        patches = (
+        together.public_base_url = public_base_url
+        patches = [
             patch.object(together, '_start_room_server', new=AsyncMock()),
             patch.object(type(together.room_server), 'running', new_callable=PropertyMock, return_value=True),
-            patch.object(self.runtime, '_mobile_prepare_together_access',
-                         new=AsyncMock(return_value={'url': 'https://room.example.invalid'})),
-        )
+        ]
+        if mock_prepare_access:
+            patches.append(
+                patch.object(self.runtime, '_mobile_prepare_together_access',
+                             new=AsyncMock(return_value={'url': public_base_url}))
+            )
         for item in patches:
             item.start()
             self.addCleanup(item.stop)
@@ -607,9 +616,10 @@ class RealityHostGlueTests(unittest.IsolatedAsyncioTestCase):
             package_version=package.package_version, expected_revision=0, observed_at=support.NOW))
         require(repository.set_role_enabled(extension_id='together', role=self.context.role_binding.role,
             bot_id=self.context.scope.bot_id, enabled=True, expected_revision=0, observed_at=support.NOW))
-        require(repository.set_authorization(extension_id='together', capability_id='together.room.create',
-            subject=self.context.actor.subject, scope=self.context.scope,
-            state=CapabilityAuthorizationState.ACTIVE, expected_revision=0, observed_at=support.NOW))
+        for capability_id in capabilities:
+            require(repository.set_authorization(extension_id='together', capability_id=capability_id,
+                subject=self.context.actor.subject, scope=self.context.scope,
+                state=CapabilityAuthorizationState.ACTIVE, expected_revision=0, observed_at=support.NOW))
         await self.registry.reconcile_service('together')
         await self.registry._lease('together').start()
         return together
@@ -668,6 +678,92 @@ class RealityHostGlueTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(second['data']['request_id'], first['data']['request_id'])
             self.assertNotEqual(second['data']['operation_id'], first['data']['operation_id'])
             self.assertEqual(issue.call_count, 2)
+
+    async def test_mobile_create_room_in_lan_ssh_mode_without_public_url_skips_cloudflared(self):
+        together = await self.prepare_native_mobile_rooms(
+            public_base_url='',
+            mock_prepare_access=False,
+        )
+        self.runtime.config['mobile']['proxy_rooms'] = True
+        self.runtime._sync_runtime_config()
+        phone = self.mobile_session('test-paired-lan-ssh-phone-123', ttl=600)
+        with patch.object(
+            together.quick_tunnel,
+            'start',
+            new=AsyncMock(side_effect=AssertionError('cloudflared must not start in LAN/SSH mode')),
+        ) as tunnel_start:
+            for mode, req_id in (('watch', 'lan-ssh-watch-1'), ('call', 'lan-ssh-call-1')):
+                body, status = await self.mobile_call(
+                    phone,
+                    self.runtime.mobile_create_room,
+                    {'mode': mode, 'client': 'android_native', 'request_id': req_id},
+                )
+                self.assertEqual((status, body['ok']), (200, True), body)
+                self.assertEqual(body['data']['mode'], mode)
+                self.assertEqual(body['data']['request_id'], req_id)
+                self.assertIn('/join/', body['data']['url'])
+            tunnel_start.assert_not_awaited()
+
+    async def test_mobile_create_room_falls_back_from_stale_chat_provider_id_with_warning(self):
+        together = await self.prepare_native_mobile_rooms(
+            public_base_url='',
+            mock_prepare_access=False,
+        )
+        self.runtime.config['mobile']['proxy_rooms'] = True
+        self.runtime._sync_runtime_config()
+        together.chat_provider_id = 'deepseek/deepseek-v4-flash'
+        phone = self.mobile_session('test-paired-stale-chat-phone-123', ttl=600)
+        with (patch.object(
+                together.quick_tunnel,
+                'start',
+                new=AsyncMock(side_effect=AssertionError('cloudflared must not start')),
+              ) as tunnel_start,
+              self.assertLogs('astrbot_host.native_extensions', level='WARNING') as captured):
+            body, status = await self.mobile_call(
+                phone,
+                self.runtime.mobile_create_room,
+                {'mode': 'call', 'client': 'android_native', 'request_id': 'lan-stale-chat-1'},
+            )
+        self.assertEqual((status, body['ok']), (200, True), body)
+        tunnel_start.assert_not_awaited()
+        warning_text = '\n'.join(captured.output)
+        self.assertIn('deepseek/deepseek-v4-flash', warning_text)
+        self.assertIn(self.registry.together_execution['model_provider_id'], warning_text)
+
+    async def test_mobile_invite_and_join_room_expose_error_codes_and_warnings_in_lan_mode(self):
+        together = await self.prepare_native_mobile_rooms(
+            public_base_url='',
+            mock_prepare_access=False,
+            capabilities=('together.room.create', 'together.room.invite', 'together.room.join'),
+        )
+        self.runtime.config['mobile']['proxy_rooms'] = True
+        self.runtime._sync_runtime_config()
+        phone = self.mobile_session('test-paired-invite-join-phone-123', ttl=600)
+        with (patch.object(
+                together.quick_tunnel,
+                'start',
+                new=AsyncMock(side_effect=AssertionError('cloudflared must not start')),
+              ) as tunnel_start,
+              patch('astrbot_host.native_extensions.reality.mobile_gateway.logger') as gw_logger):
+            invite_body, invite_status = await self.mobile_call(
+                phone,
+                self.runtime.mobile_invite_room,
+                {'request_id': 'lan-invite-1', 'expires_in_seconds': 300},
+            )
+            join_body, join_status = await self.mobile_call(
+                phone,
+                self.runtime.mobile_join_room,
+                {'request_id': 'lan-join-1', 'invitation_id': 'missing-inv', 'client': 'android_native'},
+            )
+        tunnel_start.assert_not_awaited()
+        self.assertEqual((invite_status, invite_body['code']), (409, 'together_no_room_to_invite'))
+        self.assertEqual(invite_body['data']['error_code'], 'together_no_room_to_invite')
+        self.assertEqual((join_status, join_body['code']), (409, 'native_invitation_not_found'))
+        self.assertEqual(join_body['data']['error_code'], 'native_invitation_not_found')
+        self.assertEqual(gw_logger.warning.call_count, 2)
+        self.assertNotIn(phone, repr(gw_logger.mock_calls))
+        self.assertNotIn(phone, repr(invite_body))
+        self.assertNotIn(phone, repr(join_body))
 
     async def test_paired_mobile_snapshot_executes_native_provider_without_model_or_delivery(self):
         self.allow_snapshot()
