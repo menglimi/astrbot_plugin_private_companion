@@ -18,6 +18,14 @@ from astrbot.core.agent.tool import FunctionTool, ToolSet
 from companion_v2.agenda.models import AgendaTarget, MemoCursor
 from companion_v2.conversation.agenda_tools import AgendaRoleSession
 from companion_v2.conversation.interaction_tools import POKE_ACTION, POKE_SPEC
+from companion_v2.conversation.media.generated import IMAGE_ACTIONS
+from companion_v2.conversation.relay_tools import RELAY_ACTIONS
+from companion_v2.conversation.reply_settings import (
+    LEAN_PRIVATE_TOOL_GROUPS,
+    PRIVATE_TOOL_GROUPS,
+    PRIVATE_TOOL_PROFILES,
+    private_tool_groups_set,
+)
 from companion_v2.conversation.tool_loop import READ_ACTIONS
 from companion_v2.conversation.native_tool_media import native_image_data
 from companion_v2.execution.models import TaskContext, TaskError, digest, encode, require
@@ -40,7 +48,7 @@ GROUP_READ_ACTIONS = frozenset({"group.memory.query", "group.memory.legacy.query
 # Stable window-level manifests.  The order is part of the cached tool prefix:
 # append new actions at the end and bump TOOL_MANIFEST_VERSION when the schema
 # changes, never splice a tool in because one message looks special.
-TOOL_MANIFEST_VERSION = "2026-11-06.1"
+TOOL_MANIFEST_VERSION = "2026-11-22.1"
 LEAN_GROUP_TOOL_ORDER = ("group.participation.choose", "group.memory.query",
                          "group.memory.remember", "acquaintance.recall",
                          "reaction.search", "slang.search")
@@ -56,6 +64,68 @@ KB_TOOL_INSTRUCTION = (
     "需要查设定、文档、作品剧情、百科等知识库资料时，调用 astr_kb_search 并传入简短关键词；"
     "回忆与当前对话者的私人往事、偏好或群内历史发言时，使用记忆相关工具，不要混用。"
 )
+PRIVATE_EVIDENCE_GROUPS = frozenset(("memory", "calendar", "records"))
+
+
+def private_tool_group(owner: str, action: str) -> str:
+    """Map one private-chat Companion tool to its functional group."""
+    if owner == "evidence":
+        return "evidence"
+    if owner == "agenda":
+        return "agenda"
+    if owner == "calendar":
+        return "calendar"
+    if owner == "memory":
+        return "memory"
+    if owner in ("source", "growth", "relationships", "timeline", "acquaintance"):
+        return "records"
+    if owner in ("interaction", "semantic", "weather", "news"):
+        return "interaction"
+    if owner == "diagnostics":
+        return "diagnostics"
+    if action in RELAY_ACTIONS:
+        return "relay"
+    if action in IMAGE_ACTIONS:
+        return "media"
+    return "extensions"
+
+
+def private_tool_manifest(offered, profile: str, groups=PRIVATE_TOOL_GROUPS):
+    """Return the fixed private-chat Companion tool manifest for one profile.
+
+    ``full`` preserves the complete catalogue.  ``lean`` keeps core companion
+    groups (agenda, calendar, memory, interaction).  ``custom`` keeps only the
+    configured functional groups.  ``none`` removes all Companion tools while
+    leaving host/persona-card tools intact.  The output is sorted canonically by
+    native tool name so ``tools_hash`` stays invariant across turns.
+    """
+    if profile not in PRIVATE_TOOL_PROFILES or profile == "full":
+        return tuple(offered)
+    if profile == "none":
+        return ()
+    if profile == "lean":
+        enabled = LEAN_PRIVATE_TOOL_GROUPS
+    else:
+        try:
+            enabled = private_tool_groups_set(groups)
+        except Exception:
+            enabled = PRIVATE_TOOL_GROUPS
+    include_evidence = bool(enabled & PRIVATE_EVIDENCE_GROUPS)
+    filtered, seen = [], set()
+    for item in offered:
+        action = item.spec.action
+        if action in seen:
+            continue
+        group = private_tool_group(item.owner, action)
+        if group == "evidence":
+            if not include_evidence:
+                continue
+        elif group not in enabled:
+            continue
+        seen.add(action)
+        filtered.append(item)
+    filtered.sort(key=lambda item: native_tool_name(item.spec.action))
+    return tuple(filtered)
 
 
 def group_tool_manifest(offered, profile, *, allow_camera=False):
@@ -251,6 +321,13 @@ class CoreReplyToolSession:
         self.turn_id = "core-reply:" + digest([self.context.key, _field(self.prepared, "event_id")])
         profile = _field(self.prepared, "group_tool_profile", "full")
         self.group_tool_profile = profile if profile in ("lean", "standard", "full") else "full"
+        private_profile = _field(self.prepared, "private_tool_profile", "full")
+        self.private_tool_profile = private_profile if private_profile in PRIVATE_TOOL_PROFILES else "full"
+        raw_private_groups = _field(self.prepared, "private_tool_groups", PRIVATE_TOOL_GROUPS)
+        try:
+            self.private_tool_groups = private_tool_groups_set(raw_private_groups)
+        except Exception:
+            self.private_tool_groups = PRIVATE_TOOL_GROUPS
         self.native_response = self.native_run_context = None
         self.native_calls = []
         from .core_reply_media import frozen_image_locators
@@ -355,7 +432,26 @@ class CoreReplyToolSession:
             # Execution-time admission strictly enforces core-admin permission.
             allow_camera = any(item.spec.action == "reality.camera.observe" for item in offered)
             return group_tool_manifest(offered, self.group_tool_profile, allow_camera=allow_camera)
+        if self.context.scope.kind is ScopeKind.PRIVATE:
+            offered = self._prune_disabled_private_relay(offered)
+            if self.private_tool_profile != "full":
+                return private_tool_manifest(offered, self.private_tool_profile, self.private_tool_groups)
         return tuple(offered)
+
+    def _prune_disabled_private_relay(self, offered):
+        """Omit relay tools in private chat when window relay is fully disabled."""
+        relay_settings = getattr(self.application, "relay_settings", None)
+        if relay_settings is None or not any(item.spec.action in RELAY_ACTIONS for item in offered):
+            return offered
+        try:
+            settings = relay_settings.read(self.context, self.application.tasks.now())
+        except Exception:
+            return offered
+        if (isinstance(settings, Mapping)
+                and settings.get("enabled") is False
+                and settings.get("member_relay_enabled") is False):
+            return [item for item in offered if item.spec.action not in RELAY_ACTIONS]
+        return offered
 
     def choose_participation(self, wrapper, arguments):
         from companion_v2.conversation.native_participation import AUTONOMOUS_REASONS, native_participation_turn
@@ -798,17 +894,28 @@ def inject_core_reply_tools(event, req, *, application):
         session = CoreReplyToolSession(event, state, application)
         state["_tool_session"] = session
     from .core_reply_image_prompt import core_image_tools, inject_core_image_prompt
-    # Consent is scoped to the exact AstrBot conversation. A new conversation id
-    # (persona switch, restart, new private session) makes every retained image
-    # capability invisible until it is provisioned for this scope again, so do it
-    # here, on the real event context, before the catalogue is filtered.
-    from .image_access import ensure_image_access
-    ensure_image_access(application.runtime, session.context, observed_at=application.tasks.now())
-    from .content_access import ensure_content_access
-    ensure_content_access(application.runtime, session.context, observed_at=application.tasks.now())
-    offered, image_values = core_image_tools(session, session.catalog())
+    private_chat = session.context.scope.kind is ScopeKind.PRIVATE
+    profile = session.private_tool_profile
+    custom_groups = session.private_tool_groups if profile == "custom" else frozenset()
+    if private_chat and (profile == "full" or "extensions" in custom_groups):
+        from .content_access import ensure_content_access
+        ensure_content_access(application.runtime, session.context, observed_at=application.tasks.now())
+    media_enabled = (
+        not private_chat or profile == "full" or "media" in custom_groups
+    )
+    if media_enabled:
+        # Consent is scoped to the exact AstrBot conversation. A new conversation id
+        # (persona switch, restart, new private session) makes every retained image
+        # capability invisible until it is provisioned for this scope again, so do it
+        # here, on the real event context, before the catalogue is filtered.
+        from .image_access import ensure_image_access
+        ensure_image_access(application.runtime, session.context, observed_at=application.tasks.now())
+        offered, image_values = core_image_tools(session, session.catalog())
+    else:
+        offered, image_values = session.catalog(), None
     semantic = getattr(application.tools, "semantic", None)
-    if semantic is not None:
+    if semantic is not None and (
+            not private_chat or profile == "full" or any(item.owner == "semantic" for item in offered)):
         from .core_reply_reaction_delivery import inject_core_reaction_instruction
         inject_core_reaction_instruction(event, req, semantic, session.turn_id)
     existing = list(getattr(getattr(req, "func_tool", None), "tools", ()))
