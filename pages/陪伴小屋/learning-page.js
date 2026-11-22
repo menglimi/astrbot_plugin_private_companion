@@ -103,6 +103,8 @@ window.CompanionLearningPage = (() => {
     source_dependency_expired:"原来源的依赖已过期。",
     growth_review_unavailable:"这条审阅依据已不可读取，只能不采纳。",
     growth_review_conflict:"这条审阅已有结论，已刷新。",
+    growth_view_stale:"记录视图已变化，已重新读取。",
+    growth_progress_decided:"这条进展审阅已处理，已刷新。",
     growth_review_missing:"这条审阅已不在待处理列表。",
     unauthorized:"当前对象尚未获得这项权限。",
     permission_denied:"当前对象尚未获得这项权限。",
@@ -122,6 +124,7 @@ window.CompanionLearningPage = (() => {
     return new Date(value).toLocaleString("zh-CN", {hour12:false, month:"numeric", day:"numeric",
       hour:"2-digit", minute:"2-digit"});
   };
+  const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
   const ICON = {
     track:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17V7M12 17V4M19 17v-6"/><path d="M3 20h18"/></svg>',
     review:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="13" rx="2"/><path d="M8 9h8M8 13h5"/><path d="m9 20 3-3 3 3"/></svg>',
@@ -132,7 +135,7 @@ window.CompanionLearningPage = (() => {
     close:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>',
     sourceKey:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="12" r="3.4"/><path d="M11.5 12H20M17 12v3.4"/></svg>',
   };
-  let root = null, bridge = null, version = 0, data = null;
+  let root = null, bridge = null, version = 0, listTicket = 0, reviewTicket = 0, data = null, getSourcesFn = null;
 
   function blank() {
     return {view:"track",layout:"default",roleLabel:"",
@@ -147,8 +150,28 @@ window.CompanionLearningPage = (() => {
       reviews:[], reviewCursor:"", reviewNext:null,
       detailId:null, detail:null,
       evidenceId:"",evidence:[],evidenceLoading:false,evidenceError:false,
-      form:null, busy:false, loading:false, loadingReviews:false, writing:false, ready:false,
+      form:null, busy:false, loading:false, loadingReviews:false, refreshing:false, refreshedAt:"", writing:false, ready:false,
       notice:"", error:false, entered:new Set(), confirm:null};
+  }
+  function normalizeSources(list) {
+    return (Array.isArray(list) ? list : []).map(source => {
+      const absolute = source?.growthApi || source?.api;
+      if (typeof absolute !== "string" || !absolute) return null;
+      try { return {...source, path: rel(absolute)}; } catch { return null; }
+    }).filter(Boolean);
+  }
+  function syncSources() {
+    if (typeof getSourcesFn !== "function" || !data) return;
+    try {
+      const latest = normalizeSources(getSourcesFn());
+      if (!latest.length && !data.sources.length) return;
+      data.sources = latest;
+      data.path = latest[0]?.path || "";
+      const activeKeys = new Set(latest.map(sourceKey));
+      for (const map of [data.listCursors, data.listPages, data.reviewCursors, data.reviewPages, data.accesses]) {
+        for (const key of Object.keys(map)) if (!activeKeys.has(key)) delete map[key];
+      }
+    } catch (_) {}
   }
   /* 插件相对路径。目录给的是绝对地址，交给桥之前切掉插件目录名——
      带上它宿主会拼两次，整族 404。 */
@@ -279,13 +302,19 @@ window.CompanionLearningPage = (() => {
      常见路径——不设上限就等于一次动作串行发几十次请求。上限之内的页重读不到的行
      由合并保留，游标退回上限处，用户再点「加载更多」会顺着往后走（合并会去重）。 */
   const MAX_REFRESH_PAGES = 8;
-  async function load({mode = "reset"} = {}) {
-    if (!data.sources.length || data.loading) return;
+  async function load({mode = "reset", manual = false} = {}) {
+    if (data.loading) return;
+    const reset = mode === "reset", refresh = mode === "refresh";
+    if (refresh) syncSources();
+    if (!data.sources.length) return;
     const ticket = version;
-    const reset = mode === "reset";
+    const request = ++listTicket;
     const previous = reset ? [] : data.items.slice();
-    if (reset) { data.listCursors = {}; data.listPages = {}; data.accesses = {}; }
-    data.loading = true; render();
+    if (reset) { data.listCursors = {}; data.listPages = {}; data.accesses = {}; data.refreshedAt = ""; }
+    else if (manual) { notice(""); }
+    data.loading = true;
+    data.refreshing = refresh;
+    render();
     try {
       const requests = await Promise.allSettled(data.sources.map(async source => {
         const listed = Math.max(1, Number(data.listPages[sourceKey(source)] || 1));
@@ -316,22 +345,38 @@ window.CompanionLearningPage = (() => {
           && cursor && guard++ < 200) {
           const page = await api("GET", source.path, listQuery(cursor));
           if (!Array.isArray(page.items)) throw problem("invalid_response");
-          rows.push(...page.items.map(row => attachRow(source, row, row.growth_id)));
+          rows.push(...page.items.map(row => ({...attachRow(source, row, row.growth_id), _deepLinked: true})));
           cursor = page.next_cursor || null;
         }
-        return {source, rows, cursor, pages, access:first?.access || null,
+        return {source, rows, cursor, pages, capped: Boolean(cursor) && listed > MAX_REFRESH_PAGES, access:first?.access || null,
           profileId:first?.profile_id || "", operatorName:first?.operator_name || ""};
       }));
-      if (!live(ticket)) return;
+      if (!live(ticket) || request !== listTicket) return;
       const valid = requests.filter(result => result.status === "fulfilled").map(result => result.value);
-      const failed = requests.length - valid.length;
+      const failedSources = data.sources.filter((_, index) => requests[index].status !== "fulfilled");
+      const failed = failedSources.length;
       if (!valid.length) throw requests.find(result => result.status === "rejected")?.reason || problem("invalid_response");
-      const merged = [...new Map(valid.flatMap(result => result.rows).map(row => [row._rowKey, row])).values()];
-      data.items = reset ? merged.sort(byUpdatedAt) : mergeKept(previous, merged);
-      data.accesses = Object.fromEntries(valid.filter(result => validAccess(result.access))
-        .map(result => [sourceKey(result.source), result.access]));
+      const resultByKey = new Map(valid.map(result => [sourceKey(result.source), result]));
+      const activeKeys = new Set(data.sources.map(sourceKey));
+      const freshRows = [...new Map(valid.flatMap(result => result.rows).map(row => [row._rowKey, row])).values()];
+      if (reset) {
+        data.items = freshRows.sort(byUpdatedAt);
+      } else {
+        /* 成功来源已完整重读的页以服务端结果权威替换；仅保留失败来源旧项，
+           以及有界刷新未覆盖到的深链/超上限后页条目（服务端流已结束时一并替换）。 */
+        const retained = previous.filter(row => {
+          const key = sourceKey(row._source);
+          if (!activeKeys.has(key)) return false;
+          const res = resultByKey.get(key);
+          if (!res) return true;
+          return Boolean(res.cursor) && (row._deepLinked || res.capped);
+        });
+        data.items = retained.length ? mergeKept(retained, freshRows) : freshRows.sort(byUpdatedAt);
+      }
       for (const result of valid) {
         const key = sourceKey(result.source);
+        if (validAccess(result.access)) data.accesses[key] = result.access;
+        else delete data.accesses[key];
         data.listCursors[key] = result.cursor;
         data.listPages[key] = result.pages;
       }
@@ -340,10 +385,15 @@ window.CompanionLearningPage = (() => {
       data.profileId = "";
       data.operatorName = valid[0]?.operatorName || "";
       data.ready = true;
-      if (failed) notice(`部分记录归属暂不可读取（${failed} 处）。`, true);
+      if (failed) {
+        const names = failedSources.map(source => source.label || sourceKey(source)).filter(Boolean);
+        notice(`部分记录归属暂不可读取（${names.length ? names.join("、") + "，" : ""}${failed} 处），已保留失败归属旧项。`, true);
+      } else if (manual) {
+        data.refreshedAt = formatClock();
+      }
       /* 详情跟着列表刷新：列表里的那条已经变了，详情不能停在旧版本。 */
       if (data.detailId && !item(data.detailId)) {
-        data.detailId = null;data.form=null;
+        data.detailId = null; data.form = null;
         notice("所选记录已不在当前可读范围。", true);
       }
       if (data.recordFocus?.growth_id && !data.detailId) {
@@ -352,11 +402,11 @@ window.CompanionLearningPage = (() => {
           && row._source?.role?.role_id === data.recordFocus.role_id);
         if (focused) data.detailId = rowKey(focused);
       }
-      if (!data.detailId && data.layout==="chain")data.detailId=rowKey(data.items[0])||null;
-      data.detail=data.detailId?item(data.detailId):null;
-      if(data.layout==="chain"&&data.detailId)await loadEvidence(data.detailId);
+      if (!data.detailId && data.layout === "chain") data.detailId = rowKey(data.items[0]) || null;
+      data.detail = data.detailId ? item(data.detailId) : null;
+      if (data.layout === "chain" && data.detailId) await loadEvidence(data.detailId);
     } catch (error) {
-      if (!live(ticket)) return;
+      if (!live(ticket) || request !== listTicket) return;
       /* 只有 reset 才清空：刷新失败时保留已经显示的记录，一次网络抖动不该把
          用户翻出来的第二页抹掉；下方那条提示已经说明了原因。 */
       if (reset) { data.items = []; data.detail = null; data.next = null; }
@@ -364,7 +414,7 @@ window.CompanionLearningPage = (() => {
       notice(reset ? failure : failure + "（已保留当前内容）", true);
       if (denied.has(error.code)) { data.ready = false; data.sources = []; data.path = ""; }
     } finally {
-      if (live(ticket)) { data.loading = false; render(); }
+      if (live(ticket) && request === listTicket) { data.loading = false; data.refreshing = false; render(); }
     }
   }
   async function loadEvidence(id) {
@@ -423,9 +473,12 @@ window.CompanionLearningPage = (() => {
   /* 审阅队列与列表一样分页：reset 从第一页重来，refresh 把已经读过的页数原地重读，
      新数据按 _rowKey 覆盖旧行、没读到的旧行保留。 */
   async function loadReviews({mode = "reset"} = {}) {
-    if (!data.sources.length || data.loadingReviews) return;
-    const ticket = version;
+    if (data.loadingReviews) return;
     const reset = mode === "reset";
+    if (!reset) syncSources();
+    if (!data.sources.length) return;
+    const ticket = version;
+    const request = ++reviewTicket;
     const previous = reset ? [] : data.reviews.slice();
     if (reset) { data.reviewCursors = {}; data.reviewPages = {}; }
     data.loadingReviews = true; render();
@@ -446,26 +499,40 @@ window.CompanionLearningPage = (() => {
         }
         return {source, rows, cursor, pages};
       }));
-      if (!live(ticket)) return;
+      if (!live(ticket) || request !== reviewTicket) return;
       const valid=results.filter(result=>result.status==="fulfilled").map(result=>result.value);
+      const failedSources = data.sources.filter((_, index) => results[index].status !== "fulfilled");
       if(!valid.length&&results.length)throw results.find(result=>result.status==="rejected")?.reason||problem("invalid_response");
-      const merged=[...new Map(valid.flatMap(result=>result.rows).map(row=>[row._rowKey,row])).values()];
-      data.reviews=(reset?merged:mergeKept(previous,merged)).sort(byUpdatedAt);
+      const freshRows=[...new Map(valid.flatMap(result=>result.rows).map(row=>[row._rowKey,row])).values()];
+      if (reset || !failedSources.length) {
+        data.reviews = freshRows.sort(byUpdatedAt);
+      } else {
+        const succeededKeys = new Set(valid.map(result => sourceKey(result.source)));
+        const activeKeys = new Set(data.sources.map(sourceKey));
+        const retained = previous.filter(row => {
+          const key = sourceKey(row._source);
+          return activeKeys.has(key) && !succeededKeys.has(key);
+        });
+        data.reviews = mergeKept(retained, freshRows);
+      }
       for (const result of valid) {
         const key = sourceKey(result.source);
         data.reviewCursors[key] = result.cursor;
         data.reviewPages[key] = result.pages;
       }
       data.reviewNext=Object.values(data.reviewCursors).some(Boolean)?"more":null;
-      if(valid.length<results.length)notice("部分审阅记录归属暂不可读取。",true);
+      if(failedSources.length){
+        const names = failedSources.map(source => source.label || sourceKey(source)).filter(Boolean);
+        notice(`部分审阅记录归属暂不可读取${names.length ? `（${names.join("、")}）` : ""}，已保留失败归属旧项。`, true);
+      }
       data.ready = true;
     } catch (error) {
-      if (!live(ticket)) return;
+      if (!live(ticket) || request !== reviewTicket) return;
       if (reset) data.reviews = [];
       const failure = error.code ? reason(error.code) : "审阅列表没有读到。";
       notice(reset ? failure : failure + "（已保留当前内容）", true);
     } finally {
-      if (live(ticket)) { data.loadingReviews = false; render(); }
+      if (live(ticket) && request === reviewTicket) { data.loadingReviews = false; render(); }
     }
   }
   async function loadMoreReviews() {
@@ -588,7 +655,9 @@ window.CompanionLearningPage = (() => {
     } catch (error) {
       if (!live(ticket)) return;
       data.writing = false; notice(reason(error.code), true);
-      if (error.code === "growth_review_conflict") await loadReviews({mode:"refresh"}); else render();
+      if (["growth_view_stale","growth_progress_decided","growth_revision_conflict","growth_review_conflict"].includes(error.code)) {
+        await loadReviews({mode:"refresh"});
+      } else render();
     }
   }
 
@@ -633,8 +702,9 @@ window.CompanionLearningPage = (() => {
         ${pending ? `<span class="lea-pill">${pending} 条待审阅</span>` : ""}
         ${data.sources.length > 1 ? `<span class="lea-id">汇总 ${data.sources.length} 个记录归属</span>` : ""}
       </div>
-      <div class="lea-head-actions">
-        <button type="button" class="lea-btn" data-action="refresh"${data.loading || data.writing ? " disabled" : ""}>${ICON.refresh}<span>重新读取</span></button>
+      <div class="lea-head-actions refresh-cluster">
+        ${data.refreshedAt ? `<span class="refresh-stamp" role="status">刚刚已刷新 ${e(data.refreshedAt)}</span>` : ""}
+        <button type="button" class="lea-btn${data.refreshing ? " is-refreshing" : ""}" data-action="refresh" aria-busy="${data.refreshing ? "true" : "false"}"${data.loading || data.writing ? " disabled" : ""}>${ICON.refresh}<span>${data.refreshing ? "读取中…" : "重新读取"}</span></button>
       </div>
     </header>`;
   }
@@ -819,7 +889,7 @@ window.CompanionLearningPage = (() => {
         ${data.loading&&!data.items.length?`<p class="lea-lane-empty">正在读取…</p>`:rows||`<p class="lea-lane-empty">暂无成长记录</p>`}
         ${data.next?`<button type="button" class="lea-btn is-wide" data-action="more"${data.loading?" disabled":""}>读取下一页</button>`:""}</section>
         <section class="lea-chain-evidence lea-block"><header><h3>依据与凭证</h3><span>${current?e(current.source_count??0)+" 条记录":"—"}</span></header>${evidence}</section></div>
-      <div class="lea-chain-right"><section class="lea-chain-detail lea-block"><header><h3>记录详情 · 工作台</h3><button type="button" class="lh-refresh" data-action="refresh" aria-label="重新读取" title="重新读取"${data.loading||data.writing?" disabled":""}>${ICON.refresh}</button></header>${detailView()}</section>
+      <div class="lea-chain-right"><section class="lea-chain-detail lea-block"><header><h3>记录详情 · 工作台</h3><span class="refresh-cluster">${data.refreshedAt ? `<span class="refresh-stamp" role="status">刚刚已刷新 ${e(data.refreshedAt)}</span>` : ""}<button type="button" class="lh-refresh${data.refreshing ? " is-refreshing" : ""}" data-action="refresh" aria-label="重新读取" title="重新读取" aria-busy="${data.refreshing ? "true" : "false"}"${data.loading || data.writing ? " disabled" : ""}>${ICON.refresh}</button></span></header>${detailView()}</section>
       ${current?.actions?.includes("revise")?`<section class="lea-chain-revision"><header><h3>修订 · 生成新版本</h3></header>${reviseForm(current)}</section>`:""}</div>
     </div>
     ${data.notice?noticeMarkup():""}`;
@@ -942,7 +1012,7 @@ window.CompanionLearningPage = (() => {
     if (action === "refresh") {
       data.notice = "";
       if (data.view === "reviews" || data.view === "track") loadReviews({mode:"refresh"});
-      load({mode:"refresh"}); return;
+      load({mode:"refresh", manual:true}); return;
     }
     if (action === "dismiss") { data.notice = ""; render(); return; }
     if (action === "cancel-revision") {data.form=null;render();return;}
@@ -1094,6 +1164,7 @@ window.CompanionLearningPage = (() => {
        在 unmount() 之前取票会让下面第一处 live(ticket) 立即为假。 */
     unmount();
     root = host; data = blank();
+    getSourcesFn = typeof options.getSources === "function" ? options.getSources : null;
     data.layout=options.layout==="chain"?"chain":"default";
     data.detailId=null;
     data.roleLabel=typeof options.roleLabel==="string"?options.roleLabel:"";
@@ -1136,14 +1207,14 @@ window.CompanionLearningPage = (() => {
     }
   }
   function unmount() {
-    ++version;
-    if (!root) { data = null; bridge = null; return; }
+    ++version; ++listTicket; ++reviewTicket;
+    if (!root) { data = null; bridge = null; getSourcesFn = null; return; }
     root.removeEventListener("click", onClick);
     root.removeEventListener("change", change);
     root.removeEventListener("input", input);
     root.removeEventListener("submit", submit);
     root.removeEventListener("keydown", keydown);
-    root = null; bridge = null; data = null;
+    root = null; bridge = null; data = null; getSourcesFn = null;
   }
   return {mount, unmount,
     get state() { return {data}; },

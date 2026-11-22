@@ -210,7 +210,7 @@ window.CompanionConfigEditors = (() => {
     {id: "switches", title: "状态与动作",
      help: "关闭总闸时下面所有项都不起作用：不再发任何空间请求，也不再为它花模型额度。",
      fields: ["enabled", "like_enabled", "comment_enabled", "publish_enabled",
-              "feed_recent_posts", "comment_recent_posts"]},
+              "feed_recent_posts", "comment_recent_posts", "owner_uin"]},
     {id: "throttle", title: "发布节流",
      help: "总闸与「允许在空间发说说」都打开后才生效。这几项限制的是频率与条数，不放宽任何一项能力开关。",
      fields: ["action_min_interval_minutes", "max_actions_per_tick", "daily_limits_enabled", "publish_max_daily"]},
@@ -232,6 +232,10 @@ window.CompanionConfigEditors = (() => {
   /* 每个主题的 helps 里那串「可选值」是各主题自己的那一份，所以逐主题拼；
      共用一句示例会把「只能用该主题自己的场景」说成另一个主题的场景。 */
   function qzoneAudit(values) {
+    if (typeof values.owner_uin === "string") {
+      const ownerUin = values.owner_uin.trim();
+      if (ownerUin && !/^\d{1,20}$/.test(ownerUin)) return "qzone_owner_uin_invalid";
+    }
     for (const topic of QZONE_TOPIC_SECTIONS) {
       const name = `${topic.prefix}_scenes`;
       const value = values[name];
@@ -1674,6 +1678,7 @@ window.CompanionConfigEditors = (() => {
         publish_enabled: "允许在空间发说说",
         feed_recent_posts: "每次刷空间读取条数",
         comment_recent_posts: "回复前回看自己的说说条数",
+        owner_uin: "主人 QQ 号",
         action_min_interval_minutes: "两次同类公开动作最短间隔（分钟）",
         max_actions_per_tick: "单轮公开动作上限",
         daily_limits_enabled: "启用每日次数限制",
@@ -1702,6 +1707,7 @@ window.CompanionConfigEditors = (() => {
         publish_enabled: "关闭时不能发说说。发布同样是公开动作，还要受下面的间隔、每日上限与主题条件约束。",
         feed_recent_posts: "刷空间一次最多读多少条，好友动态与我的动态都在这个范围内，1 到 30。",
         comment_recent_posts: "回复前回看自己最近几条说说，用来判断上下文，1 到 20。",
+        owner_uin: "需要查看主人 QQ 空间动态时填写纯数字 QQ 号（不超过 20 位）；留空表示暂不指定。",
         action_min_interval_minutes: "点赞、回复、发说说共用这一条间隔，5 到 1440 分钟；调小只是允许更频繁，不代表会真的更频繁。",
         max_actions_per_tick: "一轮里最多做几个公开动作，1 到 5。调大不会放宽间隔，也不会放宽每日上限。",
         daily_limits_enabled: "开启时同时执行说说总数、各主题和生活说说的每日上限；关闭后每日次数不限，冷却间隔、内容去重和发布授权仍然生效。",

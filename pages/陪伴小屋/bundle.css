@@ -6950,6 +6950,34 @@ body.state-connected{min-width:320px}
 @keyframes console-spin{to{transform:rotate(360deg)}}
 :root[data-motion="off"] .console-loading::before{animation:none}
 
+/* === 统一刷新反馈 === */
+button.is-refreshing svg,
+[role="button"].is-refreshing svg{
+  animation:console-spin .85s linear infinite;
+}
+button.is-refreshing[aria-busy="true"],
+[role="button"].is-refreshing[aria-busy="true"]{
+  cursor:progress;
+}
+.refresh-cluster{
+  display:inline-flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;
+}
+.refresh-stamp{
+  color:var(--t-text-faint);font-size:var(--fs-micro);
+  font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+:root[data-motion="off"] button.is-refreshing svg,
+:root[data-motion="off"] [role="button"].is-refreshing svg,
+body.reduce-motion button.is-refreshing svg,
+body.reduce-motion [role="button"].is-refreshing svg{
+  animation:none;
+}
+@media(prefers-reduced-motion:reduce){
+  .console-loading::before,
+  button.is-refreshing svg,
+  [role="button"].is-refreshing svg{animation:none}
+}
+
 @media(max-width:760px){
   /* 窄屏上说明与标题并排会挤成两行半，改成换行独占一行。 */
   .console-section-head{flex-direction:column;align-items:flex-start;gap:var(--sp-2)}
@@ -21906,14 +21934,15 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
 .role-profile-migration-dialog .role-profile-draft-actions>span{max-width:44ch;line-height:1.45}
 
 @media(max-width:650px){
-  .role-profile-draft-dialog{width:calc(100vw - 16px);max-height:96dvh;border-radius:var(--r-sm)}
-  .role-profile-draft-shell{max-height:96dvh}
+  .role-profile-draft-dialog{width:calc(100vw - 16px);max-height:96dvh;overflow-y:auto;border-radius:var(--r-sm)}
+  .role-profile-draft-shell{max-height:none}
+  .role-profile-draft-output{overflow:visible}
   .role-profile-draft-head,.role-profile-draft-compose,.role-profile-draft-output{padding-inline:var(--sp-3)}
   .role-profile-draft-compose-foot{align-items:stretch;flex-direction:column}
   .role-profile-draft-compose-actions{display:grid;grid-template-columns:minmax(0,1fr)}
   .role-profile-draft-compose-actions .button{justify-content:center}
   .role-profile-draft-field-list{grid-template-columns:minmax(0,1fr)}
-  .role-profile-migration-dialog .role-profile-draft-shell{max-height:96dvh}
+  .role-profile-migration-dialog .role-profile-draft-shell{max-height:none}
   .role-profile-migration-context{grid-template-columns:minmax(0,1fr)}
   .role-profile-migration-context-item{padding-inline:var(--sp-3)}
   .role-profile-migration-notice,.role-profile-migration-output{padding-inline:var(--sp-3)}

@@ -1,4 +1,4 @@
-﻿.semantic-section{border-top:1px solid var(--t-text-soft);padding:var(--sp-5) 0;margin-top:var(--sp-4)}
+.semantic-section{border-top:1px solid var(--t-text-soft);padding:var(--sp-5) 0;margin-top:var(--sp-4)}
 .semantic-heading,.semantic-toolbar,.semantic-actions{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap}
 .semantic-heading h3{display:flex;align-items:center;gap:var(--sp-2);margin:0;font-size:var(--fs-title)}.semantic-heading span,.semantic-meta,.semantic-import span,.semantic-row small{color:var(--t-text-soft);font-size:var(--fs-body)}
 .semantic-feedback{min-height:20px;color:var(--t-ok-ink);font-size:var(--fs-body)}.semantic-state{font-size:var(--fs-body);background:var(--t-surface-soft);color:var(--t-ok-ink);padding:var(--sp-1) var(--sp-2);border-radius:var(--r-2xs)}.semantic-state.lexical_fallback{background:var(--t-warn-quiet);color:var(--t-warn-ink)}.semantic-state.disabled{background:var(--t-surface-soft);color:var(--t-text-soft)}

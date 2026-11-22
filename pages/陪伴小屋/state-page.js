@@ -593,8 +593,8 @@ window.CompanionStatePage = (() => {
       :"";
     if(oldDialog?.open)oldDialog.close();
     const pending=data.pendingMaintenance,maintenanceOff=status?.settings?.enabled===false;
-    const maintainDisabled=!status||data.loading||data.maintenanceSubmitting||editor?.busy||pending&&!pending.retryable;
-    const maintainLabel=data.maintenanceSubmitting?"正在请求…":pending?(pending.retryable?"重试更新":"更新中…")
+    const maintainDisabled=!status||data.loading||data.maintenanceSubmitting||editor?.busy;
+    const maintainLabel=data.maintenanceSubmitting?"正在请求…":pending?"重试更新"
       :maintenanceOff?"前往设置":"立即更新";
     const maintainIcon=maintenanceOff?"settings-2":"sparkles";
     const noticeText=data.notice||(maintenanceOff?"状态维护已关闭，启用后才会生成新的状态记录。":"");
@@ -731,11 +731,11 @@ window.CompanionStatePage = (() => {
     if(!Number.isInteger(current?.revision)||typeof current?.view_token!=="string"){
       notice("当前状态尚未就绪，请重新读取后再试。",true);render();return;
     }
-    let pending=data.pendingMaintenance;
-    if(pending&&!pending.retryable)return;
-    if(!pending)pending={operation_key:crypto.randomUUID(),expected_revision:current.revision,view_token:current.view_token,
+    const prevPending=data.pendingMaintenance;
+    const pending={operation_key:prevPending?.retryable&&prevPending.operation_key?prevPending.operation_key:crypto.randomUUID(),
+      expected_revision:current.revision,view_token:current.view_token,
       resultSnapshot:JSON.stringify(data.status.maintenance?.result??null),retryable:false};
-    pending.retryable=false;data.pendingMaintenance=pending;data.maintenanceSubmitting=true;
+    data.pendingMaintenance=pending;data.maintenanceSubmitting=true;
     notice("正在安排状态更新…");render();
     try {
       await api("POST",endpoint()+"/command",{action:"maintain",operation_key:pending.operation_key,

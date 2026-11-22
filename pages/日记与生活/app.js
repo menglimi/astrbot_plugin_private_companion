@@ -8,9 +8,18 @@
     authorization_missing: "请先启用生活日程与执行权限。", life_view_stale: "记录或权限已经变化，请刷新后重新确认。", life_reading_unresolved: "原阅读结果尚未确定，不能重复调用。",
     life_reading_active: "当前片段仍在阅读，请完成或取消后再入睡。", life_sleeping: "角色正在睡眠，请先醒来再阅读。", life_command_invalid: "生活记录或操作信息已变化，请刷新后重新尝试。", journal_trigger_unresolved: "原书写仍在进行、结果未知或已经成功，不能重复执行。",
     configuration_revision_conflict: "设置已变化，请刷新后重新保存。", core_access_required: "当前账号没有本体管理权限。", source_revoked: "原文已撤回，依赖它的内容已停止使用。", life_activity_not_removable: "只有已完成或已取消的阅读记录可以删除。" };
-  let bridge, state, selected, dialogAction, dialogItem, busy = false, dirty = false, tab = "archive";
+  let bridge, state, selected, dialogAction, dialogItem, busy = false, loading = false, loadSeq = 0, dirty = false, tab = "archive";
   let datePages = [null], datePage = 0, activityCursor = null, polling = null;
   let embedded = false, sleepOverviewUserToggled = false, settingSleepOverview = false;
+  const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
+  function setRefreshState(active) {
+    const btn = $("refresh");
+    if (!btn) return;
+    btn.disabled = active || busy;
+    btn.classList?.toggle?.("is-refreshing", active);
+    btn.setAttribute?.("aria-busy", active ? "true" : "false");
+    btn.textContent = active ? "刷新中…" : "刷新记录";
+  }
   const renderedKeys = { journalList: null, journalDetail: null, reading: null, sleep: null, receipts: null, sleepSummary: null };
   const animatedLists = new Set();
   const pending = new Map();
@@ -140,6 +149,7 @@
     /* 配置没读到（state 为 null）时别让用户对着能点的表单白点：整组禁用，
        具体原因由 load() 的提示给出，刷新成功后自动恢复。 */
     $("config-form").querySelectorAll("input, button").forEach(el => { el.disabled = value || !state; });
+    if ($("refresh")) $("refresh").disabled = value || loading;
   }
   async function api(method, body) {
     try {
@@ -364,13 +374,22 @@
     renderArchive(background); renderActivities(background); renderReceipts(background); controls(busy);
     if (state.failure_code) notice(errors[state.failure_code] || "生活日程已暂停，请检查执行权限与设置。", true);
   }
-  async function load(preserveNotice = false, background = false) {
+  async function load(preserveNotice = false, background = false, manual = false) {
     if (!bridge) return;
+    if (manual && loading) return;
+    const seq = ++loadSeq;
+    loading = true;
+    if (!background) setRefreshState(true);
+    if (manual) notice("");
     try {
-      state = await api("GET", { ...(datePages[datePage] ? { before: datePages[datePage] } : {}), ...(activityCursor ? { after_activity: activityCursor } : {}) });
-      if (!preserveNotice) notice(""); render(background);
+      const next = await api("GET", { ...(datePages[datePage] ? { before: datePages[datePage] } : {}), ...(activityCursor ? { after_activity: activityCursor } : {}) });
+      if (seq !== loadSeq) return;
+      state = next;
+      if (!preserveNotice) notice(manual ? `刚刚已刷新 ${formatClock()}` : "");
+      render(background);
       schedulePolling();
     } catch (error) {
+      if (seq !== loadSeq) return;
       state = selected = null;
       resetRenderKeys();
       clearTimeout(polling); polling = null;
@@ -394,6 +413,11 @@
       $("editor").close();
       notice(`${error.message} 配置暂时无法读取或保存，请点「刷新记录」重试。`, true);
       controls(false);
+    } finally {
+      if (seq === loadSeq) {
+        loading = false;
+        setRefreshState(false);
+      }
     }
   }
   function open(action, item = null) {
@@ -440,7 +464,7 @@
   });
   $("retry-form").addEventListener("submit", e => { e.preventDefault(); send("diary", { local_date: $("retry-date").value, retry_of: $("retry-id").value.trim() }); });
   $("close-dialog").addEventListener("click", () => $("editor").close());
-  $("refresh").addEventListener("click", () => load());
+  $("refresh").addEventListener("click", () => load(false, false, true));
   async function hostControl(action) {
     if (busy || !bridge) return;
     controls(true); notice(action === "start" ? "正在载入当前角色并启动…" : "正在停止运行…");

@@ -279,7 +279,7 @@ function navigationDestination(next,tab='',subtab=''){
     subtab=tab==='learning'?(['overview','strategy','review','chain','expression','behavior','semantic','reflection'].includes(subtab)?subtab:'overview')
       :tab==='models'?(MODEL_TABS.includes(subtab)?subtab:'fn')
       :tab==='expression'?(['text','segment','style','cleanup','voice','components','checks','timing','platform','reaction','group'].includes(subtab)?subtab:'')
-      :tab==='maintenance'?(['diagnostics','delivery','reply-diagnostics','cache','efficiency','recent','prompts','patrol'].includes(subtab)?subtab:'')
+      :tab==='maintenance'?(['diagnostics','delivery','reply-diagnostics','cache','efficiency','recent','prompts','system-prompts','logs','patrol'].includes(subtab)?subtab:'')
         :tab==='data'?(['storage','backup','migration','port'].includes(subtab)?subtab:'storage')
         :tab==='memory'?(['records','settings'].includes(subtab)?subtab:'')
         :tab==='perception'?(['environment','models','news','screen','balance','recall','injection'].includes(subtab)?subtab:'')
@@ -1183,6 +1183,7 @@ function paintPanel(){
      只在来源确实是导航时移动焦点——面板内部的刷新（轮询、保存回执）不该抢焦点。 */
   const fromRail=Boolean(document.activeElement?.closest?.('.rail'));
   const commit=()=>{
+    product.unmountWorkspace?.();
     unmountConfigEditors();
     host.innerHTML=furniture?renderFurniturePanel(furniture)
       :section?renderSectionPanel(section)
@@ -1236,10 +1237,11 @@ function mountPanelWorkspaces(){
     ?window.CompanionContactPage?.mount(contactHost)
     :window.CompanionContactPage?.unmount());
   const learningHost=$('#learningWorkspace');
-  const growthSources=learningReviewSources({scopeKey:learningTab==='chain'?'growth':null});
+  const readGrowthSources=()=>learningReviewSources({scopeKey:learningTab==='chain'?'growth':null});
+  const growthSources=readGrowthSources();
   guarded('学习与反思',()=>learningHost
     ?growthSources.length
-      ?window.CompanionLearningPage?.mount(learningHost,{sources:growthSources,layout:'chain',recordFocus:learningRecordFocus})
+      ?window.CompanionLearningPage?.mount(learningHost,{sources:growthSources,getSources:readGrowthSources,layout:'chain',recordFocus:learningRecordFocus})
       :window.CompanionLearningPage?.unmount()
     :window.CompanionLearningPage?.unmount());
   const learningOverviewHost=$('#learningOverviewWorkspace');
@@ -1248,14 +1250,15 @@ function mountPanelWorkspaces(){
     ?window.CompanionBehaviorPage?.mount(behaviorHost,{api:roleConfigApi(product.role?.())})
     :window.CompanionBehaviorPage?.unmount());
   guarded('学习总览',()=>learningOverviewHost
-    ?window.CompanionLearningOverviewPage?.mount(learningOverviewHost,{sources:learningReviewSources({includeGroups:true}),semantic:{global:true}})
+    ?window.CompanionLearningOverviewPage?.mount(learningOverviewHost,{sources:learningReviewSources({includeGroups:true}),semantic:{global:true},getSources:()=>learningReviewSources({includeGroups:true})})
     :window.CompanionLearningOverviewPage?.unmount());
   const learningReviewHost=$('#learningReviewWorkspace');
   guarded('学习审阅中心',()=>learningReviewHost
-    ?window.CompanionLearningReviewPage?.mount(learningReviewHost,{sources:learningReviewSources({includeGroups:true})})
+    ?window.CompanionLearningReviewPage?.mount(learningReviewHost,{sources:learningReviewSources({includeGroups:true}),getSources:()=>learningReviewSources({includeGroups:true})})
     :window.CompanionLearningReviewPage?.unmount());
   const selfReviewHost=$('#selfReviewWorkspace');
   const reviewSources=learningReviewSources();
+  reviewSources.getSources=()=>learningReviewSources();
   guarded('每日复盘',()=>selfReviewHost
     ?window.CompanionSelfReviewPage?.mount(selfReviewHost,{sources:reviewSources,state:'active'})
     :window.CompanionSelfReviewPage?.unmount());
@@ -1320,23 +1323,27 @@ function mountPanelWorkspaces(){
       :window.CompanionExpressionLearningPage?.unmount());
   }else guarded('表达学习卸载',()=>window.CompanionExpressionLearningPage?.unmount());
   const expressionSignalsHost=$('#expressionSignalsWorkspace');
-  const expressionSources=learningExpressionSources();
+  const readExpressionSources=()=>learningExpressionSources();
+  const expressionSources=readExpressionSources();
   guarded('表达规则',()=>expressionSignalsHost&&expressionSources.length
-    ?window.CompanionExpressionSignalsPage?.mount(expressionSignalsHost,{sources:expressionSources})
+    ?window.CompanionExpressionSignalsPage?.mount(expressionSignalsHost,{sources:expressionSources,getSources:readExpressionSources})
     :window.CompanionExpressionSignalsPage?.unmount());
   const expressionSamplesHost=$('#expressionSamplesWorkspace');
   guarded('表达学习素材',()=>expressionSamplesHost&&expressionSources.length
-    ?window.CompanionExpressionSamplesPage?.mount(expressionSamplesHost,{sources:expressionSources})
+    ?window.CompanionExpressionSamplesPage?.mount(expressionSamplesHost,{sources:expressionSources,getSources:readExpressionSources})
     :window.CompanionExpressionSamplesPage?.unmount());
   if($('#setupGuideHost'))guarded('首次配置引导',()=>mountSetupGuide());
-  const legacyMigrationHost=$('#legacyMigrationWorkspace');
-  if(legacyMigrationHost)guarded('旧版资料迁入',()=>window.CompanionSetup?.mountMigration(legacyMigrationHost));
+  else if($('#legacyMigrationWorkspace'))guarded('旧版资料迁入',()=>window.CompanionSetup?.mountMigration($('#legacyMigrationWorkspace')));
+  else guarded('首次配置引导卸载',()=>unmountSetupGuide());
   /* 备份与还原。它只在「资料与维护」与「治理与维护」两页出现，
      两道 renderData() 各自会插入挂载点，这里按容器是否存在探测，
      不存在就不挂——与上面几行同一个做法。 */
   if($('#backupWorkspace'))guarded('备份与还原',()=>window.CompanionBackupPage?.mount($('#backupWorkspace')));
+  else guarded('备份与还原卸载',()=>window.CompanionBackupPage?.unmount?.());
   if($('#storageWorkspace'))guarded('插件存储管理',()=>window.CompanionStoragePage?.mount($('#storageWorkspace')));
- if($('#configPortWorkspace'))guarded('配置导入导出',()=>window.CompanionConfigPortPage?.mount($('#configPortWorkspace')));
+  else guarded('插件存储管理卸载',()=>window.CompanionStoragePage?.unmount?.());
+  if($('#configPortWorkspace'))guarded('配置导入导出',()=>window.CompanionConfigPortPage?.mount($('#configPortWorkspace')));
+  else guarded('配置导入导出卸载',()=>window.CompanionConfigPortPage?.unmount?.());
   guarded('配置分区',()=>renderConfigEditors());
   guarded('产出预览',()=>mountOutputPreviewImage());
   guarded('产出后端',()=>$('.output-page')?window.CompanionOutputPage?.mount($('.output-page')):window.CompanionOutputPage?.unmount());
@@ -1346,6 +1353,7 @@ function mountPanelWorkspaces(){
     :window.CompanionImageMaterialsPage?.unmount());
   if($('#modelWorkspace'))guarded('模型与连接',()=>window.CompanionModelsPage?.mount($('#modelWorkspace'),
     route==='manage'&&manageTab==='models'?{initialTab:modelsPane,onTabChange:onModelsTabChange}:{}));
+  else guarded('模型与连接卸载',()=>window.CompanionModelsPage?.unmount?.());
   const mobileConnectionHost=$('#mobileConnectionWorkspace');
   if(mobileConnectionHost)guarded('手机端连接',()=>
     window.CompanionNativeExtensionPanel?.mount(mobileConnectionHost,{extensionId:'reality',onlyGroup:'mobile'}));
@@ -1365,9 +1373,11 @@ function mountPanelWorkspaces(){
   });
   guarded('内置能力面板',()=>window.CompanionNativeExtensionPanel?.prune());
   if($('#perceptionOverviewWorkspace'))guarded('感知上下文',()=>window.CompanionPerceptionOverviewPage?.mount($('#perceptionOverviewWorkspace')));
+  else guarded('感知上下文卸载',()=>window.CompanionPerceptionOverviewPage?.unmount?.());
   if($('#nativeEnvironmentWorkspace'))guarded('原生感知',()=>window.CompanionNativePerceptionPage?.mount({
     environment:$('#nativeEnvironmentWorkspace'),calendar:$('#nativeCalendarWorkspace'),
     model:$('#nativeModelWorkspace'),news:$('#nativeNewsWorkspace')}));
+  else guarded('原生感知卸载',()=>window.CompanionNativePerceptionPage?.unmount?.());
   guarded('华为运动健康',()=>$('#huaweiHealthWorkspace')
     ?window.CompanionHuaweiHealthPage?.mount($('#huaweiHealthWorkspace'))
     :window.CompanionHuaweiHealthPage?.unmount());
@@ -1534,7 +1544,7 @@ function renderHomeEnvironment(){
   const host=$('[data-home-environment]');
   if(!host||!window.CompanionHomeEnvironment)return;
   if(liteHomeSuspended()){
-    window.CompanionHomeEnvironment.suspend();
+    window.CompanionHomeEnvironment?.suspend?.();
     return;
   }
   const current=product.role();

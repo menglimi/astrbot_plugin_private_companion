@@ -1,4 +1,4 @@
-﻿/* 统一配置工作台 · 内核
+/* 统一配置工作台 · 内核
    取代此前 reply / expression / semantic / config-editor 各自实现的保存生命周期。
    各页只声明「字段 + 作用范围 + 接口」，草稿、脏状态、幂等重试、版本冲突、
    层轨与范围来源提示由本文件统一负责。
@@ -152,6 +152,7 @@ window.CompanionWorkbench = (() => {
     qzone_target_changed: "当前对象或角色绑定已变化，请重新读取。",
     qzone_configuration_invalid: "请核对 QQ 空间开关、节流参数、置信度与各主题场景配置。",
     qzone_scene_list_invalid: "QQ 空间主题的场景清单只能用半角逗号分隔、不能重复，且只能填该主题自己的场景；请对照该主题段落说明里的可选值。",
+    qzone_owner_uin_invalid: "主人 QQ 号只能填写不超过 20 位的纯数字，或留空。",
     content_authoring_scope_invalid: "原生创作按角色生效，请选择一个已初始化的私聊对象。",
     content_authoring_target_changed: "当前对象或角色绑定已变化，请重新读取。",
     content_authoring_configuration_invalid: "请核对原生创作开关、方向说明与封面上限设置。",
@@ -167,6 +168,9 @@ window.CompanionWorkbench = (() => {
     screen_scope_invalid: "屏幕解读按会话生效，请选择一个已初始化的私聊对象。",
     screen_target_changed: "当前对象或角色绑定已变化，请重新读取。",
     screen_configuration_invalid: "请核对开关与素材字数上限。",
+    device_phone_scope_invalid: "手机感知设置按会话生效，请选择一个已初始化的私聊对象。",
+    device_phone_target_changed: "当前对象或角色绑定已变化，请重新读取。",
+    device_phone_configuration_invalid: "请核对手机感知开关与隐私配置参数。",
     person_scope_invalid: "熟人卡按对象生效，请选择一个已初始化的私聊对象。",
     person_target_changed: "当前对象或角色绑定已变化，请重新读取。",
     person_configuration_invalid: "请核对熟人卡开关、回看时长与字数上限。",

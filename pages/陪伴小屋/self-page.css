@@ -1,4 +1,4 @@
-﻿/* 自我页 · 角色手帐。只在本页调整配置控件，保留工作台的保存与继承协议。 */
+/* 自我页 · 角色手帐。只在本页调整配置控件，保留工作台的保存与继承协议。 */
 .self-page{display:grid;gap:var(--sp-4);width:100%;max-width:1120px;min-width:0;margin-inline:auto;container:self-journal / inline-size}
 .self-page [hidden]{display:none!important}
 .self-page.is-questionnaire-focus{max-width:1280px;gap:0}
@@ -424,14 +424,15 @@
 .role-profile-migration-dialog .role-profile-draft-actions>span{max-width:44ch;line-height:1.45}
 
 @media(max-width:650px){
-  .role-profile-draft-dialog{width:calc(100vw - 16px);max-height:96dvh;border-radius:var(--r-sm)}
-  .role-profile-draft-shell{max-height:96dvh}
+  .role-profile-draft-dialog{width:calc(100vw - 16px);max-height:96dvh;overflow-y:auto;border-radius:var(--r-sm)}
+  .role-profile-draft-shell{max-height:none}
+  .role-profile-draft-output{overflow:visible}
   .role-profile-draft-head,.role-profile-draft-compose,.role-profile-draft-output{padding-inline:var(--sp-3)}
   .role-profile-draft-compose-foot{align-items:stretch;flex-direction:column}
   .role-profile-draft-compose-actions{display:grid;grid-template-columns:minmax(0,1fr)}
   .role-profile-draft-compose-actions .button{justify-content:center}
   .role-profile-draft-field-list{grid-template-columns:minmax(0,1fr)}
-  .role-profile-migration-dialog .role-profile-draft-shell{max-height:96dvh}
+  .role-profile-migration-dialog .role-profile-draft-shell{max-height:none}
   .role-profile-migration-context{grid-template-columns:minmax(0,1fr)}
   .role-profile-migration-context-item{padding-inline:var(--sp-3)}
   .role-profile-migration-notice,.role-profile-migration-output{padding-inline:var(--sp-3)}
