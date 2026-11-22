@@ -8300,10 +8300,10 @@ body.reduce-motion .action-page *::after{animation:none!important;transition-dur
 @media(prefers-reduced-motion:reduce){.home-environment-refresh[aria-busy="true"] svg{animation:none}}
 
 /* 小屋右栏。承接 V1 的状态摘要与时间线，使用当前主题的分隔线与色板。 */
-.home-side-band{min-width:0;padding-top:var(--sp-4)}
+.home-side-band{min-width:0;padding-top:var(--sp-3)}
 .shell-side>.home-side-band:first-child{padding-top:0;border-top:0}
 .home-side-band .home-band-head{
-  flex-direction:row;align-items:center;justify-content:flex-start;flex-wrap:nowrap;gap:var(--sp-2);margin-bottom:var(--sp-3);
+  flex-direction:row;align-items:center;justify-content:flex-start;flex-wrap:nowrap;gap:var(--sp-2);margin-bottom:var(--sp-2);
 }
 .home-side-band .home-band-head h2{font-size:var(--fs-lead);letter-spacing:0}
 .home-side-age{flex:none;color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.4;white-space:nowrap}
@@ -8550,18 +8550,18 @@ body.reduce-motion .action-page *::after{animation:none!important;transition-dur
 }
 
 /* === 状态卡：当前 hero + 状态行 === */
-.home-state-board.is-b2{display:flex;flex-direction:column;gap:8px;padding:7px;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);text-align:left}
-.home-state-hero{display:grid;grid-template-columns:32px minmax(0,1fr);align-items:center;gap:9px;min-width:0;padding:9px 10px;border:1px solid color-mix(in srgb,var(--t-ok) 18%,var(--t-line));border-left:3px solid var(--t-ok);border-radius:var(--r-xs);background:var(--t-ok-quiet)}
+.home-state-board.is-b2{display:flex;flex-direction:column;gap:6px;padding:6px;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);text-align:left}
+.home-state-hero{display:grid;grid-template-columns:30px minmax(0,1fr);align-items:center;gap:8px;min-width:0;padding:7px 9px;border:1px solid color-mix(in srgb,var(--t-ok) 18%,var(--t-line));border-left:3px solid var(--t-ok);border-radius:var(--r-xs);background:var(--t-ok-quiet)}
 .home-state-hero[data-tone="rest"]{border-left-color:var(--t-accent);background:var(--t-accent-quiet)}
-.home-state-hero-icon{display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:color-mix(in srgb,var(--t-surface) 82%,transparent);color:var(--t-ok-ink)}
+.home-state-hero-icon{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:color-mix(in srgb,var(--t-surface) 82%,transparent);color:var(--t-ok-ink)}
 .home-state-hero[data-tone="rest"] .home-state-hero-icon{color:var(--t-accent-ink)}
-.home-state-hero-icon svg{width:17px;height:17px}
+.home-state-hero-icon svg{width:16px;height:16px}
 .home-state-hero-copy{display:grid;gap:1px;min-width:0}
 .home-state-hero-copy small{font-size:var(--fs-micro);line-height:1.35;color:var(--t-text-faint)}
 .home-state-hero-copy strong{font-size:var(--fs-tiny);line-height:1.4;font-weight:650;color:var(--t-ok-ink);overflow-wrap:anywhere}
 .home-state-hero[data-tone="rest"] .home-state-hero-copy strong{color:var(--t-accent-ink)}
-.home-state-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
-.home-state-row{display:grid;grid-template-columns:24px minmax(0,1fr);align-items:center;gap:7px;min-width:0;padding:7px 8px;border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface);text-align:left}
+.home-state-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}
+.home-state-row{display:grid;grid-template-columns:22px minmax(0,1fr);align-items:center;gap:6px;min-width:0;padding:6px 7px;border:1px solid var(--t-line);border-radius:var(--r-xs);background:var(--t-surface);text-align:left}
 .home-state-row.is-wide{grid-column:1/-1}
 .home-state-row-icon{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--t-surface-soft);color:var(--t-text-soft)}
 .home-state-row-icon svg{width:14px;height:14px}
@@ -8576,7 +8576,7 @@ body.reduce-motion .action-page *::after{animation:none!important;transition-dur
 @media(max-width:760px){.home-state-grid{gap:5px}.home-state-row{padding:6px 7px;grid-template-columns:22px minmax(0,1fr);gap:6px}}
 
 /* === 今日安排：进度轨道 + 进行中状态卡 + 连续时间轴 === */
-.home-agenda-progress{position:relative;height:18px;margin:2px 0 12px}
+.home-agenda-progress{position:relative;height:18px;margin:2px 0 9px}
 .home-agenda-progress::before{content:"";position:absolute;left:0;right:0;top:8px;height:2px;border-radius:2px;background:var(--t-line)}
 .home-agenda-progress-fill{position:absolute;left:0;top:8px;height:2px;border-radius:2px;background:var(--t-accent);z-index:0}
 .home-agenda-progress-now{position:absolute;top:2px;width:13px;height:13px;transform:translateX(-50%);border:3px solid var(--t-accent);border-radius:50%;background:var(--t-surface);box-shadow:0 0 0 2px var(--t-surface);z-index:2}
@@ -8586,7 +8586,7 @@ body.reduce-motion .action-page *::after{animation:none!important;transition-dur
 .home-agenda-progress-node[data-tone="current"]{top:5px;width:8px;height:8px;border-color:var(--t-accent-ink);background:var(--t-accent)}
 .home-agenda-progress-node[data-tone="proposed"],.home-agenda-progress-node[data-temporary="true"]{border-color:var(--t-warn-ink);background:var(--t-warn-quiet)}
 .home-agenda-progress-node[data-next="true"]{top:4px;width:10px;height:10px;border-width:2px;box-shadow:0 0 0 2px var(--t-surface)}
-.home-agenda-status{display:flex;flex-direction:column;gap:2px;margin:0 0 14px;padding:12px 14px;border-left:3px solid var(--t-accent);border-radius:var(--r-sm);background:var(--t-accent-quiet)}
+.home-agenda-status{display:flex;flex-direction:column;gap:2px;margin:0 0 10px;padding:10px 12px;border-left:3px solid var(--t-accent);border-radius:var(--r-sm);background:var(--t-accent-quiet)}
 .home-agenda-status-kicker{font-size:var(--fs-micro);line-height:1.4;letter-spacing:.08em;color:var(--t-accent-ink)}
 .home-agenda-status-kicker:empty{display:none}
 .home-agenda-status strong{font-size:var(--fs-body);line-height:1.45;font-weight:600;color:var(--t-text-strong);overflow-wrap:anywhere}
@@ -8603,7 +8603,7 @@ body.reduce-motion .action-page *::after{animation:none!important;transition-dur
 .home-agenda-list-toggle .is-closed{display:none}
 .home-agenda-list:not([open]) .home-agenda-list-toggle .is-open{display:none}
 .home-agenda-list:not([open]) .home-agenda-list-toggle .is-closed{display:inline}
-.home-agenda-scroll{max-height:430px;overflow-y:auto;overscroll-behavior:contain;padding:2px 6px 8px 0;scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent}
+.home-agenda-scroll{flex:0 0 auto;max-height:460px;overflow-y:auto;overscroll-behavior:contain;padding:2px 6px 8px 0;scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent}
 .home-agenda-scroll:focus-visible{outline:2px solid var(--t-accent);outline-offset:2px;border-radius:var(--r-xs)}
 .home-agenda-scroll::-webkit-scrollbar{width:5px}
 .home-agenda-scroll::-webkit-scrollbar-track{background:transparent}
@@ -8653,18 +8653,10 @@ body.reduce-motion .action-page *::after{animation:none!important;transition-dur
 .home-agenda-row[data-temporary="true"] .home-agenda-row-time small,.home-agenda-row[data-temporary="true"] .home-agenda-row-detail,.home-agenda-row[data-temporary="true"] .home-agenda-row-note{color:color-mix(in srgb,var(--t-warn-ink) 68%,var(--t-text-soft))}
 .home-agenda-row[data-temporary="true"] .home-agenda-row-marker{border-color:var(--t-warn-ink)}
 @media(min-width:1121px){
-  .shell-side>.home-side-band{flex:0 0 auto}
-  .shell-side>.home-side-band:has([data-home-agenda-clock]){flex:0 1 auto;min-height:0;display:flex;flex-direction:column}
-  .shell-side [data-home-agenda-clock]{flex:0 1 auto;min-height:0;display:flex;flex-direction:column}
-  .shell-side [data-home-agenda-clock]>*{flex:0 0 auto}
-  .shell-side [data-home-agenda-clock]>.home-agenda-list{flex:0 1 auto;min-height:0;display:flex;flex-direction:column}
-  .shell-side [data-home-agenda-clock]>.home-agenda-list:not([open]){flex:0 0 auto}
-  .shell-side .home-agenda-list-head{flex:0 0 auto}
-  .shell-side .home-agenda-list[open]::details-content{flex:0 1 auto;min-height:0;display:flex;flex-direction:column}
-  .shell-side .home-agenda-scroll{flex:0 1 auto;min-height:0;max-height:clamp(220px,calc(100dvh - 430px),560px)}
+  .shell-side .home-agenda-scroll{flex:0 0 auto;max-height:460px}
 }
 @media(min-width:761px) and (max-width:1120px){
-  .shell-side .home-agenda-scroll{max-height:360px}
+  .shell-side .home-agenda-scroll{flex:0 0 auto;max-height:360px}
 }
 @media(max-width:760px){
   .home-agenda-rows{--agenda-rail:76px}
@@ -20749,6 +20741,11 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
     grid-template-rows: auto;
     grid-template-areas: "stage side";
   }
+  body:not(.room-editing) #homeShell[data-away="false"]:not(:has(#shellPanel:not([hidden]))) .stage-region {
+    position: sticky;
+    top: var(--shell-pad);
+    align-self: start;
+  }
   body:not(.room-editing) #homeShell[data-away="false"]:has(#shellPanel:not([hidden])) .shell-body {
     grid-template-rows: auto minmax(min-content, 1fr);
     grid-template-areas:
@@ -20756,9 +20753,7 @@ button.maint-ranking-row:hover .maint-ranking-label { color: var(--t-text-strong
       "panel side";
   }
   body:not(.room-editing) #homeShell[data-away="false"] .shell-side {
-    position: sticky;
-    top: var(--shell-pad);
-    max-height: calc(100dvh - var(--shell-pad) * 2);
+    align-self: start;
   }
   body:not(.room-editing) #homeShell[data-away="false"]:has(#shellPanel[hidden]) .stage-region .room-stage {
     height: max(var(--shell-stage-min), calc(100dvh - var(--shell-stage-chrome, 192px)));

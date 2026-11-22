@@ -1226,12 +1226,14 @@ function syncStageSpace(){
     const scene=$('#stageScene'),strip=$('#stageFurniture'),body=$('.shell-body');
     if(!scene||!strip||!body||window.CompanionShell?.section||arrangementDraft)return;
     const number=value=>parseFloat(value)||0;
-    const regionStyle=getComputedStyle(scene.parentElement);
+    const region=scene.parentElement,regionStyle=getComputedStyle(region);
+    const bodyStyle=getComputedStyle(body);
     const stripStyle=getComputedStyle(strip),sceneStyle=getComputedStyle(scene);
-    const reserved=scene.getBoundingClientRect().top+window.scrollY
+    const topChrome=(scene.getBoundingClientRect().top-region.getBoundingClientRect().top)+number(bodyStyle.paddingTop);
+    const reserved=topChrome
       +strip.getBoundingClientRect().height+number(regionStyle.rowGap)
       +number(sceneStyle.marginBottom)+number(stripStyle.marginTop)+number(stripStyle.marginBottom)
-      +number(getComputedStyle(body).paddingBottom);
+      +number(bodyStyle.paddingBottom);
     scene.style.setProperty('--shell-stage-chrome',`${Math.ceil(reserved)}px`);
   });
 }

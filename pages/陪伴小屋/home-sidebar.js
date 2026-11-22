@@ -327,7 +327,8 @@ window.CompanionHomeSidebar = (() => {
     const rows = visible.filter(([kind]) => kind !== "sleep").map(row => {
       const options = {sleeping, disabled:row[3], loading, unreadable};
       const item = vital(row[0], row[2], options);
-      return {row, options, wide: ["mood","busy","location"].includes(row[0]) || item.label.length > 5};
+      const compactLimit = row[0] === "cycle" ? 13 : row[0] === "location" ? 10 : 6;
+      return {row, options, wide: ["mood","busy"].includes(row[0]) || item.label.length > compactLimit};
     });
     const shortRows = rows.filter(item => !item.wide);
     if (shortRows.length % 2) shortRows[shortRows.length - 1].wide = true;

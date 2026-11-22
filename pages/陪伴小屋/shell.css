@@ -786,6 +786,11 @@
     grid-template-rows: auto;
     grid-template-areas: "stage side";
   }
+  body:not(.room-editing) #homeShell[data-away="false"]:not(:has(#shellPanel:not([hidden]))) .stage-region {
+    position: sticky;
+    top: var(--shell-pad);
+    align-self: start;
+  }
   body:not(.room-editing) #homeShell[data-away="false"]:has(#shellPanel:not([hidden])) .shell-body {
     grid-template-rows: auto minmax(min-content, 1fr);
     grid-template-areas:
@@ -793,9 +798,7 @@
       "panel side";
   }
   body:not(.room-editing) #homeShell[data-away="false"] .shell-side {
-    position: sticky;
-    top: var(--shell-pad);
-    max-height: calc(100dvh - var(--shell-pad) * 2);
+    align-self: start;
   }
   body:not(.room-editing) #homeShell[data-away="false"]:has(#shellPanel[hidden]) .stage-region .room-stage {
     height: max(var(--shell-stage-min), calc(100dvh - var(--shell-stage-chrome, 192px)));

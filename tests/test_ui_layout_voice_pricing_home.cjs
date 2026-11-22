@@ -138,22 +138,28 @@ test("需求 8：.pw-search 采用弹性宽度与窄屏断点，确保完整展�
 
 /* ---------- 需求 14：陪伴小屋首页双层根治大片空白 + 今日安排内部滚动与渐隐 ---------- */
 
-test("需求 14（结构与样式）：>= 1121px 首页打开家具面板时左列衔接 stage+panel、右列 sticky 跨两行，配置态维持全宽", () => {
+test("需求 14（结构与样式）：>= 1121px 双态零空白（开面板左列衔接 stage+panel，纯首页左侧舞台 sticky），且 .shell-side 绝不挤压日程区", () => {
     const shellCss = stripComments(readPage("shell.css"));
     const homeCss = stripComments(readPage("home.css"));
+    const appJs = readPage("app.js");
 
     const desktopMedia = shellCss.match(/@media\s*\(\s*min-width:\s*1121px\s*\)\s*\{([\s\S]*?)\n\}/);
     assert.ok(desktopMedia, "shell.css 应包含 @media (min-width: 1121px)");
     assert.match(
         desktopMedia[1],
+        /body:not\(\.room-editing\)\s+#homeShell\[data-away="false"\]:not\(:has\(#shellPanel:not\(\[hidden\]\)\)\)\s+\.stage-region\s*\{[^}]*position:\s*sticky[^}]*top:\s*var\(--shell-pad\)[^}]*align-self:\s*start/s,
+        "桌面纯首页态应将左侧舞台列 .stage-region 设为 sticky 贴顶跟随，彻底消除左下角留白",
+    );
+    assert.match(
+        desktopMedia[1],
         /body:not\(\.room-editing\)\s+#homeShell\[data-away="false"\]:has\(#shellPanel:not\(\[hidden\]\)\)\s+\.shell-body\s*\{[^}]*grid-template-rows:\s*auto\s+minmax\(\s*min-content\s*,\s*1fr\s*\)[^}]*grid-template-areas:\s*"stage side"\s+"panel side"/s,
         "桌面首页打开面板时应将 stage 与 panel 置于左列上下衔接、side 跨两行",
     );
-    const stickySide = desktopMedia[1].match(/body:not\(\.room-editing\)\s+#homeShell\[data-away="false"\]\s+\.shell-side\s*\{([^}]*)\}/);
-    assert.ok(stickySide, "桌面首页右栏应使用 sticky 且受视口高度约束");
-    assert.match(stickySide[1], /position:\s*sticky/);
-    assert.match(stickySide[1], /max-height:\s*calc\(\s*100dvh\s*-\s*var\(--shell-pad\)\s*\*\s*2\s*\)/);
-    assert.doesNotMatch(stickySide[1], /overflow:\s*hidden/, "右栏容器本身不应 overflow:hidden，避免裁切状态悬浮提示");
+    const sideRule = desktopMedia[1].match(/body:not\(\.room-editing\)\s+#homeShell\[data-away="false"\]\s+\.shell-side\s*\{([^}]*)\}/);
+    assert.ok(sideRule, "桌面首页右栏应保持 align-self: start 自然流高度");
+    assert.match(sideRule[1], /align-self:\s*start/);
+    assert.doesNotMatch(sideRule[1], /max-height:\s*calc\(\s*100dvh/, "右栏不得以 100dvh 上限挤压下方今日安排滚动区");
+    assert.doesNotMatch(sideRule[1], /overflow:\s*hidden/, "右栏容器本身不应 overflow:hidden，避免裁切状态悬浮提示");
 
     assert.match(
         shellCss,
@@ -161,21 +167,33 @@ test("需求 14（结构与样式）：>= 1121px 首页打开家具面板时左�
         "进入配置区 [data-away=true] 时主面板必须保持全宽展开",
     );
 
+    assert.match(
+        appJs,
+        /const topChrome=\(scene\.getBoundingClientRect\(\)\.top-region\.getBoundingClientRect\(\)\.top\)\+number\(bodyStyle\.paddingTop\);/,
+        "syncStageSpace 应相对 .stage-region 计算顶距，避免 sticky 滚动时误叠加 scrollY",
+    );
+
+    assert.match(homeCss, /\.home-agenda-scroll\{[^}]*flex:0 0 auto;max-height:460px;overflow-y:auto/);
     assert.match(homeCss, /\.home-agenda-scroll\[data-fade-top="true"\]\{[^}]*mask-image:linear-gradient/);
     assert.match(homeCss, /\.home-agenda-scroll\[data-fade-bottom="true"\]\{[^}]*mask-image:linear-gradient/);
     assert.match(homeCss, /\.home-agenda-row\[data-tone="current"\]\{[^}]*box-shadow:inset 3px 0 0 var\(--t-accent\)/);
     assert.match(homeCss, /\.home-agenda-row-detail\.is-clamped\{[^}]*-webkit-line-clamp:2/);
     assert.match(
         homeCss,
-        /@media\(min-width:1121px\)\{[\s\S]*?\.shell-side\s+\.home-agenda-scroll\{[^}]*max-height:clamp\(/,
-        "桌面态今日安排滚动区应受视口/舞台高度约束",
+        /@media\(min-width:1121px\)\{[\s\S]*?\.shell-side\s+\.home-agenda-scroll\{[^}]*flex:0 0 auto;max-height:460px/,
+        "桌面态今日安排滚动区应拥有独立且不被 flex 挤压的 460px 充裕高度",
+    );
+    assert.doesNotMatch(
+        homeCss,
+        /\.shell-side\s+\.home-agenda-scroll\{[^}]*flex:\s*0\s+1\s+auto/,
+        "今日安排滚动区绝不能参与 flex-shrink 收缩导致低视口下塌陷至 0px",
     );
     const desktopPos = homeCss.lastIndexOf("@media(min-width:1121px)");
     const mobilePos = homeCss.lastIndexOf("@media(max-width:760px)");
     assert.ok(mobilePos > desktopPos, "移动端 <= 760px 取消内层滚动的规则应位于桌面规则之后");
 });
 
-test("需求 14（行为）：今日安排渲染内部滚动容器、当前时段高亮、长详情两行折叠/展开与渐隐边界同步", () => {
+test("需求 14（行为）：今日安排渲染内部滚动容器、当前时段高亮、长详情两行折叠/展开与渐隐边界同步，短生理期与短位置成对排布", () => {
     const listeners = {};
     const document = {
         addEventListener(type, fn) { listeners[type] = fn; },
@@ -183,9 +201,51 @@ test("需求 14（行为）：今日安排渲染内部滚动容器、当前时�
     };
     const window = {addEventListener() {}};
     vm.runInNewContext(readPage("home-sidebar.js"), {window, document});
-    const {renderSchedule, syncScrollFade} = window.CompanionHomeSidebar;
+    const {renderState, renderSchedule, syncScrollFade} = window.CompanionHomeSidebar;
 
     const now = Date.parse("2026-09-30T04:00:00Z");
+
+    /* 首屏紧凑排布：短生理期（经前期 · 第 2 天）与短位置（维也纳家中客厅）应两列并排而非各占一整行 */
+    const compactStateHtml = renderState({
+        now,
+        state: {
+            settings: {enabled: true, planning_timezone: "Asia/Shanghai"},
+            state: {
+                revision: 1,
+                cycle_timeline: {applicability: "applicable", phase: "pms", phase_day: 2},
+                values: {
+                    energy: 65,
+                    health: "良好",
+                    hunger: "胃里空得更明显了些，想喝一杯温热的焦糖茶",
+                    mood: "缩在暖烘烘的客厅角落里，心里踏实又慵懒",
+                    busy: "继续裹在被炉里偷懒歇神",
+                    location: "维也纳家中客厅",
+                },
+            },
+            body_sleep: {state: "sleeping", started_at: "2026-09-29T20:45:00Z"},
+            occurrences: {items: [], partial: false},
+            sleep_schedule: {enabled: false},
+        },
+        life: {activities: [], config: {diary_enabled: false}},
+    });
+    assert.match(compactStateHtml, /class="home-state-row" data-state-kind="cycle"/, "短生理期标签应紧凑排入两列网格");
+    assert.match(compactStateHtml, /class="home-state-row" data-state-kind="location"/, "短位置标签应与短生理期并排节省首屏高度");
+    assert.match(compactStateHtml, /class="home-state-row is-wide" data-state-kind="mood"/, "长心情文案仍占通栏");
+
+    const longLocationHtml = renderState({
+        now,
+        state: {
+            settings: {enabled: true, planning_timezone: "Asia/Shanghai"},
+            state: {
+                revision: 1,
+                values: {energy: 80, health: "良好", location: "维也纳市中心靠窗安静的独立咖啡馆二楼角落"},
+            },
+            occurrences: {items: [], partial: false},
+            sleep_schedule: {enabled: false},
+        },
+        life: {activities: [], config: {diary_enabled: false}},
+    });
+    assert.match(longLocationHtml, /class="home-state-row is-wide" data-state-kind="location"/, "超长位置文案自动占通栏不挤压");
     const longDetail = "第一句计划细则内容较长，用于验证超过四十四字时默认收起为两行显示并在点击展开全文后完整呈现。";
     const state = {
         settings: {enabled: true, planning_timezone: "Asia/Shanghai"},
