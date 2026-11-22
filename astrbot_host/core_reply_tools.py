@@ -491,15 +491,20 @@ class CoreReplyToolSession:
             # independent conclusion about the mention (e.g. "@我但明说不用理我").
             if self._mention_skips_are_restricted() and (mentioned or native_wakeup):
                 reason = arguments.get("reason", "")
-                if not (isinstance(reason, str)
-                        and re.search(r"不用|别理|无需回复|不要打扰|不要理|不用理|不理|无需打扰|忙着|稍后|暂时不回复|不要回应", reason)):
+                opted_out = (isinstance(reason, str)
+                             and re.search(r"不用|别理|无需回复|不要打扰|不要理|不用理|不理|无需打扰|忙着|稍后|暂时不回复|不要回应", reason))
+                force_reply = self._mention_force_reply_enabled()
+                if not opted_out or force_reply:
                     # Issue #836: bounded rejection.  Allow the skip once the
                     # model has already been forced to reconsider and still
                     # chooses skip, so a stubborn re-judgement cannot loop the
                     # whole turn.  _latch_group_skip never latches mention
                     # batches, so a bypassed skip stays non-persistent.
+                    # The mention_force_reply_enabled switch is a hard rule:
+                    # it never uses the bounded bypass, so a mention batch
+                    # cannot be dropped by repeated skip attempts.
                     rejections = self.state.get("_mention_skip_rejections", 0)
-                    if rejections < 1:
+                    if force_reply or rejections < 1:
                         self.state["_mention_skip_rejections"] = rejections + 1
                         raise TaskError("group_participation_mention_skip_rejected",
                                         "the batch contains an explicit mention of the bot; decide on the mentioned message itself")
@@ -539,6 +544,22 @@ class CoreReplyToolSession:
         operations = [call for call in calls
                       if _field(call, "name", _field(_field(call, "function"), "name")) not in annotation_names]
         return len(operations) == 1
+
+    def _mention_force_reply_enabled(self):
+        """Whether the window opted in to the mention force-reply hard rule.
+
+        Reads the registered ``conversation.group_participation`` window value.
+        Any read failure keeps the default (off) so the guard stays identical
+        to the pre-switch behaviour.
+        """
+        try:
+            from companion_v2.conversation.participation import (CONFIG_GROUP,
+                                                                 group_participation_settings)
+            settings = group_participation_settings(self.application.runtime, self.context)
+            return bool(settings["mention_force_reply_enabled"])
+        except Exception:  # noqa: BLE001 - configuration trouble must not change the guard
+            logger.warning("mention_force_reply_enabled read failed; defaulting to off")
+            return False
 
     def _mention_skips_are_restricted(self):
         """Whether mention-triggered skips must carry an explicit opt-out reason.
