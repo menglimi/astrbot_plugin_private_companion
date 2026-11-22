@@ -1115,6 +1115,8 @@ window.CompanionContactPage = (() => {
      控件顺序按「改了会立刻改变环的哪一圈」排，不按字段在注册表里的顺序。 */
   function dialView() {
     const span = quietSpan();
+    const quietOn = value("quiet_enabled") === true;
+    const greetingsOn = value("enable_daily_greetings") === true;
     const tier = TIER_BY_KEY[data.tierDraft || tierOf(value("proactive_intensity_preset"))];
     const v = verdict();
     const interval = Number(value("interval_seconds"));
@@ -1142,7 +1144,7 @@ window.CompanionContactPage = (() => {
         ])}
         ${fieldBlock("免打扰 · 外圈", [
           toggle("quiet_enabled", "启用免打扰时段", "免打扰只决定「现在不开口」，不改动已登记的日程。"),
-          timeRow("quiet_start", "开始", "quiet_end", "结束", span && span.from > span.to ? "跨午夜：" + hm(span.from) + " 至次日 " + hm(span.to) : ""),
+          timeRow("quiet_start", "开始", "quiet_end", "结束", span && span.from > span.to ? "跨午夜：" + hm(span.from) + " 至次日 " + hm(span.to) : "", {muted: !quietOn}),
           textRow("quiet_timezone", "时区", "Asia/Shanghai", "环上游标与免打扰判定都用这个时区。"),
         ], "is-ring-quiet")}
       </div></div>
@@ -1168,33 +1170,36 @@ window.CompanionContactPage = (() => {
       ${fieldBlock("问候窗口 · 内圈", [
         toggle("enable_daily_greetings", "启用每日问候", "三个窗口必须当天内结束，不能跨午夜。"),
         ...ANCHORS.map(([name, , from, to]) => textRow("greeting_" + name + "_window",
-          {morning:"早间", noon:"午间", evening:"晚间"}[name], from + "-" + to, "形如 " + from + "-" + to)),
+          {morning:"早间", noon:"午间", evening:"晚间"}[name], from + "-" + to, "形如 " + from + "-" + to, {muted: !greetingsOn})),
         toggle("allow_insomnia_night_message", "允许深夜一条", "深夜窗口显式有界，并按日限额。"),
       ], "is-ring-greet")}
     </div>`;
   }
   function morningView() {
+    const chainOn = value("morning_chain_enabled") === true;
+    const routineLearningOn = value("routine_learning_enabled") === true;
+    const nudgeOn = chainOn && value("morning_nudge_enabled") === true;
     return `<div class="ct-rest">
       ${fieldBlock("晨间流程", [
         toggle("morning_chain_enabled", "启用晨间流程", "关闭后不会生成角色醒来问候或清醒确认提醒。"),
-        timeRow("wake_morning_start", "开始", "wake_morning_end", "结束", "使用全局免打扰时区；窗口外不补发过期消息。"),
+        timeRow("wake_morning_start", "开始", "wake_morning_end", "结束", "使用全局免打扰时区；窗口外不补发过期消息。", {muted: !chainOn}),
       ], "is-wide")}
       ${fieldBlock("角色作息", [
-        toggle("morning_role_greeting_enabled", "角色醒来后先问候", "只判断角色自身醒来，不推断用户已经醒。"),
+        toggle("morning_role_greeting_enabled", "角色醒来后先问候", "只判断角色自身醒来，不推断用户已经醒。", {muted: !chainOn}),
         toggle("routine_learning_enabled", "学习角色的起床习惯", "根据近期有效样本调整角色的预测起床窗口。"),
-        numberRow("routine_window_days", "学习窗口", "天", 14, 180, "只使用最近这段时间的作息记录。"),
+        numberRow("routine_window_days", "学习窗口", "天", 14, 180, "只使用最近这段时间的作息记录。", {muted: !routineLearningOn}),
         decimalRow("morning_wake_confidence_floor", "预测可信度下限", 0, 1, 0.05,
-          "预测把握低于此值时不生成晨间问候。"),
+          "预测把握低于此值时不生成晨间问候。", {muted: !chainOn}),
       ])}
       ${nativeWakeBlock()}
       ${fieldBlock("清醒确认", [
-        toggle("morning_nudge_enabled", "允许轻声确认", "仅在清醒证据充分、窗口有效且没有新输入时提醒。"),
-        numberRow("morning_nudge_delay_minutes", "确认前等待", "分钟", 10, 90, "给对方自然开口的时间。"),
-        numberRow("morning_nudge_max_attempts", "每次起床最多提醒", "次", 0, 2, "0 表示不提醒；默认最多一次。"),
-        numberRow("wake_contact_window_minutes", "清醒后有效窗口", "分钟", 15, 240, "超时后不再翻旧账。"),
-        numberRow("wake_contact_min_confidence", "清醒迹象可信度", "%", 40, 100, "低于此值只保留诊断，不触发联系。"),
-        numberRow("wake_contact_max_daily", "每日确认上限", "次", 0, 3, "按免打扰时区的本地日期计数。"),
-        toggle("wake_require_device_evidence", "要求设备侧证据", "开启后只接受授权设备提供的清醒迹象。"),
+        toggle("morning_nudge_enabled", "允许轻声确认", "仅在清醒证据充分、窗口有效且没有新输入时提醒。", {muted: !chainOn}),
+        numberRow("morning_nudge_delay_minutes", "确认前等待", "分钟", 10, 90, "给对方自然开口的时间。", {muted: !nudgeOn}),
+        numberRow("morning_nudge_max_attempts", "每次起床最多提醒", "次", 0, 2, "0 表示不提醒；默认最多一次。", {muted: !nudgeOn}),
+        numberRow("wake_contact_window_minutes", "清醒后有效窗口", "分钟", 15, 240, "超时后不再翻旧账。", {muted: !nudgeOn}),
+        numberRow("wake_contact_min_confidence", "清醒迹象可信度", "%", 40, 100, "低于此值只保留诊断，不触发联系。", {muted: !nudgeOn}),
+        numberRow("wake_contact_max_daily", "每日确认上限", "次", 0, 3, "按免打扰时区的本地日期计数。", {muted: !nudgeOn}),
+        toggle("wake_require_device_evidence", "要求设备侧证据", "开启后只接受授权设备提供的清醒迹象。", {muted: !nudgeOn}),
       ], "is-wide is-wake")}
     </div>`;
   }
@@ -1382,41 +1387,41 @@ window.CompanionContactPage = (() => {
   function fieldBlock(title, body, extra) {
     return `<section class="ct-block${extra ? " " + extra : ""}"><h3>${e(title)}</h3>${body.join("")}</section>`;
   }
-  function toggle(name, label, help) {
+  function toggle(name, label, help, opts = {}) {
     const on = value(name) === true;
-    return `<label class="ct-switch${dirty(name) ? " is-dirty" : ""}${flipClass(name)}">
+    return `<label class="ct-switch${dirty(name) ? " is-dirty" : ""}${flipClass(name)}${opts.muted ? " is-muted" : ""}">
       <input type="checkbox" data-field="${e(name)}"${on ? " checked" : ""}>
       <span class="ct-switch-track"><i></i></span>
       <span class="ct-switch-text"><strong>${e(label)}</strong><small>${e(help)}</small></span></label>`;
   }
-  function textRow(name, label, placeholder, help) {
+  function textRow(name, label, placeholder, help, opts = {}) {
     const current = value(name);
-    return `<label class="ct-field${dirty(name) ? " is-dirty" : ""}">
+    return `<label class="ct-field${dirty(name) ? " is-dirty" : ""}${opts.muted ? " is-muted" : ""}">
       <span class="ct-field-label">${e(label)}</span>
       <input type="text" data-field="${e(name)}" value="${e(typeof current === "string" ? current : "")}"
         placeholder="${e(placeholder)}" autocomplete="off" spellcheck="false">
       ${help ? `<small class="ct-field-help">${e(help)}</small>` : ""}</label>`;
   }
-  function timeRow(nameA, labelA, nameB, labelB, help) {
+  function timeRow(nameA, labelA, nameB, labelB, help, opts = {}) {
     const a = value(nameA), b = value(nameB);
-    return `<div class="ct-field-pair${dirty(nameA) || dirty(nameB) ? " is-dirty" : ""}">
+    return `<div class="ct-field-pair${dirty(nameA) || dirty(nameB) ? " is-dirty" : ""}${opts.muted ? " is-muted" : ""}">
       <label class="ct-field"><span class="ct-field-label">${e(labelA)}</span>
         <input type="time" data-field="${e(nameA)}" value="${e(typeof a === "string" ? a : "")}"></label>
       <label class="ct-field"><span class="ct-field-label">${e(labelB)}</span>
         <input type="time" data-field="${e(nameB)}" value="${e(typeof b === "string" ? b : "")}"></label>
       ${help ? `<small class="ct-field-help">${e(help)}</small>` : ""}</div>`;
   }
-  function numberRow(name, label, unit, min, max, help) {
+  function numberRow(name, label, unit, min, max, help, opts = {}) {
     const current = value(name);
-    return `<label class="ct-field ct-field-number${dirty(name) ? " is-dirty" : ""}">
+    return `<label class="ct-field ct-field-number${dirty(name) ? " is-dirty" : ""}${opts.muted ? " is-muted" : ""}">
       <span class="ct-field-label">${e(label)}<small>${e(min)}–${e(max)}</small></span>
       <span class="ct-input-unit"><input type="number" data-field="${e(name)}" value="${e(current ?? "")}"
         min="${min}" max="${max}" step="1" inputmode="numeric"><i>${e(unit)}</i></span>
       ${help ? `<small class="ct-field-help">${e(help)}</small>` : ""}</label>`;
   }
-  function decimalRow(name, label, min, max, step, help) {
+  function decimalRow(name, label, min, max, step, help, opts = {}) {
     const current = value(name);
-    return `<label class="ct-field ct-field-number${dirty(name) ? " is-dirty" : ""}">
+    return `<label class="ct-field ct-field-number${dirty(name) ? " is-dirty" : ""}${opts.muted ? " is-muted" : ""}">
       <span class="ct-field-label">${e(label)}<small>${e(min)}–${e(max)}</small></span>
       <input type="number" data-field="${e(name)}" value="${e(current ?? "")}"
         min="${min}" max="${max}" step="${step}" inputmode="decimal">
@@ -1989,22 +1994,24 @@ window.CompanionContactPage = (() => {
     return Number.isFinite(at.getTime()) ? at.toISOString() : "";
   }
 
-  /* 额度与去重：额度**没有读出口**，所以画成上限刻度而不是用量表。 */
+  /* 额度与去重：额度**没有读出口**，所以画成上限刻度而不是用量表。
+     三块统一通栏堆叠、各自内部双列对齐，彻底消除「每日额度 1 条 vs 重复抑制 7 条」并排撕出的垂直空洞。 */
   function budgetsView() {
     const num = name => { const n = Number(value(name)); return Number.isFinite(n) ? n : null; };
+    const dedupOn = value("dedup_enabled") === true;
+    const lastMsgOn = dedupOn && value("dedup_last_message_enabled") === true;
+    const burstOn = value("enable_proactive_burst") === true;
     const quota = [["max_contacts_24h", "本窗口每日最多实际联系", "条", 100]];
-    const dedup = [
-      ["dedup_enabled", "启用重复抑制"],
-      ["dedup_last_message_enabled", "与上一条原文比对"],
-      ["dedup_sent_window_minutes", "已发内容窗口（分钟）", 1440],
-      ["dedup_last_message_window_minutes", "上一条窗口（分钟）", 1440],
-      ["dedup_min_shared_tokens", "最少共有词数", 4],
-      ["dedup_min_overlap_ratio", "最低重合比例", 1],
+    const dedupSliders = [
+      ["dedup_sent_window_minutes", "已发内容窗口（分钟）", 1440, !dedupOn],
+      ["dedup_last_message_window_minutes", "上一条窗口（分钟）", 1440, !lastMsgOn],
+      ["dedup_min_shared_tokens", "最少共有词数", 4, !dedupOn],
+      ["dedup_min_overlap_ratio", "最低重合比例", 1, !dedupOn],
     ];
     return `<div class="ct-budgets">
       <section class="ct-block"><h3>每日额度</h3>
         <p class="ct-note">这几个数只有上限，没有实时读出口——所以画成刻度，不画成进度条。</p>
-
+        <div class="ct-budget-quota-list">
         ${quota.map(([name, label, unit, max]) => {
           const current = num(name);
           return `<div class="ct-quota${dirty(name) ? " is-dirty" : ""}">
@@ -2015,120 +2022,180 @@ window.CompanionContactPage = (() => {
             <div class="ct-quota-scale"><span>0</span><span>${max}</span></div>
           </div>`;
         }).join("")}
+        </div>
       </section>
       <section class="ct-block"><h3>重复抑制</h3>
-        ${dedup.map(([name, label, max]) => {
-          if (typeof max === "undefined") return toggle(name, label, "关闭后同一内容可能在窗口内重复发出。");
+        <div class="ct-budget-switches">
+          ${toggle("dedup_enabled", "启用重复抑制", "关闭后同一内容可能在窗口内重复发出。")}
+          ${toggle("dedup_last_message_enabled", "与上一条原文比对", "避免连续两次说出几乎相同的话。", {muted: !dedupOn})}
+        </div>
+        <div class="ct-budget-sliders${dedupOn ? "" : " is-branch-off"}">
+        ${dedupSliders.map(([name, label, max, muted]) => {
           const current = num(name);
-          return `<div class="ct-quota${dirty(name) ? " is-dirty" : ""}">
+          return `<div class="ct-quota${dirty(name) ? " is-dirty" : ""}${muted ? " is-muted" : ""}">
             <div class="ct-quota-head"><strong>${e(label)}</strong>
               <span class="ct-quota-value"><b>${current === null ? "—" : current}</b></span></div>
             <input type="range" min="0" max="${max}" step="${max <= 4 ? 1 : max <= 100 ? 5 : 30}"
               data-field="${e(name)}" value="${current ?? 0}" aria-label="${e(label)}">
             <div class="ct-quota-scale"><span>0</span><span>${max}</span></div></div>`;
         }).join("")}
+        </div>
         ${textRow("dedup_policies", "启用的去重策略", "semantic,content_fingerprint,life_event,event_revision",
-          "逗号分隔，不能重复。可选：semantic / event_anchor / event_revision / conversation_anchor / daily_slot / content_fingerprint / life_event。")}
+          "逗号分隔，不能重复。可选：semantic / event_anchor / event_revision / conversation_anchor / daily_slot / content_fingerprint / life_event。", {muted: !dedupOn})}
       </section>
       <section class="ct-block is-wide"><h3>连发与收尾</h3>
-        ${toggle("enable_proactive_burst", "允许连发", "连发只接着一条普通话题继续；提醒、预警、问候和分享不会拖着连发走。")}
-        ${numberRow("proactive_burst_max_messages", "一轮最多几条", "条", 2, 3, "")}
-        ${numberRow("proactive_burst_gap_min_seconds", "两条之间最少", "秒", 10, 600, "")}
-        ${numberRow("proactive_burst_gap_max_seconds", "两条之间最多", "秒", 10, 900, "实际间隔由这一轮的联系标识决定，同一轮不会重掷。")}
-        ${numberRow("proactive_closing_grace_minutes", "收尾静默时长", "分钟", 0, 240, "连续开口到这个数后会主动停一段，等你回应或静默结束。")}
-        ${numberRow("proactive_closing_contacts_threshold", "触发收尾的连续条数", "条", 1, 10, "")}
-        ${numberRow("proactive_share_probability", "分享类开口概率", "%", 0, 100, "只作用于「分享自己的生活」与「作品与阅读」；提醒、预警和天气各有自己的授权，不受这个数影响。")}
+        <div class="ct-budget-sub${burstOn ? "" : " is-branch-off"}">
+          <div class="ct-budget-sub-head">
+            ${toggle("enable_proactive_burst", "允许连发", "连发只接着一条普通话题继续；提醒、预警、问候和分享不会拖着连发走。")}
+            ${burstOn ? "" : '<span class="ct-src-branch-state">未启用 · 以下连发参数暂不生效</span>'}
+          </div>
+          <div class="ct-budget-sub-grid">
+            ${numberRow("proactive_burst_max_messages", "一轮最多几条", "条", 2, 3, "", {muted: !burstOn})}
+            ${numberRow("proactive_burst_gap_min_seconds", "两条之间最少", "秒", 10, 600, "", {muted: !burstOn})}
+            ${numberRow("proactive_burst_gap_max_seconds", "两条之间最多", "秒", 10, 900, "实际间隔由这一轮的联系标识决定，同一轮不会重掷。", {muted: !burstOn})}
+          </div>
+        </div>
+        <div class="ct-budget-sub">
+          <div class="ct-budget-sub-title">收尾静默与分享比例</div>
+          <div class="ct-budget-sub-grid">
+            ${numberRow("proactive_closing_grace_minutes", "收尾静默时长", "分钟", 0, 240, "连续开口到这个数后会主动停一段，等你回应或静默结束。")}
+            ${numberRow("proactive_closing_contacts_threshold", "触发收尾的连续条数", "条", 1, 10, "")}
+            ${numberRow("proactive_share_probability", "分享类开口概率", "%", 0, 100, "只作用于「分享自己的生活」与「作品与阅读」；提醒、预警和天气各有自己的授权，不受这个数影响。")}
+          </div>
+        </div>
       </section></div>`;
   }
 
-  /* 外部触发源：这些不是「一天」上的东西，是「素材从哪来」。
-     所以单独一屏，按获取方式分组，每组一张卡片：图标 + 组名 + 「n/m 开启」，
-     组内一行一件事（标签在左、控件在右）。
-     分组没动过——分法是按「谁在决定素材」，改了分组名等于重写语义；
-     改的只是画法：原来每个字段竖排三行（标签 / 控件 / 说明），
-     一屏扫下去全是左对齐的灰标签，读不出哪一行是哪一项。
-     wide 的三组条目最多（14 / 9 / 9 条），占满整行、组内分两栏，
-     否则它们会把同一行的短卡片拉出一大块空白。 */
+  /* 外部触发源：每组一张通栏结构化卡片，组内按独立功能拆成清晰子块与 2 列对齐表单网格，
+     彻底消除窄卡挤压、相邻卡片高低错位空洞、以及文本输入被截断的问题；
+     主开关关闭时，其从属子配置项视觉柔和降权（仍可查看与预先填写）。 */
   function sourcesView() {
+    const weatherCheckinOn = value("weather_checkin_enabled") === true;
+    const weatherChangeOn = value("weather_change_enabled") === true;
+    const officialAlertOn = value("official_weather_alert_enabled") === true;
+    const newsShareOn = value("news_share_enabled") === true;
+    const newsHotOn = value("news_daily_hot_read_enabled") === true;
+    const mealOn = value("meal_checkin_enabled") === true;
+    const dateOn = value("date_checkin_enabled") === true;
+    const webExploreOn = value("web_exploration_enabled") === true;
+    const screenOn = value("screen_glance_enabled") === true;
+    const goodnightOn = screenOn && value("screen_glance_goodnight_enabled") === true;
+    const followupOn = screenOn && value("screen_glance_followup_enabled") === true;
+    const voiceOn = value("voice_action_enabled") === true;
+    const pokeOn = value("poke_action_enabled") === true;
+    const judgeOn = value("enable_llm_proactive_persona_judge") === true;
+    const balanceOn = value("balance_awareness_enabled") === true;
+
     const known = [
-      {id:"weather", icon:ICON.weather, title:"天气", hint:"定时采样；只有突变超过阈值才开口。", body:[
-        srcToggle("weather_checkin_enabled", "定时天气问候", "要等定时点。"),
-        srcText("weather_checkin_time", "问候时刻", "08:30", "本地时间，二十四小时制。"),
-        srcNumber("weather_sample_minutes", "采样间隔", "分钟", 10, 1440, ""),
-        srcToggle("weather_change_enabled", "天气突变时联系", "变化幅度超过阈值时才开口。"),
-        srcNumber("dedup_weather_window_minutes", "同内容不重复时长", "分钟", 0, 2880, "突变与预警都走 event_revision 去重。"),
+      {id:"weather", icon:ICON.weather, title:"天气", hint:"定时采样；只有突变超过阈值才开口。", pairSections:true, sections:[
+        {master:srcToggle("weather_checkin_enabled", "定时天气问候", "要等定时点。", {master:true}),
+          active:weatherCheckinOn, cols:1, fields:[
+            srcText("weather_checkin_time", "问候时刻", "08:30", "本地时间，二十四小时制。", {compact:true}),
+          ]},
+        {master:srcToggle("weather_change_enabled", "天气突变时联系", "变化幅度超过阈值时才开口。", {master:true}),
+          active:weatherCheckinOn || weatherChangeOn || officialAlertOn, cols:1, fields:[
+            srcNumber("weather_sample_minutes", "采样间隔", "分钟", 10, 1440, "", {muted:!weatherCheckinOn && !weatherChangeOn}),
+            srcNumber("dedup_weather_window_minutes", "同内容不重复时长", "分钟", 0, 2880, "突变与预警都走 event_revision 去重。", {muted:!weatherChangeOn && !officialAlertOn}),
+          ]},
       ]},
-      {id:"weather-alert", icon:ICON.bell, title:"官方预警", hint:"预警由官方发布，这里只管转不转、多久看一次。", body:[
-        srcToggle("official_weather_alert_enabled", "转发官方气象预警", "预警由官方发布，这里只管转不转、多久看一次。"),
-        srcNumber("official_alert_poll_minutes", "轮询间隔", "分钟", 1, 1440, ""),
-        srcSelect("official_alert_min_severity", "最低预警级别",
-          [["","不限制（全部转发）"],["minor","蓝色 · 一般"],["moderate","黄色 · 较重"],
-           ["severe","橙色 · 严重"],["extreme","红色 · 特别严重"]]),
+      {id:"weather-alert", icon:ICON.bell, title:"官方预警", hint:"预警由官方发布，这里只管转不转、多久看一次。", sections:[
+        {master:srcToggle("official_weather_alert_enabled", "转发官方气象预警", "预警由官方发布，这里只管转不转、多久看一次。", {master:true}),
+          active:officialAlertOn, fields:[
+            srcNumber("official_alert_poll_minutes", "轮询间隔", "分钟", 1, 1440, ""),
+            srcSelect("official_alert_min_severity", "最低预警级别",
+              [["","不限制（全部转发）"],["minor","蓝色 · 一般"],["moderate","黄色 · 较重"],
+               ["severe","橙色 · 严重"],["extreme","红色 · 特别严重"]]),
+          ]},
       ]},
-      {id:"news", icon:ICON.source, title:"资讯", hint:"资讯来源、每日热点与去重时长。", body:[
-        srcToggle("news_share_enabled", "分享资讯", "自然分享亮点和感想；追问时再给来源与原文。分段沿用表达设置。"),
-        srcNumber("news_check_interval_minutes", "检查间隔", "分钟", 15, 1440, ""),
-        srcSelect("news_source_kind", "来源类型", [["host","默认数据源"],["disabled","停用资讯源"],
-          ["bilibili","B 站动态"],["rss","RSS / Atom"],["json","HTTPS JSON"],["search","网络搜索"],["hot","热榜"]]),
-        srcText("news_source_uid", "来源标识", "", "与类型匹配填写。"),
-        srcText("news_source_url", "来源地址", "", "与类型匹配填写。"),
-        srcToggle("news_daily_hot_read_enabled", "每日热点", ""),
-        srcText("news_hot_sources", "热点来源", "weibo,hackernews", "逗号分隔，可选 weibo / hackernews。"),
+      {id:"news", icon:ICON.source, title:"资讯", hint:"资讯来源、每日热点与去重时长。", sections:[
+        {master:srcToggle("news_share_enabled", "分享资讯", "自然分享亮点和感想；追问时再给来源与原文。分段沿用表达设置。", {master:true}),
+          active:newsShareOn, fields:[
+            srcNumber("news_check_interval_minutes", "检查间隔", "分钟", 15, 1440, ""),
+            srcSelect("news_source_kind", "来源类型", [["host","默认数据源"],["disabled","停用资讯源"],
+              ["bilibili","B 站动态"],["rss","RSS / Atom"],["json","HTTPS JSON"],["search","网络搜索"],["hot","热榜"]]),
+            srcText("news_source_uid", "来源标识", "", "与类型匹配填写。", {stacked:true}),
+            srcText("news_source_url", "来源地址", "", "与类型匹配填写。", {stacked:true}),
+          ]},
+        {master:srcToggle("news_daily_hot_read_enabled", "每日热点", "定时巡读热点榜单，挑适合聊起的内容自然分享。", {master:true}),
+          active:newsHotOn, cols:1, fields:[
+            srcText("news_hot_sources", "热点来源", "weibo,hackernews", "逗号分隔，可选 weibo / hackernews。", {stacked:true}),
+          ]},
       ]},
-      {id:"meal", icon:ICON.meal, title:"饭点与生日纪念日", hint:"饭点只是可选话题；生日和纪念日自动读取资料。", body:[
-        srcToggle("meal_checkin_enabled", "饭点话题", "系统会按当天语境在跳过、单时段或双时段中选择，不保证每餐都联系。"),
-        srcText("meal_lunch_time", "午餐大致时刻", "12:00", "实际机会会在参考时刻前后小幅浮动。"),
-        srcText("meal_dinner_time", "晚餐大致时刻", "18:00", "实际机会会在参考时刻前后小幅浮动。"),
-        srcNumber("meal_care_followup_minutes", "饭点后可接话窗口", "分钟", 1, 240, "超出窗口就不再跟进；语境不合适时可以直接跳过。"),
-        srcToggle("date_checkin_enabled", "生日与纪念日问候", ""),
-        srcText("date_checkin_time", "问候时刻", "09:00", ""),
-        srcNumber("important_date_lookahead_days", "提前几天开始留意", "天", 0, 30, "0 表示只在当天问候；角色生日、对方资料日期和每日反思记下的重要互动纪念日会自动读取，无需再填日期清单；可在聊天中用「陪伴 日期列表」查看或删除。"),
+      {id:"meal", icon:ICON.meal, title:"饭点与生日纪念日", hint:"饭点只是可选话题；生日和纪念日自动读取资料。", pairSections:true, sections:[
+        {master:srcToggle("meal_checkin_enabled", "饭点话题", "系统会按当天语境在跳过、单时段或双时段中选择，不保证每餐都联系。", {master:true}),
+          active:mealOn, cols:1, fields:[
+            srcText("meal_lunch_time", "午餐大致时刻", "12:00", "实际机会会在参考时刻前后小幅浮动。", {compact:true}),
+            srcText("meal_dinner_time", "晚餐大致时刻", "18:00", "实际机会会在参考时刻前后小幅浮动。", {compact:true}),
+            srcNumber("meal_care_followup_minutes", "饭点后可接话窗口", "分钟", 1, 240, "超出窗口就不再跟进；语境不合适时可以直接跳过。"),
+          ]},
+        {master:srcToggle("date_checkin_enabled", "生日与纪念日问候", "按本地问候时刻自动触发重要日期关心。", {master:true}),
+          active:dateOn, cols:1, fields:[
+            srcText("date_checkin_time", "问候时刻", "09:00", "", {compact:true}),
+            srcNumber("important_date_lookahead_days", "提前几天开始留意", "天", 0, 30, "0 表示只在当天问候；角色生日、对方资料日期和每日反思记下的重要互动纪念日会自动读取，无需再填日期清单；可在聊天中用「陪伴 日期列表」查看或删除。"),
+          ]},
       ]},
-      {id:"explore", icon:ICON.compass, title:"网络探索与自关联", hint:"按生日、纪念日、日程和兴趣生成研究目标，结果先存笔记。", body:[
-        srcToggle("web_exploration_enabled", "网络探索", "需要把上方「来源类型」设为“网络搜索”；生日等惊喜目标只记笔记，不会直接说破。"),
-        srcText("web_exploration_interests", "关注方向", "", "留空则不做定向探索。"),
-        srcNumber("web_exploration_min_interval_hours", "最短探索间隔", "小时", 1, 168, ""),
-        srcNumber("web_exploration_result_count", "每次取几条", "条", 1, 30, ""),
-        srcToggle("external_event_self_link_enabled", "把外部事件关联到自己", ""),
+      {id:"explore", icon:ICON.compass, title:"网络探索与自关联", hint:"按生日、纪念日、日程和兴趣生成研究目标，结果先存笔记。", sections:[
+        {master:srcToggle("web_exploration_enabled", "网络探索", "需要把上方「来源类型」设为“网络搜索”；生日等惊喜目标只记笔记，不会直接说破。", {master:true}),
+          active:webExploreOn, fields:[
+            srcText("web_exploration_interests", "关注方向", "", "留空则不做定向探索。", {stacked:true, span:true}),
+            srcNumber("web_exploration_min_interval_hours", "最短探索间隔", "小时", 1, 168, ""),
+            srcNumber("web_exploration_result_count", "每次取几条", "条", 1, 30, ""),
+          ]},
+        {master:srcToggle("external_event_self_link_enabled", "把外部事件关联到自己", "允许在自然语境中把外部见闻联系到角色自身经历。", {master:true}),
+          active:true, standalone:true, fields:[]},
       ]},
-      {id:"screen", icon:ICON.screen, title:"屏幕与动作", hint:"屏幕观察有授权与每日上限；语音与戳一戳各自有冷却。", wide:true, body:[
-        srcToggle("screen_glance_enabled", "已授权屏幕观察", "采集本身是设备侧的原生调用，可能被拒绝。"),
-        srcNumber("screen_glance_daily_limit", "每日上限", "次", 0, 20, ""),
-        srcNumber("screen_glance_cooldown_minutes", "冷却", "分钟", 0, 10080, ""),
-        srcToggle("screen_glance_goodnight_enabled", "睡前看一眼", ""),
-        srcNumber("screen_glance_goodnight_delay_minutes", "睡前延迟", "分钟", 1, 180, ""),
-        srcToggle("screen_glance_followup_enabled", "未回应后跟进", ""),
-        srcNumber("screen_glance_followup_after_minutes", "多久后跟进", "分钟", 10, 240, ""),
-        srcNumber("screen_glance_followup_cooldown_minutes", "跟进冷却", "分钟", 30, 1440, ""),
-        srcToggle("voice_action_enabled", "允许发语音", "沿用回复设置中的语音语言与对应 TTS，正文完整保留，语音另条发送。"),
-        srcNumber("voice_action_max_chars", "语音参考长度", "字", 6, 80, "供模型组织完整短句参考，优先保证语意完整，不按字数截断。"),
-        srcNumber("voice_action_cooldown_minutes", "语音冷却", "分钟", 0, 1440, ""),
-        srcToggle("poke_action_enabled", "允许戳一戳", ""),
-        srcNumber("poke_action_daily_limit", "每日上限", "次", 0, 20, ""),
-        srcNumber("poke_action_cooldown_minutes", "冷却", "分钟", 0, 1440, ""),
+      {id:"screen", icon:ICON.screen, title:"屏幕与动作", hint:"屏幕观察有授权与每日上限；语音与戳一戳各自有冷却。", wide:true, pairSections:true, sections:[
+        {master:srcToggle("screen_glance_enabled", "已授权屏幕观察", "采集本身是设备侧的原生调用，可能被拒绝。", {master:true}),
+          active:screenOn, span:true, fields:[
+            srcNumber("screen_glance_daily_limit", "每日上限", "次", 0, 20, ""),
+            srcNumber("screen_glance_cooldown_minutes", "冷却", "分钟", 0, 10080, ""),
+            srcToggle("screen_glance_goodnight_enabled", "睡前看一眼", ""),
+            srcNumber("screen_glance_goodnight_delay_minutes", "睡前延迟", "分钟", 1, 180, "", {muted:!goodnightOn}),
+            srcToggle("screen_glance_followup_enabled", "未回应后跟进", "", {span:true}),
+            srcNumber("screen_glance_followup_after_minutes", "多久后跟进", "分钟", 10, 240, "", {muted:!followupOn}),
+            srcNumber("screen_glance_followup_cooldown_minutes", "跟进冷却", "分钟", 30, 1440, "", {muted:!followupOn}),
+          ]},
+        {master:srcToggle("voice_action_enabled", "允许发语音", "沿用回复设置中的语音语言与对应 TTS，正文完整保留，语音另条发送。", {master:true}),
+          active:voiceOn, cols:1, fields:[
+            srcNumber("voice_action_max_chars", "语音参考长度", "字", 6, 80, "供模型组织完整短句参考，优先保证语意完整，不按字数截断。"),
+            srcNumber("voice_action_cooldown_minutes", "语音冷却", "分钟", 0, 1440, ""),
+          ]},
+        {master:srcToggle("poke_action_enabled", "允许戳一戳", "按冷却与每日上限控制戳一戳频率。", {master:true}),
+          active:pokeOn, cols:1, fields:[
+            srcNumber("poke_action_daily_limit", "每日上限", "次", 0, 20, ""),
+            srcNumber("poke_action_cooldown_minutes", "冷却", "分钟", 0, 1440, ""),
+          ]},
       ]},
-      {id:"context", icon:ICON.context, title:"约定与生成上下文", hint:"约定前后的静默，以及主动联系的生成方式。", wide:true, body:[
-        srcNumber("appointment_lead_minutes", "约定提前量", "分钟", 0, 240, ""),
-        srcNumber("appointment_lag_minutes", "约定延后量", "分钟", 0, 180, ""),
-        srcNumber("appointment_pre_silence_minutes", "约定前静默", "分钟", 0, 240, "约定前先安静一段，避免连着说两遍。"),
-        srcSelect("generation_mode", "生成方式", [["single","一次调用"],["two_stage","先规划再写作"]],
-          "两阶段先规划，决定发送后再写作；规划模型可在模型路由中单独设置。实际费用见运行统计。"),
-        srcToggle("enable_llm_proactive_persona_judge", "开口前先自评", "多一次模型调用，按阈值决定这条要不要发。"),
-        srcNumber("proactive_persona_judge_threshold", "自评阈值", "", 0, 100, ""),
-        srcNumber("proactive_persona_judge_cache_minutes", "自评缓存", "分钟", 0, 720, ""),
-        srcNumber("generation_history_limit", "近期对话轮数", "轮", 0, 64, "同一轮中的分段消息会合并计数，并受上下文字数预算约束。"),
-        srcNumber("history_max_chars", "历史字数上限", "字", 0, 8192, ""),
+      {id:"context", icon:ICON.context, title:"约定与生成上下文", hint:"约定前后的静默，以及主动联系的生成方式。", wide:true, sections:[
+        {title:"约定时间窗", active:true, fields:[
+          srcNumber("appointment_lead_minutes", "约定提前量", "分钟", 0, 240, ""),
+          srcNumber("appointment_lag_minutes", "约定延后量", "分钟", 0, 180, ""),
+          srcNumber("appointment_pre_silence_minutes", "约定前静默", "分钟", 0, 240, "约定前先安静一段，避免连着说两遍。", {span:true}),
+        ]},
+        {title:"生成方式与历史上下文", active:true, fields:[
+          srcSelect("generation_mode", "生成方式", [["single","一次调用"],["two_stage","先规划再写作"]],
+            "两阶段先规划，决定发送后再写作；规划模型可在模型路由中单独设置。实际费用见运行统计。", {span:true}),
+          srcNumber("generation_history_limit", "近期对话轮数", "轮", 0, 64, "同一轮中的分段消息会合并计数，并受上下文字数预算约束。"),
+          srcNumber("history_max_chars", "历史字数上限", "字", 0, 8192, ""),
+        ]},
+        {master:srcToggle("enable_llm_proactive_persona_judge", "开口前先自评", "多一次模型调用，按阈值决定这条要不要发。", {master:true}),
+          active:judgeOn, fields:[
+            srcNumber("proactive_persona_judge_threshold", "自评阈值", "", 0, 100, ""),
+            srcNumber("proactive_persona_judge_cache_minutes", "自评缓存", "分钟", 0, 720, ""),
+          ]},
       ]},
-      {id:"balance", icon:ICON.purse, title:"余额与其它", hint:"余额只影响说不说、说不说金额；两个阈值是绝对值与百分比双保险。", wide:true, body:[
-        srcToggle("balance_awareness_enabled", "余额感知", ""),
-        srcToggle("balance_include_amount_in_message", "在消息里说出金额", "关闭时只提「快用完了」，不报具体数字。"),
-        srcText("balance_currency_label", "货币单位", "元", "不超过 20 字符。"),
-        srcNumber("balance_check_interval_minutes", "检查间隔", "分钟", 5, 1440, ""),
-        srcNumber("balance_low_threshold", "低余额阈值", "", 0, 1000000000, ""),
-        srcNumber("balance_critical_threshold", "极低余额阈值", "", 0, 1000000000, ""),
-        srcNumber("balance_low_percent_threshold", "低余额百分比", "%", 0, 100, ""),
-        srcNumber("balance_critical_percent_threshold", "极低余额百分比", "%", 0, 100, ""),
-        srcNumber("balance_message_cooldown_hours", "余额提醒冷却", "小时", 1, 168, ""),
+      {id:"balance", icon:ICON.purse, title:"余额与其它", hint:"余额只影响说不说、说不说金额；两个阈值是绝对值与百分比双保险。", wide:true, sections:[
+        {master:srcToggle("balance_awareness_enabled", "余额感知", "根据配置的服务余额来源与阈值触发温和提醒。", {master:true}),
+          active:balanceOn, fields:[
+            srcToggle("balance_include_amount_in_message", "在消息里说出金额", "关闭时只提「快用完了」，不报具体数字。"),
+            srcText("balance_currency_label", "货币单位", "元", "不超过 20 字符。", {compact:true}),
+            srcNumber("balance_check_interval_minutes", "检查间隔", "分钟", 5, 1440, ""),
+            srcNumber("balance_message_cooldown_hours", "余额提醒冷却", "小时", 1, 168, ""),
+            srcNumber("balance_low_threshold", "低余额阈值", "", 0, 1000000000, ""),
+            srcNumber("balance_critical_threshold", "极低余额阈值", "", 0, 1000000000, ""),
+            srcNumber("balance_low_percent_threshold", "低余额百分比", "%", 0, 100, ""),
+            srcNumber("balance_critical_percent_threshold", "极低余额百分比", "%", 0, 100, ""),
+          ]},
       ]},
     ];
     const groups = known.map(sourceGroup).join("");
@@ -2147,48 +2214,71 @@ window.CompanionContactPage = (() => {
       <div class="ct-source-summary" role="status">${fields} 项触发配置 · ${on}/${toggles} 个开关当前开启</div>
       ${groups}<div data-screen-observation></div></div>`;
   }
-  function sourceGroup(group) {
-    const body = group.body;
-    const html = body.join("");
-    const half = group.wide ? Math.ceil(body.length / 2) : body.length;
-    const rows = [body.slice(0, half), body.slice(half)].filter(list => list.length)
-      .map(list => `<div class="ct-src-col">${list.join("")}</div>`).join("");
-    const toggles = (html.match(/data-kind="toggle"/g) || []).length;
-    const on = (html.match(/data-on="1"/g) || []).length;
-    return `<section class="ct-src-group${group.wide ? " is-wide" : ""}" data-source="${e(group.id)}"
-      data-toggles="${toggles}" data-enabled="${on}">
-      <header class="ct-src-head"><span class="ct-src-icon">${group.icon}</span><h3>${e(group.title)}</h3>
-        <em class="ct-src-badge${on ? " is-on" : ""}">${on}/${toggles} 开启</em></header>
-      <p class="ct-src-hint">${e(group.hint)}</p><div class="ct-src-rows">${rows}</div></section>`;
+  function sourceSection(section) {
+    const off = section.active === false;
+    const hasFields = Array.isArray(section.fields) && section.fields.length > 0;
+    const colsClass = section.cols === 1 ? " is-single-col" : "";
+    const head = section.master
+      ? `<div class="ct-src-section-head${hasFields ? "" : " is-solo"}">${section.master}`
+        + `${off && hasFields ? '<span class="ct-src-branch-state">未启用 · 以下子项暂不生效</span>' : ""}</div>`
+      : section.title
+        ? `<div class="ct-src-section-title">${e(section.title)}</div>` : "";
+    const body = hasFields
+      ? `<div class="ct-src-section-fields${colsClass}">${section.fields.join("")}</div>` : "";
+    return `<div class="ct-src-section${off ? " is-branch-off" : ""}${section.span ? " is-span" : ""}${section.standalone ? " is-standalone" : ""}">${head}${body}</div>`;
   }
-  function srcRow(name, label, help, kind, control) {
-    return `<label class="ct-src-row${dirty(name) ? " is-dirty" : ""}" data-kind="${kind}">
+  function sourceGroup(group) {
+    const sections = Array.isArray(group.sections) ? group.sections : [];
+    const sectionsHtml = sections.map(sourceSection).join("");
+    const toggles = (sectionsHtml.match(/data-kind="toggle"/g) || []).length;
+    const on = (sectionsHtml.match(/data-on="1"/g) || []).length;
+    return `<section class="ct-src-group${group.wide ? " is-wide" : ""}${on ? " has-active" : ""}" data-source="${e(group.id)}"
+      data-toggles="${toggles}" data-enabled="${on}">
+      <header class="ct-src-head"><span class="ct-src-icon">${group.icon}</span><div class="ct-src-head-copy"><h3>${e(group.title)}</h3>
+        <p class="ct-src-hint">${e(group.hint)}</p></div>
+        <em class="ct-src-badge${on ? " is-on" : ""}">${on}/${toggles} 开启</em></header>
+      <div class="ct-src-rows${group.pairSections ? " is-paired" : ""}">${sectionsHtml}</div></section>`;
+  }
+  function srcRow(name, label, help, kind, control, opts = {}) {
+    const classes = ["ct-src-row"];
+    if (dirty(name)) classes.push("is-dirty");
+    if (opts.stacked) classes.push("is-stacked");
+    if (opts.compact) classes.push("is-compact");
+    if (opts.muted) classes.push("is-muted");
+    if (opts.span) classes.push("is-span");
+    return `<label class="${classes.join(" ")}" data-kind="${kind}">
       <span class="ct-src-label">${e(label)}${help ? `<small>${e(help)}</small>` : ""}</span>
       <span class="ct-src-control">${control}</span></label>`;
   }
-  function srcToggle(name, label, help) {
+  function srcToggle(name, label, help, opts = {}) {
     const on = value(name) === true;
-    return `<label class="ct-src-row is-toggle${on ? " is-on" : ""}${dirty(name) ? " is-dirty" : ""}${flipClass(name)}"
+    const classes = ["ct-src-row", "is-toggle"];
+    if (on) classes.push("is-on");
+    if (dirty(name)) classes.push("is-dirty");
+    if (opts.master) classes.push("is-branch-master");
+    if (opts.muted) classes.push("is-muted");
+    if (opts.span) classes.push("is-span");
+    return `<label class="${classes.join(" ")}${flipClass(name)}"
       data-kind="toggle"${on ? ' data-on="1"' : ""}>
       <span class="ct-src-label">${e(label)}${help ? `<small>${e(help)}</small>` : ""}</span>
       <span class="ct-src-control"><span class="ct-switch"><input type="checkbox" data-field="${e(name)}"${on ? " checked" : ""}>
         <span class="ct-switch-track"><i></i></span></span></span></label>`;
   }
-  function srcText(name, label, placeholder, help) {
+  function srcText(name, label, placeholder, help, opts = {}) {
     const current = value(name);
     return srcRow(name, label, help, "text", `<input type="text" data-field="${e(name)}" value="${e(typeof current === "string" ? current : "")}"
-      placeholder="${e(placeholder)}" autocomplete="off" spellcheck="false" aria-label="${e(label)}">`);
+      placeholder="${e(placeholder)}" autocomplete="off" spellcheck="false" aria-label="${e(label)}">`, opts);
   }
-  function srcNumber(name, label, unit, min, max, help) {
+  function srcNumber(name, label, unit, min, max, help, opts = {}) {
     const current = value(name);
     const range = "可填 " + min + "–" + max + (unit ? "，单位 " + unit : "");
     return srcRow(name, label, help, "number", `<input type="number" data-field="${e(name)}" value="${e(current ?? "")}" min="${min}" max="${max}"
-      step="1" inputmode="numeric" aria-label="${e(label)}" title="${e(range)}"><i>${e(unit)}</i>`);
+      step="1" inputmode="numeric" aria-label="${e(label)}" title="${e(range)}">${unit ? `<i>${e(unit)}</i>` : ""}`, opts);
   }
-  function srcSelect(name, label, options, help="") {
+  function srcSelect(name, label, options, help="", opts = {}) {
     const current = value(name);
     return srcRow(name, label, help, "select", `<select data-field="${e(name)}" aria-label="${e(label)}">${options.map(([v, text]) =>
-      `<option value="${e(v)}"${String(current ?? "") === v ? " selected" : ""}>${e(text)}</option>`).join("")}</select>`);
+      `<option value="${e(v)}"${String(current ?? "") === v ? " selected" : ""}>${e(text)}</option>`).join("")}</select>`, opts);
   }
   function materialTime(value) {
     if (typeof value !== "string") return "—";
@@ -2908,13 +2998,16 @@ window.CompanionContactPage = (() => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
       event.preventDefault(); save(); return;
     }
-    const rail = event.target.closest("[data-view]");
-    if (rail && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+    const rail = event.target.closest(".ct-rail [data-view]");
+    if (rail && ["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
       event.preventDefault();
       const index = VIEWS.findIndex(([id]) => id === data.view);
-      const next = (index + (event.key === "ArrowDown" ? 1 : VIEWS.length - 1)) % VIEWS.length;
+      const next = event.key === "Home" ? 0
+        : event.key === "End" ? VIEWS.length - 1
+        : (index + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : VIEWS.length - 1)) % VIEWS.length;
       switchView(VIEWS[next][0]); render();
-      root.querySelector('[data-view="' + data.view + '"]')?.focus();
+      if (data.view === "materials") void loadMaterials();
+      root.querySelector('.ct-rail [data-view="' + data.view + '"]')?.focus();
     }
   }
 
