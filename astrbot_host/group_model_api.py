@@ -18,7 +18,14 @@ from companion_v2.model_gateway.management import ModelManagement
 from .group_settings import GroupTarget
 from .laya_client import LayaDecisionClient
 from .management_identity import dashboard_operator
-from .model_api import PREFIX as MODEL_PREFIX, _document, _document_optional
+from .model_api import (
+    PREFIX as MODEL_PREFIX,
+    _document,
+    _document_optional,
+    read_global_model_defaults,
+    save_global_model_defaults,
+)
+from .settings import HostControlError
 from .web_api import outcome_response
 
 
@@ -30,6 +37,7 @@ class GroupModelWebAPI:
     def routes(self, prefix):
         return [(prefix, self.status, ["GET"], "Read this group's model routing"),
                 (prefix + "/configure", self.configure, ["POST"], "Save this group's model routing"),
+                (prefix + "/defaults", self.save_defaults, ["POST"], "Save plugin global default primary and fallback providers"),
                 (prefix + "/laya", self.laya_status, ["GET"], "Read global Laya configuration from this group"),
                 (prefix + "/laya/save", self.laya_save, ["POST"], "Save global Laya configuration from this group"),
                 (prefix + "/laya/logs", self.laya_logs, ["GET"], "Report group Laya log availability"),
@@ -211,6 +219,7 @@ class GroupModelWebAPI:
                 operator, manager, _ = await self._prepare(layer)
                 result = require(manager.status(operator, layer=layer))
                 result["scope_kind"] = "group"
+                result["global_defaults"] = read_global_model_defaults(self.controller)
                 return outcome_response(Outcome.success(result))
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
@@ -243,3 +252,23 @@ class GroupModelWebAPI:
             return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, KeyError, AttributeError):
             return outcome_response(Outcome.failed("group_model_request_invalid", "invalid group model settings request"))
+
+    async def save_defaults(self):
+        try:
+            data = _document_optional(await request.body(), {"provider_id"},
+                optional=("fallback_provider_id",), limit=4096)
+            async with self.controller._control_lock:
+                operator, manager, _ = await self._prepare("role")
+                status = require(manager.status(operator, layer="role"))
+                allowed_ids = {item["id"] for item in status.get("providers", [])
+                               if "text" in (item.get("capabilities") or ())}
+            saved = await save_global_model_defaults(self.controller, data, allowed_provider_ids=allowed_ids)
+            return outcome_response(Outcome.success(saved))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except HostControlError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+            return outcome_response(Outcome.failed("model_defaults_invalid", "invalid global model defaults request"))
+        except OSError:
+            return outcome_response(Outcome.failed("account_config_save_failed", "global model defaults could not be saved"))

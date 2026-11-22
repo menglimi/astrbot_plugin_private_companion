@@ -412,6 +412,108 @@ def text_provider_catalog(controller):
     return providers
 
 
+def read_global_model_defaults(controller):
+    """Read plugin-wide default primary/fallback text providers (model.provider_id / fallback_provider_id)."""
+    base = getattr(controller, "controller", controller)
+    config = getattr(base, "config", None)
+    model_cfg = config.get("model", {}) if isinstance(config, dict) else {}
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+    configured_primary = str(model_cfg.get("provider_id") or "").strip()
+    configured_fallback = str(model_cfg.get("fallback_provider_id") or "").strip()
+    settings = getattr(base, "settings", None)
+    common = getattr(settings, "common", settings)
+    effective_primary = configured_primary or str(getattr(common, "provider_id", "") or "").strip()
+    effective_fallback = configured_fallback or str(getattr(common, "fallback_provider_id", "") or "").strip()
+    if effective_fallback == effective_primary:
+        effective_fallback = ""
+    editable = isinstance(config, dict) and callable(getattr(base, "save_plugin_config", None))
+    return {
+        "provider_id": configured_primary,
+        "fallback_provider_id": configured_fallback,
+        "effective_provider_id": effective_primary,
+        "effective_fallback_provider_id": effective_fallback,
+        "editable": editable,
+    }
+
+
+def _validate_global_text_provider(base, provider_id, allowed_provider_ids=None):
+    from .bootstrap_provider import supported_text_provider, text_provider_predicate
+    context = getattr(base, "context", None)
+    expected_type = text_provider_predicate(getattr(base, "native_types", None))
+    if context is not None and callable(getattr(context, "get_provider_by_id", None)) and expected_type is not None:
+        provider = context.get_provider_by_id(provider_id)
+        if provider is None or not supported_text_provider(provider, expected_type):
+            raise TaskError("host_provider_unavailable", "choose a loaded AstrBot text provider supported by V2")
+        return
+    if allowed_provider_ids is not None and provider_id not in allowed_provider_ids:
+        raise TaskError("host_provider_unavailable", "choose a loaded AstrBot text provider supported by V2")
+
+
+async def save_global_model_defaults(controller, data, *, allowed_provider_ids=None):
+    """Persist plugin-wide default primary and fallback providers shared with account/setup settings."""
+    base = getattr(controller, "controller", controller)
+    raw_primary = data.get("provider_id")
+    if type(raw_primary) is not str:
+        raise TaskError("model_defaults_invalid", "global default primary provider must be a string")
+    provider_id = raw_primary.strip()
+    if len(provider_id) > 512:
+        raise TaskError("model_defaults_invalid", "global default primary provider id is too long")
+    raw_fallback = data.get("fallback_provider_id", "")
+    if type(raw_fallback) is not str:
+        raise TaskError("model_defaults_invalid", "fallback global default provider must be a string")
+    fallback_provider_id = raw_fallback.strip()
+    if len(fallback_provider_id) > 512:
+        raise TaskError("model_defaults_invalid", "fallback global default provider id is too long")
+    if provider_id:
+        _validate_global_text_provider(base, provider_id, allowed_provider_ids=allowed_provider_ids)
+    fallback_cleared_duplicate = False
+    if provider_id and fallback_provider_id == provider_id:
+        fallback_provider_id = ""
+        fallback_cleared_duplicate = True
+    elif fallback_provider_id:
+        _validate_global_text_provider(base, fallback_provider_id, allowed_provider_ids=allowed_provider_ids)
+    config = getattr(base, "config", None)
+    save = getattr(base, "save_plugin_config", None)
+    if not isinstance(config, dict) or not callable(save):
+        raise TaskError("model_defaults_unavailable", "plugin configuration cannot be edited here")
+    candidate = deepcopy(dict(config))
+    model_settings = candidate.setdefault("model", {})
+    if type(model_settings) is not dict:
+        raise TaskError("model_defaults_invalid", "plugin model settings have an invalid shape")
+    model_settings["provider_id"] = provider_id
+    model_settings["fallback_provider_id"] = fallback_provider_id
+    profiles = model_settings.get("additional_providers")
+    if provider_id and type(profiles) is list:
+        model_settings["additional_providers"] = [
+            profile for profile in profiles
+            if not isinstance(profile, dict) or profile.get("provider_id") != provider_id
+        ]
+    save(candidate)
+    refresh = getattr(base, "refresh_settings", None)
+    if callable(refresh):
+        refresh()
+    restart_required = False
+    if getattr(base, "settings_error", None) is None:
+        initializer = getattr(base, "initialize_profile", None)
+        if callable(initializer):
+            try:
+                initialized = await initializer()
+                failure = getattr(initialized, "failure", None)
+                if failure is not None and getattr(failure, "code", "") == "host_must_stop":
+                    restart_required = True
+            except Exception:
+                restart_required = getattr(base, "session", None) is not None
+        else:
+            restart_required = getattr(base, "session", None) is not None
+    return {
+        "saved": True,
+        "global_defaults": read_global_model_defaults(base),
+        "restart_required": restart_required,
+        "fallback_cleared_duplicate": fallback_cleared_duplicate,
+    }
+
+
 class ModelWebAPI:
     def __init__(self, controller):
         self.controller = controller
@@ -429,6 +531,7 @@ class ModelWebAPI:
             (PREFIX + "/image-schema", self.image_schema, ["GET"],
              "Read the declared image provider field groups"),
             (PREFIX + "/configure", self.configure, ["POST"], "Save one model task configuration"),
+            (PREFIX + "/defaults", self.save_defaults, ["POST"], "Save plugin global default primary and fallback providers"),
             (PREFIX + "/test", self.test, ["POST"], "Probe one registered text provider"),
             (PREFIX + "/laya", self.laya_status, ["GET"], "Read optional Laya decision model configuration"),
             (PREFIX + "/laya/save", self.laya_save, ["POST"], "Save optional Laya decision model configuration"),
@@ -636,6 +739,7 @@ class ModelWebAPI:
                 if action == "status":
                     payload = dict(result.unwrap())
                     payload["host_route"] = self._host_route(_session)
+                    payload["global_defaults"] = read_global_model_defaults(self.controller)
                     result = Outcome.success(payload)
                 result = Outcome.success(project_core_reply_configuration(result.unwrap()))
             if action == "maintenance" and result.is_success:
@@ -764,6 +868,25 @@ class ModelWebAPI:
 
     async def configure(self):
         return await self._run("configure")
+
+    async def save_defaults(self):
+        try:
+            data = _document_optional(await request.body(), {"provider_id"},
+                optional=("fallback_provider_id",), limit=4096)
+            async with self.controller._control_lock:
+                _session, _operator, _manager, status = self._authorized(include_status=True)
+                allowed_ids = {item["id"] for item in status.get("providers", [])
+                               if "text" in (item.get("capabilities") or ())}
+            saved = await save_global_model_defaults(self.controller, data, allowed_provider_ids=allowed_ids)
+            return self._response(Outcome.success(saved))
+        except TaskError as error:
+            return self._response(Outcome.failed(error.code, str(error)))
+        except HostControlError as error:
+            return self._response(Outcome.failed(error.code, str(error)))
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
+            return self._response(Outcome.failed("model_defaults_invalid", "invalid global model defaults request"))
+        except OSError:
+            return self._response(Outcome.failed("account_config_save_failed", "global model defaults could not be saved"))
 
     async def test(self):
         try:
