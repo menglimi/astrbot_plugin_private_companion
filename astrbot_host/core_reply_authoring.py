@@ -90,8 +90,10 @@ async def execute_core_authoring(session, wrapper, call_id, action, arguments):
     def revalidate():
         session.assert_current()
         require(app.tasks.check_context_access(context, action="conversation.reply", observed_at=app.tasks.now()))
+        from companion_v2.storage.native_dedup import role_instruction_matches
         row = app.runtime.read_one("SELECT * FROM conversation_native_turns WHERE turn_id=?", (session.turn_id,))
-        if (row is None or row["context_key"] != context.key or row["role_instruction"] != native_input.instruction
+        if (row is None or row["context_key"] != context.key
+                or not role_instruction_matches(app.runtime, row["role_instruction"], native_input.instruction)
                 or row["generation_state"] not in ("prepared", "running")):
             raise TaskError("content_authoring_request_mismatch", "the original native writing turn changed")
         event = input_event(app.messages, row, app.tasks.now())

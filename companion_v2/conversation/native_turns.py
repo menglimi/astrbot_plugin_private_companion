@@ -12,6 +12,15 @@ from companion_v2.storage.native_conversation_schema import (
     OPEN_TURN_STATES,
     ensure_native_conversation_schema,
 )
+from companion_v2.storage.native_dedup import (
+    matching_context_hashes,
+    resolve_context_json,
+    resolve_role_instruction,
+    resolve_rows_context,
+    role_instruction_matches,
+    store_context_json,
+    store_role_instruction,
+)
 from companion_v2.storage.runtime import table_exists
 
 from .messages import source_from_document
@@ -26,10 +35,15 @@ def turns_available(runtime):
     return table_exists(runtime, TABLE)
 
 
-def project(row):
+def project(row, runtime=None):
     if row is None:
         return None
-    return {**dict(row), "batch_id": row["turn_id"], "origin_key": row["context_key"],
+    data = dict(row)
+    if "context_json" in data:
+        data["context_json"] = resolve_context_json(runtime, data["context_json"])
+    if "role_instruction" in data:
+        data["role_instruction"] = resolve_role_instruction(runtime, data["role_instruction"])
+    return {**data, "batch_id": row["turn_id"], "origin_key": row["context_key"],
             "created_at": row["observed_at"], "execution_path": "astrbot_core",
             "flow_state": "complete" if row["generation_state"] == "completed" else row["generation_state"],
             "state": "ready" if row["generation_state"] == "completed" else row["generation_state"]}
@@ -39,12 +53,52 @@ def latest(runtime, context_key):
     if not turns_available(runtime):
         return None
     return project(runtime.read_one("""SELECT * FROM conversation_native_turns WHERE context_key = ?
-        ORDER BY observed_at DESC, rowid DESC LIMIT 1""", (context_key,)))
+        ORDER BY observed_at DESC, rowid DESC LIMIT 1""", (context_key,)), runtime=runtime)
 
 
 def latest_scope(runtime, scope):
     if not turns_available(runtime):
         return None
+    scope_params = (
+        scope.installation_id,
+        scope.platform,
+        scope.kind.value,
+        scope.native_scope_id,
+        scope.bot_id,
+        scope.account_id,
+        scope.session_id,
+    )
+    hashes = matching_context_hashes(
+        runtime,
+        """json_extract(context_json, '$.audience.scope.installation_id') = ?
+           AND json_extract(context_json, '$.audience.scope.platform') = ?
+           AND json_extract(context_json, '$.audience.scope.kind') = ?
+           AND json_extract(context_json, '$.audience.scope.native_scope_id') = ?
+           AND json_extract(context_json, '$.audience.scope.bot_id') = ?
+           AND json_extract(context_json, '$.audience.scope.account_id') = ?
+           AND json_extract(context_json, '$.audience.scope.session_id') = ?""",
+        scope_params,
+    )
+    if hashes:
+        best_row = None
+        for start in range(0, len(hashes), 400):
+            chunk = hashes[start:start + 400]
+            marks = ",".join("?" for _ in chunk)
+            candidate = runtime.read_one(
+                f"""SELECT rowid AS _rid, * FROM conversation_native_turns
+                    WHERE context_hash IN ({marks})
+                    ORDER BY observed_at DESC, rowid DESC LIMIT 1""",
+                chunk,
+            )
+            if candidate is not None and (
+                best_row is None
+                or (candidate["observed_at"], candidate["_rid"]) > (best_row["observed_at"], best_row["_rid"])
+            ):
+                best_row = candidate
+        if best_row is not None:
+            data = dict(best_row)
+            data.pop("_rid", None)
+            return project(data, runtime=runtime)
     return project(runtime.read_one("""SELECT * FROM conversation_native_turns
         WHERE json_extract(context_json, '$.audience.scope.installation_id') = ?
           AND json_extract(context_json, '$.audience.scope.platform') = ?
@@ -53,8 +107,7 @@ def latest_scope(runtime, scope):
           AND json_extract(context_json, '$.audience.scope.bot_id') = ?
           AND json_extract(context_json, '$.audience.scope.account_id') = ?
           AND json_extract(context_json, '$.audience.scope.session_id') = ?
-        ORDER BY observed_at DESC, rowid DESC LIMIT 1""", (scope.installation_id, scope.platform,
-        scope.kind.value, scope.native_scope_id, scope.bot_id, scope.account_id, scope.session_id)))
+        ORDER BY observed_at DESC, rowid DESC LIMIT 1""", scope_params), runtime=runtime)
 
 
 def latest_input(runtime, context_key):
@@ -71,7 +124,7 @@ def latest_input(runtime, context_key):
         WHERE context_key = ? AND input_observation_id IS NOT NULL
           AND input_observation_id <> ''
           AND generation_state = 'completed' AND trim(role_instruction) <> ''
-        ORDER BY observed_at DESC, rowid DESC LIMIT 1""", (context_key,)))
+        ORDER BY observed_at DESC, rowid DESC LIMIT 1""", (context_key,)), runtime=runtime)
 
 
 def context_rows(runtime, *, kind=None, open_only=False):
@@ -97,14 +150,15 @@ def context_rows(runtime, *, kind=None, open_only=False):
         where = f"WHERE n.generation_state IN ({phases}) AND "
         parameters: tuple[object, ...] = ()
         if kind:
-            where += "json_extract(n.context_json, '$.audience.scope.kind') = ? AND "
+            where += "n.scope_kind = ? AND "
             parameters = (kind,)
         rows = runtime.read_all("SELECT n.* FROM conversation_native_turns n " + where + """
             NOT EXISTS (SELECT 1 FROM conversation_native_turns newer
                 WHERE newer.context_key = n.context_key
                 AND (newer.observed_at, newer.rowid) > (n.observed_at, n.rowid))
             ORDER BY n.observed_at DESC, n.rowid DESC""", parameters)
-        return tuple(project(row) for row in rows)
+        resolved = resolve_rows_context(runtime, rows, resolve_role=True)
+        return tuple(project(row, runtime=runtime) for row in resolved)
     # Full latest-turn-per-context reads (e.g. expression review over groups)
     # jump across distinct context_keys via a loose index scan on
     # conversation_native_turn_context_recent_idx instead of scanning the full
@@ -112,7 +166,7 @@ def context_rows(runtime, *, kind=None, open_only=False):
     kind_filter = ""
     parameters = ()
     if kind:
-        kind_filter = " AND json_extract(n.context_json, '$.audience.scope.kind') = ?"
+        kind_filter = " AND n.scope_kind = ?"
         parameters = (kind,)
     rows = runtime.read_all("""WITH RECURSIVE keys(k) AS (
             SELECT MIN(context_key) FROM conversation_native_turns
@@ -127,7 +181,8 @@ def context_rows(runtime, *, kind=None, open_only=False):
                     ORDER BY t.observed_at DESC, t.rowid DESC LIMIT 1)
             FROM keys WHERE keys.k IS NOT NULL
         )""" + kind_filter + " ORDER BY n.observed_at DESC, n.rowid DESC", parameters)
-    return tuple(project(row) for row in rows)
+    resolved = resolve_rows_context(runtime, rows, resolve_role=True)
+    return tuple(project(row, runtime=runtime) for row in resolved)
 
 
 def latest_role_contexts(runtime, *, kind, limit=8):
@@ -140,7 +195,7 @@ def latest_role_contexts(runtime, *, kind, limit=8):
     """
     if not turns_available(runtime) or limit <= 0:
         return ()
-    return tuple(runtime.read_all("""WITH RECURSIVE roles(rb) AS (
+    rows = runtime.read_all("""WITH RECURSIVE roles(rb) AS (
             SELECT MIN(role_binding_key)
             FROM conversation_native_turns
             WHERE scope_kind = ? AND role_binding_key > ''
@@ -172,7 +227,8 @@ def latest_role_contexts(runtime, *, kind, limit=8):
         SELECT n.context_json
         FROM top_roles l
         JOIN conversation_native_turns n ON n.rowid = l.rid
-        ORDER BY l.obs DESC, l.rid DESC""", (kind, kind, kind, kind, limit)))
+        ORDER BY l.obs DESC, l.rid DESC""", (kind, kind, kind, kind, limit))
+    return resolve_rows_context(runtime, rows)
 
 
 def foreground_busy(runtime, context):
@@ -183,7 +239,7 @@ def foreground_busy(runtime, context):
 def input_event(messages, row, at):
     from .native_observations import validate_observation
 
-    context = TaskContext.restore(json.loads(row["context_json"]))
+    context = TaskContext.restore(json.loads(resolve_context_json(messages.runtime, row["context_json"])))
     original = messages.runtime.read_one("SELECT * FROM conversation_native_observations WHERE observation_id = ?",
                                          (row["input_observation_id"],))
     if original is None or original["kind"] != "input" or original["turn_id"] != row["turn_id"]:
@@ -215,42 +271,64 @@ class NativeConversationTurns:
         at = stamp(native_input.at)
         scope_kind = context.scope.kind.value
         role_binding_key = encode(context.role_binding)
+        raw_context_json = encode(context)
         with self.runtime.transaction() as connection:
             existing = connection.execute("SELECT * FROM conversation_native_turns WHERE turn_id = ?", (turn_id,)).fetchone()
             if existing is not None and (existing["context_key"] != context.key
-                    or existing["role_instruction"] != native_input.instruction):
+                    or not role_instruction_matches(connection, existing["role_instruction"], native_input.instruction)):
                 raise TaskError("native_turn_conflict", "the admitted native turn changed")
+            stored_ctx, ctx_hash = store_context_json(
+                connection,
+                raw_context_json,
+                context_key=context.key,
+                scope_kind=scope_kind,
+                role_binding_key=role_binding_key,
+                created_at=at,
+            )
+            stored_role = store_role_instruction(connection, native_input.instruction, created_at=at)
             connection.execute("""INSERT INTO conversation_native_turns
                 (turn_id, context_key, context_json, role_instruction, input_observation_id,
-                 observed_at, generation_state, phase_at, last_sent_at, scope_kind, role_binding_key)
-                VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?, NULL, ?, ?)
+                 observed_at, generation_state, phase_at, last_sent_at, scope_kind, role_binding_key, context_hash)
+                VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?, NULL, ?, ?, ?)
                 ON CONFLICT(turn_id) DO UPDATE SET input_observation_id = excluded.input_observation_id""",
-                (turn_id, context.key, encode(context), native_input.instruction,
+                (turn_id, context.key, stored_ctx, stored_role,
                  input_reference.source_id if input_reference is not None else None, at, at,
-                 scope_kind, role_binding_key))
+                 scope_kind, role_binding_key, ctx_hash))
 
     def mark(self, prepared, state, *, at):
         if state not in ("prepared", "running", "completed", "failed"):
             raise ValueError("invalid native generation phase")
         context, turn_id = prepared["context"], prepared["turn_id"]
         observed = getattr(prepared.get("native_input"), "at", at)
+        stamped_observed = stamp(observed)
+        stamped_at = stamp(at)
         scope_kind = context.scope.kind.value
         role_binding_key = encode(context.role_binding)
+        raw_context_json = encode(context)
         with self.runtime.transaction() as connection:
             current = connection.execute("SELECT * FROM conversation_native_turns WHERE turn_id = ?", (turn_id,)).fetchone()
             if current is not None and (current["context_key"] != context.key
-                    or current["role_instruction"] != prepared["instruction"]):
+                    or not role_instruction_matches(connection, current["role_instruction"], prepared["instruction"])):
                 raise TaskError("native_turn_conflict", "the admitted native turn changed")
-            if current is not None and (current["phase_at"] > stamp(at)
+            if current is not None and (current["phase_at"] > stamped_at
                     or current["generation_state"] in ("completed", "failed") and state in ("prepared", "running")):
                 return
+            stored_ctx, ctx_hash = store_context_json(
+                connection,
+                raw_context_json,
+                context_key=context.key,
+                scope_kind=scope_kind,
+                role_binding_key=role_binding_key,
+                created_at=stamped_observed,
+            )
+            stored_role = store_role_instruction(connection, prepared["instruction"], created_at=stamped_observed)
             connection.execute("""INSERT INTO conversation_native_turns
                 (turn_id, context_key, context_json, role_instruction, input_observation_id,
-                 observed_at, generation_state, phase_at, last_sent_at, scope_kind, role_binding_key)
-                VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?, ?)
+                 observed_at, generation_state, phase_at, last_sent_at, scope_kind, role_binding_key, context_hash)
+                VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?)
                 ON CONFLICT(turn_id) DO UPDATE SET generation_state = excluded.generation_state, phase_at = excluded.phase_at""",
-                (turn_id, context.key, encode(context), prepared["instruction"], stamp(observed), state, stamp(at),
-                 scope_kind, role_binding_key))
+                (turn_id, context.key, stored_ctx, stored_role, stamped_observed, state, stamped_at,
+                 scope_kind, role_binding_key, ctx_hash))
 
     def sent(self, turn_id, observed_at, *, observation_id=None):
         with self.runtime.transaction() as connection:

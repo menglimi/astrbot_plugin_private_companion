@@ -9,6 +9,7 @@ snapshot contains no filesystem paths, provider objects or host sessions.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import uuid
@@ -348,19 +349,7 @@ class MemoryPageAPI:
             "degraded_reasons": [],
         }
 
-    async def export_snapshot(
-        self,
-        *,
-        target_plugin_id: str = MEMORY_PLUGIN_ID,
-        selected_date: str = "",
-    ) -> dict[str, Any]:
-        if target_plugin_id != MEMORY_PLUGIN_ID:
-            raise MemoryPageUnavailable("memory_page_snapshot_state_unavailable")
-        requested = _date(selected_date)
-        runtime = getattr(self.controller, "runtime", None)
-        if runtime is None:
-            return _empty_snapshot(generation=self.instance_generation,
-                                   selected_date=requested or _local_today())
+    def _export_snapshot_sync(self, runtime: Any, requested: str) -> dict[str, Any]:
         try:
             records = runtime.read_all("SELECT record_json FROM calendar_records", ())
             states = runtime.read_all(
@@ -428,6 +417,21 @@ class MemoryPageAPI:
             },
         }
         return _seal(payload)
+
+    async def export_snapshot(
+        self,
+        *,
+        target_plugin_id: str = MEMORY_PLUGIN_ID,
+        selected_date: str = "",
+    ) -> dict[str, Any]:
+        if target_plugin_id != MEMORY_PLUGIN_ID:
+            raise MemoryPageUnavailable("memory_page_snapshot_state_unavailable")
+        requested = _date(selected_date)
+        runtime = getattr(self.controller, "runtime", None)
+        if runtime is None:
+            return _empty_snapshot(generation=self.instance_generation,
+                                   selected_date=requested or _local_today())
+        return await asyncio.to_thread(self._export_snapshot_sync, runtime, requested)
 
     async def read_photo(
         self,

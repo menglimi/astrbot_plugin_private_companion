@@ -144,12 +144,27 @@ def recent_group_lines(runtime, context, manifest, *, limit=MAX_SOURCE_LINES):
     from companion_v2.storage.codec import decode_timestamp
     from companion_v2.conversation.native_turns import turns_available
     if observations_available(runtime):
+        from companion_v2.storage.native_dedup import matching_context_hashes, resolve_context_json
         time_column = "COALESCE(t.sent_at, n.observed_at)" if turns_available(runtime) else "n.observed_at"
-        native = runtime.read_all("SELECT n.*, " + time_column + " AS sent_at FROM conversation_native_observations n "
-            + ("LEFT JOIN conversation_native_sends t USING(observation_id) " if turns_available(runtime) else "") + """
-            WHERE n.kind='assistant' AND n.delivery_state='send_returned'
-              AND """ + time_column + " >= ? AND " + time_column + """ < ?
-              AND json_extract(n.context_json, '$.audience.scope.installation_id') = ?
+        scope_params = (
+            context.scope.installation_id, context.scope.platform, context.scope.bot_id, context.scope.account_id,
+            context.scope.native_scope_id, context.scope.session_id,
+            context.role_binding.role.subject_id,
+        )
+        hashes = matching_context_hashes(
+            runtime,
+            """json_extract(context_json, '$.audience.scope.installation_id') = ?
+               AND json_extract(context_json, '$.audience.scope.platform') = ?
+               AND json_extract(context_json, '$.audience.scope.bot_id') = ?
+               AND json_extract(context_json, '$.audience.scope.account_id') = ?
+               AND json_extract(context_json, '$.audience.scope.kind') = 'group'
+               AND json_extract(context_json, '$.audience.scope.native_scope_id') = ?
+               AND json_extract(context_json, '$.audience.scope.session_id') = ?
+               AND json_extract(context_json, '$.role_binding.role.subject_id') = ?""",
+            scope_params,
+        )
+        legacy_scope_sql = """(
+              json_extract(n.context_json, '$.audience.scope.installation_id') = ?
               AND json_extract(n.context_json, '$.audience.scope.platform') = ?
               AND json_extract(n.context_json, '$.audience.scope.bot_id') = ?
               AND json_extract(n.context_json, '$.audience.scope.account_id') = ?
@@ -157,15 +172,24 @@ def recent_group_lines(runtime, context, manifest, *, limit=MAX_SOURCE_LINES):
               AND json_extract(n.context_json, '$.audience.scope.native_scope_id') = ?
               AND json_extract(n.context_json, '$.audience.scope.session_id') = ?
               AND json_extract(n.context_json, '$.role_binding.role.subject_id') = ?
-            ORDER BY sent_at DESC LIMIT ?""", (manifest["start"], manifest["end"],
-            context.scope.installation_id, context.scope.platform, context.scope.bot_id, context.scope.account_id,
-            context.scope.native_scope_id, context.scope.session_id,
-            context.role_binding.role.subject_id, limit))
+        )"""
+        if hashes:
+            marks = ",".join("?" for _ in hashes)
+            scope_where = f"(n.context_hash IN ({marks}) OR {legacy_scope_sql})"
+            query_params = (manifest["start"], manifest["end"], *hashes, *scope_params, limit)
+        else:
+            scope_where = legacy_scope_sql
+            query_params = (manifest["start"], manifest["end"], *scope_params, limit)
+        native = runtime.read_all("SELECT n.*, " + time_column + " AS sent_at FROM conversation_native_observations n "
+            + ("LEFT JOIN conversation_native_sends t USING(observation_id) " if turns_available(runtime) else "") + """
+            WHERE n.kind='assistant' AND n.delivery_state='send_returned'
+              AND """ + time_column + " >= ? AND " + time_column + " < ? AND " + scope_where + """
+            ORDER BY sent_at DESC LIMIT ?""", query_params)
         sources, identity = SourceRepository(runtime), PersistentIdentityDirectory(runtime)
         at = decode_timestamp(manifest["end"])
         for row in reversed(native):
             try:
-                original = TaskContext.restore(json.loads(row["context_json"]))
+                original = TaskContext.restore(json.loads(resolve_context_json(runtime, row["context_json"])))
                 source = source_from_document(json.loads(row["source_json"]))
                 if (group_owner_key(original) != group_owner_key(context)
                         or original.audience != group_audience(original.scope, original.actor.subject)):

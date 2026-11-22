@@ -45,9 +45,16 @@ def history(application, context, *, at, cursor=None):
     if not members:
         return {"records": [], "next_cursor": None}
     queries, params = [], []
+    from companion_v2.storage.native_dedup import matching_context_hashes, resolve_context_json
     from companion_v2.storage.runtime import table_exists
     if observations_available(runtime):
         clause, values = predicate("n.context_json")
+        ctx_clause, ctx_values = predicate("context_json")
+        matched_hashes = matching_context_hashes(runtime, ctx_clause, tuple(ctx_values))
+        if matched_hashes:
+            marks = ",".join("?" for _ in matched_hashes)
+            clause = f"{clause} OR n.context_hash IN ({marks})"
+            values.extend(matched_hashes)
         has_sends = table_exists(runtime, "conversation_native_sends")
         projected = "COALESCE(s.sent_at,n.observed_at)" if has_sends else "n.observed_at"
         joins = " LEFT JOIN conversation_native_sends s USING(observation_id)" if has_sends else ""
@@ -72,7 +79,7 @@ def history(application, context, *, at, cursor=None):
             actual_scope = None
             if item["kind"] == "native":
                 row = runtime.read_one("SELECT * FROM conversation_native_observations WHERE observation_id=?", (item["original_id"],))
-                original = TaskContext.restore(json.loads(row["context_json"]))
+                original = TaskContext.restore(json.loads(resolve_context_json(runtime, row["context_json"])))
                 if member_for(original) not in members:
                     continue
                 require(application.tasks.check_context_access(original, action="conversation.reply", observed_at=at))

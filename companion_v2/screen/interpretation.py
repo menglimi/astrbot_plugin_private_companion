@@ -188,9 +188,10 @@ class ScreenInterpretationService:
             return ""
         from companion_v2.conversation.native_tool_sources import native_turn
         if native_turn(parent_task_id):
+            from companion_v2.storage.native_dedup import resolve_role_instruction
             row = self.runtime.read_one("SELECT role_instruction FROM conversation_native_turns WHERE turn_id = ?",
                                         (parent_task_id,))
-            return row["role_instruction"] if row is not None else ""
+            return resolve_role_instruction(self.runtime, row["role_instruction"]) if row is not None else ""
         row = self.runtime.read_one("SELECT role_instruction FROM conversation_batches WHERE generation_task_id = ?",
                                     (parent_task_id,))
         return row["role_instruction"] if row is not None else ""

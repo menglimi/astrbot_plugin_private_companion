@@ -57,7 +57,8 @@ def linked_context(application, context, *, at, before=None):
         if not peers:
             return ""
         # Route-indexed probes avoid scanning the entire installation's history.
-        clauses, values = [], [group["context_since"], stamp(before or at)]
+        from companion_v2.storage.native_dedup import matching_context_hashes, resolve_context_json
+        clauses, ctx_clauses, peer_values = [], [], []
         for peer in peers:
             clauses.append("""(json_extract(n.context_json, '$.actor.subject.subject_id') = ?
                 AND json_extract(n.context_json, '$.audience.scope.platform') = ?
@@ -65,7 +66,24 @@ def linked_context(application, context, *, at, before=None):
                 AND json_extract(n.context_json, '$.audience.scope.account_id') = ?
                 AND json_extract(n.context_json, '$.audience.scope.native_scope_id') = ?
                 AND json_extract(n.context_json, '$.role_binding.role.subject_id') = ?)""")
-            values.extend(peer[k] for k in ("subject_id", "platform", "bot_id", "account_id", "native_account_id", "role_id"))
+            ctx_clauses.append("""(json_extract(context_json, '$.actor.subject.subject_id') = ?
+                AND json_extract(context_json, '$.audience.scope.platform') = ?
+                AND json_extract(context_json, '$.audience.scope.bot_id') = ?
+                AND json_extract(context_json, '$.audience.scope.account_id') = ?
+                AND json_extract(context_json, '$.audience.scope.native_scope_id') = ?
+                AND json_extract(context_json, '$.role_binding.role.subject_id') = ?)""")
+            peer_values.extend(peer[k] for k in ("subject_id", "platform", "bot_id", "account_id", "native_account_id", "role_id"))
+        values = [group["context_since"], stamp(before or at), *peer_values]
+        matched_hashes = matching_context_hashes(
+            runtime,
+            "scope_kind = 'private' AND (" + " OR ".join(ctx_clauses) + ")",
+            tuple(peer_values),
+        )
+        peer_filter = " OR ".join(clauses)
+        if matched_hashes:
+            marks = ",".join("?" for _ in matched_hashes)
+            peer_filter = f"{peer_filter} OR n.context_hash IN ({marks})"
+            values.extend(matched_hashes)
         from companion_v2.storage.runtime import table_exists
         has_sends = table_exists(runtime, "conversation_native_sends")
         # Without a real send marker, an assistant row is not evidence of delivery.
@@ -76,15 +94,15 @@ def linked_context(application, context, *, at, before=None):
         projected_at = "COALESCE(s.sent_at, n.observed_at)" if has_sends else "n.observed_at"
         rows = runtime.read_all("SELECT n.*, " + projected_at + " AS projected_at FROM conversation_native_observations n" + joins + """
             WHERE n.observed_at > ? AND n.observed_at <= ?
-            AND json_extract(n.context_json, '$.audience.scope.kind') = 'private'
-            AND (""" + " OR ".join(clauses) + ") AND " + sent_filter + """
+            AND n.scope_kind = 'private'
+            AND (""" + peer_filter + ") AND " + sent_filter + """
             AND n.delivery_state IN ('input_observed', 'send_returned')
             ORDER BY projected_at DESC, n.observation_id DESC LIMIT 96""", tuple(values))
         records, chars = [], 0
         sources = SourceRepository(runtime)
         for row in rows:
             try:
-                original = TaskContext.restore(json.loads(row["context_json"]))
+                original = TaskContext.restore(json.loads(resolve_context_json(runtime, row["context_json"])))
                 if member_for(original) not in peers:
                     continue
                 require(application.tasks.check_context_access(original, action="conversation.reply", observed_at=at))

@@ -19,6 +19,12 @@ from companion_v2.storage.native_conversation_schema import (
     TABLE,
     ensure_native_conversation_schema,
 )
+from companion_v2.storage.native_dedup import (
+    resolve_context_json,
+    resolve_row_context,
+    resolve_rows_context,
+    store_context_json,
+)
 from companion_v2.storage.runtime import table_exists
 
 from .recalls import CONSUMER as RECALL_CONSUMER, MessageRecall
@@ -45,12 +51,12 @@ def observations_available(runtime):
     return table_exists(runtime, TABLE)
 
 
-def inbound_event(row):
+def inbound_event(row, runtime=None):
     """Adapt an observed input for domain owners, without creating a reply batch."""
     from .messages import source_from_document
     from .models import InboundConversationEvent
 
-    original = TaskContext.restore(json.loads(row["context_json"]))
+    original = TaskContext.restore(json.loads(resolve_context_json(runtime, row["context_json"])))
     return InboundConversationEvent(row["event_id"], original.actor.principal, original.scope,
         source_from_document(json.loads(row["source_json"])), "text", row["content_hash"],
         datetime.fromisoformat(row["observed_at"]))
@@ -66,7 +72,7 @@ def input_rows_for_context(runtime, context, *, start=None, end=None, after_sequ
         clauses.append("n.context_key = ?")
         values.append(context.key)
     elif context.scope.kind is ScopeKind.GROUP:
-        clauses.append("json_extract(n.context_json, '$.role_binding') = ?")
+        clauses.append("n.role_binding_key = ?")
         values.append(encode(context.role_binding))
     else:
         return ()
@@ -80,32 +86,35 @@ def input_rows_for_context(runtime, context, *, start=None, end=None, after_sequ
         clauses.append("s.rowid > ?")
         values.append(after_sequence)
     values.append(limit)
-    return runtime.read_all("""SELECT n.*, s.rowid AS input_sequence
+    rows = runtime.read_all("""SELECT n.*, s.rowid AS input_sequence
         FROM conversation_native_observations n JOIN sources s
         ON s.source_id = json_extract(n.source_json, '$.source_id')
           AND s.lineage_id = json_extract(n.source_json, '$.version.lineage_id')
           AND s.source_revision = json_extract(n.source_json, '$.version.revision')
         WHERE """ + " AND ".join(clauses) + " ORDER BY n.observed_at DESC, s.rowid DESC LIMIT ?", tuple(values))
+    return resolve_rows_context(runtime, rows)
 
 
 def observation_row(runtime, identifier):
     if not observations_available(runtime):
         return None
-    return runtime.read_one("SELECT * FROM conversation_native_observations WHERE observation_id = ?", (identifier,))
+    row = runtime.read_one("SELECT * FROM conversation_native_observations WHERE observation_id = ?", (identifier,))
+    return resolve_row_context(runtime, row)
 
 
 def source_row(runtime, reference):
     if reference.owner not in NATIVE_OWNERS or not observations_available(runtime):
         return None
-    return runtime.read_one("""SELECT * FROM conversation_native_observations
+    row = runtime.read_one("""SELECT * FROM conversation_native_observations
         WHERE json_extract(source_json, '$.source_id') = ?""", (reference.source_id,))
+    return resolve_row_context(runtime, row)
 
 
 def validate_observation(runtime, row, context, reference, *, original=None, recalled_keys=None):
     from companion_v2.memory.codec import source
 
     if original is None:
-        original = TaskContext.restore(json.loads(row["context_json"]))
+        original = TaskContext.restore(json.loads(resolve_context_json(runtime, row["context_json"])))
     if (source(json.loads(row["source_json"])) != reference
             or original.scope != reference.scope or owner_key(original) != owner_key(context)
             or original.scope.kind is not context.scope.kind
@@ -150,7 +159,7 @@ def rows_for_context(runtime, context, *, start=None, end=None, limit=None):
     if limit is not None:
         query += " LIMIT ?"
         values.append(limit)
-    return runtime.read_all(query, tuple(values))
+    return resolve_rows_context(runtime, runtime.read_all(query, tuple(values)))
 
 
 class NativeConversationObservations:
@@ -268,14 +277,24 @@ class NativeConversationObservations:
                                    (state, identifier))
             else:
                 stamped_issued = stamp(issued_at)
+                scope_kind = context.scope.kind.value
+                role_binding_key = encode(context.role_binding)
+                stored_ctx, ctx_hash = store_context_json(
+                    connection,
+                    encode(context),
+                    context_key=context.key,
+                    scope_kind=scope_kind,
+                    role_binding_key=role_binding_key,
+                    created_at=stamped_issued,
+                )
                 connection.execute("""INSERT INTO conversation_native_observations
                     (observation_id, context_key, memory_owner, conversation_owner, turn_id, event_id,
                      kind, delivery_state, context_json, source_json, content_hash, observed_at,
-                     effective_at, scope_kind)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                     effective_at, scope_kind, role_binding_key, context_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (identifier, context.key, owner_key(context), conversation_owner(context), turn_id, event_id,
-                     kind, state, encode(context), encode(reference), record.content_hash, stamped_issued,
-                     stamped_issued, context.scope.kind.value))
+                     kind, state, stored_ctx, encode(reference), record.content_hash, stamped_issued,
+                     stamped_issued, scope_kind, role_binding_key, ctx_hash))
             if context.scope.kind is ScopeKind.PRIVATE and state in ("input_observed", "send_returned"):
                 connection.execute("""INSERT INTO memory_recall_changes(owner, kind, object_id, token)
                     VALUES (?, ?, ?, ?)""", (conversation_owner(context),

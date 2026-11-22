@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from companion_v2.storage.native_dedup import (
+    DEDUP_INDEX_STATEMENTS,
+    DEDUP_TABLE_STATEMENTS,
+    ensure_dedup_tables,
+)
+
 # The two phases in which an admitted turn is still using its window. They appear
 # as literals below and in the query that reads them, because SQLite only applies
 # a partial index when it can prove the statement implies the index predicate, and
@@ -9,9 +15,10 @@ from __future__ import annotations
 OPEN_TURN_STATES = ("prepared", "running")
 
 TABLE = "conversation_native_observations"
-SCHEMA_KEY = "native_conversation.v2"
+SCHEMA_KEY = "native_conversation.v3"
 
 TABLE_STATEMENTS = (
+    *DEDUP_TABLE_STATEMENTS,
     """CREATE TABLE IF NOT EXISTS conversation_native_observations (
         observation_id TEXT PRIMARY KEY,
         context_key TEXT NOT NULL, memory_owner TEXT NOT NULL, conversation_owner TEXT NOT NULL,
@@ -21,7 +28,9 @@ TABLE_STATEMENTS = (
         context_json TEXT NOT NULL, source_json TEXT NOT NULL,
         content_hash TEXT NOT NULL, observed_at TEXT NOT NULL,
         effective_at TEXT NOT NULL DEFAULT '',
-        scope_kind TEXT NOT NULL DEFAULT ''
+        scope_kind TEXT NOT NULL DEFAULT '',
+        role_binding_key TEXT NOT NULL DEFAULT '',
+        context_hash TEXT NOT NULL DEFAULT ''
     )""",
     """CREATE TABLE IF NOT EXISTS conversation_native_turns (
         turn_id TEXT PRIMARY KEY, context_key TEXT NOT NULL, context_json TEXT NOT NULL,
@@ -30,7 +39,8 @@ TABLE_STATEMENTS = (
             CHECK(generation_state IN ('prepared', 'running', 'completed', 'failed')),
         phase_at TEXT NOT NULL, last_sent_at TEXT,
         scope_kind TEXT NOT NULL DEFAULT '',
-        role_binding_key TEXT NOT NULL DEFAULT ''
+        role_binding_key TEXT NOT NULL DEFAULT '',
+        context_hash TEXT NOT NULL DEFAULT ''
     )""",
     """CREATE TABLE IF NOT EXISTS conversation_native_sends (
         observation_id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, sent_at TEXT NOT NULL
@@ -72,8 +82,11 @@ INDEX_STATEMENTS = (
     # The leading expression is the audience kind: callers that also narrow to one
     # scope kind are served by the same entry, which is why a plain kind index is
     # deliberately absent — it would win the planner and lose the state filter.
+    # The leading column is the materialized scope_kind so both legacy inline
+    # rows and deduplicated ``{"_ctx_ref":...}`` rows use this partial index
+    # without evaluating json_extract on every open-turn probe.
     "CREATE INDEX IF NOT EXISTS conversation_native_open_turn_idx ON conversation_native_turns("
-    "json_extract(context_json, '$.audience.scope.kind'), context_key, observed_at) "
+    "scope_kind, context_key, observed_at) "
     "WHERE generation_state IN ('prepared', 'running')",
     # ``latest_scope`` probes seven scope fields and then orders by observed_at.
     # Without this index the probe is a full table scan per call, and presence
@@ -120,12 +133,16 @@ INDEX_STATEMENTS = (
 )
 
 MATERIALIZED_INDEX_STATEMENTS = (
+    *DEDUP_INDEX_STATEMENTS,
     # Materialized covering index for ``native_turns.latest_role_contexts``:
     # ascending observed_at with implicit trailing rowid ASC enables exact
     # backwards scans for ORDER BY observed_at DESC, rowid DESC with zero table
     # page reads and zero temp B-tree, without shadowing conversation_native_open_turn_idx.
     "CREATE INDEX IF NOT EXISTS idx_native_turns_kind_role_obs "
     "ON conversation_native_turns(scope_kind, role_binding_key, observed_at)",
+    # Fast index seek on deduplicated context hashes for latest_scope & scope_family.
+    "CREATE INDEX IF NOT EXISTS idx_native_turns_context_hash "
+    "ON conversation_native_turns(context_hash, observed_at)",
     # Materialized effective_at = COALESCE(sent_at, observed_at) lets
     # ``native_history.rows`` scan backwards in exact (effective_at DESC, rowid DESC)
     # order with zero temp B-tree even when LEFT JOINing conversation_native_sends.
@@ -137,6 +154,13 @@ MATERIALIZED_INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_native_obs_owner_kind_effective "
     "ON conversation_native_observations(memory_owner, scope_kind, effective_at, observation_id) "
     "WHERE delivery_state IN ('input_observed', 'send_returned')",
+    # Materialized role_binding_key serves group input lookups on both legacy and deduped rows.
+    "CREATE INDEX IF NOT EXISTS idx_native_obs_input_role_key "
+    "ON conversation_native_observations(role_binding_key, observed_at DESC, observation_id) "
+    "WHERE kind = 'input' AND delivery_state = 'input_observed'",
+    # Fast index seek on deduplicated context hashes for private_scope & recalls/reset.
+    "CREATE INDEX IF NOT EXISTS idx_native_obs_context_hash "
+    "ON conversation_native_observations(kind, context_hash, observed_at)",
 )
 
 TURN_TRIGGER_STATEMENTS = (
@@ -147,17 +171,27 @@ TURN_TRIGGER_STATEMENTS = (
         UPDATE conversation_native_turns
         SET scope_kind = CASE
                 WHEN NEW.scope_kind <> '' THEN NEW.scope_kind
+                WHEN json_extract(NEW.context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                    (SELECT c.scope_kind FROM conversation_contexts c
+                     WHERE c.context_hash = json_extract(NEW.context_json, '$._ctx_ref')),
+                    ''
+                )
                 ELSE COALESCE(json_extract(NEW.context_json, '$.audience.scope.kind'), '')
             END,
             role_binding_key = CASE
                 WHEN NEW.role_binding_key <> '' THEN NEW.role_binding_key
+                WHEN json_extract(NEW.context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                    (SELECT c.role_binding_key FROM conversation_contexts c
+                     WHERE c.context_hash = json_extract(NEW.context_json, '$._ctx_ref')),
+                    ''
+                )
                 ELSE COALESCE(json_extract(NEW.context_json, '$.role_binding'), '')
             END
         WHERE rowid = NEW.rowid;
     END""",
     """CREATE TRIGGER IF NOT EXISTS trg_native_turns_sync_meta_upd
     AFTER UPDATE OF context_json ON conversation_native_turns
-    WHEN OLD.context_json <> NEW.context_json
+    WHEN OLD.context_json <> NEW.context_json AND json_extract(NEW.context_json, '$._ctx_ref') IS NULL
     BEGIN
         UPDATE conversation_native_turns
         SET scope_kind = COALESCE(json_extract(NEW.context_json, '$.audience.scope.kind'), ''),
@@ -169,7 +203,7 @@ TURN_TRIGGER_STATEMENTS = (
 OBS_TRIGGER_STATEMENTS_WITH_SENDS = (
     """CREATE TRIGGER IF NOT EXISTS trg_native_obs_sync_meta_ins
     AFTER INSERT ON conversation_native_observations
-    WHEN NEW.effective_at = '' OR NEW.scope_kind = ''
+    WHEN NEW.effective_at = '' OR NEW.scope_kind = '' OR NEW.role_binding_key = ''
     BEGIN
         UPDATE conversation_native_observations
         SET effective_at = CASE
@@ -181,7 +215,21 @@ OBS_TRIGGER_STATEMENTS_WITH_SENDS = (
             END,
             scope_kind = CASE
                 WHEN NEW.scope_kind <> '' THEN NEW.scope_kind
+                WHEN json_extract(NEW.context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                    (SELECT c.scope_kind FROM conversation_contexts c
+                     WHERE c.context_hash = json_extract(NEW.context_json, '$._ctx_ref')),
+                    ''
+                )
                 ELSE COALESCE(json_extract(NEW.context_json, '$.audience.scope.kind'), '')
+            END,
+            role_binding_key = CASE
+                WHEN NEW.role_binding_key <> '' THEN NEW.role_binding_key
+                WHEN json_extract(NEW.context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                    (SELECT c.role_binding_key FROM conversation_contexts c
+                     WHERE c.context_hash = json_extract(NEW.context_json, '$._ctx_ref')),
+                    ''
+                )
+                ELSE COALESCE(json_extract(NEW.context_json, '$.role_binding'), '')
             END
         WHERE rowid = NEW.rowid;
     END""",
@@ -194,7 +242,24 @@ OBS_TRIGGER_STATEMENTS_WITH_SENDS = (
                 (SELECT sent_at FROM conversation_native_sends WHERE observation_id = NEW.observation_id),
                 NEW.observed_at
             ),
-            scope_kind = COALESCE(json_extract(NEW.context_json, '$.audience.scope.kind'), '')
+            scope_kind = CASE
+                WHEN json_extract(NEW.context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                    NULLIF(NEW.scope_kind, ''),
+                    (SELECT c.scope_kind FROM conversation_contexts c
+                     WHERE c.context_hash = json_extract(NEW.context_json, '$._ctx_ref')),
+                    ''
+                )
+                ELSE COALESCE(json_extract(NEW.context_json, '$.audience.scope.kind'), '')
+            END,
+            role_binding_key = CASE
+                WHEN json_extract(NEW.context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                    NULLIF(NEW.role_binding_key, ''),
+                    (SELECT c.role_binding_key FROM conversation_contexts c
+                     WHERE c.context_hash = json_extract(NEW.context_json, '$._ctx_ref')),
+                    ''
+                )
+                ELSE COALESCE(json_extract(NEW.context_json, '$.role_binding'), '')
+            END
         WHERE rowid = NEW.rowid;
     END""",
     """CREATE TRIGGER IF NOT EXISTS trg_native_sends_sync_effective_ins
@@ -224,7 +289,7 @@ OBS_TRIGGER_STATEMENTS_WITH_SENDS = (
 OBS_TRIGGER_STATEMENTS_NO_SENDS = (
     """CREATE TRIGGER IF NOT EXISTS trg_native_obs_sync_meta_ins
     AFTER INSERT ON conversation_native_observations
-    WHEN NEW.effective_at = '' OR NEW.scope_kind = ''
+    WHEN NEW.effective_at = '' OR NEW.scope_kind = '' OR NEW.role_binding_key = ''
     BEGIN
         UPDATE conversation_native_observations
         SET effective_at = CASE
@@ -233,7 +298,21 @@ OBS_TRIGGER_STATEMENTS_NO_SENDS = (
             END,
             scope_kind = CASE
                 WHEN NEW.scope_kind <> '' THEN NEW.scope_kind
+                WHEN json_extract(NEW.context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                    (SELECT c.scope_kind FROM conversation_contexts c
+                     WHERE c.context_hash = json_extract(NEW.context_json, '$._ctx_ref')),
+                    ''
+                )
                 ELSE COALESCE(json_extract(NEW.context_json, '$.audience.scope.kind'), '')
+            END,
+            role_binding_key = CASE
+                WHEN NEW.role_binding_key <> '' THEN NEW.role_binding_key
+                WHEN json_extract(NEW.context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                    (SELECT c.role_binding_key FROM conversation_contexts c
+                     WHERE c.context_hash = json_extract(NEW.context_json, '$._ctx_ref')),
+                    ''
+                )
+                ELSE COALESCE(json_extract(NEW.context_json, '$.role_binding'), '')
             END
         WHERE rowid = NEW.rowid;
     END""",
@@ -243,7 +322,24 @@ OBS_TRIGGER_STATEMENTS_NO_SENDS = (
     BEGIN
         UPDATE conversation_native_observations
         SET effective_at = NEW.observed_at,
-            scope_kind = COALESCE(json_extract(NEW.context_json, '$.audience.scope.kind'), '')
+            scope_kind = CASE
+                WHEN json_extract(NEW.context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                    NULLIF(NEW.scope_kind, ''),
+                    (SELECT c.scope_kind FROM conversation_contexts c
+                     WHERE c.context_hash = json_extract(NEW.context_json, '$._ctx_ref')),
+                    ''
+                )
+                ELSE COALESCE(json_extract(NEW.context_json, '$.audience.scope.kind'), '')
+            END,
+            role_binding_key = CASE
+                WHEN json_extract(NEW.context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                    NULLIF(NEW.role_binding_key, ''),
+                    (SELECT c.role_binding_key FROM conversation_contexts c
+                     WHERE c.context_hash = json_extract(NEW.context_json, '$._ctx_ref')),
+                    ''
+                )
+                ELSE COALESCE(json_extract(NEW.context_json, '$.role_binding'), '')
+            END
         WHERE rowid = NEW.rowid;
     END""",
 )
@@ -258,7 +354,7 @@ STATEMENTS = (
 
 
 def ensure_native_conversation_migrations(connection) -> bool:
-    """Idempotently add materialized columns, backfills, triggers, and indexes.
+    """Idempotently add materialized columns, dedup tables, backfills, triggers, and indexes.
 
     Returns True if any schema object or backfill changed so callers may run
     ``PRAGMA optimize`` to refresh planner statistics.
@@ -270,42 +366,95 @@ def ensure_native_conversation_migrations(connection) -> bool:
         )
     }
     changed = False
+    if "conversation_native_turns" in tables or "conversation_native_observations" in tables:
+        if "role_instruction_blobs" not in tables or "conversation_contexts" not in tables:
+            changed = True
+        ensure_dedup_tables(connection)
+
     if "conversation_native_turns" in tables:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(conversation_native_turns)")}
+        turns_changed = False
         if "scope_kind" not in columns:
             connection.execute(
                 "ALTER TABLE conversation_native_turns ADD COLUMN scope_kind TEXT NOT NULL DEFAULT ''"
             )
-            changed = True
+            turns_changed = True
         if "role_binding_key" not in columns:
             connection.execute(
                 "ALTER TABLE conversation_native_turns ADD COLUMN role_binding_key TEXT NOT NULL DEFAULT ''"
             )
-            changed = True
-        if changed or connection.execute(
+            turns_changed = True
+        if "context_hash" not in columns:
+            connection.execute(
+                "ALTER TABLE conversation_native_turns ADD COLUMN context_hash TEXT NOT NULL DEFAULT ''"
+            )
+            turns_changed = True
+        if turns_changed or connection.execute(
             "SELECT 1 FROM conversation_native_turns WHERE scope_kind = '' OR role_binding_key = '' LIMIT 1"
         ).fetchone() is not None:
             connection.execute(
                 """UPDATE conversation_native_turns
-                SET scope_kind = COALESCE(json_extract(context_json, '$.audience.scope.kind'), ''),
-                    role_binding_key = COALESCE(json_extract(context_json, '$.role_binding'), '')
+                SET scope_kind = CASE
+                        WHEN scope_kind <> '' THEN scope_kind
+                        WHEN json_extract(context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                            (SELECT c.scope_kind FROM conversation_contexts c
+                             WHERE c.context_hash = json_extract(context_json, '$._ctx_ref')),
+                            ''
+                        )
+                        ELSE COALESCE(json_extract(context_json, '$.audience.scope.kind'), '')
+                    END,
+                    role_binding_key = CASE
+                        WHEN role_binding_key <> '' THEN role_binding_key
+                        WHEN json_extract(context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                            (SELECT c.role_binding_key FROM conversation_contexts c
+                             WHERE c.context_hash = json_extract(context_json, '$._ctx_ref')),
+                            ''
+                        )
+                        ELSE COALESCE(json_extract(context_json, '$.role_binding'), '')
+                    END
                 WHERE scope_kind = '' OR role_binding_key = ''"""
             )
-            changed = True
+            turns_changed = True
         existing_indexes = {
-            row[0]
+            row[0]: (row[1] or "")
             for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'conversation_native_turns'"
+                "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'conversation_native_turns'"
             )
         }
-        if "idx_native_turns_kind_role_obs" not in existing_indexes:
+        open_idx_sql = existing_indexes.get("conversation_native_open_turn_idx")
+        if open_idx_sql is not None and "json_extract" in open_idx_sql:
+            connection.execute("DROP INDEX IF EXISTS conversation_native_open_turn_idx")
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_native_turns_kind_role_obs "
-                "ON conversation_native_turns(scope_kind, role_binding_key, observed_at)"
+                "CREATE INDEX IF NOT EXISTS conversation_native_open_turn_idx "
+                "ON conversation_native_turns(scope_kind, context_key, observed_at) "
+                "WHERE generation_state IN ('prepared', 'running')"
             )
-            changed = True
+            turns_changed = True
+        for name, stmt in (
+            (
+                "idx_native_turns_kind_role_obs",
+                "CREATE INDEX IF NOT EXISTS idx_native_turns_kind_role_obs "
+                "ON conversation_native_turns(scope_kind, role_binding_key, observed_at)",
+            ),
+            (
+                "idx_native_turns_context_hash",
+                "CREATE INDEX IF NOT EXISTS idx_native_turns_context_hash "
+                "ON conversation_native_turns(context_hash, observed_at)",
+            ),
+        ):
+            if name not in existing_indexes:
+                connection.execute(stmt)
+                turns_changed = True
+        existing_turn_trg = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_native_turns_sync_meta_upd'"
+        ).fetchone()
+        if existing_turn_trg is not None and "_ctx_ref" not in (existing_turn_trg[0] or ""):
+            connection.execute("DROP TRIGGER IF EXISTS trg_native_turns_sync_meta_ins")
+            connection.execute("DROP TRIGGER IF EXISTS trg_native_turns_sync_meta_upd")
+            turns_changed = True
         for statement in TURN_TRIGGER_STATEMENTS:
             connection.execute(statement)
+        changed = changed or turns_changed
 
     if "conversation_native_observations" in tables:
         has_sends = "conversation_native_sends" in tables
@@ -321,8 +470,19 @@ def ensure_native_conversation_migrations(connection) -> bool:
                 "ALTER TABLE conversation_native_observations ADD COLUMN scope_kind TEXT NOT NULL DEFAULT ''"
             )
             obs_changed = True
+        if "role_binding_key" not in columns:
+            connection.execute(
+                "ALTER TABLE conversation_native_observations ADD COLUMN role_binding_key TEXT NOT NULL DEFAULT ''"
+            )
+            obs_changed = True
+        if "context_hash" not in columns:
+            connection.execute(
+                "ALTER TABLE conversation_native_observations ADD COLUMN context_hash TEXT NOT NULL DEFAULT ''"
+            )
+            obs_changed = True
         if obs_changed or connection.execute(
-            "SELECT 1 FROM conversation_native_observations WHERE effective_at = '' OR scope_kind = '' LIMIT 1"
+            "SELECT 1 FROM conversation_native_observations "
+            "WHERE effective_at = '' OR scope_kind = '' OR role_binding_key = '' LIMIT 1"
         ).fetchone() is not None:
             if has_sends:
                 connection.execute(
@@ -337,9 +497,23 @@ def ensure_native_conversation_migrations(connection) -> bool:
                         END,
                         scope_kind = CASE
                             WHEN scope_kind <> '' THEN scope_kind
+                            WHEN json_extract(context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                                (SELECT c.scope_kind FROM conversation_contexts c
+                                 WHERE c.context_hash = json_extract(context_json, '$._ctx_ref')),
+                                ''
+                            )
                             ELSE COALESCE(json_extract(context_json, '$.audience.scope.kind'), '')
+                        END,
+                        role_binding_key = CASE
+                            WHEN role_binding_key <> '' THEN role_binding_key
+                            WHEN json_extract(context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                                (SELECT c.role_binding_key FROM conversation_contexts c
+                                 WHERE c.context_hash = json_extract(context_json, '$._ctx_ref')),
+                                ''
+                            )
+                            ELSE COALESCE(json_extract(context_json, '$.role_binding'), '')
                         END
-                    WHERE effective_at = '' OR scope_kind = ''"""
+                    WHERE effective_at = '' OR scope_kind = '' OR role_binding_key = ''"""
                 )
             else:
                 connection.execute(
@@ -347,9 +521,23 @@ def ensure_native_conversation_migrations(connection) -> bool:
                     SET effective_at = CASE WHEN effective_at <> '' THEN effective_at ELSE observed_at END,
                         scope_kind = CASE
                             WHEN scope_kind <> '' THEN scope_kind
+                            WHEN json_extract(context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                                (SELECT c.scope_kind FROM conversation_contexts c
+                                 WHERE c.context_hash = json_extract(context_json, '$._ctx_ref')),
+                                ''
+                            )
                             ELSE COALESCE(json_extract(context_json, '$.audience.scope.kind'), '')
+                        END,
+                        role_binding_key = CASE
+                            WHEN role_binding_key <> '' THEN role_binding_key
+                            WHEN json_extract(context_json, '$._ctx_ref') IS NOT NULL THEN COALESCE(
+                                (SELECT c.role_binding_key FROM conversation_contexts c
+                                 WHERE c.context_hash = json_extract(context_json, '$._ctx_ref')),
+                                ''
+                            )
+                            ELSE COALESCE(json_extract(context_json, '$.role_binding'), '')
                         END
-                    WHERE effective_at = '' OR scope_kind = ''"""
+                    WHERE effective_at = '' OR scope_kind = '' OR role_binding_key = ''"""
                 )
             obs_changed = True
         if has_sends:
@@ -396,18 +584,35 @@ def ensure_native_conversation_migrations(connection) -> bool:
                 "CREATE INDEX IF NOT EXISTS idx_native_obs_event_input "
                 "ON conversation_native_observations(event_id) WHERE kind = 'input'",
             ),
+            (
+                "idx_native_obs_input_role_key",
+                "CREATE INDEX IF NOT EXISTS idx_native_obs_input_role_key "
+                "ON conversation_native_observations(role_binding_key, observed_at DESC, observation_id) "
+                "WHERE kind = 'input' AND delivery_state = 'input_observed'",
+            ),
+            (
+                "idx_native_obs_context_hash",
+                "CREATE INDEX IF NOT EXISTS idx_native_obs_context_hash "
+                "ON conversation_native_observations(kind, context_hash, observed_at)",
+            ),
         ):
             if name not in existing_indexes:
                 connection.execute(stmt)
                 obs_changed = True
+        existing_ins = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_native_obs_sync_meta_ins'"
+        ).fetchone()
+        existing_ins_sql = existing_ins[0] or "" if existing_ins is not None else ""
+        needs_obs_trg_upgrade = (
+            existing_ins is not None
+            and ("_ctx_ref" not in existing_ins_sql
+                 or (has_sends and "conversation_native_sends" not in existing_ins_sql))
+        )
+        if needs_obs_trg_upgrade:
+            connection.execute("DROP TRIGGER IF EXISTS trg_native_obs_sync_meta_ins")
+            connection.execute("DROP TRIGGER IF EXISTS trg_native_obs_sync_meta_upd")
+            obs_changed = True
         if has_sends:
-            # Replace no-sends triggers if table was upgraded after sends was added.
-            existing_ins = connection.execute(
-                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_native_obs_sync_meta_ins'"
-            ).fetchone()
-            if existing_ins is not None and "conversation_native_sends" not in (existing_ins[0] or ""):
-                connection.execute("DROP TRIGGER IF EXISTS trg_native_obs_sync_meta_ins")
-                connection.execute("DROP TRIGGER IF EXISTS trg_native_obs_sync_meta_upd")
             for statement in OBS_TRIGGER_STATEMENTS_WITH_SENDS:
                 connection.execute(statement)
         else:

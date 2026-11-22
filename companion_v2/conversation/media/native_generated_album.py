@@ -106,10 +106,11 @@ def _origin_keys(owner, context):
         # Older fixtures/databases may not have the native-turn ledger yet.
         # The current key is still a valid album projection in that case.
         rows = ()
+    from companion_v2.storage.native_dedup import resolve_context_json
     keys = []
     for row in rows:
         try:
-            data = json.loads(row["context_json"] or "{}")
+            data = json.loads(resolve_context_json(owner.runtime, row["context_json"]) or "{}")
         except (TypeError, ValueError):
             continue
         if type(data) is not dict:

@@ -436,7 +436,7 @@ class StateMaintenance:
         events = []
         for row in input_rows_for_context(self.runtime, context, start=since, limit=limit):
             try:
-                event = inbound_event(row)
+                event = inbound_event(row, runtime=self.runtime)
                 if since is not None and stamp(event.received_at) <= since:
                     continue
                 validate_observation(self.runtime, row, context, event.source)

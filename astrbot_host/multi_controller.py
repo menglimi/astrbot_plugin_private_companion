@@ -213,6 +213,66 @@ class AstrBotMultiController:
         self._connections_for().refresh()
         return None
 
+    def should_wait_for_initial_platform(self) -> bool:
+        """Whether initial boot should briefly wait for platform adapters before assembling a session."""
+        if self._terminated or self._stopped_by_user or self.session is not None:
+            return False
+        settings = self.settings
+        if settings is None or not getattr(settings, "enabled", False):
+            return False
+        accounts = getattr(settings, "accounts", ())
+        if not accounts:
+            return False
+        lookup = getattr(self.context, "get_platform_inst", None)
+        if not callable(lookup):
+            return False
+        for account in accounts:
+            try:
+                if lookup(account.platform_id) is not None:
+                    return False
+            except Exception:
+                continue
+        return not self._qzone_transport_ready()
+
+    def all_configured_platforms_loaded(self) -> bool:
+        """Whether every configured account's platform adapter is currently instantiated."""
+        settings = self.settings
+        accounts = getattr(settings, "accounts", ()) if settings is not None else ()
+        if not accounts:
+            return True
+        lookup = getattr(self.context, "get_platform_inst", None)
+        if not callable(lookup):
+            return True
+        for account in accounts:
+            try:
+                if lookup(account.platform_id) is None:
+                    return False
+            except Exception:
+                return False
+        return True
+
+    def _can_hot_refresh_running_session(self, session) -> bool:
+        """Whether a running session can latch newly online accounts without teardown."""
+        if (session is None or not self._accepting
+                or session.application.state != "running"):
+            return False
+        if self._session_missing_ready_qzone(session):
+            return False
+        snapshots = getattr(session, "native_bridge_pairs", ())
+        if len(snapshots) != 2:
+            return False
+        for platforms in snapshots:
+            if not isinstance(platforms, Mapping):
+                return False
+            for platform_id, (platform, client) in platforms.items():
+                try:
+                    current = self.context.get_platform_inst(platform_id)
+                    if current is not platform or current.get_client() is not client:
+                        return False
+                except Exception:
+                    return False
+        return True
+
     async def recover_accounts(self):
         session = self.session
         if (not self._terminated and not self._stopped_by_user and self._accepting
@@ -1314,6 +1374,8 @@ class AstrBotMultiController:
                     return Outcome.failed("host_manually_stopped", "the operator stopped this host")
                 self._stopped_by_user = False
                 if self.session is not None and self.session.application.state == "running":
+                    if self._can_hot_refresh_running_session(self.session):
+                        self._sync_session_native_bridges(self.session)
                     if self._accepting and self.native_bridges_current():
                         # Refresh and latch any previously waiting account that has now
                         # come online so subsequent client replacements are detected.

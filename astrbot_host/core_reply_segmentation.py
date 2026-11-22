@@ -23,7 +23,11 @@ from .core_reply_presentation import (
     core_reply_presentation, has_reply_body, mark_presented, note_removed_text, present_text_parts,
     strip_plaintext_tool_calls,
 )
-from .core_reply_voice import capture_core_voice_message
+from .core_reply_voice import (
+    cancel_core_voice_segment_prefetch,
+    capture_core_voice_message,
+    init_core_voice_segment_prefetch,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -391,7 +395,11 @@ def prepare_core_reply_segmentation(event):
         message = unwrap_core_forward_node(event, message)
         from .core_reply_reaction_delivery import capture_core_reaction_intent
         capture_core_reaction_intent(event, message)
-        from .core_reply_voice import capture_core_voice_message
+        from .core_reply_voice import (
+            cancel_core_voice_segment_prefetch,
+            capture_core_voice_message,
+            init_core_voice_segment_prefetch,
+        )
         message = capture_core_voice_message(event, message)
         from .core_reply_idempotency import mark_native_tool_checked, should_drop_native_tool_response
         already_native_parts = _already_native_parts(event, message)
@@ -451,21 +459,25 @@ def prepare_core_reply_segmentation(event):
                         object.__setattr__(part, "_companion_v2_voice_source", sent_core_text(raw))
         first_text_segment = next((index for index, part in enumerate(parts)
                                    if sent_core_text(part).strip()), 0)
-        for index, part in enumerate(parts):
-            if state["stopped"] or core.get("silent_suppressed"):
-                state["stopped"] = True
-                break
-            core["voice_segment_index"], core["voice_segment_count"] = index, len(parts)
-            core["outbound_first_text_segment"] = first_text_segment
-            try:
-                result = await _send_part(event, state, mark_native_tool_checked(part), args, kwargs)
-            finally:
-                core.pop("voice_segment_index", None)
-                core.pop("voice_segment_count", None)
-                core.pop("outbound_first_text_segment", None)
-            if state["stopped"] or core.get("silent_suppressed"):
-                state["stopped"] = True
-                break
+        init_core_voice_segment_prefetch(core, prepared, parts)
+        try:
+            for index, part in enumerate(parts):
+                if state["stopped"] or core.get("silent_suppressed"):
+                    state["stopped"] = True
+                    break
+                core["voice_segment_index"], core["voice_segment_count"] = index, len(parts)
+                core["outbound_first_text_segment"] = first_text_segment
+                try:
+                    result = await _send_part(event, state, mark_native_tool_checked(part), args, kwargs)
+                finally:
+                    core.pop("voice_segment_index", None)
+                    core.pop("voice_segment_count", None)
+                    core.pop("outbound_first_text_segment", None)
+                if state["stopped"] or core.get("silent_suppressed"):
+                    state["stopped"] = True
+                    break
+        finally:
+            await cancel_core_voice_segment_prefetch(core)
         return result
 
     state["wrapper"] = send_parts

@@ -111,12 +111,10 @@ class ReactionLibrary:
     def captured(self, item):
         descriptor = image_descriptor(item["payload"]["descriptor"])
         if isinstance(descriptor, AnimationDescriptor):
-            with self.store.db() as db:
-                rows = db.execute("SELECT content FROM reaction_frames WHERE owner=? AND id=? ORDER BY position",
-                                  (item["owner"], item["id"])).fetchall()
-            if len(rows) != len(descriptor.frames):
+            frame_bytes = self.store.reaction_frames(item["owner"], item["id"])
+            if len(frame_bytes) != len(descriptor.frames):
                 raise TaskError("reaction_frames_missing", "original animation frames are unavailable")
-            frames = tuple(CapturedImage(frame.image, row[0]) for frame, row in zip(descriptor.frames, rows))
+            frames = tuple(CapturedImage(frame.image, raw) for frame, raw in zip(descriptor.frames, frame_bytes))
             return CapturedAnimation(descriptor, item["content"], frames)
         return CapturedImage(descriptor, item["content"])
 

@@ -266,23 +266,26 @@ class MultiHostWebAPI:
             raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard as an administrator")
 
     async def api_status(self):
+        import asyncio
+        from .http_etag import conditional_response
         try:
             self._admin()
-            status = self.controller.status()
+            status = await asyncio.to_thread(self.controller.status)
             status["targets"] = await display_names(self.controller).targets(status.get("targets", []))
             self._admin()
             if self.controller._terminated:
-                status = self.controller.status()
-            return {"status": "ok", "data": status}
+                status = await asyncio.to_thread(self.controller.status)
+            return conditional_response({"status": "ok", "data": status}, req=request)
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
 
     async def api_performance(self):
+        from .http_etag import conditional_response
         try:
             self._admin()
-            return {"status": "ok", "data": performance_status(
+            return conditional_response({"status": "ok", "data": performance_status(
                 getattr(self.controller, "config", {}),
-                enabled=getattr(self.controller, "_performance_mode_enabled", None))}
+                enabled=getattr(self.controller, "_performance_mode_enabled", None))}, req=request)
         except TaskError as error:
             return outcome_response(Outcome.failed(error.code, str(error)))
 
