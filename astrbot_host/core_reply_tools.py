@@ -461,15 +461,45 @@ class CoreReplyToolSession:
         if decision is not None:
             if decision["mode"] != arguments["mode"]:
                 raise TaskError("group_participation_fixed", "the original native group choice is already fixed")
-            return {"state": "succeeded", "effect": "none", "payload": dict(decision), "replayed": True}
+            # Issue #836: the latched decision may predate the authenticated
+            # trigger facts (or belong to a batch without the mention).  When
+            # the current facts show an explicit mention/wakeup the cache was
+            # decided without that signal, so discard it and re-decide.
+            admission = _field(self.prepared, "group_admission", {}) or {}
+            group_trigger = _field(self.prepared, "group_trigger")
+            batch_mentioned = bool(group_trigger["mentioned"] if group_trigger is not None
+                                   else admission.get("mentioned"))
+            batch_native_wakeup = bool(group_trigger["native_wakeup"] if group_trigger is not None
+                                       else admission.get("native_wakeup"))
+            if decision["mode"] == "skip" and (batch_mentioned or batch_native_wakeup):
+                self.state.pop("group_participation", None)
+            else:
+                return {"state": "succeeded", "effect": "none", "payload": dict(decision), "replayed": True}
         if arguments["mode"] == "skip":
             if self.state.get("_business_tools_started") or self.state.get("send_attempts", 0):
                 raise TaskError("group_participation_started", "a group turn cannot revoke an operation that already began")
             if not self._skip_is_alone(wrapper):
                 raise TaskError("group_participation_skip_alone", "listening may accompany learning notes, but no business operation")
-        admission = _field(self.prepared, "group_admission", {}) or {}
-        group_trigger = _field(self.prepared, "group_trigger")
-        mentioned = group_trigger["mentioned"] if group_trigger is not None else admission.get("mentioned")
+            admission = _field(self.prepared, "group_admission", {}) or {}
+            group_trigger = _field(self.prepared, "group_trigger")
+            mentioned = group_trigger["mentioned"] if group_trigger is not None else admission.get("mentioned")
+            native_wakeup = group_trigger["native_wakeup"] if group_trigger is not None else admission.get("native_wakeup")
+            # Issue #836: a merged batch may contain an explicit @ or a host
+            # wakeup even when the surrounding conversation is between other
+            # members.  A skip decided on the whole batch would silently drop
+            # that mention.  Refuse the skip unless the reason itself is an
+            # independent conclusion about the mention (e.g. "@我但明说不用理我").
+            if self._mention_skips_are_restricted() and (mentioned or native_wakeup):
+                reason = arguments.get("reason", "")
+                if not (isinstance(reason, str)
+                        and re.search(r"不用|别理|无需回复|不要打扰|不要理|不用理|不理|无需打扰|忙着|稍后|暂时不回复|不要回应", reason)):
+                    raise TaskError("group_participation_mention_skip_rejected",
+                                    "the batch contains an explicit mention of the bot; decide on the mentioned message itself")
+        else:
+            admission = _field(self.prepared, "group_admission", {}) or {}
+            group_trigger = _field(self.prepared, "group_trigger")
+            mentioned = group_trigger["mentioned"] if group_trigger is not None else admission.get("mentioned")
+            native_wakeup = group_trigger["native_wakeup"] if group_trigger is not None else admission.get("native_wakeup")
         act, signature = "", ""
         if arguments["mode"] == "reply" and not mentioned and admission.get("reason") in AUTONOMOUS_REASONS:
             try:
@@ -500,11 +530,32 @@ class CoreReplyToolSession:
                       if _field(call, "name", _field(_field(call, "function"), "name")) not in annotation_names]
         return len(operations) == 1
 
+    def _mention_skips_are_restricted(self):
+        """Whether mention-triggered skips must carry an explicit opt-out reason.
+
+        Only group scopes decide group participation, and only when the turn
+        carries authenticated trigger facts; a missing group_trigger with a
+        plain admission dict still exposes the mentioned flag.
+        """
+        if self.context.scope.kind is not ScopeKind.GROUP:
+            return False
+        facts = _field(self.prepared, "group_trigger")
+        if facts is not None and not isinstance(facts, dict):
+            return False
+        return True
+
     def _latch_group_skip(self, wrapper, action, arguments):
         reason = arguments.get("reason", "")
+        admission = _field(self.prepared, "group_admission", {}) or {}
+        group_trigger = _field(self.prepared, "group_trigger")
+        batch_mentioned = bool(group_trigger["mentioned"] if group_trigger is not None
+                               else admission.get("mentioned"))
+        batch_native_wakeup = bool(group_trigger["native_wakeup"] if group_trigger is not None
+                                   else admission.get("native_wakeup"))
         if (action != "group.participation.choose" or arguments.get("mode") != "skip"
                 or not isinstance(reason, str)
                 or self.context.scope.kind is not ScopeKind.GROUP
+                or batch_mentioned or batch_native_wakeup
                 or self.state.get("group_participation") is not None
                 or self.state.get("_business_tools_started") or self.state.get("send_attempts", 0)):
             return
