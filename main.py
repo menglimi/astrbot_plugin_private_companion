@@ -139,7 +139,7 @@ RETRYABLE_HOST_STARTUP_CODES = frozenset({
     "host_platform_unavailable", "host_platform_changed", "host_account_unavailable",
     "host_account_changed", "host_persona_unavailable",
     "host_persona_window_unbound", "host_conversation_changed", "host_startup_failed",
-    "host_provider_unavailable",
+    "host_provider_required", "host_provider_unavailable",
     "staging_preflight_failed",
 })
 # A denied final send is the one refusal the user feels as silence, and it is
@@ -603,14 +603,18 @@ class PrivateCompanionV2StagingPlugin(Star):
         try:
             readiness = self.staging.startup_readiness()
         except Exception as error:
-            self._note_startup_failure("readiness", getattr(error, "code", "startup_readiness_failed"),
-                                       type(error).__name__, str(error))
-            return True
+            code = getattr(error, "code", None) or "startup_readiness_failed"
+            if code == "host_terminated":
+                return True
+            retry = self._retry_startup_failure(code)
+            self._note_startup_failure("readiness", code, type(error).__name__, str(error), retrying=retry)
+            return not retry
         if readiness in ("host_platform_unavailable", "host_account_unavailable"):
             return False
         if readiness is not None:
-            self._note_startup_failure("readiness", readiness)
-            return True
+            retry = self._retry_startup_failure(readiness)
+            self._note_startup_failure("readiness", readiness, retrying=retry)
+            return not retry
 
         initialized_profile = False
         if self.staging.session is None:
@@ -652,7 +656,9 @@ class PrivateCompanionV2StagingPlugin(Star):
 
     @staticmethod
     def _retry_startup_failure(code: str) -> bool:
-        return code in RETRYABLE_HOST_STARTUP_CODES or code.startswith("host_native_lookup_timeout")
+        return (isinstance(code, str)
+                and (code in RETRYABLE_HOST_STARTUP_CODES
+                     or code.startswith("host_native_lookup_timeout")))
 
     def _note_startup_failure(self, stage: str, code: str, error_type: str | None = None,
                               detail: str | None = None, *, retrying: bool = False) -> None:
@@ -665,7 +671,12 @@ class PrivateCompanionV2StagingPlugin(Star):
         self._startup_failure_key = key
         self._startup_failure_at = now
         suffix = "，将自动重试" if retrying else "，请修正配置或重新加载插件"
-        if stage == "load_existing":
+        if code == "host_provider_required":
+            logger.warning(
+                "[CompanionV2] 共享启动模型（model.provider_id）留空且 AstrBot 当前暂无可用的文本 Provider%s "
+                "stage=%s code=%s detail=%s（请确认 AstrBot 已启用文本模型，或在插件配置中指定共享启动模型）",
+                suffix, stage, code, detail or "unavailable")
+        elif stage == "load_existing":
             logger.warning("[CompanionV2] 已固定 profile 加载失败%s code=%s detail=%s",
                            suffix, code, detail or "unavailable")
         elif stage == "initialize":
@@ -675,8 +686,8 @@ class PrivateCompanionV2StagingPlugin(Star):
             logger.warning("[CompanionV2] staging profile 自动启动失败%s code=%s detail=%s",
                            suffix, code, detail or "unavailable")
         else:
-            logger.warning("[CompanionV2] 保存的运行档暂不能启动 code=%s error_type=%s detail=%s",
-                           code, error_type or "unknown", detail or "unavailable")
+            logger.warning("[CompanionV2] 保存的运行档暂不能启动%s code=%s error_type=%s detail=%s",
+                           suffix, code, error_type or "unknown", detail or "unavailable")
 
     def _schedule_host_start(self) -> None:
         if self.staging._terminated or getattr(self.staging, "_stopped_by_user", False):

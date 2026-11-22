@@ -18,9 +18,56 @@ from companion_v2.foundation.refs import ScopeKind
 logger = logging.getLogger(__name__)
 
 
+_NOTICE_ONLY_COMPONENT_TYPES = frozenset({"poke"})
+
+
+def _component_kind(component) -> str:
+    raw_type = component.get("type") if isinstance(component, Mapping) else getattr(component, "type", None)
+    value = getattr(raw_type, "value", raw_type)
+    if isinstance(value, str) and value.strip():
+        return value.strip().lower()
+    return type(component).__name__.strip().lower()
+
+
+def _has_message_body(event) -> bool:
+    """Return True when the event carries real user message content.
+
+    Some OneBot/aiocqhttp streams (for example ``input_status`` notifications)
+    can leave ``message_obj.raw_message["post_type"] == "notice"`` on a
+    subsequent real user message.  Pure notices carry neither text nor user
+    message components, whereas polluted real messages do.
+    """
+    message_obj = getattr(event, "message_obj", None)
+    for text in (getattr(event, "message_str", None), getattr(message_obj, "message_str", None)):
+        if isinstance(text, str) and text.strip():
+            return True
+    components = getattr(message_obj, "message", None)
+    if not isinstance(components, (list, tuple)):
+        return False
+    for component in components:
+        if component is None:
+            continue
+        kind = _component_kind(component)
+        if kind in _NOTICE_ONLY_COMPONENT_TYPES:
+            continue
+        if kind in ("plain", "text"):
+            if isinstance(component, Mapping):
+                data = component.get("data")
+                text = data.get("text") if isinstance(data, Mapping) else component.get("text")
+            else:
+                text = getattr(component, "text", None)
+            if isinstance(text, str) and text.strip():
+                return True
+            continue
+        return True
+    return False
+
+
 def is_notice_event(event):
     raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
-    return isinstance(raw, Mapping) and raw.get("post_type") == "notice"
+    if not isinstance(raw, Mapping) or raw.get("post_type") != "notice":
+        return False
+    return not _has_message_body(event)
 
 
 def has_post_type(event, expected):
