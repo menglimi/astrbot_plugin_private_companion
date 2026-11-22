@@ -690,8 +690,9 @@ button.summary-record:hover strong,.summary-memory:hover>strong,.summary-note:ho
 .all-functions-chip.is-active{border-color:color-mix(in srgb,var(--t-accent) 48%,var(--t-line));background:var(--t-accent-quiet);color:var(--t-accent-ink);font-weight:650}
 .all-functions-chip small{color:var(--t-text-faint);font-variant-numeric:tabular-nums}
 .all-functions-search{display:flex;align-items:center;gap:var(--sp-2);min-width:0;padding-top:var(--sp-1);border-top:1px solid var(--t-line)}
-.all-functions-search>span{color:var(--t-text-faint);font-size:var(--fs-micro);white-space:nowrap}
+.all-functions-search>label,.all-functions-search>span{color:var(--t-text-faint);font-size:var(--fs-micro);white-space:nowrap}
 .all-functions-search input{flex:1;min-width:0;min-height:34px;padding:5px 10px;border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-sunken);color:var(--t-text);font:inherit}
+#globalSearch::-webkit-search-cancel-button,[data-all-feature-filter]::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
 .all-functions-search small{min-width:44px;color:var(--t-text-faint);font-size:var(--fs-micro);text-align:right;white-space:nowrap}
 .all-functions-section-nav{display:none}
 .all-feature-domain{border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface);overflow:hidden}

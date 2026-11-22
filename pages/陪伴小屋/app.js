@@ -4963,14 +4963,16 @@ function extractDedicatedAllFeatureRows({replyPayload,statePayload,memoryPayload
     seen.add(row.key);
     extras.push(row);
   };
-  /* 1. 表达与回复 + 媒体理解 + 决策 (reply_api) */
-  if(replyPayload?.fields&&replyPayload?.settings){
+  /* 1. 表达与回复 + 媒体理解 + 决策 (reply_api: {settings, configuration_token, ...}) */
+  if(replyPayload?.settings&&typeof replyPayload.settings==='object'){
+    const replyFields=replyPayload.fields&&typeof replyPayload.fields==='object'?replyPayload.fields:null;
     const metaByField=new Map((window.CompanionReplyPage?.searchEntries?.()||[]).map(item=>[item.field,item]));
     const understandingSections=new Set(['media_permissions','context_image','native_image','image_narration','video_narration','file_understanding','forwards']);
     const groupDecisionSections=new Set(['wakeup_direct','wakeup_interest','wakeup_members','group_continuation','wakeup_cold_group','wakeup_fatigue','group_air_guard','group_content_safety']);
     const privateDecisionSections=new Set(['private_debounce','silence_policy','private_closing']);
-    for(const [field,meta] of Object.entries(replyPayload.fields)){
-      if(meta?.kind!=='boolean'||!(field in replyPayload.settings))continue;
+    for(const [field,rawValue] of Object.entries(replyPayload.settings)){
+      if(replyFields&&replyFields[field]?.kind!=='boolean')continue;
+      if(typeof rawValue!=='boolean')continue;
       const info=metaByField.get(field);
       if(!info?.label)continue;
       const domain=understandingSections.has(info.section)?'理解、知识与感知'
@@ -4982,7 +4984,7 @@ function extractDedicatedAllFeatureRows({replyPayload,statePayload,memoryPayload
         label:info.label,help:info.help||`${info.sectionTitle||'表达与回复'}专题开关`,
         groupTitle:info.sectionTitle||'表达与回复',
         scopeLabel:'表达/理解专题',sourceTag:'专题页',
-        value:Boolean(replyPayload.settings[field]),editable:false,
+        value:Boolean(rawValue),editable:false,
         jumpEntry:info,
       });
     }
@@ -5005,11 +5007,14 @@ function extractDedicatedAllFeatureRows({replyPayload,statePayload,memoryPayload
   }
   /* 3. 原生感知 (perception_native_api) */
   if(perceptionPayload&&typeof perceptionPayload==='object'){
+    const envSet=perceptionPayload.environment?.settings||{};
     const modelSet=perceptionPayload.model?.settings||{};
     const newsSet=perceptionPayload.news?.settings||{};
     const percEntries=window.CompanionNativePerceptionPage?.searchEntries?.()||[];
     for(const info of percEntries){
-      const rawVal=info.field in modelSet?modelSet[info.field]:info.field in newsSet?newsSet[info.field]:undefined;
+      const rawVal=info.field in modelSet?modelSet[info.field]
+        :info.field in newsSet?newsSet[info.field]
+        :info.field in envSet?envSet[info.field]:undefined;
       if(typeof rawVal!=='boolean')continue;
       pushRow({
         key:`perception_native.${info.field}`,name:'perception_native_extra',field:info.field,
@@ -5019,25 +5024,32 @@ function extractDedicatedAllFeatureRows({replyPayload,statePayload,memoryPayload
       });
     }
   }
-  /* 4. 记忆整理 (memory_api/settings) */
-  if(memoryPayload?.fields&&memoryPayload?.settings){
+  /* 4. 记忆整理 (memory_api/settings: {fields, values}) */
+  const memValues=memoryPayload?.values||memoryPayload?.settings;
+  if(memValues&&typeof memValues==='object'){
+    const memFields=memoryPayload.fields&&typeof memoryPayload.fields==='object'?memoryPayload.fields:null;
     const memEntries=new Map((window.CompanionMemorySettingsSection?.searchEntries?.()||[]).map(item=>[item.field,item]));
-    for(const [field,meta] of Object.entries(memoryPayload.fields)){
-      if(meta?.kind!=='boolean'||!(field in memoryPayload.settings))continue;
+    for(const [field,rawValue] of Object.entries(memValues)){
+      if(memFields&&memFields[field]?.kind!=='boolean')continue;
+      if(typeof rawValue!=='boolean')continue;
       const info=memEntries.get(field);
       if(!info?.label)continue;
       pushRow({
         key:`memory_settings.${field}`,name:'memory_extra',field,domain:'学习与成长',
         label:info.label,help:info.help||`${info.sectionTitle||'记忆整理'}专题开关`,
         groupTitle:info.sectionTitle||'整理策略',scopeLabel:'记忆整理专题',sourceTag:'专题页',
-        value:Boolean(memoryPayload.settings[field]),editable:false,jumpEntry:info,
+        value:Boolean(rawValue),editable:false,jumpEntry:info,
       });
     }
   }
-  /* 5. 宿主选项 (host-options: voice / poke / forward_intake) */
+  /* 5. 宿主选项 (host-options: {voice_reply, poke, forward_intake}) */
   if(hostOptionsPayload&&typeof hostOptionsPayload==='object'){
     const hostEntries=window.CompanionHostOptionsPage?.searchEntries?.()||[];
-    const bucketMap={voice_reply:hostOptionsPayload.voice,poke:hostOptionsPayload.poke,forward_intake:hostOptionsPayload.forward_intake};
+    const bucketMap={
+      voice_reply:hostOptionsPayload.voice_reply||hostOptionsPayload.voice,
+      poke:hostOptionsPayload.poke,
+      forward_intake:hostOptionsPayload.forward_intake,
+    };
     for(const info of hostEntries){
       const src=bucketMap[info.group];
       if(!src||typeof src[info.field]!=='boolean')continue;
@@ -5386,10 +5398,10 @@ function renderAllFeatureBoard(){
     <div class="all-functions-filter">
       <div class="all-functions-filter-line"><span>功能领域</span><div class="all-functions-chips">${domainChips}</div></div>
       <div class="all-functions-filter-line"><span>当前状态</span><div class="all-functions-chips">${statusChips}</div></div>
-      <label class="all-functions-search"><span>筛选功能</span>
-        <input type="search" data-all-feature-filter value="${escapeHTML(query)}" placeholder="功能名、说明、别名、拼音或字段键…" autocomplete="off" />
+      <div class="all-functions-search"><label for="allFeatureFilterInput">筛选功能</label>
+        <input id="allFeatureFilterInput" type="search" data-all-feature-filter value="${escapeHTML(query)}" placeholder="功能名、说明、别名、拼音或字段键…" autocomplete="off" />
         <button type="button" class="button small all-functions-search-clear" data-all-feature-clear-filter ${query.trim()?'':'hidden'}>清空</button>
-        <small data-all-feature-count>${visibleCount} 项</small></label>
+        <small data-all-feature-count>${visibleCount} 项</small></div>
     </div>
     <nav class="all-functions-section-nav" aria-label="功能领域">${nav}</nav>
     <div id="allFeatureResultsHost" class="all-functions-results-host">${resultsMarkup}</div>

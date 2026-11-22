@@ -163,7 +163,26 @@ test("CompanionSearchEngine: 5-layer fuzzy scoring covers synonyms, pinyin, init
   assert.ok(jsHits.length > 0, "Expected juese to match 角色 items");
   assert.ok(jiaoseHits.length > 0, "Expected jiaose to match 角色 items");
 
-  /* 7. No false positives on unrelated gibberish */
+  /* 7. Multi-word AND matching must never drop the second keyword on synonym phrases */
+  const qzoneSample = engine.prepare([
+    { field: "qzone.like_enabled", label: "QQ 空间点赞", help: "自动给好友动态点赞。", groupTitle: "QQ 空间", aliases: ["qzone"] },
+    { field: "qzone.comment_enabled", label: "QQ 空间评论", help: "自动评论或回复好友空间动态。", groupTitle: "QQ 空间", aliases: ["qzone"] },
+    { field: "qzone.post_enabled", label: "QQ 空间发说说", help: "主动发布空间说说与生活动态。", groupTitle: "QQ 空间", aliases: ["qzone"] },
+  ], {
+    getTitle: x => x.label,
+    getDesc: x => x.help,
+    getKey: x => x.field,
+    getAliases: x => x.aliases || [],
+    getGroup: x => x.groupTitle || "",
+  });
+  for (const multiQ of ["qq空间 评论", "qq 空间 评论"]) {
+    const res = engine.search(qzoneSample, multiQ);
+    assert.equal(res.length, 1, `Multi-word query "${multiQ}" must only match QQ 空间评论, got ${JSON.stringify(res.map(r => r.item.field))}`);
+    assert.equal(res[0].item.field, "qzone.comment_enabled");
+  }
+  assert.equal(engine.search(qzoneSample, "qq 空间").length, 3, 'Exact multi-word phrase "qq 空间" matches all 3 QZone entries');
+
+  /* 8. No false positives on unrelated gibberish */
   assert.equal(engine.search(prepared, "不存在的火星配置xyz").length, 0);
 });
 
@@ -356,6 +375,96 @@ test("All-features page keeps enabled + disabled === total === domainSum and eli
   for (const extDetail of ["cap-game", "cap-live", "cap-reality", "cap-together"]) {
     assert.match(html, new RegExp(`data-detail="${extDetail}"`));
   }
+
+  /* 5. HTML5 semantics: filter toolbar uses <div class="all-functions-search"><label for="allFeatureFilterInput"> (never wraps button inside <label>) */
+  assert.match(html, /<div class="all-functions-search"><label for="allFeatureFilterInput">筛选功能<\/label>/);
+  assert.match(html, /<input id="allFeatureFilterInput"[^>]*data-all-feature-filter/);
+  assert.doesNotMatch(html, /<label class="all-functions-search">/);
+});
+
+test("extractDedicatedAllFeatureRows matches real backend shapes for reply, state, perception, memory, host-options and self-review", () => {
+  const { sandbox, af } = createAllFeaturesHarness();
+  sandbox.window.CompanionReplyPage = {
+    searchEntries: () => [
+      { group: "conversation.presentation", section: "segment", sectionTitle: "分段回复", field: "enabled", label: "启用私聊分段" },
+      { group: "conversation.presentation", section: "media_permissions", sectionTitle: "媒体权限", field: "allow_image", label: "允许理解图片" },
+    ],
+  };
+  sandbox.window.CompanionStateMaintenance = {
+    searchEntries: () => [
+      { group: "role.state", section: "state", sectionTitle: "状态维护", field: "enabled", label: "启用角色状态维护" },
+    ],
+  };
+  sandbox.window.CompanionNativePerceptionPage = {
+    searchEntries: () => [
+      { group: "perception.native", section: "model", sectionTitle: "感知模型", field: "model_route_enabled", label: "标明模型路由" },
+      { group: "perception.native", section: "news", sectionTitle: "外部资讯", field: "news_share_enabled", label: "允许分享外部资讯" },
+    ],
+  };
+  sandbox.window.CompanionMemorySettingsSection = {
+    searchEntries: () => [
+      { group: "memory", section: "reflection", sectionTitle: "整理策略", field: "reflection_enabled", label: "启用记忆反思整理" },
+      { group: "memory", section: "core", sectionTitle: "基础记忆", field: "enabled", label: "启用长期记忆" },
+    ],
+  };
+  sandbox.window.CompanionHostOptionsPage = {
+    searchEntries: () => [
+      { group: "voice_reply", groupTitle: "全局语音默认值", section: "voice_reply", field: "enabled", label: "启用语音朗读总开关" },
+      { group: "poke", groupTitle: "戳一戳", section: "poke", field: "enabled", label: "启用戳一戳回应" },
+      { group: "forward_intake", groupTitle: "合并转发", section: "forward_intake", field: "enabled", label: "启用合并转发读取" },
+    ],
+  };
+
+  const rows = af.extractDedicatedAllFeatureRows({
+    /* Real reply_api returns {settings, configuration_token} without a fields map */
+    replyPayload: { settings: { enabled: true, allow_image: false, streaming_mode: "auto" }, configuration_token: "tok" },
+    /* Real state_api returns {state, settings, sleep_schedule} */
+    statePayload: { settings: { enabled: true } },
+    /* Real perception_native_api returns {environment, model, news} */
+    perceptionPayload: { model: { settings: { model_route_enabled: true } }, news: { settings: { news_share_enabled: false } } },
+    /* Real memory_api/settings returns {fields, values} (NOT settings!) */
+    memoryPayload: {
+      fields: { reflection_enabled: { kind: "boolean" }, enabled: { kind: "boolean" }, context_items: { kind: "integer" } },
+      values: { reflection_enabled: true, enabled: true, context_items: 8 },
+    },
+    /* Real host-options returns {voice_reply, poke, forward_intake} (NOT voice!) */
+    hostOptionsPayload: {
+      voice_reply: { enabled: true },
+      poke: { enabled: false },
+      forward_intake: { enabled: true },
+    },
+    /* Real self-review/settings returns {enabled} */
+    selfReviewPayload: { enabled: true },
+    catalogPayload: {
+      plugin_config: [
+        { path: "performance.enabled", section: "performance", section_title: "性能模式", label: "启用性能模式", type: "bool", current_value: false },
+      ],
+    },
+  });
+
+  const byKey = new Map(rows.map(r => [r.key, r]));
+  assert.equal(byKey.get("reply.enabled")?.value, true, "reply_api boolean must be extracted without requiring fields map");
+  assert.equal(byKey.get("reply.allow_image")?.value, false);
+  assert.equal(byKey.get("role_state.enabled")?.value, true);
+  assert.equal(byKey.get("perception_native.model_route_enabled")?.value, true);
+  assert.equal(byKey.get("perception_native.news_share_enabled")?.value, false);
+  assert.equal(byKey.get("memory_settings.reflection_enabled")?.value, true, "memory_api/settings must read from values key");
+  assert.equal(byKey.get("memory_settings.enabled")?.value, true);
+  assert.equal(byKey.get("host_options.voice_reply.enabled")?.value, true, "host-options must read from voice_reply key");
+  assert.equal(byKey.get("host_options.poke.enabled")?.value, false);
+  assert.equal(byKey.get("host_options.forward_intake.enabled")?.value, true);
+  assert.equal(byKey.get("self_review.enabled")?.value, true);
+  assert.equal(byKey.get("plugin_global.performance.enabled")?.value, false);
+  assert.equal(rows.length, 12);
+});
+
+test("CSS polish contracts: hides native search cancel buttons and respects data-motion in workspace-theme.css", () => {
+  const stylesCss = fs.readFileSync(path.join(PAGE_DIR, "styles.css"), "utf8");
+  const workspaceCss = fs.readFileSync(path.join(PAGE_DIR, "workspace-theme.css"), "utf8");
+  assert.match(stylesCss, /#globalSearch::-webkit-search-cancel-button/);
+  assert.match(stylesCss, /\[data-all-feature-filter\]::-webkit-search-cancel-button/);
+  assert.match(workspaceCss, /\[data-motion="off"\].*\.is-search-target/);
+  assert.match(workspaceCss, /\[data-motion="low"\].*\.is-search-target/);
 });
 
 test("All-features fuzzy filter supports pinyin/synonyms, highlights matches, persists query and handles 0-hit handoff", () => {

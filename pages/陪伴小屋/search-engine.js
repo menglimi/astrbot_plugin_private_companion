@@ -277,6 +277,59 @@
     return { entries };
   });
 
+  const MULTIWORD_SYNONYM_PHRASES = (() => {
+    const set = new Set();
+    for (const group of SYNONYM_INDEX) {
+      for (const item of group.entries) {
+        if (item.phrase.includes(" ")) set.add(item.phrase);
+      }
+    }
+    return [...set].map(phrase => ({ phrase, parts: phrase.split(/\s+/) }))
+      .sort((a, b) => b.parts.length - a.parts.length || b.phrase.length - a.phrase.length);
+  })();
+
+  function expandExactAliases(rawPhrase) {
+    const phrase = normalize(rawPhrase).trim();
+    if (!phrase) return [];
+    const results = [];
+    const seen = new Set([phrase]);
+    for (const group of SYNONYM_INDEX) {
+      if (!group.entries.some(item => item.phrase === phrase)) continue;
+      for (const item of group.entries) {
+        if (seen.has(item.phrase)) continue;
+        seen.add(item.phrase);
+        results.push({ phrase: item.phrase, label: item.raw, mode: "exact" });
+      }
+    }
+    return results;
+  }
+
+  function coalesceKnownPhrases(terms) {
+    if (!Array.isArray(terms) || terms.length <= 1 || !MULTIWORD_SYNONYM_PHRASES.length) return terms;
+    const merged = [];
+    let i = 0;
+    while (i < terms.length) {
+      let matched = null;
+      for (const candidate of MULTIWORD_SYNONYM_PHRASES) {
+        const len = candidate.parts.length;
+        if (i + len > terms.length) continue;
+        let ok = true;
+        for (let j = 0; j < len; j += 1) {
+          if (terms[i + j] !== candidate.parts[j]) { ok = false; break; }
+        }
+        if (ok) { matched = candidate; break; }
+      }
+      if (matched) {
+        merged.push(matched.phrase);
+        i += matched.parts.length;
+      } else {
+        merged.push(terms[i]);
+        i += 1;
+      }
+    }
+    return merged;
+  }
+
   function expandAliases(rawTerm) {
     const term = normalize(rawTerm).trim();
     if (!term) return [];
@@ -471,16 +524,19 @@
 
   function parseQuery(rawQuery) {
     const normalized = normalize(rawQuery).trim();
-    const terms = tokenize(rawQuery);
+    const rawTerms = tokenize(rawQuery);
+    const terms = coalesceKnownPhrases(rawTerms);
     const expandedByTerm = terms.map(term => ({
       term,
       isAsciiPinyin: PURE_ASCII_LETTERS.test(term),
       isCjk: HAS_CJK.test(term),
-      ngrams: HAS_CJK.test(term) && term.length >= 3 ? cjkNgrams(term) : [],
-      synonyms: expandAliases(term),
+      ngrams: HAS_CJK.test(term) && !term.includes(" ") && term.length >= 3 ? cjkNgrams(term) : [],
+      synonyms: term.includes(" ") ? expandExactAliases(term) : expandAliases(term),
     }));
-    /* Whole-query synonym expansion (for phrases with spaces like "qq 空间") */
-    const wholeSynonyms = terms.length > 1 ? expandAliases(normalized) : [];
+    /* Whole-query synonym shortcut ONLY when the entire query is an exact
+     * multi-word synonym phrase (e.g. "qq 空间", "sd webui"), never substring-
+     * matching longer multi-term queries like "qq 空间 评论". */
+    const wholeSynonyms = rawTerms.length > 1 ? expandExactAliases(normalized) : [];
     return { raw: String(rawQuery ?? ""), normalized, terms, expandedByTerm, wholeSynonyms };
   }
 
@@ -669,45 +725,17 @@
     const matchedTerms = [];
     const kindPriority = { exact: 5, direct: 4, alias: 3, synonym: 3, pinyin: 2, ngram: 2, fuzzy: 1 };
 
-    /* Whole-query shortcut for multi-word synonym phrases (e.g., "qq 空间", "sd webui") */
-    if (parsedQuery.wholeSynonyms.length) {
-      let wholeBest = 0;
-      let wholeReason = "";
-      let wholeTerm = "";
-      for (const syn of parsedQuery.wholeSynonyms) {
-        const sc = Math.max(
-          directScore(entry.title, syn.phrase, [110, 88, 68]),
-          directScore(entry.key, syn.phrase, [80, 64, 48]),
-          ...entry.aliases.map(al => directScore(al.norm, syn.phrase, [90, 70, 52])),
-          directScore(entry.group, syn.phrase, [54, 42, 32]),
-        );
-        if (sc > wholeBest) {
-          wholeBest = sc;
-          wholeReason = `别名：${syn.label}`;
-          wholeTerm = syn.phrase;
-        }
+    for (const termInfo of parsedQuery.expandedByTerm) {
+      const res = scoreOneTerm(entry, termInfo);
+      if (res.score <= 0) return { score: -1, matchKind: "", reason: "", matchedTerms: [] };
+      total += res.score;
+      for (const mt of res.matchedTerms) {
+        if (mt && !matchedTerms.includes(mt)) matchedTerms.push(mt);
       }
-      if (wholeBest > 0) {
-        total = wholeBest;
-        primaryKind = "synonym";
-        primaryReason = wholeReason;
-        matchedTerms.push(wholeTerm);
-      }
-    }
-
-    if (total === 0) {
-      for (const termInfo of parsedQuery.expandedByTerm) {
-        const res = scoreOneTerm(entry, termInfo);
-        if (res.score <= 0) return { score: -1, matchKind: "", reason: "", matchedTerms: [] };
-        total += res.score;
-        for (const mt of res.matchedTerms) {
-          if (mt && !matchedTerms.includes(mt)) matchedTerms.push(mt);
-        }
-        if (!primaryKind || (res.reason && !primaryReason)
-            || (kindPriority[res.matchKind] || 0) < (kindPriority[primaryKind] || 99)) {
-          if (res.reason) { primaryKind = res.matchKind; primaryReason = res.reason; }
-          else if (!primaryKind) { primaryKind = res.matchKind; }
-        }
+      if (!primaryKind || (res.reason && !primaryReason)
+          || (kindPriority[res.matchKind] || 0) < (kindPriority[primaryKind] || 99)) {
+        if (res.reason) { primaryKind = res.matchKind; primaryReason = res.reason; }
+        else if (!primaryKind) { primaryKind = res.matchKind; }
       }
     }
 
