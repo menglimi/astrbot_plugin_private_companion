@@ -1,4 +1,4 @@
-"""Bounded planning material from the original calendar, goals and memory owners."""
+﻿"""Bounded planning material from the original calendar, goals and memory owners."""
 
 from datetime import date, datetime, time, timedelta
 import json
@@ -65,7 +65,7 @@ def planning_calendar_context(at, end, zone, annual_calendars=()):
             break
         days.append(row)
         used_chars += size
-    return {"today": project_local_date(at, zone.key),
+    return {"today": project_local_date(at, zone.key, annual_calendars),
             "fixed_gregorian_holidays_in_window": holidays,
             "configured_annual_calendar": {"basis": "operator_configured_annual_calendar",
              "years": sorted(item.year for item in annual_calendars), "days": days, "partial": partial}}

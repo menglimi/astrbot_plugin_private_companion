@@ -350,8 +350,14 @@ class QzoneService:
                                              context=context, source="feed")
         elif scope == "friends":
             posts = await self._friends(credential, bound, at=at, context=context)
+        elif scope == "owner":
+            owner_uin = str(settings.get("owner_uin") or "").strip()
+            if not owner_uin.isdigit():
+                raise TaskError("qzone_owner_missing", "请先在 QQ 空间设置里填写主人的 QQ 号")
+            posts = await self._recent_posts(credential, uin=int(owner_uin), num=bound, at=at,
+                                             context=context, source="feed")
         else:
-            raise TaskError("qzone_scope_invalid", "刷空间只支持自己的动态或好友动态")
+            raise TaskError("qzone_scope_invalid", "刷空间只支持自己的动态、好友动态或主人动态")
         references = self.references.issue(posts, owner_key=owner_key(context), scope_key=context.key, at=at)
         self._success(context, at)
         items = [reference.summary() for reference in references]
@@ -387,6 +393,7 @@ class QzoneService:
         """Comments of the scanned posts, read through the detail form of the list call."""
         by_id = {post.post_id: reference for post, reference in zip(posts, references)}
         items = [reference.summary() for reference in references]
+        items = await self._describe_media_items(items, references)
         targets = [post for post in posts if post.own][:3] or list(posts[:1])
         details = {}
         for post in targets:
@@ -405,6 +412,32 @@ class QzoneService:
                     if post.liked or await self._read_like(credential, post, at=at, context=context):
                         item["liked"] = True
                         self.references.mark_liked(by_id[post.post_id])
+        return items
+
+    async def _describe_media_items(self, items, references):
+        """Attach bounded descriptions for pictures and clips; never fail the read."""
+        if not items:
+            return items
+        from . import media
+        for index, reference in enumerate(references):
+            if index >= len(items):
+                break
+            post = reference.post
+            if not getattr(post, "images", ()) and not getattr(post, "videos", ()):
+                continue
+            try:
+                described = await asyncio.to_thread(media.describe_post, post)
+            except Exception:  # noqa: BLE001 - media is best effort
+                items[index]["media_error"] = "媒体解析失败"
+                continue
+            if described.get("images"):
+                items[index]["image_texts"] = [
+                    item.get("text") or item.get("note") or "" for item in described["images"]]
+            if described.get("videos"):
+                items[index]["video_texts"] = [{
+                    "seconds": item.get("seconds"), "frames": item.get("frames") or [],
+                    "audio": item.get("audio") or "", "note": item.get("note") or "",
+                } for item in described["videos"]]
         return items
 
     async def _read_like(self, credential, post, *, at, context):

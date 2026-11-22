@@ -50,6 +50,8 @@ DEFAULTS = {
     "life_publish_max_daily": 1,
     "life_publish_retry_minutes": 30,
     "life_publish_style_prompt": "",
+    # 主人的 QQ 号；scope="owner" 时读取他的空间。
+    "owner_uin": "",
 }
 for _topic in TOPIC_SPECS:
     _key = _topic.topic.value
@@ -83,7 +85,7 @@ BOOLEAN_FIELDS = ("enabled", "like_enabled", "comment_enabled", "publish_enabled
 INTEGER_FIELDS = tuple(LIMITS)
 PROBABILITY_FIELDS = ("life_publish_probability",) + tuple(
     f"{item.topic.value}_min_confidence" for item in TOPIC_SPECS)
-TEXT_FIELDS = ("topic_prompt_guidance", "life_publish_style_prompt") + tuple(
+TEXT_FIELDS = ("topic_prompt_guidance", "life_publish_style_prompt", "owner_uin") + tuple(
     f"{item.topic.value}_scenes" for item in TOPIC_SPECS)
 
 
@@ -105,6 +107,9 @@ def validate(values):
         raise ConfigurationError("qzone_configuration_invalid", "topic_prompt_guidance is too long")
     if type(values["life_publish_style_prompt"]) is not str or len(values["life_publish_style_prompt"]) > 512:
         raise ConfigurationError("qzone_configuration_invalid", "life_publish_style_prompt is too long")
+    owner_uin = values["owner_uin"]
+    if type(owner_uin) is not str or len(owner_uin) > 20 or (owner_uin and not owner_uin.isdigit()):
+        raise ConfigurationError("qzone_configuration_invalid", "owner_uin must be a QQ number or empty")
     for item in TOPIC_SPECS:
         name = f"{item.topic.value}_scenes"
         try:

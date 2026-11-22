@@ -1,4 +1,4 @@
-"""One sealed outbound plan: what a delivered message carries beyond its text.
+﻿"""One sealed outbound plan: what a delivered message carries beyond its text.
 
 Two different kinds of fact live here, and they are deliberately kept apart:
 
@@ -136,7 +136,7 @@ class VoicePlan:
 
     speech: str
     provider_id: str = ""
-    timeout_seconds: int = 30
+    timeout_seconds: int = 120
     position: str = "after_text"
     delivery_mode: str = "voice_and_text"
 

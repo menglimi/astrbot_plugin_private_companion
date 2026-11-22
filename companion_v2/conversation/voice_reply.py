@@ -1,4 +1,4 @@
-"""Validated voice presentation policy and model-authored spoken spans."""
+﻿"""Validated voice presentation policy and model-authored spoken spans."""
 
 from dataclasses import dataclass, replace
 from datetime import timedelta
@@ -221,7 +221,7 @@ class VoiceReplyPolicy:
     private_cooldown_seconds: int = -1
     group_cooldown_seconds: int = -1
     max_speech_chars: int = 1800
-    timeout_seconds: int = 30
+    timeout_seconds: int = 120
     trigger_keywords: str = ""
     primary_mention_keywords: str = ""
     primary_mention_probability: float = 0.8

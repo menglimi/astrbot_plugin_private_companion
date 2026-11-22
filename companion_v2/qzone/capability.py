@@ -100,8 +100,8 @@ def tool_descriptors():
         _descriptor(READ_ACTION,
             "查看 QQ 空间动态：返回自己与好友最近说说的有界摘要。每条动态带一个只在本次对话内有效的引用，"
             "点赞或回复必须原样使用该引用，不能自己编造动态标识。",
-            _schema({"scope": {"type": "string", "enum": ["own", "friends"],
-                                "description": "读取自己的动态或好友动态，省略则读取好友动态。"},
+            _schema({"scope": {"type": "string", "enum": ["own", "friends", "owner"],
+                                "description": "读取自己的动态、好友动态或主人动态，省略则读取好友动态。"},
                      "limit": {"type": "integer", "description": "本次读取的条数上限，省略则用当前设置。"},
                      "detail": {"type": "boolean", "description": "是否一并读取有界评论摘要。"}}),
             SideEffect.NONE, 20),

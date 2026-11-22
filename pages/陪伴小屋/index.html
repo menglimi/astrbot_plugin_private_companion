@@ -148,14 +148,14 @@
     <script defer src="page-motion.js?v=page-interactions-20261011"></script>
     <script defer src="entrance.js?v=entrance-state-build-20261001"></script>
     <script defer src="config-snapshot.js?v=brand-no-version-20261018"></script>
-    <script defer src="home-sidebar.js?v=state-age-20261120"></script>
+    <script defer src="home-sidebar.js?v=home-loading-20261122"></script>
     <script defer src="persona-designer-memory.js?v=persona-recreation-20261101"></script>
     <script defer src="product-page.js?v=state-age-20261120"></script>
     <script defer src="confirmation-dialog.js?v=consolidated-20261024-r1"></script>
     <script defer src="native-extension-management.js?v=mobile-mihome-controls-20261026"></script>
     <script defer src="native-extension-panel.js?v=phone-pages-20261121"></script>
     <script defer src="self-relationship.js?v=core-user-profile-20261007"></script>
-    <script defer src="home-environment.js?v=weather-alert-label-20261118"></script>
+    <script defer src="home-environment.js?v=home-loading-20261122"></script>
     <script defer src="migration-config-review.js?v=consolidated-20261024-r1"></script>
     <script defer src="migration-config-table.js?v=migration-guided-20261025"></script>
     <script defer src="setup-guide.js?v=setup-init-deferral-20261110"></script>
@@ -333,6 +333,7 @@
   <!-- 忆忆策略位于忆忆页的独立视图。 -->
   <!-- 备份与还原：后端 backup_api.py 有六条真实路由，而这一页此前没有任何
        入口加载它——资料与维护页的挂载点永远停在「正在读取快照列表…」。 -->
+  <link rel="stylesheet" href="home-loading.css?v=home-loading-20261122">
 </head>
 <body>
   <!-- 启动幕：首屏闸门（tokens.css 的 data-room-ready）在体素包解析完之前

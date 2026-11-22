@@ -143,6 +143,31 @@ def images_from_mapping(item):
     return tuple(found)
 
 
+def _videos_from_item(item):
+    """Video clips carried by a msglist entry (the official parser only reads pics)."""
+    videos, seen = [], set()
+    for container in (item, item.get("raw") if isinstance(item.get("raw"), dict) else {}):
+        raw_videos = container.get("video") or []
+        if isinstance(raw_videos, dict):
+            raw_videos = [raw_videos]
+        for raw in raw_videos:
+            if not isinstance(raw, dict):
+                continue
+            url = str(raw.get("url3") or raw.get("url2") or raw.get("url1") or "").strip()
+            cover = str(raw.get("pic_url") or "").strip()
+            try:
+                seconds = int(int(raw.get("video_time") or 0) / 1000)
+            except (TypeError, ValueError):
+                seconds = 0
+            if not url.startswith("http") or url in seen:
+                continue
+            seen.add(url)
+            videos.append((url, cover if cover.startswith("http") else "", seconds))
+        if videos:
+            break
+    return tuple(videos)
+
+
 def _post_from_mapping(item, *, my_uin):
     if not isinstance(item, dict):
         return None
@@ -153,7 +178,8 @@ def _post_from_mapping(item, *, my_uin):
     raw = item.get("raw") if isinstance(item.get("raw"), dict) else item
     text = plain_text(_first(item, _TEXT_KEYS, nested=("raw", "summary")))
     images = images_from_mapping(item)
-    if not text and not images:
+    videos = _videos_from_item(item)
+    if not text and not images and not videos:
         return None
     name = display_name(_first(item, _NAME_KEYS, nested=("userinfo", "user", "raw")), author)
     return QzonePost(post_id=post_id, author_uin=author, author_name=name, excerpt=text,
@@ -163,7 +189,7 @@ def _post_from_mapping(item, *, my_uin):
         fid=str(_first(raw, ("fid", "feeds_key")) or ""),
         created_at=str(_first(item, _TIME_KEYS) or "")[:40],
         liked=bool(_first(item, _LIKED_KEYS, nested=("like", "raw")) in (1, "1", True, "true")),
-        own=author == str(my_uin), images=images)
+        own=author == str(my_uin), images=images, videos=videos)
 
 
 def posts_from_msglist(payload, *, my_uin, limit):
@@ -230,7 +256,7 @@ def posts_from_html(text, *, my_uin, limit):
             unikey=str(attributes.get("unikey") or ""), curkey=str(attributes.get("curkey") or ""),
             appid=str(attributes.get("appid") or ""), typeid=str(attributes.get("typeid") or ""),
             abstime=str(attributes.get("abstime") or ""), fid=str(attributes.get("fid") or ""),
-            own=author == str(my_uin), images=images))
+            own=author == str(my_uin), images=images, videos=()))
         if len(posts) >= limit:
             break
     return tuple(posts)

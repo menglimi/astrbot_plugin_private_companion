@@ -158,7 +158,23 @@ class RoleAwareness:
                 payload["continuity"] = continuity
             return payload
         if context.scope.kind is ScopeKind.GROUP and self._private_contact(context, at, values):
-            return {"private_contact": True}
+            payload = {"private_contact": True}
+            cross_group = self._recent_cross_group_activity(
+                document, context, at,
+                hours=self._integer(values, "person.cross_window_private_group_hours", WINDOW_HOURS, 1, 48),
+                limit=self._integer(values, "person.cross_window_max_items", MAX_PROMPT_ITEMS, 1, 8),
+            )
+            if cross_group:
+                payload["cross_group_activity"] = cross_group
+            return payload
+        if context.scope.kind is ScopeKind.GROUP:
+            cross_group = self._recent_cross_group_activity(
+                document, context, at,
+                hours=self._integer(values, "person.cross_window_private_group_hours", WINDOW_HOURS, 1, 48),
+                limit=self._integer(values, "person.cross_window_max_items", MAX_PROMPT_ITEMS, 1, 8),
+            )
+            if cross_group:
+                return {"cross_group_activity": cross_group}
         return None
 
     @staticmethod
@@ -262,6 +278,30 @@ class RoleAwareness:
             "prior_question": question["topic"],
             "prior_reply": prior_reply,
         }
+
+    def _recent_cross_group_activity(self, document, context, at, *, hours=WINDOW_HOURS,
+                                     limit=MAX_PROMPT_ITEMS):
+        """The same human's own public words from *other* groups.
+
+        Group ids stay out of the prompt.  Other members, the role's replies and
+        private content are never included, so this cannot turn into a general
+        group-to-group transcript.
+        """
+        cutoff = at - timedelta(hours=hours)
+        subject = context.actor.subject.subject_id
+        current_group = context.scope.native_scope_id
+        items = []
+        for item in document["events"]:
+            when = _when(item["at"])
+            if (item["window"] != "group" or item["kind"] != "spoke"
+                    or item["subject"] != subject or item["group_id"] == current_group
+                    or not item["topic"] or not self._same_route(item, context)
+                    or when is None or when < cutoff or when > at
+                    or not self._source_current(item, at)):
+                continue
+            items.append({"at": item["at"], "topic": item["topic"]})
+        items.sort(key=lambda item: item["at"])
+        return items[-limit:]
 
     def _recent_group_activity(self, document, context, at, *, hours=WINDOW_HOURS, limit=MAX_PROMPT_ITEMS):
         cutoff = at - timedelta(hours=hours)

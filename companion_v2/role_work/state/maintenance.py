@@ -47,6 +47,7 @@ INTERVENTION_DIALOGUE_WINDOW = timedelta(minutes=3)
 IDLE_FINGERPRINT_PREFIX = "role.state.idle-fingerprint.v1:"
 IDLE_REFRESH_MAX_MINUTES = 240
 PROMPT = """本轮是角色状态的后台维护，只生成 role_state 数据，不给聊天对象写回复。原人格决定身体设定与生活习惯；maintenance_minutes 是观察间隔，不是状态必须变差的周期。
+maintenance_basis.today 是当前时区的日期投影，包含年度日历里的节假日、调休上班和节气。判断角色今天是否上班、休息或过节时以它为准，不要用 weekday 自行猜测；today 缺失时才退回普通星期判断。
 健康、能够照顾自己的普通生活是常态。疾病应有具体情境和连续过程，不为更新而随机生病，也不把一次不适反复当成新发病。previous_simulation 和 simulation_history 都是此前模型的模拟，重复保存不构成新的病情证据；结合原始时间判断同一次不适如何平稳、缓解或结束，不把“昨天”“整夜”每天滚动续写。
 若异常只剩长期重复的旧描述、缺乏近期独立材料支持，可以逐步回到惯常体验或保留未知，不必等待不存在的进食或服药执行系统才允许感受好转。已知仍在持续的具体症状则保持合理连续性，不无故抹去。
 recent_dialogue 是带时间、说话者的完整互动。分清用户与角色，用户的经历不移到角色身上；用户以“我”陈述的身体、睡眠、饥饿或情绪只属于用户，不把任一方的状态移到另一方。角色在互动中接受食物、照顾、药物或表达舒服些，可以自然影响饥饿、健康、心情与精力的模拟感受，注意先后顺序和已经反映过的影响，不机械叠加奖励，也不要求用户特定措辞。仅提供药物不等于已服用，更不等于立即痊愈；角色表达药效或缓解是可参考的主观体验，不是医疗诊断或真实服药回执。
@@ -567,6 +568,19 @@ class StateMaintenance:
         except TaskError:
             return {"state": "unavailable"}
 
+    @staticmethod
+    def _today(settings, at):
+        """The same date projection the chat and planner use, including makeup days."""
+        from companion_v2.agenda.planning_config import configured_annual_calendars
+        from companion_v2.conversation.date_context import project_local_date
+
+        try:
+            calendars = configured_annual_calendars(settings.get("planning_annual_calendars") or "")
+            return project_local_date(at, settings.get("planning_timezone") or "Asia/Shanghai",
+                                      calendars, holiday_country="CN")
+        except Exception:
+            return None
+
     def _idle_fingerprint_key(self, context):
         return IDLE_FINGERPRINT_PREFIX + role_schedule_key(context)
 
@@ -734,6 +748,7 @@ class StateMaintenance:
             "previous": previous,
             "settings": settings, "token": token, "sources": sources, "materials": materials,
             "calendar": calendar, "activities": activities, "cycle_timeline": cycle_timeline,
+            "today": self._today(settings, now),
             "mood_round": mood_round, "sleep_execution": self.service.body_clock.read(context, now=now),
             "sleep_profile": self.service.body_clock.profile(context, now=now),
             "simulation_history": maintenance_context.simulation_history(self.service, context, now),
@@ -863,7 +878,8 @@ class StateMaintenance:
         context = job["context"]
         mood_round = job["mood_round"]
         materials = (PromptMaterial("role.state", "maintenance_basis", encode({
-            "at": job["at"], "previous_simulation": job["previous"], "settings": job["settings"],
+            "at": job["at"], "today": job.get("today"),
+            "previous_simulation": job["previous"], "settings": job["settings"],
             "cycle_timeline": job["cycle_timeline"], "calendar_plans": job["calendar"],
             "mood_settlement": {"reference": mood_round["reference"], "baseline": mood_round["baseline"],
                 "interest_level": mood_round["interest"], "messages_since_last_round": mood_round["messages"],

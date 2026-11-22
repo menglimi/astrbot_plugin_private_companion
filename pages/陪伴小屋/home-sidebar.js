@@ -228,6 +228,7 @@ window.CompanionHomeSidebar = (() => {
       cycle:"calendar-heart",busy:"briefcase-business",location:"map-pin"};
     const item = (visual,icon,label,tone="quiet") => ({visual,icon,label,tone});
     if (disabled) return item("disabled",icons[kind],"未启用");
+    if (loading && !raw) return item("loading",icons[kind],"读取中","loading");
     if (kind === "energy" && typeof raw === "number") {
       if (raw >= 75) return item("energy-full","battery-full","充足","ok");
       if (raw >= 40) return item("energy-medium","battery-medium","尚可","ok");
@@ -338,13 +339,13 @@ window.CompanionHomeSidebar = (() => {
     const sleepStart = stamp(sleepOf(input)?.started_at);
     const sleepMinutes = sleeping && sleepStart != null ? Math.max(0, (now - sleepStart) / 60000) : null;
     const sleepDuration = sleepMinutes == null ? "" : durationLabel(sleepMinutes).replace(/(\d)(小时|分)/g, "$1 $2");
-    const heroTitle = sleeping ? `睡眠中${sleepDuration ? ` · 已睡 ${sleepDuration}` : ""}` : sleepRaw && !/^清醒$/.test(sleepRaw) ? sleepRaw : "清醒";
+    const heroTitle = loading ? "正在读取" : sleeping ? `睡眠中${sleepDuration ? ` · 已睡 ${sleepDuration}` : ""}` : sleepRaw && !/^清醒$/.test(sleepRaw) ? sleepRaw : "清醒";
     const fallback = loading ? "正在读取角色状态…" : settings.enabled === false ? "状态维护未启用" : visible.length ? "" : "暂无已启用的首页状态";
     const accessible = visible.map(([kind,label,raw,disabled]) => `${label} ${disabled ? "未启用" : kind === "energy" && typeof raw === "number" ? `${raw} / 100` : raw || "尚未记录"}`).join("；");
-    const hero = sleepEntry ? `<span class="home-state-hero" data-tone="${sleeping ? "rest" : "quiet"}" title="${e("睡眠 · " + heroTitle)}">
-      <span class="home-state-hero-icon" aria-hidden="true"><i data-lucide="${sleeping ? "moon-star" : "sun"}"></i></span>
+    const hero = sleepEntry ? `<span class="home-state-hero" data-tone="${loading ? "loading" : sleeping ? "rest" : "quiet"}"${loading ? ' data-visual="loading"' : ""} title="${e("睡眠 · " + heroTitle)}">
+      <span class="home-state-hero-icon" aria-hidden="true"><i data-lucide="${loading ? "loader-circle" : sleeping ? "moon-star" : "sun"}"></i></span>
       <span class="home-state-hero-copy"><small>当前</small><strong>${e(heroTitle)}</strong></span></span>` : "";
-    return `<button type="button" class="home-state-board is-b2" data-go="life" data-life-target="state" aria-label="查看并更新角色状态。${e(accessible || fallback)}" title="查看并更新角色状态">
+    return `<button type="button" class="home-state-board is-b2"${loading ? ' data-loading="true"' : ""} data-go="life" data-life-target="state" aria-label="查看并更新角色状态。${e(accessible || fallback)}" title="查看并更新角色状态">
       ${hero}<span class="home-state-grid">${states}</span>${!hero && !states ? `<span class="home-state-empty">${e(fallback)}</span>` : ""}<span class="home-state-open" aria-hidden="true"><i data-lucide="arrow-up-right"></i></span></button>
       ${unreadable && !loading ? `<p class="home-side-warning" role="status">${e(runtimeMissing ? "角色数据尚未就绪，请核对账号与人格的角色映射；首次设置记录仍会保留。" : state ? "暂时无法读取角色状态，请在详情中核对。" : unavailable("state"))}</p>${runtimeMissing ? `<button class="text-button home-side-action" data-go="manage" data-manage="host">前往账号与会话</button>` : ""}` : ""}`;
   }
@@ -515,7 +516,7 @@ window.CompanionHomeSidebar = (() => {
       </div>
     </details>` : "";
     return `<span class="home-agenda-signature" hidden>${e(signature)}</span>${progress}
-      <div class="home-agenda-status" data-tone="${status.tone}" role="status">
+      <div class="home-agenda-status" data-tone="${status.tone}"${loading ? ' data-loading="true"' : ""} role="status">
         <span class="home-agenda-status-kicker">${e(status.kicker)}</span>
         <strong>${e(status.title)}</strong>
       </div>

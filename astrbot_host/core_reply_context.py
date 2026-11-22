@@ -1,4 +1,4 @@
-"""Local, optional V2 background for AstrBot-owned conversation turns.
+﻿"""Local, optional V2 background for AstrBot-owned conversation turns.
 
 The host keeps its own current conversation history, media and model pipeline.
 This bridge only reads the domain owners' authorized background. It never
@@ -474,7 +474,7 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
                 holiday_enabled=settings["holiday_enabled"], holiday_country=settings["holiday_country"],
                 lunar_enabled=settings["lunar_enabled"], almanac_enabled=settings["almanac_enabled"],
                 automatic_solar_terms_enabled=settings["automatic_solar_terms_enabled"],
-                solar_term_port=None)
+                solar_term_port=getattr(messages, "solar_term_port", None))
             perception_data["local_calendar_context"] = payload
             instructions.append(CALENDAR_INSTRUCTION)
             if settings["almanac_enabled"]:
