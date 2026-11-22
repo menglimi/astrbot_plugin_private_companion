@@ -211,6 +211,9 @@ window.CompanionSetup = (() => {
   let notice = "";
   let migrationProgress = "";
   let modelDraft = "";
+  let fallbackModelDraft = "";
+  let fallbackModelTouched = false;
+  let pendingQuickBlock = "";
   let modelTasks = null;
   let modelTasksStatus = "idle";
   let modelTasksError = "";
@@ -437,7 +440,11 @@ window.CompanionSetup = (() => {
     syncModelTasksScope();
     const providers = Array.isArray(state?.model?.providers) ? state.model.providers : [];
     const providerId = modelDraft || state?.model?.provider_id || "";
-    const canSetInitialProvider = state?.step === "model" && !state?.ready;
+    const savedFallback = state?.model?.fallback_provider_id || "";
+    const rawFallback = fallbackModelTouched ? fallbackModelDraft : savedFallback;
+    const fallbackId = rawFallback && rawFallback !== providerId ? rawFallback : "";
+    const fallbackChoices = providers.filter(item => item.id !== providerId);
+    const isInitialStep = state?.step === "model" && !state?.ready;
     const tasks = (modelTasks?.tasks || []).filter(task =>
       ["proactive.compose", "calendar.plan", "role.state.maintain", "role.self_review"].includes(task.kind));
     const taskProviders = Array.isArray(modelTasks?.providers) ? modelTasks.providers : [];
@@ -448,17 +455,17 @@ window.CompanionSetup = (() => {
       const choices = taskProviders.filter(item => task.capabilities.every(capability => item.capabilities.includes(capability)));
       return `<details class="setup-task-route"><summary><strong>${escape(taskLabel(task.kind))}</strong><small>${escape(task.kind)}</small></summary><div class="setup-task-route-fields"><label><span>主模型</span><select data-setup-model-task="${escape(task.kind)}" data-setup-model-field="provider" ${busy || !choices.length ? "disabled" : ""}>${choices.map(item => `<option value="${escape(item.id)}" ${provider === item.id ? "selected" : ""}>${escape(item.name || item.id)}</option>`).join("")}</select></label><label><span>备用模型</span><select data-setup-model-task="${escape(task.kind)}" data-setup-model-field="fallback" ${busy || !choices.length ? "disabled" : ""}><option value="">不设置</option>${choices.filter(item => item.id !== provider).map(item => `<option value="${escape(item.id)}" ${fallback === item.id ? "selected" : ""}>${escape(item.name || item.id)}</option>`).join("")}</select></label>${button(`save-task:${task.kind}`, "保存", {disabled: !choices.length})}</div></details>`;
     }).join("");
-    const providerMarkup = canSetInitialProvider
-      ? providers.length ? `<label class="setup-model-field"><span>陪伴通用模型</span><select name="setup-provider" ${busy ? "disabled" : ""}><option value="">选择模型</option>${providers.map(item => `<option value="${escape(item.id)}" ${providerId === item.id ? "selected" : ""}>${escape(item.name)} · ${escape(item.id)}</option>`).join("")}</select></label>${button("save-model", state?.prepared ? "保存通用模型" : "初始化并载入模型", {primary: true, disabled: !providerId})}`
-        : `<p class="setup-inline-error">没有可用的文本模型，请先在 AstrBot 中加载 Provider 后刷新本页。</p>`
-      : `<div class="setup-model-default"><span>陪伴通用模型</span><strong>${escape(providerId || "未设置")}</strong></div>`;
+    const providerMarkup = providers.length
+      ? `<div class="setup-model-default-editor"><label class="setup-model-field"><span>陪伴通用模型（全局默认）</span><select name="setup-provider" ${busy ? "disabled" : ""}><option value="">选择模型</option>${providers.map(item => `<option value="${escape(item.id)}" ${providerId === item.id ? "selected" : ""}>${escape(item.name)} · ${escape(item.id)}</option>`).join("")}</select></label><label class="setup-model-field"><span>全局备用模型（可选）</span><select name="setup-fallback-provider" ${busy ? "disabled" : ""}><option value="">不使用备用模型</option>${fallbackChoices.map(item => `<option value="${escape(item.id)}" ${fallbackId === item.id ? "selected" : ""}>${escape(item.name)} · ${escape(item.id)}</option>`).join("")}</select></label><div class="setup-model-default-actions">${button("save-model", isInitialStep && !state?.prepared ? "初始化并载入模型" : "保存陪伴通用模型", {primary: true, disabled: !providerId})}</div></div>`
+      : `<div class="setup-model-default"><span>陪伴通用模型（全局默认）</span><strong>${escape(providerId || "未设置")}</strong><p class="setup-inline-error">没有可用的文本模型，请先在 AstrBot 中加载 Provider 后刷新本页。</p></div>`;
     const routesMarkup = modelTasksStatus === "loading"
       ? `<p class="setup-inline-loading" role="status">正在读取后台模型路由…</p>`
       : modelTasksStatus === "error"
         ? `<div class="setup-inline-error" role="alert"><span>${escape(modelTasksError || "后台模型路由暂时无法读取。")}</span>${button("retry-model-routes", "重新读取")}</div>`
         : modelTasks ? taskMarkup || `<p class="setup-inline-empty">当前没有这些后台任务的模型路由。</p>`
           : `<p class="setup-inline-loading" role="status">正在读取后台模型路由…</p>`;
-    return `<div class="setup-quick-models"><p class="setup-quick-models-note">陪伴模型用于插件内部任务；日常对话回复仍跟随 AstrBot 当前人格与主链。</p>
+    return `<div class="setup-quick-models"><p class="setup-quick-models-note">陪伴通用模型（全局默认，原称「共享启动模型」）用于插件内部后台任务；日常对话回复仍跟随 AstrBot 当前人格与主链。</p>
+      ${noticeMarkup()}
       ${providerMarkup}
       <section class="setup-model-routes"><header><div><h4>常用后台任务</h4><p>主动联系、日程、状态与每日反思</p></div><span>${tasks.length} 项</span></header>${routesMarkup}</section>
     </div>`;
@@ -2957,6 +2964,10 @@ window.CompanionSetup = (() => {
     const model = state?.model || {};
     const providers = Array.isArray(model.providers) ? model.providers : [];
     const providerId = modelDraft || model.provider_id || "";
+    const savedFallback = model.fallback_provider_id || "";
+    const rawFallback = fallbackModelTouched ? fallbackModelDraft : savedFallback;
+    const fallbackId = rawFallback && rawFallback !== providerId ? rawFallback : "";
+    const fallbackChoices = providers.filter(item => item.id !== providerId);
     const taskProviders = Array.isArray(modelTasks?.providers) ? modelTasks.providers : [];
     const tasks = Array.isArray(modelTasks?.tasks) ? modelTasks.tasks : [];
     const selectedProvider = providers.find(item => item.id === providerId);
@@ -2971,17 +2982,22 @@ window.CompanionSetup = (() => {
       ${connectionDiagnostic()}
       <div class="setup-question-card">
         <p class="setup-kicker">本步只问一件事</p>
-        <h3>先选一个插件通用模型</h3>
-        <p>日常聊天仍然使用 AstrBot 当前人格和主模型；这里只决定主动联系、日程、状态和事实整理这些后台任务用哪个模型。</p>
+        <h3>先选一个陪伴通用模型（全局默认）</h3>
+        <p>日常聊天仍然使用 AstrBot 当前人格和主模型；这里只决定主动联系、日程、状态和事实整理这些后台任务默认使用哪个模型（原称「共享启动模型」）。</p>
         <ul class="setup-question-points">
-          <li>选择插件通用模型：先选一个能稳定调用的文本模型即可，不必一开始就分得很细</li>
-          <li>保存后会沿用为后台任务的默认模型，仍可逐项覆盖</li>
+          <li>选择陪伴通用模型（全局默认）：先选一个能稳定调用的文本模型即可，不必一开始就分得很细</li>
+          <li>保存后会沿用为后台任务的默认模型，仍可随时修改或逐项覆盖</li>
           <li>任务路由可以稍后在「模型与连接」中调整，不影响角色设定</li>
         </ul>
-        ${providers.length ? `<label class="setup-model-field"><span>初始主 Provider（插件通用模型） <span class="setup-recommendation">推荐只选这里</span></span>
+        ${providers.length ? `<label class="setup-model-field"><span>陪伴通用模型（全局默认 · 初始主 Provider） <span class="setup-recommendation">推荐只选这里</span></span>
           <select name="setup-provider" ${busy ? "disabled" : ""}>
             <option value="">选择 Provider</option>
             ${providers.map(item => `<option value="${escape(item.id)}" ${providerId === item.id ? "selected" : ""}>${escape(item.name)} · ${escape(item.id)}</option>`).join("")}
+          </select></label>
+          <label class="setup-model-field"><span>全局备用模型（可选，主模型波动时自动回退）</span>
+          <select name="setup-fallback-provider" ${busy ? "disabled" : ""}>
+            <option value="">不使用备用模型</option>
+            ${fallbackChoices.map(item => `<option value="${escape(item.id)}" ${fallbackId === item.id ? "selected" : ""}>${escape(item.name)} · ${escape(item.id)}</option>`).join("")}
           </select></label>
           ${selectedProvider ? `<p class="setup-question-note">当前选择：${escape(selectedProvider.name || selectedProvider.id)}。保存后先作为插件后台任务的默认入口。</p>` : ""}`
           : `<p class="setup-inline-error">AstrBot 当前没有已加载的文本 Provider。请先在 AstrBot 的提供商管理中添加模型，再回来刷新。</p>`}
@@ -3296,6 +3312,13 @@ window.CompanionSetup = (() => {
          loadStepData() 会再写入更具体的提示。 */
       notice = "";
       modelDraft = result?.model?.provider_id || "";
+      fallbackModelDraft = result?.model?.fallback_provider_id || "";
+      fallbackModelTouched = false;
+      if (pendingQuickBlock && (result?.ready || result?.prepared)) {
+        advancedBlock = ADVANCED_BLOCKS.some(item => item.id === pendingQuickBlock) ? pendingQuickBlock : ADVANCED_BLOCKS[0].id;
+        advancedOpen = true;
+        pendingQuickBlock = "";
+      }
       await loadStepData(result);
       render();
       /* 旧版探测只补充升级卡，不应延迟当前版本首屏。 */
@@ -3841,14 +3864,25 @@ window.CompanionSetup = (() => {
       } else if (action === "prepare") {
         await api("POST", "/prepare", {});
       } else if (action === "save-model") {
-        const saved = await api("POST", "/model", {provider_id: modelDraft});
+        const providerId = modelDraft || state?.model?.provider_id || "";
+        const payload = {provider_id: providerId};
+        if (fallbackModelTouched) {
+          payload.fallback_provider_id = fallbackModelDraft === providerId ? "" : fallbackModelDraft;
+        }
+        const useInitialSetup = state?.step === "model" && !state?.ready;
+        const saved = useInitialSetup
+          ? await api("POST", "/model", payload)
+          : await product().request("POST", "accounts/model-provider", payload);
         modelTaskDrafts = {};
+        fallbackModelTouched = false;
         const deferred = saved?.init_deferred === true || saved?.data?.init_deferred === true;
         notice = deferred
-          ? `模型已保存。${(saved?.init_reason || saved?.data?.init_reason) || "配置的 Bot 账号当前未连接 AstrBot。"}账号连上后回到这一步再点一次即可完成初始化。`
+          ? `陪伴通用模型（全局默认）已保存。${(saved?.init_reason || saved?.data?.init_reason) || "配置的 Bot 账号当前未连接 AstrBot。"}账号连上后回到这一步再点一次即可完成初始化。`
           : saved?.restart_required || saved?.data?.restart_required
-          ? "模型已保存；当前宿主仍在运行，重载插件后使用新模型。"
-          : "已初始化模型；任务路由可直接选择 AstrBot 当前已加载的 Provider。";
+          ? "陪伴通用模型（全局默认）已保存；当前宿主仍在运行，重载插件后生效。"
+          : useInitialSetup
+          ? "陪伴通用模型（全局默认）已初始化；任务路由可直接选择 AstrBot 当前已加载的 Provider。"
+          : "陪伴通用模型（全局默认）已保存。";
       } else if (action.startsWith("save-task:")) {
         await saveModelTask(action.slice("save-task:".length));
       } else if (action === "generate-profile") {
@@ -3895,8 +3929,10 @@ window.CompanionSetup = (() => {
         const result = await api("GET", "/status");
         state = result;
         modelDraft = result?.model?.provider_id || "";
+        fallbackModelDraft = result?.model?.fallback_provider_id || "";
+        fallbackModelTouched = false;
         await loadStepData(result);
-        if (result.ready) notice = "";
+        if (result.ready && action !== "save-model") notice = "";
         render();
         if (result?.proactive_test?.state === "started") void watchProactive();
       }
@@ -4637,6 +4673,12 @@ window.CompanionSetup = (() => {
     }
     if (input?.name === "setup-provider") {
       modelDraft = input.value;
+      if (fallbackModelTouched && fallbackModelDraft === modelDraft) fallbackModelDraft = "";
+      render();
+    }
+    if (input?.name === "setup-fallback-provider") {
+      fallbackModelDraft = input.value;
+      fallbackModelTouched = true;
       render();
     }
     if (input?.dataset?.setupModelTask && input?.dataset?.setupModelField) {
@@ -4684,6 +4726,8 @@ window.CompanionSetup = (() => {
     state = null;
     notice = "";
     modelDraft = "";
+    fallbackModelDraft = "";
+    fallbackModelTouched = false;
     modelTasks = null;
     modelTasksStatus = "idle";
     modelTasksError = "";
@@ -4805,10 +4849,24 @@ window.CompanionSetup = (() => {
 
   // A retained task map (including an empty map after saving) is not a change.
   // The migration source path is a workflow input, not a setting to save.
+  function openQuickBlock(blockId) {
+    const valid = ADVANCED_BLOCKS.some(item => item.id === blockId) ? blockId : ADVANCED_BLOCKS[0].id;
+    if (root && state && (state.ready || state.prepared)) {
+      advancedBlock = valid;
+      advancedOpen = true;
+      pendingQuickBlock = "";
+      render();
+      return true;
+    }
+    pendingQuickBlock = valid;
+    return false;
+  }
+
   function changedFields() {
     if(!root)return [];
     const changed=[];
-    if(modelDraft && modelDraft !== (state?.model?.provider_id || ''))changed.push('默认模型');
+    if(modelDraft && modelDraft !== (state?.model?.provider_id || ''))changed.push('陪伴通用模型（全局默认）');
+    if(fallbackModelTouched && fallbackModelDraft !== (state?.model?.fallback_provider_id || ''))changed.push('全局备用模型');
     for(const [kind,values] of Object.entries(modelTaskDrafts || {})){
       const task=modelTasks?.tasks?.find(item=>item.kind===kind);
       for(const [name,value] of Object.entries(values))if(value !== task?.fields?.[name]?.value)
@@ -4831,9 +4889,19 @@ window.CompanionSetup = (() => {
         const task=modelTasks?.tasks?.find(item=>item.kind===kind);
         if(Object.entries(values).some(([name,value])=>value !== task?.fields?.[name]?.value))await saveModelTask(kind);
       }
-      if(modelDraft && modelDraft !== (state?.model?.provider_id || '')){
-        await api('POST','/model',{provider_id:modelDraft});
+      const primaryChanged = modelDraft && modelDraft !== (state?.model?.provider_id || '');
+      const fallbackChanged = fallbackModelTouched && fallbackModelDraft !== (state?.model?.fallback_provider_id || '');
+      if(primaryChanged || fallbackChanged){
+        const providerId = modelDraft || state?.model?.provider_id || '';
+        const payload = {provider_id: providerId};
+        if (fallbackChanged) payload.fallback_provider_id = fallbackModelDraft === providerId ? '' : fallbackModelDraft;
+        const useInitialSetup = state?.step === 'model' && !state?.ready;
+        if (useInitialSetup) await api('POST','/model',payload);
+        else await product().request('POST','accounts/model-provider',payload);
+        fallbackModelTouched = false;
         state=await api('GET','/status');
+        modelDraft = state?.model?.provider_id || '';
+        fallbackModelDraft = state?.model?.fallback_provider_id || '';
       }
       if(Object.keys(profileFieldDrafts || {}).length)await saveProfileDraft();
       return !isDirty()?true:{error:'还有所选资料未写入，请回到向导核对写入字段。'};
@@ -4841,8 +4909,11 @@ window.CompanionSetup = (() => {
   }
   function discardChanges() {
     if(busy)return {error:'设置正在处理，请稍后切换。'};
-    modelDraft=state?.model?.provider_id || ''; modelTaskDrafts={}; profileFieldDrafts={}; legacyRootDraft='';
+    modelDraft=state?.model?.provider_id || '';
+    fallbackModelDraft=state?.model?.fallback_provider_id || '';
+    fallbackModelTouched=false;
+    modelTaskDrafts={}; profileFieldDrafts={}; legacyRootDraft='';
     return true;
   }
-  return {mount, mountMigration, unmount, refresh, isDirty, changedFields, saveBeforeLeave, discardChanges, promptUpgradeAtStartup, continueUpgrade};
+  return {mount, mountMigration, unmount, refresh, openQuickBlock, isDirty, changedFields, saveBeforeLeave, discardChanges, promptUpgradeAtStartup, continueUpgrade};
 })();

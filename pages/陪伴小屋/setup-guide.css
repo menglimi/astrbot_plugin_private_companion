@@ -159,6 +159,10 @@
 .setup-quick-models { min-width:0; }
 .setup-quick-models-note { margin:0 0 var(--sp-4); color:var(--muted); font-size:var(--fs-body); line-height:1.55; }
 .setup-model-default { display:grid; grid-template-columns:minmax(150px, 220px) minmax(0, 1fr); gap:var(--sp-3); padding:var(--sp-3) 0; border-bottom:1px solid var(--line); }
+.setup-model-default-editor { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:var(--sp-3); align-items:end; padding:var(--sp-4); margin:0 0 var(--sp-4); border:1px solid color-mix(in srgb, var(--accent) 24%, var(--line)); border-radius:var(--r-md); background:color-mix(in srgb, var(--accent-soft, var(--t-accent-quiet)) 36%, var(--surface)); }
+.setup-model-default-editor .setup-model-field { margin:0; max-width:none; }
+.setup-model-default-actions { grid-column:1 / -1; display:flex; align-items:center; justify-content:flex-start; gap:var(--sp-2); }
+@media (max-width: 680px) { .setup-model-default-editor { grid-template-columns:minmax(0, 1fr); } }
 .setup-model-default > span { color:var(--muted); font-size:var(--fs-body); }
 .setup-model-default > strong { min-width:0; color:var(--ink); font-size:var(--fs-body); overflow-wrap:anywhere; }
 .setup-inline-loading, .setup-inline-empty { margin:0; padding:var(--sp-3) 0; color:var(--muted); font-size:var(--fs-body); line-height:1.5; }

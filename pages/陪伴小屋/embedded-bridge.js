@@ -58,6 +58,35 @@
     if(message.kind==="navigate-failed"){
       document.dispatchEvent(new CustomEvent("companion-navigate-failed",{detail:message}));return;
     }
+    if(message.kind==="focus-selector"&&typeof message.selector==="string"&&message.selector){
+      const tryFocus=(attempt=0)=>{
+        let node=null;
+        try{node=document.querySelector(message.selector);}catch(_){return;}
+        if(!node){
+          if(attempt<25){const t=setTimeout(()=>tryFocus(attempt+1),80);t?.unref?.();}
+          return;
+        }
+        for(let p=node.parentElement;p;p=p.parentElement){if(p.tagName==="DETAILS")p.open=true;}
+        const target=node.closest?.(".shared-model-select, .shared-model-panel, section, label")||node;
+        const reduced=window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+          ||["low","off"].includes(document.documentElement?.dataset?.motion);
+        node.scrollIntoView?.({behavior:reduced?"instant":"smooth",block:"center"});
+        if(node.matches?.("button,input,select,textarea,a"))node.focus?.({preventScroll:true});
+        else if(typeof node.focus==="function"){
+          if(!node.hasAttribute?.("tabindex"))node.tabIndex=-1;
+          node.focus({preventScroll:true});
+        }
+        if(message.highlight!==false&&target?.classList){
+          target.classList.remove("is-search-target");
+          void target.offsetWidth;
+          target.classList.add("is-search-target");
+          const timer=setTimeout(()=>target.classList?.remove?.("is-search-target"),2400);
+          timer?.unref?.();
+        }
+      };
+      tryFocus();
+      return;
+    }
     if(message.kind==="confirm-result"&&pendingConfirms.has(message.requestId)){
       const item=pendingConfirms.get(message.requestId);pendingConfirms.delete(message.requestId);
       item.resolve(message.code?null:message.confirmed===true);return;

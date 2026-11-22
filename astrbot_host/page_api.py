@@ -28,6 +28,7 @@ from .browser_preferences import (
 from .display_names import display_names
 from .group_remarks import GroupRemarks
 from .identity_derivation import role_display_name
+from .search_catalog import build_search_catalog
 from .settings import HostControlError
 
 
@@ -74,7 +75,30 @@ class PageWebAPI:
                 (PREFIX + "/page/browser-preferences", self.browser_preferences, ["GET"],
                  "Read this browser's Companion role and card preferences"),
                 (PREFIX + "/page/browser-preferences", self.save_browser_preferences, ["POST"],
-                 "Save Companion role and card preferences in this browser's cookies")]
+                 "Save Companion role and card preferences in this browser's cookies"),
+                (PREFIX + "/search/catalog", self.search_catalog, ["GET"],
+                 "Read searchable model tasks, plugin schema and native extension metadata")]
+
+    async def search_catalog(self):
+        """Return non-secret searchable metadata for global search and all-features overview."""
+        from .web_api import outcome_response
+
+        try:
+            username = request.username
+            if (
+                type(username) is not str
+                or not username.strip()
+                or username.startswith("api_key:")
+            ):
+                raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard")
+            if request.query:
+                raise TaskError("page_request_invalid", "search catalog does not accept query overrides")
+            if getattr(self.controller, "_terminated", False):
+                raise TaskError("staging_host_terminated", "plugin is stopped")
+            catalog = await asyncio.to_thread(build_search_catalog, self.controller)
+            return outcome_response(Outcome.success(catalog))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
 
     async def workspace_entry(self):
         """Refresh the current page's short-lived resource token through AstrBot.

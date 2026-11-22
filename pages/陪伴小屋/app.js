@@ -4755,28 +4755,12 @@ function renderAllFunctionsPage(){
      而宿主给插件页的 asset token 只有 60 秒有效期，晚一点打开就只剩 Token 过期。 */
   return renderAllFeatureBoard();
 }
-function filterAllFunctions(value){
-  const query=normalizeSearchText(value).trim();
-  let visible=0;
-  document.querySelectorAll?.('.all-function-fold').forEach(section=>{
-    let shown=0;
-    section.querySelectorAll?.('.all-function-card').forEach(card=>{
-      const hit=!query||(card.dataset.allSearch||'').includes(query);
-      card.hidden=!hit;
-      if(hit)shown+=1;
-    });
-    section.hidden=shown===0;
-    if(query)section.open=true;
-    visible+=shown;
-  });
-  const count=document.querySelector?.('[data-all-filter-count]');
-  if(count)count.textContent=query?`${visible} 个入口`:'';
-}
-/* 全部功能：以 config-editor.js 为单一文案真源，收录配置总线的全部真实布尔开关，
-   按 V2 功能领域归组，复合键索引避免重名覆盖；行内切换、按作用域分流保存，
-   复杂配置仍点击进入对应完整配置详情。 */
+/* 全部功能：以 config-editor.js 与各专题模块为文案真源，收录配置总线的全部真实布尔开关
+   及常用专题/全局核心布尔开关，按 V2 功能领域归组，复合键索引避免重名覆盖；
+   配置总线开关支持行内切换与按作用域分流保存，专题开关展示实时状态并一键直达编辑。 */
 const allFeatureDomainOrder=[
   '跨窗口与跨群递话',
+  '表达、语音与平台互动',
   '群聊参与与行为',
   '日记、睡眠与休息',
   '生活节奏与防打扰',
@@ -4790,34 +4774,42 @@ const allFeatureDomainOrder=[
 ];
 const allFeatureDomainNotes={
   '跨窗口与跨群递话':'跨私聊与群聊向外递话、接收他人递话与发送前确认规则。',
+  '表达、语音与平台互动':'文字分段与表达风格、语音朗读总闸与戳一戳互动回应开关。',
   '群聊参与与行为':'群聊话题线、氛围参考、主动插话、复读处理与互动习惯学习。',
-  '日记、睡眠与休息':'每日日记、角色作息入睡、休息时段回复判定与书架阅读。',
+  '日记、睡眠与休息':'每日日记、角色状态与作息入睡、休息时段回复判定与书架阅读。',
   '生活节奏与防打扰':'忙碌时回复顺延，以及主动联系总闸、节律、免打扰与各类契机开关。',
   'QQ 空间互动':'QQ 空间动态点赞、评论回复、说说发布、生活说说与各主题条件开关。',
   '图像、穿搭与创作':'对话生图与群图审核、角色参考图、衣柜穿搭与原生创作。',
-  '学习与成长':'私聊与群聊表达学习、样本复核及技能成长模拟。',
+  '学习与成长':'私聊与群聊表达学习、记忆整理策略、每日复盘及技能成长模拟。',
   '用户关系与准入':'熟人卡、跨窗口在场、新用户默认权限与未绑定陌生号婉拒。',
-  '理解、知识与感知':'网页链接理解、撤回原文转写、屏幕解读及世界知识与成员资料注入。',
-  '全局检索与预算':'插件安装全局的表情检索策略与每日 Token 软限额总闸。',
+  '理解、知识与感知':'图片/视频/文件/网页理解、撤回转写、屏幕解读、历法感知、手机操作授权与世界知识。',
+  '全局检索与预算':'插件安装全局的表情检索策略、性能模式、自动备份与每日模型预算总闸。',
   '其他功能':'来自配置但暂未归入固定分组的开关。',
 };
 const allFeatureDomainSections={
   '跨窗口与跨群递话':['relay'],
-  '群聊参与与行为':['group_participation'],
-  '日记、睡眠与休息':['life','library'],
-  '生活节奏与防打扰':['busy_gate','proactive.contact'],
+  '表达、语音与平台互动':['reply_expression','host_voice_poke'],
+  '群聊参与与行为':['group_participation','reply_group_decision'],
+  '日记、睡眠与休息':['life','library','role_state_extra'],
+  '生活节奏与防打扰':['busy_gate','proactive.contact','reply_private_decision'],
   'QQ 空间互动':['qzone'],
   '图像、穿搭与创作':['image.output','image_review','quota','photo.reference','wardrobe','content.authoring'],
-  '学习与成长':['expression.learning','role.growth.skills'],
+  '学习与成长':['expression.learning','role.growth.skills','memory_extra','self_review_extra'],
   '用户关系与准入':['person','private_access','private_access_installation','role_profile','relationship_profile'],
-  '理解、知识与感知':['web_understanding','recall','screen','knowledge'],
-  '全局检索与预算':['reaction','budget'],
+  '理解、知识与感知':['web_understanding','recall','screen','knowledge','device.phone','reply_understanding','perception_native_extra','host_forward_extra'],
+  '全局检索与预算':['reaction','budget','plugin_global_extra'],
 };
 const allFeatureDomainOf=Object.fromEntries(
   Object.entries(allFeatureDomainSections).flatMap(([domain,sections])=>sections.map(section=>[section,domain]))
 );
 const ALL_FEATURE_INSTALLATION_SECTIONS=new Set(['proactive.contact','reaction','budget','private_access_installation']);
-const allFeaturesState={roleKey:'',ticket:0,loading:false,loaded:false,attempted:false,error:'',notice:'',sections:{},endpoints:{},draft:{},saving:false,domain:'all',status:'all'};
+const ALL_FEATURE_NATIVE_EXTENSIONS=[
+  {id:'game',name:'游戏棋桌',icon:'dices',desc:'聊天内游戏、网页房间与棋类引擎',defaultBoolCount:27,detail:'cap-game'},
+  {id:'live',name:'直播与表演',icon:'mic-vocal',desc:'VTube Studio、Live2D、OBS 与字幕表演',defaultBoolCount:59,detail:'cap-live'},
+  {id:'reality',name:'现实触及',icon:'radio-tower',desc:'本机语音叫醒、摄像头、米家家居与手机端',defaultBoolCount:19,detail:'cap-reality'},
+  {id:'together',name:'一起房间',icon:'phone',desc:'实时语音房间、一起看视频与一起读小说',defaultBoolCount:17,detail:'cap-together'},
+];
+const allFeaturesState={roleKey:'',ticket:0,loading:false,loaded:false,attempted:false,error:'',notice:'',sections:{},endpoints:{},draft:{},extraRows:[],extensionsMeta:[],saving:false,domain:'all',status:'all',query:''};
 function pluginRelativePath(path){
   const prefix='/astrbot_plugin_private_companion/';
   return typeof path==='string'&&path.startsWith(prefix)?path.slice(prefix.length):'';
@@ -4879,6 +4871,7 @@ function allFeatureRows(section,sectionName=''){
       endpoint,
       isInstallation,
       scopeLabel:isInstallation?'所有角色共用':'当前角色/窗口',
+      editable:true,
     };
   });
 }
@@ -4887,7 +4880,19 @@ function allFeatureIndex(){
   for(const [name,section] of Object.entries(allFeaturesState.sections||{})){
     for(const row of allFeatureRows(section,name))index[row.key]=row;
   }
+  for(const row of (allFeaturesState.extraRows||[]))index[row.key]=row;
   return index;
+}
+function allFeatureGroupHeaderLinks(domain,sections){
+  const links=[];
+  if(domain==='跨窗口与跨群递话'&&Object.hasOwn(sections,'relay')){
+    links.push({
+      label:'递话目标与规则',
+      title:'私聊目标、群聊白名单、确认、字数与成员权限',
+      attrs:'data-go="manage" data-manage="identity-access" data-page-anchor="identity-relay"',
+    });
+  }
+  return links;
 }
 function allFeatureBoardGroups(){
   const sections=allFeaturesState.sections||{};
@@ -4907,19 +4912,18 @@ function allFeatureBoardGroups(){
     const target=buckets.get(domain)||buckets.get('其他功能');
     target.push(...allFeatureRows(sections[name],name));
   }
-  if(Object.hasOwn(sections,'relay')){
-    buckets.get('跨窗口与跨群递话').push({
-      key:'relay.relay-settings',
-      field:'relay-settings',
-      name:'relay',
-      label:'递话目标与规则',
-      help:'私聊目标、群聊白名单、确认、字数与成员权限',
-      scopeLabel:'当前角色/窗口',
-      link:true,
-    });
+  for(const extra of (allFeaturesState.extraRows||[])){
+    const domain=extra.domain||allFeatureDomainOf[extra.name]||'其他功能';
+    const target=buckets.get(domain)||buckets.get('其他功能');
+    target.push(extra);
   }
   return allFeatureDomainOrder
-    .map(domain=>({domain,note:allFeatureDomainNotes[domain]||'',rows:buckets.get(domain)||[]}))
+    .map(domain=>({
+      domain,
+      note:allFeatureDomainNotes[domain]||'',
+      headerLinks:allFeatureGroupHeaderLinks(domain,sections),
+      rows:buckets.get(domain)||[],
+    }))
     .filter(group=>group.rows.length>0);
 }
 function allFeatureDirty(group,field,value){
@@ -4951,17 +4955,149 @@ function updateAllFeatureSaveState(){
   button.disabled=allFeaturesState.saving||count===0;
   button.textContent=allFeaturesState.saving?'正在保存…':count?`保存更改（${count}）`:'保存更改';
 }
+function extractDedicatedAllFeatureRows({replyPayload,statePayload,memoryPayload,perceptionPayload,hostOptionsPayload,selfReviewPayload,catalogPayload}){
+  const extras=[];
+  const seen=new Set();
+  const pushRow=(row)=>{
+    if(!row?.key||seen.has(row.key))return;
+    seen.add(row.key);
+    extras.push(row);
+  };
+  /* 1. 表达与回复 + 媒体理解 + 决策 (reply_api) */
+  if(replyPayload?.fields&&replyPayload?.settings){
+    const metaByField=new Map((window.CompanionReplyPage?.searchEntries?.()||[]).map(item=>[item.field,item]));
+    const understandingSections=new Set(['media_permissions','context_image','native_image','image_narration','video_narration','file_understanding','forwards']);
+    const groupDecisionSections=new Set(['wakeup_direct','wakeup_interest','wakeup_members','group_continuation','wakeup_cold_group','wakeup_fatigue','group_air_guard','group_content_safety']);
+    const privateDecisionSections=new Set(['private_debounce','silence_policy','private_closing']);
+    for(const [field,meta] of Object.entries(replyPayload.fields)){
+      if(meta?.kind!=='boolean'||!(field in replyPayload.settings))continue;
+      const info=metaByField.get(field);
+      if(!info?.label)continue;
+      const domain=understandingSections.has(info.section)?'理解、知识与感知'
+        :groupDecisionSections.has(info.section)?'群聊参与与行为'
+        :privateDecisionSections.has(info.section)?'生活节奏与防打扰'
+        :'表达、语音与平台互动';
+      pushRow({
+        key:`reply.${field}`,name:'reply_expression',field,domain,
+        label:info.label,help:info.help||`${info.sectionTitle||'表达与回复'}专题开关`,
+        groupTitle:info.sectionTitle||'表达与回复',
+        scopeLabel:'表达/理解专题',sourceTag:'专题页',
+        value:Boolean(replyPayload.settings[field]),editable:false,
+        jumpEntry:info,
+      });
+    }
+  }
+  /* 2. 角色状态与日程 (state_api) */
+  if(statePayload?.settings&&typeof statePayload.settings==='object'){
+    const stateEntries=window.CompanionStateMaintenance?.searchEntries?.()||[];
+    for(const info of stateEntries){
+      if(!(info.field in statePayload.settings)||typeof statePayload.settings[info.field]!=='boolean')continue;
+      pushRow({
+        key:`role_state.${info.field}`,name:'role_state_extra',field:info.field,
+        domain:info.field.includes('weather')?'理解、知识与感知':'日记、睡眠与休息',
+        label:info.label,help:info.help||`${info.sectionTitle||'角色状态'}专题开关`,
+        groupTitle:info.sectionTitle||'角色状态',
+        scopeLabel:'角色状态专题',sourceTag:'专题页',
+        value:Boolean(statePayload.settings[info.field]),editable:false,
+        jumpEntry:info,
+      });
+    }
+  }
+  /* 3. 原生感知 (perception_native_api) */
+  if(perceptionPayload&&typeof perceptionPayload==='object'){
+    const modelSet=perceptionPayload.model?.settings||{};
+    const newsSet=perceptionPayload.news?.settings||{};
+    const percEntries=window.CompanionNativePerceptionPage?.searchEntries?.()||[];
+    for(const info of percEntries){
+      const rawVal=info.field in modelSet?modelSet[info.field]:info.field in newsSet?newsSet[info.field]:undefined;
+      if(typeof rawVal!=='boolean')continue;
+      pushRow({
+        key:`perception_native.${info.field}`,name:'perception_native_extra',field:info.field,
+        domain:'理解、知识与感知',label:info.label,help:info.help||`${info.sectionTitle||'感知'}专题开关`,
+        groupTitle:info.sectionTitle||'感知',scopeLabel:'感知专题',sourceTag:'专题页',
+        value:Boolean(rawVal),editable:false,jumpEntry:info,
+      });
+    }
+  }
+  /* 4. 记忆整理 (memory_api/settings) */
+  if(memoryPayload?.fields&&memoryPayload?.settings){
+    const memEntries=new Map((window.CompanionMemorySettingsSection?.searchEntries?.()||[]).map(item=>[item.field,item]));
+    for(const [field,meta] of Object.entries(memoryPayload.fields)){
+      if(meta?.kind!=='boolean'||!(field in memoryPayload.settings))continue;
+      const info=memEntries.get(field);
+      if(!info?.label)continue;
+      pushRow({
+        key:`memory_settings.${field}`,name:'memory_extra',field,domain:'学习与成长',
+        label:info.label,help:info.help||`${info.sectionTitle||'记忆整理'}专题开关`,
+        groupTitle:info.sectionTitle||'整理策略',scopeLabel:'记忆整理专题',sourceTag:'专题页',
+        value:Boolean(memoryPayload.settings[field]),editable:false,jumpEntry:info,
+      });
+    }
+  }
+  /* 5. 宿主选项 (host-options: voice / poke / forward_intake) */
+  if(hostOptionsPayload&&typeof hostOptionsPayload==='object'){
+    const hostEntries=window.CompanionHostOptionsPage?.searchEntries?.()||[];
+    const bucketMap={voice_reply:hostOptionsPayload.voice,poke:hostOptionsPayload.poke,forward_intake:hostOptionsPayload.forward_intake};
+    for(const info of hostEntries){
+      const src=bucketMap[info.group];
+      if(!src||typeof src[info.field]!=='boolean')continue;
+      pushRow({
+        key:`host_options.${info.group}.${info.field}`,
+        name:info.group==='forward_intake'?'host_forward_extra':'host_voice_poke',
+        field:`${info.group}.${info.field}`,
+        domain:info.group==='forward_intake'?'理解、知识与感知':'表达、语音与平台互动',
+        label:info.label,help:info.help||`${info.groupTitle||'宿主选项'}全局开关`,
+        groupTitle:info.groupTitle||'宿主选项',scopeLabel:'全局专题',sourceTag:'全局专题',
+        value:Boolean(src[info.field]),editable:false,jumpEntry:info,
+      });
+    }
+  }
+  /* 6. 每日自我复盘 (self-review/settings) */
+  if(selfReviewPayload&&typeof selfReviewPayload.enabled==='boolean'){
+    pushRow({
+      key:'self_review.enabled',name:'self_review_extra',field:'self_review_enabled',
+      domain:'学习与成长',label:'启用每日自我复盘',
+      help:'开启后角色每天从近期执行与互动记录中提炼待确认的改进建议。',
+      groupTitle:'每日复盘',scopeLabel:'学习与反思专题',sourceTag:'专题页',
+      value:Boolean(selfReviewPayload.enabled),editable:false,
+      jumpEntry:{group:'self.review',section:'reflection',field:'self_review_enabled',label:'启用每日自我复盘',
+        location:{next:'manage',tab:'learning',subtab:'reflection',root:'#selfReviewWorkspace',selector:'[data-review-enabled]'}},
+    });
+  }
+  /* 7. 插件全局 _conf_schema.json 核心布尔开关（去重已在上面展示的 poke/segmentation/soft_limit） */
+  if(Array.isArray(catalogPayload?.plugin_config)){
+    const globalAllow=new Set([
+      'performance.enabled','storage.auto_backup_enabled','multi_host.enabled',
+      'model.fallback_on_refusal','model.streaming','runtime.enable_daily_model_hard_limit',
+    ]);
+    for(const item of catalogPayload.plugin_config){
+      if(!globalAllow.has(item.path)||typeof item.current_value!=='boolean')continue;
+      const loc=window.CompanionSearchRegistry?.pluginConfigLocation?.(item)||{next:'manage',tab:'host'};
+      pushRow({
+        key:`plugin_global.${item.path}`,name:'plugin_global_extra',field:item.path,
+        domain:'全局检索与预算',label:item.label||item.path,
+        help:item.hint||'插件全局配置项（AstrBot 插件配置 / 陪伴小屋联动）',
+        groupTitle:item.section_title||'插件全局配置',scopeLabel:'插件全局配置',sourceTag:'插件配置',
+        value:Boolean(item.current_value),editable:false,
+        jumpEntry:{group:`plugin_config.${item.section||'global'}`,section:item.section||'global',field:item.path,label:item.label||item.path,location:loc},
+      });
+    }
+  }
+  return extras;
+}
 async function loadAllFeatures(){
   const roleKey=window.CompanionProduct?.scopeKey?.()||'';
   if(allFeaturesState.loading&&allFeaturesState.roleKey===roleKey)return;
   const ticket=(allFeaturesState.ticket=(allFeaturesState.ticket||0)+1);
-  const endpoint=pluginRelativePath(window.CompanionProduct?.role?.()?.config_api);
+  const roleObj=window.CompanionProduct?.role?.()||{};
+  const endpoint=pluginRelativePath(roleObj.config_api);
   allFeaturesState.loading=true;allFeaturesState.attempted=true;allFeaturesState.error='';allFeaturesState.loaded=false;
   if(allFeaturesState.roleKey!==roleKey){
     allFeaturesState.roleKey=roleKey;
     allFeaturesState.sections={};
     allFeaturesState.endpoints={};
     allFeaturesState.draft={};
+    allFeaturesState.extraRows=[];
     allFeaturesState.notice='';
   }
   if(manageTab==='all')paintPanel();
@@ -4994,6 +5130,36 @@ async function loadAllFeatures(){
       for(const [field,meta] of Object.entries(section.fields||{}))
         if(meta?.kind==='boolean'&&field in (section.settings||{}))
           allFeaturesState.draft[name][field]=Boolean(section.settings[field]);
+    }
+    /* Optional supplementary reads for dedicated workbenches & global plugin booleans:
+       only fire when the role exposes dedicated APIs or when hosted() is available,
+       keeping minimal /config-only callers clean and deterministic. */
+    const replyPath=pluginRelativePath(roleObj.reply_api);
+    const statePath=pluginRelativePath(roleObj.state_api);
+    const memoryPath=pluginRelativePath(roleObj.memory_api);
+    const percPath=pluginRelativePath(roleObj.perception_native_api);
+    const growthPath=pluginRelativePath(roleObj.growth_api);
+    const hasExtras=Boolean(replyPath||statePath||memoryPath||percPath||growthPath||window.CompanionProduct?.hosted?.());
+    if(hasExtras){
+      const safeGet=route=>route?window.CompanionProduct.request('GET',route).catch(()=>null):Promise.resolve(null);
+      const [replyPayload,statePayload,memoryPayload,perceptionPayload,hostOptionsPayload,selfReviewPayload,catalogPayload]=await Promise.all([
+        safeGet(replyPath),
+        safeGet(statePath),
+        safeGet(memoryPath?`${memoryPath}/settings`:''),
+        safeGet(percPath),
+        safeGet(window.CompanionProduct?.hosted?.()?'host-options':''),
+        safeGet(growthPath?`${growthPath}/self-review/settings`:''),
+        typeof ensureSearchCatalog==='function'?ensureSearchCatalog().catch(()=>null):safeGet(window.CompanionProduct?.hosted?.()?'search/catalog':''),
+      ]);
+      if(ticket!==allFeaturesState.ticket)return;
+      allFeaturesState.extraRows=extractDedicatedAllFeatureRows({
+        replyPayload,statePayload,memoryPayload,perceptionPayload,hostOptionsPayload,selfReviewPayload,catalogPayload,
+      });
+      if(Array.isArray(catalogPayload?.native_extensions)){
+        allFeaturesState.extensionsMeta=catalogPayload.native_extensions;
+      }
+    }else{
+      allFeaturesState.extraRows=[];
     }
     allFeaturesState.loaded=true;
   }catch(error){
@@ -5045,6 +5211,139 @@ async function saveAllFeatures(){
   }
   finally{allFeaturesState.saving=false;updateAllFeatureSaveState();}
 }
+function allFeatureRowIsOn(row){
+  return row.editable===false?Boolean(row.value):Boolean(allFeaturesState.draft?.[row.name]?.[row.field]);
+}
+function allFeatureFuzzyFilter(rows,rawQuery){
+  const query=String(rawQuery??'').trim();
+  if(!query)return rows.map(row=>({row,reason:'',matchedTerms:[]}));
+  const engine=window.CompanionSearchEngine;
+  if(engine&&typeof engine.prepare==='function'&&typeof engine.search==='function'){
+    const prepared=engine.prepare(rows,{
+      getTitle:r=>r.label,
+      getDesc:r=>r.help,
+      getKey:r=>`${r.field} ${r.key}`,
+      getAliases:r=>[r.groupTitle,r.domain,r.scopeLabel,r.sourceTag].filter(Boolean),
+      getGroup:r=>r.domain||r.groupTitle||'',
+    });
+    return engine.search(prepared,query).map(hit=>({
+      row:hit.item,
+      reason:hit.reason||'',
+      matchedTerms:hit.matchedTerms||[],
+    }));
+  }
+  const norm=normalizeSearchText(query);
+  const terms=norm.split(/[\s,，;；、\/|]+/).filter(Boolean);
+  return rows.filter(row=>{
+    const hay=normalizeSearchText([row.label,row.help,row.field,row.key,row.groupTitle,row.scopeLabel,row.domain,row.name].join(' '));
+    return terms.every(term=>hay.includes(term));
+  }).map(row=>({row,reason:'',matchedTerms:terms}));
+}
+function allFeatureHighlight(text,matchedTerms){
+  const engine=window.CompanionSearchEngine;
+  if(engine&&typeof engine.highlight==='function')return engine.highlight(text,matchedTerms,escapeHTML);
+  const raw=String(text??'');
+  const terms=(Array.isArray(matchedTerms)?matchedTerms:[]).filter(Boolean);
+  if(!terms.length)return escapeHTML(raw);
+  const escRe=s=>String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const pattern=new RegExp(`(${terms.map(escRe).join('|')})`,'gi');
+  return raw.split(pattern).map((part,idx)=>idx%2?`<mark>${escapeHTML(part)}</mark>`:escapeHTML(part)).join('');
+}
+function renderAllFeatureExtensionsStrip(rawQuery=''){
+  const norm=s=>typeof normalizeSearchText==='function'?normalizeSearchText(s):String(s??'').normalize('NFKC').toLocaleLowerCase();
+  const extMeta=new Map((allFeaturesState.extensionsMeta||[]).map(item=>[item.id,item]));
+  const query=norm(rawQuery).trim();
+  const cards=ALL_FEATURE_NATIVE_EXTENSIONS.map(ext=>{
+    const meta=extMeta.get(ext.id);
+    const boolCount=meta?.bool_count||ext.defaultBoolCount;
+    const runtimeExt=window.CompanionProduct?.extension?.(ext.id);
+    const statusText=runtimeExt?.state?window.CompanionProduct?.statusLabel?.(runtimeExt.state)||'可配置':'专属面板';
+    const matchesQuery=!query||norm(`${ext.name} ${ext.id} ${ext.desc}`).includes(query)
+      ||(window.CompanionSearchEngine?.search?.(
+        window.CompanionSearchEngine.prepare([ext],{getTitle:x=>x.name,getDesc:x=>x.desc,getKey:x=>x.id}),
+        rawQuery).length>0);
+    if(query&&!matchesQuery)return '';
+    return `<button type="button" class="all-feature-ext-card" data-detail="${escapeHTML(ext.detail)}">
+      <span class="all-feature-ext-icon" aria-hidden="true">${I(ext.icon)}</span>
+      <span class="all-feature-ext-body">
+        <strong>${escapeHTML(ext.name)}</strong>
+        <small>${escapeHTML(ext.desc)}</small>
+        <span class="all-feature-ext-meta"><span class="all-feature-ext-count">${boolCount} 项开关</span><span class="all-feature-ext-status">${escapeHTML(statusText)}</span><span class="all-feature-open-hint">打开配置 ↗</span></span>
+      </span>
+    </button>`;
+  }).filter(Boolean).join('');
+  if(!cards)return '';
+  const totalExtBools=ALL_FEATURE_NATIVE_EXTENSIONS.reduce((sum,ext)=>sum+(extMeta.get(ext.id)?.bool_count||ext.defaultBoolCount),0);
+  return `<section class="all-feature-extensions" aria-label="原生扩展独立设置">
+    <header><div><b>原生扩展功能</b><p>4 项原生扩展共含 ${totalExtBools} 个细项开关，各自在专属面板管理，不计入上方功能开关总数。</p></div><small>4 项扩展</small></header>
+    <div class="all-feature-ext-grid">${cards}</div>
+  </section>`;
+}
+function renderAllFeatureSectionsMarkup(board,domain,status,rawQuery){
+  const domainHit=row=>domain==='all'||row.domain===domain;
+  const statusHit=row=>status==='all'||(status==='enabled'?allFeatureRowIsOn(row):!allFeatureRowIsOn(row));
+  const query=String(rawQuery??'').trim();
+  const baseRows=board.flatMap((group,index)=>group.rows
+    .map(row=>({...row,domain:group.domain,groupIndex:index}))
+    .filter(row=>domainHit(row)&&statusHit(row)));
+  const hits=allFeatureFuzzyFilter(baseRows,query);
+  const hitMap=new Map(hits.map((h,rank)=>[h.row.key,{...h,rank}]));
+  const visibleBoard=board.map((group,index)=>{
+    const matchedRows=group.rows
+      .map(row=>({...row,domain:group.domain}))
+      .filter(row=>hitMap.has(row.key))
+      .map(row=>({row,hit:hitMap.get(row.key)}));
+    if(query)matchedRows.sort((a,b)=>a.hit.rank-b.hit.rank);
+    return {...group,index,matchedRows};
+  }).filter(group=>group.matchedRows.length>0);
+
+  if(!visibleBoard.length){
+    const emptyHtml=query
+      ?`<div class="all-functions-empty" role="status">
+          <p>在当前「全部功能」开关中未找到「<strong>${escapeHTML(query)}</strong>」。</p>
+          <div class="all-functions-empty-actions">
+            <button type="button" class="button small" data-all-feature-clear-filter>清空筛选</button>
+            <button type="button" class="button small primary" data-all-feature-global-search>带此词搜全站配置</button>
+          </div>
+        </div>`
+      :`<div class="all-functions-empty" role="status"><p>没有符合当前筛选条件的功能开关。</p></div>`;
+    return {markup:emptyHtml+renderAllFeatureExtensionsStrip(query),visibleCount:0};
+  }
+
+  const sections=visibleBoard.map(({domain:domName,note,headerLinks,matchedRows,index})=>{
+    const id='all-feature-'+index;
+    const headerLinkMarkup=(headerLinks||[]).map(link=>
+      `<button type="button" class="all-feature-header-link" ${link.attrs} title="${escapeHTML(link.title||link.label)}"><span>${escapeHTML(link.label)}</span>${I('arrow-up-right')}</button>`
+    ).join('');
+    const rowsHtml=matchedRows.map(({row,hit})=>{
+      const checked=allFeatureRowIsOn(row);
+      const dirty=row.editable!==false&&allFeatureDirty(row.name,row.field,checked);
+      const terms=hit?.matchedTerms||[];
+      const reasonBadge=hit?.reason?`<span class="all-feature-match-badge">${escapeHTML(hit.reason)}</span>`:'';
+      const labelHtml=allFeatureHighlight(row.label,terms);
+      const fieldHtml=allFeatureHighlight(row.field,terms);
+      const helpHtml=row.help?`<small>${allFeatureHighlight(row.help,terms)}</small>`:'';
+      if(row.editable===false){
+        return `<div class="all-feature-row all-feature-row-external${checked?' is-on':' is-off'}" data-all-feature-key="${escapeHTML(row.key)}">
+          <span class="all-feature-indicator" aria-label="${checked?'已开启':'已关闭'}" title="此项由专题页管理，点击右侧直达编辑"><span class="all-feature-indicator-dot" aria-hidden="true"></span></span>
+          <button type="button" class="all-feature-copy" data-all-feature-jump-setting="${escapeHTML(row.key)}">
+            <strong>${labelHtml}${reasonBadge}</strong><code>${fieldHtml}</code>${helpHtml}
+            <span class="all-feature-meta"><span class="all-feature-state">${checked?'已开启':'已关闭'}</span><span class="all-feature-source-badge">${escapeHTML(row.scopeLabel||'专题页')}</span><span class="all-feature-open-hint">前往调整 ›</span></span>
+          </button></div>`;
+      }
+      return `<div class="all-feature-row${checked?' is-on':' is-off'}${dirty?' is-dirty':''}" data-all-feature-key="${escapeHTML(row.key)}">
+        <label class="all-feature-toggle" aria-label="${escapeHTML(row.label)}"><input type="checkbox" data-all-feature-toggle data-all-feature-group="${escapeHTML(row.name)}" data-all-feature-field="${escapeHTML(row.field)}" ${checked?'checked':''}><span class="all-feature-toggle-visual" aria-hidden="true"></span></label>
+        <button type="button" class="all-feature-copy" data-all-feature-open="${escapeHTML(row.name)}" data-all-feature-open-field="${escapeHTML(row.field)}">
+          <strong>${labelHtml}${reasonBadge}</strong><code>${fieldHtml}</code>${helpHtml}
+          <span class="all-feature-meta"><span class="all-feature-state">${checked?'已开启':'已关闭'}</span><span class="all-feature-scope">${escapeHTML(row.scopeLabel||'当前角色/窗口')}</span><span class="all-feature-open-hint">查看配置 ›</span></span>
+        </button></div>`;
+    }).join('');
+    return `<section class="all-feature-domain" id="${id}">
+      <header><div><b>${escapeHTML(domName)}</b>${note?`<p>${escapeHTML(note)}</p>`:''}</div><div class="all-feature-domain-tools">${headerLinkMarkup}<small>${matchedRows.length} 项</small></div></header>
+      <div class="all-feature-list">${rowsHtml}</div></section>`;
+  }).join('');
+  return {markup:sections+renderAllFeatureExtensionsStrip(query),visibleCount:hits.length};
+}
 function renderAllFeatureBoard(){
   const currentRoleKey=window.CompanionProduct?.scopeKey?.()||'';
   if(allFeaturesState.loaded&&allFeaturesState.roleKey&&currentRoleKey&&allFeaturesState.roleKey!==currentRoleKey){
@@ -5053,7 +5352,7 @@ function renderAllFeatureBoard(){
   if(!allFeaturesState.loaded&&!allFeaturesState.loading&&!allFeaturesState.attempted)setTimeout(loadAllFeatures,0);
   const dirtyCount=allFeatureDirtyCount();
   const head=`<header class="all-functions-head"><div><p class="eyebrow">配置与功能</p><h1>全部功能</h1>
-    <p>按功能领域整理配置总线的全部功能开关（含当前角色/窗口与安装全局共用开关）；行内修改，页面内保存；复杂配置点击条目进入详情编辑，表达/状态/记忆等专用开关请在对应专题页调整。</p></div>
+    <p>按功能领域整理配置总线与各专题页的全部核心布尔开关（含当前角色/窗口与安装全局开关）；总线开关支持行内切换与页内保存，专题开关实时显示状态并一键直达编辑。</p></div>
     <div class="all-functions-actions">${button('回到小屋','data-shell-home','small')}
       ${button('重新读取','data-all-feature-reload','small')}
       ${button(dirtyCount?`保存更改（${dirtyCount}）`:'保存更改',`data-all-feature-save ${dirtyCount?'':'disabled'}`,'small primary')}</div></header>`;
@@ -5065,49 +5364,22 @@ function renderAllFeatureBoard(){
   const domainNames=[...new Set(board.map(group=>group.domain))];
   const domain=allFeaturesState.domain&&domainNames.includes(allFeaturesState.domain)?allFeaturesState.domain:'all';
   const status=allFeaturesState.status||'all';
+  const query=String(allFeaturesState.query||'');
   const allRows=board.flatMap(group=>group.rows.map(row=>({...row,domain:group.domain})));
-  const switchRows=allRows.filter(row=>!row.link);
-  const isOn=row=>Boolean(allFeaturesState.draft?.[row.name]?.[row.field]);
-  const statusHit=row=>status==='all'||(!row.link&&(status==='enabled'?isOn(row):!isOn(row)));
-  const domainHit=row=>domain==='all'||row.domain===domain;
-  const visibleRows=allRows.filter(row=>domainHit(row)&&statusHit(row));
-  const enabledCount=switchRows.filter(isOn).length;
+  const enabledCount=allRows.filter(allFeatureRowIsOn).length;
+  const disabledCount=allRows.length-enabledCount;
   const domainCounts=Object.fromEntries(domainNames.map(name=>[name,allRows.filter(row=>row.domain===name).length]));
-  const statusCounts={all:allRows.length,enabled:switchRows.filter(isOn).length,disabled:switchRows.filter(row=>!isOn(row)).length};
+  const statusCounts={all:allRows.length,enabled:enabledCount,disabled:disabledCount};
   const summary=`<div class="all-functions-summary">
-    <section class="all-functions-summary-card is-on"><span>已开启</span><b>${enabledCount} / ${switchRows.length}</b><small>当前功能开关</small></section>
+    <section class="all-functions-summary-card is-on"><span>已开启</span><b>${enabledCount} / ${allRows.length}</b><small>当前功能开关</small></section>
     <section class="all-functions-summary-card"><span>未保存</span><b>${dirtyCount}</b><small>${dirtyCount?'保存后按作用域写入':'与已保存一致'}</small></section>
     <section class="all-functions-summary-card"><span>功能领域</span><b>${domainNames.length}</b><small>按使用场景分组</small></section></div>`;
   const domainChips=[['all','全部领域',allRows.length],...domainNames.map(name=>[name,name,domainCounts[name]])]
     .map(([id,label,count])=>`<button type="button" class="all-functions-chip${domain===id?' is-active':''}" data-all-feature-domain="${escapeHTML(id)}" aria-pressed="${domain===id}"><span>${escapeHTML(label)}</span><small>${count}</small></button>`).join('');
   const statusChips=[['all','全部状态'],['enabled','已开启'],['disabled','已关闭']]
     .map(([id,label])=>`<button type="button" class="all-functions-chip${status===id?' is-active':''}" data-all-feature-status="${id}" aria-pressed="${status===id}"><span>${label}</span><small>${statusCounts[id]}</small></button>`).join('');
-  const visibleBoard=board.map((group,index)=>({...group,index,
-    rows:group.rows.filter(row=>domainHit({...row,domain:group.domain})&&statusHit({...row,domain:group.domain}))}))
-    .filter(group=>group.rows.length);
-  const sections=visibleBoard.map(({domain,note,rows:groupRows,index})=>{
-    const id='all-feature-'+index;
-    const rows=groupRows.map(row=>{
-      const search=normalizeSearchText([row.label,row.help,row.field,row.key,row.groupTitle,row.scopeLabel,domain,row.name].join(' '));
-      if(row.link)return `<button type="button" class="all-feature-row all-feature-link" data-all-feature-search="${escapeHTML(search)}"
-        data-go="manage" data-manage="identity-access" data-page-anchor="identity-relay">
-        <span class="all-feature-link-icon">${I('arrow-up-right')}</span>
-        <span class="all-feature-copy"><strong>${escapeHTML(row.label)}</strong>${row.help?`<small>${escapeHTML(row.help)}</small>`:''}
-          <span class="all-feature-meta"><span class="all-feature-state">设置</span><span class="all-feature-scope">${escapeHTML(row.scopeLabel||domain)}</span></span></span></button>`;
-      const checked=Boolean(allFeaturesState.draft?.[row.name]?.[row.field]);
-      const dirty=allFeatureDirty(row.name,row.field,checked);
-      return `<div class="all-feature-row${checked?' is-on':' is-off'}${dirty?' is-dirty':''}" data-all-feature-search="${escapeHTML(search)}">
-        <label class="all-feature-toggle" aria-label="${escapeHTML(row.label)}"><input type="checkbox" data-all-feature-toggle data-all-feature-group="${escapeHTML(row.name)}" data-all-feature-field="${escapeHTML(row.field)}" ${checked?'checked':''}><span class="all-feature-toggle-visual" aria-hidden="true"></span></label>
-        <button type="button" class="all-feature-copy" data-all-feature-open="${escapeHTML(row.name)}" data-all-feature-open-field="${escapeHTML(row.field)}">
-          <strong>${escapeHTML(row.label)}</strong><code>${escapeHTML(row.field)}</code>${row.help?`<small>${escapeHTML(row.help)}</small>`:''}
-          <span class="all-feature-meta"><span class="all-feature-state">${checked?'已开启':'已关闭'}</span><span class="all-feature-scope">${escapeHTML(row.scopeLabel||'当前角色/窗口')}</span><span class="all-feature-open-hint">查看配置 ›</span></span>
-        </button></div>`;
-    }).join('');
-    return `<section class="all-feature-domain" id="${id}">
-      <header><div><b>${escapeHTML(domain)}</b>${note?`<p>${escapeHTML(note)}</p>`:''}</div><small>${groupRows.length} 项</small></header>
-      <div class="all-feature-list">${rows}</div></section>`;
-  }).join('');
-  const nav=board.map(({domain},index)=>`<button type="button" data-all-feature-jump="all-feature-${index}">${escapeHTML(domain)}</button>`).join('');
+  const {markup:resultsMarkup,visibleCount}=renderAllFeatureSectionsMarkup(board,domain,status,query);
+  const nav=board.map(({domain:domName},index)=>`<button type="button" data-all-feature-jump="all-feature-${index}">${escapeHTML(domName)}</button>`).join('');
   return `<div class="all-functions-page">${head}
     ${allFeaturesState.notice?`<p class="all-functions-notice" role="status">${escapeHTML(allFeaturesState.notice)}</p>`:''}
     ${summary}
@@ -5115,11 +5387,12 @@ function renderAllFeatureBoard(){
       <div class="all-functions-filter-line"><span>功能领域</span><div class="all-functions-chips">${domainChips}</div></div>
       <div class="all-functions-filter-line"><span>当前状态</span><div class="all-functions-chips">${statusChips}</div></div>
       <label class="all-functions-search"><span>筛选功能</span>
-        <input type="search" data-all-feature-filter placeholder="功能名、说明或字段键" autocomplete="off" />
-        <small data-all-feature-count>${visibleRows.length} 项</small></label>
+        <input type="search" data-all-feature-filter value="${escapeHTML(query)}" placeholder="功能名、说明、别名、拼音或字段键…" autocomplete="off" />
+        <button type="button" class="button small all-functions-search-clear" data-all-feature-clear-filter ${query.trim()?'':'hidden'}>清空</button>
+        <small data-all-feature-count>${visibleCount} 项</small></label>
     </div>
     <nav class="all-functions-section-nav" aria-label="功能领域">${nav}</nav>
-    ${visibleBoard.length?sections:'<div class="all-functions-empty" role="status">没有符合当前筛选的功能开关。</div>'}
+    <div id="allFeatureResultsHost" class="all-functions-results-host">${resultsMarkup}</div>
   </div>`;
 }
 function openAllFeatureDetail(group, field=''){
@@ -5157,18 +5430,21 @@ function openAllFeatureDetail(group, field=''){
 }
 
 function filterAllFeatures(value){
-  const query=normalizeSearchText(value).trim();
-  let visible=0;
-  document.querySelectorAll?.('.all-feature-domain').forEach(section=>{
-    let shown=0;
-    section.querySelectorAll?.('.all-feature-row').forEach(row=>{
-      const hit=!query||(row.dataset.allFeatureSearch||'').includes(query);
-      row.hidden=!hit;if(hit)shown+=1;
-    });
-    section.hidden=shown===0;if(query)section.open=true;visible+=shown;
-  });
+  allFeaturesState.query=String(value??'');
+  const board=allFeatureBoardGroups();
+  const domainNames=[...new Set(board.map(group=>group.domain))];
+  const domain=allFeaturesState.domain&&domainNames.includes(allFeaturesState.domain)?allFeaturesState.domain:'all';
+  const status=allFeaturesState.status||'all';
+  const {markup,visibleCount}=renderAllFeatureSectionsMarkup(board,domain,status,allFeaturesState.query);
+  const host=document.querySelector?.('#allFeatureResultsHost');
+  if(host){
+    host.innerHTML=markup;
+    if(typeof icons==='function')icons();
+  }
   const count=document.querySelector?.('[data-all-feature-count]');
-  if(count)count.textContent=query?`${visible} 项`:'';
+  if(count)count.textContent=`${visibleCount} 项`;
+  const clearBtn=document.querySelector?.('[data-all-feature-clear-filter]');
+  if(clearBtn)clearBtn.hidden=!allFeaturesState.query.trim();
 }
 /* 分发表只保留 manageTabs 里的十六个页签。
    growth/base/state/reply/preferences 五个死键已删——它们既不在侧栏、
@@ -5798,7 +6074,14 @@ const searchIndex=[
   ['关系与情感','角色关系记录、好感与情感状态','heart-handshake','manage','identity-feelings',{aliases:['情感','好感','关系记录']}],
   ['事实与经历','本插件事实、原话、经历与冷归档','orbit','manage','memory',{subtab:'records',aliases:['记忆','共同经历','事实','冷归档']}],
   ['整理策略','事实反思、对话情节与习惯学习设置','sliders-horizontal','manage','memory',{subtab:'settings',aliases:['记忆设置','反思设置','习惯学习']}],
-  ['学习与反思','成长进展、表达学习、行为学习与每日复盘','graduation-cap','manage','learning',{subtab:'overview',aliases:['复盘','成长','表达学习','行为学习']}],
+  ['学习与反思','成长进展、表达学习、行为学习与每日复盘','graduation-cap','manage','learning',{subtab:'overview',aliases:['复盘','成长','表达学习','行为学习','学习总览']}],
+  ['角色学习策略','技能成长与表达学习的角色级策略','sliders-horizontal','manage','learning',{subtab:'strategy',aliases:['角色策略','技能策略','自定义技能域','表达学习策略']}],
+  ['审阅中心','集中审阅待确认的成长、表达与记忆提案','clipboard-check','manage','learning',{subtab:'review',aliases:['学习审阅','待审阅','审阅','审核中心']}],
+  ['成长链路','查看与推进角色的成长记录与技能阶段','git-branch','manage','learning',{subtab:'chain',aliases:['成长记录','技能成长','成长进展']}],
+  ['表达学习','管理表达规则库与观察素材样本','sparkles','manage','learning',{subtab:'expression',aliases:['表达规则库','观察素材','表达样本','说话习惯']}],
+  ['行为模仿','群聊行为模仿策略与习得互动习惯','users','manage','learning',{subtab:'behavior',aliases:['行为学习','群聊习惯','模仿策略']}],
+  ['语义目录','全局语义模型策略与观察素材分类','library','manage','learning',{subtab:'semantic',aliases:['全局语义策略','语义素材']}],
+  ['每日复盘','角色每日自我复盘开关与历史复盘记录','history','manage','learning',{subtab:'reflection',aliases:['自我复盘','每日反思','插件复盘','self_review']}],
   ['感知','时空环境、模型能力、现实触及、健康与撤回记录','scan-eye','manage','perception',{aliases:['环境','历法','撤回','余额','健康感知']}],
   ['现实触及','屏幕读取、手机摄像头授权与米家家居','radio','manage','perception',{perceptionTab:'config-screen',aliases:['屏幕','摄像头','米家','设备授权']}],
   ['理解','图片、视频、文件、网页与合并转发理解','brain-circuit','manage','understanding',{understandingTab:'overview',aliases:['图片理解','视频理解','文件理解','网页理解','合并转发']}],
@@ -5810,9 +6093,10 @@ const searchIndex=[
   ['产出图库','查看、导出与管理当前角色已生成的图片','images','manage','output',{outputTab:'gallery',aliases:['相册','图库','生图相册']}],
   ['参考素材与衣柜','参考图、衣柜穿搭与素材管理','shirt','manage','output',{outputTab:'materials',aliases:['参考图','衣柜','穿搭','素材']}],
   ['创作与作品','Content 作品库、原生创作与作品预览','book-open','manage','output',{outputTab:'creation',aliases:['作品库','创作书架','Content','原稿','小说']}],
-  ['模型与连接','功能任务路由、主备模型与后台任务预算','sliders-horizontal','manage','models',{subtab:'fn',aliases:['任务模型','功能模型','模型路由','模型管理']}],
+  ['模型与连接','功能任务路由、主备模型与后台任务预算','sliders-horizontal','manage','models',{subtab:'fn',aliases:['任务模型','功能模型','模型路由','模型管理','陪伴通用模型','备用模型']}],
   ['语音模型','TTS 语音服务、发音人音色与试听','audio-lines','manage','models',{subtab:'voice',aliases:['TTS','发音人','音色','语音服务']}],
-  ['生图模型','在线生图、ComfyUI 与 SD WebUI 连接','image','manage','models',{subtab:'image',aliases:['ComfyUI','SD WebUI','文生图','改图']}],
+  ['生图模型','在线生图、ComfyUI 与 SD WebUI 连接','image','manage','models',{subtab:'image',aliases:['ComfyUI','SD WebUI','文生图','改图','画图']}],
+  ['联网搜索模型','DeepSeek 与外置联网搜索服务配置','globe','manage','models',{subtab:'search',aliases:['联网搜索','搜索服务','DeepSeek 搜索','网页搜索']}],
   ['计价与汇率','模型单价配置、币种显示与实时汇率','coins','manage','models',{subtab:'pricing',aliases:['模型单价','单价','汇率','费用','价格','成本']}],
   ['Laya 决策模型','Laya 决策接口、连接测试与运行日志','cpu','manage','models',{subtab:'laya',aliases:['Laya','外置决策']}],
   ['治理与维护','Token 费用统计、运行诊断、投递排障与缓存状态','settings-2','manage','maintenance',{aliases:['运行诊断','运行状态','排障','Token 统计','费用统计']}],
@@ -5822,8 +6106,8 @@ const searchIndex=[
   ['备份与还原','创建、校验与还原插件数据备份','archive','manage','data',{subtab:'backup',aliases:['备份','还原','恢复']}],
   ['旧版资料迁入','从旧版数据目录迁入角色与历史资料','folder-input','manage','data',{subtab:'migration',aliases:['迁移','旧版数据']}],
   ['配置导入导出','导出脱敏配置快照或从文件导入','arrow-up-down','manage','data',{subtab:'port',aliases:['导出配置','导入配置']}],
-  ['账号与会话','Bot 账号、角色映射、窗口绑定与启动状态','power','manage','host',{aliases:['Bot 账号','角色映射','会话','私聊目标']}],
-  ['开始使用','首次连接、选择对象与决定是否发送','rocket','manage','setup',{aliases:['首次连接','引导','新手配置']}],
+  ['账号与会话','陪伴通用模型（全局默认）、Bot 账号、角色映射与窗口绑定','power','manage','host',{aliases:['Bot 账号','角色映射','会话','私聊目标','陪伴通用模型','共享启动模型','插件启动模型','全局默认模型']}],
+  ['开始使用','首次连接、陪伴通用模型、选择对象与快速配置','rocket','manage','setup',{aliases:['首次连接','引导','新手配置','陪伴通用模型','快速配置']}],
   ['手机使用','ADB 设备、输入方式与操作范围','smartphone','manage','phone',{aliases:['ADB','手机操作','安卓']}],
   ['手机端连接','陪伴终端配对、网关与上报','link-2','manage','mobile',{aliases:['陪伴终端','配对','网关','手机上报']}],
   ['外观与设置','主题、密度、圆角、字号与动效','palette','manage','appearance',{aliases:['主题','字号','圆角','动效','深色模式']}],
@@ -5953,6 +6237,7 @@ function replySearchLocation(entry){
 }
 function resolveSettingTarget(entry){
   if(!entry||typeof entry!=='object')return null;
+  if(entry.location&&typeof entry.location==='object')return entry.location;
   return entry.group==='conversation.presentation'
     ?replySearchLocation(entry)
     :configSearchLocation(entry);
@@ -5963,17 +6248,22 @@ let searchScope='all';
 let searchEntryCache=null;
 let searchEntryCacheAt=0;
 let searchEntryCacheProviders=[];
+let searchEntryCacheRegistryRef=null;
+let searchPreparedPagesCache=null;
+let searchPreparedSettingsCache=null;
 let searchRenderTimer=0;
 const SEARCH_RESULT_LIMIT=50;
 const SEARCH_ENTRY_CACHE_MS=1500;
 const SEARCH_INPUT_DELAY_MS=90;
+const SEARCH_PAGE_LABELS={all:'全部功能',home:'首页与小屋',state:'状态与日程',diary:'日记与生活',identity:'关系网','identity-people':'用户','identity-groups':'群聊','identity-access':'访问规则','identity-feelings':'关系与情感',memory:'事实与经历',understanding:'理解',contact:'主动联系',expression:'表达',governance:'自我',output:'产出',models:'模型与连接',perception:'感知',decision:'决策',action:'行动',learning:'学习与反思',host:'账号与会话',maintenance:'治理与维护',data:'资料与维护',phone:'手机使用',mobile:'手机端连接',setup:'开始使用',persona:'人格处理',appearance:'外观与设置'};
 function normalizeSearchText(text){return String(text??'').normalize('NFKC').toLocaleLowerCase();}
 function searchTerms(query){return normalizeSearchText(query).trim().split(/[\s,，;；、\/|]+/).filter(Boolean);}
 function escapeSearchPattern(value){return String(value).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
 function highlightSearchText(value,terms){
   const text=String(value??'');
-  const parts=terms.filter(Boolean);
+  const parts=(Array.isArray(terms)?terms:[]).filter(Boolean);
   if(!parts.length)return escapeHTML(text);
+  if(window.CompanionSearchEngine?.highlight)return window.CompanionSearchEngine.highlight(text,parts,escapeHTML);
   const pattern=new RegExp(`(${parts.map(escapeSearchPattern).join('|')})`,'gi');
   return text.split(pattern).map((part,index)=>index%2?`<mark>${escapeHTML(part)}</mark>`:escapeHTML(part)).join('');
 }
@@ -5981,10 +6271,15 @@ function searchableConfigEntries(){
   const now=Date.now();
   const providers=[window.CompanionConfigEditors,window.CompanionReplyPage,window.CompanionHostOptionsPage,
     window.CompanionStateMaintenance,window.CompanionMemorySettingsSection,window.CompanionNativePerceptionPage];
+  const registry=window.CompanionSearchRegistry||null;
+  const catalogRef=registry?.getCatalog?.()||null;
   if(searchEntryCache&&now-searchEntryCacheAt<SEARCH_ENTRY_CACHE_MS
+      &&registry===searchEntryCacheRegistryRef?.registry
+      &&catalogRef===searchEntryCacheRegistryRef?.catalog
       &&providers.length===searchEntryCacheProviders.length
       &&providers.every((provider,index)=>provider===searchEntryCacheProviders[index]))return searchEntryCache;
   searchEntryCacheProviders=providers;
+  searchEntryCacheRegistryRef={registry,catalog:catalogRef};
   const editors=window.CompanionConfigEditors?.searchEntries?.()||[];
   const replies=window.CompanionReplyPage?.searchEntries?.()||[];
   const hostOptions=window.CompanionHostOptionsPage?.searchEntries?.()||[];
@@ -5993,14 +6288,16 @@ function searchableConfigEntries(){
   const states=window.CompanionStateMaintenance?.searchEntries?.()||[];
   const memories=window.CompanionMemorySettingsSection?.searchEntries?.()||[];
   const perceptions=window.CompanionNativePerceptionPage?.searchEntries?.()||[];
+  const registered=registry?.collectSettings?.()||[];
   const seen=new Set();
-  const entries=[...editors,...replies,...hostOptions,...states,...memories,...perceptions].map(entry=>{
+  const entries=[...editors,...replies,...hostOptions,...states,...memories,...perceptions,...registered].map(entry=>{
     const location=resolveSettingTarget(entry);
     if(!location)return null;
     const key=JSON.stringify([entry.group,entry.section,entry.field]);
     if(seen.has(key))return null;
     seen.add(key);
-    return {kind:'setting',entry,location,texts:{
+    const breadcrumb=[entry.groupTitle||SEARCH_PAGE_LABELS[location.tab]||location.tab,entry.sectionTitle].filter(Boolean).join(' › ');
+    return {kind:'setting',entry,location,breadcrumb,texts:{
       label:normalizeSearchText(entry.label),
       field:normalizeSearchText(entry.field),
       sectionTitle:normalizeSearchText(entry.sectionTitle),
@@ -6011,9 +6308,11 @@ function searchableConfigEntries(){
   }).filter(Boolean);
   searchEntryCache=entries;
   searchEntryCacheAt=now;
+  searchPreparedSettingsCache=null;
   return entries;
 }
-function invalidateSearchCache(){searchEntryCache=null;searchEntryCacheAt=0;}
+function invalidateSearchCache(){searchEntryCache=null;searchEntryCacheAt=0;searchPreparedSettingsCache=null;searchPreparedPagesCache=null;}
+window.CompanionSearchRegistry?.onChange?.(()=>invalidateSearchCache());
 function textSearchScore(value,term,weights){
   const text=normalizeSearchText(value);
   if(!text)return 0;
@@ -6071,7 +6370,43 @@ function pageSearchScore(data,terms,query){
 function rankedSearchResults(query){
   const terms=searchTerms(query);
   const normalized=normalizeSearchText(query).trim();
-  if(!terms.length)return searchIndex.map((data,order)=>({kind:'page',data,score:0,order}));
+  if(!terms.length)return searchIndex.map((data,order)=>({kind:'page',data,score:0,order,matchKind:'empty',reason:'',matchedTerms:[]}));
+  const engine=window.CompanionSearchEngine;
+  if(engine&&typeof engine.prepare==='function'&&typeof engine.search==='function'){
+    const currentTab=route==='manage'?manageTab:route==='life'?lifeTab:'';
+    if(!searchPreparedPagesCache){
+      searchPreparedPagesCache=engine.prepare(searchIndex,{
+        getTitle:d=>d[0],
+        getDesc:d=>d[1],
+        getKey:d=>d[4]||'',
+        getAliases:d=>Array.isArray(d[5]?.aliases)?d[5].aliases:[],
+        getGroup:()=>'页面',
+      });
+    }
+    const allSettings=searchableConfigEntries();
+    if(!searchPreparedSettingsCache){
+      searchPreparedSettingsCache=engine.prepare(allSettings,{
+        getTitle:r=>r.entry.label,
+        getDesc:r=>r.entry.help,
+        getKey:r=>r.entry.field,
+        getAliases:r=>Array.isArray(r.entry.aliases)?r.entry.aliases:[],
+        getGroup:r=>`${r.entry.groupTitle||''} ${r.entry.sectionTitle||''}`.trim(),
+        getBreadcrumb:r=>r.breadcrumb||'',
+      });
+    }
+    const pages=engine.search(searchPreparedPagesCache,query).map(hit=>({
+      kind:'page',data:hit.item,score:hit.score,order:hit.order,
+      matchKind:hit.matchKind,reason:hit.reason,matchedTerms:hit.matchedTerms,
+    }));
+    const settings=engine.search(searchPreparedSettingsCache,query,{
+      bonus:r=>(r.location&&currentTab&&r.location.tab===currentTab?18:0),
+    }).map(hit=>({
+      ...hit.item,score:hit.score,order:hit.order,
+      matchKind:hit.matchKind,reason:hit.reason,matchedTerms:hit.matchedTerms,
+    }));
+    return [...pages,...settings].sort((left,right)=>right.score-left.score
+      ||(left.kind===right.kind?left.order-right.order:left.kind==='setting'?-1:1));
+  }
   const pages=searchIndex.map((data,order)=>({kind:'page',data,score:pageSearchScore(data,terms,normalized),order}))
     .filter(result=>result.score>0);
   const settings=searchableConfigEntries().map((result,order)=>({...result,
@@ -6161,20 +6496,31 @@ function renderSearch(){
   if(clearButton)clearButton.hidden=!query;
   const resultMarkup=visibleSearchResults.map((result,index)=>{
     const selected=index===activeSearchResultIndex;
+    const hlTerms=Array.isArray(result.matchedTerms)&&result.matchedTerms.length?result.matchedTerms:terms;
+    const reasonBadge=result.reason?`<span class="search-reason-badge">${escapeHTML(result.reason)}</span>`:'';
     if(result.kind==='setting'){
       const {entry,location}=result;
       const pageLabels={all:'全部功能',home:'首页与小屋',state:'状态与日程',diary:'日记与生活',identity:'关系网','identity-people':'用户','identity-groups':'群聊','identity-access':'访问规则','identity-feelings':'关系与情感',memory:'事实与经历',understanding:'理解',contact:'主动联系',expression:'表达',governance:'自我',output:'产出',models:'模型与连接',perception:'感知',decision:'决策',action:'行动',learning:'学习与反思',host:'账号与会话',maintenance:'治理与维护',data:'资料与维护',phone:'手机使用',mobile:'手机端连接',setup:'开始使用',persona:'人格处理',appearance:'外观与设置'};
-      const context=['配置项',pageLabels[location.tab]||manageTabs.find(([tab])=>tab===location.tab)?.[2]||location.tab,
-        entry.sectionTitle,entry.field].filter(Boolean).join(' · ');
-      return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I('sliders-horizontal')}<span><strong>${highlightSearchText(entry.label,terms)}</strong><small>${highlightSearchText(context,terms)}</small></span></button>`;
+      const rootLabel=location.nativeExtension
+        ?(entry.groupTitle||'原生扩展')
+        :(String(entry.group||'').startsWith('plugin_config.')?'插件全局配置':(pageLabels[location.tab]||(typeof manageTabs!=='undefined'&&manageTabs.find(([tab])=>tab===location.tab)?.[2])||location.tab));
+      const breadcrumb=[rootLabel,entry.sectionTitle].filter((part,idx,arr)=>part&&arr.indexOf(part)===idx).join(' › ');
+      const prefix=location.nativeExtension||String(entry.group||'').startsWith('plugin_config.')?'':'配置项 · ';
+      const context=[`${prefix}${breadcrumb}`,entry.field].filter(Boolean).join(' · ');
+      const iconName=location.nativeExtension?'puzzle':location.modelsTab||location.modelsTask?'cpu':location.workspaceFocus?'power':'sliders-horizontal';
+      const helpPreview=entry.help&&terms.length?`<small class="search-result-help">${highlightSearchText(entry.help,hlTerms)}</small>`:'';
+      return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I(iconName)}<span><strong>${highlightSearchText(entry.label,hlTerms)}${reasonBadge}</strong><small class="search-result-path">${highlightSearchText(context,hlTerms)}</small>${helpPreview}</span></button>`;
     }
     const [title,description,icon]=result.data;
-    return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I(icon)}<span><strong>${highlightSearchText(title,terms)}</strong><small>${highlightSearchText(`页面 · ${description}`,terms)}</small></span></button>`;
+    return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I(icon)}<span><strong>${highlightSearchText(title,hlTerms)}${reasonBadge}</strong><small class="search-result-path">${highlightSearchText(`页面 › ${description}`,hlTerms)}</small></span></button>`;
   }).join('');
   const emptyMessage=searchScope==='settings'&&!terms.length
-    ?'输入设置名称、用途或字段键查找配置项。'
-    :terms.length?'没有找到匹配内容，试试设置名、用途或字段键。':'没有可显示的页面入口。';
-  $('#searchResults').innerHTML=resultMarkup?resultMarkup:`<div class="search-empty">${escapeHTML(emptyMessage)}</div>`;
+    ?'输入设置名称、别名、拼音或字段键查找全站配置项。'
+    :terms.length?'没有找到匹配内容，试试更短的关键词、拼音首字母或常用别名。':'没有可显示的页面入口。';
+  const suggestions=terms.length
+    ?`<div class="search-empty-suggestions">${['陪伴通用模型','备用模型','免打扰','递话','生图','pbtymx'].map(s=>`<button type="button" class="search-suggestion-chip" data-search-suggestion="${s}">${s}</button>`).join('')}</div>`
+    :'';
+  $('#searchResults').innerHTML=resultMarkup?resultMarkup:`<div class="search-empty"><p>${escapeHTML(emptyMessage)}</p>${suggestions}</div>`;
   updateSearchSelection();
   icons();
 }
@@ -6221,7 +6567,7 @@ function expandAncestorDetails(node){
 }
 function applySearchHighlight(element){
   if(!element)return;
-  const target=element.closest?.('.wb-field, .wb-row, .host-options-row, .self-relationship-field, .self-contact-switch, .perception-field, .native-perception-field, .ct-src-row, .ct-field, .ct-quota, .ct-purpose, .state-field, .state-edit-field, label')||element;
+  const target=element.closest?.('.wb-field, .wb-row, .host-options-row, .self-relationship-field, .self-contact-switch, .perception-field, .native-perception-field, .ct-src-row, .ct-field, .ct-quota, .ct-purpose, .state-field, .state-edit-field, .setup-model-field, .setup-model-default-editor, .model-fncard, .model-rrow, .native-extension-field, .all-feature-row, label')||element;
   if(!target?.classList)return;
   target.classList.remove('is-search-target');
   void target.offsetWidth;
@@ -6290,6 +6636,16 @@ function waitAndFocusTarget(spec,jump,attempt=0){
     focusTokenTaskElement(scopeHost,{highlight:Boolean(spec.highlight)});return;
   }
   if(tab&&tab.getAttribute?.('aria-selected')!=='true')tab.click();
+  if(spec.selector&&typeof scopeHost.querySelector==='function'){
+    let directNode=null;
+    try{directNode=scopeHost.querySelector(spec.selector);}catch(_){directNode=null;}
+    if(directNode){focusTokenTaskElement(directNode,{highlight:Boolean(spec.highlight)});return;}
+    if(attempt<maxAttempts){
+      const timer=setTimeout(()=>waitAndFocusTarget(spec,jump,attempt+1),80);
+      timer?.unref?.();
+      return;
+    }
+  }
   const field=spec.field?matchSearchField(scopeHost,spec.field,spec.fieldAttr):null;
   if(field){focusTokenTaskElement(field,{highlight:Boolean(spec.highlight)});return;}
   if(spec.field&&attempt<maxAttempts){
@@ -6328,6 +6684,20 @@ async function openSearchSetting(result){
   const entry=result.entry;
   const location=result.location||resolveSettingTarget(entry);
   if(!location)return false;
+  /* 原生扩展弹窗项（game/live/reality/together）：直接打开其专属配置弹窗并滚定位字段。 */
+  if(location.nativeExtension){
+    const {id:extId,field:extField,inline}=location.nativeExtension;
+    if(inline){
+      const nav=navigate('manage','mobile');
+      const allowed=nav&&typeof nav.then==='function'?await nav:nav;
+      if(allowed===false)return false;
+      requestAnimationFrame(()=>window.CompanionNativeExtensionPanel?.focusField?.(extId,extField));
+      return true;
+    }
+    window.CompanionNativeExtensionPanel?.focusField?.(extId,extField);
+    showDetail('cap-'+extId);
+    return true;
+  }
   const jump=++tokenTaskSettingsJump;
   const targetSubtab=location.modelsTab||location.subtab||(location.memoryRoute||'');
   const nav=navigate(location.next,location.tab,targetSubtab);
@@ -6348,7 +6718,26 @@ async function openSearchSetting(result){
   }
   requestAnimationFrame(()=>{
     if(jump!==tokenTaskSettingsJump)return;
+    /* 嵌入工作区 iframe（如账号与会话中的陪伴通用模型 / 备用模型）：发消息滚动高亮。 */
+    if(location.workspaceFocus){
+      product?.focusWorkspace?.(location.workspaceFocus.workspace,location.workspaceFocus.selector,{highlight:true});
+      return;
+    }
+    /* 开始使用快速配置分区（如快速配置 → 模型）。 */
+    if(location.setupQuickBlock){
+      window.CompanionSetup?.openQuickBlock?.(location.setupQuickBlock);
+      if(location.selector){
+        waitAndFocusTarget({root:location.root||'#setupGuideHost',selector:location.selector,highlight:true},jump);
+      }
+      return;
+    }
     if(location.modelsTab)window.CompanionModelsPage?.selectTab?.(location.modelsTab,{notify:false});
+    if(location.modelsTask){
+      const safeTask=globalThis.CSS?.escape?.(location.modelsTask)||String(location.modelsTask).replace(/["\\]/g,'\\$&');
+      const taskSel=`[data-fncard="${safeTask}"], [data-model-open="${safeTask}"], [data-model-kind="${safeTask}"], [data-task-kind="${safeTask}"], [data-model-task="${safeTask}"]`;
+      waitAndFocusTarget({root:location.root||'#modelWorkspace',selector:taskSel,highlight:true},jump);
+      return;
+    }
     if(location.outputTab)activateOutputTab(location.outputTab,{scroll:false});
     if(location.understandingTab)window.CompanionUnderstandingPage?.select?.(location.understandingTab);
     if(location.decisionView)window.CompanionDecisionPage?.setView?.(location.decisionView);
@@ -6359,7 +6748,7 @@ async function openSearchSetting(result){
     if(location.perceptionTab){
       activatePerceptionTab(location.perceptionTab,{scroll:false});
       const perceptionRoot=location.root||`#perception-page-${location.perceptionSection}`;
-      waitAndFocusTarget({root:perceptionRoot,section:location.focusSection||'',field:location.perceptionField||entry.field,fieldAttr:location.fieldAttr||'',highlight:true},jump);
+      waitAndFocusTarget({root:perceptionRoot,section:location.focusSection||'',field:location.perceptionField||entry.field,fieldAttr:location.fieldAttr||'',selector:location.selector||'',highlight:true},jump);
       return;
     }
     if(location.identitySettings){
@@ -6383,6 +6772,10 @@ async function openSearchSetting(result){
     if(entry.group==='device.phone'){
       const details=$('.phone-advanced');
       if(details)details.open=true;
+    }
+    if(location.selector){
+      waitAndFocusTarget({root:location.root||'#shellPanel',selector:location.selector,highlight:true},jump);
+      return;
     }
     const section=location.understandingTab||location.selfSection?'':location.focusSection!==undefined?location.focusSection
       :entry.sectionCount>1?entry.section:'';
@@ -6417,7 +6810,41 @@ function openTokenTaskSettings(kind){
   });
   return true;
 }
-function openSearch(){if($('#detailDialog').open)closeDetail();searchScope='all';invalidateSearchCache();clearTimeout(searchRenderTimer);searchRenderTimer=0;$('#globalSearch').value='';renderSearch();$('#searchDialog').showModal();$('#globalSearch').focus();}
+let searchCatalogPromise=null;
+function ensureSearchCatalog(){
+  const existing=window.CompanionSearchRegistry?.getCatalog?.();
+  if(existing)return Promise.resolve(existing);
+  if(searchCatalogPromise)return searchCatalogPromise;
+  if(!window.CompanionProduct?.hosted?.()||typeof window.CompanionProduct?.request!=='function'){
+    return Promise.resolve(null);
+  }
+  searchCatalogPromise=window.CompanionProduct.request('GET','search/catalog')
+    .then(data=>{
+      if(data&&typeof data==='object'){
+        window.CompanionSearchRegistry?.setCatalog?.(data);
+        invalidateSearchCache();
+        if($('#searchDialog')?.open)renderSearch();
+      }
+      return data||null;
+    })
+    .catch(()=>null)
+    .finally(()=>{searchCatalogPromise=null;});
+  return searchCatalogPromise;
+}
+function openSearch(initialQuery=''){
+  if($('#detailDialog')?.open)closeDetail();
+  const preset=typeof initialQuery==='string'?initialQuery:'';
+  searchScope='all';
+  invalidateSearchCache();
+  clearTimeout(searchRenderTimer);searchRenderTimer=0;
+  const input=$('#globalSearch');
+  if(input)input.value=preset;
+  renderSearch();
+  $('#searchDialog')?.showModal?.();
+  input?.focus?.();
+  if(preset)input?.setSelectionRange?.(preset.length,preset.length);
+  void ensureSearchCatalog();
+}
 document.addEventListener('click',event=>{
   const el=event.target.closest('button,a');if(!el)return;
   if(el.hasAttribute('data-profile-avatar-remove')){
@@ -6539,8 +6966,29 @@ document.addEventListener('click',event=>{
   if(el.dataset.allFeatureSave!==undefined){saveAllFeatures();return;}
   if(el.dataset.allFeatureDomain!==undefined){allFeaturesState.domain=el.dataset.allFeatureDomain||'all';paintPanel();return;}
   if(el.dataset.allFeatureStatus!==undefined){allFeaturesState.status=el.dataset.allFeatureStatus||'all';paintPanel();return;}
+  if(el.dataset.allFeatureClearFilter!==undefined){
+    allFeaturesState.query='';
+    const filterInput=document.querySelector('[data-all-feature-filter]');
+    if(filterInput){filterInput.value='';filterInput.focus();}
+    filterAllFeatures('');
+    return;
+  }
+  if(el.dataset.allFeatureGlobalSearch!==undefined){
+    openSearch(allFeaturesState.query||'');
+    return;
+  }
+  if(el.dataset.allFeatureJumpSetting){
+    const row=(allFeaturesState.extraRows||[]).find(item=>item.key===el.dataset.allFeatureJumpSetting);
+    if(row?.jumpEntry)void openSearchSetting({entry:row.jumpEntry,location:row.jumpEntry.location||resolveSettingTarget(row.jumpEntry)});
+    return;
+  }
   if(el.dataset.allFeatureOpen){openAllFeatureDetail(el.dataset.allFeatureOpen,el.dataset.allFeatureOpenField||'');return;}
   if(el.dataset.allFeatureJump){const target=document.getElementById(el.dataset.allFeatureJump);if(target){target.open=true;target.scrollIntoView({behavior:'smooth',block:'start'});}return;}
+  if(el.dataset.searchSuggestion){
+    const input=$('#globalSearch');
+    if(input){input.value=el.dataset.searchSuggestion;renderSearch();input.focus();}
+    return;
+  }
   if(el.dataset.openSearch!==undefined){openSearch();return;}
   if(el.dataset.openNavigation!==undefined){navigate('manage','all');return;}
   if(el.dataset.closeNavigation!==undefined){$('#navigationDialog').close();return;}
@@ -6632,9 +7080,34 @@ document.addEventListener('change',event=>{
   if(arrangementDraft&&handleRoomEditorChange(el))return;
   if(el.dataset.allFeatureToggle!==undefined){
     const group=el.dataset.allFeatureGroup;
-    allFeaturesState.draft[group][el.dataset.allFeatureField]=el.checked;
-    el.closest?.('.all-feature-row')?.classList.toggle('is-dirty',
-      allFeatureDirty(group,el.dataset.allFeatureField,el.checked));
+    const field=el.dataset.allFeatureField;
+    allFeaturesState.draft[group][field]=el.checked;
+    const rowEl=el.closest?.('.all-feature-row');
+    if(rowEl){
+      rowEl.classList.toggle('is-on',el.checked);
+      rowEl.classList.toggle('is-off',!el.checked);
+      rowEl.classList.toggle('is-dirty',allFeatureDirty(group,field,el.checked));
+      const stateEl=rowEl.querySelector?.('.all-feature-state');
+      if(stateEl)stateEl.textContent=el.checked?'已开启':'已关闭';
+    }
+    const board=allFeatureBoardGroups();
+    const allRows=board.flatMap(g=>g.rows);
+    const enabledCount=allRows.filter(allFeatureRowIsOn).length;
+    const disabledCount=allRows.length-enabledCount;
+    const dirtyCount=allFeatureDirtyCount();
+    const onCard=document.querySelector('.all-functions-summary-card.is-on b');
+    if(onCard)onCard.textContent=`${enabledCount} / ${allRows.length}`;
+    const summaryCards=document.querySelectorAll('.all-functions-summary-card');
+    if(summaryCards[1]){
+      const dirtyB=summaryCards[1].querySelector('b');
+      const dirtySmall=summaryCards[1].querySelector('small');
+      if(dirtyB)dirtyB.textContent=String(dirtyCount);
+      if(dirtySmall)dirtySmall.textContent=dirtyCount?'保存后按作用域写入':'与已保存一致';
+    }
+    const enChip=document.querySelector('[data-all-feature-status="enabled"] small');
+    const disChip=document.querySelector('[data-all-feature-status="disabled"] small');
+    if(enChip)enChip.textContent=String(enabledCount);
+    if(disChip)disChip.textContent=String(disabledCount);
     updateAllFeatureSaveState();
     return;
   }
@@ -6677,7 +7150,7 @@ document.addEventListener('paste',event=>{
 });
 document.addEventListener('input',event=>{
   const el=event.target;
-  if(el.dataset.allFeatureFilter!==undefined){filterAllFeatures(el.value);return;}
+  if(el.dataset.allFeatureFilter!==undefined){if(!event.isComposing)filterAllFeatures(el.value);return;}
   /* QQ 空间的草稿只在这里同步进状态：动作结束后整块重画，正文才不会丢。 */
   if(el.dataset.qzoneDraft==='publish'){qzoneState.publishDraft=el.value;qzoneCounts();}
   if(el.dataset.qzoneDraft==='reply'){qzoneState.replyDraft=el.value;qzoneState.replyDraftFor=Number(el.dataset.qzonePost);qzoneCounts();}
@@ -6691,6 +7164,10 @@ document.addEventListener('input',event=>{
     const target=$('#memoryWorkspace input[type="search"]');
     if(target){target.value=el.value;target.dispatchEvent(new Event('input',{bubbles:true}));}
   }
+});
+document.addEventListener('compositionend',event=>{
+  const el=event.target;
+  if(el?.dataset?.allFeatureFilter!==undefined)filterAllFeatures(el.value);
 });
 document.addEventListener('submit',event=>{
   /* 这里原先有三个「保存到预览」的表单处理器：示例日记、示例便签、示例
