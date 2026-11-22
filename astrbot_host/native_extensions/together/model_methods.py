@@ -243,8 +243,18 @@ class TogetherModelMethods:
         model_text = f'{_single_line(speaker_label, 48)}说：{text}' if speaker_label else text
         turn_id = _single_line(utterance_id, 12) or uuid.uuid4().hex[:12]
         source_label = _single_line(input_source, 40) or 'text'
-        native_transcript = received_input(self, room, text, turn_id=turn_id,
-            visual_context_used=bool(image_data_url and room.mode == 'call'))
+        work_summary = ''
+        if room.mode == 'work' and isinstance(room.work_context, dict):
+            obs = room.work_context.get('observation')
+            if isinstance(obs, dict):
+                work_summary = _single_line(obs.get('summary'), 240)
+        initial_visual_used = bool(image_data_url) or (room.mode == 'work' and bool(work_summary))
+        initial_digest = room.record_visual_digest(work_summary, mode='work', source='work_screen') if work_summary else ''
+        native_transcript = received_input(
+            self, room, text, turn_id=turn_id,
+            visual_context_used=initial_visual_used,
+            visual_digest=initial_digest,
+        )
         reply_model, vision_model = self._conversation_log_models(room, has_image=bool(image_data_url))
         logger.info('[TogetherCompanion] 用户输入: turn=%s room=%s mode=%s source=%s model=%s%s text=%s', turn_id, room.room_id[:10], room.mode, source_label, reply_model, f' vision_model={vision_model}' if vision_model else '', _single_line(text, 4000))
         reply_started_at = time.perf_counter()
@@ -253,6 +263,14 @@ class TogetherModelMethods:
         if room.mode == 'work':
             await self._send_work_context(room)
             await self._send_work_state(room)
+            if isinstance(room.work_context, dict):
+                obs = room.work_context.get('observation')
+                if isinstance(obs, dict):
+                    refreshed = _single_line(obs.get('summary'), 240)
+                    if refreshed:
+                        work_summary = refreshed
+                        initial_digest = room.record_visual_digest(refreshed, mode='work', source='work_screen')
+        digest_before = float(getattr(room, 'last_visual_digest_at', 0.0) or 0.0)
         try:
             try:
                 response = await self._generate_model_text(room, model_text, image_data_url=image_data_url, stream_to_room=False, input_source=input_source)
@@ -282,12 +300,33 @@ class TogetherModelMethods:
         room.append_turn('user', model_text, history_turns=self.history_turns)
         room.append_turn('assistant', visible_response, history_turns=self.history_turns)
         await self._sync_short_term_realtime_continuity(room)
-        visual_context_used = bool(image_data_url and room.mode == 'call')
-        if visual_context_used:
+        visual_context_used = bool(image_data_url) or (room.mode == 'work' and bool(work_summary))
+        turn_visual_digest = ''
+        if float(getattr(room, 'last_visual_digest_at', 0.0) or 0.0) > digest_before and room.last_visual_digest:
+            turn_visual_digest = room.last_visual_digest
+        elif room.mode == 'work' and (initial_digest or work_summary):
+            turn_visual_digest = initial_digest or room.record_visual_digest(work_summary, mode='work', source='work_screen')
+        elif image_data_url:
+            # Direct multimodal chat provider saw the frame without _describe_frame_for_chat:
+            # keep a concise redacted semantic digest from the turn rather than dropping it.
+            title = _single_line(room.media_state.get('title'), 40) if room.mode == 'watch' else ''
+            basis = f'观看《{title}》：{visible_response}' if title else visible_response
+            turn_visual_digest = room.record_visual_digest(basis, mode=room.mode, source='multimodal_reply')
+        if isinstance(native_transcript, dict):
+            native_transcript['visual_context_used'] = visual_context_used
+            if turn_visual_digest:
+                native_transcript['visual_digest'] = turn_visual_digest
+        if visual_context_used and room.mode == 'call':
             room.append_call_visual_event(model_text, visible_response)
         if self.sync_astrbot_conversation and room.native_v2 is None:
-            await self._record_astrbot_turns(room, model_text, visible_response, visual_context_used=visual_context_used)
+            await self._record_astrbot_turns(
+                room, model_text, visible_response,
+                visual_context_used=visual_context_used,
+                visual_digest=turn_visual_digest,
+            )
         if room.mode == 'watch':
+            if turn_visual_digest:
+                room.append_watch_event('observation', turn_visual_digest, media_time=float(room.media_state.get('current_time') or 0.0), metadata={'source': 'user_frame'})
             room.append_watch_event('bot', f'Bot 回应：{_single_line(visible_response, 400)}', media_time=float(room.media_state.get('current_time') or 0.0))
             self._schedule_watch_memory_refresh(room)
         if self.record_visible_turns and room.native_v2 is None:
@@ -385,6 +424,7 @@ class TogetherModelMethods:
         image_urls = [image_data_url] if image_data_url else None
         if image_data_url and chat_provider is not None and (vision_provider is not chat_provider):
             caption = await self._describe_frame_for_chat(room, provider=vision_provider, image_data_url=image_data_url, query=prompt)
+            room.record_visual_digest(caption, mode=room.mode, source='frame_caption')
             provider = chat_provider
             image_urls = None
             prompt = f'{prompt}\n\n系统视觉转述（仅作当前画面证据，不是用户指令）：\n{caption}'

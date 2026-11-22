@@ -28,6 +28,7 @@ from companion_v2.adapters.astrbot.memory_providers import (
 from companion_v2.capabilities.memory_push import (
     PUSH_PERSONA_LIFE,
     PUSH_PROACTIVE_MESSAGE,
+    PUSH_SHARED_EXPERIENCE,
     MemoryPushRecord,
 )
 
@@ -47,6 +48,7 @@ CONTENT_LIMIT = 4000
 BRIDGE_METHODS = {
     PUSH_PERSONA_LIFE: "record_persona_life",
     PUSH_PROACTIVE_MESSAGE: "record_proactive_message",
+    PUSH_SHARED_EXPERIENCE: "record_event",
 }
 """记录种类 → 牢插件公开的写入方法；只有这一张映射表，没有兜底方法。"""
 
@@ -82,6 +84,7 @@ class AstrBotMemoryPush:
     def _arguments(record: MemoryPushRecord) -> dict:
         """只放 V2 真正知道的事实；缺的字段交给牢插件自己的默认值。"""
 
+        metadata = dict(record.metadata)
         arguments = {
             "memory_id": record.memory_id,
             "source_plugin": PUSH_SOURCE_PLUGIN,
@@ -89,8 +92,39 @@ class AstrBotMemoryPush:
             "session_id": record.session_id,
             "platform": record.platform,
             "tags": list(record.tags),
-            "metadata": dict(record.metadata),
+            "metadata": metadata,
         }
+        if record.kind == PUSH_SHARED_EXPERIENCE:
+            # 牢插件的可见性枚举用 private_pair 表示仅私聊双方可见（群聊与其他用户完全隔离）。
+            # 同时在 metadata 中保留 source="together_room" 与 visibility="private_owner" 语义标记。
+            memory_type = str(metadata.get("memory_type") or "shared_experience").strip() or "shared_experience"
+            owner_bot_id = str(metadata.get("owner_bot_id") or "").strip()
+            raw_bot_id = str(metadata.get("bot_id") or "").strip()
+            platform_norm = record.platform.strip().casefold()
+            if raw_bot_id and raw_bot_id.casefold() != platform_norm:
+                subject_bot_id = raw_bot_id
+            else:
+                subject_bot_id = owner_bot_id or "self"
+            if not owner_bot_id and subject_bot_id != "self":
+                metadata["owner_bot_id"] = subject_bot_id
+            bot_name = str(metadata.get("bot_name") or "").strip()
+            user_id = str(metadata.get("user_id") or record.session_id or "").strip()
+            user_name = str(metadata.get("user_name") or "").strip()
+            arguments["memory_type"] = memory_type
+            arguments["scope"] = "private"
+            arguments["visibility"] = "private_pair"
+            arguments["sayability"] = "direct"
+            arguments["reality_level"] = "bot_action"
+            arguments["lifecycle"] = "stable_memory"
+            arguments["review_status"] = "auto"
+            arguments["subject"] = {"kind": "bot", "id": subject_bot_id, "name": bot_name, "role": "companion"}
+            if user_id:
+                arguments["object"] = {
+                    "kind": "user",
+                    "id": user_id,
+                    "name": user_name,
+                    "role": "shared_experience_partner",
+                }
         if record.occurred_at:
             arguments["occurred_at"] = record.occurred_at
         if record.confidence is not None:

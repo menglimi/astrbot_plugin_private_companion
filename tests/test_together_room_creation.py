@@ -265,7 +265,8 @@ class TogetherRoomExecutionFallbackTests(unittest.TestCase):
             plugin._get_provider_by_id = lambda pid: valid_chat if pid == "main/chat-model" else None
 
             with TemporaryDirectory(prefix="v2-together-fallback-") as temp_dir:
-                provider = NativeTogetherProvider(plugin, Path(temp_dir), version="7.2.9")
+                from companion_v2.product import PRODUCT_VERSION
+                provider = NativeTogetherProvider(plugin, Path(temp_dir), version=PRODUCT_VERSION)
                 registry = internal_registry(provider)
                 registry.context = context
                 registry.together_execution = dict(self.base_binding)

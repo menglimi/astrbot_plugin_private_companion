@@ -239,11 +239,16 @@ class NativeTogetherContextTests(MultiFixture, unittest.IsolatedAsyncioTestCase)
                 patch.object(registry, "api", side_effect=AssertionError("paused Live must not be queried")):
             self.assertIsNone(self.runtime._live_native_api())
         prompt = "分享时像刚发现新东西一样开心。\n\n按语意分段。"
-        updates = self.runtime._validate_page_settings({"conversation.system_prompt": prompt,
-            "conversation.record_shared_experiences": True})
+        updates = self.runtime._validate_page_settings({
+            "conversation.system_prompt": prompt,
+            "conversation.record_shared_experiences": True,
+            "conversation.unknown_legacy_flag": True,
+        })
         self.assertEqual(updates["conversation.system_prompt"], prompt)
-        self.assertNotIn("conversation.record_shared_experiences", updates)
+        self.assertIs(updates["conversation.record_shared_experiences"], True)
+        self.assertNotIn("conversation.unknown_legacy_flag", updates)
         self.assertIn("conversation.system_prompt", self.runtime._page_setting_values())
+        self.assertIn("conversation.record_shared_experiences", self.runtime._page_setting_values())
 
 
 if __name__ == "__main__":

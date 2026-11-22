@@ -473,6 +473,12 @@ class NativeExtensionRegistry(AstrBotToolPort):
                                     previous_package_id=predecessor, observed_at=observed_at)
                                 if not upgraded.is_success:
                                     blocked[package.extension_id] = (package.package_id, upgraded.failure.code)
+                                    if upgraded.failure.code == "capability_descriptor_conflict":
+                                        logger.warning(
+                                            "[CompanionV2] 模块 %s（%s v%s）已被阻断：%s",
+                                            package.extension_id, package.package_id,
+                                            package.package_version, upgraded.failure.reason,
+                                        )
                                     break
                             if package.extension_id in blocked:
                                 continue

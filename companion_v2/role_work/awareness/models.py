@@ -24,13 +24,14 @@ MAX_EVENTS = 64
 RETENTION_HOURS = 24
 WINDOW_HOURS = 12
 MAX_PROMPT_ITEMS = 4
+MAX_ALLOWED_PROMPT_ITEMS = 8
 MAX_TOPIC_CHARS = 96
 MAX_EVENT_KEY_CHARS = 256
 MAX_DOCUMENT_CHARS = 65536
 ATTENTION_MINUTES = 30
 
 WINDOWS = frozenset({"private", "group"})
-EVENT_KINDS = frozenset({"spoke", "reply", "peer_reply"})
+EVENT_KINDS = frozenset({"spoke", "reply", "peer_reply", "together_room"})
 _TOPIC_PLACEHOLDER = re.compile(r"\[[^\]]{0,24}\]")
 _TOPIC_SPACE = re.compile(r"\s+")
 
@@ -118,6 +119,23 @@ def peer_reply_record(context, at: datetime, subject: str, event_key: str = "", 
             "peer_count": 0}
 
 
+def together_record(context, at: datetime, text: str, event_key: str = "") -> dict:
+    """One desensitized, private-only summary from a single-user Together room."""
+    if window_of(context) != "private":
+        raise ValueError("together room awareness records are private-only")
+    topic = clean_topic(text)
+    if not topic:
+        raise ValueError("together room awareness record requires non-empty topic")
+    return {"at": stamp(at), "window": "private",
+            "group_id": "",
+            "platform": context.scope.platform, "account_id": context.scope.account_id or "",
+            "subject": context.actor.subject.subject_id,
+            "speaker_account": context.actor.principal.native_account_id,
+            "kind": "together_room", "topic": topic,
+            "event_key": str(event_key or "")[:MAX_EVENT_KEY_CHARS],
+            "source": None, "peer_count": 0}
+
+
 def _when(value) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value) if type(value) is str else None
@@ -154,6 +172,9 @@ def _valid_event(item) -> bool:
             return False
     elif item["kind"] == "peer_reply":
         if item["window"] != "group" or item["topic"] or item["peer_count"] != 0:
+            return False
+    elif item["kind"] == "together_room":
+        if item["window"] != "private" or not item["topic"] or item["peer_count"] != 0:
             return False
     elif item["window"] == "private" and item["topic"]:
         return False
@@ -210,7 +231,8 @@ def prune(events, at: datetime) -> list:
 
 __all__ = [
     "VERSION", "PREFIX", "MAX_EVENTS", "RETENTION_HOURS", "WINDOW_HOURS", "MAX_PROMPT_ITEMS",
-    "MAX_TOPIC_CHARS", "MAX_DOCUMENT_CHARS", "ATTENTION_MINUTES", "WINDOWS", "window_of",
-    "role_ref", "owner_key", "empty_document", "clean_topic", "event_record", "reply_record",
-    "peer_reply_record", "valid_document", "prune",
+    "MAX_ALLOWED_PROMPT_ITEMS", "MAX_TOPIC_CHARS", "MAX_DOCUMENT_CHARS", "ATTENTION_MINUTES",
+    "WINDOWS", "window_of", "role_ref", "owner_key", "empty_document", "clean_topic",
+    "event_record", "reply_record", "peer_reply_record", "together_record", "valid_document",
+    "prune",
 ]

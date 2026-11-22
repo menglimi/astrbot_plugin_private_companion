@@ -79,8 +79,10 @@ class TogetherSettingsMethods:
         request_host = request.headers.get('host', '')
         browser_launch_available = _is_local_dashboard_request(client_host, request_host)
         browser_opened = False
+        resolved_user = self._resolve_primary_user_id()
+        native_v2 = await self._resolve_native_v2_binding(resolved_user) if resolved_user else None
         if browser_requested and browser_launch_available:
-            browser_ticket = self.issue_room_ticket(mode=mode)
+            browser_ticket = self.issue_room_ticket(mode=mode, user_id=resolved_user, native_v2=native_v2)
             browser_url = self._ticket_url(browser_ticket)
             try:
                 browser_opened = bool(await asyncio.to_thread(webbrowser.open, browser_url, new=2, autoraise=True))
@@ -88,7 +90,7 @@ class TogetherSettingsMethods:
                 logger.warning('[TogetherCompanion] 唤起系统浏览器失败: mode=%s error=%s', browser_ticket.mode, _single_line(exc))
         elif browser_requested:
             logger.info('[TogetherCompanion] 当前拓展页不是本机访问，跳过服务器浏览器唤起: remote=%s', _single_line(client_host) or '未知')
-        ticket = self.issue_room_ticket(mode=mode)
+        ticket = self.issue_room_ticket(mode=mode, user_id=resolved_user, native_v2=native_v2)
         room_url = self._ticket_url(ticket)
         logger.info('[TogetherCompanion] 拓展页已创建房间凭据: mode=%s user=%s expires_in=%ss browser_opened=%s', ticket.mode, ticket.user_id or '未指定', max(0, int(ticket.expires_at - time.time())), browser_opened)
         return {'status': 'ok', 'data': {'url': room_url, 'mode': ticket.mode, 'expires_at': ticket.expires_at, 'browser_opened': browser_opened, 'browser_launch_available': browser_launch_available}}
@@ -113,13 +115,13 @@ class TogetherSettingsMethods:
         return {'status': 'ok', 'data': {'values': self._page_setting_values(), 'persisted': persisted, 'message': '配置已保存并立即生效' if persisted else '配置已应用到当前运行实例'}}
 
     def _page_setting_values(self) -> dict[str, Any]:
-        defaults = {'conversation.chat_provider_id': '', 'conversation.vision_provider_id': '', 'conversation.history_turns': 12, 'conversation.enable_memory_context': True, 'conversation.call_proactive_enabled': True, 'conversation.model_hangup_enabled': True, 'conversation.call_idle_seconds': 120, 'conversation.sync_astrbot_conversation': True, 'conversation.record_visible_turns': False, 'conversation.system_prompt': '', 'speech.stt_mode': 'auto', 'speech.stt_provider_id': '', 'speech.stt_correction_enabled': True, 'speech.browser_language': 'zh-CN', 'speech.tts_provider_id': '', 'speech.browser_tts_fallback': True, 'speech.direct_multilingual_tts': True, 'speech.tts_timeout_seconds': 60, 'speech.tts_volume_percent': 100, 'speech.realtime_duplex_enabled': False, 'watch.prepare_knowledge': True, 'watch.auto_comment': True, 'watch.comment_interval_seconds': 60, 'watch.scene_min_interval_seconds': 18, 'watch.memory_refresh_seconds': 240, 'watch.duck_video_volume': True, 'watch.duck_volume_percent': 28, 'library.enabled': True, 'library.max_upload_mb': 40, 'library.import_admin_only': True, 'novel.retrieval_top_k': 8, 'novel.spoiler_policy': 'strict', 'novel.answer_with_sources': True, 'novel.auto_save_progress': True}
+        defaults = {'conversation.chat_provider_id': '', 'conversation.vision_provider_id': '', 'conversation.history_turns': 12, 'conversation.enable_memory_context': True, 'conversation.call_proactive_enabled': True, 'conversation.model_hangup_enabled': True, 'conversation.call_idle_seconds': 120, 'conversation.sync_astrbot_conversation': True, 'conversation.record_visible_turns': False, 'conversation.record_shared_experiences': True, 'conversation.system_prompt': '', 'speech.stt_mode': 'auto', 'speech.stt_provider_id': '', 'speech.stt_correction_enabled': True, 'speech.browser_language': 'zh-CN', 'speech.tts_provider_id': '', 'speech.browser_tts_fallback': True, 'speech.direct_multilingual_tts': True, 'speech.tts_timeout_seconds': 60, 'speech.tts_volume_percent': 100, 'speech.realtime_duplex_enabled': False, 'watch.prepare_knowledge': True, 'watch.auto_comment': True, 'watch.comment_interval_seconds': 60, 'watch.scene_min_interval_seconds': 18, 'watch.memory_refresh_seconds': 240, 'watch.duck_video_volume': True, 'watch.duck_volume_percent': 28, 'library.enabled': True, 'library.max_upload_mb': 40, 'library.import_admin_only': True, 'novel.retrieval_top_k': 8, 'novel.spoiler_policy': 'strict', 'novel.answer_with_sources': True, 'novel.auto_save_progress': True}
         return {key: self._cfg(key, default) for key, default in defaults.items()}
 
     def _validate_page_settings(self, values: dict[str, Any]) -> dict[str, Any]:
         updates: dict[str, Any] = {}
         string_limits = {'conversation.chat_provider_id': 160, 'conversation.vision_provider_id': 160, 'speech.stt_provider_id': 160, 'speech.tts_provider_id': 160, 'speech.browser_language': 20}
-        boolean_keys = {'conversation.enable_memory_context', 'conversation.call_proactive_enabled', 'conversation.model_hangup_enabled', 'conversation.sync_astrbot_conversation', 'conversation.record_visible_turns', 'speech.stt_correction_enabled', 'speech.browser_tts_fallback', 'speech.direct_multilingual_tts', 'speech.realtime_duplex_enabled', 'watch.prepare_knowledge', 'watch.auto_comment', 'watch.duck_video_volume', 'library.enabled', 'library.import_admin_only', 'novel.answer_with_sources', 'novel.auto_save_progress'}
+        boolean_keys = {'conversation.enable_memory_context', 'conversation.call_proactive_enabled', 'conversation.model_hangup_enabled', 'conversation.sync_astrbot_conversation', 'conversation.record_visible_turns', 'conversation.record_shared_experiences', 'speech.stt_correction_enabled', 'speech.browser_tts_fallback', 'speech.direct_multilingual_tts', 'speech.realtime_duplex_enabled', 'watch.prepare_knowledge', 'watch.auto_comment', 'watch.duck_video_volume', 'library.enabled', 'library.import_admin_only', 'novel.answer_with_sources', 'novel.auto_save_progress'}
         integer_ranges = {'conversation.history_turns': (2, 60), 'conversation.call_idle_seconds': (60, 900), 'speech.tts_timeout_seconds': (15, 180), 'speech.tts_volume_percent': (0, 100), 'watch.comment_interval_seconds': (20, 600), 'watch.scene_min_interval_seconds': (8, 120), 'watch.memory_refresh_seconds': (90, 900), 'watch.duck_volume_percent': (5, 80), 'library.max_upload_mb': (1, 200), 'novel.retrieval_top_k': (3, 20)}
         for key, limit in string_limits.items():
             if key in values:
@@ -166,7 +168,7 @@ class TogetherSettingsMethods:
         self.model_hangup_enabled = self._cfg_bool('conversation.model_hangup_enabled', True)
         self.call_idle_seconds = _clamp_int(self._cfg('conversation.call_idle_seconds', 120), 120, 60, 900)
         self.sync_astrbot_conversation = self._cfg_bool('conversation.sync_astrbot_conversation', True)
-        self.record_shared_experiences = False
+        self.record_shared_experiences = self._cfg_bool('conversation.record_shared_experiences', True)
         self.record_visible_turns = self._cfg_bool('conversation.record_visible_turns', False)
         self.stt_mode = self._normalize_stt_mode(self._cfg_str('speech.stt_mode', 'auto'))
         self.stt_provider_id = self._cfg_str('speech.stt_provider_id', '')

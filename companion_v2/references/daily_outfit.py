@@ -415,14 +415,13 @@ class DailyOutfitPhotos:
                 except Exception as error:
                     logger.debug("Daily outfit weather unavailable: %s", type(error).__name__)
         wardrobe = {}
-        if self.app.reference_settings.read(context, at)["enabled"]:
-            references = self.app.references
-            wardrobe_options = references.wardrobe_options(context)
-            if wardrobe_options["enabled"] and wardrobe_options["prompt_enabled"]:
-                wardrobe = {"preferences": wardrobe_options["tendency"][:500]}
-                selected = references.assets.daily_outfit_item(references.owner(context), day.isoformat())
-                if selected:
-                    wardrobe["suggested_garment"] = {"name": selected.name, "details": selected.description[:400]}
+        references = self.app.references
+        wardrobe_options = references.wardrobe_options(context)
+        if wardrobe_options["enabled"] and wardrobe_options["prompt_enabled"]:
+            wardrobe = {"preferences": wardrobe_options["tendency"][:500]}
+            selected = references.assets.daily_outfit_item(references.owner(context), day.isoformat())
+            if selected:
+                wardrobe["suggested_garment"] = {"name": selected.name, "details": selected.description[:400]}
         return {"date": day.isoformat(), "character": role, "agenda": agenda, "weather": weather,
                 "wardrobe": wardrobe}
 

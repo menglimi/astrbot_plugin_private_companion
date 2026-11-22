@@ -40,7 +40,10 @@ PUSH_PERSONA_LIFE = "persona_life"
 PUSH_PROACTIVE_MESSAGE = "proactive_message"
 """角色自己发起的主动消息。"""
 
-PUSH_KINDS = (PUSH_PERSONA_LIFE, PUSH_PROACTIVE_MESSAGE)
+PUSH_SHARED_EXPERIENCE = "shared_experience"
+"""私聊一起房间结束后的脱敏共同经历摘要（仅限私聊主人本人可见）。"""
+
+PUSH_KINDS = (PUSH_PERSONA_LIFE, PUSH_PROACTIVE_MESSAGE, PUSH_SHARED_EXPERIENCE)
 
 MEMORY_PUSH_ID_PREFIX = "companion_v2"
 """id 前缀：让接收方一眼看出这条记忆的产地，也避免与别家 id 撞名。"""
@@ -69,6 +72,7 @@ class MemoryPushRecord:
     confidence: float | None = None
     importance: float | None = None
     context: TaskContext | None = None
+    visibility: str = ""
 
     def __post_init__(self):
         if self.context is not None and not isinstance(self.context, TaskContext):
@@ -80,7 +84,8 @@ class MemoryPushRecord:
             raise ValueError("memory push requires a bounded deterministic memory identity")
         if not isinstance(self.content, str) or not self.content.strip():
             raise ValueError("memory push requires recallable content")
-        if not isinstance(self.scope, str) or not isinstance(self.session_id, str) or not isinstance(self.platform, str):
+        if (not isinstance(self.scope, str) or not isinstance(self.session_id, str)
+                or not isinstance(self.platform, str) or not isinstance(self.visibility, str)):
             raise ValueError("memory push routing fields must be strings")
         if not isinstance(self.occurred_at, str):
             raise ValueError("memory push time must be an ISO string")
@@ -97,11 +102,14 @@ class MemoryPushRecord:
     def document(self) -> dict:
         """给日志和测试用的纯 JSON 文档；不参与接收方的写入形状。"""
 
-        return {"memory_id": self.memory_id, "kind": self.kind, "content": self.content,
-                "scope": self.scope, "session_id": self.session_id, "platform": self.platform,
-                "occurred_at": self.occurred_at, "tags": list(self.tags),
-                "metadata": dict(self.metadata), "confidence": self.confidence,
-                "importance": self.importance}
+        doc = {"memory_id": self.memory_id, "kind": self.kind, "content": self.content,
+               "scope": self.scope, "session_id": self.session_id, "platform": self.platform,
+               "occurred_at": self.occurred_at, "tags": list(self.tags),
+               "metadata": dict(self.metadata), "confidence": self.confidence,
+               "importance": self.importance}
+        if self.visibility:
+            doc["visibility"] = self.visibility
+        return doc
 
 
 def push_memory_id(kind: str, *identity) -> str:
@@ -171,6 +179,7 @@ __all__ = [
     "PUSH_KINDS",
     "PUSH_PERSONA_LIFE",
     "PUSH_PROACTIVE_MESSAGE",
+    "PUSH_SHARED_EXPERIENCE",
     "push_memory",
     "push_memory_id",
 ]

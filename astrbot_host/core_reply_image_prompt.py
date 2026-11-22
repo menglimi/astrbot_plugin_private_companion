@@ -9,7 +9,11 @@ from companion_v2.conversation.media.generated import IMAGE_ACTIONS
 from companion_v2.conversation.media.output_settings import (effective_settings, image_request_denial,
                                                              is_rule_image_request, prompt_instruction)
 from companion_v2.execution.models import TaskError
-from companion_v2.references.prompts import IMAGE_REFERENCE_INSTRUCTION
+from companion_v2.references.prompts import (
+    IMAGE_REFERENCE_INSTRUCTION,
+    TEXT_WARDROBE_INSTRUCTION,
+    text_wardrobe_material,
+)
 
 from .native_extensions.request_context import set_system_instruction
 
@@ -273,7 +277,9 @@ def inject_core_image_prompt(session, request, offered, values):
             instruction += (
                 "用户指向本轮附图时，同时保留附图与 identity；额度不足时不要为了同时满足多个用途盲目提交，"
                 "将其余服装、姿态或场景要求写进 prompt。")
-    if "image.edit" in actions:
+    has_edit = "image.edit" in actions
+    has_generate = "image.generate" in actions
+    if has_edit:
         instruction += (
             "\n本轮参考素材位于 companion_v2_context.image_reference_material。"
             "角色自拍有可用身份锚点时，可通过改图工具的 reference_ids 与 reference_roles 保持人物一致；"
@@ -284,15 +290,27 @@ def inject_core_image_prompt(session, request, offered, values):
             "没有可用身份图时，依照已知角色外观使用生成工具；只有改图工具可用且没有任何参考图时，"
             "简短说明需要图片参考，不猜素材 ID。\n" + IMAGE_REFERENCE_INSTRUCTION
         )
+    if has_edit or has_generate:
         owner = getattr(session.application.messages, "reference_materials", None)
         if owner is not None:
             try:
                 material = owner.prompt_material(session.context, local_date=_reference_date(session))
-                if isinstance(material, dict) and (material.get("references") or material.get("wardrobe")):
-                    session.state["_image_reference_material"] = material
-                    route_guidance = _identity_reference_guidance(material, reference_limit)
-                    if route_guidance:
-                        instruction += "\n" + route_guidance
+                if has_edit:
+                    if isinstance(material, dict) and (
+                        material.get("references") or material.get("wardrobe") or material.get("daily_outfit")
+                    ):
+                        session.state["_image_reference_material"] = material
+                        route_guidance = _identity_reference_guidance(material, reference_limit)
+                        if route_guidance:
+                            instruction += "\n" + route_guidance
+                else:
+                    text_only = text_wardrobe_material(material)
+                    if text_only is not None:
+                        session.state["_image_reference_material"] = text_only
+                        instruction += (
+                            "\n本轮文字衣柜与每日穿搭参考位于 companion_v2_context.image_reference_material。\n"
+                            + TEXT_WARDROBE_INSTRUCTION
+                        )
             except Exception as error:
                 code = getattr(error, "code", "unknown")
                 if isinstance(error, TaskError) and code in _EXPECTED_REFERENCE_DISABLED_CODES:
