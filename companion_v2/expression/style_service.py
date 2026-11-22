@@ -123,15 +123,14 @@ LEARN_BUDGET_SECONDS = 180
 LEARN_MARGIN_SECONDS = 30
 LEARN_PROVIDER_TIMEOUT_SECONDS = LEARN_BUDGET_SECONDS - LEARN_MARGIN_SECONDS
 
-# A window reads the newest rules for deduplication, but a window that
-# accumulated hundreds of them cannot always encode all of them inside the
-# model's declared input estimate: one production window held 128 rules and the
-# newest 80 alone were 1.42× the default 131072-byte ceiling once JSON-escaped by
-# the adapter's wire. The rules are the cheapest material to lose, so a run trims
-# them rather than failing. The floor keeps enough priors to deduplicate at all;
-# below it a batch would propose rules the window already adopted.
-RULE_READ_LIMIT = 80
+# A window reads compact deduplication priors prioritizing adopted/pending rules.
+# Keeping the read window tight (30) and trimming each rule to its compact form
+# keeps typical learning batches far below provider input ceilings while still
+# protecting adopted and pending priors from duplicate proposals.
+RULE_READ_LIMIT = 30
 MIN_EXISTING_RULES = 8
+EXISTING_PROPOSAL_SUMMARY_CHARS = 120
+EXISTING_EXPRESSION_FIELD_CHARS = 80
 
 # Not every rule is equally useful to a batch that can only afford part of the
 # window: an adopted or pending rule is a prior a new candidate must not
@@ -149,6 +148,33 @@ def reference_rule_priority(rule):
     """
     state = rule.get("state") if isinstance(rule, Mapping) else None
     return RULE_STATE_PRIORITY.get(state, LOWEST_RULE_PRIORITY)
+
+
+def _compact_expression_form(form):
+    """Keep only short deduplication anchors from a stored expression form."""
+    if not isinstance(form, Mapping):
+        return None
+    compact = {}
+    for key in ("situation", "form", "usage", "kind"):
+        value = form.get(key)
+        if isinstance(value, str) and value.strip():
+            compact[key] = " ".join(value.split())[:EXISTING_EXPRESSION_FIELD_CHARS]
+    return compact or None
+
+
+def _compact_existing_rule(runtime, row):
+    """Compact deduplication prior: signal_id, dimension, state, short proposal, compact form."""
+    proposal = " ".join(str(row["proposal"] or "").split())[:EXISTING_PROPOSAL_SUMMARY_CHARS]
+    entry = {
+        "signal_id": row["signal_id"],
+        "dimension": row["dimension"],
+        "proposal": proposal,
+        "state": row["state"],
+    }
+    expression = _compact_expression_form(rule_details.form_for(runtime, row))
+    if expression is not None:
+        entry["expression"] = expression
+    return entry
 
 
 def expression_learning_profile(provider, *, max_output_tokens=2048):
@@ -1063,19 +1089,15 @@ class ExpressionStyleService:
         placeholders = ",".join("?" for _ in family_keys)
         existing_rows = [row for row in self.runtime.read_all(f"""SELECT s.signal_id, s.dimension,
                 s.observation, s.proposal, s.applicability_json, s.evidence_json, s.state,
-                s.scope_key, r.sample_json
+                s.scope_key, s.created_at, r.sample_json
             FROM expression_style_signals s JOIN expression_style_runs r ON r.run_id = s.run_id
             WHERE s.owner_key = ? AND s.scope_key IN ({placeholders})
-            ORDER BY s.created_at DESC, s.signal_id LIMIT ?""",
+            ORDER BY CASE s.state WHEN 'adopted' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
+                     s.created_at DESC, s.signal_id LIMIT ?""",
             (owner_key, *family_keys, RULE_READ_LIMIT))
             if row_usable(context, row, samples=self.samples, at=at)]
-        existing_rules = tuple({"signal_id": row["signal_id"],
-                                "dimension": row["dimension"], "observation": row["observation"][:800],
-                                "proposal": row["proposal"][:1200],
-                                "expression": rule_details.form_for(self.runtime, row),
-                                "applicability": learning.normalize_applicability(
-                                    json.loads(row["applicability_json"])), "state": row["state"]}
-                               for row in existing_rows)
+        existing_rows.sort(key=lambda row: (row["created_at"], row["signal_id"]), reverse=True)
+        existing_rules = tuple(_compact_existing_rule(self.runtime, row) for row in existing_rows)
         return {"context": context, "instruction": instruction, "at": at, "policy": policy,
                 "samples": samples, "material_hash": samples.material_hash,
                 "catalogue": self.samples.catalogue(samples), "sample_context_key": context.key,

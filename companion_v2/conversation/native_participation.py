@@ -11,7 +11,10 @@ from .group_interjection import (ACKNOWLEDGED_STEP, IGNORED_STEP, INTERJECTION, 
 from .group_observation import observe, parse_moment
 from .group_timing import strip_address_markers
 from .participation import INSTRUCTION, group_participation_settings
-from .participation_prompts import group_hints, interjection_instruction, observation_instruction
+from .participation_prompts import (
+    compact_group_hints_facts, compact_interjection_facts, compact_observation_facts,
+    group_hints, interjection_instruction, observation_instruction,
+)
 from .reply_settings import group_safety_settings, group_wakeup_settings
 
 
@@ -74,6 +77,18 @@ def speaker_history_instruction(items, current_speaker):
             + f"\n本轮 current_group_speaker={current_speaker}；只代表本轮，不代表上面每一个人。")
 
 
+def compact_speaker_history(items):
+    """Compact account-attributed recent lines for <companion_v2_context>."""
+    entries = []
+    for item in tuple(items or ())[-8:]:
+        speaker = str(item.get("speaker_id") or "").strip()
+        text = " ".join(str(item.get("text") or "").split())
+        if not speaker or not text:
+            continue
+        entries.append({"speaker_id": speaker, "text": text[:160]})
+    return entries
+
+
 def native_participation_turn(participation, context, native_input, settings, *, group_trigger=None):
     """Read effective references; the model remains responsible for participation."""
     values = group_participation_settings(participation.runtime, context)
@@ -117,9 +132,29 @@ def native_participation_turn(participation, context, native_input, settings, *,
     if values["enable_group_repeat_follow"]:
         hints += ("\n群聊复读有独立的跟读和打断动作，由系统按管理员配置直接发送。"
                   "本轮是普通会话，按当前发言意图回应；不要借可见的复读内容扩展话题、解释其中的事实或自行启动复读动作。")
-    hints += participation.behavior.instruction(context, native_input)
+    behavior_text = participation.behavior.instruction(context, native_input)
+    hints += behavior_text
     act = INTERJECTION if facts["enabled"] and facts["initiative"] else ""
+    compact = compact_group_hints_facts(request, context, settings, recent, {}, native=True,
+                                        current_text=current_text, group_trigger=group_trigger)
+    if len(merged_ids) > 1:
+        compact["merged_fragments"] = len(merged_ids)
+    obs_compact = compact_observation_facts(values, observation["facts"])
+    if obs_compact:
+        compact["observation"] = obs_compact
+    interject_compact = compact_interjection_facts(facts)
+    if interject_compact:
+        compact["interjection"] = interject_compact
+    if values["enable_group_repeat_follow"]:
+        compact["repeat_follow"] = True
+    if behavior_text and behavior_text.strip():
+        compact["behavior"] = behavior_text.strip()
+    speakers = compact_speaker_history(recent_visible)
+    if speakers:
+        compact["recent_speakers"] = speakers
+    compact["current_speaker"] = context.actor.principal.native_account_id
     return {"instruction": INSTRUCTION + hints
                 + speaker_history_instruction(recent_visible, context.actor.principal.native_account_id)
                 + "\n这里的发送记录只证明 AstrBot 发送调用正常返回，不等于平台确认送达；缺失记录不能证明此前无人发言。",
+            "compact_facts": compact,
             "act": act, "signature": ""}
