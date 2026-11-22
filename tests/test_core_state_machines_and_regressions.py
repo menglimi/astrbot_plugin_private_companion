@@ -261,20 +261,73 @@ class HostLayerRegressionTests(unittest.IsolatedAsyncioTestCase):
         relay_requeue(runtime, perm_id)
         self.assertEqual(relay_read(runtime)["tasks"][perm_id]["state"], "waiting_permission")
 
+        # 4) Cancellation during finish() after group delivery settles as "sent" (never requeued).
+        sent_group_id = relay_add_task(runtime, {
+            "kind": "group_wait",
+            "state": "waiting",
+            "group_id": "g-1",
+            "target_user_id": "u-1",
+            "text": "只发一次",
+            "expires_at": future,
+        })
+        orig_to_thread = asyncio.to_thread
+
+        async def cancel_on_finish(fn, *args, **kwargs):
+            if fn.__name__ == "finish":
+                raise asyncio.CancelledError()
+            return await orig_to_thread(fn, *args, **kwargs)
+
+        with patch("astrbot_host.relay_pending_events._send_group", AsyncMock(return_value={"state": "delivered"})), \
+                patch("astrbot_host.relay_pending_events.asyncio.to_thread", side_effect=cancel_on_finish):
+            with self.assertRaises(asyncio.CancelledError):
+                await process_group_presence(controller, unrelated, target, ctx)
+        self.assertEqual(relay_read(runtime)["tasks"][sent_group_id]["state"], "sent")
+
+        # 5) Cancellation during finish() after private report settles as "reported" (never requeued).
+        report_id = relay_add_task(runtime, {
+            "kind": "private_receipt",
+            "state": "waiting_reply",
+            "target_user_id": "u-2",
+            "source_user": "admin",
+            "question": "到了吗",
+            "confirm_before_report": False,
+            "expires_at": future,
+        })
+        target_u2 = NS(platform_id="qq-main", account_id="100", group_id="g-1", participant_id="u-2")
+        with patch("astrbot_host.relay_pending_events._report_receipt", AsyncMock(return_value=True)), \
+                patch("astrbot_host.relay_pending_events.asyncio.to_thread", side_effect=cancel_on_finish):
+            with self.assertRaises(asyncio.CancelledError):
+                await process_private_receipts(controller, NS(message_str="刚到"), target_u2)
+        self.assertEqual(relay_read(runtime)["tasks"][report_id]["state"], "reported")
+
+        # 6) Cancellation during finish() after confirmed permission report settles as "reported".
+        with patch("astrbot_host.relay_pending_events._report_receipt", AsyncMock(return_value=True)), \
+                patch("astrbot_host.relay_pending_events.asyncio.to_thread", side_effect=cancel_on_finish):
+            with self.assertRaises(asyncio.CancelledError):
+                await process_private_receipts(controller, NS(message_str="可以"), target)
+        self.assertEqual(relay_read(runtime)["tasks"][perm_id]["state"], "reported")
+
     async def test_multi_host_web_api_wraps_routes_with_http_handler(self):
         registered = []
         context = NS(registered_web_apis=registered)
         controller = NS(context=context)
         api = MultiHostWebAPI(controller)
 
-        async def broken():
-            raise RuntimeError("unexpected failure")
+        class BoundOwner:
+            def __init__(self):
+                self.controller = NS(target_id="first", role_id="role-a")
 
+            async def broken(self):
+                raise RuntimeError("unexpected failure")
+
+        owner = BoundOwner()
         api._register_routes(
             lambda route, handler, methods, desc: registered.append((route, handler, methods, desc)),
-            [("/test/broken", broken, ["GET"], "broken")],
+            [("/test/broken", owner.broken, ["GET"], "broken")],
         )
         _, wrapped, _, _ = registered[0]
+        self.assertIs(wrapped.__self__, owner)
+        self.assertEqual(wrapped.__name__, "broken")
         response = await wrapped()
         self.assertEqual(response["status"], "error")
         self.assertEqual(response["message"], "plugin_web_internal_error")
@@ -467,8 +520,27 @@ class CoreStateMachineRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(doc["awake_until"])
         self.assertIsNone(doc["awake_sleep"])
 
-        night_now = datetime(2026, 9, 25, 23, 5, tzinfo=zone).astimezone(timezone.utc)
+        night_now = datetime(2026, 9, 25, 23, 5, 12, 123456, tzinfo=zone).astimezone(timezone.utc)
         self.assertGreater(rest_gate.deferral(runtime, ctx, text="在干嘛呀", now=night_now, settings=settings), 0.0)
+
+        # Waking inside explicit rest window activates stable awake_grace across seconds and local midnight.
+        self.assertEqual(rest_gate.deferral(runtime, ctx, text="快醒醒！", now=night_now, settings=settings), 0.0)
+        five_sec_later = datetime(2026, 9, 25, 23, 5, 17, 654321, tzinfo=zone).astimezone(timezone.utc)
+        self.assertEqual(rest_gate.deferral(runtime, ctx, text="在干嘛呀", now=five_sec_later, settings=settings), 0.0)
+
+        before_midnight = datetime(2026, 9, 25, 23, 55, 10, tzinfo=zone).astimezone(timezone.utc)
+        after_midnight = datetime(2026, 9, 26, 0, 10, 45, tzinfo=zone).astimezone(timezone.utc)
+        self.assertEqual(rest_gate.deferral(runtime, ctx, text="快醒醒！", now=before_midnight, settings=settings), 0.0)
+        self.assertEqual(rest_gate.deferral(runtime, ctx, text="还没睡吗", now=after_midnight, settings=settings), 0.0)
+        key_before = rest_gate.sleep_context(runtime, ctx, now=before_midnight, settings=settings)["window_key"]
+        key_after = rest_gate.sleep_context(runtime, ctx, now=after_midnight, settings=settings)["window_key"]
+        key_next_night = rest_gate.sleep_context(
+            runtime, ctx,
+            now=datetime(2026, 9, 26, 23, 5, 12, tzinfo=zone).astimezone(timezone.utc),
+            settings=settings,
+        )["window_key"]
+        self.assertEqual(key_before, key_after)
+        self.assertNotEqual(key_before, key_next_night)
 
         # backlog_prompt pairs the LAST limit timestamps with the LAST limit texts.
         entries = [

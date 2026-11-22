@@ -1,6 +1,7 @@
 """Dashboard control and immutable per-owner administration routes."""
 
 from types import SimpleNamespace
+import functools
 import logging
 import time
 
@@ -147,7 +148,15 @@ class MultiHostWebAPI:
         snapshot = list(registered) if isinstance(registered, list) else None
         try:
             for route, handler, methods, description in routes:
-                wrapped = http_handler(handler)
+                if getattr(handler, "_companion_http_handler", False):
+                    wrapped = handler
+                else:
+                    wrapped = http_handler(handler)
+                    functools.update_wrapper(wrapped, handler)
+                    bound_self = getattr(handler, "__self__", None)
+                    if bound_self is not None:
+                        wrapped.__self__ = bound_self
+                    wrapped._companion_http_handler = True
                 register(route, wrapped, methods, description)
                 self._registered_routes.append((route, wrapped))
         except Exception:

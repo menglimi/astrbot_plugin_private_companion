@@ -161,6 +161,37 @@ def window_active(windows, *, minutes):
                for candidate in (minutes, minutes + 24 * 60))
 
 
+def _local_datetime(now, timezone):
+    """Localized datetime for the configured sleep timezone; bad zones fall back."""
+    try:
+        zone = zoneinfo.ZoneInfo(str(timezone or DEFAULT_TIMEZONE))
+    except Exception:
+        zone = zoneinfo.ZoneInfo(DEFAULT_TIMEZONE)
+    return normalize_utc(now, field="rest gate time").astimezone(zone)
+
+
+def _active_window_instance(settings, *, now):
+    """Return ``(wake_at, window_key)`` for the explicit rest window containing ``now``.
+
+    ``window_key`` anchors to the window instance's local start date and minute
+    bounds ``(start, end)`` so messages arriving at different seconds or across
+    local midnight within the same window share one stable awake-grace key,
+    while distinct dates or distinct windows remain separate.
+    """
+    windows = settings.windows()
+    if not windows:
+        return None
+    local = _local_datetime(now, settings.sleep_timezone)
+    minutes = local.hour * 60 + local.minute
+    for start, end in windows:
+        for candidate in (minutes, minutes + 24 * 60):
+            if start <= candidate < end:
+                wake_at = now + timedelta(minutes=end - candidate)
+                origin_date = local.date() - timedelta(days=1 if candidate >= 24 * 60 else 0)
+                return wake_at, f"rest_window:{origin_date.isoformat()}:{start}-{end}"
+    return None
+
+
 def window_wake_at(settings, *, now):
     """End of the configured rest window containing ``now``, or ``None``.
 
@@ -168,24 +199,13 @@ def window_wake_at(settings, *, now):
     role sleep; a role that has no sleep receipt can still rest through the
     explicit window without pretending an execution receipt exists.
     """
-    windows = settings.windows()
-    if not windows:
-        return None
-    minutes = local_minutes(now, settings.sleep_timezone)
-    for start, end in windows:
-        for candidate in (minutes, minutes + 24 * 60):
-            if start <= candidate < end:
-                return now + timedelta(minutes=end - candidate)
-    return None
+    matched = _active_window_instance(settings, now=now)
+    return matched[0] if matched is not None else None
 
 
 def local_minutes(now, timezone):
     """Local minute of day for the configured sleep timezone; bad zones fall back."""
-    try:
-        zone = zoneinfo.ZoneInfo(str(timezone or DEFAULT_TIMEZONE))
-    except Exception:
-        zone = zoneinfo.ZoneInfo(DEFAULT_TIMEZONE)
-    local = normalize_utc(now, field="rest gate time").astimezone(zone)
+    local = _local_datetime(now, timezone)
     return local.hour * 60 + local.minute
 
 
@@ -350,10 +370,11 @@ def sleep_context(runtime, context, *, now, settings=None):
         # window itself is the durable rest bound, and it only applies when the
         # operator enabled the rest-reply simulation and configured windows.
         if settings.enable_rest_reply_simulation:
-            window_wake = window_wake_at(settings, now=now)
-            if window_wake is not None:
+            matched = _active_window_instance(settings, now=now)
+            if matched is not None:
+                window_wake, window_key = matched
                 return {"resting": True, "reason": "rest_window", "sleep": None,
-                        "window_key": "rest_window:" + stamp(window_wake),
+                        "window_key": window_key,
                         "wake_at": window_wake,
                         "until_seconds": max(0.0, (window_wake - now).total_seconds())}
         return {"resting": False, "reason": "not_sleeping", "sleep": None, "wake_at": None, "until_seconds": None}
@@ -361,10 +382,11 @@ def sleep_context(runtime, context, *, now, settings=None):
     if not active and not settings.sleep_enabled and settings.enable_rest_reply_simulation:
         # Older interrupted receipts must not make a disabled sleep schedule
         # permanently immune to the operator's explicit rest windows.
-        window_wake = window_wake_at(settings, now=now)
-        if window_wake is not None:
+        matched = _active_window_instance(settings, now=now)
+        if matched is not None:
+            window_wake, window_key = matched
             return {"resting": True, "reason": "rest_window", "sleep": None,
-                    "window_key": "rest_window:" + stamp(window_wake),
+                    "window_key": window_key,
                     "wake_at": window_wake,
                     "until_seconds": max(0.0, (window_wake - now).total_seconds())}
     activity = receipts[-1]
