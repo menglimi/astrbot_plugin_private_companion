@@ -86,3 +86,55 @@ test("workspace context updates notify the editor and draft actions return confi
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(h.messages.at(-1).result,true);
 });
+
+test("embedded bridge measures main content height so iframe shrinks even when body scrollHeight stays stretched", async () => {
+  const messages = [], documentEvents = {}, observed = [];
+  let onMessage, resizeCallback;
+  const parent = {postMessage(message) { messages.push(message); }};
+  const window = {
+    parent,
+    scrollY: 0,
+    addEventListener(type, handler) { if (type === "message") onMessage = handler; },
+  };
+  let mainHeight = 2800;
+  const main = {
+    get scrollHeight() { return mainHeight; },
+    get offsetHeight() { return mainHeight; },
+    getBoundingClientRect() { return {top: 0, bottom: mainHeight, height: mainHeight}; },
+  };
+  const body = {
+    scrollHeight: 2800,
+    offsetHeight: 2800,
+  };
+  const document = {
+    body,
+    querySelector: selector => selector === "main" ? main : null,
+    querySelectorAll: () => [],
+    addEventListener(type, handler) { documentEvents[type] = handler; },
+    dispatchEvent(event) { documentEvents[event.type]?.(event); },
+  };
+  class TestResizeObserver {
+    constructor(cb) { resizeCallback = cb; }
+    observe(target) { observed.push(target); }
+  }
+  class TestCustomEvent { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } }
+  vm.runInNewContext(SOURCE, {
+    window, document, parent, setTimeout, clearTimeout,
+    ResizeObserver: TestResizeObserver,
+    getComputedStyle: () => ({paddingBottom: "0px", marginBottom: "0px"}),
+    Promise, Map, Number, Math, Object, String, parseFloat, CustomEvent: TestCustomEvent,
+  });
+  messages.length = 0;
+  const domReady = documentEvents.DOMContentLoaded();
+  onMessage({source: parent, data: {channel: "companion-workspace", kind: "context", context: {}}});
+  await domReady;
+  assert.equal(observed.includes(main), true);
+  assert.equal(observed.includes(body), true);
+  assert.deepEqual(messages.filter(m => m.kind === "resize").map(m => m.height), [2800]);
+
+  // Simulate collapsing sections: main shrinks while body.scrollHeight remains stretched to old iframe viewport.
+  mainHeight = 940;
+  body.scrollHeight = 2800;
+  resizeCallback();
+  assert.deepEqual(messages.filter(m => m.kind === "resize").map(m => m.height), [2800, 940]);
+});

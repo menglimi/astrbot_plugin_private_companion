@@ -91,12 +91,45 @@
     reportDraft:metadata=>send({kind:"draft-state",draft:metadata}),
     apiGet:(path,body,options)=>request("GET",path,body,options),
     apiPost:(path,body,options)=>request("POST",path,body,options)};
+  const measureContentHeight=()=>{
+    const body=document.body;
+    if(!body)return 0;
+    const readStyle=el=>typeof getComputedStyle==="function"?getComputedStyle(el):null;
+    const bodyStyle=readStyle(body);
+    const padBottom=bodyStyle?parseFloat(bodyStyle.paddingBottom)||0:0;
+    const root=document.querySelector?.("main");
+    if(root){
+      const rootStyle=readStyle(root);
+      const marginBottom=rootStyle?parseFloat(rootStyle.marginBottom)||0:0;
+      if(typeof root.getBoundingClientRect==="function"){
+        const rect=root.getBoundingClientRect();
+        const scrollY=Number.isFinite(window.scrollY)?window.scrollY:0;
+        const top=rect.top+scrollY;
+        const bottom=Math.max(rect.bottom+scrollY,top+(root.scrollHeight||0));
+        const measured=Math.ceil(bottom+marginBottom+padBottom);
+        if(Number.isFinite(measured)&&measured>0)return measured;
+      }
+      const fallback=Math.ceil((root.offsetHeight||root.scrollHeight||0)+marginBottom+padBottom);
+      if(Number.isFinite(fallback)&&fallback>0)return fallback;
+    }
+    return Math.ceil(body.offsetHeight||body.scrollHeight||0);
+  };
   document.addEventListener("DOMContentLoaded",async()=>{
     document.querySelectorAll("#start-host,#stop-host").forEach(el=>el.hidden=true);
     await ready;
     if(context.tab)document.querySelector('[data-tab="'+CSS.escape(context.tab)+'"]')?.click();
     let last=0;
-    new ResizeObserver(()=>{const height=document.body.scrollHeight;if(height!==last){last=height;send({kind:"resize",height});}}).observe(document.body);
+    const reportHeight=()=>{
+      const height=measureContentHeight();
+      if(height>0&&height!==last){last=height;send({kind:"resize",height});}
+    };
+    reportHeight();
+    if(typeof ResizeObserver==="function"){
+      const observer=new ResizeObserver(reportHeight);
+      const root=document.querySelector?.("main");
+      if(root)observer.observe(root);
+      if(document.body&&document.body!==root)observer.observe(document.body);
+    }
   });
   send({kind:"ready"});
 })();

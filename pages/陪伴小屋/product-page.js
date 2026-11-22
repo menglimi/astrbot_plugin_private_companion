@@ -1389,7 +1389,7 @@ window.CompanionProduct = (() => {
       sendWorkspaceContext(owner,context);
       send({kind:"appearance",appearance:{...appearance}});return;
     }
-    if(message.kind==="resize"){if(Number.isFinite(message.height))owner.style.height=Math.max(620,Math.min(2400,message.height+12))+"px";return;}
+    if(message.kind==="resize"){if(Number.isFinite(message.height)&&message.height>0)owner.style.height=Math.max(420,Math.min(16000,Math.ceil(message.height)+16))+"px";return;}
     /* 工作区是 opaque origin 的 sandbox iframe，开不出能盖住插件视口的模态层；
        确认由宿主这一层代开，工作区只等结论。没有 CompanionConfirm 时回
        unavailable，工作区据此退回自己的内联确认框。 */

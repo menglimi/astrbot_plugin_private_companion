@@ -85,16 +85,28 @@
   const LONG_MODEL_TIMEOUT = {timeoutMs: 180000};
   function post(path, body, options) { return bridge.apiPost(path, body, options).then(unwrap); }
   function get(path, body) { return bridge.apiGet(path, body).then(unwrap); }
+  const memoryDrafts = new Map();
   function workspaceKey() { return "companion.persona-workshop.v2." + encodeURIComponent(sourceId || "current"); }
-  function persist() {
+  function readStoredDraft(key) {
     try {
-      localStorage.setItem(workspaceKey(), JSON.stringify({
-        sourceMode, strength, answers, sourceText: $("source-text").value, reference: $("reference-material").value,
-        sourceSnapshot, rightSections, rightStyle, rightExamples, rightRaw, leftSections, leftStyle, leftExamples, leftRaw,
-        styleNotes, tryoutBatch, tryoutRows, tryoutIndex, tryoutSelections, speechPreference: $("speech-preference").value,
-        constraintPreference: $("constraint-preference").value, activeStep, unlockedStep,
-      }));
+      const value = localStorage.getItem(key);
+      if (typeof value === "string") return value;
     } catch {}
+    return memoryDrafts.has(key) ? memoryDrafts.get(key) : null;
+  }
+  function writeStoredDraft(key, payload) {
+    memoryDrafts.set(key, payload);
+    try { localStorage.setItem(key, payload); } catch {}
+  }
+  function persist() {
+    const key = workspaceKey();
+    const payload = JSON.stringify({
+      sourceMode, strength, answers, sourceText: $("source-text").value, reference: $("reference-material").value,
+      sourceSnapshot, rightSections, rightStyle, rightExamples, rightRaw, leftSections, leftStyle, leftExamples, leftRaw,
+      styleNotes, tryoutBatch, tryoutRows, tryoutIndex, tryoutSelections, speechPreference: $("speech-preference").value,
+      constraintPreference: $("constraint-preference").value, activeStep, unlockedStep,
+    });
+    writeStoredDraft(key, payload);
   }
   function cleanRecord(value, keys, max, fallback) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return Object.assign({}, fallback || {});
@@ -102,7 +114,7 @@
   }
   function restoreLocal() {
     let saved = null;
-    try { saved = JSON.parse(localStorage.getItem(workspaceKey()) || "null"); } catch {}
+    try { saved = JSON.parse(readStoredDraft(workspaceKey()) || "null"); } catch {}
     if (!saved || typeof saved !== "object" || Array.isArray(saved)) return resetWorkspace();
     sourceMode = ["current", "paste"].includes(saved.sourceMode) ? saved.sourceMode : "current";
     strength = ["light", "medium", "deep"].includes(saved.strength) ? saved.strength : "medium";

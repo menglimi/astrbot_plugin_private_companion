@@ -1,6 +1,7 @@
 ﻿/* 自我页 · 角色手帐。只在本页调整配置控件，保留工作台的保存与继承协议。 */
 .self-page{display:grid;gap:var(--sp-4);width:100%;max-width:1120px;min-width:0;margin-inline:auto;container:self-journal / inline-size}
 .self-page [hidden]{display:none!important}
+.self-page.is-questionnaire-focus{max-width:1280px;gap:0}
 .self-page.is-questionnaire-focus .journal-cover{display:none}
 .self-page.is-questionnaire-focus .deck-panels{min-height:0}
 .self-page.is-questionnaire-focus .deck-tabs{display:none}

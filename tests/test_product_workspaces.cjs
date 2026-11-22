@@ -278,7 +278,7 @@ test("designer state and late replies survive remount while leaving the extensio
   assert.equal(replacement.messages.at(-1).data.state, null);
 });
 
-test("persona pickers use in-frame listboxes so long lists scroll instead of the parent page", () => {
+test("persona pickers keep in-frame listboxes without blocking parent wheel scroll chaining", () => {
   const designerMarkup = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/workspaces/designer/index.html"), "utf8");
   const designerCss = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/workspaces/designer/style.css"), "utf8");
   const personaMarkup = fs.readFileSync(path.join(__dirname, "../pages/陪伴小屋/workspaces/persona/index.html"), "utf8");
@@ -289,9 +289,28 @@ test("persona pickers use in-frame listboxes so long lists scroll instead of the
   assert.match(personaMarkup, /id="source-persona" size="6"/);
   assert.match(profileDraft, /data-role-profile-draft-persona size="6"/);
   assert.match(designerCss, /dialog\{[^}]*overflow:auto[^}]*overscroll-behavior:contain/);
-  assert.match(designerCss, /html,body\{overscroll-behavior-y:contain\}/);
-  assert.match(personaCss, /html,body\{overscroll-behavior-y:contain\}/);
+  assert.doesNotMatch(designerCss, /html\s*,\s*body\{[^}]*overscroll-behavior/);
+  assert.doesNotMatch(personaCss, /html\s*,\s*body\{[^}]*overscroll-behavior/);
+  assert.doesNotMatch(designerCss, /#persona-select\{[^}]*overscroll-behavior/);
+  assert.doesNotMatch(personaCss, /#source-persona\{[^}]*overscroll-behavior/);
   assert.match(selfCss, /\.role-profile-draft-persona select\{[^}]*overflow-y:auto[^}]*overscroll-behavior:contain/);
+});
+
+test("workspace iframe resize relaxes the 2400px cap and shrinks cleanly when content shortens", async () => {
+  const h = await harness();
+  h.product.mountWorkspace();
+  await h.events.message({source: h.persona.contentWindow,
+    data: {channel: "companion-workspace", kind: "resize", height: 3420}});
+  assert.equal(h.persona.style.height, "3436px");
+  await h.events.message({source: h.persona.contentWindow,
+    data: {channel: "companion-workspace", kind: "resize", height: 520}});
+  assert.equal(h.persona.style.height, "536px");
+  await h.events.message({source: h.persona.contentWindow,
+    data: {channel: "companion-workspace", kind: "resize", height: 180}});
+  assert.equal(h.persona.style.height, "420px");
+  await h.events.message({source: h.persona.contentWindow,
+    data: {channel: "companion-workspace", kind: "resize", height: 99999}});
+  assert.equal(h.persona.style.height, "16000px");
 });
 
 test("optional designer UI failure leaves the core account workspace usable", async () => {

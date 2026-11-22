@@ -23,9 +23,8 @@ dialog{width:min(540px,calc(100% - 32px));max-height:calc(100% - 32px);overflow:
 @media(max-width:850px){.workbench{grid-template-columns:minmax(0,1fr)}.workbench-head{align-items:flex-start}.workbench-head>.actions{margin-left:auto}.messages{height:320px}.manuscript textarea{min-height:280px}.stages button{flex:0 0 auto}.stages{justify-content:space-between}.comparison{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:480px){.designer{padding:12px}.workbench-head>.actions{margin-left:0;width:100%}.workbench-head>.actions button{flex:1;padding-inline:8px}.mode-row{margin-top:16px;gap:8px}.memory-note{font-size:.8em}.card:not(details){padding:12px}.card summary{padding:12px}.card-body{padding:0 12px 12px}.composer-foot>.actions{width:100%;justify-content:flex-end}.draft-foot>.actions{width:100%}.draft-foot>.actions button{flex:1}.stages{gap:2px;padding:5px}.stages button{padding:7px;font-size:.82em;gap:5px}}
 
-/* 人设列表用固定高度的 listbox：选项多时在弹窗内部滚动，滚到边界也不把外层页面带着滚。 */
-html,body{overscroll-behavior-y:contain}
-#persona-select{max-height:min(42vh,320px);overflow-y:auto;overscroll-behavior:contain}
+/* 人设列表用固定高度的 listbox，同时保持向父页的正常滚轮传递。 */
+#persona-select{max-height:min(42vh,320px);overflow-y:auto}
 .draft-list{max-height:45vh;overflow:auto;overscroll-behavior:contain}
 
 /* 嵌入「人格处理」时由外层模式卡导航，隐藏重复的标题与模式开关 */
