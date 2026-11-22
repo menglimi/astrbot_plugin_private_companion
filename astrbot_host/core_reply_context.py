@@ -16,6 +16,7 @@ from companion_v2.conversation.awareness_context import INSTRUCTION as CROSS_WIN
 from companion_v2.conversation.growth_context import ROLE_GROWTH_INSTRUCTION
 from companion_v2.conversation.health_context import HEALTH_INSTRUCTION
 from companion_v2.conversation.life_context import LIFE_INSTRUCTION
+from companion_v2.conversation.location_context import LOCATION_CONTEXT_INSTRUCTION
 from companion_v2.conversation.open_items_context import INSTRUCTION as OPEN_ITEMS_INSTRUCTION
 from companion_v2.conversation.phone_context import PHONE_CONTEXT_INSTRUCTION
 from companion_v2.conversation.relationship_context import RELATIONSHIP_INSTRUCTION
@@ -32,7 +33,7 @@ from companion_v2.system_prompts.catalog import (
 )
 from companion_v2.system_prompts.context import SystemPromptContext
 from .core_reply_health import health_perception_snapshot
-from .core_reply_mobile import phone_scene_snapshot
+from .core_reply_mobile import location_scene_snapshot, phone_scene_snapshot
 
 
 logger = logging.getLogger(__name__)
@@ -479,6 +480,10 @@ def build_core_reply_prompt(application, context, native_input, *, at, keyword_m
             if phone:
                 perception_data["phone_context"] = phone
                 instructions.append(PHONE_CONTEXT_INSTRUCTION)
+            location = location_scene_snapshot(application, context, at)
+            if location:
+                perception_data["location_context"] = location
+                instructions.append(LOCATION_CONTEXT_INSTRUCTION)
         # Personal birthdays are explicit profile data, so they remain available
         # even when generic calendar labels are disabled. User data is included
         # only for the identified private recipient; role data is safe to share

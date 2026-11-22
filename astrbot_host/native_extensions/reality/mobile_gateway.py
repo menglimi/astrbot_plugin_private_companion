@@ -25,6 +25,7 @@ try:
 except Exception:
     request = None
 from astrbot.api import logger
+from companion_v2.conversation.location_context import sanitize_activity_note
 from companion_v2.product import PRODUCT_VERSION
 try:
     import aiohttp
@@ -36,6 +37,7 @@ PLUGIN_NAME = 'astrbot_plugin_private_companion.reality'
 MOBILE_API_VERSION = '1.0'
 MOBILE_MAX_BODY_BYTES = 256 * 1024
 MOBILE_STATUS_DISCOVERY_TIMEOUT_SECONDS = 4.0
+MOBILE_AMAP_NOTIFY_WAIT_SECONDS = 5.0
 MOBILE_MAX_SESSIONS_PER_USER = 8
 MOBILE_PROXY_MAX_WS_BYTES = 16 * 1024 * 1024
 MOBILE_TELEMETRY_MAX_MEASUREMENTS = 32
@@ -102,6 +104,9 @@ class MobileGatewayMixin:
         self._mobile_location_notify_tasks: dict[str, asyncio.Task] = {}
         self._mobile_location_notify_pending: set[str] = set()
         self._mobile_location_enrich_tasks: dict[str, asyncio.Task] = {}
+        self._mobile_location_seq: dict[str, int] = {}
+        self._mobile_location_events: dict[str, asyncio.Event] = {}
+        self._mobile_amap_inflight: dict[str, asyncio.Task] = {}
         self._mobile_proxy_session: Any | None = None
         self._mobile_room_upstream_cache: dict[str, str] = {}
         from .mobile_snapshot_owner import MobileSnapshotOwner
@@ -171,49 +176,157 @@ class MobileGatewayMixin:
     def _mobile_amap_timeout_seconds(self) -> float:
         return max(1.0, min(20.0, _number(self._cfg_str('mobile.amap_request_timeout_seconds', '5'), 5.0)))
 
-    async def _mobile_enrich_location_with_amap(self, item: dict[str, Any]) -> None:
-        if not self._mobile_amap_enabled() or not isinstance(item, dict):
-            return
-        key = amap_cache_key(item.get('latitude'), item.get('longitude'))
+    def _mobile_amap_notify_wait_seconds(self) -> float:
+        return max(1.0, min(self._mobile_amap_timeout_seconds(), MOBILE_AMAP_NOTIFY_WAIT_SECONDS))
+
+    def _mobile_amap_cached(self, key: str, *, now: float | None = None) -> dict[str, Any] | None:
         if not key:
-            return
-        now = time.time()
-        cached = self._mobile_amap_cache.get(key)
-        if isinstance(cached, dict) and now - _number(cached.get('cached_at')) <= self._mobile_amap_cache_ttl():
-            item['amap'] = dict(cached.get('result') or {})
-            return
-        result = await reverse_geocode(item.get('latitude'), item.get('longitude'), api_key=self._mobile_amap_api_key(), timeout_seconds=self._mobile_amap_timeout_seconds())
-        if not isinstance(result, dict):
-            return
-        self._mobile_amap_cache[key] = {'cached_at': now, 'result': dict(result)}
-        if len(self._mobile_amap_cache) > 128:
-            oldest = sorted(self._mobile_amap_cache.items(), key=lambda pair: _number(pair[1].get('cached_at')))[:32]
-            for old_key, _value in oldest:
-                self._mobile_amap_cache.pop(old_key, None)
-        item['amap'] = result
+            return None
+        current_time = time.time() if now is None else float(now)
+        with self._mobile_state_lock:
+            cached = self._mobile_amap_cache.get(key)
+            if isinstance(cached, dict) and current_time - _number(cached.get('cached_at')) <= self._mobile_amap_cache_ttl():
+                result = cached.get('result')
+                if isinstance(result, dict):
+                    return dict(result)
+        return None
 
-    def _schedule_mobile_amap_enrichment(self, user_id: str, item: dict[str, Any]) -> None:
-        """Enrich the newest location without delaying the mobile upload response."""
-        if not self._mobile_amap_enabled() or not isinstance(item, dict):
+    def _store_mobile_amap_cache(self, key: str, result: dict[str, Any], *, now: float | None = None) -> None:
+        if not key or not isinstance(result, dict):
             return
-        previous = self._mobile_location_enrich_tasks.get(user_id)
-        if previous is not None and (not previous.done()):
-            previous.cancel()
+        current_time = time.time() if now is None else float(now)
+        with self._mobile_state_lock:
+            self._mobile_amap_cache[key] = {'cached_at': current_time, 'result': dict(result)}
+            if len(self._mobile_amap_cache) > 128:
+                oldest = sorted(self._mobile_amap_cache.items(), key=lambda pair: _number(pair[1].get('cached_at')))[:32]
+                for old_key, _value in oldest:
+                    self._mobile_amap_cache.pop(old_key, None)
 
-        async def run() -> None:
+    def _apply_mobile_amap_result(self, key: str, result: dict[str, Any], *, user_id: str | None = None,
+                                  item: dict[str, Any] | None = None, expected_seq: int | None = None) -> bool:
+        """Write an AMap result only when the target snapshot and grid are still current."""
+        if not key or not isinstance(result, dict):
+            return False
+        with self._mobile_state_lock:
+            if user_id is not None:
+                current = self._mobile_locations.get(user_id)
+                if not isinstance(current, dict):
+                    return False
+                if item is not None and current is not item:
+                    return False
+                if expected_seq is not None and current.get('_seq') != expected_seq:
+                    return False
+                if amap_cache_key(current.get('latitude'), current.get('longitude')) != key:
+                    return False
+                current['amap'] = dict(result)
+                return True
+            applied = False
+            for current in self._mobile_locations.values():
+                if not isinstance(current, dict) or current.get('amap'):
+                    continue
+                if amap_cache_key(current.get('latitude'), current.get('longitude')) == key:
+                    current['amap'] = dict(result)
+                    applied = True
+            return applied
+
+    def _ensure_mobile_amap_task(self, key: str, latitude: Any, longitude: Any) -> asyncio.Task | None:
+        """Deduplicate in-flight AMap reverse geocoding per quantized coordinate grid."""
+        if not self._mobile_amap_enabled() or not key:
+            return None
+        existing = self._mobile_amap_inflight.get(key)
+        if isinstance(existing, asyncio.Task) and not existing.done():
+            return existing
+
+        async def fetch() -> dict[str, Any] | None:
             try:
-                await self._mobile_enrich_location_with_amap(item)
+                result = await reverse_geocode(
+                    latitude, longitude,
+                    api_key=self._mobile_amap_api_key(),
+                    timeout_seconds=self._mobile_amap_timeout_seconds(),
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.debug('[RealityCompanion] 高德区域增强失败: %s', _clean(exc, 160))
-        task = asyncio.create_task(run(), name='reality_mobile_amap_enrichment')
-        self._mobile_location_enrich_tasks[user_id] = task
+                return None
+            if isinstance(result, dict):
+                self._store_mobile_amap_cache(key, result)
+                self._apply_mobile_amap_result(key, result)
+                return dict(result)
+            return None
 
-        def done(_completed: asyncio.Task) -> None:
-            if self._mobile_location_enrich_tasks.get(user_id) is task:
-                self._mobile_location_enrich_tasks.pop(user_id, None)
-        task.add_done_callback(done)
+        try:
+            creator = getattr(self, '_create_lifecycle_background_task', None)
+            task = (creator(fetch(), label='mobile_amap_enrichment')
+                    if callable(creator) else asyncio.create_task(fetch(), name='reality_mobile_amap_enrichment'))
+        except RuntimeError:
+            return None
+        self._mobile_amap_inflight[key] = task
+
+        def cleanup(done: asyncio.Task) -> None:
+            if self._mobile_amap_inflight.get(key) is done:
+                self._mobile_amap_inflight.pop(key, None)
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(cleanup)
+        return task
+
+    async def _mobile_enrich_location_with_amap(self, item: dict[str, Any], *, user_id: str | None = None,
+                                                expected_seq: int | None = None,
+                                                wait_timeout: float | None = None) -> bool:
+        if not self._mobile_amap_enabled() or not isinstance(item, dict):
+            return False
+        key = amap_cache_key(item.get('latitude'), item.get('longitude'))
+        if not key:
+            return False
+        cached = self._mobile_amap_cached(key)
+        if cached is not None:
+            if user_id is not None:
+                return self._apply_mobile_amap_result(key, cached, user_id=user_id, item=item, expected_seq=expected_seq)
+            item['amap'] = cached
+            return True
+        task = self._ensure_mobile_amap_task(key, item.get('latitude'), item.get('longitude'))
+        if task is None:
+            return False
+        try:
+            if wait_timeout is not None:
+                result = await asyncio.wait_for(asyncio.shield(task), timeout=max(0.05, float(wait_timeout)))
+            else:
+                result = await asyncio.shield(task)
+        except asyncio.TimeoutError:
+            return False
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug('[RealityCompanion] 高德区域增强失败: %s', _clean(exc, 160))
+            return False
+        if not isinstance(result, dict):
+            return False
+        if user_id is not None:
+            return self._apply_mobile_amap_result(key, result, user_id=user_id, item=item, expected_seq=expected_seq)
+        item['amap'] = dict(result)
+        return True
+
+    def _schedule_mobile_amap_enrichment(self, user_id: str, item: dict[str, Any]) -> asyncio.Task | None:
+        """Start or reuse grid-deduplicated AMap enrichment without cancelling in-flight queries."""
+        if not self._mobile_amap_enabled() or not isinstance(item, dict):
+            return None
+        key = amap_cache_key(item.get('latitude'), item.get('longitude'))
+        if not key:
+            return None
+        cached = self._mobile_amap_cached(key)
+        if cached is not None:
+            self._apply_mobile_amap_result(key, cached, user_id=user_id, item=item, expected_seq=item.get('_seq'))
+            return None
+        task = self._ensure_mobile_amap_task(key, item.get('latitude'), item.get('longitude'))
+        if task is not None:
+            self._mobile_location_enrich_tasks[user_id] = task
+
+            def done(completed: asyncio.Task) -> None:
+                if self._mobile_location_enrich_tasks.get(user_id) is completed:
+                    self._mobile_location_enrich_tasks.pop(user_id, None)
+            task.add_done_callback(done)
+        return task
 
     def _mobile_screen_upload_enabled(self) -> bool:
         return bool(self._cfg_bool('mobile.screen_upload_enabled', True))
@@ -491,7 +604,29 @@ class MobileGatewayMixin:
                 prompt_place['area_source'] = 'amap'
         elif amap:
             prompt_place['amap'] = {key: _clean(amap.get(key), 180) for key in ('province', 'city', 'district', 'township', 'street', 'number', 'poi', 'formatted_address', 'area_label', 'source') if _clean(amap.get(key), 180)}
-        return {'available': True, 'latitude': round(_number(item.get('latitude')), 3), 'longitude': round(_number(item.get('longitude')), 3), 'accuracy_m': round(max(0.0, _number(item.get('accuracy_m'))), 1), 'altitude_m': round(_number(item.get('altitude_m')), 1) if item.get('altitude_m') is not None else None, 'speed_mps': round(max(0.0, _number(item.get('speed_mps'))), 1), 'bearing': round(_number(item.get('bearing')), 1) if item.get('bearing') is not None else None, 'label': '' if prompt_safe else _clean(item.get('label'), 40), 'place': prompt_place, 'captured_at': captured_at, 'age_seconds': age, 'source': 'android_foreground_location'}
+        activity_note = sanitize_activity_note(item.get('label'), require_prefix=True)
+        arrived_at = _number(item.get('arrived_at'), captured_at) or captured_at
+        stay_seconds = max(0, int(time.time() - arrived_at)) if arrived_at else 0
+        snapshot = {
+            'available': True,
+            'latitude': round(_number(item.get('latitude')), 3),
+            'longitude': round(_number(item.get('longitude')), 3),
+            'accuracy_m': round(max(0.0, _number(item.get('accuracy_m'))), 1),
+            'altitude_m': round(_number(item.get('altitude_m')), 1) if item.get('altitude_m') is not None else None,
+            'speed_mps': round(max(0.0, _number(item.get('speed_mps'))), 1),
+            'bearing': round(_number(item.get('bearing')), 1) if item.get('bearing') is not None else None,
+            'label': '' if prompt_safe else _clean(item.get('label'), 40),
+            'place': prompt_place,
+            'captured_at': captured_at,
+            'received_at': received_at,
+            'arrived_at': arrived_at,
+            'stay_seconds': stay_seconds,
+            'age_seconds': age,
+            'source': 'android_foreground_location',
+        }
+        if activity_note:
+            snapshot['activity_note'] = activity_note
+        return snapshot
 
     def mobile_context(self, user_id: str='') -> dict[str, Any]:
         """Return authorized, coarse mobile facts for V2's current private window."""
@@ -542,17 +677,85 @@ class MobileGatewayMixin:
         except Exception as exc:
             logger.debug('[RealityCompanion] 手机位置主动联动暂时失败: %s', _clean(exc, 160))
 
+    def _mobile_location_event(self, user_id: str) -> asyncio.Event:
+        event = self._mobile_location_events.get(user_id)
+        if event is None:
+            event = asyncio.Event()
+            self._mobile_location_events[user_id] = event
+        return event
+
+    async def _run_mobile_location_pipeline(self, user_id: str) -> None:
+        """Enrich the newest location with AMap before notifying V2 proactive delivery."""
+        notified_seq = -1
+        event = self._mobile_location_event(user_id)
+        while not self._mobile_runtime_stopped:
+            with self._mobile_state_lock:
+                self._mobile_location_notify_pending.discard(user_id)
+                event.clear()
+                item = self._mobile_locations.get(user_id)
+                seq = int(item.get('_seq') or 0) if isinstance(item, dict) else -1
+                already_enriched = isinstance(item.get('amap'), dict) and bool(item.get('amap')) if isinstance(item, dict) else False
+            if not isinstance(item, dict) or seq <= notified_seq:
+                break
+            if self._mobile_amap_enabled() and not already_enriched:
+                key = amap_cache_key(item.get('latitude'), item.get('longitude'))
+                if key:
+                    cached = self._mobile_amap_cached(key)
+                    if cached is not None:
+                        self._apply_mobile_amap_result(key, cached, user_id=user_id, item=item, expected_seq=seq)
+                    else:
+                        amap_task = self._ensure_mobile_amap_task(key, item.get('latitude'), item.get('longitude'))
+                        if amap_task is not None and not amap_task.done():
+                            amap_waiter = asyncio.ensure_future(asyncio.shield(amap_task))
+                            update_waiter = asyncio.create_task(event.wait())
+                            try:
+                                done, _pending = await asyncio.wait(
+                                    {amap_waiter, update_waiter},
+                                    timeout=self._mobile_amap_notify_wait_seconds(),
+                                    return_when=asyncio.FIRST_COMPLETED,
+                                )
+                            finally:
+                                for waiter in (amap_waiter, update_waiter):
+                                    if not waiter.done():
+                                        waiter.cancel()
+                                await asyncio.gather(amap_waiter, update_waiter, return_exceptions=True)
+                            if amap_waiter not in done and update_waiter in done:
+                                continue
+                            if amap_waiter in done and not amap_waiter.cancelled() and amap_waiter.exception() is None:
+                                result = amap_waiter.result()
+                                if isinstance(result, dict):
+                                    self._apply_mobile_amap_result(key, result, user_id=user_id, item=item, expected_seq=seq)
+                        elif amap_task is not None and amap_task.done() and not amap_task.cancelled() and amap_task.exception() is None:
+                            result = amap_task.result()
+                            if isinstance(result, dict):
+                                self._apply_mobile_amap_result(key, result, user_id=user_id, item=item, expected_seq=seq)
+            with self._mobile_state_lock:
+                current = self._mobile_locations.get(user_id)
+                current_seq = int(current.get('_seq') or 0) if isinstance(current, dict) else -1
+            if current is not item or current_seq != seq:
+                if current is None:
+                    break
+                continue
+            notified_seq = seq
+            await self._notify_v2_location(user_id)
+
     def _schedule_v2_location_notification(self, user_id: str) -> None:
         normalized = _clean(user_id, 120)
-        if not normalized:
+        if not normalized or self._mobile_runtime_stopped:
             return
+        with self._mobile_state_lock:
+            current = self._mobile_locations.get(normalized)
+        if isinstance(current, dict) and self._mobile_amap_enabled() and not current.get('amap'):
+            self._schedule_mobile_amap_enrichment(normalized, current)
         previous = self._mobile_location_notify_tasks.get(normalized)
         if isinstance(previous, asyncio.Task) and (not previous.done()):
             self._mobile_location_notify_pending.add(normalized)
+            self._mobile_location_event(normalized).set()
             return
         try:
             creator = getattr(self, '_create_lifecycle_background_task', None)
-            task = creator(self._notify_v2_location(normalized), label='mobile_location_notify') if callable(creator) else asyncio.create_task(self._notify_v2_location(normalized))
+            task = (creator(self._run_mobile_location_pipeline(normalized), label='mobile_location_notify')
+                    if callable(creator) else asyncio.create_task(self._run_mobile_location_pipeline(normalized)))
         except RuntimeError:
             return
         self._mobile_location_notify_tasks[normalized] = task
@@ -560,7 +763,9 @@ class MobileGatewayMixin:
         def clear(done: asyncio.Task) -> None:
             if self._mobile_location_notify_tasks.get(normalized) is done:
                 self._mobile_location_notify_tasks.pop(normalized, None)
-            if normalized in self._mobile_location_notify_pending:
+            if not done.cancelled():
+                done.exception()
+            if not self._mobile_runtime_stopped and normalized in self._mobile_location_notify_pending:
                 self._mobile_location_notify_pending.discard(normalized)
                 self._schedule_v2_location_notification(normalized)
         task.add_done_callback(clear)
@@ -1437,9 +1642,34 @@ class MobileGatewayMixin:
             auth = self._mobile_authorize()
             if not auth:
                 return self._mobile_json_error('未授权的移动端请求', 401)
+            previous = self._mobile_locations.get(user_id)
+            arrived_at = captured_at
+            if isinstance(previous, dict):
+                prev_received = _number(previous.get('received_at') or previous.get('captured_at'))
+                if prev_received and now - prev_received <= self._mobile_location_ttl():
+                    prev_place = previous.get('place') if isinstance(previous.get('place'), dict) else {}
+                    same_geofence = (
+                        bool(place.get('matched')) and bool(prev_place.get('matched'))
+                        and bool(place.get('name')) and place.get('name') == prev_place.get('name')
+                    )
+                    grid_key = amap_cache_key(latitude, longitude)
+                    prev_grid_key = amap_cache_key(previous.get('latitude'), previous.get('longitude'))
+                    same_grid = (
+                        not place.get('matched') and not prev_place.get('matched')
+                        and bool(grid_key) and grid_key == prev_grid_key
+                    )
+                    if same_geofence or same_grid:
+                        arrived_at = _number(previous.get('arrived_at') or previous.get('captured_at'), captured_at)
+            seq = self._mobile_location_seq.get(user_id, 0) + 1
+            self._mobile_location_seq[user_id] = seq
+            item['_seq'] = seq
+            item['arrived_at'] = arrived_at
+            if self._mobile_amap_enabled():
+                cached_amap = self._mobile_amap_cached(amap_cache_key(latitude, longitude), now=now)
+                if cached_amap is not None:
+                    item['amap'] = cached_amap
             self._mobile_snapshot_owner.stamp(user_id, 'location', item, session=auth)
             self._mobile_locations[user_id] = item
-        self._schedule_mobile_amap_enrichment(user_id, item)
         self._schedule_v2_location_notification(user_id)
         return ({'ok': True, 'data': self._mobile_location_snapshot(user_id)}, 200)
 
@@ -1782,9 +2012,15 @@ class MobileGatewayMixin:
         auth = self._mobile_authorize()
         if not auth:
             return self._mobile_json_error('未授权的移动端请求', 401)
+        user_id = _clean(auth.get('user_id'), 120)
         with self._mobile_state_lock:
-            self._mobile_locations.pop(_clean(auth.get('user_id'), 120), None)
-            self._mobile_snapshot_owner.invalidate(_clean(auth.get('user_id'), 120), ('location',))
+            self._mobile_locations.pop(user_id, None)
+            self._mobile_location_seq[user_id] = self._mobile_location_seq.get(user_id, 0) + 1
+            self._mobile_location_notify_pending.discard(user_id)
+            event = self._mobile_location_events.get(user_id)
+            if event is not None:
+                event.set()
+            self._mobile_snapshot_owner.invalidate(user_id, ('location',))
         return ({'ok': True, 'data': {'revoked': True}}, 200)
 
     async def mobile_close_session(self) -> tuple[dict[str, Any], int]:
@@ -1941,16 +2177,27 @@ class MobileGatewayMixin:
                 with self._mobile_state_lock:
                     self._mobile_sessions.clear()
                     self._mobile_locations.clear()
+                    self._mobile_location_seq.clear()
                     self._mobile_device_status.clear()
                     self._mobile_activity.clear()
                     self._mobile_telemetry.clear()
                     self._mobile_screen_clients.clear()
                     self._mobile_pair_attempts.clear()
                     self._mobile_location_notify_pending.clear()
-                for task in list(self._mobile_location_enrich_tasks.values()):
-                    if not task.done():
+                    for event in self._mobile_location_events.values():
+                        event.set()
+                    self._mobile_location_events.clear()
+                tasks_to_cancel = (
+                    list(self._mobile_location_notify_tasks.values())
+                    + list(self._mobile_location_enrich_tasks.values())
+                    + list(self._mobile_amap_inflight.values())
+                )
+                for task in tasks_to_cancel:
+                    if isinstance(task, asyncio.Task) and not task.done():
                         task.cancel()
+                self._mobile_location_notify_tasks.clear()
                 self._mobile_location_enrich_tasks.clear()
+                self._mobile_amap_inflight.clear()
 
     def _register_mobile_api(self) -> None:
         register_api = getattr(self.context, 'register_web_api', None)

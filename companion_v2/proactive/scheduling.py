@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime, timedelta
 import json
+import math
 
 from companion_v2.agenda.models import AgendaError, AgendaTarget
 from companion_v2.agenda.service import AgendaService
@@ -388,6 +389,41 @@ class ContactSchedule:
         native = latest_scope(self.runtime, context.scope)
         return native if native is not None and (legacy is None or native["observed_at"] >= legacy["created_at"]) else legacy
 
+    @staticmethod
+    def _validate_reality_location(marker):
+        if (type(marker) is not dict
+                or set(marker) != {"captured_at", "source_id", "place_fingerprint"}
+                or type(marker.get("captured_at")) not in (int, float)
+                or isinstance(marker.get("captured_at"), bool)
+                or not math.isfinite(marker["captured_at"])
+                or not isinstance(marker.get("source_id"), str)
+                or not marker["source_id"].startswith("reality-location-")
+                or not isinstance(marker.get("place_fingerprint"), str)
+                or not marker["place_fingerprint"]):
+            raise TaskError("contact_reality_location_invalid", "mobile location origin marker is invalid")
+
+    def reality_location_origin(self, context, at, *, captured_at, source_id, place_fingerprint):
+        """Bind a production mobile location event to the latest completed private conversation."""
+        if context.scope.kind.value != "private":
+            raise TaskError("reality_location_not_authorized", "mobile location contact requires a private window")
+        latest = self.latest_conversation(context)
+        if latest is None:
+            raise TaskError("contact_conversation_changed",
+                            "mobile location contact requires a completed private conversation")
+        keys = latest.keys() if hasattr(latest, "keys") else ()
+        batch_id = latest["batch_id"] if "batch_id" in keys else latest.get("turn_id")
+        if not isinstance(batch_id, str) or not batch_id:
+            raise TaskError("contact_conversation_changed",
+                            "the latest private conversation has no stable identity")
+        origin, batch, event = self._origin(context, batch_id, at)
+        marker = {
+            "captured_at": captured_at,
+            "source_id": source_id,
+            "place_fingerprint": place_fingerprint,
+        }
+        self._validate_reality_location(marker)
+        return {**origin, "reality_location_event": marker}, batch, event
+
     def validate_origin(self, context, origin, at):
         current, row, event = self._origin(context, origin["batch_id"], at)
         event_markers = {"activity_event", "growth_event", "journal_event", "calendar_event",
@@ -395,7 +431,7 @@ class ContactSchedule:
                          "meal_event", "weather_event", "weather_change_event", "official_alert_event",
                          "balance_event", "news_event", "screen_event", "greeting_event", "burst_event",
                          "relationship_event", "followup_event", "open_loop_event", "morning_event",
-                         "health_event"}
+                         "health_event", "reality_location_event"}
         rhythm_event_markers = event_markers - {"relationship_event"}
         if current.get("reanchored"):
             # The latest completed conversation took over. Keep the original
@@ -480,6 +516,8 @@ class ContactSchedule:
             self.wake_events.validate(context, origin["morning_event"], at, interaction=interaction)
         if "open_loop_event" in origin:
             self._validate_open_loop(context, origin["open_loop_event"], preferences, at)
+        if "reality_location_event" in origin:
+            self._validate_reality_location(origin["reality_location_event"])
         return current
 
     def _plan(self, row, at):
