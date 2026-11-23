@@ -431,7 +431,44 @@ class StorageRuntime:
             "ON conversation_batches(json_extract(context_json, '$.role_binding')) "
             "WHERE json_extract(context_json, '$.audience.scope.kind') = 'group'",
         ),
+        (
+            "sources",
+            "idx_sources_owner_inst_state",
+            "CREATE INDEX IF NOT EXISTS idx_sources_owner_inst_state "
+            "ON sources(owner, installation_id, state)",
+        ),
+        (
+            "astrbot_core_reply_observations",
+            "idx_core_reply_role_watermark",
+            "CREATE INDEX IF NOT EXISTS idx_core_reply_role_watermark "
+            "ON astrbot_core_reply_observations(role_key, received_at, revision, observed_at)",
+        ),
+        (
+            "astrbot_core_reply_observations",
+            "idx_core_reply_scope_lookup",
+            "CREATE INDEX IF NOT EXISTS idx_core_reply_scope_lookup "
+            "ON astrbot_core_reply_observations("
+            "role_key, scope_kind, "
+            "json_extract(context_json, '$.role_binding.scope.native_scope_id'), "
+            "json_extract(context_json, '$.role_binding.scope.session_id'), "
+            "json_extract(context_json, '$.role_binding.scope.conversation_id'), "
+            "received_at DESC, turn_id DESC)",
+        ),
     )
+
+    _STARTUP_WAL_TRUNCATE_MIN_BYTES = 8 * 1024 * 1024
+    _TABLE_WRITE_ACTIONS = frozenset((
+        sqlite3.SQLITE_INSERT,
+        sqlite3.SQLITE_UPDATE,
+        sqlite3.SQLITE_DELETE,
+    ))
+    _SCHEMA_MUTATION_ACTIONS = frozenset((
+        sqlite3.SQLITE_CREATE_TABLE,
+        sqlite3.SQLITE_DROP_TABLE,
+        sqlite3.SQLITE_ALTER_TABLE,
+        sqlite3.SQLITE_ATTACH,
+        sqlite3.SQLITE_DETACH,
+    ))
 
     def __init__(self, *, data_root: Path, installation_id: str) -> None:
         if not installation_id or installation_id != installation_id.strip():
@@ -446,7 +483,7 @@ class StorageRuntime:
         self._read_snapshot_diagnostics = local()
         self._read_connections = local()
         self._reader_condition = Condition()
-        # Bounded shared pool of read-only WAL connections (2-4 depending on host RAM).
+        # Shared pool of read-only WAL connections scaled to host RAM and CPU.
         self._idle_readers: list[sqlite3.Connection] = []
         self._all_readers: list[sqlite3.Connection] = []
         self._creating_readers = 0
@@ -456,6 +493,8 @@ class StorageRuntime:
         self._table_exists_cache: dict[str, tuple[bool, int]] = {}
         self._initialized_schemas: set[str] = set()
         self._write_epoch = 0
+        self._table_write_epochs: dict[str, int] = {}
+        self._schema_mutation_epoch = 0
         self._last_optimize_at = 0.0
         self._schema_indexes_changed = False
         self._savepoint_sequence = 0
@@ -480,6 +519,55 @@ class StorageRuntime:
     @property
     def reader_pool_size(self) -> int:
         return self._reader_pool_size
+
+    def _install_write_tracker(self, connection: sqlite3.Connection) -> None:
+        """Track per-table in-process writes on the writer connection with ~1-2us overhead."""
+        write_actions = self._TABLE_WRITE_ACTIONS
+        schema_actions = self._SCHEMA_MUTATION_ACTIONS
+        epochs = self._table_write_epochs
+
+        def _authorizer(action: int, arg1: str | None, _arg2: str | None, _db: str | None, _src: str | None) -> int:
+            if action in write_actions:
+                if arg1:
+                    table = arg1.lower()
+                    epochs[table] = epochs.get(table, 0) + 1
+            elif action in schema_actions:
+                self._schema_mutation_epoch += 1
+                if arg1:
+                    table = arg1.lower()
+                    epochs[table] = epochs.get(table, 0) + 1
+            return sqlite3.SQLITE_OK
+
+        connection.set_authorizer(_authorizer)
+
+    def table_write_epoch_snapshot(self, groups: tuple[frozenset[str], ...]) -> tuple[int, ...]:
+        """Return per-group write counters plus the schema-mutation counter.
+
+        Callers that already hold ``self._lock`` receive a consistent snapshot
+        with zero SQLite work; external callers acquire ``self._lock`` briefly.
+        """
+        with self._lock:
+            epochs = self._table_write_epochs
+            return (
+                *(sum(epochs.get(table, 0) for table in group) for group in groups),
+                self._schema_mutation_epoch,
+            )
+
+    def _wal_file_size(self) -> int:
+        wal_path = Path(str(self._database_path) + "-wal")
+        try:
+            return wal_path.stat().st_size
+        except OSError:
+            return 0
+
+    def _truncate_wal_best_effort(self, connection: sqlite3.Connection) -> tuple[int, int, int] | None:
+        if connection.in_transaction:
+            return None
+        try:
+            row = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            return tuple(int(value) for value in row) if row is not None else None
+        except sqlite3.Error:
+            return None
 
     def has_table(self, table_name: str) -> bool:
         """Return whether *table_name* exists, caching hits across hot read paths.
@@ -753,6 +841,8 @@ class StorageRuntime:
                 reader.close()
             if self._connection is not None:
                 self._run_pragma_optimize(self._connection)
+                if self._wal_file_size() > self._tuning_profile.journal_size_limit:
+                    self._truncate_wal_best_effort(self._connection)
                 self._connection.close()
                 self._connection = None
             with self._meta_cache_lock:
@@ -780,11 +870,24 @@ class StorageRuntime:
             self._require_connection()
         checkpoint = None
         result = None
+        mode_used = "PASSIVE"
         try:
-            checkpoint = sqlite3.connect(str(self._database_path), timeout=0.0, isolation_level=None)
+            checkpoint = sqlite3.connect(str(self._database_path), timeout=0.2, isolation_level=None)
             checkpoint.execute("PRAGMA synchronous = NORMAL")
+            checkpoint.execute("PRAGMA busy_timeout = 200")
+            checkpoint.execute(f"PRAGMA journal_size_limit = {int(self._tuning_profile.journal_size_limit)}")
             row = checkpoint.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
             result = tuple(int(value) for value in row)
+            if (
+                result[0] == 0
+                and result[2] == result[1]
+                and self._wal_file_size() > self._tuning_profile.journal_size_limit
+                and self._active_readers == 0
+            ):
+                truncated = self._truncate_wal_best_effort(checkpoint)
+                if truncated is not None:
+                    result = truncated
+                    mode_used = "TRUNCATE"
             if (time.monotonic() - self._last_optimize_at) >= self.OPTIMIZE_INTERVAL_SECONDS:
                 self._run_pragma_optimize(checkpoint)
             return result
@@ -795,8 +898,8 @@ class StorageRuntime:
             if elapsed_ms >= self.SLOW_OPERATION_SECONDS * 1000:
                 details = "" if result is None else (
                     f"busy={result[0]} wal_frames={result[1]} checkpointed_frames={result[2]}")
-                logger.warning("V2 SQLite WAL checkpoint slow elapsed_ms=%d mode=PASSIVE%s",
-                               elapsed_ms, " " + details if details else "")
+                logger.warning("V2 SQLite WAL checkpoint slow elapsed_ms=%d mode=%s%s",
+                               elapsed_ms, mode_used, " " + details if details else "")
 
     @contextmanager
     def transaction(self, *, require_outermost: bool = False) -> Iterator[sqlite3.Connection]:
@@ -956,7 +1059,9 @@ class StorageRuntime:
                 created.execute("PRAGMA busy_timeout = 5000")
                 created.execute("PRAGMA wal_autocheckpoint = 0")
                 created.execute("PRAGMA query_only = ON")
-                created.execute(f"PRAGMA cache_size = -{int(self._tuning_profile.cache_size_kib)}")
+                created.execute(
+                    f"PRAGMA cache_size = -{int(self._tuning_profile.effective_reader_cache_size_kib())}"
+                )
                 created.execute(f"PRAGMA mmap_size = {int(self._tuning_profile.mmap_size)}")
                 created.execute("PRAGMA temp_store = MEMORY")
             except BaseException as error:
@@ -1066,6 +1171,7 @@ class StorageRuntime:
                 timeout=5.0,
                 isolation_level=None,
                 check_same_thread=False,
+                cached_statements=0,
             )
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
@@ -1073,8 +1179,9 @@ class StorageRuntime:
             connection.execute("PRAGMA synchronous = NORMAL")
             connection.execute("PRAGMA busy_timeout = 5000")
             connection.execute("PRAGMA wal_autocheckpoint = 0")
-            # Bound cache_size and mmap_size to host RAM so low-memory VPS hosts
-            # stay well within budget while mid/high-RAM hosts retain hot pages.
+            connection.execute(f"PRAGMA journal_size_limit = {int(self._tuning_profile.journal_size_limit)}")
+            # Scale cache_size and mmap_size to host RAM so low-memory VPS hosts stay
+            # bounded while high-RAM hosts map hot tables into OS page cache.
             connection.execute(f"PRAGMA cache_size = -{int(self._tuning_profile.cache_size_kib)}")
             connection.execute(f"PRAGMA mmap_size = {int(self._tuning_profile.mmap_size)}")
             connection.execute("PRAGMA temp_store = MEMORY")
@@ -1109,6 +1216,12 @@ class StorageRuntime:
                     self._run_pragma_optimize(connection)
                 else:
                     self._last_optimize_at = time.monotonic()
+                # Fold migration/index WAL frames back into the main file while we hold
+                # the sole connection so mmap covers all hot pages immediately.
+                wal_threshold = min(self._STARTUP_WAL_TRUNCATE_MIN_BYTES, self._tuning_profile.journal_size_limit)
+                if self._schema_indexes_changed or self._wal_file_size() > wal_threshold:
+                    self._truncate_wal_best_effort(connection)
+            self._install_write_tracker(connection)
         except sqlite3.Error as error:
             self.close()
             raise StorageOpenError("V2 schema validation or migration failed") from error

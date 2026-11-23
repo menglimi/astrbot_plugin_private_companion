@@ -845,16 +845,28 @@ class ModelManagement:
             legacy_watermark = None
             if cache is not None and core_state is not None:
                 legacy_key = (role_address_key, self.context.key, cache_version)
-                legacy_watermark = precomputed.get("legacy_watermark")
-                if legacy_watermark is None:
-                    legacy_watermark = read_legacy_watermark(runtime)
-                    precomputed["legacy_watermark"] = legacy_watermark
-                legacy_entry = cache.lookup_legacy(
+                legacy_token = precomputed.get("db_write_token") or shared_token_before
+                legacy_entry = cache.lookup_legacy_fast(
                     legacy_key,
-                    legacy_watermark=legacy_watermark,
+                    db_write_token=legacy_token,
                     core_days=core_state.core_days,
                     today=today,
                 )
+                if legacy_entry is not None:
+                    legacy_watermark = legacy_entry.legacy_watermark
+                    precomputed["legacy_watermark"] = legacy_watermark
+                else:
+                    legacy_watermark = precomputed.get("legacy_watermark")
+                    if legacy_watermark is None:
+                        legacy_watermark = read_legacy_watermark(runtime)
+                        precomputed["legacy_watermark"] = legacy_watermark
+                    legacy_entry = cache.lookup_legacy(
+                        legacy_key,
+                        legacy_watermark=legacy_watermark,
+                        core_days=core_state.core_days,
+                        today=today,
+                        db_write_token=legacy_token,
+                    )
 
             if legacy_entry is not None and core_state is not None:
                 all_days = set(legacy_entry.all_days)
@@ -1131,6 +1143,11 @@ class ModelManagement:
                         or has_active_read_snapshot(runtime)
                     )
                 ):
+                    stable_legacy_token = (
+                        shared_token_before
+                        if (shared_token_before is not None and read_shared_db_token(runtime) == shared_token_before)
+                        else None
+                    )
                     cache.store_legacy(
                         legacy_key,
                         build_legacy_entry(
@@ -1139,6 +1156,7 @@ class ModelManagement:
                             candidate_days=frozenset(valid_candidate_days),
                             reports=reports,
                             cache_diag=legacy_cache_diag,
+                            db_write_token=stable_legacy_token,
                         ),
                     )
 

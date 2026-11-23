@@ -11,7 +11,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
-from threading import Lock
+from threading import Lock, get_ident
 from weakref import WeakKeyDictionary
 
 from companion_v2.execution.models import digest
@@ -699,11 +699,17 @@ def pricing_fingerprint(runtime, pricing_revision=None) -> tuple:
 
 
 def _single_store_active_write(runtime) -> bool:
-    return int(getattr(runtime, "_write_depth", 0) or 0) > 0
+    depth = int(getattr(runtime, "_write_depth", 0) or 0)
+    if depth <= 0:
+        return False
+    owner_tid = getattr(runtime, "_write_owner_thread_id", None)
+    if owner_tid is None:
+        return True
+    return owner_tid == get_ident()
 
 
 def has_active_write_transaction(runtime) -> bool:
-    """Return True if either the main store or split config store has an active write tx."""
+    """Return True if the current thread owns an active write tx on main or split config store."""
     if _single_store_active_write(runtime):
         return True
     config_store = getattr(runtime, "configuration_store", None)
@@ -726,10 +732,49 @@ def has_active_read_snapshot(runtime) -> bool:
         return False
 
 
+_CORE_OBS_TABLES = frozenset((
+    "astrbot_core_reply_observations",
+    "core_reply_daily_rollups",
+))
+_LEGACY_MODEL_TABLES = frozenset((
+    "model_calls",
+    "execution_tasks",
+    "model_requests",
+    "model_call_accounts",
+    "model_call_failures",
+    "model_call_diagnostics",
+    "model_call_cache_signatures",
+))
+_AUX_MAINT_TABLES = frozenset((
+    "model_budget_accounts",
+    "inbound_no_replies",
+    "conversation_batches",
+    "conversation_flows",
+    "conversation_inputs",
+    "conversation_parts",
+    "conversation_tool_calls",
+    "extension_tool_invocations",
+    "execution_events",
+    "laya_decision_events",
+    "proactive_contacts",
+    "configuration_targets",
+    "configuration_values",
+    "configuration_changes",
+))
+_RUNTIME_META_TABLES = frozenset(("runtime_metadata",))
+_MAINTENANCE_TABLE_GROUPS = (
+    _CORE_OBS_TABLES,
+    _LEGACY_MODEL_TABLES,
+    _AUX_MAINT_TABLES,
+    _RUNTIME_META_TABLES,
+)
+
+
 @dataclass(frozen=True)
 class _StoreWriteToken:
     generation: tuple[int, int]
     local_changes: tuple[int, int, int]
+    domain_epochs: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -748,22 +793,88 @@ def _compatible_read_snapshot(before: _DatabaseWriteToken, after: _DatabaseWrite
             and before.configuration == after.configuration)
 
 
-def _single_runtime_shared_token(runtime) -> _StoreWriteToken | None:
+def _same_maintenance_domains(
+    left: _DatabaseWriteToken | None,
+    right: _DatabaseWriteToken | None,
+) -> tuple[bool, bool]:
+    """Return ``(non_meta_unchanged, meta_unchanged)`` across tracked writer table groups."""
+    if left is None or right is None:
+        return False, False
+    if left.main.generation != right.main.generation or left.configuration != right.configuration:
+        return False, False
+    le = left.main.domain_epochs
+    re = right.main.domain_epochs
+    if le is None or re is None or len(le) < 5 or len(re) < 5:
+        return False, False
+    # Indices: 0=core_obs, 1=legacy_model, 2=aux_maint, 3=runtime_metadata, 4=schema
+    non_meta = le[0] == re[0] and le[1] == re[1] and le[2] == re[2] and le[4] == re[4]
+    return non_meta, le[3] == re[3]
+
+
+def _same_legacy_domain(
+    left: _DatabaseWriteToken | None,
+    right: _DatabaseWriteToken | None,
+) -> bool:
+    """Return True when no legacy model-ledger table changed on this writer or externally."""
+    if left is None or right is None:
+        return False
+    if left.main.generation != right.main.generation:
+        return False
+    le = left.main.domain_epochs
+    re = right.main.domain_epochs
+    if le is None or re is None or len(le) < 5 or len(re) < 5:
+        return False
+    return le[1] == re[1] and le[4] == re[4]
+
+
+def _same_aux_domain(
+    left: _DatabaseWriteToken | None,
+    right: _DatabaseWriteToken | None,
+) -> tuple[bool, bool]:
+    """Return ``(aux_unchanged, meta_unchanged)`` across auxiliary maintenance tables."""
+    if left is None or right is None:
+        return False, False
+    if left.main.generation != right.main.generation or left.configuration != right.configuration:
+        return False, False
+    le = left.main.domain_epochs
+    re = right.main.domain_epochs
+    if le is None or re is None or len(le) < 5 or len(re) < 5:
+        return False, False
+    return (le[2] == re[2] and le[4] == re[4]), (le[3] == re[3])
+
+
+def _read_runtime_meta_maintenance_mark(runtime, context, soft_fallback) -> tuple[object, tuple[bool, int]]:
+    """O(1) PK verification for the two runtime_metadata-dependent maintenance fields."""
+    reclaim_row = runtime.read_one(
+        "SELECT value FROM runtime_metadata WHERE key = ?",
+        (RECLAIM_AUDIT_KEY,),
+    )
+    soft = effective_soft(runtime, context, soft_fallback)
+    soft_mark = (bool(soft and soft.enabled), soft.tokens if soft else 0)
+    return (reclaim_row["value"] if reclaim_row is not None else None), soft_mark
+
+
+def _single_runtime_shared_token(runtime, *, include_domains: bool = False) -> _StoreWriteToken | None:
     if _single_store_active_write(runtime):
         return None
     lock = getattr(runtime, "_lock", None)
-    if lock is None or not lock.acquire(timeout=0.01):
+    if lock is None or not lock.acquire(timeout=0.25):
         return None
     try:
         connection = getattr(runtime, "_connection", None)
-        if connection is None or _single_store_active_write(runtime):
+        if connection is None or int(getattr(runtime, "_write_depth", 0) or 0) > 0:
             return None
         # The writer sees every external commit and its own commits leave this value unchanged.
         # SQLite's value is connection-local, so always sample the same writer connection.
         generation = (id(connection), int(connection.execute("PRAGMA data_version").fetchone()[0]))
         local_changes = (connection.total_changes, runtime._savepoint_sequence,
                          runtime._transaction_rollback_epoch)
-        return _StoreWriteToken(generation, local_changes)
+        domain_epochs = None
+        if include_domains:
+            epoch_reader = getattr(runtime, "table_write_epoch_snapshot", None)
+            if callable(epoch_reader):
+                domain_epochs = epoch_reader(_MAINTENANCE_TABLE_GROUPS)
+        return _StoreWriteToken(generation, local_changes, domain_epochs)
     except sqlite3.Error:
         return None
     finally:
@@ -772,12 +883,12 @@ def _single_runtime_shared_token(runtime) -> _StoreWriteToken | None:
 
 def read_shared_db_token(runtime) -> _DatabaseWriteToken | None:
     """Thread-independent O(1) write token across main and optional split config stores."""
-    main_token = _single_runtime_shared_token(runtime)
+    main_token = _single_runtime_shared_token(runtime, include_domains=True)
     if main_token is None:
         return None
     config_store = getattr(runtime, "configuration_store", None)
     if config_store is not None and config_store is not runtime:
-        config_token = _single_runtime_shared_token(config_store)
+        config_token = _single_runtime_shared_token(config_store, include_domains=False)
         if config_token is None:
             return None
         return _DatabaseWriteToken(main_token, config_token)
@@ -1318,6 +1429,7 @@ class _LegacyCacheEntry:
     candidate_days: frozenset[str]
     reports: dict[str, ModelUsageReport]
     cache_diag: CacheDiagnosticAccumulator
+    db_write_token: _DatabaseWriteToken | None = None
 
 
 @dataclass
@@ -1330,6 +1442,7 @@ class _SnapshotCacheEntry:
     has_future_rows: bool
     payload: _PreparedPayload
     storage_pragmas_override: dict | None = None
+    built_token: _DatabaseWriteToken | None = None
 
 
 @dataclass
@@ -1627,23 +1740,76 @@ class _RuntimeMaintenanceCache:
                     payload["reply_efficiency"]["generated_at"] = eff_now.isoformat()
                 return payload, precomputed
             candidate_rich = entry.rich_watermark if (clock_ok and entry.runtime_state_key == runtime_state_key) else None
+            candidate_token = entry.db_write_token if candidate_rich is not None else None
+            candidate_day = entry.snapshot_now_utc.date() if candidate_rich is not None else None
 
         if candidate_rich is None:
             with self._lock:
                 self._stats["snapshot_misses"] += 1
             return None, precomputed
 
-        # A DB write occurred somewhere; check whether any maintenance table actually changed.
+        # O(1) domain fast path: if only unrelated tables were written in-process,
+        # avoid scanning legacy model_calls / signatures / aux tables completely.
+        non_meta_same, meta_same = _same_maintenance_domains(candidate_token, db_write_token)
+        if non_meta_same:
+            meta_ok = meta_same
+            if not meta_ok and len(candidate_rich) >= 4 and len(candidate_rich[3]) >= 15:
+                reclaim_val, soft_mark = _read_runtime_meta_maintenance_mark(
+                    runtime, context, soft_fallback
+                )
+                meta_ok = (reclaim_val == candidate_rich[3][13] and soft_mark == candidate_rich[3][14])
+            if meta_ok:
+                storage_pragmas = _read_storage_pragmas(runtime)
+                stable_token = (
+                    db_write_token is not None
+                    and shared_token_before is not None
+                    and read_shared_db_token(runtime) == shared_token_before
+                )
+                with self._lock:
+                    entry = self._snapshots.get(scope_key)
+                    if entry is not None and entry.rich_watermark == candidate_rich:
+                        if stable_token:
+                            entry.db_write_token = db_write_token
+                            entry.fast_watermark = fast_watermark
+                            entry.storage_pragmas_override = storage_pragmas.copy()
+                        self._snapshots.move_to_end(scope_key)
+                        self._stats["snapshot_hits"] += 1
+                        payload = entry.payload.clone()
+                        if isinstance(payload.get("runtime"), dict):
+                            payload["runtime"]["storage"] = storage_pragmas.copy()
+                        payload["generated_at"] = now.isoformat()
+                        if isinstance(payload.get("reply_efficiency"), dict):
+                            payload["reply_efficiency"]["generated_at"] = eff_now.isoformat()
+                        return payload, precomputed
+
+        # A maintenance table or external writer mutated the DB; verify watermarks,
+        # skipping the heavy legacy-table scan whenever legacy tables are untouched.
         hist_wm = read_core_history_watermark(
             runtime, role_key_value=role_key_value, history_cutoff=history_cutoff, core_available=core_available
         )
         today_wm = read_core_today_watermark(
             runtime, role_key_value=role_key_value, history_cutoff=history_cutoff, core_available=core_available
         )
-        legacy_wm = read_legacy_watermark(runtime)
-        aux_wm = read_aux_maintenance_watermark(
-            runtime, context, context_key=context_key, soft_fallback=soft_fallback, eff_now=eff_now
-        )
+        if _same_legacy_domain(candidate_token, db_write_token):
+            legacy_wm = candidate_rich[2]
+        else:
+            legacy_wm = read_legacy_watermark(runtime)
+        aux_same, aux_meta_same = _same_aux_domain(candidate_token, db_write_token)
+        reuse_aux = False
+        if aux_same and candidate_day == now_utc.date():
+            if aux_meta_same:
+                reuse_aux = True
+            elif len(candidate_rich) >= 4 and len(candidate_rich[3]) >= 15:
+                reclaim_val, soft_mark = _read_runtime_meta_maintenance_mark(
+                    runtime, context, soft_fallback
+                )
+                reuse_aux = (reclaim_val == candidate_rich[3][13] and soft_mark == candidate_rich[3][14])
+        if reuse_aux:
+            aux_wm = candidate_rich[3]
+        else:
+            aux_wm = read_aux_maintenance_watermark(
+                runtime, context, context_key=context_key, soft_fallback=soft_fallback, eff_now=eff_now
+            )
         rich_watermark = (hist_wm, today_wm, legacy_wm, aux_wm)
         precomputed.update(
             hist_watermark=hist_wm,
@@ -1730,19 +1896,36 @@ class _RuntimeMaintenanceCache:
             fresh_fast_wm = read_fast_table_watermark(
                 runtime, role_key_value=role_key_value, core_available=core_available
             )
-            hist_wm = read_core_history_watermark(
-                runtime, role_key_value=role_key_value, history_cutoff=history_cutoff, core_available=core_available
-            )
-            today_wm = read_core_today_watermark(
-                runtime, role_key_value=role_key_value, history_cutoff=history_cutoff, core_available=core_available
-            )
-            legacy_wm = read_legacy_watermark(runtime)
-            aux_wm = read_aux_maintenance_watermark(
-                runtime, context, context_key=context_key, soft_fallback=soft_fallback, eff_now=eff_now
-            )
-            fresh_rich = (hist_wm, today_wm, legacy_wm, aux_wm)
-            if fresh_rich != entry.rich_watermark:
-                return False
+            non_meta_same, meta_same = _same_maintenance_domains(entry.built_token, fresh_shared)
+            fast_verified = False
+            if non_meta_same:
+                if meta_same:
+                    fast_verified = True
+                elif len(entry.rich_watermark) >= 4 and len(entry.rich_watermark[3]) >= 15:
+                    reclaim_val, soft_mark = _read_runtime_meta_maintenance_mark(
+                        runtime, context, soft_fallback
+                    )
+                    fast_verified = (
+                        reclaim_val == entry.rich_watermark[3][13]
+                        and soft_mark == entry.rich_watermark[3][14]
+                    )
+            if not fast_verified:
+                hist_wm = read_core_history_watermark(
+                    runtime, role_key_value=role_key_value, history_cutoff=history_cutoff, core_available=core_available
+                )
+                today_wm = read_core_today_watermark(
+                    runtime, role_key_value=role_key_value, history_cutoff=history_cutoff, core_available=core_available
+                )
+                if _same_legacy_domain(entry.built_token, fresh_shared):
+                    legacy_wm = entry.rich_watermark[2]
+                else:
+                    legacy_wm = read_legacy_watermark(runtime)
+                aux_wm = read_aux_maintenance_watermark(
+                    runtime, context, context_key=context_key, soft_fallback=soft_fallback, eff_now=eff_now
+                )
+                fresh_rich = (hist_wm, today_wm, legacy_wm, aux_wm)
+                if fresh_rich != entry.rich_watermark:
+                    return False
             storage_pragmas = _read_storage_pragmas(runtime)
         if read_shared_db_token(runtime) != fresh_shared:
             return False
@@ -2040,6 +2223,28 @@ class _RuntimeMaintenanceCache:
             has_future_obs=hist_has_future or today_has_future,
         )
 
+    def lookup_legacy_fast(
+        self,
+        legacy_key: tuple,
+        *,
+        db_write_token: _DatabaseWriteToken | None,
+        core_days: frozenset[str],
+        today: str,
+    ) -> _LegacyCacheEntry | None:
+        """O(1) legacy cache lookup when writer table-epochs prove legacy tables are untouched."""
+        if db_write_token is None:
+            return None
+        with self._lock:
+            entry = self._legacy.get(legacy_key)
+            if entry is None or not _same_legacy_domain(entry.db_write_token, db_write_token):
+                return None
+            expected_days = entry.candidate_days | core_days | {today}
+            if entry.all_days != expected_days:
+                return None
+            self._legacy.move_to_end(legacy_key)
+            self._stats["legacy_cache_hits"] += 1
+            return entry
+
     def lookup_legacy(
         self,
         legacy_key: tuple,
@@ -2047,6 +2252,7 @@ class _RuntimeMaintenanceCache:
         legacy_watermark: tuple,
         core_days: frozenset[str],
         today: str,
+        db_write_token: _DatabaseWriteToken | None = None,
     ) -> _LegacyCacheEntry | None:
         with self._lock:
             entry = self._legacy.get(legacy_key)
@@ -2057,6 +2263,8 @@ class _RuntimeMaintenanceCache:
             if entry.all_days != expected_days:
                 self._stats["legacy_cache_misses"] += 1
                 return None
+            if db_write_token is not None:
+                entry.db_write_token = db_write_token
             self._legacy.move_to_end(legacy_key)
             self._stats["legacy_cache_hits"] += 1
             return entry
@@ -2169,6 +2377,7 @@ def build_snapshot_entry(
         snapshot_now_utc=eff_now.astimezone(timezone.utc),
         has_future_rows=has_future_obs or has_future_batches,
         payload=_PreparedPayload(payload),
+        built_token=shared_token_before,
     )
 
 
@@ -2179,6 +2388,7 @@ def build_legacy_entry(
     candidate_days: frozenset[str],
     reports: dict[str, ModelUsageReport],
     cache_diag: CacheDiagnosticAccumulator,
+    db_write_token: _DatabaseWriteToken | None = None,
 ) -> _LegacyCacheEntry:
     return _LegacyCacheEntry(
         legacy_watermark=legacy_watermark,
@@ -2186,6 +2396,7 @@ def build_legacy_entry(
         candidate_days=candidate_days,
         reports={key: _clone_usage_report(reports[key]) for key in LEGACY_USAGE_KEYS},
         cache_diag=cache_diag.clone(),
+        db_write_token=db_write_token,
     )
 
 

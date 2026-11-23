@@ -87,30 +87,97 @@ def _make_context(index: int, kind: ScopeKind = ScopeKind.PRIVATE, inst: str = "
 
 
 class AdaptivePoolAndPragmaTests(unittest.TestCase):
-    def test_memory_adaptive_pragmas_cover_low_mid_and_high_ram_hosts(self):
+    def test_memory_adaptive_pragmas_cover_low_mid_high_and_ultra_hosts(self):
         cases = (
-            (1 * 1024**3, "low", 2, -8192, 0),
-            (4 * 1024**3, "medium", 3, -16384, 64 * 1024 * 1024),
-            (16 * 1024**3, "high", 4, -16384, 128 * 1024 * 1024),
+            # (mem_bytes, cpu_count, tier, pool_size, writer_cache, reader_cache, mmap_size, journal_limit)
+            (1 * 1024**3, 2, "low", 2, -8192, -8192, 0, 16 * 1024 * 1024),
+            (2 * 1024**3, 2, "low", 2, -8192, -8192, 0, 16 * 1024 * 1024),
+            (4 * 1024**3, 2, "medium", 3, -32768, -16384, 128 * 1024 * 1024, 32 * 1024 * 1024),
+            (4 * 1024**3, 4, "medium", 4, -32768, -16384, 128 * 1024 * 1024, 32 * 1024 * 1024),
+            (8 * 1024**3, 8, "high", 4, -65536, -65536, 256 * 1024 * 1024, 64 * 1024 * 1024),
+            (32 * 1024**3, 16, "ultra", 8, -131072, -65536, 1024 * 1024 * 1024, 64 * 1024 * 1024),
         )
-        for mem_bytes, tier, pool_size, cache_size, mmap_size in cases:
-            with self.subTest(tier=tier), TemporaryDirectory(prefix=f"pr02-ram-{tier}-") as tmp:
-                with patch.object(sqlite_tuning, "detect_total_memory_bytes", return_value=mem_bytes):
+        for mem_bytes, cpus, tier, pool_size, writer_cache, reader_cache, mmap_size, j_limit in cases:
+            with self.subTest(tier=tier, cpus=cpus), TemporaryDirectory(prefix=f"pr02-ram-{tier}-") as tmp:
+                with (
+                    patch.object(sqlite_tuning, "detect_total_memory_bytes", return_value=mem_bytes),
+                    patch.object(sqlite_tuning, "detect_cpu_count", return_value=cpus),
+                ):
                     runtime = StorageRuntime.open(data_root=Path(tmp), installation_id=f"ram-{tier}")
                 try:
                     self.assertEqual(runtime.tuning_profile.tier, tier)
                     self.assertEqual(runtime.reader_pool_size, pool_size)
                     # Check writer connection PRAGMAs.
                     with runtime.transaction() as writer_conn:
-                        self.assertEqual(writer_conn.execute("PRAGMA cache_size").fetchone()[0], cache_size)
+                        self.assertEqual(writer_conn.execute("PRAGMA cache_size").fetchone()[0], writer_cache)
                         self.assertEqual(writer_conn.execute("PRAGMA mmap_size").fetchone()[0], mmap_size)
+                        self.assertEqual(writer_conn.execute("PRAGMA journal_size_limit").fetchone()[0], j_limit)
                     # Check pooled reader connection PRAGMAs.
                     with runtime.read_snapshot() as reader_conn:
-                        self.assertEqual(reader_conn.execute("PRAGMA cache_size").fetchone()[0], cache_size)
+                        self.assertEqual(reader_conn.execute("PRAGMA cache_size").fetchone()[0], reader_cache)
                         self.assertEqual(reader_conn.execute("PRAGMA mmap_size").fetchone()[0], mmap_size)
                         self.assertEqual(reader_conn.execute("PRAGMA query_only").fetchone()[0], 1)
                 finally:
                     runtime.close()
+
+    def test_startup_wal_truncation_and_hot_covering_indexes_and_write_tracker(self):
+        with TemporaryDirectory(prefix="pr02-wal-idx-") as tmp:
+            root = Path(tmp)
+            runtime = StorageRuntime.open(data_root=root, installation_id="wal-idx-inst")
+            try:
+                # Create optional core_reply table and verify covering/expression indexes.
+                from companion_v2.model_gateway.core_observations import _ensure_schema as ensure_core
+                ensure_core(runtime)
+                plan_src = _explain(
+                    runtime,
+                    "SELECT payload_json, created_at FROM sources WHERE owner=? AND installation_id=? AND state='active'",
+                    ("content.governance", "wal-idx-inst"),
+                )
+                self.assertIn("idx_sources_owner_inst_state", plan_src)
+                plan_wm = _explain(
+                    runtime,
+                    "SELECT COUNT(*), COALESCE(MAX(rowid), 0), COALESCE(SUM(revision), 0), "
+                    "COALESCE(MAX(observed_at), ''), COALESCE(MAX(received_at), '') "
+                    "FROM astrbot_core_reply_observations WHERE role_key = ? AND received_at < ?",
+                    ("rk", "2026-11-23"),
+                )
+                self.assertIn("COVERING INDEX idx_core_reply_role_watermark", plan_wm)
+                plan_diag = _explain(
+                    runtime,
+                    "SELECT record_json FROM astrbot_core_reply_observations "
+                    "WHERE role_key = ? AND scope_kind = ? "
+                    "AND json_extract(context_json, '$.role_binding.scope.native_scope_id') = ? "
+                    "AND json_extract(context_json, '$.role_binding.scope.session_id') = ? "
+                    "AND json_extract(context_json, '$.role_binding.scope.conversation_id') = ? "
+                    "ORDER BY received_at DESC, turn_id DESC LIMIT 20",
+                    ("rk", "private", "n1", "s1", "c1"),
+                )
+                self.assertIn("idx_core_reply_scope_lookup", plan_diag)
+
+                # Verify per-table write tracker increments on repeated identical SQL statements.
+                groups = (frozenset(("runtime_metadata",)), frozenset(("sources",)))
+                before = runtime.table_write_epoch_snapshot(groups)
+                with runtime.transaction() as conn:
+                    for i in range(3):
+                        conn.execute(
+                            "INSERT INTO runtime_metadata(key, value) VALUES (?, ?) "
+                            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                            (f"tracker-test-{i}", "v"),
+                        )
+                after = runtime.table_write_epoch_snapshot(groups)
+                self.assertGreaterEqual(after[0] - before[0], 3)
+                self.assertEqual(after[1], before[1])
+            finally:
+                runtime.close()
+
+            # Reopen and verify startup WAL truncation cleans up any uncheckpointed WAL cleanly.
+            runtime2 = StorageRuntime.open(data_root=root, installation_id="wal-idx-inst")
+            try:
+                wal_path = Path(str(runtime2.database_path) + "-wal")
+                wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+                self.assertLessEqual(wal_size, runtime2.tuning_profile.journal_size_limit)
+            finally:
+                runtime2.close()
 
     def test_bounded_reader_pool_caps_connections_supports_reentrant_reads_and_closes_cleanly(self):
         with TemporaryDirectory(prefix="pr02-pool-") as tmp:
@@ -811,6 +878,148 @@ class SidecarWalAndVectorAccelerationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(store.slang_candidate_counts("o-chunk"), {})
             self.assertIn("totals", store.reaction_collection_summary("o-chunk"))
             self.assertEqual(store.unclaimed_legacy_reaction_owners("o-chunk"), ())
+
+
+class MaintenanceDomainEpochAndJournalBatchTests(HostFixture, unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.host_instance = await self.start()
+        self.app = self.host_instance.application
+        batch = self.host_instance.receive(self.event("pr02-epoch-seed")).unwrap()
+        self.advance(self.app)
+        await self.done(self.app, batch)
+        self.role_context = self.context(self.app, batch)
+
+    async def test_unrelated_and_core_writes_skip_legacy_watermark_while_legacy_write_invalidates(self):
+        from companion_v2.model_gateway import maintenance_cache as mc_mod
+        from companion_v2.model_gateway.core_observations import record_observation
+        from companion_v2.model_gateway.management import ModelManagement
+        from tests.test_maintenance_perf_cache import _make_observation
+
+        app = self.app
+        ctx = self.role_context
+        operator = self.core
+        manager = ModelManagement(app, ctx)
+        mc_mod.clear_maintenance_cache(app.runtime)
+
+        # Seed 1 historical + 1 today core observation and warm caches.
+        record_observation(app.runtime, ctx, _make_observation("t-hist-1", app.now() - timedelta(days=2)))
+        record_observation(app.runtime, ctx, _make_observation("t-today-1", app.now() - timedelta(minutes=10)))
+        cold = manager.maintenance(operator).unwrap()
+        base_calls = cold["usage_sources"]["astrbot_core"]["totals"]["calls"]
+        self.assertEqual(base_calls, 2)
+
+        # Unrelated write (runtime_metadata) must NOT scan legacy or aux watermarks!
+        with app.runtime.transaction() as conn:
+            conn.execute(
+                "INSERT INTO runtime_metadata(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                ("unrelated.heartbeat", '{"ok":true}'),
+            )
+        with (
+            patch.object(mc_mod, "read_legacy_watermark", side_effect=AssertionError("must skip legacy wm")),
+            patch.object(mc_mod, "read_aux_maintenance_watermark", side_effect=AssertionError("must skip aux wm")),
+        ):
+            warm = manager.maintenance(operator).unwrap()
+        self.assertEqual(warm["usage_sources"]["astrbot_core"]["totals"]["calls"], 2)
+
+        # New core observation invalidates snapshot, but MUST STILL skip read_legacy_watermark and aux!
+        record_observation(app.runtime, ctx, _make_observation("t-today-2", app.now() - timedelta(minutes=2)))
+        with (
+            patch.object(mc_mod, "read_legacy_watermark", side_effect=AssertionError("must skip legacy wm on core turn")),
+            patch.object(mc_mod, "read_aux_maintenance_watermark", side_effect=AssertionError("must skip aux wm on core turn")),
+        ):
+            updated = manager.maintenance(operator).unwrap()
+        self.assertEqual(updated["usage_sources"]["astrbot_core"]["totals"]["calls"], 3)
+
+        # In-process write to a legacy table MUST invalidate legacy watermark immediately.
+        with app.runtime.transaction() as conn:
+            conn.execute("DELETE FROM model_call_cache_signatures WHERE 1 = 0")
+        seen_legacy_calls = []
+        orig_read_legacy = mc_mod.read_legacy_watermark
+
+        def _spy_legacy(rt):
+            seen_legacy_calls.append(1)
+            return orig_read_legacy(rt)
+
+        with patch.object(mc_mod, "read_legacy_watermark", side_effect=_spy_legacy):
+            manager.maintenance(operator).unwrap()
+        self.assertGreaterEqual(len(seen_legacy_calls), 1)
+
+    async def test_journal_chain_validation_deduplicates_queries_and_still_observes_revocation(self):
+        from companion_v2.foundation.refs import RoleOwnerRef, SourceRef, VersionRef
+        from companion_v2.role_work.journal.models import (
+            JournalContext,
+            JournalDraft,
+            JournalKey,
+            JournalKind,
+            JournalOrigin,
+            JournalRef,
+        )
+        from companion_v2.role_work.life.management import RoleLifeManagement
+        from companion_v2.sources.models import SourceRecord
+
+        app = self.app
+        ctx = self.role_context
+        operator = self.core
+        owner = RoleOwnerRef(ctx.scope.installation_id, ctx.scope.bot_id, ctx.role_binding.role.subject_id)
+        now = app.now()
+
+        # Publish 3 shared sources and build a 10-day chained journal ancestry.
+        shared_sources = []
+        for idx in range(3):
+            sid = f"j-src-{idx}"
+            ref = SourceRef(sid, "conversation.native_input", ctx.scope, VersionRef(sid, 1), now - timedelta(days=20))
+            rec = SourceRecord(ref, ctx.audience, digest(f"body-{idx}"), f"body-{idx}")
+            self.assertTrue(app.role_journal.sources.publish(rec, observed_at=now - timedelta(days=20)).is_success)
+            shared_sources.append(ref)
+
+        prev_refs: list[JournalRef] = []
+        for day_i in range(1, 11):
+            day_str = f"2026-03-{day_i:02d}"
+            jkey = JournalKey(owner, JournalKind.DIARY, day_str)
+            jctx = JournalContext(jkey, ctx.scope, "Asia/Shanghai")
+            draft = JournalDraft(
+                context=jctx,
+                origin=JournalOrigin.GENERATED,
+                body=f"Day {day_i} body",
+                sources=tuple(shared_sources),
+                journals=tuple(prev_refs[-3:]),
+            )
+            receipt = app.role_journal.save(
+                draft,
+                expected_revision=0,
+                operation_id=f"op-j-{day_i}",
+                observed_at=now - timedelta(days=11 - day_i),
+            )
+            prev_refs.append(JournalRef(jkey, receipt.head.revision))
+
+        # Count read_one calls during RoleLifeManagement.status(): must be O(N), not O(N^2).
+        manager = RoleLifeManagement(app, ctx)
+        orig_read_one = app.runtime.read_one
+        source_reads = []
+
+        def _counting_read_one(sql, params):
+            if "FROM sources WHERE" in sql:
+                source_reads.append(params)
+            return orig_read_one(sql, params)
+
+        with patch.object(app.runtime, "read_one", side_effect=_counting_read_one):
+            status = manager.status(operator)
+        self.assertEqual(len(status["journals"]), 10)
+        self.assertTrue(all(j["unavailable_reason"] is None for j in status["journals"]))
+        # 3 unique sources across 10 chained diaries -> strictly 3 source reads (not 30+!).
+        self.assertEqual(len(source_reads), 3)
+
+        # Revoking one shared source must immediately surface unavailable_reason!
+        revoked = app.role_journal.sources.revoke(
+            shared_sources[0],
+            expected_governance_revision=1,
+            observed_at=now,
+        )
+        self.assertTrue(revoked.is_success)
+        status_after = manager.status(operator)
+        self.assertTrue(all(j["unavailable_reason"] == "source_revoked" for j in status_after["journals"]))
 
 
 if __name__ == "__main__":
