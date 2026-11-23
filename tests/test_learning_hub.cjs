@@ -245,6 +245,9 @@ test('学习工作台顶部 8 Tab 胶囊导航、总览间距语义色与角色�
   assert.match(app, /'expression\.learning':\{[\s\S]*?presentation:'policy'/);
   assert.match(renderer, /id="learningPolicySaveDock" class="learning-policy-dock"/);
   assert.match(policyCss, /\.learning-policy-workspaces\{[^}]*padding-bottom:96px/);
+  assert.match(policyCss, /\.learning-policy-workspaces \.wb-policy \.wb-field-main\{[^}]*align-items:stretch/);
+  assert.match(policyCss, /\.learning-policy-workspaces \.wb-policy \.wb-field-head\{[^}]*width:100%/);
+  assert.match(policyCss, /\.learning-policy-workspaces \.wb-policy \.wb-label\{[^}]*justify-content:flex-start[^}]*text-align:left/);
   assert.match(policyCss, /\.learning-policy-workspaces \.wb-actions\{[^}]*position:static/);
   assert.match(policyCss, /#homeShell\[data-away="true"\] \.learning-policy-workspaces \.wb-actions\{padding-right:0\}/);
   assert.match(policyCss, /\.learning-policy-dock\{[^}]*--lp-dock-left:[^}]*--lp-dock-right:[^}]*max-width:560px/);

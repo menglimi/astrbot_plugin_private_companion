@@ -382,7 +382,7 @@ test("learning-hub.css 清理串扰、非法 -var()、双栏独立滚动、对�
 
   // 双栏几何与独立滚动容器
   assert.match(hubCss, /\.learning-review-workspace \.lh-review-layout\{[^}]*grid-template-columns:minmax\(270px,340px\) minmax\(0,1fr\)/);
-  assert.match(hubCss, /\.learning-review-workspace \.lh-review-layout\{[^}]*max-height:clamp\(500px,calc\(100dvh - 230px\),780px\)/);
+  assert.match(hubCss, /\.learning-review-workspace \.lh-review-layout\{[^}]*max-height:clamp\(420px,calc\(100dvh - 320px\),760px\)/);
   assert.match(hubCss, /\.learning-review-workspace \.lh-review-queue,\.learning-review-workspace \.lh-review-detail\{[^}]*display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;overflow:hidden/);
   assert.match(hubCss, /\.learning-review-workspace \.lh-review-queue-list\{[^}]*overflow-y:auto;overscroll-behavior:contain/);
   assert.match(hubCss, /\.learning-review-workspace \.lh-review-detail-body\{[^}]*overflow-y:auto;overscroll-behavior:contain/);

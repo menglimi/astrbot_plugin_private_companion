@@ -4605,7 +4605,7 @@ body:has(.learning-hub.is-review) #homeShell[data-away="true"] .stage-region{vis
 .learning-review-workspace .lh-review-bulk-reject{min-height:32px;padding:var(--sp-1) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface);color:var(--t-text-soft);font:inherit;font-size:var(--fs-tiny);cursor:pointer}
 .learning-review-workspace .lh-review-bulk-reject:hover:not(:disabled){border-color:var(--t-risk);background:var(--t-risk-quiet);color:var(--t-risk-ink)}
 .learning-review-workspace .lh-review-bulk-reject:disabled{opacity:.48;cursor:default}
-.learning-review-workspace .lh-review-layout{display:grid;grid-template-columns:minmax(270px,340px) minmax(0,1fr);gap:var(--sp-3);align-items:stretch;min-width:0;height:clamp(500px,calc(100dvh - 230px),780px);max-height:clamp(500px,calc(100dvh - 230px),780px)}
+.learning-review-workspace .lh-review-layout{display:grid;grid-template-columns:minmax(270px,340px) minmax(0,1fr);gap:var(--sp-3);align-items:stretch;min-width:0;height:clamp(420px,calc(100dvh - 320px),760px);max-height:clamp(420px,calc(100dvh - 320px),760px)}
 .learning-review-workspace .lh-review-queue,.learning-review-workspace .lh-review-detail{display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;overflow:hidden;border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-raised);box-shadow:var(--t-shadow)}
 .learning-review-workspace .lh-review-queue-head{flex:0 0 auto;display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-2);padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--t-line);background:var(--t-surface)}
 .learning-review-workspace .lh-review-queue-head h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-lead);font-weight:650}
@@ -4628,7 +4628,7 @@ body:has(.learning-hub.is-review) #homeShell[data-away="true"] .stage-region{vis
 .learning-review-workspace .lh-review-row-source{color:var(--t-text-faint);font-size:var(--fs-micro);line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .learning-review-workspace .lh-review-queue-foot{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);flex-wrap:wrap;padding:var(--sp-2) var(--sp-4);border-top:1px solid var(--t-line);background:var(--t-surface);color:var(--t-text-faint);font-size:var(--fs-micro);font-variant-numeric:tabular-nums}
 .learning-review-workspace .lh-review-queue-foot .lh-command{min-height:29px;padding:2px var(--sp-2);font-size:var(--fs-micro)}
-.learning-review-workspace .lh-review-detail-top{flex:0 0 auto;display:flex;flex-direction:column;gap:var(--sp-3);padding:var(--sp-4) var(--sp-5) var(--sp-3);border-bottom:1px solid var(--t-line);background:var(--t-surface)}
+.learning-review-workspace .lh-review-detail-top{flex:0 0 auto;display:flex;flex-direction:column;gap:var(--sp-2);padding:var(--sp-3) var(--sp-5);border-bottom:1px solid var(--t-line);background:var(--t-surface)}
 .learning-review-workspace .lh-review-detail-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);flex-wrap:wrap}
 .learning-review-workspace .lh-review-detail-chips{display:flex;align-items:center;gap:var(--sp-1);flex-wrap:wrap}
 .learning-review-workspace .lh-review-chip{display:inline-flex;align-items:center;gap:var(--sp-1);padding:2px var(--sp-2);border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:var(--r-xs);background:var(--t-surface-soft);color:var(--t-text-soft);font-size:var(--fs-micro);font-weight:600;line-height:1.4}
@@ -22626,13 +22626,13 @@ body.reduce-motion :is(#detailDialog, #searchDialog, #navigationDialog)::backdro
 .learning-policy-workspaces .wb-policy .wb-field:has(.wb-word-editor){grid-column:1/-1}
 
 .learning-policy-workspaces .wb-policy .wb-field-main{
-  display:flex;flex-direction:column;gap:var(--sp-2);flex:1 1 auto;min-width:0;
+  display:flex;flex-direction:column;align-items:stretch;gap:var(--sp-2);flex:1 1 auto;min-width:0;
 }
 .learning-policy-workspaces .wb-policy .wb-field-head{
-  display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);min-width:0;
+  display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);width:100%;min-width:0;
 }
 .learning-policy-workspaces .wb-policy .wb-label{
-  display:inline-flex;align-items:center;gap:var(--sp-1);
+  display:inline-flex;align-items:center;justify-content:flex-start;gap:var(--sp-1);min-width:0;text-align:left;
   color:var(--t-text-strong);font-size:var(--fs-body);font-weight:600;line-height:1.4;
 }
 .learning-policy-workspaces .wb-policy .wb-help{
