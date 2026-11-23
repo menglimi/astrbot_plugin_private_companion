@@ -86,9 +86,12 @@ window.CompanionOutputPage=(()=>{
     if(!item?._albumEndpoint)throw new Error("图片所属账号尚未确认，请刷新图库");
     return item._albumEndpoint;
   }
+  function visibleSelectedIds(){
+    return filteredAlbumItems().map(item=>item.image_id).filter(imageId=>albumSelectedIds.has(imageId));
+  }
   function selectedAlbumGroups(){
     const groups=new Map();
-    for(const imageId of albumSelectedIds){
+    for(const imageId of visibleSelectedIds()){
       const endpoint=imageAlbumEndpoint(imageId);
       if(!groups.has(endpoint))groups.set(endpoint,[]);
       groups.get(endpoint).push(imageId);
@@ -321,7 +324,7 @@ window.CompanionOutputPage=(()=>{
       </div>`;
     }
     if(albumItems.length){
-      const selected=albumSelectedIds.size;
+      const selected=visibleSelectedIds().length;
       const all=visible.length>0&&visible.every(item=>albumSelectedIds.has(item.image_id));
       body+='<div class="output-album-toolbar"><label class="output-album-check"><input type="checkbox" data-output-album-select-all'+(all?' checked':'')+' aria-label="全选产出图片">全选</label><span class="output-album-selected">已选 <b>'+selected+'</b> 张</span><div class="output-album-actions"><button type="button" class="button small primary" data-output-native-action="album-export"'+(selected&&!albumBusy?'':' disabled')+'>'+(albumBusy==='export'?'正在导出…':'导出选中')+'</button><button type="button" class="button small" data-output-native-action="album-reference"'+(selected===1&&!albumBusy?'':' disabled')+'>加入参考图</button><button type="button" class="button small danger" data-output-native-action="album-hide"'+(selected&&!albumBusy?'':' disabled')+'>'+(albumBusy==='hide'?'正在删除…':'删除选中')+'</button><button type="button" class="button small" data-output-native-action="album-open-folder"'+(albumBusy?' disabled':'')+'>'+(albumBusy==='folder'?'正在打开…':'打开图库目录')+'</button></div></div>';
     }
@@ -626,7 +629,8 @@ window.CompanionOutputPage=(()=>{
     renderAlbum();
   }
   async function exportAlbum(){
-    if(albumBusy||!albumSelectedIds.size)return;
+    const ids=visibleSelectedIds();
+    if(albumBusy||!ids.length)return;
     const id=ticket;
     albumBusy="export";albumNotice="正在打包选中的图片…";albumError="";renderAlbum();
     try{
@@ -647,8 +651,8 @@ window.CompanionOutputPage=(()=>{
     finally{if(live(id)){albumBusy="";renderAlbum();}}
   }
   async function hideAlbum(){
-    if(albumBusy||!albumSelectedIds.size)return;
-    const ids=[...albumSelectedIds];
+    const ids=visibleSelectedIds();
+    if(albumBusy||!ids.length)return;
     if(typeof window.confirm==="function"&&!window.confirm(`确定从图库删除选中的 ${ids.length} 张图片？图片会从当前角色图库中移除，不会删除原始来源记录。`))return;
     const id=ticket;albumBusy="hide";albumNotice="正在从图库删除…";albumError="";renderAlbum();
     try{
@@ -689,8 +693,9 @@ window.CompanionOutputPage=(()=>{
     finally{if(live(id)){albumBusy="";renderAlbum();}}
   }
   function openAlbumReference(){
-    if(albumBusy||albumSelectedIds.size!==1)return;
-    albumReferenceImageId=[...albumSelectedIds][0];
+    const ids=visibleSelectedIds();
+    if(albumBusy||ids.length!==1)return;
+    albumReferenceImageId=ids[0];
     albumReferenceLabel="";albumReferenceRoles=new Set(["identity"]);albumReferenceError="";albumReferenceOpen=true;renderAlbum();
   }
   function closeAlbumReference(){
@@ -1147,7 +1152,7 @@ window.CompanionOutputPage=(()=>{
     if(action==="album-load-batch"){void loadAlbumBatch(ALBUM_BATCH_PAGES);return;}
     if(action==="album-filter"){
       const next=target.dataset.outputAlbumFilter||"all";
-      if(ALBUM_FILTERS.some(([id])=>id===next)&&next!==albumFilter){albumFilter=next;renderAlbum();}
+      if(ALBUM_FILTERS.some(([id])=>id===next)&&next!==albumFilter){albumFilter=next;albumSelectedIds.clear();renderAlbum();}
       return;
     }
     if(action==="album-page-size"){

@@ -411,6 +411,59 @@ class ConfigurationCacheAndNativeImageStoreTests(HostFixture, unittest.IsolatedA
             res2 = await _assert_off_loop_and_lock_free(self, controller, model_api.storage_test(), entered2, release2)
         self.assertEqual(res2["status"], "ok", res2)
 
+    async def test_page_targets_calls_inventory_without_route_refresh_off_loop_and_refreshes_on_loop(self):
+        main_thread_id = threading.get_ident()
+        inventory_calls = []
+        refresh_calls = []
+        ok_policy = NS(feature_access=lambda *a, **kw: Outcome.success(True))
+        fake_operator = NS(subject=NS(subject_id="op-1"))
+
+        def target_inventory(*, refresh_routes=True):
+            inventory_calls.append((threading.get_ident(), refresh_routes))
+            return [{
+                "target_id": "t-1",
+                "scope_kind": "private",
+                "roles": [{"role_id": "role-a", "persona_ids": ["p-a"], "config_api": "/cfg"}],
+            }]
+
+        controller = None
+
+        def ensure_role_routes(items):
+            refresh_calls.append((threading.get_ident(), controller._control_lock.locked(), len(items)))
+
+        controller = _fake_controller(
+            web_api=NS(target_inventory=target_inventory, _ensure_role_routes=ensure_role_routes)
+        )
+        with patch("astrbot_host.page_api.request", _fake_request()), \
+                patch("astrbot_host.page_api.dashboard_operator", return_value=fake_operator), \
+                patch("astrbot_host.page_api.ObjectAccessPolicy", return_value=ok_policy), \
+                patch("astrbot_host.page_api.GroupRemarks", return_value=NS(apply=lambda rows: rows)), \
+                patch("astrbot_host.page_api.display_names", return_value=NS(targets=AsyncMock(side_effect=lambda rows: rows))):
+            res = await PageWebAPI(controller).targets()
+
+        self.assertEqual(res["status"], "ok", res)
+        self.assertEqual(len(inventory_calls), 1)
+        self.assertNotEqual(inventory_calls[0][0], main_thread_id, "target_inventory must run off-loop")
+        self.assertFalse(inventory_calls[0][1], "off-loop target_inventory must pass refresh_routes=False")
+        self.assertEqual(refresh_calls, [(main_thread_id, True, 1)])
+
+        # If controller is terminated before re-acquiring _control_lock, route refresh must not run.
+        refresh_calls.clear()
+
+        async def terminate_during_display_names(rows):
+            controller._terminated = True
+            return rows
+
+        with patch("astrbot_host.page_api.request", _fake_request()), \
+                patch("astrbot_host.page_api.dashboard_operator", return_value=fake_operator), \
+                patch("astrbot_host.page_api.ObjectAccessPolicy", return_value=ok_policy), \
+                patch("astrbot_host.page_api.GroupRemarks", return_value=NS(apply=lambda rows: rows)), \
+                patch("astrbot_host.page_api.display_names",
+                      return_value=NS(targets=AsyncMock(side_effect=terminate_during_display_names))):
+            res_stopped = await PageWebAPI(controller).targets()
+        self.assertEqual(res_stopped["status"], "error")
+        self.assertEqual(refresh_calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -54,7 +54,8 @@ SHORT_TASK_BUDGETS = MappingProxyType({
     "proactive.judge": (1, 0),
     # Replies stay deliberately short and low-latency.
     "conversation.reply": (1, 0),
-    "conversation.poke_reply": (1, 0),
+    # Thinking models spend hidden reasoning tokens before emitting the JSON reply.
+    "conversation.poke_reply": (1, 4096),
     "conversation.image_review": (1, 0),
     "conversation.image_narration": (1, 0),
     "conversation.video_narration": (1, 0),

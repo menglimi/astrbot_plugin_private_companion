@@ -301,7 +301,6 @@ class AstrBotKnowledgeSources:
             except RuntimeError:
                 loop = None
         self._loop = loop
-        self._document_names = {}
 
     async def _resolve_kb_names(self, ordered_kbs):
         id_to_name = {}
@@ -338,7 +337,8 @@ class AstrBotKnowledgeSources:
         missing = [kb_id for kb_id in ordered_kbs if kb_id not in id_to_name and kb_id not in unavailable_ids]
         if missing and self.data_root is not None:
             try:
-                for kb_id, kb_name in self._names(missing).items():
+                kb_names, _ = self._names(missing)
+                for kb_id, kb_name in kb_names.items():
                     if kb_name:
                         id_to_name[kb_id] = str(kb_name).strip()
             except (OSError, sqlite3.Error):
@@ -506,7 +506,7 @@ class AstrBotKnowledgeSources:
 
         try:
             available = available_source_ids(self.data_root)
-            names = self._names(ordered_kbs)
+            names, document_names = self._names(ordered_kbs)
         except (OSError, sqlite3.Error):
             return ()
         reader = KnowledgeSourceReader(self.data_root)
@@ -538,7 +538,7 @@ class AstrBotKnowledgeSources:
                     content = content[:remaining]
                     if not content:
                         return tuple(candidates)
-                    document_name = chunk.document_name or self._document_names.get(
+                    document_name = chunk.document_name or document_names.get(
                         (kb_id, chunk.document_id), chunk.document_id or "资料")
                     candidates.append(KnowledgeCandidate(
                         f"astrbot:{kb_id}:{chunk.document_id}:{chunk.chunk_index}", content,
@@ -553,19 +553,19 @@ class AstrBotKnowledgeSources:
         return tuple(candidates)
 
     def _names(self, kb_ids):
+        if not kb_ids:
+            return {}, {}
         database = self.data_root / KNOWLEDGE_BASE_DIR / "kb.db"
         connection = _connect(database)
         try:
             placeholders = ",".join("?" for _ in kb_ids)
-            self._document_names = {}
-            if not kb_ids:
-                return {}
             bases = connection.execute(
                 f"select kb_id, kb_name from knowledge_bases where kb_id in ({placeholders})", kb_ids).fetchall()
             docs = connection.execute(
                 f"select kb_id, doc_id, doc_name from kb_documents where kb_id in ({placeholders})", kb_ids).fetchall()
-            self._document_names = {(row["kb_id"], row["doc_id"]): row["doc_name"] for row in docs}
-            return {row["kb_id"]: row["kb_name"] for row in bases}
+            kb_names = {row["kb_id"]: row["kb_name"] for row in bases}
+            doc_names = {(row["kb_id"], row["doc_id"]): row["doc_name"] for row in docs}
+            return kb_names, doc_names
         finally:
             connection.close()
 

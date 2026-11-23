@@ -573,6 +573,7 @@ class CompanionApplication:
         self._wake = asyncio.Event()
         self._driver = None
         self._wal_checkpoint_worker = None
+        self._thread_futures = set()
         # Built by the first drive pass, once every component exists and the loop
         # that will time the slices is running.
         self._maintenance = None
@@ -952,6 +953,19 @@ class CompanionApplication:
             self._mark_reaction_sent(result.result_ref)
         return result
 
+    async def _run_in_thread(self, fn, *args, **kwargs):
+        """Run blocking maintenance off-loop while tracking the worker thread for safe shutdown."""
+        future = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
+        self._thread_futures.add(future)
+
+        def _discard(done_future):
+            self._thread_futures.discard(done_future)
+            if not done_future.cancelled():
+                done_future.exception()
+
+        future.add_done_callback(_discard)
+        return await asyncio.shield(future)
+
     def _maintenance_rotation(self, loop) -> TickScheduler:
         """The ordered maintenance units of one drive pass, and its slice bound.
 
@@ -965,7 +979,7 @@ class CompanionApplication:
             windows = tuple(self.state_maintenance.bindings.values())
             if not self.memory.activity.has_due_bindings(windows):
                 return
-            await asyncio.to_thread(self.memory.activity.advance_bound, windows)
+            await self._run_in_thread(self.memory.activity.advance_bound, windows)
 
         async def bound_game() -> None:
             if self.memory.game is None:
@@ -973,7 +987,7 @@ class CompanionApplication:
             windows = tuple(self.state_maintenance.bindings.values())
             if not self.memory.game.has_due_bindings(windows):
                 return
-            await asyncio.to_thread(self.memory.game.advance_bound, windows)
+            await self._run_in_thread(self.memory.game.advance_bound, windows)
 
         def advance_reflection() -> None:
             tools = self.messages.tools
@@ -1041,7 +1055,7 @@ class CompanionApplication:
         """
 
         try:
-            await asyncio.to_thread(self.gateway.ledger.reclaim_expired, self.tasks)
+            await self._run_in_thread(self.gateway.ledger.reclaim_expired, self.tasks)
         except TaskError as error:
             logger.debug("[CompanionV2] 模型过期预留回收跳过 code=%s", error.code)
         except Exception as error:
@@ -1209,6 +1223,9 @@ class CompanionApplication:
             if self._wal_checkpoint_worker is not None:
                 await asyncio.gather(self._wal_checkpoint_worker, return_exceptions=True)
                 self._wal_checkpoint_worker = None
+            pending_threads = tuple(future for future in self._thread_futures if not future.done())
+            if pending_threads:
+                await asyncio.wait(pending_threads, timeout=5.0)
             workers = tuple(worker for _, worker in self._workers.values())
             if workers:
                 _, pending = await asyncio.wait(workers, timeout=grace_seconds)

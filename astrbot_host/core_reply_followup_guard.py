@@ -214,6 +214,18 @@ def _default_active_runners() -> Mapping[str, Any] | None:
     return _ACTIVE_AGENT_RUNNERS if isinstance(_ACTIVE_AGENT_RUNNERS, Mapping) else None
 
 
+def _default_host_serializes_media() -> bool:
+    """Whether AstrBot core natively defers media follow-ups in arrival order."""
+    try:
+        from astrbot.core.pipeline.process_stage import follow_up
+    except Exception:
+        return False
+    return (
+        callable(getattr(follow_up, "extract_plain_steering_text", None))
+        and hasattr(follow_up, "_FOLLOW_UP_ORDER_STATE")
+    )
+
+
 def runner_can_capture_followup(
     runner: Any,
     sender_id: str,
@@ -293,6 +305,7 @@ class CoreReplyFollowUpGuard:
         host_poll_interval_seconds: float = DEFAULT_HOST_POLL_INTERVAL_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         active_runners_getter: Callable[[], Mapping[str, Any] | None] = _default_active_runners,
+        host_serializes_media: bool | Callable[[], bool] | None = None,
     ) -> None:
         if type(wait_timeout_seconds) not in (int, float) or wait_timeout_seconds <= 0:
             raise ValueError("follow-up media wait timeout must be positive")
@@ -302,9 +315,48 @@ class CoreReplyFollowUpGuard:
         self._host_poll_interval_seconds = float(host_poll_interval_seconds)
         self._clock = clock
         self._active_runners_getter = active_runners_getter
+        if host_serializes_media is None:
+            self._host_serializes_media_getter = (
+                _default_host_serializes_media
+                if active_runners_getter is _default_active_runners
+                else (lambda: False)
+            )
+        elif isinstance(host_serializes_media, bool):
+            fixed = host_serializes_media
+            self._host_serializes_media_getter = lambda _v=fixed: _v
+        elif callable(host_serializes_media):
+            self._host_serializes_media_getter = host_serializes_media
+        else:
+            raise TypeError("host_serializes_media must be a bool, callable, or None")
         self._keys: dict[tuple[str, str], _KeyState] = {}
         self._seq = 0
         self._closed = False
+
+    def _host_serializes_media(self) -> bool:
+        try:
+            return bool(self._host_serializes_media_getter())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _attach_done_callback(
+        event: Any,
+        owner_task: asyncio.Task[Any] | None,
+        on_turn_done: Callable[[Any, asyncio.Task[Any]], Any] | None,
+    ) -> None:
+        if owner_task is None or not callable(on_turn_done):
+            return
+
+        def _on_done(done_task: asyncio.Task[Any]) -> None:
+            try:
+                on_turn_done(event, done_task)
+            except Exception:
+                logger.warning(
+                    "[CompanionV2] 核心轮次收尾回调异常",
+                    exc_info=True,
+                )
+
+        owner_task.add_done_callback(_on_done)
 
     @property
     def closed(self) -> bool:
@@ -534,7 +586,7 @@ class CoreReplyFollowUpGuard:
         return marked
 
     def finish_turn(self, event: Any) -> bool:
-        """Explicitly finish an active turn (mainly for non-task callers/tests)."""
+        """Explicitly release an active turn slot once the core turn ends."""
         if event is None:
             return False
         removed = False
@@ -544,7 +596,11 @@ class CoreReplyFollowUpGuard:
                 continue
             for turn in tuple(state.active_turns):
                 if turn.event is event:
-                    if turn.owner_task is not None and turn._done_callback is not None:
+                    if (
+                        not callable(turn.on_turn_done)
+                        and turn.owner_task is not None
+                        and turn._done_callback is not None
+                    ):
                         try:
                             turn.owner_task.remove_done_callback(turn._done_callback)
                         except Exception:
@@ -583,8 +639,19 @@ class CoreReplyFollowUpGuard:
                 "had_active_turn": False,
             }
 
-        key = (umo, sender_id)
         current_task = self._current_task()
+        if self._host_serializes_media():
+            had_active = self._has_live_host_runner(umo, sender_id, exclude_event=event)
+            self._attach_done_callback(event, current_task, on_turn_done)
+            return {
+                "waited": False,
+                "waited_ms": 0,
+                "reason": "host_serialized",
+                "media_kinds": media_kinds,
+                "had_active_turn": had_active,
+            }
+
+        key = (umo, sender_id)
         state = self._keys.get(key)
         self._prune_finished(key, state)
         state = self._keys.get(key)
@@ -709,14 +776,19 @@ class CoreReplyFollowUpGuard:
                     continue
 
             if not self._closed and not stopped:
-                self._register_active_turn(
-                    key,
-                    event,
-                    current_task,
-                    is_media=is_media,
-                    on_turn_done=on_turn_done,
-                )
-                registered = True
+                if reason == "timeout":
+                    # Do not register a timed-out turn into active_turns, so a stalled
+                    # prior turn cannot cascade into repeated wait timeouts for later events.
+                    self._attach_done_callback(event, current_task, on_turn_done)
+                else:
+                    self._register_active_turn(
+                        key,
+                        event,
+                        current_task,
+                        is_media=is_media,
+                        on_turn_done=on_turn_done,
+                    )
+                    registered = True
         finally:
             try:
                 state.waiters.remove(waiter)

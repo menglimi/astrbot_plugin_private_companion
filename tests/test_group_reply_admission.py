@@ -153,6 +153,24 @@ class GroupReplyAdmissionTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(tool)
         return json.loads(await tool.call(wrapper, **arguments))
 
+    @staticmethod
+    def _context_payload(event):
+        for part in event.core_request.extra_user_content_parts:
+            text = getattr(part, "text", "")
+            if text.startswith("<companion_v2_context>"):
+                raw = text.removeprefix("<companion_v2_context>").removesuffix("</companion_v2_context>").strip()
+                return json.loads(raw)
+        raise AssertionError("missing <companion_v2_context> payload")
+
+    @classmethod
+    def _participation_facts(cls, event):
+        payload = cls._context_payload(event)
+        for section in payload.get("companion_background", {}).get("sections", ()):
+            for material in section.get("materials", ()):
+                if material.get("kind") == "group_participation_facts":
+                    return payload, material["content"]
+        raise AssertionError("missing group_participation_facts material")
+
     async def test_native_group_prompt_includes_effective_wakeup_and_participation_references(self):
         context = await self.configure(group_wakeup_interest_probability=.01,
             group_wakeup_interest_keywords=json.dumps(["星图"], ensure_ascii=False), group_wakeup_question_threshold=95,
@@ -161,11 +179,17 @@ class GroupReplyAdmissionTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
                                      group_interject_min_interval_minutes=33)
         event = self.event("core-effective-hints", "这也太离谱了")
         prepared = await self.core_turn(event)
-        prompt = "\n".join(part.text for part in event.core_request.extra_user_content_parts)
         self.assertIn("group_participation", prepared["context_sections"])
-        for text in ("求助强度参考 95/100", "兴趣话题自主接话宜低频", "兴趣候选抽取概率为 1%",
-                     "自主插话参考额度剩余 0/0", "最小间隔参考 33 分钟", "本轮没有明确 @"):
-            self.assertIn(text, prompt)
+        payload, facts = self._participation_facts(event)
+        self.assertEqual(facts["wakeup"]["question_threshold"], 95)
+        self.assertEqual(facts["wakeup"]["interest_probability_pct"], 1)
+        self.assertEqual(facts["wakeup"]["interest_keywords"], ["星图"])
+        self.assertEqual(facts["wakeup"]["cooldown_s"], 90)
+        self.assertEqual(facts["interjection"]["max_daily"], 0)
+        self.assertEqual(facts["interjection"]["remaining"], 0)
+        self.assertEqual(facts["interjection"]["min_interval_min"], 33)
+        self.assertFalse(facts["mention"]["mentioned"])
+        self.assertFalse(payload["group_participation_hint"]["mentioned"])
         self.assertIsNotNone(event.core_request.func_tool.get_tool(native_tool_name("group.participation.choose")))
         self.assert_no_v2_generation()
 
@@ -230,11 +254,13 @@ class GroupReplyAdmissionTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         second = self.event("core-autonomous-2", "小星你觉得呢", sender="201")
         await self.core_turn(second)
         reference = "\n".join(part.text for part in second.core_request.extra_user_content_parts)
-        self.assertIn("自主插话参考额度剩余 1/2", reference)
-        self.assertIn("最小间隔参考 33 分钟", reference)
-        self.assertIn("宿主发送调用已返回", reference)
+        _, facts = self._participation_facts(second)
+        self.assertEqual((facts["interjection"]["remaining"], facts["interjection"]["max_daily"]), (1, 2))
+        self.assertEqual(facts["interjection"]["min_interval_min"], 33)
+        self.assertEqual(facts["air"]["recent_bot_replies"], 1)
         self.assertNotIn("已确认 Bot 回复", reference)
         self.assertNotIn("自主插话参考额度剩余", second.core_request.system_prompt)
+        self.assertNotIn('"remaining":1', second.core_request.system_prompt)
         self.clock.advance(timedelta(seconds=1))
         window = ConversationWindow.from_scope(prepared["context"].scope)
         reset_window(self.app.runtime, window, reset_id="core-participation-reset", at=self.clock.now())
@@ -242,7 +268,8 @@ class GroupReplyAdmissionTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         self.clock.advance(timedelta(seconds=1))
         third = self.event("core-autonomous-3", "小星再看看", sender="201")
         await self.core_turn(third)
-        self.assertIn("自主插话参考额度剩余 2/2", "\n".join(part.text for part in third.core_request.extra_user_content_parts))
+        _, third_facts = self._participation_facts(third)
+        self.assertEqual((third_facts["interjection"]["remaining"], third_facts["interjection"]["max_daily"]), (2, 2))
         self.assert_no_v2_generation()
 
     async def test_unmatched_messages_keep_observation_without_intake_logs_batches_or_model_calls(self):
@@ -437,8 +464,10 @@ class GroupReplyAdmissionTests(GroupFixture, unittest.IsolatedAsyncioTestCase):
         intermediate = self.event("intermediate-follow-up", "先等一下")
         self.assertEqual((await self.candidate(intermediate))["reason"], "reply_follow_up")
         await self.core_turn(intermediate)
-        prompt = "\n".join(part.text for part in intermediate.core_request.extra_user_content_parts)
-        self.assertIn("机器人上一轮互动后的非点名接话候选", prompt)
+        payload = self._context_payload(intermediate)
+        self.assertFalse(payload["group_participation_hint"]["mentioned"])
+        self.assertEqual(payload["group_participation_hint"]["reason"], "reply_follow_up")
+        self.assertIn("接续", payload["group_participation_hint"]["reason_label"])
         await self.choose(intermediate, "skip", reason="先旁听等对方说完")
         finish_core_reply_tracking(intermediate)
         await self.flush_tracking()

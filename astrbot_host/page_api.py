@@ -1,6 +1,7 @@
 """Authenticated page directory; the host supplies every target and API path."""
 
 import asyncio
+import inspect
 import json
 import os
 from pathlib import Path
@@ -342,13 +343,29 @@ class PageWebAPI:
                 observed_at = controller.now()
                 inventory = getattr(controller.web_api, "target_inventory", None)
 
+            def _accepts_refresh_routes(fn):
+                try:
+                    sig = inspect.signature(fn)
+                except (TypeError, ValueError):
+                    return False
+                param = sig.parameters.get("refresh_routes")
+                if param is not None and param.kind in (
+                    inspect.Parameter.KEYWORD_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                ):
+                    return True
+                return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
             def prepare_targets():
                 operator = dashboard_operator(runtime, username, at=observed_at)
                 require(ObjectAccessPolicy(runtime).feature_access(operator,
                     scope=ScopeRef(runtime.installation_id, "companion", ScopeKind.SYSTEM, "page.management"),
                     action="memory.manage", observed_at=observed_at))
+                raw_targets = None
                 if callable(inventory):
-                    targets = inventory()
+                    targets = (inventory(refresh_routes=False)
+                               if _accepts_refresh_routes(inventory) else inventory())
+                    raw_targets = targets
                 else:
                     settings = controller.resolved_settings()
                     targets = [{"target_id": settings.profile_id, "scope_kind": "private",
@@ -384,15 +401,18 @@ class PageWebAPI:
                                      "config", "perception_native", "reality_access", "screen_access", "game_access", "persona", "legacy",
                                      "qzone_extension", "image_material")}}
                                  for role in target["roles"]]} for target in targets]
-                return operator, GroupRemarks(runtime).apply(public)
+                return operator, GroupRemarks(runtime).apply(public), raw_targets
 
-            operator, remarked = await asyncio.to_thread(prepare_targets)
+            operator, remarked, raw_targets = await asyncio.to_thread(prepare_targets)
             public = await display_names(controller).targets(remarked)
             async with controller._control_lock:
                 if controller.runtime is not runtime or controller.settings is not settings_snapshot:
                     raise TaskError("staging_not_initialized", "the profile changed while reading display names")
                 if controller._terminated:
                     raise TaskError("staging_host_terminated", "plugin is stopped")
+                ensure_routes = getattr(controller.web_api, "_ensure_role_routes", None)
+                if callable(ensure_routes) and raw_targets is not None:
+                    ensure_routes(raw_targets)
                 recheck_at = controller.now()
 
             def recheck_access():
