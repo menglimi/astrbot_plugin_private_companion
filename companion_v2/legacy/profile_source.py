@@ -205,6 +205,22 @@ def _sqlite_path(root, value):
     return (path if path.is_absolute() else root / path).absolute()
 
 
+def _sqlite_paths_match(root, configured_value, configured_path, state_path):
+    if configured_path.resolve() == state_path.resolve():
+        return True
+    # V1 resolves custom relative paths from the AstrBot process directory.
+    if (
+        isinstance(configured_value, str)
+        and configured_value.strip()
+        and not Path(configured_value.strip()).is_absolute()
+        and root.parent.name == "plugin_data"
+        and root.parent.parent.name == "data"
+    ):
+        host_path = root.parent.parent.parent / configured_value.strip()
+        return host_path.resolve() == state_path.resolve()
+    return False
+
+
 def _exists(path):
     try:
         path.lstat()
@@ -252,7 +268,7 @@ def primary_profile(root: Path, configuration=None):
         database_path = _sqlite_path(root, configured_path if path_present else "")
         if state_backend == "sqlite":
             state_path = _sqlite_path(root, state.get("sqlite_path", ""))
-            if path_present and database_path.resolve() != state_path.resolve():
+            if path_present and not _sqlite_paths_match(root, configured_path, database_path, state_path):
                 return PrimaryProfile(None, "core_profile_authority_conflict", None, "sqlite", authority)
             database_path = state_path
     except (OSError, ValueError):

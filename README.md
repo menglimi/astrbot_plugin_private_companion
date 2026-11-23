@@ -182,7 +182,7 @@ https://github.com/menglimi/astrbot_plugin_private_companion
 
 ---
 
-### 3.3 从 6.7.0 升级与回退指南
+### 3.3 从 6.x 升级与回退指南
 
 7.x 继续使用原仓库和插件名 `astrbot_plugin_private_companion`，通过现有安装原地更新即可，**不要并行安装第二份同名插件，也不要先删除原数据目录**。
 
@@ -192,7 +192,7 @@ https://github.com/menglimi/astrbot_plugin_private_companion
 
 供执行迁移和首次配置的 Agent 使用的操作顺序、确认边界和回执核验步骤见 [Agent 首次配置与旧版迁移手册](docs/AGENT_MIGRATION_AND_SETUP.md)。
 
-1. **准备可验证的回退材料**：备份插件配置文件和原数据目录；使用过独立记忆或其他伴侣拓展的，一并备份其配置与数据。从发布页下载「6.7.0 回退包」附件并核对下方 SHA-256。
+1. **准备可验证的回退材料**。使用 6.7.3 的用户可在停止 AstrBot 后运行该版本附带的 `upgrade_preflight.py` 检查并备份旧配置和数据。使用其他受支持的旧版本时，请备份实际使用的插件配置、数据目录和对应安装包。使用过独立记忆或其他伴侣拓展的，一并备份其配置与数据。[6.7.3 升级前检查和备份](https://github.com/menglimi/astrbot_plugin_private_companion/blob/v6.7.3/README.md#从-6x-升级到-7x)
 2. **原地更新插件**：在 AstrBot 插件管理中将插件更新至 7.x 并按提示重载；离线更新时先停止 AstrBot，用新版交付包替换插件代码目录，保留原配置与数据目录。
 3. **打开「陪伴小屋 → 开始使用」**：查看识别出的旧版账号、人格、私聊对象和模型。唯一匹配目标会自动预选；存在多个候选或归属不明时手动确认映射。
 4. **确认配置交接**：按引导进入迁移预览页，核对可接续的模型、回复、主动联系与生活设置并确认交接。已有新版明确设置优先保留。
@@ -221,15 +221,15 @@ https://github.com/menglimi/astrbot_plugin_private_companion
 - 确认内置能力接管后，请**停用承担同一功能的旧独立伴侣插件**，避免重复注入提示词、重复调度定时任务或重复发送消息。
 - 不要因某项配置已接续就立即删除旧拓展的数据目录；屏幕、麦克风、摄像头等敏感设备权限需在 7.x 中按当前设备重新确认。
 
-#### 需要回退到 6.7.0 时
+#### 需要回退到原 6.x 版本时
 
 7.x 没有一键降级。若迁移结果不符合预期，**不要重复执行迁移或清理数据**，先正常停止 AstrBot，再按以下步骤恢复：
 
 1. **封存 7.x 现场**：将当前插件目录、AstrBot 配置目录和实际运行数据根（如 `companion-7` 或配置的外部路径）完整复制到插件扫描目录之外，留作后续取回 7.x 新增资料。
-2. **恢复 6.7.0 代码**：使用发布附件中的 `astrbot_plugin_private_companion-6.7.0-rollback.zip`（来自正式 `v6.7.0` 标签，提交 `f2f87183993a0667800056f73bcf12df298cdbcb`，SHA-256：`C8812D861942D0274E74D48A383EFD330537E7155C787D30D33220075A050CEA`），校验哈希后完整替换原插件代码目录，不要混用新旧代码。
-3. **恢复 6.7.0 插件配置**：将 `astrbot_plugin_private_companion_config.json` 恢复为升级前备份；若未手动备份，可在 AstrBot 配置目录下检查 `.private-companion-upgrade/source.json`，按其中记录的 SHA-256 找到同目录归档 JSON，校验无误后复制回原配置文件名。
-4. **让 6.7.0 使用原数据**：确认 6.7.0 原始数据目录完整，不要将 `companion-7` 数据库覆盖回旧版。
-5. **启动并核验**：启动 AstrBot，确认加载日志显示 `6.7.0`，核对账号、人格、主要用户与记忆。
+2. **恢复原 6.x 代码**。校验对应版本的安装包后，完整替换原插件代码目录。6.7.3 的安装包及校验文件随 6.7.3 发布。[6.7.3 发布页](https://github.com/menglimi/astrbot_plugin_private_companion/releases/tag/v6.7.3)
+3. **恢复旧版插件配置**。将 `astrbot_plugin_private_companion_config.json` 恢复为升级前备份。若未手动备份，可在 AstrBot 配置目录下检查 `.private-companion-upgrade/source.json`，按其中记录的 SHA-256 找到同目录归档 JSON，校验无误后恢复。
+4. **恢复旧版数据位置**。确认原 6.x 数据目录和自定义 SQLite 路径完整，供旧版继续读取。7.x 数据保存在 `companion-7` 目录下。
+5. **启动并核验**。确认 AstrBot 加载的插件版本，核对账号、人格、主要用户和记忆。
 
 ---
 
