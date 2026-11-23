@@ -630,8 +630,9 @@
       }
     }
 
-    /* Layer 5a: 1-char typo tolerance (homophone-assisted outranks generic 1-edit so "倍用模型" ranks "备用模型" #1) */
-    if (best < 76) {
+    /* Layer 5a: 1-char typo tolerance (homophone-assisted outranks generic 1-edit so "倍用模型" ranks "备用模型" #1;
+     * never overwrite a direct title/key/alias match with a misleading "容错" badge) */
+    if (best < 40) {
       let typoScore = 0;
       let typoReason = "容错匹配";
       const titleFuzzy = fuzzyWindowMatch(term, entry.title);

@@ -6521,10 +6521,10 @@ function renderSearch(){
       const context=[`${prefix}${breadcrumb}`,entry.field].filter(Boolean).join(' · ');
       const iconName=location.nativeExtension?'puzzle':location.modelsTab||location.modelsTask?'cpu':location.workspaceFocus?'power':'sliders-horizontal';
       const helpPreview=entry.help&&terms.length?`<small class="search-result-help">${highlightSearchText(entry.help,hlTerms)}</small>`:'';
-      return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I(iconName)}<span><strong>${highlightSearchText(entry.label,hlTerms)}${reasonBadge}</strong><small class="search-result-path">${highlightSearchText(context,hlTerms)}</small>${helpPreview}</span></button>`;
+      return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}"><span class="search-result-icon" aria-hidden="true">${I(iconName)}</span><span class="search-result-body"><strong>${highlightSearchText(entry.label,hlTerms)}${reasonBadge}</strong><small class="search-result-path">${highlightSearchText(context,hlTerms)}</small>${helpPreview}</span><span class="search-result-arrow" aria-hidden="true">${I('chevron-right')}</span></button>`;
     }
     const [title,description,icon]=result.data;
-    return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}">${I(icon)}<span><strong>${highlightSearchText(title,hlTerms)}${reasonBadge}</strong><small class="search-result-path">${highlightSearchText(`页面 › ${description}`,hlTerms)}</small></span></button>`;
+    return `<button id="search-option-${index}" class="search-result" type="button" role="option" aria-selected="${selected}" data-search-result="${index}"><span class="search-result-icon" aria-hidden="true">${I(icon)}</span><span class="search-result-body"><strong>${highlightSearchText(title,hlTerms)}${reasonBadge}</strong><small class="search-result-path">${highlightSearchText(`页面 › ${description}`,hlTerms)}</small></span><span class="search-result-arrow" aria-hidden="true">${I('chevron-right')}</span></button>`;
   }).join('');
   const emptyMessage=searchScope==='settings'&&!terms.length
     ?'输入设置名称、别名、拼音或字段键查找全站配置项。'

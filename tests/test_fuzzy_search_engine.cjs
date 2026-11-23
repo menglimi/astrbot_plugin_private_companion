@@ -458,13 +458,35 @@ test("extractDedicatedAllFeatureRows matches real backend shapes for reply, stat
   assert.equal(rows.length, 12);
 });
 
-test("CSS polish contracts: hides native search cancel buttons and respects data-motion in workspace-theme.css", () => {
+test("CSS polish contracts: hides native search cancel buttons, enlarges 3-tier search modal and respects data-motion", () => {
   const stylesCss = fs.readFileSync(path.join(PAGE_DIR, "styles.css"), "utf8");
   const workspaceCss = fs.readFileSync(path.join(PAGE_DIR, "workspace-theme.css"), "utf8");
   assert.match(stylesCss, /#globalSearch::-webkit-search-cancel-button/);
   assert.match(stylesCss, /\[data-all-feature-filter\]::-webkit-search-cancel-button/);
+  assert.match(stylesCss, /\.search-dialog\{[^}]*width:min\(860px,90vw\)/);
+  assert.match(stylesCss, /\.search-dialog\[open\]\{display:flex;flex-direction:column\}/);
+  assert.match(stylesCss, /\.search-results\{[^}]*flex:1 1 auto;min-height:360px/);
+  assert.match(stylesCss, /\.search-result-help\{[^}]*-webkit-line-clamp:2/);
+  assert.match(stylesCss, /\.search-result-icon\{/);
+  assert.match(stylesCss, /\.search-result-arrow\{/);
   assert.match(workspaceCss, /\[data-motion="off"\].*\.is-search-target/);
   assert.match(workspaceCss, /\[data-motion="low"\].*\.is-search-target/);
+});
+
+test("Direct alias substring hit keeps alias reason instead of misleading typo badge", () => {
+  const win = loadEngineWindow();
+  const engine = win.CompanionSearchEngine;
+  const prepared = engine.prepare([
+    { label: "模型与连接", help: "功能任务路由", key: "models", aliases: ["陪伴通用模型", "模型"] },
+  ], {
+    getTitle: x => x.label,
+    getDesc: x => x.help,
+    getKey: x => x.key,
+    getAliases: x => x.aliases,
+  });
+  const hits = engine.search(prepared, "通用");
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].reason, "别名：陪伴通用模型");
 });
 
 test("All-features fuzzy filter supports pinyin/synonyms, highlights matches, persists query and handles 0-hit handoff", () => {
