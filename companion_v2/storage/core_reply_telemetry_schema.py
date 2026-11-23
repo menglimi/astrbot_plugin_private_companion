@@ -35,6 +35,9 @@ STATEMENTS = (
     "received_at DESC, turn_id DESC)",
     "CREATE INDEX IF NOT EXISTS idx_core_reply_context_hash "
     "ON astrbot_core_reply_observations(role_key, context_hash, received_at)",
+    "CREATE INDEX IF NOT EXISTS idx_core_reply_role_scope_ctxhash "
+    "ON astrbot_core_reply_observations("
+    "role_key, scope_kind, context_hash, received_at DESC, turn_id DESC)",
     """CREATE TABLE IF NOT EXISTS core_reply_daily_rollups (
         role_key TEXT NOT NULL,
         day TEXT NOT NULL,
@@ -61,16 +64,34 @@ def ensure_core_reply_telemetry_migrations(connection) -> bool:
     changed = False
     if TABLE in tables:
         ensure_dedup_tables(connection)
+        existing_indexes = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name IS NOT NULL"
+            )
+        }
         columns = {row[1] for row in connection.execute(f"PRAGMA table_info({TABLE})")}
         if "context_hash" not in columns:
             connection.execute(
                 f"ALTER TABLE {TABLE} ADD COLUMN context_hash TEXT NOT NULL DEFAULT ''"
             )
             changed = True
-        connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_core_reply_context_hash "
-            "ON astrbot_core_reply_observations(role_key, context_hash, received_at)"
-        )
+        for index_name, statement in (
+            (
+                "idx_core_reply_context_hash",
+                "CREATE INDEX IF NOT EXISTS idx_core_reply_context_hash "
+                "ON astrbot_core_reply_observations(role_key, context_hash, received_at)",
+            ),
+            (
+                "idx_core_reply_role_scope_ctxhash",
+                "CREATE INDEX IF NOT EXISTS idx_core_reply_role_scope_ctxhash "
+                "ON astrbot_core_reply_observations("
+                "role_key, scope_kind, context_hash, received_at DESC, turn_id DESC)",
+            ),
+        ):
+            if index_name not in existing_indexes:
+                connection.execute(statement)
+                changed = True
         if ROLLUPS_TABLE not in tables:
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS core_reply_daily_rollups (

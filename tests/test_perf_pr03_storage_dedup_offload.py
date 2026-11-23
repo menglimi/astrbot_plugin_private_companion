@@ -328,6 +328,104 @@ class NativeDedupTests(unittest.TestCase):
             finally:
                 runtime.close()
 
+    def test_native_reply_diagnostics_uses_covering_indexes_across_mixed_legacy_and_deduped_rows(self):
+        from companion_v2.conversation.native_reply_diagnostics import recent as native_recent
+
+        with TemporaryDirectory(prefix="pr03-diag-idx-") as tmp:
+            runtime = StorageRuntime.open(data_root=Path(tmp) / "v2", installation_id=INSTALLATION_ID)
+            try:
+                ctx = _make_context(1, ScopeKind.PRIVATE)
+                other_ctx = _make_context(2, ScopeKind.PRIVATE)
+                rk = core_role_key(ctx)
+
+                # Seed 3 deduped observations (stored via record_observation -> context_hash populated).
+                for idx, delta_min in ((1, 10), (3, 30), (5, 50)):
+                    record_observation(
+                        runtime,
+                        ctx,
+                        _make_core_record(f"turn-{idx}", NOW + timedelta(minutes=delta_min)),
+                    )
+                # Also seed another scope so filtering is proven.
+                record_observation(
+                    runtime,
+                    other_ctx,
+                    _make_core_record("other-turn-99", NOW + timedelta(minutes=99)),
+                )
+                # Raw-INSERT 2 legacy un-deduped observations (inline context_json, empty context_hash)
+                # interleaved in timestamp order with the deduped rows.
+                with runtime.transaction() as conn:
+                    for idx, delta_min in ((2, 20), (4, 40)):
+                        ts = stamp(NOW + timedelta(minutes=delta_min))
+                        rec = _make_core_record(f"turn-{idx}", NOW + timedelta(minutes=delta_min))
+                        conn.execute(
+                            """INSERT INTO astrbot_core_reply_observations
+                               (turn_id, revision, role_key, context_key, scope_kind,
+                                context_json, received_at, observed_at, record_json, context_hash)
+                               VALUES (?, 2, ?, ?, ?, ?, ?, ?, ?, '')""",
+                            (
+                                f"turn-{idx}",
+                                rk,
+                                ctx.key,
+                                ctx.scope.kind.value,
+                                encode(ctx),
+                                ts,
+                                ts,
+                                json.dumps(rec),
+                            ),
+                        )
+
+                # Verify both split SQL branches hit their covering indexes without scanning the table.
+                eqp_dedup = [
+                    row["detail"]
+                    for row in runtime.read_all(
+                        """EXPLAIN QUERY PLAN
+                           SELECT turn_id, received_at FROM astrbot_core_reply_observations
+                           WHERE role_key = ? AND scope_kind = ? AND context_hash IN (?)
+                           ORDER BY received_at DESC, turn_id DESC LIMIT 5""",
+                        (rk, ctx.scope.kind.value, "h1"),
+                    )
+                ]
+                eqp_legacy = [
+                    row["detail"]
+                    for row in runtime.read_all(
+                        """EXPLAIN QUERY PLAN
+                           SELECT turn_id, received_at FROM astrbot_core_reply_observations
+                           WHERE role_key = ? AND scope_kind = ?
+                             AND json_extract(context_json, '$.role_binding.scope.native_scope_id') = ?
+                             AND json_extract(context_json, '$.role_binding.scope.session_id') = ?
+                             AND json_extract(context_json, '$.role_binding.scope.conversation_id') = ?
+                           ORDER BY received_at DESC, turn_id DESC LIMIT 5""",
+                        (
+                            rk,
+                            ctx.scope.kind.value,
+                            ctx.scope.native_scope_id,
+                            ctx.scope.session_id,
+                            ctx.scope.conversation_id,
+                        ),
+                    )
+                ]
+                self.assertTrue(
+                    any("COVERING INDEX idx_core_reply_role_scope_ctxhash" in line for line in eqp_dedup),
+                    eqp_dedup,
+                )
+                self.assertTrue(
+                    any("COVERING INDEX idx_core_reply_scope_lookup" in line for line in eqp_legacy),
+                    eqp_legacy,
+                )
+                self.assertFalse(any("SCAN astrbot_core_reply_observations" in line for line in eqp_dedup + eqp_legacy))
+
+                # Verify exact merged DESC ordering and limit enforcement across mixed rows.
+                top3 = native_recent(runtime, ctx.scope, ctx.role_binding.role, limit=3)
+                self.assertEqual([item["batch_id"] for item in top3], ["turn-5", "turn-4", "turn-3"])
+                all_five = native_recent(runtime, ctx.scope, ctx.role_binding.role, limit=10)
+                self.assertEqual(
+                    [item["batch_id"] for item in all_five],
+                    ["turn-5", "turn-4", "turn-3", "turn-2", "turn-1"],
+                )
+                self.assertEqual(native_recent(runtime, ctx.scope, ctx.role_binding.role, limit=0), [])
+            finally:
+                runtime.close()
+
 
 class ColdTelemetryArchiveTests(unittest.TestCase):
     def test_archive_cold_telemetry_preserves_usage_fx_recompute_and_pricing_inventory(self):
