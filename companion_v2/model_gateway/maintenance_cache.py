@@ -284,21 +284,67 @@ class CacheDiagnosticAccumulator:
             raw_daily = record["daily"]
             raw_events = record["events"]
             raw_deltas = record["delta_traces"]
+            raw_prev = record["previous_by_scope"]
+            if (
+                type(raw_daily) is not dict
+                or type(raw_events) is not dict
+                or type(raw_deltas) is not dict
+                or type(raw_prev) is not list
+            ):
+                return None
             for key in CACHE_DIAGNOSTIC_KEYS:
-                acc.daily[key] = {day: item.copy() for day, item in raw_daily[key].items()}
-                acc.events[key] = deque(raw_events[key], maxlen=80)
-                acc.delta_traces[key] = {day: list(vals) for day, vals in raw_deltas[key].items()}
-            for entry in record["previous_by_scope"]:
+                day_map = raw_daily[key]
+                ev_list = raw_events[key]
+                delta_map = raw_deltas[key]
+                if type(day_map) is not dict or type(ev_list) is not list or type(delta_map) is not dict:
+                    return None
+                copied_daily = {}
+                for day, item in day_map.items():
+                    if type(day) is not str or type(item) is not dict:
+                        return None
+                    copied_daily[day] = item.copy()
+                acc.daily[key] = copied_daily
+                copied_events = []
+                for ev in ev_list:
+                    if type(ev) is not dict:
+                        return None
+                    copied_events.append(ev.copy())
+                acc.events[key] = deque(copied_events, maxlen=80)
+                copied_deltas = {}
+                for day, vals in delta_map.items():
+                    if type(day) is not str or type(vals) is not list or not all(type(v) in (int, float) for v in vals):
+                        return None
+                    copied_deltas[day] = list(vals)
+                acc.delta_traces[key] = copied_deltas
+            for entry in raw_prev:
+                if type(entry) is not list or len(entry) != 4:
+                    return None
                 partition_list, sig_dict, hit_rate, provider_id = entry
+                if (
+                    type(partition_list) is not list
+                    or len(partition_list) != 4
+                    or not all(part is None or type(part) is str for part in partition_list)
+                    or type(provider_id) is not str
+                    or (hit_rate is not None and type(hit_rate) not in (int, float))
+                ):
+                    return None
                 sig = checked_signature_record(sig_dict)
                 if sig is None:
                     return None
                 acc.previous_by_scope[tuple(partition_list)] = (sig, hit_rate, provider_id)
             msk = record.get("max_sort_key")
-            acc.max_sort_key = (msk[0], msk[1]) if msk is not None else None
-            acc.saw_core_kind = bool(record.get("saw_core_kind", False))
+            if msk is not None:
+                if type(msk) is not list or len(msk) != 2 or type(msk[0]) is not str or type(msk[1]) is not int:
+                    return None
+                acc.max_sort_key = (msk[0], msk[1])
+            else:
+                acc.max_sort_key = None
+            saw_core = record.get("saw_core_kind", False)
+            if type(saw_core) is not bool:
+                return None
+            acc.saw_core_kind = saw_core
             return acc
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError):
             return None
 
     def add_row(self, row, *, allowed_days=None, track_sort_key: bool = False) -> None:
@@ -1601,15 +1647,43 @@ def _usage_report_from_disk(record: dict) -> ModelUsageReport | None:
         return None
     try:
         report = ModelUsageReport()
-        report.by_day = {k: v.copy() for k, v in record["by_day"].items()}
-        report.by_provider = {k: v.copy() for k, v in record["by_provider"].items()}
-        report.by_task = {k: v.copy() for k, v in record["by_task"].items()}
-        report.day_provider = {(item[0], item[1]): item[2].copy() for item in record["day_provider"]}
-        report.day_task = {(item[0], item[1]): item[2].copy() for item in record["day_task"]}
-        report.hourly = {(item[0], item[1]): item[2].copy() for item in record["hourly"]}
-        report.recent_rows = [row.copy() for row in record["recent_rows"]]
+        for attr in ("by_day", "by_provider", "by_task"):
+            raw_map = record[attr]
+            if type(raw_map) is not dict:
+                return None
+            out_map = {}
+            for k, v in raw_map.items():
+                if type(k) is not str or type(v) is not dict:
+                    return None
+                out_map[k] = v.copy()
+            setattr(report, attr, out_map)
+        for attr in ("day_provider", "day_task", "hourly"):
+            raw_items = record[attr]
+            if type(raw_items) is not list:
+                return None
+            out_pair_map = {}
+            for item in raw_items:
+                if (
+                    type(item) is not list
+                    or len(item) != 3
+                    or type(item[0]) is not str
+                    or type(item[1]) not in (str, int)
+                    or type(item[2]) is not dict
+                ):
+                    return None
+                out_pair_map[(item[0], item[1])] = item[2].copy()
+            setattr(report, attr, out_pair_map)
+        raw_recent = record["recent_rows"]
+        if type(raw_recent) is not list:
+            return None
+        recent_rows = []
+        for row in raw_recent:
+            if type(row) is not dict:
+                return None
+            recent_rows.append(row.copy())
+        report.recent_rows = recent_rows
         return report
-    except (KeyError, IndexError, TypeError, AttributeError):
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError):
         return None
 
 
@@ -1622,6 +1696,8 @@ def _save_disk_core_history(
     pricing_digest: str,
     eff_start: datetime,
     entry: _CoreHistoryEntry,
+    disk_lock: Lock | None = None,
+    can_commit=None,
 ) -> bool:
     """Atomically persist one compact immutable historical core projection (disposable cache)."""
     path = _disk_core_history_path(runtime, role_key_value=role_key_value, tz_offset_seconds=tz_offset_seconds)
@@ -1629,6 +1705,8 @@ def _save_disk_core_history(
         return False
     inst_id = getattr(runtime, "installation_id", None)
     if not isinstance(inst_id, str) or not inst_id:
+        return False
+    if callable(can_commit) and not can_commit():
         return False
     payload = {
         "v": DISK_CORE_HISTORY_VERSION,
@@ -1653,6 +1731,16 @@ def _save_disk_core_history(
         compressed = zlib.compress(encoded, level=1)
         tmp_path = path.parent / f".{path.name}.{os.getpid()}.{get_ident()}.tmp"
         tmp_path.write_bytes(compressed)
+        if disk_lock is not None:
+            with disk_lock:
+                if callable(can_commit) and not can_commit():
+                    tmp_path.unlink(missing_ok=True)
+                    return False
+                os.replace(tmp_path, path)
+                return True
+        if callable(can_commit) and not can_commit():
+            tmp_path.unlink(missing_ok=True)
+            return False
         os.replace(tmp_path, path)
         return True
     except OSError:
@@ -1688,9 +1776,11 @@ def _load_disk_core_history(
     if type(data) is not dict:
         return None
     if (
-        data.get("v") != DISK_CORE_HISTORY_VERSION
+        type(data.get("v")) is not int
+        or data.get("v") != DISK_CORE_HISTORY_VERSION
         or data.get("inst") != inst_id
         or data.get("role_key") != role_key_value
+        or type(data.get("tz")) is not int
         or data.get("tz") != int(tz_offset_seconds)
         or data.get("pricing_digest") != pricing_digest
     ):
@@ -1712,19 +1802,31 @@ def _load_disk_core_history(
     if usage_report is None or cache_diag is None:
         return None
     try:
-        hist_wm = _normalize_watermark_tuples(data["hist_watermark"])
-        core_days = frozenset(str(d) for d in data["core_days"])
-        avail_counts = tuple(int(x) for x in data["availability_counts"])
-        if len(avail_counts) != 8:
+        raw_wm = data["hist_watermark"]
+        if type(raw_wm) is not list:
+            return None
+        hist_wm = _normalize_watermark_tuples(raw_wm)
+        raw_core_days = data["core_days"]
+        if type(raw_core_days) is not list or not all(type(d) is str for d in raw_core_days):
+            return None
+        core_days = frozenset(raw_core_days)
+        raw_avail = data["availability_counts"]
+        if type(raw_avail) is not list or len(raw_avail) != 8 or not all(type(x) is int for x in raw_avail):
+            return None
+        avail_counts = tuple(raw_avail)
+        raw_priv = data["private_7d"]
+        if type(raw_priv) is not list:
             return None
         priv_records: list[tuple[dict, datetime]] = []
-        for item in data["private_7d"]:
+        for item in raw_priv:
+            if type(item) is not list or len(item) != 2:
+                return None
             obs_dict, dt_iso = item
             dt_val = _parse_utc_timestamp(dt_iso)
             if type(obs_dict) is not dict or dt_val is None:
                 return None
             priv_records.append((obs_dict, dt_val))
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError):
         return None
     return (
         disk_cutoff,
@@ -1823,6 +1925,8 @@ class _PreloadedCoreHistory:
     hist_has_future: bool
     hist_entry: _CoreHistoryEntry
     raw_entry: _CoreRawHistoryEntry | None = None
+    generation: tuple | None = None
+    clear_epoch: int | None = None
 
 
 @dataclass
@@ -2041,11 +2145,13 @@ class _RuntimeMaintenanceCache:
 
     def __init__(self) -> None:
         self._lock = Lock()
+        self._disk_lock = Lock()
         self._snapshots: OrderedDict[tuple, _SnapshotCacheEntry] = OrderedDict()
         self._days: OrderedDict[tuple, _CoreHistoryEntry] = OrderedDict()
         self._raw_days: OrderedDict[tuple, _CoreRawHistoryEntry] = OrderedDict()
         self._legacy: OrderedDict[tuple, _LegacyCacheEntry] = OrderedDict()
         self._last_seen_generation: tuple | None = None
+        self._clear_epoch = 0
         self._stats = {
             "snapshot_hits": 0,
             "snapshot_misses": 0,
@@ -2059,6 +2165,10 @@ class _RuntimeMaintenanceCache:
             "legacy_cache_hits": 0,
             "legacy_cache_misses": 0,
         }
+
+    def clear_epoch(self) -> int:
+        with self._lock:
+            return self._clear_epoch
 
     def stats(self) -> dict[str, int]:
         with self._lock:
@@ -2077,6 +2187,7 @@ class _RuntimeMaintenanceCache:
             self._raw_days.clear()
             self._legacy.clear()
             self._last_seen_generation = None
+            self._clear_epoch += 1
             for key in self._stats:
                 self._stats[key] = 0
 
@@ -2084,19 +2195,25 @@ class _RuntimeMaintenanceCache:
         """Detect external SQLite commits (``PRAGMA data_version`` bumps) and purge disk cache."""
         if generation is None:
             return False
+        with self._lock:
+            if self._last_seen_generation == generation:
+                return False
         changed = False
         main_dv = generation[0][1] if (isinstance(generation[0], tuple) and len(generation[0]) >= 2) else None
         initial_dv = getattr(runtime, "_initial_data_version", None)
-        with self._lock:
-            if self._last_seen_generation is None:
-                self._last_seen_generation = generation
-                if initial_dv is not None and main_dv is not None and main_dv != initial_dv:
+        with self._disk_lock:
+            with self._lock:
+                if self._last_seen_generation is None:
+                    self._last_seen_generation = generation
+                    if initial_dv is not None and main_dv is not None and main_dv != initial_dv:
+                        changed = True
+                        self._clear_epoch += 1
+                elif self._last_seen_generation != generation:
+                    self._last_seen_generation = generation
                     changed = True
-            elif self._last_seen_generation != generation:
-                self._last_seen_generation = generation
-                changed = True
-        if changed:
-            _clear_disk_core_history(runtime)
+                    self._clear_epoch += 1
+            if changed:
+                _clear_disk_core_history(runtime)
         return changed
 
     def lookup_snapshot(
@@ -2398,11 +2515,12 @@ class _RuntimeMaintenanceCache:
         eff_start: datetime,
         eff_now: datetime,
         core_available: bool,
+        expected_generation: tuple | None = None,
     ) -> _PreloadedCoreHistory | None:
         """Warm immutable historical core aggregates OUTSIDE read_snapshot().
 
         1. Attempts an O(1) persistent disk cache hit (~3 ms) verified by covering-index
-           ``hist_watermark`` and ``pricing_digest``.
+           ``hist_watermark``, ``pricing_digest``, and ``PRAGMA data_version`` generation.
         2. On cross-restart midnight rollover, loads yesterday's disk cache and folds
            only the 1-day gap.
         3. On true first-ever cold boot, reads immutable historical rows via bounded
@@ -2411,6 +2529,29 @@ class _RuntimeMaintenanceCache:
         """
         if not core_available or has_active_write_transaction(runtime):
             return None
+        start_epoch = self.clear_epoch()
+        token_before = read_shared_db_token(runtime)
+        if expected_generation is not None:
+            if token_before is None or token_before.generation != expected_generation:
+                if token_before is not None:
+                    self.sync_generation(runtime, token_before.generation)
+                return None
+            pre_gen: tuple | None = expected_generation
+        else:
+            pre_gen = token_before.generation if token_before is not None else None
+
+        def _generation_still_valid() -> bool:
+            if self.clear_epoch() != start_epoch:
+                return False
+            if pre_gen is None:
+                return True
+            token_now = read_shared_db_token(runtime)
+            if token_now is None or token_now.generation != pre_gen:
+                if token_now is not None:
+                    self.sync_generation(runtime, token_now.generation)
+                return False
+            return True
+
         now_utc = eff_now.astimezone(timezone.utc)
         eff_start_buffer_iso = (eff_start - timedelta(days=2)).astimezone(timezone.utc).isoformat()
         pricing_digest = _pricing_cache_digest(pricing_key)
@@ -2432,6 +2573,8 @@ class _RuntimeMaintenanceCache:
         if disk_loaded is not None:
             disk_cutoff, disk_entry = disk_loaded
             if disk_cutoff == history_cutoff and disk_entry.hist_watermark == cur_wm:
+                if not _generation_still_valid():
+                    return None
                 return _PreloadedCoreHistory(
                     source="disk_hit",
                     history_cutoff=history_cutoff,
@@ -2441,6 +2584,8 @@ class _RuntimeMaintenanceCache:
                     hist_has_future=False,
                     hist_entry=disk_entry,
                     raw_entry=None,
+                    generation=pre_gen,
+                    clear_epoch=start_epoch,
                 )
             if disk_cutoff < history_cutoff:
                 prev_wm = read_core_history_watermark(
@@ -2476,6 +2621,8 @@ class _RuntimeMaintenanceCache:
                                 core_available=True,
                             )
                             if wm_after == cur_wm:
+                                if not _generation_still_valid():
+                                    return None
                                 return _PreloadedCoreHistory(
                                     source="disk_advance",
                                     history_cutoff=history_cutoff,
@@ -2485,6 +2632,8 @@ class _RuntimeMaintenanceCache:
                                     hist_has_future=False,
                                     hist_entry=advanced,
                                     raw_entry=None,
+                                    generation=pre_gen,
+                                    clear_epoch=start_epoch,
                                 )
 
         # True first-ever cold build (or pricing/history changed offline): chunked outside snapshot.
@@ -2517,7 +2666,7 @@ class _RuntimeMaintenanceCache:
             history_cutoff=history_cutoff,
             core_available=True,
         )
-        if wm_after != cur_wm:
+        if wm_after != cur_wm or not _generation_still_valid():
             return None
         return _PreloadedCoreHistory(
             source="chunked_cold",
@@ -2528,6 +2677,8 @@ class _RuntimeMaintenanceCache:
             hist_has_future=hist_has_future,
             hist_entry=hist_entry,
             raw_entry=built_raw,
+            generation=pre_gen,
+            clear_epoch=start_epoch,
         )
 
     def load_partitioned_core(
@@ -2629,12 +2780,15 @@ class _RuntimeMaintenanceCache:
                 )
             )
 
-        # Adopt pre-warmed historical entry if its watermark and partition key match this pinned snapshot.
+        # Adopt pre-warmed historical entry if its watermark, generation, and partition key match this pinned snapshot.
         hist_has_future = False
+        expected_preloaded_gen = shared_token_before.generation if shared_token_before is not None else None
         if (
             hist_entry is None
             and raw_hit_entry is None
             and preloaded_hist is not None
+            and preloaded_hist.generation == expected_preloaded_gen
+            and (preloaded_hist.clear_epoch is None or preloaded_hist.clear_epoch == self.clear_epoch())
             and preloaded_hist.history_cutoff == history_cutoff
             and preloaded_hist.tz_offset_seconds == tz_offset_seconds
             and preloaded_hist.hist_watermark == hist_watermark
@@ -2644,6 +2798,7 @@ class _RuntimeMaintenanceCache:
             hist_has_future = preloaded_hist.hist_has_future
             store_ok = not hist_has_future and _can_store_entry()
             with self._lock:
+                epoch_ok = preloaded_hist.clear_epoch is None or self._clear_epoch == preloaded_hist.clear_epoch
                 if preloaded_hist.source == "disk_hit":
                     self._stats["day_cache_hits"] += 1
                     self._stats["disk_day_cache_hits"] += 1
@@ -2653,11 +2808,11 @@ class _RuntimeMaintenanceCache:
                 else:
                     self._stats["day_cache_misses"] += 1
                     self._stats["raw_day_cache_misses"] += 1
-                if store_ok:
+                if store_ok and epoch_ok:
                     _lru_put(self._days, day_key, hist_entry, DAY_CACHE_MAX_ENTRIES)
                     if preloaded_hist.raw_entry is not None:
                         _lru_put(self._raw_days, raw_key, preloaded_hist.raw_entry, RAW_DAY_CACHE_MAX_ENTRIES)
-            if store_ok and preloaded_hist.source != "disk_hit":
+            if store_ok and epoch_ok and preloaded_hist.source != "disk_hit":
                 disk_hist_to_save = hist_entry
 
         # Pricing/FX refresh fast path: re-project pricing from cached raw historical
@@ -2945,11 +3100,32 @@ def save_disk_core_history(
     pricing_key,
     eff_start: datetime,
     entry: _CoreHistoryEntry | None,
+    expected_generation: tuple | None = None,
+    expected_clear_epoch: int | None = None,
 ) -> bool:
     """Persist an immutable historical core projection outside any SQLite read snapshot."""
     if entry is None:
         return False
-    return _save_disk_core_history(
+    cache = runtime_maintenance_cache(runtime)
+
+    def _can_commit() -> bool:
+        if has_active_write_transaction(runtime):
+            return False
+        if expected_clear_epoch is not None and cache is not None and cache.clear_epoch() != expected_clear_epoch:
+            return False
+        if expected_generation is not None:
+            token_now = read_shared_db_token(runtime)
+            if token_now is None or token_now.generation != expected_generation:
+                return False
+        return True
+
+    if expected_generation is not None:
+        token_pre = read_shared_db_token(runtime)
+        if token_pre is not None and token_pre.generation != expected_generation:
+            if cache is not None:
+                cache.sync_generation(runtime, token_pre.generation)
+            return False
+    saved = _save_disk_core_history(
         runtime,
         role_key_value=role_key_value,
         history_cutoff=history_cutoff,
@@ -2957,15 +3133,25 @@ def save_disk_core_history(
         pricing_digest=_pricing_cache_digest(pricing_key),
         eff_start=eff_start,
         entry=entry,
+        disk_lock=cache._disk_lock if cache is not None else None,
+        can_commit=_can_commit if (expected_generation is not None or expected_clear_epoch is not None) else None,
     )
+    if not saved and expected_generation is not None:
+        token_post = read_shared_db_token(runtime)
+        if token_post is not None and token_post.generation != expected_generation and cache is not None:
+            cache.sync_generation(runtime, token_post.generation)
+    return saved
 
 
 def clear_maintenance_cache(runtime) -> None:
     """Clear all cached maintenance snapshots, day partitions, and persisted disk cache."""
     cache = runtime_maintenance_cache(runtime)
     if cache is not None:
-        cache.clear()
-    _clear_disk_core_history(runtime)
+        with cache._disk_lock:
+            cache.clear()
+            _clear_disk_core_history(runtime)
+    else:
+        _clear_disk_core_history(runtime)
 
 
 def build_snapshot_entry(

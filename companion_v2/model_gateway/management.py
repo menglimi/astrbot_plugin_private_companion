@@ -638,6 +638,7 @@ class ModelManagement:
         shared_token_before = None if active_write else read_shared_db_token(runtime)
         promote_ctx = None
         disk_save_ctx = None
+        pre_cache = None
         preloaded_hist = None
         pre_pricing_file_key = None
         pre_pricing_settings = None
@@ -645,8 +646,9 @@ class ModelManagement:
         pre_pricing_key = None
         if not active_write and shared_token_before is not None:
             pre_cache = runtime_maintenance_cache(runtime)
+            pre_gen = shared_token_before.generation
             if pre_cache is not None:
-                pre_cache.sync_generation(runtime, shared_token_before.generation)
+                pre_cache.sync_generation(runtime, pre_gen)
             if pre_cache is not None and _core_observations_available(runtime):
                 pre_now = self.app.now()
                 pre_eff_now = pre_now.replace(tzinfo=timezone.utc) if pre_now.tzinfo is None else pre_now
@@ -664,13 +666,13 @@ class ModelManagement:
                     pre_pricing_file_key, pre_pricing["revision"], tuple(sorted(pre_models.items())),
                     tuple(sorted(pre_clusters.items())), tuple(sorted(pre_own_sources.items())),
                 )
-                pre_cache_ver = (pre_pricing_key, shared_token_before.generation)
+                pre_cache_ver = (pre_pricing_key, pre_gen)
                 if pre_cache.needs_core_history_prewarm(
                     role_key_value=pre_role_key,
                     history_cutoff=pre_today,
                     tz_offset_seconds=pre_tz,
                     cache_version=pre_cache_ver,
-                    raw_cache_version=shared_token_before.generation,
+                    raw_cache_version=pre_gen,
                 ):
                     self._authorize(operator)
                     pre_pricing_catalog = PriceCatalogStore(runtime.data_root).read_safe(copy=False)
@@ -691,9 +693,14 @@ class ModelManagement:
                         eff_start=pre_eff_start,
                         eff_now=pre_eff_now,
                         core_available=True,
+                        expected_generation=pre_gen,
                     )
                     shared_token_before = read_shared_db_token(runtime)
-                    if preloaded_hist is not None and pricing_fingerprint(runtime, pricing_revision) != pre_pricing_file_key:
+                    if shared_token_before is None or shared_token_before.generation != pre_gen:
+                        if shared_token_before is not None:
+                            pre_cache.sync_generation(runtime, shared_token_before.generation)
+                        preloaded_hist = None
+                    elif preloaded_hist is not None and pricing_fingerprint(runtime, pricing_revision) != pre_pricing_file_key:
                         preloaded_hist = None
         with runtime.read_snapshot():
             self._authorize(operator)
@@ -732,10 +739,18 @@ class ModelManagement:
                 tuple(sorted(provider_clusters.items())), tuple(sorted(provider_own_sources.items())),
             )
             cache = None
+            disk_clear_epoch = None
             snapshot_token = read_shared_db_token(runtime) if shared_token_before is not None else None
-            if (snapshot_token is not None and snapshot_token.generation == shared_token_before.generation
+            if snapshot_token is not None and shared_token_before is not None and snapshot_token.generation != shared_token_before.generation:
+                if pre_cache is not None:
+                    pre_cache.sync_generation(runtime, snapshot_token.generation)
+                preloaded_hist = None
+            elif (snapshot_token is not None and shared_token_before is not None
+                    and snapshot_token.generation == shared_token_before.generation
                     and pricing_fingerprint(runtime, pricing_revision) == file_key):
                 cache = runtime_maintenance_cache(runtime)
+                if cache is not None:
+                    disk_clear_epoch = cache.clear_epoch()
             precomputed = {}
             if cache is not None:
                 cache_version = (pricing_key, shared_token_before.generation)
@@ -940,6 +955,8 @@ class ModelManagement:
                         pricing_key,
                         eff_start,
                         core_state.disk_hist_entry,
+                        shared_token_before.generation,
+                        disk_clear_epoch,
                     )
             else:
                 core_state = None
@@ -1401,6 +1418,8 @@ class ModelManagement:
                 pricing_key=disk_save_ctx[3],
                 eff_start=disk_save_ctx[4],
                 entry=disk_save_ctx[5],
+                expected_generation=disk_save_ctx[6],
+                expected_clear_epoch=disk_save_ctx[7],
             )
         if promote_ctx is not None and not has_active_write_transaction(runtime):
             cache.promote_snapshot_token(

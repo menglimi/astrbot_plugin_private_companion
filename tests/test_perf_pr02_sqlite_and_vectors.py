@@ -1222,6 +1222,189 @@ class MaintenanceDomainEpochAndJournalBatchTests(HostFixture, unittest.IsolatedA
         self.assertEqual(rolled["usage_sources"]["astrbot_core"]["totals"], uncached["usage_sources"]["astrbot_core"]["totals"])
         self.assertEqual(rolled["usage_sources"]["astrbot_core"]["cache_diagnostics"], uncached["usage_sources"]["astrbot_core"]["cache_diagnostics"])
 
+    async def test_malformed_disk_core_history_cache_falls_back_silently(self):
+        import copy
+        import zlib
+        from companion_v2.model_gateway import maintenance_cache as mc_mod
+        from companion_v2.model_gateway.core_observations import record_observation
+        from companion_v2.model_gateway.management import ModelManagement
+        from tests.test_maintenance_perf_cache import _make_observation
+
+        app = self.app
+        ctx = self.role_context
+        operator = self.core
+        manager = ModelManagement(app, ctx)
+        mc_mod.clear_maintenance_cache(app.runtime)
+
+        now = app.now()
+        record_observation(app.runtime, ctx, _make_observation("mal-h-1", now - timedelta(days=2)))
+        record_observation(app.runtime, ctx, _make_observation("mal-t-1", now - timedelta(minutes=5)))
+
+        baseline = manager.maintenance(operator).unwrap()
+        cache_dir = Path(app.runtime.data_root) / mc_mod.DISK_CORE_HISTORY_DIRNAME
+        disk_files = list(cache_dir.glob("core-hist-v*.zlib"))
+        self.assertEqual(len(disk_files), 1)
+        disk_path = disk_files[0]
+        valid_payload = json.loads(zlib.decompress(disk_path.read_bytes()).decode("utf-8"))
+
+        def _mutate(fn):
+            doc = copy.deepcopy(valid_payload)
+            fn(doc)
+            return zlib.compress(json.dumps(doc).encode("utf-8"), level=1)
+
+        corrupt_blobs = [
+            ("truncated_bytes", disk_path.read_bytes()[:12]),
+            ("non_dict_json", zlib.compress(b"[]", level=1)),
+            ("empty_max_sort_key", _mutate(lambda d: d["cache_diag"].__setitem__("max_sort_key", []))),
+            ("daily_int_bucket", _mutate(lambda d: d["cache_diag"].__setitem__("daily", {"all": 1}))),
+            ("daily_int_day", _mutate(lambda d: d["cache_diag"]["daily"]["all"].__setitem__("2026-01-01", 1))),
+            ("core_days_str", _mutate(lambda d: d.__setitem__("core_days", "2026-11-22"))),
+            ("avail_counts_str", _mutate(lambda d: d.__setitem__("availability_counts", "12345678"))),
+            ("avail_counts_bools", _mutate(lambda d: d.__setitem__("availability_counts", [True] * 8))),
+            ("private_7d_str", _mutate(lambda d: d.__setitem__("private_7d", "not-a-list"))),
+            ("usage_by_day_list", _mutate(lambda d: d["usage_report"].__setitem__("by_day", []))),
+            ("usage_hourly_short", _mutate(lambda d: d["usage_report"].__setitem__("hourly", [["2026-01-01"]]))),
+        ]
+
+        for label, blob in corrupt_blobs:
+            with self.subTest(case=label):
+                disk_path.write_bytes(blob)
+                mc_mod.runtime_maintenance_cache(app.runtime).clear()
+                recovered = manager.maintenance(operator).unwrap()
+                self.assertEqual(
+                    recovered["usage_sources"]["astrbot_core"]["totals"],
+                    baseline["usage_sources"]["astrbot_core"]["totals"],
+                )
+                self.assertEqual(
+                    mc_mod.maintenance_cache_stats(app.runtime)["disk_day_cache_hits"],
+                    0,
+                )
+
+    async def test_external_sqlite_inplace_edit_invalidates_cold_start_prewarm_and_disk_save(self):
+        from companion_v2.model_gateway import maintenance_cache as mc_mod
+        from companion_v2.model_gateway.core_observations import record_observation
+        from companion_v2.model_gateway.management import ModelManagement
+        from companion_v2.storage.runtime import StorageRuntime
+        from tests.test_maintenance_perf_cache import _make_observation
+
+        app = self.app
+        ctx = self.role_context
+        operator = self.core
+        manager = ModelManagement(app, ctx)
+        mc_mod.clear_maintenance_cache(app.runtime)
+
+        now = app.now()
+        obs = _make_observation("ext-hist-1", now - timedelta(days=2))
+        obs["requests"][0]["usage"]["tokens"] = 150
+        obs["requests"][0]["usage"]["input_tokens"] = 100
+        obs["requests"][0]["usage"]["output_tokens"] = 50
+        record_observation(app.runtime, ctx, obs)
+
+        first = manager.maintenance(operator).unwrap()
+        self.assertEqual(first["usage_sources"]["astrbot_core"]["totals"]["tokens"], 150)
+
+        def _external_inplace_replace(old_tokens: int, new_tokens: int):
+            conn = sqlite3.connect(str(app.runtime.database_path))
+            try:
+                row = conn.execute(
+                    "SELECT turn_id, record_json FROM astrbot_core_reply_observations WHERE turn_id = ?",
+                    ("ext-hist-1",),
+                ).fetchone()
+                self.assertIsNotNone(row)
+                updated = json.loads(row[1])
+                updated["requests"][0]["usage"]["tokens"] = new_tokens
+                conn.execute(
+                    "UPDATE astrbot_core_reply_observations SET record_json = ? WHERE turn_id = ?",
+                    (json.dumps(updated, ensure_ascii=False), "ext-hist-1"),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        # Case A: External in-place edit BEFORE first cold start on an open runtime
+        # (disk cache already exists from prior run; COUNT/revision/timestamps/length unchanged!).
+        fresh_runtime = StorageRuntime.open(data_root=app.runtime.data_root, installation_id=app.runtime.installation_id)
+        try:
+            _external_inplace_replace(150, 777)
+            orig_runtime = app.runtime
+            app.runtime = fresh_runtime
+            try:
+                after_pre_cold = manager.maintenance(operator).unwrap()
+                self.assertEqual(after_pre_cold["usage_sources"]["astrbot_core"]["totals"]["tokens"], 777)
+                self.assertEqual(mc_mod.maintenance_cache_stats(fresh_runtime)["disk_day_cache_hits"], 0)
+            finally:
+                app.runtime = orig_runtime
+        finally:
+            fresh_runtime.close()
+
+        # Sync original runtime cache cleanly and re-seed disk cache at 777.
+        mc_mod.clear_maintenance_cache(app.runtime)
+        at_777 = manager.maintenance(operator).unwrap()
+        self.assertEqual(at_777["usage_sources"]["astrbot_core"]["totals"]["tokens"], 777)
+
+        # Case B: External in-place edit DURING prewarm_core_history() (data_version advances mid-prewarm).
+        mc_mod.runtime_maintenance_cache(app.runtime).clear()
+        orig_load_disk = mc_mod._load_disk_core_history
+        injected = {"done": False}
+
+        def _load_disk_with_mid_edit(*args, **kwargs):
+            result = orig_load_disk(*args, **kwargs)
+            if not injected["done"]:
+                injected["done"] = True
+                _external_inplace_replace(777, 9999)
+            return result
+
+        with patch.object(mc_mod, "_load_disk_core_history", side_effect=_load_disk_with_mid_edit):
+            during_prewarm = manager.maintenance(operator).unwrap()
+        self.assertEqual(during_prewarm["usage_sources"]["astrbot_core"]["totals"]["tokens"], 9999)
+
+        # Second call (RAM hit) and simulated restart (disk hit) must both return 9999, never stale 777!
+        second_call = manager.maintenance(operator).unwrap()
+        self.assertEqual(second_call["usage_sources"]["astrbot_core"]["totals"]["tokens"], 9999)
+        mc_mod.runtime_maintenance_cache(app.runtime).clear()
+        restarted_call = manager.maintenance(operator).unwrap()
+        self.assertEqual(restarted_call["usage_sources"]["astrbot_core"]["totals"]["tokens"], 9999)
+
+        # Case C: save_disk_core_history() refuses to resurrect stale disk cache when clear_epoch
+        # or PRAGMA data_version generation has moved on.
+        cache = mc_mod.runtime_maintenance_cache(app.runtime)
+        stale_epoch = cache.clear_epoch()
+        stale_gen = mc_mod.read_shared_db_token(app.runtime).generation
+        dummy_entry = next(iter(cache._days.values()))
+        mc_mod.clear_maintenance_cache(app.runtime)
+        cache_dir = Path(app.runtime.data_root) / mc_mod.DISK_CORE_HISTORY_DIRNAME
+        self.assertEqual(list(cache_dir.glob("core-hist-v*.zlib")), [])
+
+        saved_after_clear = mc_mod.save_disk_core_history(
+            app.runtime,
+            role_key_value=mc_mod.read_core_history_watermark.__name__,
+            history_cutoff=app.now().date().isoformat(),
+            tz_offset_seconds=0,
+            pricing_key=("k",),
+            eff_start=app.now() - timedelta(days=6),
+            entry=dummy_entry,
+            expected_generation=stale_gen,
+            expected_clear_epoch=stale_epoch,
+        )
+        self.assertFalse(saved_after_clear)
+        self.assertEqual(list(cache_dir.glob("core-hist-v*.zlib")), [])
+
+        cur_epoch = cache.clear_epoch()
+        _external_inplace_replace(9999, 8888)
+        saved_after_ext = mc_mod.save_disk_core_history(
+            app.runtime,
+            role_key_value=mc_mod.read_core_history_watermark.__name__,
+            history_cutoff=app.now().date().isoformat(),
+            tz_offset_seconds=0,
+            pricing_key=("k",),
+            eff_start=app.now() - timedelta(days=6),
+            entry=dummy_entry,
+            expected_generation=stale_gen,
+            expected_clear_epoch=cur_epoch,
+        )
+        self.assertFalse(saved_after_ext)
+        self.assertEqual(list(cache_dir.glob("core-hist-v*.zlib")), [])
+
 
 if __name__ == "__main__":
     unittest.main()
