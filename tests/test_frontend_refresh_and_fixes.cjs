@@ -1090,3 +1090,19 @@ test("全站右侧滑出抽屉双向丝滑动效：detailDialog、semantic-edito
   assert.match(memCss, /:root\[data-motion="off"\]\s*\.mem-detail/);
   assert.match(memCss, /@media\(prefers-reduced-motion:reduce\)\{\.mem-detail/);
 });
+
+test("主动与联系节律盘排版精修：桌面三卡等高配平、移除 1460px 误折行、四圈交互图例与生效节律速览", () => {
+  const css = read("pages", "陪伴小屋", "contact-page.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.doesNotMatch(css, /@media\s*\(\s*max-width:\s*1460px\s*\)/, "不得保留按外层视口 1460px 强压 .ct-controls 为单列的过时规则");
+  assert.match(css, /\.ct-dial-wrap\{[^}]*align-items:stretch/);
+  assert.match(css, /\.ct-dial-stage\{[^}]*border:1px solid var\(--t-line\)[^}]*border-radius:var\(--r-md\)/);
+  assert.match(css, /\.ct-dial-face\{[^}]*position:relative/);
+  assert.match(css, /\.ct-dial-legend\{[^}]*repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(css, /\.ct-controls\{[^}]*align-items:stretch/);
+  assert.match(css, /\.ct-global-summary\{[^}]*margin:auto 0 0/);
+  const js = read("pages", "陪伴小屋", "contact-page.js");
+  assert.match(js, /class="ct-dial-face"/);
+  assert.match(js, /class="ct-dial-legend"/);
+  assert.match(js, /data-ring-jump="\$\{ring\}"/);
+  assert.match(js, /class="ct-global-summary"/);
+});
