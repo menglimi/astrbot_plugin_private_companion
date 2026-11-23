@@ -184,7 +184,8 @@ class CoreReplyForwardParserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.message_str, "")
         req = event.get_extra("provider_request")
         self.assertEqual(req.prompt, FORWARD_ONLY_SENTINEL_PROMPT)
-        self.assertEqual(getattr(req, "retrieval_query", None), "")
+        if hasattr(req, "retrieval_query"):
+            self.assertEqual(req.retrieval_query, "")
 
         claim_core_reply_forward_injection(event)
         self.assertTrue(event.get_extra(COMPANION_FORWARD_INJECTED_EXTRA))

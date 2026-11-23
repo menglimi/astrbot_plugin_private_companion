@@ -463,6 +463,7 @@ class ManagementApiUnblockingTests(unittest.IsolatedAsyncioTestCase):
             acct_api = AccountSessionWebAPI(controller)
             body = json.dumps({"session_key": "k1", "llm_enabled": True}).encode("utf-8")
             with patch("astrbot_host.account_session_api.request", _fake_request(body=body)), \
+                    patch("astrbot_host.management_identity.require_management_operator", return_value=object()), \
                     patch("astrbot_host.account_session_api.sp.get_async", new=AsyncMock(return_value={})), \
                     patch("astrbot_host.account_session_api.sp.put_async", new=AsyncMock()):
                 task = asyncio.create_task(acct_api.save_session())
@@ -883,7 +884,9 @@ class HttpEtagPollingTests(unittest.IsolatedAsyncioTestCase):
         controller.status = lambda: dict(state)
         api = MultiHostWebAPI(controller)
 
-        with patch("astrbot_host.multi_api.display_names", return_value=NS(targets=AsyncMock(return_value=[]))):
+        with patch("astrbot_host.management_identity.require_management_operator",
+                   return_value=object()) as authorize, \
+                patch("astrbot_host.multi_api.display_names", return_value=NS(targets=AsyncMock(return_value=[]))):
             with patch("astrbot_host.multi_api.request", _fake_request()):
                 first = await api.api_status()
             self.assertIsInstance(first, dict)
@@ -896,6 +899,7 @@ class HttpEtagPollingTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(second, Response)
             self.assertEqual(second.status_code, 304)
             self.assertEqual(second.headers.get("etag"), etag)
+            self.assertEqual(authorize.call_count, 4)
 
             state["counter"] = 2
             with patch("astrbot_host.multi_api.request", _fake_request(headers={"If-None-Match": etag})):
@@ -905,12 +909,13 @@ class HttpEtagPollingTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(third["etag"], etag)
 
         # api_performance ETag / 304
-        with patch("astrbot_host.multi_api.request", _fake_request()):
-            perf1 = await api.api_performance()
-        self.assertIsInstance(perf1, dict)
-        perf_etag = perf1["etag"]
-        with patch("astrbot_host.multi_api.request", _fake_request(headers={"If-None-Match": perf_etag})):
-            perf2 = await api.api_performance()
+        with patch("astrbot_host.management_identity.require_management_operator", return_value=object()):
+            with patch("astrbot_host.multi_api.request", _fake_request()):
+                perf1 = await api.api_performance()
+            self.assertIsInstance(perf1, dict)
+            perf_etag = perf1["etag"]
+            with patch("astrbot_host.multi_api.request", _fake_request(headers={"If-None-Match": perf_etag})):
+                perf2 = await api.api_performance()
         self.assertIsInstance(perf2, Response)
         self.assertEqual(perf2.status_code, 304)
 
