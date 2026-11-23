@@ -222,7 +222,8 @@ class MultiPrivateBridge(NativePrivateBridge):
                 for segment in raw_segments:
                     if _is_sticker_segment(segment):
                         pieces.append("[表情包]")
-            text = "".join(pieces)
+            from .core_reply_forwards import combine_text_and_forward_summary, get_parsed_forwards
+            text = combine_text_and_forward_summary("".join(pieces), get_parsed_forwards(event))
             return Outcome.success(NativeConversationInput(
                 event_id, principal, ConversationRoute(scope, user=actor.subject), recipients,
                 text, at, role, instruction,
@@ -1233,6 +1234,7 @@ class MultiHostSession:
                 captured_voice_policy, voice_settings_available = None, False
                 captured_outbound_settings = None
                 astrbot_animated_image_understanding_enabled = False
+                forward_adaptation_enabled = True
                 if not group_admission or group_admission.get("reason") != "repeat":
                     try:
                         from companion_v2.conversation.segmentation import SegmentationPolicy
@@ -1260,6 +1262,8 @@ class MultiHostSession:
                             private_tool_groups = None
                         astrbot_animated_image_understanding_enabled = (
                             snapshot.values.get(GROUP + ".astrbot_animated_image_understanding_enabled") is True)
+                        forward_adaptation_enabled = (
+                            snapshot.values.get(GROUP + ".forward_message_adaptation_enabled", True) is not False)
                         names = {field.name for field in fields(SegmentationPolicy)} | {
                             "streaming", "part_gap_mode", "part_gap_ms", "part_gap_min_ms",
                             "part_gap_max_ms", "part_gap_log_base"}
@@ -1291,6 +1295,32 @@ class MultiHostSession:
                         voice_settings_available = True
                     except Exception as error:
                         logger.warning("[CompanionV2] 核心回复文字设置暂不可读，保留宿主发送 error_type=%s", type(error).__name__)
+                from .core_reply_forwards import (
+                    combine_text_and_forward_summary,
+                    component_kind,
+                    get_parsed_forwards,
+                )
+                parsed_forwards = get_parsed_forwards(event)
+                if parsed_forwards is not None:
+                    if context.scope.kind is ScopeKind.GROUP:
+                        captured = replace(
+                            captured,
+                            text=combine_text_and_forward_summary(
+                                captured.text, parsed_forwards,
+                                adaptation_enabled=forward_adaptation_enabled,
+                            ),
+                        )
+                    elif not forward_adaptation_enabled:
+                        plain_only = "".join(
+                            part.text for part in getattr(getattr(event, "message_obj", None), "message", ())
+                            if component_kind(part) == "Plain" and isinstance(getattr(part, "text", None), str)
+                        )
+                        captured = replace(
+                            captured,
+                            text=combine_text_and_forward_summary(
+                                plain_only, parsed_forwards, adaptation_enabled=False,
+                            ),
+                        )
                 prompt_instruction, stable_prompt_instruction = "", ""
                 prompt_context_instruction, prompt_context_blocks = "", ()
                 context_sections, expression_signal_ids = (), ()
@@ -1449,6 +1479,7 @@ class MultiHostSession:
                     **({"private_tool_groups": private_tool_groups} if private_tool_groups is not None else {}),
                     "outbound_settings": captured_outbound_settings,
                     "astrbot_animated_image_understanding_enabled": astrbot_animated_image_understanding_enabled,
+                    "forward_adaptation_enabled": forward_adaptation_enabled,
                     "voice_reply_policy": voice_policy,
                     "voice_singsing_enabled": singsing_enabled,
                     "configured_voice_reply_policy": configured_voice_policy,

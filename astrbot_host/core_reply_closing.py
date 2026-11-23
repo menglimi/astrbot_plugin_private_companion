@@ -27,6 +27,10 @@ _HEAVY_CONTENT = frozenset({"Image", "Record", "Video", "File", "Forward", "Node
 
 def _has_heavy_content(event):
     """True for an image/audio/video/file/forward part, never for At/Reply/Face."""
+    from .core_reply_forwards import get_parsed_forwards
+
+    if get_parsed_forwards(event) is not None:
+        return True
     kinds = set()
     for part in getattr(getattr(event, "message_obj", None), "message", ()) or ():
         part_type = getattr(part, "type", None)

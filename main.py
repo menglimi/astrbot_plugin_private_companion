@@ -60,6 +60,25 @@ from .astrbot_host.core_reply_tool_guard import (
     close_core_reply_tool_guard, install_core_reply_tool_guard, mark_managed_turn,
 )
 from .astrbot_host.core_reply_mentions import prepare_bare_mention_request
+from .astrbot_host.core_reply_forwards import (
+    apply_debounced_private_merge,
+    await_event_forwards_parsed,
+    claim_core_reply_forward_injection,
+    coalesce_debounced_forwards,
+    combine_text_and_forward_summary,
+    ensure_event_forwards_parsed,
+    event_has_media_or_reply,
+    event_has_top_level_forwards,
+    event_will_enter_astrbot_llm,
+    forward_burst_debounce_policy,
+    get_parsed_forwards,
+    inject_core_reply_forwards,
+    merge_followup_forwards,
+    parse_event_forwards,
+    prepare_forward_only_request,
+    private_debounce_input,
+    resolve_forward_intake_policy,
+)
 from .astrbot_host.core_reply_native_send import inject_core_reply_send_tool
 from .astrbot_host.core_reply_perception import (
     inject_core_reply_perception_context, inject_core_reply_perception_policy,
@@ -525,7 +544,7 @@ class PrivateCompanionV2StagingPlugin(Star):
             return
         await self._enter_core_reply_followup_guard(event, event_ref=event_ref, channel=channel)
 
-    def _fold_private_follow_up(self, event, target, event_ref, text):
+    def _fold_private_follow_up(self, event, target, event_ref, text, *, allow_empty=False):
         """Join a post-debounce message to the first model request when possible."""
         target_key = getattr(target, "target_id", None)
         if not isinstance(target_key, str) or not target_key:
@@ -537,7 +556,8 @@ class PrivateCompanionV2StagingPlugin(Star):
         if guard is not None and guard.has_pending_media_barrier(
                 event, owner_event=active_window.event):
             return False
-        active = self._private_reply_followups().fold(target_key, event, text)
+        active = self._private_reply_followups().fold(
+            target_key, event, text, allow_empty=allow_empty)
         if active is None:
             return False
         self._suppress_merged_private_event(
@@ -556,6 +576,8 @@ class PrivateCompanionV2StagingPlugin(Star):
         pending, entries = resolved
         if not pending:
             return
+        merge_followup_forwards(
+            event, pending, policy=resolve_forward_intake_policy(self.staging))
         extra_text = "\n".join(str(item[1]).strip() for item in pending if str(item[1]).strip())
         if not extra_text:
             return
@@ -1157,17 +1179,41 @@ class PrivateCompanionV2StagingPlugin(Star):
                 return
         is_calendar_command = (channel == "private"
                                and parse_calendar_command(str(getattr(event, "message_str", "") or "")))
-        plain_text = (PrivateDebounce.private_plain_text(event)
-                      if channel == "private" and not is_calendar_command else None)
+        debounce_input = (private_debounce_input(event)
+                          if channel == "private" and not is_calendar_command else None)
+        plain_text = debounce_input[0] if debounce_input is not None else None
+        event_has_forward = (debounce_input[1] if debounce_input is not None
+                             else event_has_top_level_forwards(event))
+        forward_policy = (resolve_forward_intake_policy(self.staging)
+                          if event_has_forward else None)
         target_key = getattr(target, "target_id", None) if channel == "private" else None
         if (plain_text is not None and isinstance(target_key, str) and target_key
-                and self._fold_private_follow_up(event, target, event_ref, plain_text)):
-            return
+                and self._private_reply_followups().active_for(target_key) is not None):
+            if event_has_forward:
+                await parse_event_forwards(
+                    event, policy=forward_policy,
+                    native_context=getattr(self.staging, "context", None),
+                )
+            if self._fold_private_follow_up(
+                    event, target, event_ref, plain_text, allow_empty=event_has_forward):
+                return
         debounce_manager = None
         debounce_pending = None
         if plain_text is not None and isinstance(target_key, str) and target_key:
             debounce_manager = self._private_debounce_manager()
             debounce_pending = debounce_manager.reserve(target_key, event, plain_text)
+        forward_parse_task = None
+        if event_has_forward:
+            if debounce_pending is not None:
+                forward_parse_task = ensure_event_forwards_parsed(
+                    event, policy=forward_policy,
+                    native_context=getattr(self.staging, "context", None),
+                )
+            else:
+                await parse_event_forwards(
+                    event, policy=forward_policy,
+                    native_context=getattr(self.staging, "context", None),
+                )
         group_debounce_manager = None
         group_pending = None
         group_debounced_entries = None
@@ -1263,6 +1309,8 @@ class PrivateCompanionV2StagingPlugin(Star):
             logger.warning("[CompanionV2] 会话回复开关暂不可读，继续核心授权检查 event_ref=%s error_type=%s",
                            event_ref, type(error).__name__)
         if not reply_enabled:
+            if forward_parse_task is not None and not forward_parse_task.done():
+                forward_parse_task.cancel()
             if debounce_pending is not None:
                 await debounce_manager.abort(debounce_pending, event=event)
                 if debounce_manager.superseded_by_same_event(debounce_pending, event):
@@ -1317,7 +1365,13 @@ class PrivateCompanionV2StagingPlugin(Star):
                 policy = getattr(core_reply_plan, "debounce", None)
             else:
                 policy = None
-            status = await debounce_manager.configure(debounce_pending, event, policy)
+            burst_has_forwards = event_has_forward or any(
+                event_has_top_level_forwards(item[0])
+                for item in debounce_pending.pending.entries
+            )
+            effective_policy = forward_burst_debounce_policy(
+                policy, has_forwards=burst_has_forwards)
+            status = await debounce_manager.configure(debounce_pending, event, effective_policy)
             if status == "configuring":
                 status = await debounce_manager.wait_for_resolution(debounce_pending, event)
             if status == "active":
@@ -1328,7 +1382,13 @@ class PrivateCompanionV2StagingPlugin(Star):
                         status = "superseded"
                 if status == "ready" and debounced_entries:
                     merged_text = debounce_manager.combined(debounce_pending, debounced_entries)
-                    if not PrivateDebounce.replace_private_plain_text(event, merged_text):
+                    aggregated_forwards = await coalesce_debounced_forwards(
+                        event, debounced_entries,
+                        policy=forward_policy or resolve_forward_intake_policy(self.staging),
+                        native_context=getattr(self.staging, "context", None),
+                    )
+                    if not apply_debounced_private_merge(
+                            event, merged_text, has_forwards=aggregated_forwards is not None):
                         suppress_default_reply(event)
                         self._record_no_reply(event, "private_debounce_merge_failed", origin_key=origin_key,
                                               channel="private", event_ref=event_ref, stage="intake",
@@ -1336,12 +1396,28 @@ class PrivateCompanionV2StagingPlugin(Star):
                         logger.warning("[CompanionV2] 私聊防抖合并失败 event_ref=%s", event_ref)
                         return
                     if core_reply_plan is not None:
-                        core_reply_plan = self._core_reply_plan_with_text(core_reply_plan, merged_text)
+                        plan_text = combine_text_and_forward_summary(merged_text, aggregated_forwards)
+                        core_reply_plan = self._core_reply_plan_with_text(core_reply_plan, plan_text)
+            if status == "bypass" and forward_parse_task is not None:
+                parsed = await await_event_forwards_parsed(
+                    event, policy=forward_policy,
+                    native_context=getattr(self.staging, "context", None),
+                )
+                if core_reply_plan is not None and parsed is not None:
+                    plan_text = combine_text_and_forward_summary(plain_text or "", parsed)
+                    core_reply_plan = self._core_reply_plan_with_text(core_reply_plan, plan_text)
             if status == "superseded":
+                if forward_parse_task is not None:
+                    await await_event_forwards_parsed(
+                        event, policy=forward_policy,
+                        native_context=getattr(self.staging, "context", None),
+                    )
                 self._suppress_debounced_private_event(
                     event, target, event_ref, debounce_manager, debounce_pending)
                 return
             if status in {"closed", "aborted", "finished"}:
+                if forward_parse_task is not None and not forward_parse_task.done():
+                    forward_parse_task.cancel()
                 self._suppress_debounced_private_event(
                     event, target, event_ref, debounce_manager, debounce_pending,
                     reason="private_debounce_cancelled")
@@ -1488,6 +1564,15 @@ class PrivateCompanionV2StagingPlugin(Star):
                 event.message_str = SELF_MENTION
                 if getattr(event, "message_obj", None) is not None:
                     event.message_obj.message_str = SELF_MENTION
+        if get_parsed_forwards(event) is not None:
+            if (not str(getattr(event, "message_str", "") or "").strip()
+                    and not event_has_media_or_reply(event)):
+                if not await prepare_forward_only_request(
+                        event, native_context=getattr(self.staging, "context", None)):
+                    event.message_str = "[合并转发聊天记录]"
+                    if getattr(event, "message_obj", None) is not None:
+                        event.message_obj.message_str = "[合并转发聊天记录]"
+            claim_core_reply_forward_injection(event)
         event.is_wake = True
         event.is_at_or_wake_command = True
         guard_outcome = await self._enter_core_reply_followup_guard(
@@ -1499,10 +1584,15 @@ class PrivateCompanionV2StagingPlugin(Star):
             self._cleanup_captured_core_followup(
                 event, prepared, event_ref=event_ref, channel=channel, reason=cleanup_reason)
             return
-        if channel == "private" and not guard_outcome.get("had_active_turn"):
+        if (channel == "private" and not guard_outcome.get("had_active_turn")
+                and event_will_enter_astrbot_llm(event)
+                and (plain_text is not None or bool(str(prepared.get("text") or "").strip()))):
             entries = (debounced_entries if debounced_entries is not None else
                        ((event, str(prepared.get("text") or event.message_str or ""),
                          getattr(event, "created_at", None)),))
+            if not any(len(entry) >= 2 and str(entry[1]).strip() for entry in entries):
+                entries = ((event, str(prepared.get("text") or event.message_str or "[合并转发聊天记录]"),
+                            getattr(event, "created_at", None)),)
             self._private_reply_followups().start(
                 target_key or getattr(target, "target_id", ""), event, event_ref, entries)
         logger.info("[CompanionV2] 交由 AstrBot 核心回复管线 event_ref=%s channel=%s",
@@ -1693,6 +1783,7 @@ class PrivateCompanionV2StagingPlugin(Star):
         with measure_core_preparation(event, "prompt_injection", now=self.staging.now):
             inject_core_reply_perception_policy(event, req)
             inject_core_reply_prompt(event, req)
+            inject_core_reply_forwards(event, req, prepared=prepared)
         mark_core_reply_inflight(event)
         application = getattr(getattr(self.staging, "session", None), "application", None)
         observer = getattr(getattr(self.staging, "session", None), "core_reply_observations", None)

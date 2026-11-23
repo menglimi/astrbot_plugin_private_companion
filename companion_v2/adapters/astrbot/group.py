@@ -190,8 +190,22 @@ class NativeGroupBridge(NativePrivateBridge):
         media_only_allowed = (
             bool(raw_kinds) and raw_kinds.issubset(
                 {"image", "record", "video", "file", "reply", "forward"})) or (
-            segments is None and any(kind in {"Image", "Record", "Video", "File", "Reply", "Forward"}
+            segments is None and any(kind in {"Image", "Record", "Video", "File", "Reply", "Forward", "Node", "Nodes"}
                                      for kind in native_kinds))
+        forward_summary = ""
+        extra_getter = getattr(event, "get_extra", None)
+        if callable(extra_getter):
+            try:
+                parsed_forwards = extra_getter("_astrbot_parsed_forwards")
+            except Exception:
+                parsed_forwards = None
+            if (isinstance(parsed_forwards, Mapping) and parsed_forwards.get("version") == 1
+                    and isinstance(parsed_forwards.get("cards"), list) and parsed_forwards["cards"]):
+                raw_summary = str(parsed_forwards.get("combined_text") or "").strip()
+                if len(raw_summary) > 2400:
+                    raw_summary = raw_summary[:2394].rstrip() + "…（已截断）"
+                forward_summary = raw_summary
+        forward_summary_used = False
         text, has_text, stt_used = [], False, False
         for part in parts:
             if isinstance(part, Mapping):
@@ -226,7 +240,13 @@ class NativeGroupBridge(NativePrivateBridge):
                 elif kind == "reply":
                     text.append("\n[引用消息不可用]\n")
                 elif kind == "forward":
-                    text.append("\n[合并转发不可用]\n")
+                    if forward_summary:
+                        if not forward_summary_used:
+                            text.append("\n" + forward_summary + "\n")
+                            forward_summary_used = True
+                        has_text = True
+                    else:
+                        text.append("\n[合并转发不可用]\n")
                 elif kind == "record":
                     if stt_text:
                         if not stt_used:
@@ -267,16 +287,23 @@ class NativeGroupBridge(NativePrivateBridge):
             elif kind in ("Face", "Mface"):
                 text.append("[表情]")
                 has_text = True
-            elif kind in ("Image", "Reply", "Forward", "Record", "Video", "File"):
+            elif kind in ("Image", "Reply", "Forward", "Node", "Nodes", "Record", "Video", "File"):
                 if kind == "Record" and stt_text:
                     if not stt_used:
                         text.append(f"[语音消息：{stt_text}]")
                         stt_used = True
                     has_text = True
                     continue
+                if kind in ("Forward", "Node", "Nodes") and forward_summary:
+                    if not forward_summary_used:
+                        text.append("\n" + forward_summary + "\n")
+                        forward_summary_used = True
+                    has_text = True
+                    continue
                 has_text |= kind == "Reply" and not require_text
                 text.append({"Image": "\n[图片不可用]\n", "Reply": "\n[引用消息不可用]\n",
-                             "Forward": "\n[合并转发不可用]\n", "Record": "\n[语音不可用]\n",
+                             "Forward": "\n[合并转发不可用]\n", "Node": "\n[合并转发不可用]\n",
+                             "Nodes": "\n[合并转发不可用]\n", "Record": "\n[语音不可用]\n",
                              "Video": "\n[视频不可用]\n",
                              "File": "\n[文件附件，正文尚未读取]\n"}[kind])
             else:

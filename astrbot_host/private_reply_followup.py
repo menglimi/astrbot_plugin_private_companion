@@ -99,7 +99,7 @@ class PrivateReplyFollowUps:
         self._active[key] = active
         return active
 
-    def fold(self, key, event, text):
+    def fold(self, key, event, text, *, allow_empty=False):
         """Append a follow-up only while the first provider request is pending."""
         self._prune()
         active = self._active.get(key)
@@ -128,7 +128,7 @@ class PrivateReplyFollowUps:
             self._active.pop(key, None)
             return None
         body = str(text or "").strip()
-        if not body:
+        if not body and not allow_empty:
             return None
         active.entries.append((event, body, getattr(event, "created_at", None)))
         return active
