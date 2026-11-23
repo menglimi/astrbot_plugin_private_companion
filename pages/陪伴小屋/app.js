@@ -279,7 +279,7 @@ function navigationDestination(next,tab='',subtab=''){
     subtab=tab==='learning'?(['overview','strategy','review','chain','expression','behavior','semantic','reflection'].includes(subtab)?subtab:'overview')
       :tab==='models'?(MODEL_TABS.includes(subtab)?subtab:'fn')
       :tab==='expression'?(['text','segment','style','cleanup','voice','components','checks','timing','platform','reaction','group'].includes(subtab)?subtab:'')
-      :tab==='maintenance'?(['diagnostics','delivery','reply-diagnostics','cache','efficiency','recent','prompts','patrol'].includes(subtab)?subtab:'')
+      :tab==='maintenance'?(['diagnostics','delivery','reply-diagnostics','cache','efficiency','recent','prompts','system-prompts','logs','patrol'].includes(subtab)?subtab:'')
         :tab==='data'?(['storage','backup','migration','port'].includes(subtab)?subtab:'storage')
         :tab==='memory'?(['records','settings'].includes(subtab)?subtab:'')
         :tab==='perception'?(['environment','models','news','screen','balance','recall','injection'].includes(subtab)?subtab:'')
@@ -1183,6 +1183,7 @@ function paintPanel(){
      只在来源确实是导航时移动焦点——面板内部的刷新（轮询、保存回执）不该抢焦点。 */
   const fromRail=Boolean(document.activeElement?.closest?.('.rail'));
   const commit=()=>{
+    product.unmountWorkspace?.();
     unmountConfigEditors();
     host.innerHTML=furniture?renderFurniturePanel(furniture)
       :section?renderSectionPanel(section)
@@ -1236,10 +1237,11 @@ function mountPanelWorkspaces(){
     ?window.CompanionContactPage?.mount(contactHost)
     :window.CompanionContactPage?.unmount());
   const learningHost=$('#learningWorkspace');
-  const growthSources=learningReviewSources({scopeKey:learningTab==='chain'?'growth':null});
+  const readGrowthSources=()=>learningReviewSources({scopeKey:learningTab==='chain'?'growth':null});
+  const growthSources=readGrowthSources();
   guarded('学习与反思',()=>learningHost
     ?growthSources.length
-      ?window.CompanionLearningPage?.mount(learningHost,{sources:growthSources,layout:'chain',recordFocus:learningRecordFocus})
+      ?window.CompanionLearningPage?.mount(learningHost,{sources:growthSources,getSources:readGrowthSources,layout:'chain',recordFocus:learningRecordFocus})
       :window.CompanionLearningPage?.unmount()
     :window.CompanionLearningPage?.unmount());
   const learningOverviewHost=$('#learningOverviewWorkspace');
@@ -1248,14 +1250,15 @@ function mountPanelWorkspaces(){
     ?window.CompanionBehaviorPage?.mount(behaviorHost,{api:roleConfigApi(product.role?.())})
     :window.CompanionBehaviorPage?.unmount());
   guarded('学习总览',()=>learningOverviewHost
-    ?window.CompanionLearningOverviewPage?.mount(learningOverviewHost,{sources:learningReviewSources({includeGroups:true}),semantic:{global:true}})
+    ?window.CompanionLearningOverviewPage?.mount(learningOverviewHost,{sources:learningReviewSources({includeGroups:true}),semantic:{global:true},getSources:()=>learningReviewSources({includeGroups:true})})
     :window.CompanionLearningOverviewPage?.unmount());
   const learningReviewHost=$('#learningReviewWorkspace');
   guarded('学习审阅中心',()=>learningReviewHost
-    ?window.CompanionLearningReviewPage?.mount(learningReviewHost,{sources:learningReviewSources({includeGroups:true})})
+    ?window.CompanionLearningReviewPage?.mount(learningReviewHost,{sources:learningReviewSources({includeGroups:true}),getSources:()=>learningReviewSources({includeGroups:true})})
     :window.CompanionLearningReviewPage?.unmount());
   const selfReviewHost=$('#selfReviewWorkspace');
   const reviewSources=learningReviewSources();
+  reviewSources.getSources=()=>learningReviewSources();
   guarded('每日复盘',()=>selfReviewHost
     ?window.CompanionSelfReviewPage?.mount(selfReviewHost,{sources:reviewSources,state:'active'})
     :window.CompanionSelfReviewPage?.unmount());
@@ -1281,6 +1284,7 @@ function mountPanelWorkspaces(){
   guarded('本会话回复诊断',()=>diagnosticsHost
     ?window.CompanionReplyDiagnostics?.mount(diagnosticsHost)
     :window.CompanionReplyDiagnostics?.unmount());
+  if(!$('#setupGuideHost')&&!$('#legacyMigrationWorkspace'))guarded('首次配置引导卸载',()=>unmountSetupGuide());
   const roleStateHost=$('#roleStateWorkspace');
   const roleWeatherHost=$('#perceptionRoleWeatherWorkspace');
   const stateHost=roleWeatherHost||roleStateHost;
@@ -1320,23 +1324,26 @@ function mountPanelWorkspaces(){
       :window.CompanionExpressionLearningPage?.unmount());
   }else guarded('表达学习卸载',()=>window.CompanionExpressionLearningPage?.unmount());
   const expressionSignalsHost=$('#expressionSignalsWorkspace');
-  const expressionSources=learningExpressionSources();
+  const readExpressionSources=()=>learningExpressionSources();
+  const expressionSources=readExpressionSources();
   guarded('表达规则',()=>expressionSignalsHost&&expressionSources.length
-    ?window.CompanionExpressionSignalsPage?.mount(expressionSignalsHost,{sources:expressionSources})
+    ?window.CompanionExpressionSignalsPage?.mount(expressionSignalsHost,{sources:expressionSources,getSources:readExpressionSources})
     :window.CompanionExpressionSignalsPage?.unmount());
   const expressionSamplesHost=$('#expressionSamplesWorkspace');
   guarded('表达学习素材',()=>expressionSamplesHost&&expressionSources.length
-    ?window.CompanionExpressionSamplesPage?.mount(expressionSamplesHost,{sources:expressionSources})
+    ?window.CompanionExpressionSamplesPage?.mount(expressionSamplesHost,{sources:expressionSources,getSources:readExpressionSources})
     :window.CompanionExpressionSamplesPage?.unmount());
   if($('#setupGuideHost'))guarded('首次配置引导',()=>mountSetupGuide());
-  const legacyMigrationHost=$('#legacyMigrationWorkspace');
-  if(legacyMigrationHost)guarded('旧版资料迁入',()=>window.CompanionSetup?.mountMigration(legacyMigrationHost));
+  else if($('#legacyMigrationWorkspace'))guarded('旧版资料迁入',()=>window.CompanionSetup?.mountMigration($('#legacyMigrationWorkspace')));
   /* 备份与还原。它只在「资料与维护」与「治理与维护」两页出现，
      两道 renderData() 各自会插入挂载点，这里按容器是否存在探测，
      不存在就不挂——与上面几行同一个做法。 */
   if($('#backupWorkspace'))guarded('备份与还原',()=>window.CompanionBackupPage?.mount($('#backupWorkspace')));
+  else guarded('备份与还原卸载',()=>window.CompanionBackupPage?.unmount?.());
   if($('#storageWorkspace'))guarded('插件存储管理',()=>window.CompanionStoragePage?.mount($('#storageWorkspace')));
- if($('#configPortWorkspace'))guarded('配置导入导出',()=>window.CompanionConfigPortPage?.mount($('#configPortWorkspace')));
+  else guarded('插件存储管理卸载',()=>window.CompanionStoragePage?.unmount?.());
+  if($('#configPortWorkspace'))guarded('配置导入导出',()=>window.CompanionConfigPortPage?.mount($('#configPortWorkspace')));
+  else guarded('配置导入导出卸载',()=>window.CompanionConfigPortPage?.unmount?.());
   guarded('配置分区',()=>renderConfigEditors());
   guarded('产出预览',()=>mountOutputPreviewImage());
   guarded('产出后端',()=>$('.output-page')?window.CompanionOutputPage?.mount($('.output-page')):window.CompanionOutputPage?.unmount());
@@ -1346,6 +1353,7 @@ function mountPanelWorkspaces(){
     :window.CompanionImageMaterialsPage?.unmount());
   if($('#modelWorkspace'))guarded('模型与连接',()=>window.CompanionModelsPage?.mount($('#modelWorkspace'),
     route==='manage'&&manageTab==='models'?{initialTab:modelsPane,onTabChange:onModelsTabChange}:{}));
+  else guarded('模型与连接卸载',()=>window.CompanionModelsPage?.unmount?.());
   const mobileConnectionHost=$('#mobileConnectionWorkspace');
   if(mobileConnectionHost)guarded('手机端连接',()=>
     window.CompanionNativeExtensionPanel?.mount(mobileConnectionHost,{extensionId:'reality',onlyGroup:'mobile'}));
@@ -1365,9 +1373,11 @@ function mountPanelWorkspaces(){
   });
   guarded('内置能力面板',()=>window.CompanionNativeExtensionPanel?.prune());
   if($('#perceptionOverviewWorkspace'))guarded('感知上下文',()=>window.CompanionPerceptionOverviewPage?.mount($('#perceptionOverviewWorkspace')));
+  else guarded('感知上下文卸载',()=>window.CompanionPerceptionOverviewPage?.unmount?.());
   if($('#nativeEnvironmentWorkspace'))guarded('原生感知',()=>window.CompanionNativePerceptionPage?.mount({
     environment:$('#nativeEnvironmentWorkspace'),calendar:$('#nativeCalendarWorkspace'),
     model:$('#nativeModelWorkspace'),news:$('#nativeNewsWorkspace')}));
+  else guarded('原生感知卸载',()=>window.CompanionNativePerceptionPage?.unmount?.());
   guarded('华为运动健康',()=>$('#huaweiHealthWorkspace')
     ?window.CompanionHuaweiHealthPage?.mount($('#huaweiHealthWorkspace'))
     :window.CompanionHuaweiHealthPage?.unmount());
@@ -1534,7 +1544,7 @@ function renderHomeEnvironment(){
   const host=$('[data-home-environment]');
   if(!host||!window.CompanionHomeEnvironment)return;
   if(liteHomeSuspended()){
-    window.CompanionHomeEnvironment.suspend();
+    window.CompanionHomeEnvironment?.suspend?.();
     return;
   }
   const current=product.role();
@@ -4117,7 +4127,7 @@ function activateExpressionModule(id,{focus=false}={}){
   /* 旧的「节奏时机」链接仍可打开，但它归入文字页的分段设置，
      页面不再为同一组分段控件保留第二个入口。 */
   if(id==='expression-timing')id='expression-text';
-  const tabs=$$('[data-expression-module]');
+  const tabs=$$('[role="tab"][data-expression-module]');
   const target=tabs.find(tab=>tab.dataset.expressionModule===id);
   const panel=document.getElementById(`expression-panel-${id}`);
   if(!target||!panel)return false;
@@ -4241,14 +4251,14 @@ const SELF_PROFILE_SECTIONS=[
 ];
 /* 档案章节的页眉说明：章节切换时由 selectSelfProfileSection 就地更新。 */
 const SELF_CHAPTER_COPY={
-  identity:['01 / IDENTITY','身份','姓名、种族、生日、年龄感、职业与关键经历。写在这里的设定会进入新对话，并在同角色的窗口共享。'],
-  appearance:['02 / APPEARANCE','外貌','发型、瞳色、服饰与能稳定辨认角色的识别点；图像识别线索用于头像、截图和水印。'],
-  personality:['03 / PERSONALITY','性格','性格描述、日常习惯与稳定反应；写得越具体，角色在陌生场景里越不容易走样。'],
-  voice:['04 / VOICE','口吻','自称、说话方式、情绪表达与口吻示例；这些是表达参考，不会覆盖原人格和边界。'],
-  motivations:['05 / MOTIVATION','动机','重视的事、核心欲望、长期目标与爱好；用来解释角色为什么做选择。'],
-  boundaries:['06 / BOUNDARY','边界','互动边界与禁忌。它们优先于习惯和表达偏好，不被群聊里的临时要求覆盖。'],
-  world:['07 / WORLD','世界','角色所在的世界、时代、基调与场景；世界知识用于理解设定，不替代现实事实。'],
-  expression_learning:['08 / EXPRESSION','表达学习范围','限定从哪些私聊/群聊与对象学习表达；只影响表达样本，不改变身份、关系和授权。'],
+  identity:['第 01 章','基础身份','姓名、种族、生日、年龄感、职业与关键经历。写在这里的设定会进入新对话，并在同角色的窗口共享。'],
+  appearance:['第 02 章','外貌与识别','发型、瞳色、服饰与能稳定辨认角色的识别点；图像识别线索用于头像、截图和水印。'],
+  personality:['第 03 章','性格与习惯','性格描述、日常习惯与稳定反应；写得越具体，角色在陌生场景里越不容易走样。'],
+  voice:['第 04 章','表达口吻','自称、说话方式、情绪表达与口吻示例；这些是表达参考，不会覆盖原人格和边界。'],
+  motivations:['第 05 章','内在动机','重视的事、核心欲望、长期目标与爱好；用来解释角色为什么做选择。'],
+  boundaries:['第 06 章','互动边界','互动边界与禁忌。它们优先于习惯和表达偏好，不被群聊里的临时要求覆盖。'],
+  world:['第 07 章','世界与场景','角色所在的世界、时代、基调与场景；世界知识用于理解设定，不替代现实事实。'],
+  expression_learning:['第 08 章','表达学习范围','限定从哪些私聊或群聊对象学习表达；只影响表达样本，不改变身份、关系和授权。'],
 };
 function selfChapterIntroMarkup(section){
   const [kicker,title,detail]=SELF_CHAPTER_COPY[section]||SELF_CHAPTER_COPY.identity;
@@ -5756,9 +5766,11 @@ function showDetail(id){
   openDetailDialog('这件事在别处',`<p>这个入口指向的工作区还没有读到。可以先去下面这几处：</p><div class="dialog-actions">${button('日记与生活','data-life="diary"')}${button('事实与经历','data-go="memories"')}${button('能力目录','data-home-section="furniture"')}</div>`);
 }
 /* 弹窗的统一出口。所有分支都从这里渲染，免得每条分支各写一遍头部。 */
+let detailCloseTimer=0;
 function openDetailDialog(title,body){
   const dialog=$('#detailDialog');
   if(!dialog||!dialog.classList||!$('#dialogContent'))return false;
+  if(detailCloseTimer){clearTimeout(detailCloseTimer);detailCloseTimer=0;}
   identityDialogMount?.unmount?.();
   identityDialogMount=null;
   allFeatureDialogMount?.unmount?.();
@@ -6469,7 +6481,9 @@ document.addEventListener('click',event=>{
     navigate('manage','governance','profile');
     requestAnimationFrame(()=>{
       selectSelfProfileSection(section);
-      document.getElementById('roleProfileConfigWorkspace')?.scrollIntoView({block:'start',behavior:'smooth'});
+      const target=document.getElementById('selfChapterIntro')||document.getElementById('roleProfileConfigWorkspace');
+      const reduced=state.reduceMotion||matchMedia('(prefers-reduced-motion: reduce)').matches||document.documentElement?.dataset?.motion==='off';
+      target?.scrollIntoView({block:'start',behavior:reduced?'instant':'smooth'});
     });
     return;
   }
@@ -6699,7 +6713,7 @@ document.addEventListener('submit',event=>{
      弹窗里现在不会有 data-form 表单，保留这条兜底防止未捕获的提交刷新页面。 */
   const form=event.target;if(!form.dataset.form)return;event.preventDefault();
 });
-$('#detailDialog').addEventListener('close',()=>{identityDialogMount?.unmount?.();identityDialogMount=null;allFeatureDialogMount?.unmount?.();allFeatureDialogMount=null;window.CompanionGameAccess?.unmount();const nativeHost=$('#dialogContent').querySelector('[data-native-extension-host]');if(nativeHost)window.CompanionNativeExtensionPanel?.unmount(nativeHost);$('#detailDialog').classList.remove('detail-dialog-settings','detail-dialog-native-extension');if(dialogReturnFocus?.isConnected)dialogReturnFocus.focus({preventScroll:true});else if(dialogReturnFurniture)document.querySelector('[data-furniture="'+dialogReturnFurniture+'"]')?.focus({preventScroll:true});else document.querySelector('[data-detail="'+lastDetail+'"]')?.focus({preventScroll:true});});
+$('#detailDialog').addEventListener('close',()=>{identityDialogMount?.unmount?.();identityDialogMount=null;allFeatureDialogMount?.unmount?.();allFeatureDialogMount=null;window.CompanionGameAccess?.unmount();const nativeHost=$('#dialogContent').querySelector('[data-native-extension-host]');if(nativeHost)window.CompanionNativeExtensionPanel?.unmount(nativeHost);const d=$('#detailDialog');const finishClasses=()=>{if(detailCloseTimer){clearTimeout(detailCloseTimer);detailCloseTimer=0;}if(!d.open)d.classList.remove('detail-dialog-settings','detail-dialog-native-extension');};const reduced=document.documentElement?.dataset?.motion==='off'||document.body?.classList?.contains?.('reduce-motion')||window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;if(reduced){finishClasses();}else{if(detailCloseTimer)clearTimeout(detailCloseTimer);d.addEventListener('transitionend',event=>{if(event.target===d&&event.propertyName==='transform'&&!d.open)finishClasses();},{once:true});detailCloseTimer=setTimeout(finishClasses,260);}if(dialogReturnFocus?.isConnected)dialogReturnFocus.focus({preventScroll:true});else if(dialogReturnFurniture)document.querySelector('[data-furniture="'+dialogReturnFurniture+'"]')?.focus({preventScroll:true});else document.querySelector('[data-detail="'+lastDetail+'"]')?.focus({preventScroll:true});});
 $('#detailDialog').addEventListener('click',event=>{if(event.target!==event.currentTarget)return;const r=event.currentTarget.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)closeDetail();});
 $('#searchDialog').addEventListener('click',event=>{if(event.target===event.currentTarget){const r=event.currentTarget.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)event.currentTarget.close();}});
 $('#searchButton').addEventListener('click',openSearch);
@@ -6769,7 +6783,7 @@ document.addEventListener('keydown',event=>{
   }
   const expressionTab=event.target.closest?.('[role="tab"][data-expression-module]');
   if(expressionTab&&['ArrowRight','ArrowLeft','Home','End'].includes(event.key)){
-    const tabs=$$('[data-expression-module]');
+    const tabs=$$('[role="tab"][data-expression-module]');
     const index=tabs.indexOf(expressionTab);
     if(index>=0&&tabs.length){
       event.preventDefault();

@@ -73,7 +73,21 @@ window.CompanionSemanticPage = (() => {
   /* 这一页发送所有可编辑字段（不是只发改动），而 revision 冲突后必须重读
      才能拿到新版本号。重读会把 state 换成服务端的值，所以本地草稿要单独留一份，
      否则用户刚填的值会被服务端旧值覆盖。 */
-  let root,scope,abort,state,kind="reaction",view="all",after={},loaded={},deletedIds=new Set(),sessionId="",busy=false,editing=null,result=null,message="",generation=0,draft=null,conflict=false,selectedTarget=null,selectedSelection=null,selectedScopeKey="",globalSettingsOnly=false;
+  let root,scope,abort,state,kind="reaction",view="all",after={},loaded={},deletedIds=new Set(),sessionId="",busy=false,refreshing=false,refreshedAt="",editing=null,result=null,message="",generation=0,draft=null,conflict=false,selectedTarget=null,selectedSelection=null,selectedScopeKey="",globalSettingsOnly=false;
+  let drawerEl=null,drawerCloseTimer=0,drawerOpenFrame=0;
+  function reducedMotion(){
+    if(typeof document==="undefined")return true;
+    return document.documentElement?.dataset?.motion==="off"
+      ||document.body?.classList?.contains?.("reduce-motion")
+      ||Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+  }
+  function clearDrawerTimers(){
+    if(drawerCloseTimer&&typeof clearTimeout==="function")clearTimeout(drawerCloseTimer);
+    if(drawerOpenFrame&&typeof cancelAnimationFrame==="function")cancelAnimationFrame(drawerOpenFrame);
+    drawerCloseTimer=0;drawerOpenFrame=0;
+  }
+  const MAX_REFRESH_PAGES = 8;
+  const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
   const visibleFlags = () => view === "expression"
     ? flags.filter(([id]) => reactionFlags.has(id))
     : view === "learning" ? flags.filter(([id]) => !reactionFlags.has(id) || id === "vision_review") : flags;
@@ -106,8 +120,8 @@ window.CompanionSemanticPage = (() => {
     const source=String(value||"").trim();
     return /^(?:data:image\/[a-z0-9.+-]+;|https:\/\/|http:\/\/|\/)/i.test(source)?source:"";
   };
-  function editor(item) {
-    let html='<div class="semantic-editor-drawer"><div class="semantic-editor-backdrop" data-semantic="close" aria-hidden="true"></div><form id="semanticEditor" class="semantic-editor"><div class="semantic-heading"><h3>'+escape(item.payload.name||item.payload.term||"素材详情")+'</h3><button type="button" class="icon-button" data-semantic="close" aria-label="关闭编辑" title="关闭"><i data-lucide="x"></i></button></div>';
+  function editorInner(item) {
+    let html='<div class="semantic-editor-backdrop" data-semantic="close" aria-hidden="true"></div><form id="semanticEditor" class="semantic-editor"><div class="semantic-heading"><h3>'+escape(item.payload.name||item.payload.term||"素材详情")+'</h3><button type="button" class="icon-button" data-semantic="close" aria-label="关闭编辑" title="关闭"><i data-lucide="x"></i></button></div>';
     const source=imageSource(item.image_url||item.payload?.image_url||item.payload?.url);
     if(source)html+='<img src="'+escape(source)+'" alt="'+escape(item.payload.name||"表情原图")+'" loading="lazy">';
     html+=fields[kind].map(([id,label])=>'<label>'+label+'<textarea name="'+id+'" rows="'+(id==="description"||id==="meaning"?3:2)+'" maxlength="'+(kind==="slang"?500:1500)+'">'+escape(item.payload[id]||"")+'</textarea></label>').join("");
@@ -115,7 +129,54 @@ window.CompanionSemanticPage = (() => {
     html+='<div class="semantic-actions"><button class="button primary" type="submit" '+(busy?"disabled":"")+'>保存修改</button>';
     if(kind==="reaction")html+='<button class="button" type="button" data-semantic="analyze" '+(busy?"disabled":"")+'>补全空白字段</button>';
     if(kind==="reaction")html+='<button class="icon-button danger" type="button" data-semantic="delete" aria-label="删除表情素材" title="删除表情素材" '+(busy?"disabled":"")+'><i data-lucide="trash-2"></i></button>';
-    return html+'<button class="button" type="button" data-semantic="close">取消</button></div></form></div>';
+    return html+'<button class="button" type="button" data-semantic="close">取消</button></div></form>';
+  }
+  function editor(item) {
+    return '<div class="semantic-editor-drawer is-open" aria-hidden="false">'+editorInner(item)+'</div>';
+  }
+  function commitView(mainHtml) {
+    if(typeof document==="undefined"||typeof root?.insertAdjacentHTML!=="function"){
+      root.innerHTML=mainHtml+(editing?editor(editing):"");
+      window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
+      return;
+    }
+    if(!drawerEl||drawerEl.parentNode!==root){
+      drawerEl=document.createElement("div");
+      drawerEl.className="semantic-editor-drawer";
+      drawerEl.setAttribute("aria-hidden","true");
+      root.innerHTML="";
+      root.appendChild(drawerEl);
+    }else{
+      while(root.firstChild&&root.firstChild!==drawerEl)root.removeChild(root.firstChild);
+    }
+    drawerEl.insertAdjacentHTML("beforebegin",mainHtml);
+    clearDrawerTimers();
+    const wasOpen=drawerEl.classList.contains("is-open");
+    if(editing){
+      drawerEl.innerHTML=editorInner(editing);
+      drawerEl.setAttribute("aria-hidden","false");
+      if(wasOpen||reducedMotion()||typeof requestAnimationFrame!=="function"){
+        drawerEl.classList.add("is-open");
+      }else{
+        void drawerEl.offsetWidth;
+        drawerOpenFrame=requestAnimationFrame(()=>{
+          drawerOpenFrame=0;
+          if(editing&&drawerEl?.isConnected)drawerEl.classList.add("is-open");
+        });
+      }
+    }else{
+      drawerEl.classList.remove("is-open");
+      drawerEl.setAttribute("aria-hidden","true");
+      if(wasOpen&&!reducedMotion()&&typeof setTimeout==="function"){
+        drawerCloseTimer=setTimeout(()=>{
+          drawerCloseTimer=0;
+          if(!editing&&drawerEl?.isConnected)drawerEl.innerHTML="";
+        },240);
+      }else{
+        drawerEl.innerHTML="";
+      }
+    }
+    window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
   }
   function pendingAnalysis(item) {
     const payload=item?.payload||{},itemKind=item?.kind||kind;
@@ -132,7 +193,7 @@ window.CompanionSemanticPage = (() => {
     const current=shown=>draft?{...cfg,...draft}[shown]:cfg[shown];
     const catalog=state.catalog||{},slangCount=Number(catalog.slang?.total||0),reactionCount=Number(catalog.reaction?.total||0);
     const counts=group?`${slangCount} 条黑话 · ${reactionCount} 项素材`:`${reactionCount} 项素材`;
-    let html='<div class="settings-heading"><div><h2>'+(globalSettingsOnly?'全局语义策略':'语义目录')+'</h2></div><span class="semantic-state '+escape(state.state)+'">'+escape({ready:"嵌入已就绪",lexical_fallback:"关键词回退",disabled:"已停用"}[state.state]||"状态待核对")+'</span></div>';
+    let html='<div class="settings-heading"><div><h2>'+(globalSettingsOnly?'全局语义策略':'语义目录')+'</h2></div><div class="refresh-cluster"><span class="semantic-state '+escape(state.state)+'">'+escape({ready:"嵌入已就绪",lexical_fallback:"关键词回退",disabled:"已停用"}[state.state]||"状态待核对")+'</span>'+(refreshedAt?'<span class="refresh-stamp" role="status">刚刚已刷新 '+escape(refreshedAt)+'</span>':'')+'<button type="button" class="lh-refresh'+(refreshing?' is-refreshing':'')+'" data-semantic="refresh" aria-label="重新读取" title="重新读取" aria-busy="'+(refreshing?'true':'false')+'" '+(busy?'disabled':'')+'><i data-lucide="refresh-cw"></i></button></div></div>';
     if(message)html+='<p class="semantic-feedback'+(conflict?" semantic-conflict":"")+'" role="status">'+escape(message)+'</p>';
     if(!globalSettingsOnly){
     html+='<section class="semantic-learning-catalog" aria-label="语义条目"><header class="semantic-learning-heading"><h3>语义条目 · 阵列</h3><span>'+escape(counts)+'</span></header>';
@@ -162,7 +223,6 @@ window.CompanionSemanticPage = (() => {
       html+='<div class="semantic-list">'+rows+'</div>';
       if(!state.items?.length)html+='<p class="semantic-learning-empty">暂无语义条目</p>';
       if(Object.values(after).some(Boolean))html+='<button class="button" data-semantic="more" '+(busy?'disabled':'')+'>加载更多</button>';
-      if(editing)html+=editor(editing);
     }
     html+='</section>';
     }
@@ -194,8 +254,9 @@ window.CompanionSemanticPage = (() => {
     if(!current())return;
     root?.classList?.toggle?.("semantic-expression-view", view === "expression");
     root?.classList?.toggle?.("semantic-learning-view", view !== "expression");
-    if(!product.hosted()){root.innerHTML='<div class="settings-heading"><div><h2>语义理解与素材</h2></div></div><p class="memory-notice" role="status">角色与会话目录暂未读到。</p><div class="semantic-actions"><button class="button" type="button" data-workspace-retry>重新读取</button></div>';return;}
+    if(!product.hosted()){clearDrawerTimers();drawerEl=null;root.innerHTML='<div class="settings-heading"><div><h2>语义理解与素材</h2></div></div><p class="memory-notice" role="status">角色与会话目录暂未读到。</p><div class="semantic-actions"><button class="button" type="button" data-workspace-retry>重新读取</button></div>';return;}
     if(!state){
+      clearDrawerTimers();drawerEl=null;
       const action=busy?"":'<div class="semantic-actions"><button class="button" type="button" data-semantic="retry">重新读取</button></div>';
       root.innerHTML='<div class="settings-heading"><div><h2>语义理解与素材</h2></div></div>'
         +'<p class="memory-notice" role="status">'+escape(message||"正在读取实际配置…")+'</p>'+action;
@@ -207,12 +268,11 @@ window.CompanionSemanticPage = (() => {
     const currentViewFlags=visibleFlags(),currentViewProviders=visibleProviders(),currentViewNumbers=visibleNumbers();
     const kinds=visibleKinds(group);
     if(view==="learning"){
-      root.innerHTML=renderLearning(cfg,group);
-      window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
+      commitView(renderLearning(cfg,group));
       return;
     }
     const heading=view==="expression"?"表情配图":group?"群词义与语义设置":"语义理解与学习素材";
-    let html='<div class="settings-heading"><div><h2>'+heading+'</h2></div><span class="semantic-state '+escape(state.state)+'">'+escape({ready:"嵌入已就绪",lexical_fallback:"关键词回退",disabled:"已停用"}[state.state]||"状态待核对")+'</span></div>';
+    let html='<div class="settings-heading"><div><h2>'+heading+'</h2></div><div class="refresh-cluster"><span class="semantic-state '+escape(state.state)+'">'+escape({ready:"嵌入已就绪",lexical_fallback:"关键词回退",disabled:"已停用"}[state.state]||"状态待核对")+'</span>'+(refreshedAt?'<span class="refresh-stamp" role="status">刚刚已刷新 '+escape(refreshedAt)+'</span>':'')+'<button type="button" class="lh-refresh'+(refreshing?' is-refreshing':'')+'" data-semantic="refresh" aria-label="重新读取" title="重新读取" aria-busy="'+(refreshing?'true':'false')+'" '+(busy?'disabled':'')+'><i data-lucide="refresh-cw"></i></button></div></div>';
     if(message)html+='<p class="semantic-feedback'+(conflict?" semantic-conflict":"")+'" role="status">'+escape(message)+'</p>';
     html+='<section class="semantic-section"><div class="semantic-heading"><h3>'+(view==="expression"?"表情使用与自动收录":"语义模型与学习")+(view==="expression"?window.CompanionWorkbench.scopeHintMarkup("表情使用、自动收录与检索策略由所有账号与角色共用。\n表情先由角色模型决定要不要用；这里的概率只在模型已经要图之后生效，不是每条回复/主动消息的带图率。主动消息还要开启「允许主动消息带图」。", "查看表情设置范围与使用说明"):"")+'</h3></div><form id="semanticSettings">';
     html+='<div class="semantic-flags">'+currentViewFlags.map(([id,label])=>toggle(id,label,shown[id])).join("")+'</div>';
@@ -265,13 +325,11 @@ window.CompanionSemanticPage = (() => {
         return '<article class="semantic-row" data-semantic-open="'+escape(item.id)+'"><div class="semantic-row-media">'+media+'<span class="semantic-row-state '+(item.enabled?"is-enabled":"is-disabled")+'">'+(item.enabled?"已启用":"已停用")+'</span></div><div class="semantic-row-body"><strong>'+escape(title)+'</strong><p>'+escape(detail)+'</p><small>'+escape(collectionState||source)+' · '+escape(analysis)+(item.source_valid===false?" · 来源已失效":"")+'</small></div><button class="button small" type="button" data-semantic-open="'+escape(item.id)+'">编辑</button></article>';}).join("")+'</div>';
       if(!state.items?.length)html+='<p class="memory-notice">当前没有素材。</p>';
       if(state.next_after)html+='<button class="button" data-semantic="more" '+(busy?'disabled':'')+'>加载更多</button>';
-      if(editing)html+=editor(editing);
       }
       html+='</div>';
     }
     if(kinds.length)html+='</section>';
-    root.innerHTML=html;
-    window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
+    commitView(html);
   }
   function collectionSummary(summary,catalog={}) {
     const totals=summary?.totals||{},recent=summary?.recent||[];
@@ -345,77 +403,115 @@ window.CompanionSemanticPage = (() => {
     if(Math.abs((Number(window.scrollY)||0)-value)<=1)return;
     window.scrollTo(0,value);
   }
-  /* 按游标列表逐页读一个 kind。中途某页读不到就停在上一页：已读到的行仍然有效，
-     下一页游标保持原样，下次「加载更多」会重试它。 */
-  async function readChain(type,cursors){
-    const rows=[];
-    let next="",meta=null,failed=false,failure=null;
-    for(const cursor of cursors){
+  /* 按模式逐页读一个 kind：refresh 沿服务端实时 next_after 重读已加载页数，消除游标漂移；
+     中途某页失败时停在该页并标记 failed=true，保留前缀与旧行。 */
+  async function readChain(type, options = {}) {
+    const append = options.append === true;
+    const rounds = append ? 1 : Math.min(MAX_REFRESH_PAGES, Math.max(1, Number(options.rounds) || 1));
+    const rows = [], used = [];
+    let cursor = append ? (options.startCursor || "") : "";
+    let next = "", meta = null, failed = false, failure = null;
+    for (let round = 0; round < rounds; round += 1) {
       let page;
-      try{page=await api("GET",{...selection(),kind:type,...(cursor?{after:cursor}:{})});}
-      catch(error){failed=true;failure=error;break;}
-      if(!Array.isArray(page?.items)){failed=true;break;}
-      if(!meta)meta=page;
+      try { page = await api("GET", {...selection(), kind:type, ...(cursor ? {after:cursor} : {})}); }
+      catch (error) { failed = true; failure = error; break; }
+      if (!Array.isArray(page?.items)) { failed = true; break; }
+      if (!meta) meta = page;
+      used.push(cursor);
       rows.push(...page.items);
-      next=page.next_after||"";
+      const nextCursor = typeof page.next_after === "string" && page.next_after ? page.next_after : "";
+      next = nextCursor === cursor ? "" : nextCursor;
+      if (!next) break;
+      cursor = next;
     }
-    return {type,rows,next,meta,failed,failure};
+    return {type, rows, next, used, meta, failed, failure};
   }
   /* 读取有三种模式：
-       reset   首次挂载/换类型/换会话：重建页记录，只读第 1 页（用户主动重置）；
+       reset   首次挂载/换类型/换会话：重建页记录，只读第 1 页；
        append  「加载更多」：往后读一页并追加；
-       refresh 写操作后/重新读取：按已读游标原地重读同一批页，按 id 合并，
-               **不减少**已经显示的条目，也不把草稿与编辑态清掉。
-     除用户主动切类型/会话外，任何刷新都不走 reset —— 那是「目录被打回第一页」的根源。 */
-  async function load(mode="reset"){
-    const append=mode==="append"||mode===true,refresh=mode==="refresh";
-    if(!current()||!product.hosted()||((append||refresh)&&busy))return;
-    const ticket=++generation;
-    const previous=state;
-    const oldItems=previous?.items||[];
-    const scrollTop=(append||refresh)?rememberScroll():null;
-    if(!append&&!refresh)message="";
-    busy=true;if(!append&&!refresh)state=null;render();
-    try{
-      const group=target()?.scope_kind==="group";
-      const kinds=view==="learning"?visibleKinds(group):[kind];
-      const cursorsFor=type=>refresh
-        ?(loaded[type]?.length?loaded[type].slice():[""])
-        :append?(after[type]?[after[type]]:[]):[""];
-      const fetchAll=()=>Promise.all(kinds.map(type=>readChain(type,cursorsFor(type))));
-      let chains=await fetchAll();
-      if(!active(ticket))return;
-      if(!append&&!refresh&&!sessionId&&chains[0]?.meta&&!chains[0].meta.selection_ready&&chains[0].meta.sessions?.length){
-        sessionId=chains[0].meta.sessions[0];chains=await fetchAll();
+       refresh 写操作后/重新读取：沿实时游标重读已加载页数，完整成功时以服务端结果权威替换；
+               仅当某个类型失败时保留该类型旧项并明示（导入后仍有下一页时保留顺移项）。 */
+  async function load(modeOrOptions = "reset") {
+    const opts = typeof modeOrOptions === "object" && modeOrOptions !== null
+      ? modeOrOptions
+      : {mode: modeOrOptions === true ? "append" : String(modeOrOptions || "reset")};
+    const mode = opts.mode || "reset";
+    const append = mode === "append", refresh = mode === "refresh";
+    const manual = opts.manual === true, afterImport = opts.afterImport === true;
+    if (!current() || !product.hosted() || ((append || refresh) && busy)) return;
+    const ticket = ++generation;
+    const previous = state;
+    const oldItems = previous?.items || [];
+    const scrollTop = (append || refresh) ? rememberScroll() : null;
+    if (!append && !refresh) { message = ""; refreshedAt = ""; }
+    else if (manual) { message = ""; conflict = false; }
+    busy = true; refreshing = refresh;
+    if (!append && !refresh) state = null;
+    render();
+    try {
+      const group = target()?.scope_kind === "group";
+      const kinds = view === "learning" ? visibleKinds(group) : [kind];
+      const optionsFor = type => refresh
+        ? {append: false, startCursor: "", rounds: Math.max(1, loaded[type]?.length || 1)}
+        : append ? (after[type] ? {append: true, startCursor: after[type], rounds: 1} : null)
+          : {append: false, startCursor: "", rounds: 1};
+      const fetchAll = () => Promise.all(kinds.map(type => {
+        const plan = optionsFor(type);
+        return plan ? readChain(type, plan) : Promise.resolve({type, rows:[], next:"", used:[], meta:null, failed:false, failure:null, skipped:true});
+      }));
+      let chains = await fetchAll();
+      if (!active(ticket)) return;
+      if (!append && !refresh && !sessionId && chains[0]?.meta && !chains[0].meta.selection_ready && chains[0].meta.sessions?.length) {
+        sessionId = chains[0].meta.sessions[0]; chains = await fetchAll();
       }
-      if(!active(ticket))return;
-      const fresh=chains.find(chain=>chain.meta)?.meta||null;
-      const failure=chains.find(chain=>chain.failure)?.failure||null;
-      if(!fresh){
+      if (!active(ticket)) return;
+      const fresh = chains.find(chain => chain.meta)?.meta || null;
+      const failure = chains.find(chain => chain.failure)?.failure || null;
+      const anyFailed = chains.some(chain => chain.failed);
+      if (!fresh) {
         /* 一页都没读到：旧内容原地保留，只提示这次没读到（保留具体错误码的翻译）。 */
-        message=failure?localized(failure,"读取失败，请重试。"):localized({code:"invalid_response"},"读取失败，请重试。");
+        message = failure ? localized(failure, "读取失败，请重试。") : localized({code:"invalid_response"}, "读取失败，请重试。");
         return;
       }
-      const incoming=chains.filter(chain=>!chain.failed||chain.rows.length).flatMap(chain=>chain.rows)
-        .filter(item=>!deletedIds.has(String(item?.id||"")));
-      chains.forEach(chain=>{
-        if(chain.failed)return;
-        if(!append&&!refresh)loaded[chain.type]=[""];
-        else if(append)loaded[chain.type]=(loaded[chain.type]||[""]).concat(cursorsFor(chain.type));
-        after[chain.type]=chain.next;
+      const rowsByKind = type => oldItems.filter(item => (item.kind || kind) === type);
+      const nextRows = [];
+      chains.forEach(chain => {
+        const cleanIncoming = chain.rows.filter(item => !deletedIds.has(String(item?.id || "")));
+        const prevKind = rowsByKind(chain.type);
+        if (chain.skipped) {
+          nextRows.push(...prevKind);
+          return;
+        }
+        if (chain.failed) {
+          /* 部分失败：保留该类型旧项并合并已读到的前缀，不缩小页数。 */
+          nextRows.push(...(chain.rows.length ? mergeRows(prevKind, cleanIncoming) : prevKind));
+          return;
+        }
+        if (!append && !refresh) {
+          loaded[chain.type] = chain.used.length ? chain.used.slice() : [""];
+          nextRows.push(...dedupeRows(cleanIncoming));
+        } else if (append) {
+          loaded[chain.type] = (loaded[chain.type] || [""]).concat(chain.used);
+          nextRows.push(...dedupeRows([...prevKind, ...cleanIncoming]));
+        } else {
+          loaded[chain.type] = chain.used.length ? chain.used.slice() : [""];
+          /* 导入新增后若第一页仍未读完（存在下一页），保留被新条目顺移到后页的旧项；
+             其余完整刷新以服务端返回权威替换，外部已删除素材即时移除。 */
+          nextRows.push(...(afterImport && chain.next ? mergeRows(prevKind, cleanIncoming) : dedupeRows(cleanIncoming)));
+        }
+        after[chain.type] = chain.next;
       });
-      const rows=refresh?mergeRows(oldItems,incoming)
-        :append?dedupeRows([...oldItems,...incoming]):dedupeRows(incoming);
-      state={...fresh,items:rows,next_after:after[kind]||null};
-      /* 只要有一个类型没读到就要说清楚：否则用户只看到条目变少，不知道是读取失败。
-         具体原因（超时/模型失败/服务不可用）照旧翻译出来，不显示机器码。 */
-      if(failure){
-        const detail=localized(failure,"");
-        message=detail?`部分素材读取失败：${detail}`:"部分素材读取失败，已显示其余内容。";
+      const rows = dedupeRows(nextRows);
+      state = {...fresh, items:rows, next_after:after[kind] || null};
+      if (anyFailed || failure) {
+        const detail = failure ? localized(failure, "") : "";
+        message = detail ? `部分素材读取失败：${detail}` : "部分素材读取失败，已显示其余内容。";
+      } else if (manual) {
+        refreshedAt = formatClock();
       }
     }
-    catch(error){if(active(ticket))message=localized(error,"读取失败，请重试。");}
-    finally{if(active(ticket)){busy=false;render();if(scrollTop!==null)restoreScroll(scrollTop);}}
+    catch (error) { if (active(ticket)) message = localized(error, "读取失败，请重试。"); }
+    finally { if (active(ticket)) { busy = false; refreshing = false; render(); if (scrollTop !== null) restoreScroll(scrollTop); } }
   }
   async function run(action,payload={}){
     if(busy||!current())return;
@@ -435,7 +531,7 @@ window.CompanionSemanticPage = (() => {
         deletedIds.add(String(payload.id));
         if(state)state={...state,items:(state.items||[]).filter(item=>String(item.id)!==String(payload.id))};
       }
-      await load("refresh");
+      await load(action === "import" ? {mode:"refresh", afterImport:true} : "refresh");
     }catch(error){
       if(!active(ticket))return;
       busy=false;
@@ -456,7 +552,7 @@ window.CompanionSemanticPage = (() => {
     if(busy)return;const ticket=++generation;busy=true;message="正在读取原件…";render();
     try{const data=await api("GET",{...selection(),kind,id});if(active(ticket)){editing={...data.item,image_url:data.image_url};message="";}}
     catch(error){if(active(ticket))message=localized(error,"原件暂不可用");}
-    finally{if(active(ticket)){busy=false;render();root.querySelector("#semanticEditor")?.scrollIntoView({block:"nearest"});}}
+    finally{if(active(ticket)){busy=false;render();root.querySelector('#semanticEditor [data-semantic="close"]')?.focus?.({preventScroll:true});}}
   }
   function mount(node,options={}){
     unmount();root=node;selectedTarget=options.target||null;selectedSelection=options.selection||null;selectedScopeKey=typeof options.scopeKey==="string"?options.scopeKey:"";
@@ -467,6 +563,11 @@ window.CompanionSemanticPage = (() => {
     for(const type of ["focusin","focusout","pointerover","pointerout"])
       node.addEventListener(type,window.CompanionWorkbench.scopeHintReset,{signal:abort.signal});
     node.addEventListener("keydown",window.CompanionWorkbench.scopeHintKeydown,{signal:abort.signal});
+    if(typeof document!=="undefined"&&typeof document.addEventListener==="function"){
+      document.addEventListener("keydown",event=>{
+        if(event.key==="Escape"&&editing&&current()){event.preventDefault();editing=null;render();}
+      },{signal:abort.signal});
+    }
     node.addEventListener("click",async event=>{
       if(window.CompanionWorkbench.scopeHintClick(event))return;
       const item=event.target.closest("[data-semantic-open]");if(item){kind=item.dataset.semanticKind||kind;open(item.dataset.semanticOpen);return;}
@@ -474,6 +575,7 @@ window.CompanionSemanticPage = (() => {
       const command=event.target.closest("[data-semantic]")?.dataset.semantic;
       if(command==="close"){editing=null;render();}
       if(command==="retry")load();
+      if(command==="refresh")load({mode:"refresh", manual:true});
       if(command==="more")load("append");
       if(command==="reindex")run("reindex");
       if(command==="discard"){draft=null;conflict=false;message="已放弃草稿，显示当前已保存配置。";render();}
@@ -601,7 +703,7 @@ window.CompanionSemanticPage = (() => {
     if(created)parts.push("可点「批量识别待补全」补全空白字段");
     busy=false;message=parts.join("，")||"没有可导入的图片";
     if(failed&&lastError&&!created&&!duplicates)message=localized({code:lastError},"批量导入失败，请检查图片格式和大小。");
-    await load("refresh");
+    await load({mode:"refresh", afterImport:true});
   }
   function readDataUrl(file) {
     return new Promise((resolve,reject)=>{
@@ -612,7 +714,7 @@ window.CompanionSemanticPage = (() => {
     });
   }
   function shownValue(id){return (draft?{...state.settings,...draft}:state.settings)[id];}
-  function unmount(){if(root)window.CompanionWorkbench.dismissScopeHints(root);generation++;abort?.abort();abort=null;root=null;scope=null;state=null;editing=null;busy=false;selectedTarget=null;selectedSelection=null;selectedScopeKey="";globalSettingsOnly=false;}
+  function unmount(){clearDrawerTimers();drawerEl=null;if(root)window.CompanionWorkbench.dismissScopeHints(root);generation++;abort?.abort();abort=null;root=null;scope=null;state=null;editing=null;busy=false;refreshing=false;refreshedAt="";selectedTarget=null;selectedSelection=null;selectedScopeKey="";globalSettingsOnly=false;}
   /* 页面级未保存守卫（page-guards.js）：草稿存在就说明有未提交的改法。
      unmount 已经把 draft 之外的引用清掉，这里跟着 root 一起判断。 */
   function isDirty(){return !!draft&&!!root;}

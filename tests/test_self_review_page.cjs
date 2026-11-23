@@ -265,7 +265,7 @@ test('已停止注入的建议恢复可读后，不会同时出现在生效与�
     if (!request.route.endsWith('/self-review')) return {};
     if (request.params.state === 'decided') return page([], null);
     return readable
-      ? page([item('i-1')], null)
+      ? page([item('i-1'), item('i-2')], null)
       : page([item('i-1', {unavailable_reason: 'evidence_expired'}), item('i-2')], null);
   };
   await mount(h, answer);

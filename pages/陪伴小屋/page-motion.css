@@ -1,10 +1,36 @@
 /* 动效只补充呈现，尺寸与颜色继续由各页面及主题令牌负责。 */
 :root {
-  --ease-control: cubic-bezier(.22, .72, .24, 1);
+  --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --motion-ease-standard: cubic-bezier(0.22, 0.72, 0.24, 1);
+  --motion-dur-enter: 220ms;
+  --motion-dur-exit: 165ms;
+  --motion-dur-drawer-in: 260ms;
+  --motion-dur-drawer-out: 220ms;
+  --motion-dur-expand: 240ms;
+  --motion-dur-collapse: 190ms;
+  --ease-control: var(--motion-ease-standard);
   --control-hover-y: -2px;
   --control-press-y: 1px;
   --control-press-scale: .985;
   --control-icon-x: 2px;
+}
+:root[data-motion="low"] {
+  --motion-dur-enter: 110ms;
+  --motion-dur-exit: 90ms;
+  --motion-dur-drawer-in: 120ms;
+  --motion-dur-drawer-out: 100ms;
+  --motion-dur-expand: 120ms;
+  --motion-dur-collapse: 95ms;
+}
+:root[data-motion="off"],
+body.reduce-motion {
+  --motion-dur-enter: 0ms;
+  --motion-dur-exit: 0ms;
+  --motion-dur-drawer-in: 0ms;
+  --motion-dur-drawer-out: 0ms;
+  --motion-dur-expand: 0ms;
+  --motion-dur-collapse: 0ms;
 }
 
 #shellNav { position: relative; isolation: isolate; }
@@ -66,49 +92,251 @@
   transition-duration: .08s !important;
 }
 
-#homeShell details > summary {
-  transition: background-color var(--dur-fast), color var(--dur-fast);
+:is(#homeShell, dialog) details:not(.mp-group):not(.mp-legend):not(.mp-drawer-advanced) > summary {
+  transition: background-color var(--dur-fast) var(--motion-ease-standard),
+    border-color var(--dur-fast) var(--motion-ease-standard),
+    color var(--dur-fast) var(--motion-ease-standard);
   cursor: pointer;
 }
-#homeShell details > summary:focus-visible { outline: 2px solid var(--t-focus, var(--t-accent)); outline-offset: 2px; }
-#homeShell details > summary > svg:last-child { transition: transform var(--dur) var(--ease-control); }
+:is(#homeShell, dialog) details:not(.mp-group):not(.mp-legend):not(.mp-drawer-advanced) > summary:focus-visible {
+  outline: 2px solid var(--t-focus, var(--t-accent));
+  outline-offset: 2px;
+}
+:is(#homeShell, dialog) details:not(.mp-group):not(.mp-legend):not(.mp-drawer-advanced) > summary > svg:last-child,
+:is(#homeShell, dialog) details:not(.mp-group):not(.mp-legend):not(.mp-drawer-advanced) > summary::after {
+  transition: transform var(--motion-dur-expand) var(--motion-ease-out);
+  transition-duration: var(--motion-dur-expand) !important;
+}
 @supports (interpolate-size: allow-keywords) and selector(details::details-content) {
-  #homeShell details::details-content {
+  :is(#homeShell, dialog) details:not(.mp-group):not(.mp-legend):not(.mp-drawer-advanced)::details-content {
     interpolate-size: allow-keywords;
     height: 0;
     overflow: clip;
     opacity: 0;
     content-visibility: hidden;
-    transition: height var(--dur) var(--ease-control), opacity var(--dur-fast),
-      content-visibility var(--dur) allow-discrete;
+    transition: height var(--motion-dur-collapse) var(--motion-ease-in),
+      opacity var(--motion-dur-collapse) var(--motion-ease-in),
+      overflow 0s allow-discrete 0s,
+      content-visibility var(--motion-dur-collapse) allow-discrete;
+    transition-duration: var(--motion-dur-collapse), var(--motion-dur-collapse), 0s, var(--motion-dur-collapse) !important;
   }
-  #homeShell details[open]::details-content { height: auto; opacity: 1; content-visibility: visible; }
+  :is(#homeShell, dialog) details:not(.mp-group):not(.mp-legend):not(.mp-drawer-advanced)[open]::details-content {
+    height: auto;
+    overflow: visible;
+    opacity: 1;
+    content-visibility: visible;
+    transition: height var(--motion-dur-expand) var(--motion-ease-out),
+      opacity var(--motion-dur-enter) var(--motion-ease-out),
+      overflow 0s allow-discrete var(--motion-dur-expand),
+      content-visibility var(--motion-dur-expand) allow-discrete;
+    transition-duration: var(--motion-dur-expand), var(--motion-dur-enter), 0s, var(--motion-dur-expand) !important;
+  }
 }
 
-:is(#detailDialog, #searchDialog, #navigationDialog) {
+/* 通用模态弹窗（含确认框、导航弹层、角色档案整理/迁入/导入、状态设置、作品阅读、联系测试等）：
+   统一采用柔和上浮缩放进场 + 平滑退场，不干扰右侧滑出抽屉与独立搜索弹窗。 */
+dialog:not(#detailDialog):not(.detail-dialog):not(#searchDialog) {
+  opacity: 0;
+  transform: translate3d(0, 10px, 0) scale(.975);
+  transition: opacity var(--motion-dur-exit) var(--motion-ease-in),
+    transform var(--motion-dur-exit) var(--motion-ease-in),
+    display var(--motion-dur-exit) allow-discrete,
+    overlay var(--motion-dur-exit) allow-discrete;
+  transition-duration: var(--motion-dur-exit) !important;
+}
+dialog:not(#detailDialog):not(.detail-dialog):not(#searchDialog)[open] {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition: opacity var(--motion-dur-enter) var(--motion-ease-out),
+    transform var(--motion-dur-enter) var(--motion-ease-out),
+    display var(--motion-dur-enter) allow-discrete,
+    overlay var(--motion-dur-enter) allow-discrete;
+  transition-duration: var(--motion-dur-enter) !important;
+}
+dialog:not(#detailDialog):not(.detail-dialog):not(#searchDialog)::backdrop {
+  opacity: 0;
+  transition: opacity var(--motion-dur-exit) var(--motion-ease-in),
+    display var(--motion-dur-exit) allow-discrete,
+    overlay var(--motion-dur-exit) allow-discrete;
+  transition-duration: var(--motion-dur-exit) !important;
+}
+dialog:not(#detailDialog):not(.detail-dialog):not(#searchDialog)[open]::backdrop {
+  opacity: 1;
+  transition: opacity var(--motion-dur-enter) var(--motion-ease-out),
+    display var(--motion-dur-enter) allow-discrete,
+    overlay var(--motion-dur-enter) allow-discrete;
+  transition-duration: var(--motion-dur-enter) !important;
+}
+
+#searchDialog {
   opacity: 0;
   transform: translateY(10px) scale(.985);
   transition: opacity var(--dur-fast), transform var(--dur) var(--ease-control),
     display var(--dur) allow-discrete, overlay var(--dur) allow-discrete;
 }
-#detailDialog { transform: translateX(14px); }
-:is(#detailDialog, #searchDialog, #navigationDialog)[open] { opacity: 1; transform: none; }
-:is(#detailDialog, #searchDialog, #navigationDialog):not([open]),
-:is(#detailDialog, #searchDialog, #navigationDialog):not([open])::backdrop { pointer-events: none; }
-:is(#detailDialog, #searchDialog, #navigationDialog)::backdrop {
+:is(#detailDialog, .detail-dialog) {
+  opacity: 0;
+  transform: translate3d(100%, 0, 0);
+  transition: opacity 200ms ease-in, transform 220ms cubic-bezier(0.4, 0, 1, 1),
+    display 220ms allow-discrete, overlay 220ms allow-discrete;
+}
+#searchDialog[open] { opacity: 1; transform: none; }
+:is(#detailDialog, .detail-dialog)[open] {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+  transition: opacity 220ms ease-out, transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    display 260ms allow-discrete, overlay 260ms allow-discrete;
+}
+dialog:not([open]),
+dialog:not([open])::backdrop { pointer-events: none; }
+#searchDialog::backdrop {
   opacity: 0;
   transition: opacity var(--dur), display var(--dur) allow-discrete, overlay var(--dur) allow-discrete;
 }
-:is(#detailDialog, #searchDialog, #navigationDialog)[open]::backdrop { opacity: 1; }
-@starting-style {
-  :is(#detailDialog, #searchDialog, #navigationDialog)[open] { opacity: 0; transform: translateY(10px) scale(.985); }
-  #detailDialog[open] { transform: translateX(14px); }
-  :is(#detailDialog, #searchDialog, #navigationDialog)[open]::backdrop { opacity: 0; }
+:is(#detailDialog, .detail-dialog)::backdrop {
+  opacity: 0;
+  transition: opacity 200ms ease-in, display 220ms allow-discrete, overlay 220ms allow-discrete;
 }
-@media (max-width: 760px) {
-  #detailDialog { transform: translateY(16px); }
-  #detailDialog[open] { transform: none; }
-  @starting-style { #detailDialog[open] { transform: translateY(16px); } }
+#searchDialog[open]::backdrop { opacity: 1; }
+:is(#detailDialog, .detail-dialog)[open]::backdrop {
+  opacity: 1;
+  transition: opacity 220ms ease-out, display 260ms allow-discrete, overlay 260ms allow-discrete;
+}
+@starting-style {
+  dialog:not(#detailDialog):not(.detail-dialog):not(#searchDialog)[open] {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0) scale(.975);
+  }
+  dialog:not(#detailDialog):not(.detail-dialog):not(#searchDialog)[open]::backdrop { opacity: 0; }
+  #searchDialog[open] { opacity: 0; transform: translateY(10px) scale(.985); }
+  :is(#detailDialog, .detail-dialog)[open] { opacity: 0; transform: translate3d(100%, 0, 0); }
+  :is(#detailDialog, .detail-dialog, #searchDialog)[open]::backdrop { opacity: 0; }
+}
+@media (max-width: 650px) {
+  :is(#detailDialog, .detail-dialog) { transform: translate3d(0, 100%, 0); }
+  :is(#detailDialog, .detail-dialog)[open] { transform: translate3d(0, 0, 0); }
+  @starting-style { :is(#detailDialog, .detail-dialog)[open] { opacity: 0; transform: translate3d(0, 100%, 0); } }
+}
+
+/* 非 <dialog> 覆层弹窗（回复预览配置弹窗、相册原图灯箱）：遮罩淡入淡出 + 卡片轻盈上浮缩放。 */
+.reply-preview-modal,
+.output-album-lightbox {
+  opacity: 0;
+  transition: opacity var(--motion-dur-exit) var(--motion-ease-in);
+  transition-duration: var(--motion-dur-exit) !important;
+}
+.reply-preview-modal.is-open,
+.output-album-lightbox.is-open {
+  opacity: 1;
+  transition: opacity var(--motion-dur-enter) var(--motion-ease-out);
+  transition-duration: var(--motion-dur-enter) !important;
+}
+.reply-preview-modal.is-closing,
+.output-album-lightbox.is-closing {
+  pointer-events: none;
+}
+.reply-preview-modal-card,
+.output-album-lightbox-card {
+  opacity: 0;
+  transform: translate3d(0, 12px, 0) scale(.975);
+  transition: opacity var(--motion-dur-exit) var(--motion-ease-in),
+    transform var(--motion-dur-exit) var(--motion-ease-in);
+  transition-duration: var(--motion-dur-exit) !important;
+}
+.reply-preview-modal.is-open .reply-preview-modal-card,
+.output-album-lightbox.is-open .output-album-lightbox-card {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition: opacity var(--motion-dur-enter) var(--motion-ease-out),
+    transform var(--motion-dur-enter) var(--motion-ease-out);
+  transition-duration: var(--motion-dur-enter) !important;
+}
+
+/* 共享信息气泡（popover）、底部保存条与全局提示条微动效。 */
+.wb-context-tip {
+  opacity: 0;
+  transform: translate3d(0, 4px, 0) scale(.97);
+  transition: opacity var(--motion-dur-exit) var(--motion-ease-in),
+    transform var(--motion-dur-exit) var(--motion-ease-in),
+    display var(--motion-dur-exit) allow-discrete,
+    overlay var(--motion-dur-exit) allow-discrete;
+  transition-duration: var(--motion-dur-exit) !important;
+}
+.wb-context-tip:popover-open {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+  transition: opacity var(--motion-dur-enter) var(--motion-ease-out),
+    transform var(--motion-dur-enter) var(--motion-ease-out),
+    display var(--motion-dur-enter) allow-discrete,
+    overlay var(--motion-dur-enter) allow-discrete;
+  transition-duration: var(--motion-dur-enter) !important;
+}
+@starting-style {
+  .wb-context-tip:popover-open {
+    opacity: 0;
+    transform: translate3d(0, 4px, 0) scale(.97);
+  }
+}
+
+.wb-actions {
+  transition: border-color var(--motion-dur-enter) var(--motion-ease-out),
+    box-shadow var(--motion-dur-enter) var(--motion-ease-out),
+    background-color var(--motion-dur-enter) var(--motion-ease-out);
+}
+.wb-actions.is-dirty {
+  border-color: color-mix(in srgb, var(--t-accent) 42%, var(--t-line-firm));
+}
+
+/* 可点击展开/折叠的在线生图模型端点卡片（grid-template-rows 双向丝滑展开）。 */
+.output-endpoint-toggle svg {
+  transition: transform var(--motion-dur-expand) var(--motion-ease-out);
+  transition-duration: var(--motion-dur-expand) !important;
+}
+.output-endpoint-toggle[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+.output-endpoint-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-top: calc(var(--sp-3) * -.75);
+  opacity: 0;
+  transition: grid-template-rows var(--motion-dur-collapse) var(--motion-ease-in),
+    margin-top var(--motion-dur-collapse) var(--motion-ease-in),
+    opacity var(--motion-dur-collapse) var(--motion-ease-in);
+  transition-duration: var(--motion-dur-collapse) !important;
+}
+.output-endpoint-collapse.is-open {
+  grid-template-rows: 1fr;
+  margin-top: 0;
+  opacity: 1;
+  transition: grid-template-rows var(--motion-dur-expand) var(--motion-ease-out),
+    margin-top var(--motion-dur-expand) var(--motion-ease-out),
+    opacity var(--motion-dur-enter) var(--motion-ease-out);
+  transition-duration: var(--motion-dur-expand) !important;
+}
+.output-endpoint-collapse > .output-endpoint-edit {
+  min-height: 0;
+  overflow: hidden;
+  transition: overflow 0s allow-discrete 0s;
+  transition-duration: 0s !important;
+}
+.output-endpoint-collapse.is-open > .output-endpoint-edit {
+  overflow: visible;
+  transition: overflow 0s allow-discrete var(--motion-dur-expand);
+  transition-duration: 0s !important;
+}
+
+#toast {
+  transform: translate(-50%, 14px) scale(.97);
+  transition: opacity var(--motion-dur-exit) var(--motion-ease-in),
+    transform var(--motion-dur-exit) var(--motion-ease-in);
+  transition-duration: var(--motion-dur-exit) !important;
+}
+#toast.show {
+  transform: translate(-50%, 0) scale(1);
+  transition: opacity var(--motion-dur-enter) var(--motion-ease-out),
+    transform var(--motion-dur-enter) var(--motion-ease-out);
+  transition-duration: var(--motion-dur-enter) !important;
 }
 
 @keyframes search-target-pulse {
@@ -150,29 +378,68 @@ body.reduce-motion .is-search-target {
 }
 :root[data-motion="low"] #homeShell :is(.shell-nav-link, .stage-overlay-button, .stage-furniture-strip button):is(:hover, :active),
 :root[data-motion="low"] #homeShell .shell-nav-link:hover svg,
-:root[data-motion="low"] :is(#detailDialog, #searchDialog, #navigationDialog) { transform: none; }
-:root[data-motion="off"] :is(#homeShell, #detailDialog, #searchDialog, #navigationDialog) *,
-body.reduce-motion :is(#homeShell, #detailDialog, #searchDialog, #navigationDialog) * {
+:root[data-motion="low"] :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog),
+:root[data-motion="low"] dialog:not(#detailDialog):not(.detail-dialog):not(#searchDialog),
+:root[data-motion="low"] :is(.reply-preview-modal-card, .output-album-lightbox-card, .wb-context-tip) { transform: none; }
+:root[data-motion="low"] #toast { transform: translate(-50%, 0); }
+:root[data-motion="off"] :is(#homeShell, #detailDialog, .detail-dialog, #searchDialog, #navigationDialog) *,
+:root[data-motion="off"] dialog *,
+body.reduce-motion :is(#homeShell, #detailDialog, .detail-dialog, #searchDialog, #navigationDialog) *,
+body.reduce-motion dialog * {
   transition: none !important;
   animation: none !important;
 }
-:root:is([data-motion="low"], [data-motion="off"]) #homeShell details::details-content,
-body.reduce-motion #homeShell details::details-content { transition: none; }
-:root[data-motion="off"] :is(#detailDialog, #searchDialog, #navigationDialog),
-body.reduce-motion :is(#detailDialog, #searchDialog, #navigationDialog) { transition: none !important; transform: none; }
-:root[data-motion="off"] :is(#detailDialog, #searchDialog, #navigationDialog)::backdrop,
-body.reduce-motion :is(#detailDialog, #searchDialog, #navigationDialog)::backdrop { transition: none !important; }
+:root:is([data-motion="low"], [data-motion="off"]) :is(#homeShell, dialog) details::details-content,
+body.reduce-motion :is(#homeShell, dialog) details::details-content { transition: none !important; }
+:root[data-motion="off"] :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog),
+:root[data-motion="off"] dialog,
+:root[data-motion="off"] :is(.reply-preview-modal, .reply-preview-modal-card, .output-album-lightbox, .output-album-lightbox-card, .wb-context-tip, .output-endpoint-collapse, #toast),
+body.reduce-motion :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog),
+body.reduce-motion dialog,
+body.reduce-motion :is(.reply-preview-modal, .reply-preview-modal-card, .output-album-lightbox, .output-album-lightbox-card, .wb-context-tip, .output-endpoint-collapse, #toast) {
+  transition: none !important;
+  transform: none;
+}
+:root[data-motion="off"] .output-endpoint-toggle svg,
+body.reduce-motion .output-endpoint-toggle svg { transition: none !important; }
+:root[data-motion="off"] #toast,
+body.reduce-motion #toast { transform: translate(-50%, 0); }
+:root[data-motion="off"] :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog)::backdrop,
+:root[data-motion="off"] dialog::backdrop,
+body.reduce-motion :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog)::backdrop,
+body.reduce-motion dialog::backdrop { transition: none !important; }
 @media (prefers-reduced-motion: reduce) {
-  :root { --control-hover-y: 0px; --control-press-y: 0px; --control-press-scale: 1; --control-icon-x: 0px; }
+  :root {
+    --motion-dur-enter: 0ms;
+    --motion-dur-exit: 0ms;
+    --motion-dur-drawer-in: 0ms;
+    --motion-dur-drawer-out: 0ms;
+    --motion-dur-expand: 0ms;
+    --motion-dur-collapse: 0ms;
+    --control-hover-y: 0px;
+    --control-press-y: 0px;
+    --control-press-scale: 1;
+    --control-icon-x: 0px;
+  }
   .is-search-target {
     animation: none !important;
     background-color: color-mix(in srgb, var(--t-accent-quiet) 50%, transparent);
   }
-  :is(#homeShell, #detailDialog, #searchDialog, #navigationDialog) *,
-  #homeShell details::details-content,
-  :is(#detailDialog, #searchDialog, #navigationDialog),
-  :is(#detailDialog, #searchDialog, #navigationDialog)::backdrop { transition: none !important; animation: none !important; }
+  :is(#homeShell, #detailDialog, .detail-dialog, #searchDialog, #navigationDialog) *,
+  dialog *,
+  :is(#homeShell, dialog) details::details-content,
+  :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog),
+  dialog,
+  :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog)::backdrop,
+  dialog::backdrop,
+  :is(.reply-preview-modal, .reply-preview-modal-card, .output-album-lightbox, .output-album-lightbox-card, .wb-context-tip, .output-endpoint-collapse, .output-endpoint-toggle svg, #toast) {
+    transition: none !important;
+    animation: none !important;
+  }
   #homeShell :is(.shell-nav-link, .stage-overlay-button, .stage-furniture-strip button):is(:hover, :active),
   #homeShell .shell-nav-link:hover svg,
-  :is(#detailDialog, #searchDialog, #navigationDialog) { transform: none; }
+  :is(#detailDialog, .detail-dialog, #searchDialog, #navigationDialog),
+  dialog,
+  :is(.reply-preview-modal-card, .output-album-lightbox-card, .wb-context-tip) { transform: none; }
+  #toast { transform: translate(-50%, 0); }
 }

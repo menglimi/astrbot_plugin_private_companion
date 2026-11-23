@@ -1774,12 +1774,19 @@
     }
   }
 
+  let strangerSequence = 0;
+  let refreshLoading = false;
+  const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
+
   async function loadStrangers() {
     const section = $("stranger-contacts");
     if (!section || !bridge) return;
     const status = $("stranger-status");
+    const seq = ++strangerSequence;
+    const dirSeq = requestSequence;
     try {
       const payload = unwrap(await bridge.apiGet("acquaintance/strangers", {}));
+      if (seq !== strangerSequence || dirSeq !== requestSequence) return;
       strangerItems = Array.isArray(payload?.items) ? payload.items : [];
       renderStrangers();
       const count = $("stranger-count");
@@ -1787,6 +1794,7 @@
       if (status) status.hidden = true;
       section.hidden = false;
     } catch {
+      if (seq !== strangerSequence || dirSeq !== requestSequence) return;
       // A failed read must not erase what the page already showed: keep the last
       // successful copy, put the rows back to that state, and say it is stale.
       renderStrangers();
@@ -1799,7 +1807,7 @@
       section.hidden = false;
     }
   }
-  async function supplementDirectory(sequence, edits) {
+  async function supplementDirectory(sequence, edits, manual = false) {
     try {
       const result = unwrap(await bridge.apiGet(endpoint, {}));
       if (sequence !== requestSequence) return;
@@ -1808,7 +1816,7 @@
         return;
       }
       applyDirectory(result, {background: true});
-      setSyncState("ready", "V2 数据已同步");
+      setSyncState("ready", manual ? `V2 数据已同步 · 刚刚已刷新 ${formatClock()}` : "V2 数据已同步");
     } catch (error) {
       if (sequence !== requestSequence) return;
       const failure = localized(error);
@@ -1827,20 +1835,30 @@
     }
   }
 
-  async function load({preserveNotice = false} = {}) {
+  async function load({preserveNotice = false, manual = false} = {}) {
+    if (manual && refreshLoading) return false;
     const sequence = ++requestSequence;
     const refresh = $("refresh");
+    refreshLoading = true;
     refresh.disabled = true;
-    refresh.classList.add("is-loading");
+    refresh.classList.add("is-loading", "is-refreshing");
+    refresh.setAttribute?.("aria-busy", "true");
     setSyncState("", "正在读取");
     try {
       const result = unwrap(await bridge.apiGet(endpoint, {read_mode: "stored"}));
       if (sequence !== requestSequence) return;
       applyDirectory(result);
-      void loadStrangers();
-      setSyncState("ready", result.directory_refresh_pending ? "本地关系已读取，正在更新补充资料" : "V2 数据已同步");
+      if (manual) {
+        await loadStrangers();
+        if (sequence !== requestSequence) return;
+      } else {
+        void loadStrangers();
+      }
+      setSyncState("ready", result.directory_refresh_pending
+        ? "本地关系已读取，正在更新补充资料"
+        : (manual ? `V2 数据已同步 · 刚刚已刷新 ${formatClock()}` : "V2 数据已同步"));
       if (!preserveNotice) notice("");
-      if (result.directory_refresh_pending) void supplementDirectory(sequence, memberChangeSequence);
+      if (result.directory_refresh_pending) void supplementDirectory(sequence, memberChangeSequence, manual);
       return true;
     } catch (error) {
       if (sequence !== requestSequence) return;
@@ -1859,8 +1877,10 @@
       return false;
     } finally {
       if (sequence === requestSequence) {
+        refreshLoading = false;
         refresh.disabled = false;
-        refresh.classList.remove("is-loading");
+        refresh.classList.remove("is-loading", "is-refreshing");
+        refresh.setAttribute?.("aria-busy", "false");
       }
     }
   }
@@ -1919,7 +1939,7 @@
   });
   $("refresh").addEventListener("click", async () => {
     if (!await window.CompanionPrivateMembers.beforeLeave()) return;
-    notice(""); load();
+    notice(""); load({manual: true});
   });
   /* 这里只做转发：设置弹窗由外壳（陪伴小屋）统一渲染，工作区里再画一份会
      出现两套配置控件争同一个 sparse owner。 */

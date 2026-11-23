@@ -27,8 +27,9 @@ window.CompanionWeatherSourcePage = (() => {
     staging_host_terminated:"插件已停止，请重新打开插件页面。",
     invalid_response:"数据源配置未能读取，请重新读取。",
   };
-  let root = null, status = null, draft = null, busy = false, pending = false, stale = false;
-  let generation = 0, abort = null, message = "", leavePrompt = null;
+  let root = null, status = null, draft = null, busy = false, loading = false, pending = false, stale = false;
+  let generation = 0, loadTicket = 0, abort = null, message = "", refreshedAt = "", leavePrompt = null;
+  const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
   const askConfirm = options => typeof window.CompanionConfirm === "function"
     ? window.CompanionConfirm(options) : Promise.resolve(false);
   /* 只缓存不含凭据原文的读取状态。编辑中的 credential 永远不会进入这个
@@ -84,7 +85,7 @@ window.CompanionWeatherSourcePage = (() => {
   function render() {
     if (!root) return;
     if (!status) {
-      root.innerHTML = `<p class="memory-notice" role="status">${esc(message || "正在读取天气数据源…")}</p>${message ? '<button type="button" class="button small" data-weather-source-action="reload">重新读取</button>' : ""}`;
+      root.innerHTML = `<p class="memory-notice" role="status">${esc(message || "正在读取天气数据源…")}</p>${message ? `<button type="button" class="button small${loading ? " is-refreshing" : ""}" data-weather-source-action="reload" aria-busy="${loading ? "true" : "false"}" ${busy || loading ? "disabled" : ""}>${loading ? "读取中…" : "重新读取"}</button>` : ""}`;
       return;
     }
     const settings = status.settings || {};
@@ -135,22 +136,31 @@ window.CompanionWeatherSourcePage = (() => {
             ${openMeteoNote ? `<p class="weather-source-inline-note">${esc(openMeteoNote)}</p>` : ""}
           </section>
         </fieldset>
-        <div class="weather-source-footer"><p>和风实况与官方预警共用这组凭据。保存后页面只读取配置状态，不回显密钥原文。</p><div class="native-perception-actions"><button class="button small" type="button" data-weather-source-action="reload" ${busy ? "disabled" : ""}>重新读取</button>${status.credential_source === "plugin" ? `<button class="button small" type="button" data-weather-source-action="clear" ${busy || pending ? "disabled" : ""}>清除页面凭据</button>` : ""}<button class="button primary small" type="submit" ${busy || pending || stale ? "disabled" : ""}>${busy ? "正在保存…" : "保存数据源"}</button></div></div>
+        <div class="weather-source-footer"><p>和风实况与官方预警共用这组凭据。保存后页面只读取配置状态，不回显密钥原文。</p><div class="native-perception-actions"><span class="refresh-cluster">${refreshedAt ? `<span class="refresh-stamp" role="status">刚刚已刷新 ${esc(refreshedAt)}</span>` : ""}<button class="button small${loading ? " is-refreshing" : ""}" type="button" data-weather-source-action="reload" aria-busy="${loading ? "true" : "false"}" ${busy || loading ? "disabled" : ""}>${loading ? "读取中…" : "重新读取"}</button></span>${status.credential_source === "plugin" ? `<button class="button small" type="button" data-weather-source-action="clear" ${busy || loading || pending ? "disabled" : ""}>清除页面凭据</button>` : ""}<button class="button primary small" type="submit" ${busy || loading || pending || stale ? "disabled" : ""}>${busy ? "正在保存…" : "保存数据源"}</button></div></div>
         <p class="perception-save-status" role="status" aria-live="polite">${esc(message)}</p>
       </form>
     </section>`;
   }
-  async function load() {
-    if (busy) return;
+  async function load(options = {}) {
+    if (busy || loading) return;
+    const manual = options?.manual === true;
     const ticket = generation;
-    const preserveDraft = dirty();
+    const req = ++loadTicket;
+    const preserveDraft = !manual && dirty();
+    loading = true;
+    if (manual) message = "";
+    render();
     try {
       const next = await request("GET");
-      if (!active(ticket)) return;
+      if (!active(ticket) || req !== loadTicket) return;
       status = next; statusByScope.set(currentScope(), next);
-      draft = {...next.settings, credential:"", jwt_private_key:"", auth_mode:savedAuthMode(next)}; pending = stale = false;
+      if (!preserveDraft || !draft) {
+        draft = {...next.settings, credential:"", jwt_private_key:"", auth_mode:savedAuthMode(next)};
+      }
+      pending = stale = false;
       message = next.source_state === "invalid" ? errors.weather_source_invalid : "";
-    } catch (failure) {if (active(ticket)) {
+      if (manual) refreshedAt = formatClock();
+    } catch (failure) {if (active(ticket) && req === loadTicket) {
       /* 读取失败后不再画上一份数据源与凭据状态；凭据输入若尚未保存则留在
          内存里，等成功重读后再核对，绝不写入缓存。 */
       status = null;
@@ -158,8 +168,9 @@ window.CompanionWeatherSourcePage = (() => {
       if (!preserveDraft) draft = null;
       stale = preserveDraft;
       message = errors[failure.code || failure.message] || errors.invalid_response;
-    }}
-    if (active(ticket)) render();
+    }} finally {
+      if (active(ticket) && req === loadTicket) { loading = false; render(); }
+    }
   }
   async function save(clear = false) {
     if (!status || busy || pending || stale) return;
@@ -244,7 +255,7 @@ window.CompanionWeatherSourcePage = (() => {
       const action = event.target.closest("[data-weather-source-action]")?.dataset.weatherSourceAction;
       if (action === "reload") {
         if (dirty() && !await askConfirm({title:"放弃天气数据源修改",message:"重新读取会清空未保存的数据源修改。",confirmText:"重新读取"})) return;
-        load();
+        load({manual: true});
       }
       if (action === "clear" && await askConfirm({title:"清除页面凭据",message:"清除页面保存的和风凭据？若存在环境变量凭据，将恢复使用它。",confirmText:"清除凭据",danger:true})) save(true);
     }, {signal:abort.signal});
@@ -260,8 +271,8 @@ window.CompanionWeatherSourcePage = (() => {
     return leavePrompt;
   }
   function unmount() {
-    generation++; abort?.abort(); abort = null; root = status = draft = null; leavePrompt = null;
-    busy = pending = stale = false; message = "";
+    generation++; loadTicket++; abort?.abort(); abort = null; root = status = draft = null; leavePrompt = null;
+    busy = loading = pending = stale = false; message = ""; refreshedAt = "";
   }
   window.addEventListener("beforeunload", event => {if (dirty() || busy) {event.preventDefault(); event.returnValue = "";}});
   return {mount,unmount,canLeave};

@@ -177,13 +177,16 @@ window.CompanionProduct = (() => {
      死标签——最常见的是宿主注入那条带 asset_token 的脚本因 token 失败。此时
      必须把它摘掉再试自己的候选地址，否则宿主一旦注入失败，页面就再没有第二次
      机会：那些候选是唯一不依赖宿主的路。 */
+  const failedSdkTags = new WeakSet();
+
   function sdkAlreadyPresent(ready) {
     const tags = [...document.querySelectorAll("script[src]")]
-      .filter(script => String(script.getAttribute("src") || script.src || "")
+      .filter(script => String(script.getAttribute?.("src") || script.src || "")
         .includes("bridge-sdk.js"));
-    const dead = tags.filter(script => script.readyState === "loaded" || script.readyState === "complete");
-    if (ready && dead.length) {
-      for (const script of dead) script.remove();
+    const dead = tags.filter(script => failedSdkTags.has(script)
+      || (ready && script !== sdkLoading));
+    if (dead.length) {
+      for (const script of dead) script.remove?.();
       /* 摘掉之后当作「没有」处理，让调用方继续试候选。 */
       return tags.some(script => !dead.includes(script));
     }
@@ -206,16 +209,20 @@ window.CompanionProduct = (() => {
        `readyState === "loading"` 判断就会永远不插入，整页连不上桥。 */
     const script = document.createElement("script");
     script.src = path;
-    script.addEventListener("load", () => {
-      /* 加载成功但桥没定义（路由返回了别的东西）：继续试下一个候选。 */
-      sdkLoading = null;
+    const finishFailure = () => {
+      failedSdkTags.add(script);
+      if (sdkLoading === script) sdkLoading = null;
+      script.remove?.();
       if (!bridgeOf()) requestBridgeSdk();
+    };
+    script.addEventListener("load", () => {
+      /* 加载成功但桥没定义（路由返回了别的东西）：移除失败节点并继续试下一个候选。 */
+      if (bridgeOf()) { if (sdkLoading === script) sdkLoading = null; return; }
+      finishFailure();
     });
     script.addEventListener("error", () => {
-      /* 这个地址没有：试下一个。全都试完就停下，由等待器超时报错，
-         不再无限重试——那只会刷满控制台。 */
-      sdkLoading = null;
-      requestBridgeSdk();
+      /* 这个地址没有：移除失败节点再试下一个。全都试完就停下，由等待器超时报错。 */
+      finishFailure();
     });
     sdkLoading = script;
     document.head.appendChild(script);
@@ -1406,7 +1413,7 @@ window.CompanionProduct = (() => {
     }
     if(message.kind==="designer-mode"){
       if(context.kind!=="designer"||!["create","optimize"].includes(message.mode))return;
-      valid();
+      try{ valid(); }catch{ return; }
       context.tab=message.mode;
       owner.parentElement.dataset.workspaceTab=message.mode;
       owner.title=({create:"创建人格",optimize:"拟人优化"}[message.mode])+"工作区";
@@ -1420,7 +1427,7 @@ window.CompanionProduct = (() => {
       return;
     }
     if(message.kind==="navigate"){
-      valid();
+      try{ valid(); }catch{ return; }
       const target=message.target;
       if(target?.tab==="member-edit"){
         if(context.kind!=="identity")return;

@@ -41,7 +41,8 @@ window.CompanionOutputPage=(()=>{
     nai_generation_unconfirmed:"NAI 未返回可确认的图片，未重复生成",
     nai_generation_interrupted:"NAI 调用已中断，结果未知，未重复生成",
     nai_output_unavailable:"NAI 返回的图片暂不可读取"};
-  let root=null,abort=null,ticket=0,scope="",base=null,draft=null,revision="",busy="",notice="",bad=false,hostRegistered=false,expanded=new Set(),tests=new Map(),testKeys=new Map(),observation=null,observationBusy=false,observationError="",sceneEditorOpen=false,sceneDraft=null,sceneError="",sceneSaving=false;
+  let root=null,abort=null,ticket=0,scope="",base=null,draft=null,revision="",busy="",notice="",bad=false,hostRegistered=false,expanded=new Set(),tests=new Map(),testKeys=new Map(),observation=null,observationBusy=false,observationError="",observationSeq=0,observationRefreshedAt="",sceneEditorOpen=false,sceneDraft=null,sceneError="",sceneSaving=false;
+  const formatClock=(date=new Date())=>`${String(date.getHours()).padStart(2,"0")}:${String(date.getMinutes()).padStart(2,"0")}:${String(date.getSeconds()).padStart(2,"0")}`;
   let albumSources=[],albumItems=[],albumCursor=null,albumTotal=null,albumLoaded=false,albumLoading=false,albumBatchLoading=false,albumBatchStep=0,albumBatchTotal=0,albumError="",albumSelected=-1,albumSelectedId="",albumSelectedIds=new Set(),albumNotice="",albumBusy="";
   let albumPageSize=24,albumFilter="all",albumAutoLoad=true,albumObserver=null,albumZoomed=false,albumCopyFeedback="",albumCopyTimer=null,albumStandaloneItem=null;
   const fullImageCache=new Map(),fullImagePending=new Map(),albumFullError=new Map();
@@ -502,16 +503,55 @@ window.CompanionOutputPage=(()=>{
       downloadDataUrl(item.thumbnail,item.filename||fallbackAlbumFilename(item));
     }
   }
+  let albumLightboxCloseTimer=null;
+  function canAnimateLightbox(node){
+    return Boolean(
+      node
+      &&typeof requestAnimationFrame==="function"
+      &&typeof window.getComputedStyle==="function"
+      &&!document.body?.classList?.contains("reduce-motion")
+      &&document.documentElement?.dataset?.motion!=="off"
+      &&!window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+    );
+  }
   function closeAlbumLightbox(){
+    if(albumLightboxCloseTimer)return;
     albumStandaloneItem=null;albumSelectedId="";albumSelected=-1;albumZoomed=false;albumCopyFeedback="";
     clearTimeout(albumCopyTimer);
-    renderAlbumLightbox();
+    const host=ensureLightboxHost();
+    if(!host)return;
+    if(!canAnimateLightbox(host)||host.hidden){
+      host.classList?.remove?.("is-open","is-closing");
+      host.hidden=true;host.innerHTML="";
+      return;
+    }
+    if(host.contains?.(document.activeElement))document.activeElement?.blur?.();
+    host.setAttribute?.("inert","");
+    host.classList.remove("is-open");
+    host.classList.add("is-closing");
+    const myTicket=ticket;
+    const delay=document.documentElement?.dataset?.motion==="low"?110:185;
+    albumLightboxCloseTimer=setTimeout(()=>{
+      albumLightboxCloseTimer=null;
+      if(live(myTicket)&&!currentLightboxItem()){
+        host.removeAttribute?.("inert");
+        host.classList?.remove?.("is-open","is-closing");
+        host.hidden=true;host.innerHTML="";
+      }
+    },delay);
   }
   function renderAlbumLightbox(){
     const host=ensureLightboxHost();
     if(!host)return;
     const item=currentLightboxItem();
-    if(!item){host.hidden=true;host.innerHTML="";return;}
+    if(!item){
+      clearTimeout(albumLightboxCloseTimer);albumLightboxCloseTimer=null;
+      host.classList?.remove?.("is-open","is-closing");
+      host.hidden=true;host.innerHTML="";
+      return;
+    }
+    clearTimeout(albumLightboxCloseTimer);albumLightboxCloseTimer=null;
+    const wasClosed=host.hidden||!host.classList?.contains?.("is-open");
     const standalone=!!(albumStandaloneItem&&item===albumStandaloneItem);
     const visible=filteredAlbumItems();
     const list=standalone?[item]:(visible.some(candidate=>candidate.image_id===item.image_id)?visible:albumItems);
@@ -550,6 +590,8 @@ window.CompanionOutputPage=(()=>{
     const posChip=showNav?`<span class="output-album-lightbox-pos">${position+1} / ${list.length}</span>`
       :(localDate?`<span class="output-album-lightbox-pos">${esc(localDate)}</span>`:`<span class="output-album-lightbox-pos">1 / 1</span>`);
     host.hidden=false;
+    host.removeAttribute?.("inert");
+    host.classList?.remove?.("is-closing");
     host.innerHTML=`<button type="button" class="output-album-lightbox-mask" data-output-native-action="album-close" aria-label="关闭"></button>
       <section class="output-album-lightbox-card" role="dialog" aria-modal="true" aria-label="${isOutfit?"每日穿搭原图预览":"产出原图预览"}">
         <header>
@@ -583,6 +625,12 @@ window.CompanionOutputPage=(()=>{
           <div class="output-album-lightbox-foot-actions">${downloadControl}</div>
         </footer>
       </section>`;
+    if(wasClosed&&canAnimateLightbox(host)){
+      host.classList?.remove?.("is-open");
+      requestAnimationFrame(()=>{if(!host.hidden&&currentLightboxItem())host.classList?.add?.("is-open");});
+    }else{
+      host.classList?.add?.("is-open");
+    }
     window.lucide?.createIcons?.({attrs:{"aria-hidden":"true"}});
   }
   function openAlbum(index){
@@ -792,9 +840,14 @@ window.CompanionOutputPage=(()=>{
   }
   function renderObservation(){
     if(!root?.isConnected)return;
+    root.querySelectorAll?.('[data-output-native-action="observability"]').forEach(button=>{
+      button.disabled=observationBusy;
+      button.classList?.toggle?.("is-refreshing",observationBusy);
+      button.setAttribute?.("aria-busy",observationBusy?"true":"false");
+    });
     const host=root.querySelector("#outputObservationWorkspace");
     if(!host)return;
-    if(observationBusy){host.innerHTML='<span class="output-observation-muted">正在读取最近调用…</span>';return;}
+    if(observationBusy&&!observation){host.innerHTML='<span class="output-observation-muted">正在读取最近调用…</span>';return;}
     if(!observation){
       host.innerHTML=`<div class="output-observation-empty" role="status">${esc(observationError||"还没有读取到生图记录")}<button type="button" class="output-inline-link" data-output-native-action="observability">重新读取 ${icon("refresh-cw")}</button></div>`;
       return;
@@ -803,7 +856,7 @@ window.CompanionOutputPage=(()=>{
     const action={"image.generate":"文生图","image.edit":"改图","image.mask_edit":"蒙版改图"};
     const items=observation.items||[];
     const rows=items.map(item=>`<li class="output-observation-row"><span class="output-observation-state is-${esc(item.state)}"></span><span class="output-observation-main"><strong>${esc(action[item.action]||item.action)}</strong><small>${esc(formatTime(item.created_at))}</small></span><span class="output-observation-result">${esc(status[item.state]||item.state)}${item.elapsed_ms==null?"":` · ${(item.elapsed_ms/1000).toFixed(1)} 秒`}${item.error_code?` · ${esc(ERRORS[item.error_code]||item.error_code)}`:""}</span></li>`).join("");
-    host.innerHTML=`<div class="output-observation-summary">${Number(observation.total)||0} 次调用 <span>最近 ${items.length} 条</span></div>${rows?`<ul class="output-observation-list">${rows}</ul>`:'<div class="output-observation-empty">当前角色还没有生图调用记录</div>'}`;
+    host.innerHTML=`<div class="output-observation-summary">${Number(observation.total)||0} 次调用 <span>最近 ${items.length} 条</span>${observationRefreshedAt?`<span class="refresh-stamp" role="status">刚刚已刷新 ${esc(observationRefreshedAt)}</span>`:""}</div>${rows?`<ul class="output-observation-list">${rows}</ul>`:'<div class="output-observation-empty">当前角色还没有生图调用记录</div>'}`;
   }
   const worksTarget=()=>{
     const target=product()?.roleTarget?.(),role=product()?.role?.();
@@ -924,7 +977,7 @@ window.CompanionOutputPage=(()=>{
     const reason=!naiStatus?(busy?"正在检测 NAI 插件…":"NAI 状态暂不可读，请重新检测"):!status.installed?"未安装 NAI 生图插件":!status.available?({nai_plugin_disabled:"NAI 插件已停用，请先在插件管理中启用",nai_plugin_incompatible:"NAI 插件版本不支持陪伴联动，请先更新"})[status.reason]||"NAI 尚未就绪，请检查插件的陪伴联动开关与接口配置":"已就绪";
     const format=status.prompt_format==="nai"?"NAI 英文标签":status.prompt_format==="natural"?"英文自然语言":"跟随 NAI 插件";
     const fields=[["接入服务",service],["生图模型",status.default_model||"跟随 NAI 插件"],["画风",status.artist_slot_name||"跟随 NAI 插件当前画风"],["默认尺寸",status.default_size||"跟随 NAI 插件"],["提示词格式",format],["参考图模式",status.call_mode==="direct"?"当前接入方式不支持":({vibe:"氛围参考（不固定人物身份）",img2img:"图生图",director:"精准参考"})[status.reference_mode]||"跟随 NAI 插件"]];
-    return `<section class="output-capability-card output-nai-backend" data-output-nai><header class="output-capability-heading"><h2>NAI 后端</h2><span role="status">${esc(reason)}</span><button type="button" class="output-icon-button" data-output-native-action="refresh" title="重新检测 NAI 插件" aria-label="重新检测 NAI 插件"${busy?" disabled":""}>${icon("refresh-cw")}</button></header><div class="output-endpoint-guidance"><p>模型、画风槽位、尺寸、采样参数和默认负面提示词均沿用「NAI 生图插件」的配置；地址与密钥也由 NAI 插件管理。</p><p>人物和服装按陪伴当前角色与本次要求绘制，不套用 NAI 的固定角色模板；不叠加下方的画面风格。提示词格式跟随 NAI 的「陪伴直连提示词模式」。</p></div>${status.installed?`<dl class="output-nai-defaults">${fields.map(([label,value])=>`<div class="output-native-field"><dt>${label}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>`:""}<div class="output-nai-operations">${Object.entries(labels).map(([operation,label])=>{
+    return `<section class="output-capability-card output-nai-backend" data-output-nai><header class="output-capability-heading"><h2>NAI 后端</h2><span role="status">${esc(reason)}</span><button type="button" class="output-icon-button${busy==="read"?" is-refreshing":""}" data-output-native-action="refresh" title="重新检测 NAI 插件" aria-label="重新检测 NAI 插件" aria-busy="${busy==="read"?"true":"false"}"${busy?" disabled":""}>${icon("refresh-cw")}</button></header><div class="output-endpoint-guidance"><p>模型、画风槽位、尺寸、采样参数和默认负面提示词均沿用「NAI 生图插件」的配置；地址与密钥也由 NAI 插件管理。</p><p>人物和服装按陪伴当前角色与本次要求绘制，不套用 NAI 的固定角色模板；不叠加下方的画面风格。提示词格式跟随 NAI 的「陪伴直连提示词模式」。</p></div>${status.installed?`<dl class="output-nai-defaults">${fields.map(([label,value])=>`<div class="output-native-field"><dt>${label}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>`:""}<div class="output-nai-operations">${Object.entries(labels).map(([operation,label])=>{
       const selected=draft?.operation_routes?.[operation]?.includes("nai"),supported=status.operations?.includes(operation);
       return `<label class="output-native-check"><input type="checkbox" data-output-nai-operation="${operation}"${selected?" checked":""}${!draft||busy||(!supported&&!selected)?" disabled":""}>${label}${operation==="edit"&&status.available&&!supported?"（当前接入方式不支持）":""}</label>`;
     }).join("")}</div>${draft?actions():""}</section>`;
@@ -936,8 +989,8 @@ window.CompanionOutputPage=(()=>{
       <div class="output-endpoint-list">${draft.endpoints.map((item,index)=>{
         const open=expanded.has(item.id),path=`endpoints.${index}`;
         const test=tests.get(item.id);
-        return `<article class="output-endpoint-card"><header><button type="button" class="output-endpoint-toggle" data-output-native-action="expand" data-output-endpoint="${esc(item.id)}" aria-expanded="${open}">${icon(open?"chevron-down":"chevron-right")}<strong>${esc(endpointLabel(item))}</strong></button><div class="output-endpoint-tools"><label class="output-native-check"><input type="checkbox" data-output-native-field="${path}.enabled"${item.enabled?" checked":""}${busy?" disabled":""}>${item.enabled?"已启用":"已停用"}</label><button type="button" class="button small" title="${test?.status==="unknown"?"核对同一次测试，不会再次提交生成请求":"真实生成一张图片，可能产生费用"}" data-output-native-action="test" data-output-endpoint="${esc(item.id)}"${busy||dirty()||!item.enabled?" disabled":""}>${busy===`test:${item.id}`?"生成中…":test?.status==="unknown"?"核对测试结果":"生成测试图"}</button><button type="button" class="output-icon-button" aria-label="删除图片模型" title="删除图片模型" data-output-native-action="remove" data-output-endpoint="${esc(item.id)}"${busy?" disabled":""}>${icon("x")}</button></div></header>
-        <div class="output-endpoint-edit"${open?"":" hidden"}><div class="output-endpoint-grid"><label class="output-native-field"><span>平台协议</span><select data-output-native-field="${path}.platform"${busy?" disabled":""}>${options(PLATFORMS,item.platform)}</select><small class="output-native-help">${platformGuide(item.platform)}</small></label>${field("图片模型 ID",path+".model",item.model,"text",'placeholder="如 image-01"',"填写服务商提供的模型标识。")}${field("宽度（像素）",path+".width",item.width,"number",'min="64" max="8192" step="64"')}${field("高度（像素）",path+".height",item.height,"number",'min="64" max="8192" step="64"')}</div><div class="output-endpoint-address">${field("API 根地址",path+".base_url",item.base_url,"url",'placeholder="https://api.example.com/v1"',"可填写服务根地址或完整生图地址；查询参数会保留，路径按所选协议补全。")}${keyField(path,item)}</div><div class="output-endpoint-extra">${field("自定义名称",path+".name",item.name,"text",'placeholder="例如：主力生图"',"留空则显示模型 ID。")}${field("超时秒数",path+".timeout_seconds",item.timeout_seconds,"number",'min="1" max="1800" step="1"',"保存后下一次生图任务生效；正在执行的任务保持原时限。")}</div></div>
+        return `<article class="output-endpoint-card"><header><button type="button" class="output-endpoint-toggle" data-output-native-action="expand" data-output-endpoint="${esc(item.id)}" aria-expanded="${open}">${icon("chevron-right")}<strong>${esc(endpointLabel(item))}</strong></button><div class="output-endpoint-tools"><label class="output-native-check"><input type="checkbox" data-output-native-field="${path}.enabled"${item.enabled?" checked":""}${busy?" disabled":""}>${item.enabled?"已启用":"已停用"}</label><button type="button" class="button small" title="${test?.status==="unknown"?"核对同一次测试，不会再次提交生成请求":"真实生成一张图片，可能产生费用"}" data-output-native-action="test" data-output-endpoint="${esc(item.id)}"${busy||dirty()||!item.enabled?" disabled":""}>${busy===`test:${item.id}`?"生成中…":test?.status==="unknown"?"核对测试结果":"生成测试图"}</button><button type="button" class="output-icon-button" aria-label="删除图片模型" title="删除图片模型" data-output-native-action="remove" data-output-endpoint="${esc(item.id)}"${busy?" disabled":""}>${icon("x")}</button></div></header>
+        <div class="output-endpoint-collapse${open?" is-open":""}" data-output-endpoint-collapse><div class="output-endpoint-edit"${open?"":" inert"}><div class="output-endpoint-grid"><label class="output-native-field"><span>平台协议</span><select data-output-native-field="${path}.platform"${busy?" disabled":""}>${options(PLATFORMS,item.platform)}</select><small class="output-native-help">${platformGuide(item.platform)}</small></label>${field("图片模型 ID",path+".model",item.model,"text",'placeholder="如 image-01"',"填写服务商提供的模型标识。")}${field("宽度（像素）",path+".width",item.width,"number",'min="64" max="8192" step="64"')}${field("高度（像素）",path+".height",item.height,"number",'min="64" max="8192" step="64"')}</div><div class="output-endpoint-address">${field("API 根地址",path+".base_url",item.base_url,"url",'placeholder="https://api.example.com/v1"',"可填写服务根地址或完整生图地址；查询参数会保留，路径按所选协议补全。")}${keyField(path,item)}</div><div class="output-endpoint-extra">${field("自定义名称",path+".name",item.name,"text",'placeholder="例如：主力生图"',"留空则显示模型 ID。")}${field("超时秒数",path+".timeout_seconds",item.timeout_seconds,"number",'min="1" max="1800" step="1"',"保存后下一次生图任务生效；正在执行的任务保持原时限。")}</div></div></div>
         ${test?`<div class="output-endpoint-result${test.status==="succeeded"?" is-ready":""}" role="status">${test.status==="succeeded"?"最近测试通过":test.status==="unknown"?"测试结果尚未确认":"测试未通过"} · ${Math.round(test.elapsed_ms||0)/1000} 秒${test.status!=="succeeded"?` · ${esc(test.error||"请核对接口配置")}`:""}</div>`:""}</article>`;
       }).join("")||'<div class="output-endpoint-empty">尚未添加在线生图端点</div>'}</div>${actions()}</section>`;
   }
@@ -964,20 +1017,22 @@ window.CompanionOutputPage=(()=>{
     renderObservation();
     window.lucide?.createIcons?.({attrs:{"aria-hidden":"true"}});
   }
-  async function refreshObservability(){
+  async function refreshObservability(manual=false){
     if(observationBusy)return;
-    const id=ticket;observationBusy=true;observationError="";renderObservation();
+    const id=ticket,seq=++observationSeq;
+    observationBusy=true;observationError="";renderObservation();
     try{
       const data=await product().request("GET",observationEndpoint());
-      if(!live(id))return;
+      if(!live(id)||seq!==observationSeq)return;
       observation=data?.images||{total:0,items:[]};
-      if(!worksLoaded)updateContentSummary(data?.content||null);
+      updateContentSummary(data?.content||null);
+      if(manual)observationRefreshedAt=formatClock();
     }catch(error){
-      if(!live(id))return;
+      if(!live(id)||seq!==observationSeq)return;
       observation=null;observationError=ERRORS[error.code]||ERRORS[error.message]||"观测记录暂不可读";
       updateContentSummary(null);
     }finally{
-      if(live(id)){observationBusy=false;renderObservation();window.lucide?.createIcons?.({attrs:{"aria-hidden":"true"}});}
+      if(live(id)&&seq===observationSeq){observationBusy=false;renderObservation();window.lucide?.createIcons?.({attrs:{"aria-hidden":"true"}});}
     }
   }
   async function refresh(){
@@ -1104,7 +1159,7 @@ window.CompanionOutputPage=(()=>{
     if(action==="test"){testEndpoint(identifier);return;}
     if(action==="reconnect"){reconnect();return;}
     if(action==="refresh-preferences"){void refreshPreferences();return;}
-    if(action==="observability"){refreshObservability();return;}
+    if(action==="observability"){refreshObservability(true);return;}
     if(action==="works-refresh"){void loadWorks();return;}
     if(action==="work-preview"){
       const item=works[Number(target.dataset.workIndex)];
@@ -1192,7 +1247,19 @@ window.CompanionOutputPage=(()=>{
     }
     if(!draft)return;
     const index=draft.endpoints.findIndex(item=>item.id===identifier);
-    if(action==="expand"){expanded.has(identifier)?expanded.delete(identifier):expanded.add(identifier);}
+    if(action==="expand"){
+      const nextOpen=!expanded.has(identifier);
+      if(nextOpen)expanded.add(identifier);else expanded.delete(identifier);
+      const card=target.closest?.(".output-endpoint-card");
+      const collapse=card?.querySelector?.("[data-output-endpoint-collapse]");
+      if(collapse){
+        target.setAttribute?.("aria-expanded",String(nextOpen));
+        collapse.classList?.toggle?.("is-open",nextOpen);
+        const edit=collapse.querySelector?.(".output-endpoint-edit");
+        if(edit&&typeof edit.toggleAttribute==="function")edit.toggleAttribute("inert",!nextOpen);
+        return;
+      }
+    }
     if(action==="add"){
       const item={id:crypto.randomUUID(),name:"",enabled:false,
         platform:"auto",base_url:"",api_key:"",model:"",width:1024,height:1024,timeout_seconds:180,
@@ -1213,13 +1280,13 @@ window.CompanionOutputPage=(()=>{
     if(event.key==="ArrowRight"){event.preventDefault?.();stepAlbum(1);}
   }
   function unmount(){
-    ticket++;abort?.abort();abort=null;disconnectAlbumObserver();clearFullImageCache();clearTimeout(albumCopyTimer);albumCopyTimer=null;
-    root=null;draft=base=null;naiStatus=null;busy="";scope="";observation=null;observationBusy=false;sceneEditorOpen=false;sceneDraft=null;sceneSaving=false;
+    ticket++;abort?.abort();abort=null;disconnectAlbumObserver();clearFullImageCache();clearTimeout(albumCopyTimer);albumCopyTimer=null;clearTimeout(albumLightboxCloseTimer);albumLightboxCloseTimer=null;
+    root=null;draft=base=null;naiStatus=null;busy="";scope="";observation=null;observationBusy=false;observationSeq++;observationRefreshedAt="";sceneEditorOpen=false;sceneDraft=null;sceneSaving=false;
     albumSources=[];albumItems=[];albumCursor=null;albumTotal=null;albumLoaded=false;albumLoading=false;albumBatchLoading=false;albumBatchStep=0;albumBatchTotal=0;albumError="";albumStandaloneItem=null;albumSelected=-1;albumSelectedId="";albumSelectedIds=new Set();albumNotice="";albumBusy="";albumFilter="all";albumZoomed=false;albumCopyFeedback="";
     albumReferenceOpen=false;albumReferenceImageId="";albumReferenceLabel="";albumReferenceRoles=new Set(["identity"]);albumReferenceError="";
   }
   function mount(node){
-    unmount();root=node;scope=product()?.scopeKey?.()||"";works=[];worksLoaded=false;worksBusy=false;workSelection=null;expanded=new Set();tests=new Map();testKeys=new Map();notice="";bad=false;observation=null;observationError="";sceneError="";
+    unmount();root=node;scope=product()?.scopeKey?.()||"";works=[];worksLoaded=false;worksBusy=false;workSelection=null;expanded=new Set();tests=new Map();testKeys=new Map();notice="";bad=false;observation=null;observationError="";observationRefreshedAt="";sceneError="";
     if(!root)return;
     abort=new AbortController();
     root.addEventListener("input",input,{signal:abort.signal});

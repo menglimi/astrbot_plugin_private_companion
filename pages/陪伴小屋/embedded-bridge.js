@@ -1,6 +1,21 @@
 /* Opaque-origin compatible bridge for bundled workspaces. */
 "use strict";
 (() => {
+  const target = globalThis.crypto;
+  if (!target || typeof target.randomUUID === "function") return;
+  const randomUUID = () => {
+    const bytes = new Uint8Array(16);
+    if (typeof target.getRandomValues === "function") target.getRandomValues(bytes);
+    else for (let index = 0; index < bytes.length; index++) bytes[index] = Math.floor(Math.random() * 256);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map(value => value.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  };
+  try { Object.defineProperty(target, "randomUUID", {value: randomUUID, configurable: true}); }
+  catch { target.randomUUID = randomUUID; }
+})();
+(() => {
   const pending=new Map(),pendingConfirms=new Map();let count=0,context=null,readyResolve,draftHandler=null;
   const DEFAULT_REQUEST_TIMEOUT_MS=18000,MAX_REQUEST_TIMEOUT_MS=300000;
   const ready=new Promise(resolve=>{readyResolve=resolve;});

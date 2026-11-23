@@ -375,6 +375,8 @@ window.CompanionSetup = (() => {
   let advancedOpen = false;
   let advancedBlock = "understanding";
   let quickEditor = null;
+  let quickReplyOwned = false;
+  let quickStateOwned = false;
   let migrationOnly = false;
   let onState = null;
   let generation = 0;
@@ -467,18 +469,42 @@ window.CompanionSetup = (() => {
   function stopQuickWorkspace() {
     quickEditor?.stop?.();
     quickEditor = null;
-    window.CompanionReplyPage?.unmount?.();
-    window.CompanionStatePage?.unmount?.();
+    if (quickReplyOwned) {
+      quickReplyOwned = false;
+      window.CompanionReplyPage?.unmount?.();
+    }
+    if (quickStateOwned) {
+      quickStateOwned = false;
+      window.CompanionStatePage?.unmount?.();
+    }
   }
 
   function mountQuickWorkspace() {
     const block = ADVANCED_BLOCKS.find(item => item.id === advancedBlock);
     if (!block || !root) return;
     const host = selector => root.querySelector(selector);
-    if (block.mount === "reply") window.CompanionReplyPage?.mount?.(host("#setupQuickReplyHost"),
-      {view: "expression", expressionModule: "expression-text", section: "segment"});
-    if (block.mount === "decision") window.CompanionReplyPage?.mount?.(host("#setupQuickDecisionHost"), {view: "decision"});
-    if (block.mount === "state") window.CompanionStatePage?.mount?.(host("#setupQuickStateHost"), {section: "state", feature: "planning"});
+    if (block.mount === "reply") {
+      const replyHost = host("#setupQuickReplyHost");
+      if (replyHost && window.CompanionReplyPage?.mount) {
+        window.CompanionReplyPage.mount(replyHost,
+          {view: "expression", expressionModule: "expression-text", section: "segment"});
+        quickReplyOwned = true;
+      }
+    }
+    if (block.mount === "decision") {
+      const decisionHost = host("#setupQuickDecisionHost");
+      if (decisionHost && window.CompanionReplyPage?.mount) {
+        window.CompanionReplyPage.mount(decisionHost, {view: "decision"});
+        quickReplyOwned = true;
+      }
+    }
+    if (block.mount === "state") {
+      const stateHost = host("#setupQuickStateHost");
+      if (stateHost && window.CompanionStatePage?.mount) {
+        window.CompanionStatePage.mount(stateHost, {section: "state", feature: "planning"});
+        quickStateOwned = true;
+      }
+    }
     if (block.editors?.length) {
       quickEditor = window.CompanionConfigEditors?.create?.(block.editors, () => host("#setupAdvancedEditorHost"), block.views || {});
       if (quickEditor) {

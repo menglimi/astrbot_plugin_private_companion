@@ -27,8 +27,10 @@ window.CompanionLearningReviewPage = (() => {
   const sameText = (left, right) => Boolean(left && right && left === right);
   const when = value => typeof value === "string" && Number.isFinite(Date.parse(value))
     ? new Date(value).toLocaleString("zh-CN",{hour12:false,month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "时间未知";
+  const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
   const relative = value => typeof value === "string" && value.startsWith(PREFIX) ? value.slice(PREFIX.length) : "";
-  let root = null, ticket = 0, readTicket = 0, sources = [], pages = [], data = null;
+  const MAX_REFRESH_PAGES = 10;
+  let root = null, ticket = 0, readTicket = 0, sources = [], getSourcesFn = null, pages = [], data = null;
   const live = current => root?.isConnected && current === ticket;
   function routeFor(source, base, suffix) {
     return base + suffix;
@@ -48,21 +50,39 @@ window.CompanionLearningReviewPage = (() => {
     return product?.unwrap ? product.unwrap(response) : response?.data ?? response;
   }
 
-  /* 每页记下「已经读过的游标」（第 1 页是 ""）：刷新时按它原地重读同一批页，
-     而不是退回只读第 1 页。 */
-  function buildPages() {
+  /* 每页记下已加载页数（`pageCount`）：刷新时从首页沿服务端返回的 live cursor
+     顺读回同一页数，完整成功时以服务端返回为准替换，避免游标漂移或已撤回条目滞留。 */
+  const pageKey = (sourceKey, type) => `${sourceKey}::${type}`;
+  function buildPages(previousPages = []) {
+    const previousByKey = new Map(previousPages.map(page => [pageKey(page.source.key, page.type), page]));
     return sources.flatMap(source => {
       const growth = relative(source.growthApi || source.api), reply = relative(source.replyApi);
       return [
         growth && {source,type:"growth",path:routeFor(source,growth,"/progress"),query:{limit:20}},
         reply && {source,type:"style",path:routeFor(source,reply,"/style"),query:{state:"pending",limit:20}},
         growth && {source,type:"self",path:routeFor(source,growth,"/self-review"),query:{state:"pending",limit:20}},
-      ].filter(Boolean).map(page => ({...page,items:[],cursors:[""],next:"",loaded:false}));
+      ].filter(Boolean).map(entry => {
+        const existing = previousByKey.get(pageKey(entry.source.key, entry.type));
+        if (existing) {
+          existing.source = entry.source;
+          existing.path = entry.path;
+          return existing;
+        }
+        return {...entry,items:[],cursors:[""],pageCount:1,next:"",loaded:false};
+      });
     });
   }
+  function syncSources() {
+    if (typeof getSourcesFn !== "function") return;
+    try {
+      const latest = getSourcesFn();
+      if (!Array.isArray(latest)) return;
+      sources = latest.slice();
+      pages = buildPages(pages);
+    } catch (_) {}
+  }
   const ID_FIELD = {growth:"review_id",style:"signal_id",self:"item_id"};
-  /* 按 key 合并：就地更新同一条、保留刷新时后端没有返回的旧行。
-     待裁决队列会因为「别处处理掉了」而变短，撤掉旧行等于用户眼前少了几条。 */
+  /* 仅用于部分读取失败（partial）时保留未成功续读的旧行；完整读取成功时直接以服务端结果替换。 */
   function mergeRows(previous, incoming) {
     const merged = previous.slice();
     const positions = new Map(merged.map((row, position) => [keyFor(row), position]));
@@ -89,78 +109,109 @@ window.CompanionLearningReviewPage = (() => {
         || null;
     } catch (_) { return null; }
   }
-  /* 按游标列表逐页读。中途某页读不到就停在该页：已经读到的行仍然有效，
-     下一页游标保持原样，下次「加载更多」还会重试它。 */
-  async function readChain(page, cursors) {
-    const rows = [];
+  /* 按模式逐页读取：refresh 从首页沿实时 next_cursor 重读已加载页数，消除游标漂移；
+     中途某页失败时标记 failed=true 并停在该页，保留前缀与旧行。 */
+  async function readChain(page, options = {}) {
+    const append = options.append === true;
+    const rounds = append ? 1 : Math.min(MAX_REFRESH_PAGES, Math.max(1, Number(options.rounds) || 1));
+    const rows = [], used = [];
+    let cursor = append ? (options.startCursor || "") : "";
     let next = "", failed = false;
-    for (const cursor of cursors) {
+    for (let round = 0; round < rounds; round += 1) {
       let value;
       try {
-        value = await api("GET",page.path,{...page.query,...(cursor?{after_id:cursor}:{})});
-      } catch (error) { failed = true; break; }
+        value = await api("GET", page.path, {...page.query, ...(cursor ? {after_id: cursor} : {})});
+      } catch (_) { failed = true; break; }
       if (!Array.isArray(value?.items)) { failed = true; break; }
-      rows.push(...value.items.filter(item=>page.type!=="self"||item.kind==="ask_user")
-        .map(item=>({...item,_type:page.type,_source:page.source,_id:item[ID_FIELD[page.type]]})));
-      next = typeof value.next_cursor === "string" ? value.next_cursor : "";
+      used.push(cursor);
+      rows.push(...value.items.filter(item => page.type !== "self" || item.kind === "ask_user")
+        .map(item => ({...item, _type: page.type, _source: page.source, _id: item[ID_FIELD[page.type]]})));
+      const nextCursor = typeof value.next_cursor === "string" && value.next_cursor ? value.next_cursor : "";
+      next = nextCursor === cursor ? "" : nextCursor;
+      if (!next) break;
+      cursor = next;
     }
-    return {rows, next, failed};
+    return {rows, next, used, failed};
   }
   /* 读取有三种模式：
-       reset   首次挂载/换筛选：重建页记录，只读第 1 页（用户主动重置）；
+       reset   首次挂载：重建页记录，只读第 1 页；
        append  「加载更多」：往后读一页并追加；
-       refresh 重新读取 / 裁决后：按已读游标原地重读同一批页并按 key 合并，
-               **不减少**已经显示的行，也不清掉选中与勾选。
-     除用户主动切筛选外，任何刷新都不走 reset —— 那是「队列被打回第一页」的根源。 */
-  async function read(current, mode = "reset") {
-    const append = mode === true || mode === "append";
+       refresh 重新读取 / 裁决后：同步最新来源并沿实时游标重读已加载页数，完整成功时
+               以服务端结果权威替换（保留滚动、选中与仍在列表里的勾选）；部分失败时
+               仅保留失败来源的旧行并提示失败来源。 */
+  async function read(current, modeOrOptions = "reset") {
+    const opts = typeof modeOrOptions === "object" && modeOrOptions !== null
+      ? modeOrOptions
+      : {mode: modeOrOptions === true ? "append" : String(modeOrOptions || "reset")};
+    const mode = opts.mode || "reset";
+    const append = mode === "append";
     const refresh = mode === "refresh";
+    const manual = opts.manual === true;
     if (!live(current) || !data || data.writing || ((append || refresh) && data.loading)) return;
+    if (refresh) syncSources();
     const request = ++readTicket;
     const scrollTop = append || refresh ? queueNode()?.scrollTop : undefined;
     if (!append && !refresh) {
       const previousNotice = data?.notice || "";
       const previousError = !!data?.error;
-      data = {loading:true, writing:false, items:[], selected:"", checked:new Set(), filter:data?.filter || "all",
-        notice:previousNotice, error:previousError, confirming:null, errors:0};
+      data = {loading:true, refreshing:false, writing:false, items:[], selected:"", checked:new Set(), filter:data?.filter || "all",
+        notice:previousNotice, error:previousError, confirming:null, errors:0, failedLabels:[], refreshedAt:""};
       pages = buildPages();
-    } else data.loading = true;
+    } else {
+      data.loading = true;
+      data.refreshing = refresh;
+      if (manual) { data.notice = ""; data.error = false; }
+    }
     render({resetScroll: !append && !refresh});
     const wanted = pages
       .filter(page => (append ? Boolean(page.next) : true))
-      .map(page => ({page, cursors: append ? [page.next]
-        /* 刷新时重读已加载的整条游标链；首次读取失败过的页（loaded=false）重试第 1 页。 */
-        : page.loaded ? page.cursors.slice() : [""]}));
-    const fetched = await Promise.allSettled(wanted.map(({page,cursors}) => readChain(page,cursors)));
+      .map(page => ({page, append, startCursor: append ? page.next : "",
+        rounds: !append && !refresh ? 1 : append ? 1 : (page.loaded ? Math.max(1, page.pageCount || page.cursors.length || 1) : 1)}));
+    const fetched = await Promise.allSettled(wanted.map(({page, append: isAppend, startCursor, rounds}) =>
+      readChain(page, {append: isAppend, startCursor, rounds})));
     if (!live(current) || request !== readTicket) return;
     data.errors = 0;
-    fetched.forEach((result,index) => {
-      const {page,cursors} = wanted[index];
-      if (result.status === "rejected") { data.errors++; return; }
+    const failedLabels = new Set();
+    fetched.forEach((result, index) => {
+      const {page, append: isAppend} = wanted[index];
+      if (result.status === "rejected") {
+        data.errors++;
+        if (page.source?.label) failedLabels.add(page.source.label);
+        return;
+      }
       const value = result.value;
-      if (value.failed) data.errors++;
-      /* 一页都没读到：旧行与旧游标原地不动，等于这次刷新什么也没换成。 */
-      if (value.failed && !value.rows.length) return;
+      if (value.failed) {
+        data.errors++;
+        if (page.source?.label) failedLabels.add(page.source.label);
+      }
+      /* 一页都没读到：旧行与旧游标原地不动，避免覆盖已加载内容。 */
+      if (value.failed && !value.used.length) return;
       if (!append && !refresh) {
         page.items = dedupeRows(value.rows);
-        page.cursors = [""];
-      } else if (append) {
+        page.cursors = value.used.length ? value.used.slice() : [""];
+        page.pageCount = Math.max(1, page.cursors.length);
+      } else if (isAppend) {
         page.items = dedupeRows(page.items.concat(value.rows));
-        page.cursors = page.cursors.concat(cursors);
-      } else {
+        page.cursors = page.cursors.concat(value.used);
+        page.pageCount = Math.max(1, page.cursors.length);
+      } else if (value.failed) {
+        /* 仅部分失败（partial）时保留旧行与原页数，下次刷新继续补读。 */
         page.items = mergeRows(page.items, value.rows);
-        if (!value.failed) page.cursors = cursors.slice();
+      } else {
+        /* 完整读取成功：以服务端结果权威替换，已外部处理或撤回的记录立即移除。 */
+        page.items = dedupeRows(value.rows);
+        page.cursors = value.used.length ? value.used.slice() : [""];
+        page.pageCount = Math.max(1, page.cursors.length);
       }
       if (!value.failed) {
-        /* 服务端把同一个游标又发回来时收掉「加载更多」，避免原地打转。 */
-        const requested = cursors[cursors.length - 1] || "";
-        page.next = (refresh ? value.next : (value.next === requested ? "" : value.next));
+        page.next = value.next;
       }
       page.loaded = true;
     });
+    data.failedLabels = [...failedLabels];
     const seen = new Set();
-    data.items = pages.flatMap(page=>page.items).filter(item=>{
-      const key=keyFor(item);if(seen.has(key))return false;seen.add(key);return true;
+    data.items = pages.flatMap(page => page.items).filter(item => {
+      const key = keyFor(item); if (seen.has(key)) return false; seen.add(key); return true;
     });
     data.items.sort((a,b) => (Date.parse(b.created_at || "") || 0) - (Date.parse(a.created_at || "") || 0));
     data.items.forEach(keyFor);
@@ -177,6 +228,8 @@ window.CompanionLearningReviewPage = (() => {
     }
     if (!present.has(data.selected)) data.selected = data.items[0]?._key || "";
     data.loading = false;
+    data.refreshing = false;
+    if (manual && data.errors === 0) data.refreshedAt = formatClock();
     render({resetScroll: !append && !refresh});
     const node = queueNode();
     if (node && Number.isFinite(scrollTop)) node.scrollTop = scrollTop;
@@ -366,10 +419,13 @@ window.CompanionLearningReviewPage = (() => {
     const bulkConfirm=data.confirming?.bulk?`<div class="lh-review-confirm lh-review-bulk-confirm" role="alertdialog">
       <span>确认${data.confirming.action==="accept"?"批量采纳":"批量驳回"} ${data.confirming.action==="accept"?bulkAccept:bulkReject} 条记录？</span>
       <button type="button" data-review-confirm="yes"${data.writing?" disabled":""}>确认</button><button type="button" data-review-confirm="no">取消</button></div>`:"";
+    const partialMessage = data.failedLabels?.length
+      ? `部分记录归属暂时无法读取（${data.failedLabels.join("、")}），已保留之前显示的记录`
+      : "部分记录归属暂时无法读取，已保留之前显示的记录";
     root.innerHTML = `<header class="lh-review-head"><div class="lh-review-head-copy">
         <h2>审阅中心</h2>
         <p>把陪伴里学到的分寸与进展整理成手稿，逐条核实与裁决。</p></div>
-      <button type="button" class="lh-review-refresh" data-review-refresh aria-label="重新读取" title="重新读取" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw" aria-hidden="true"></i><span>刷新</span></button></header>
+      <div class="refresh-cluster">${data.refreshedAt?`<span class="refresh-stamp" role="status">刚刚已刷新 ${e(data.refreshedAt)}</span>`:""}<button type="button" class="lh-review-refresh${data.refreshing?" is-refreshing":""}" data-review-refresh aria-label="重新读取" title="重新读取" aria-busy="${data.refreshing?"true":"false"}" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw" aria-hidden="true"></i><span>${data.refreshing?"刷新中…":"刷新"}</span></button></div></header>
       <div class="lh-review-toolbar"><div class="lh-review-filters" role="group" aria-label="审阅类型">
         ${FILTERS.map(([id,label])=>
           `<button type="button" data-review-filter="${id}" aria-pressed="${data.filter===id}">${label}<span>${counts[id]}</span></button>`).join("")}</div>
@@ -378,7 +434,7 @@ window.CompanionLearningReviewPage = (() => {
           <button type="button" class="lh-review-bulk-accept" data-review-bulk="accept"${!bulkAccept||data.writing?" disabled":""}>批量采纳${bulkAccept?` · ${bulkAccept}`:""}</button>
           <button type="button" class="lh-review-bulk-reject" data-review-bulk="reject"${!bulkReject||data.writing?" disabled":""}>批量驳回${bulkReject?` · ${bulkReject}`:""}</button></div></div>
       ${data.notice?`<p class="lh-inline-status ${data.error?"is-error":""}" role="status">${e(data.notice)}</p>`:""}
-      ${data.errors?`<p class="lh-inline-status" role="status">部分记录归属暂时无法读取</p>`:""}
+      ${data.errors?`<p class="lh-inline-status" role="status">${e(partialMessage)}</p>`:""}
       ${bulkConfirm}<div class="lh-review-layout"><section class="lh-review-queue">
         <header class="lh-review-queue-head"><div><h3>待批阅</h3><p>按记录时间排列 · 逐条读，逐条定</p></div><span>${visible.length} / ${data.items.length}</span></header>
         <div class="lh-review-queue-list">${list}</div>
@@ -529,7 +585,7 @@ window.CompanionLearningReviewPage = (() => {
     if(!data||data.writing)return;
     const filter = event.target.closest("[data-review-filter]");
     if (filter) { data.filter=filter.dataset.reviewFilter; data.confirming=null; render({resetScroll:true}); return; }
-    if (event.target.closest("[data-review-refresh]")) { void read(ticket, "refresh"); return; }
+    if (event.target.closest("[data-review-refresh]")) { void read(ticket, {mode: "refresh", manual: true}); return; }
     if (event.target.closest("[data-review-more]")) { void read(ticket, "append"); return; }
     if (event.target.closest("[data-review-prev]")) { selectStep(-1); return; }
     if (event.target.closest("[data-review-next]")) { selectStep(1); return; }
@@ -564,12 +620,13 @@ window.CompanionLearningReviewPage = (() => {
     }
   }
   function mount(host, options = {}) {
-    unmount(); root=host; sources=Array.isArray(options.sources)?options.sources:[];
+    unmount(); root=host; getSourcesFn=typeof options.getSources==="function"?options.getSources:null;
+    sources=Array.isArray(options.sources)?options.sources.slice():(getSourcesFn?(()=>{try{const list=getSourcesFn();return Array.isArray(list)?list.slice():[];}catch(_){return [];}})():[]);
     root?.addEventListener("click",onClick);root?.addEventListener("change",onChange);window.addEventListener?.("keydown",onKeydown);
-    data={loading:false,writing:false,items:[],selected:"",checked:new Set(),filter:"all",notice:"",confirming:null,errors:0};
+    data={loading:false,refreshing:false,writing:false,items:[],selected:"",checked:new Set(),filter:"all",notice:"",error:false,confirming:null,errors:0,failedLabels:[],refreshedAt:""};
     const current=++ticket;
     if (sources.length) void read(current); else render();
   }
-  function unmount() { ticket++;readTicket++; root?.removeEventListener("click",onClick);root?.removeEventListener("change",onChange);window.removeEventListener?.("keydown",onKeydown);root=null;sources=[];pages=[];data=null; }
+  function unmount() { ticket++;readTicket++; root?.removeEventListener("click",onClick);root?.removeEventListener("change",onChange);window.removeEventListener?.("keydown",onKeydown);root=null;sources=[];getSourcesFn=null;pages=[];data=null; }
   return {mount,unmount,get state(){return data;}};
 })();

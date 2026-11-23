@@ -123,7 +123,7 @@ window.CompanionPageMotion = (() => {
     if (!CSS.supports("interpolate-size: allow-keywords") || !CSS.supports("selector(details::details-content)")) {
       document.addEventListener("toggle", event => {
         const details = event.target;
-        if (details.tagName === "DETAILS" && details.open && details.closest("#homeShell")) {
+        if (details.tagName === "DETAILS" && details.open && details.closest("#homeShell, dialog")) {
           reveal(details.querySelector(":scope > :not(summary)"), {distance: 3});
         }
       }, true);

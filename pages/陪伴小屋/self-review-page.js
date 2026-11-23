@@ -42,11 +42,36 @@ window.CompanionSelfReviewPage = (() => {
   const when = value => typeof value === "string" && Number.isFinite(Date.parse(value))
     ? new Date(value).toLocaleString("zh-CN", {hour12:false, month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"})
     : "时间未知";
-  let root = null, bridge = null, generation = 0, operation = 0, data = null;
+  const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
+  let root = null, bridge = null, generation = 0, operation = 0, data = null, getSourcesFn = null;
 
   function fresh() {
     return {sources:[], items:[], stopped:[], policy:null, status:null, enabled:true, phase:"loading",
-      loading:false, writing:false, confirming:"", notice:"", error:false, sourceErrors:[], expired:0};
+      loading:false, refreshing:false, refreshedAt:"", writing:false, confirming:"", notice:"", error:false, sourceErrors:[], expired:0};
+  }
+  function normalizeSources(list, existing = []) {
+    const existingByKey = new Map(existing.map(source => [source.key, source]));
+    const seen = new Set(), out = [];
+    for (const [index, item] of (Array.isArray(list) ? list : []).entries()) {
+      try {
+        const path = rel(item?.api || item?.growthApi);
+        const key = typeof item?.key === "string" && item.key ? item.key : path;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const label = typeof item?.label === "string" && item.label ? item.label : `角色 ${index + 1}`;
+        const prev = existingByKey.get(key);
+        out.push(prev ? {...prev, path, label} : {path, key, label, next:"", pages:0});
+      } catch { /* an invalid manifest entry cannot become a request route */ }
+    }
+    return out;
+  }
+  function syncSources() {
+    if (typeof getSourcesFn !== "function" || !data) return;
+    try {
+      const latest = getSourcesFn();
+      if (!Array.isArray(latest)) return;
+      data.sources = normalizeSources(latest, data.sources);
+    } catch (_) {}
   }
   function live(ticket) { return ticket === generation && root?.isConnected; }
   function note(message, error = false) { data.notice = message; data.error = error; }
@@ -231,7 +256,7 @@ window.CompanionSelfReviewPage = (() => {
         <section class="sr-effective"><header><h2>生效中的自我指导</h2><span>${valid.length} 条</span></header>${active}</section>${stopped}`
         :`<div class="sr-empty">${emptyCopy}</div>`}`;
     root.innerHTML=`<div class="sr-toolbar"><span>${data.sources.length} 个记录归属${data.loading?" · 正在读取":""}</span>
-      <button class="lh-refresh" type="button" data-review-refresh aria-label="重新读取" title="重新读取" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></div>
+      <span class="refresh-cluster">${data.refreshedAt?`<span class="refresh-stamp" role="status">刚刚已刷新 ${e(data.refreshedAt)}</span>`:""}<button class="lh-refresh${data.refreshing?" is-refreshing":""}" type="button" data-review-refresh aria-label="重新读取" title="重新读取" aria-busy="${data.refreshing?"true":"false"}" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></span></div>
       ${blind?failed:read}
       ${!blind&&data.sources.some(source=>source.next)?`<div class="sr-more"><button class="button small" type="button" data-review-more ${data.loading?"disabled":""}>加载更多</button></div>`:""}`;
     window.lucide?.createIcons({nodes:root.querySelectorAll("[data-lucide]")});
@@ -241,29 +266,35 @@ window.CompanionSelfReviewPage = (() => {
   /* refresh 的重读页数有上限：已加载页数会被「加载更多」一路抬高，
      而刷新是写操作之后的常见路径，不能按页数无上限地串行发请求。 */
   const MAX_REFRESH_PAGES = 8;
-  /* 三种读法，区别只在「从哪一页开始」与「读到的行怎么并进现有列表」：
+  /* 三种读法：
        reset   换来源或首次读取：清空重来，从每个来源的第一页开始；
        append  「加载更多」：每个来源各取自己的下一页，按身份去重后接上；
-       refresh 重新读取与写操作之后：把**这次已经读过的页数**原地重读一遍，
-               新数据按身份覆盖旧行，这次没读到的旧行保留。
-     三种模式都不会让已经显示过的建议凭空消失——除非用户自己裁决了它。 */
-  async function load({mode = "reset", force = false} = {}) {
+       refresh 重新读取与写操作之后：同步最新来源并按已加载页数重读，完整成功的来源
+               以服务端结果权威替换（同时更新 policy 与 status），仅读取失败的来源保留旧项并提示。 */
+  async function load({mode = "reset", force = false, manual = false} = {}) {
     if (data.loading && !force) return;
+    const reset = mode === "reset", append = mode === "append", refresh = mode === "refresh";
+    if (refresh) syncSources();
     if (!data.sources.length) { data.phase = "failed"; note("暂无可读取的复盘记录。", true); render(); return; }
     const ticket = generation;
     const query = ++loadGeneration;
-    const reset = mode === "reset", append = mode === "append";
-    const previous = reset ? null : data.items.slice();
+    const previous = reset ? [] : data.items.slice();
+    const previousStopped = reset ? [] : data.stopped.slice();
     data.loading = true;
+    data.refreshing = refresh;
     if (reset) {
-      data.items = []; data.stopped=[];data.expired = 0; data.sourceErrors = [];data.policy=null;
-      data.status=null; data.phase = "loading"; note("");
+      data.items = []; data.stopped = []; data.expired = 0; data.sourceErrors = []; data.policy = null;
+      data.status = null; data.phase = "loading"; data.refreshedAt = ""; note("");
       data.sources.forEach(source => { source.next = ""; source.pages = 0; });
+    } else if (manual) {
+      note("");
     }
     render();
     const targets = append ? data.sources.filter(source => source.next) : data.sources;
-    const fetched = [], failures = [], stoppedKeys = new Set(data.stopped.map(itemKey));
-    let expired = 0, succeeded = 0;
+    const fetched = [], fetchedStopped = [], failures = [], failedLabels = [];
+    const succeededKeys = new Set();
+    const stoppedKeys = new Set(append ? previousStopped.map(itemKey) : []);
+    let expired = 0, succeeded = 0, nextPolicy = null, nextStatus = null;
     for (let offset = 0; offset < targets.length; offset += 8) {
       const batch = targets.slice(offset, offset + 8);
       const results = await Promise.allSettled(batch.map(async source => {
@@ -283,50 +314,67 @@ window.CompanionSelfReviewPage = (() => {
           cursor = typeof page.next_cursor === "string" ? page.next_cursor : "";
           if (!cursor) break;
         }
-        const decided = append?{items:[]}:await api(source,"GET","/self-review",{state:"decided",limit:50});
+        const decided = append ? {items:[]} : await api(source, "GET", "/self-review", {state:"decided", limit:50});
         /* 「已经读过几页」要累加：append 只读一页，但它把已读页数 +1。 */
         return {source, rows, cursor, pages: append ? loadedBefore + 1 : pages,
-          policy:first?.policy||null, status:first?.status||null,
-          enabled:typeof first?.enabled==="boolean"?first.enabled:true, decided};
+          policy:first?.policy || null, status:first?.status || null,
+          enabled:typeof first?.enabled === "boolean" ? first.enabled : true, decided};
       }));
       if (!live(ticket) || query !== loadGeneration) return;
       results.forEach((settled, index) => {
         const source = batch[index];
         if (settled.status === "rejected") {
           failures.push(`${source.label}：${reason(settled.reason?.code)}`);
+          failedLabels.push(source.label);
           return;
         }
         succeeded++;
-        const {rows,cursor,pages,policy,status,enabled,decided}=settled.value;
+        succeededKeys.add(source.key);
+        const {rows, cursor, pages, policy, status, enabled, decided} = settled.value;
         source.next = cursor;
         source.pages = pages;
-        if(!data.policy&&policy)data.policy=policy;
-        if(!data.status&&status)data.status=status;
-        if(typeof enabled==="boolean")data.enabled=enabled;
+        if (!nextPolicy && policy) nextPolicy = policy;
+        if (!nextStatus && status) nextStatus = status;
+        if (typeof enabled === "boolean") data.enabled = enabled;
         if (Number.isInteger(decided.expired_in_page)) expired += decided.expired_in_page;
         for (const item of rows) {
           const enriched = {...item, _sourceKey:source.key, _sourceLabel:source.label};
           const isExpired = item.expires_at && Date.parse(item.expires_at) <= Date.now();
           if (item.unavailable_reason || isExpired) {
             const key = itemKey(enriched);
-            if (!stoppedKeys.has(key)) { data.stopped.push(enriched); stoppedKeys.add(key); }
+            if (!stoppedKeys.has(key)) { fetchedStopped.push(enriched); stoppedKeys.add(key); }
           } else fetched.push(enriched);
         }
-        for(const item of Array.isArray(decided.items)?decided.items:[]){
-          if(item.state==="withdrawn"||item.state==="accepted"&&(item.unavailable_reason||item.expires_at&&Date.parse(item.expires_at)<=Date.now())){
-            const enriched={...item,_sourceKey:source.key,_sourceLabel:source.label};
-            const key=itemKey(enriched);
-            if(!stoppedKeys.has(key)){data.stopped.push(enriched);stoppedKeys.add(key);}
+        for (const item of Array.isArray(decided.items) ? decided.items : []) {
+          if (item.state === "withdrawn" || item.state === "accepted" && (item.unavailable_reason || item.expires_at && Date.parse(item.expires_at) <= Date.now())) {
+            const enriched = {...item, _sourceKey:source.key, _sourceLabel:source.label};
+            const key = itemKey(enriched);
+            if (!stoppedKeys.has(key)) { fetchedStopped.push(enriched); stoppedKeys.add(key); }
           }
         }
       });
     }
     if (!live(ticket) || query !== loadGeneration) return;
-    data.items = (reset ? fetched : mergeRows(previous, fetched))
-      .sort((left, right) => Date.parse(right.created_at || "") - Date.parse(left.created_at || ""));
+    if (nextPolicy) data.policy = nextPolicy;
+    if (nextStatus) data.status = nextStatus;
+    const activeSourceKeys = new Set(data.sources.map(source => source.key));
+    if (reset) {
+      data.items = fetched;
+      data.stopped = fetchedStopped;
+    } else if (append) {
+      data.items = mergeRows(previous, fetched);
+      data.stopped = mergeRows(previousStopped, fetchedStopped);
+    } else {
+      /* 仅保留失败来源的旧项；本次读取成功的来源以服务端返回做权威替换。 */
+      const retainedItems = previous.filter(item => activeSourceKeys.has(item._sourceKey) && !succeededKeys.has(item._sourceKey));
+      const retainedStopped = previousStopped.filter(item => activeSourceKeys.has(item._sourceKey) && !succeededKeys.has(item._sourceKey));
+      data.items = mergeRows(retainedItems, fetched);
+      data.stopped = mergeRows(retainedStopped, fetchedStopped);
+    }
+    data.items.sort((left, right) => Date.parse(right.created_at || "") - Date.parse(left.created_at || ""));
     /* 同一条建议不能同时出现在「生效中」与「已停止注入」两处：
-       · 这次读到的行若已恢复可读，就从 stopped 里摘掉——refresh 只增不减会让它重复渲染；
-       · 这次被判为失效 / 不可读的行，也不再以旧行留在生效列表里，免得状态说得过时。 */
+       · 这次读到的行若已恢复可读，就从 stopped 里摘掉；
+       · 这次被判为失效 / 不可读的行，也不再以旧行留在生效列表里。 */
     const activeKeys = new Set(data.items.map(itemKey));
     data.stopped = data.stopped.filter(item => !activeKeys.has(itemKey(item)));
     const stoppedKeysNow = new Set(data.stopped.map(itemKey));
@@ -337,9 +385,11 @@ window.CompanionSelfReviewPage = (() => {
        空列表只有读成功之后才能说成「暂无复盘记录」。 */
     if (targets.length) data.phase = succeeded ? "ready" : "failed";
     if (failures.length) note(succeeded
-      ? `部分记录归属暂不可读（${failures.length}/${targets.length}）；已显示其余记录。`
+      ? `部分记录归属暂不可读（${failedLabels.join("、")}，${failures.length}/${targets.length}）；已显示其余记录并保留失败归属旧项。`
       : `复盘记录暂时无法读取：${failures[0]}`, true);
     data.loading = false;
+    data.refreshing = false;
+    if (manual && !failures.length) data.refreshedAt = formatClock();
     render();
   }
   function operationKey(action, itemId) {
@@ -382,7 +432,7 @@ window.CompanionSelfReviewPage = (() => {
     }
   }
   function onClick(event) {
-    if (event.target.closest("[data-review-refresh]")) { load({mode:"refresh", force:true}); return; }
+    if (event.target.closest("[data-review-refresh]")) { load({mode:"refresh", manual:true}); return; }
     if (event.target.closest("[data-review-more]")) { load({mode:"append"}); return; }
     const action = event.target.closest("[data-review-action]");
     if (!action) return;
@@ -417,16 +467,11 @@ window.CompanionSelfReviewPage = (() => {
   async function mount(host, options = {}) {
     unmount();
     root = host; data = fresh();
-    const seen = new Set();
-    for (const [index, item] of (Array.isArray(options.sources) ? options.sources : []).entries()) {
-      try {
-        const path = rel(item?.api);
-        const key = typeof item.key === "string" && item.key ? item.key : path;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        data.sources.push({path, key, label:typeof item.label === "string" && item.label ? item.label : `角色 ${index + 1}`, next:"", pages:0});
-      } catch { /* an invalid manifest entry cannot become a request route */ }
-    }
+    getSourcesFn = typeof options.getSources === "function" ? options.getSources
+      : typeof options.sources?.getSources === "function" ? options.sources.getSources : null;
+    const initial = Array.isArray(options.sources) ? options.sources
+      : getSourcesFn ? (() => { try { const list = getSourcesFn(); return Array.isArray(list) ? list : []; } catch (_) { return []; } })() : [];
+    data.sources = normalizeSources(initial);
     const ticket = ++generation;
     root.addEventListener("click", onClick);
     root.addEventListener("change", onToggle);
@@ -447,7 +492,7 @@ window.CompanionSelfReviewPage = (() => {
     loadGeneration++;
     if (root) root.removeEventListener("click", onClick);
     if (root) root.removeEventListener("change", onToggle);
-    root = null; bridge = null; data = null;
+    root = null; bridge = null; data = null; getSourcesFn = null;
   }
   return {mount, unmount, get state() { return {data}; }};
 })();

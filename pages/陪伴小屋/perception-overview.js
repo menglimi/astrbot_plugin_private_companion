@@ -384,7 +384,10 @@ window.CompanionPerceptionOverviewPage = (() => {
       || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   }
   function updateClock() {
-    if (!root?.isConnected) return;
+    if (!root?.isConnected) {
+      if (clockTimer) { clearInterval(clockTimer); clockTimer = null; }
+      return;
+    }
     const calendar = calendarContext();
     const timezone = clockZone(), now = new Date();
     const write = (selector, text) => {

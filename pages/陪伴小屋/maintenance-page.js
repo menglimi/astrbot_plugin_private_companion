@@ -2403,7 +2403,7 @@ window.CompanionMaintenancePage = (() => {
       '<button class="maint-probe-button" type="button" data-voice-test ' + (!voiceOptions || state.voiceTesting ? "disabled" : "") + '><i data-lucide="' + (state.voiceTesting ? "loader-circle" : "audio-lines") + '"></i><span>' + (state.voiceTesting ? "合成中" : "测试") + '</span></button></div></div>' + resultMarkup(state.voiceTest));
     if (showImage) tests.push('<div class="maint-test-row maint-test-row--image"><div><strong>原生图片工具</strong><small>只验证扩展注册状态，不会提交图片生成请求。</small></div><div class="maint-test-controls">' +
       '<select data-image-action ' + (imageOptions ? "" : "disabled") + '>' + (imageOptions || '<option value="">未发现图片工具</option>') + '</select>' +
-      '<button class="maint-probe-button" type="button" data-image-test ' + (!imageOptions || state.imageTesting ? "disabled" : "") + '><i data-lucide="' + (state.imageTesting ? "loader-circle" : "image-check") + '"></i><span>' + (state.imageTesting ? "检查中" : "检查") + '</span></button></div></div>' + resultMarkup(imageResult));
+      '<button class="maint-probe-button" type="button" data-image-test ' + (!imageOptions || state.imageTesting ? "disabled" : "") + '><i data-lucide="' + (state.imageTesting ? "loader-circle" : "image") + '"></i><span>' + (state.imageTesting ? "检查中" : "检查") + '</span></button></div></div>' + resultMarkup(imageResult));
     if (showStorage) tests.push('<div class="maint-test-row maint-test-row--storage"><div><strong>SQLite 完整性</strong><small>' +
       escapeHtml(String(storage.journal_mode || "状态未知").toUpperCase()) + ' · quick_check 与外键核对，只读且不会改写数据库。</small></div><div class="maint-test-controls">' +
       '<button class="maint-probe-button" type="button" data-storage-test ' + (state.storageTesting ? "disabled" : "") + '><i data-lucide="' +
@@ -4612,12 +4612,14 @@ window.CompanionMaintenancePage = (() => {
   function setMaintenanceView(view) {
     if (!state) return;
     const views = ["overview", "diagnostics", "cache", "efficiency", "recent", "prompts", "system-prompts", "logs"];
-    const next = views.includes(view) ? view : "overview";
+    const deliveryTarget = view === "delivery";
+    const next = deliveryTarget ? "diagnostics" : views.includes(view) ? view : "overview";
     const changed = state.activeMaintenanceNav !== next;
     if (changed && next !== "diagnostics" && state.memoryRunning) {
       stopMemoryDiagnostic("已离开排障页，采样已停止", {render: false});
     }
     state.activeMaintenanceNav = next;
+    if (deliveryTarget) state.category = "delivery";
     if (next === "logs" && !state.logsLoaded && !state.logsLoading) void loadLogs();
     if (changed) state.onViewChange?.(next);
   }
@@ -4969,6 +4971,9 @@ window.CompanionMaintenancePage = (() => {
     maintenanceScope = currentMaintenanceScope();
     generation += 1;
     const readiness = mountReadiness();
+    const validViews = ["overview", "diagnostics", "cache", "efficiency", "recent", "prompts", "system-prompts", "logs"];
+    const isDeliveryTarget = options.activeView === "delivery";
+    const requestedNav = isDeliveryTarget ? "diagnostics" : validViews.includes(options.activeView) ? options.activeView : "";
     state = {data: null, integrations: {}, error: "", errorCode: "", readiness, loading: false, backgroundLoading: false,
       testing: false, voiceTesting: false, imageTesting: false,
       proactiveTesting: false, proactiveConfirming: false, proactiveNotice: "", proactivePurpose: "care", proactiveTest: null,
@@ -4979,9 +4984,9 @@ window.CompanionMaintenancePage = (() => {
       memorySamples: [], memoryRunning: false, memorySampling: false, memoryComplete: false,
       memoryError: "", memoryStopReason: "", memoryTimer: null, memoryStartedAt: 0,
       tokenSource: "companion", tokenTrendMode: "daily", tokenBreakdown: "providers", tokenDetailView: "daily",
-      activeMaintenanceNav: ["overview", "diagnostics", "cache", "efficiency", "recent", "prompts", "system-prompts", "logs"].includes(options.activeView) ? options.activeView : "overview",
+      activeMaintenanceNav: requestedNav || "overview",
       onViewChange: typeof options.onViewChange === "function" ? options.onViewChange : null,
-      period: "today", selectedDate: localDay(), selectedHour: "", category: "all", severity: "all", callFilter: "all",
+      period: "today", selectedDate: localDay(), selectedHour: "", category: isDeliveryTarget ? "delivery" : "all", severity: "all", callFilter: "all",
       callQuery: "", traceFilter: null, showAllCalls: false, modelStatus: null, openReplySamples: new Set(),
       promptQuery: "", promptMode: "all", promptGroup: "all", promptSelectedKind: "",
       promptSelectedSection: "task_prompt", promptView: "edit", promptRuleKey: "",
@@ -4995,7 +5000,10 @@ window.CompanionMaintenancePage = (() => {
       logs: null, logsLoaded: false, logsLoading: false, logsError: "", logLevel: "", logQuery: ""};
     const cached = readiness.kind === "ready" ? maintenanceCache.get(maintenanceScope) : null;
     if (cached?.data) Object.assign(state, cached);
+    if (requestedNav) state.activeMaintenanceNav = requestedNav;
+    if (isDeliveryTarget) state.category = "delivery";
     state.onViewChange?.(state.activeMaintenanceNav);
+    if (state.activeMaintenanceNav === "logs" && !state.logsLoaded && !state.logsLoading) void loadLogs();
     root.addEventListener("click", click);
     root.addEventListener("change", change);
     root.addEventListener("input", input);

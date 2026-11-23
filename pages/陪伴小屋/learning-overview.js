@@ -11,7 +11,15 @@ window.CompanionLearningOverviewPage = (() => {
   const ACTIONS = {confirm:"确认",pause:"暂停",resume:"继续",complete:"已完成",revise:"修订",withdraw:"撤回",retire:"归档"};
   const e = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const relative = value => typeof value === "string" && value.startsWith(PREFIX) ? value.slice(PREFIX.length) : "";
-  let root = null, ticket = 0, readTicket = 0, sources = [], semantic = null, data = null;
+  const formatClock = (date = new Date()) => `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
+  let root = null, ticket = 0, readTicket = 0, sources = [], getSourcesFn = null, semantic = null, data = null;
+  function syncSources() {
+    if (typeof getSourcesFn !== "function") return;
+    try {
+      const latest = getSourcesFn();
+      if (Array.isArray(latest)) sources = latest.slice();
+    } catch (_) {}
+  }
   const when = value => typeof value === "string" && Number.isFinite(Date.parse(value))
     ? new Date(value).toLocaleString("zh-CN",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false}) : "时间未知";
   function routeFor(source, base, suffix = "") {
@@ -47,17 +55,19 @@ window.CompanionLearningOverviewPage = (() => {
     return {items};
   }
 
-  async function read(current) {
-    if (!root || current !== ticket || data?.writing) return;
+  async function read(current, options = {}) {
+    const manual = options.manual === true;
+    if (!root || current !== ticket || data?.writing || (manual && data?.loading)) return;
+    if (manual || data?.settled) syncSources();
     const request = ++readTicket;
     // Keep the last settled view while re-reading. Replacing it with zeros made
     // every refresh flash an empty KPI row and collapse the growth track, which
     // the browser then answered by clamping the scroll position to the top.
     const previous = data;
-    const notice = previous?.notice || "", error = !!previous?.error;
+    const notice = manual ? "" : (previous?.notice || ""), error = manual ? false : !!previous?.error;
     data = previous
-      ? {...previous, loading:true, writing:false, confirming:null, notice, error}
-      : {loading:true, settled:false, writing:false, confirming:null, notice, error, errors:0,
+      ? {...previous, loading:true, refreshing:Boolean(previous.settled || manual), writing:false, confirming:null, notice, error}
+      : {loading:true, refreshing:false, refreshedAt:"", settled:false, writing:false, confirming:null, notice, error, errors:0,
          failedSources:0, growth:[], counts:{pending:0,active:0,adopted:0,rules:null,scan:null}};
     render();
     const tasks = sources.map(async source => {
@@ -128,7 +138,11 @@ window.CompanionLearningOverviewPage = (() => {
       data.access = valid.map(result=>result.access).find(item=>item&&typeof item==="object"&&item.settings)||null;
     }
     data.settled = true;
-    data.loading=false;
+    data.loading = false;
+    data.refreshing = false;
+    if (manual && data.errors === 0 && !(sources.length > 0 && data.failedSources >= sources.length)) {
+      data.refreshedAt = formatClock();
+    }
     render();
   }
 
@@ -255,7 +269,7 @@ window.CompanionLearningOverviewPage = (() => {
         <div class="lh-track-empty"><strong>${nothingYet?"学习还没有产出":"还没有成长记录"}</strong><p>${counts.pending?`有 ${counts.pending} 条待裁决，先到审阅中心处理；成长记录会在通过后进入轨道。`:"每日复盘会在后台自动运行，表达学习可在「表达学习」点「立即学习」，成长记录需要先给对应用户开启成长提案权限。"}</p><div class="lh-track-actions"><a href="#manage/learning/review">去审阅中心</a><a href="#manage/learning/expression">去表达学习</a></div></div></section>`;
     root.setAttribute?.("aria-busy",data.loading?"true":"false");
     root.innerHTML=`<div class="lh-overview-toolbar"><span>${summary}</span>
-      <button type="button" class="lh-refresh" data-lh-refresh aria-label="重新读取" title="重新读取" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></div>
+      <span class="refresh-cluster">${data.refreshedAt?`<span class="refresh-stamp" role="status">刚刚已刷新 ${e(data.refreshedAt)}</span>`:""}<button type="button" class="lh-refresh${data.refreshing?" is-refreshing":""}" data-lh-refresh aria-label="重新读取" title="重新读取" aria-busy="${data.refreshing?"true":"false"}" ${data.loading||data.writing?"disabled":""}><i data-lucide="refresh-cw"></i></button></span></div>
       ${allFailed?`<p class="lh-inline-status is-error" role="status">来源读取失败，请检查来源配置后重新读取。<button type="button" class="lh-command" data-lh-refresh ${data.loading||data.writing?"disabled":""}>重新读取</button></p>`
         :data.notice?`<p class="lh-inline-status${data.error?" is-error":""}" role="status">${e(data.notice)}</p>`:""}
       ${data.learning?`<p class="lh-inline-status" role="status">${learningLine(data.learning)}</p>`:""}
@@ -302,7 +316,7 @@ window.CompanionLearningOverviewPage = (() => {
       else render();
       return;
     }
-    if (event.target.closest("[data-lh-refresh]")) { void read(ticket); return; }
+    if (event.target.closest("[data-lh-refresh]")) { void read(ticket, {manual:true}); return; }
     const action=event.target.closest("[data-lh-action]");
     if(action){
       const item=data?.growth.find(row=>row.growth_id===action.dataset.lhId&&row._source.key===action.dataset.lhScope);
@@ -318,12 +332,14 @@ window.CompanionLearningOverviewPage = (() => {
     }
   }
   function mount(host, options = {}) {
-    unmount(); root=host; sources=Array.isArray(options.sources)?options.sources:[]; semantic=options.semantic||null;
+    unmount(); root=host; getSourcesFn=typeof options.getSources==="function"?options.getSources:null;
+    sources=Array.isArray(options.sources)?options.sources.slice():(getSourcesFn?(()=>{try{const list=getSourcesFn();return Array.isArray(list)?list.slice():[];}catch(_){return [];}})():[]);
+    semantic=options.semantic||null;
     root?.addEventListener("click",onClick);
     const current=++ticket;
     if(sources.length)void read(current);
-    else{data={loading:false,settled:true,errors:0,failedSources:0,growth:[],counts:{pending:0,active:0,adopted:0,rules:null,scan:null}};render();}
+    else{data={loading:false,refreshing:false,refreshedAt:"",settled:true,errors:0,failedSources:0,growth:[],counts:{pending:0,active:0,adopted:0,rules:null,scan:null}};render();}
   }
-  function unmount() { ticket++;readTicket++; root?.removeEventListener("click",onClick); root=null; sources=[]; semantic=null; data=null; }
+  function unmount() { ticket++;readTicket++; root?.removeEventListener("click",onClick); root=null; sources=[]; getSourcesFn=null; semantic=null; data=null; }
   return {mount,unmount,get state(){return data;}};
 })();
