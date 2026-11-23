@@ -54,6 +54,10 @@ AstrBotPluginPage.apiPost=async(endpoint,body)=>{
 @unittest.skipUnless(importlib.util.find_spec("playwright"), "optional Playwright dependency is not installed")
 class OriginalQuestionnaireBrowserTests(unittest.TestCase):
     @classmethod
+    def _cleanup_resources(cls):
+        designer_support.PersonaDesignerBrowserTests._cleanup_resources.__func__(cls)
+
+    @classmethod
     def setUpClass(cls):
         designer_support.PersonaDesignerBrowserTests.setUpClass.__func__(cls)
 

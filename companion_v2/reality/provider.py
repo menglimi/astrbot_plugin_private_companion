@@ -512,7 +512,7 @@ class NativeRealityProvider:
 
     def _response(self, request: dict[str, Any], operation: dict[str, Any]) -> dict[str, Any]:
         succeeded = operation.get("state") == "succeeded"
-        failed = operation.get("state") == "failed"
+        failed = operation.get("state") in ("failed", "cancelled")
         state = "succeeded" if succeeded else "failed" if failed else "unknown"
         result = operation.get("result") if succeeded else None
         read_only = request["action"] in _READ_ACTIONS
@@ -530,6 +530,9 @@ class NativeRealityProvider:
         value = self._request(request)
         await _checked(before_dispatch)
         scope = scope_key(value["context"])
+        if value["action"] == "reality.operation.lookup":
+            # Read the journal only without minting a prepared ledger entry.
+            return self._response(value, self._resolve_operation(scope, value))
         operation, fresh = self.store.begin(scope, value)
         if not fresh:
             return self._response(value, operation)
@@ -541,10 +544,6 @@ class NativeRealityProvider:
                     if not isinstance(snapshot, dict):
                         raise NativeRealityError("invalid_reality_snapshot")
                     result = {"snapshot": snapshot}
-                elif value["action"] == "reality.operation.lookup":
-                    # Read the journal only.  Nothing here may turn a query into
-                    # a device retry, a camera capture or a paid analysis.
-                    return self._response(value, self._resolve_operation(scope, value))
                 else:
                     web_api = getattr(self.plugin, "mihome_web_api", None)
                     method_name = {"reality.device.list": "extension_device_directory",
@@ -628,7 +627,12 @@ class NativeRealityProvider:
         if value["action"] == "reality.operation.cancel":
             try:
                 await _checked(before_dispatch)
-                operation = self.store.cancel(scope, value["arguments"]["operation_id"])
+                cancelled = self.store.cancel(scope, value["arguments"]["operation_id"])
+                operation = self.store.update(
+                    scope, operation["id"], state="succeeded", effect="committed",
+                    result={"cancelled_operation_id": cancelled["id"],
+                            "state": cancelled["state"], "effect": cancelled["effect"]},
+                )
             except Exception as exc:
                 code = exc.code if isinstance(exc, NativeRealityError) else "reality_operation_cancel_failed"
                 operation = self.store.update(scope, operation["id"], state="failed",

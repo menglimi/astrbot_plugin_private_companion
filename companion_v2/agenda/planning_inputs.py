@@ -1,4 +1,4 @@
-﻿"""Bounded planning material from the original calendar, goals and memory owners."""
+"""Bounded planning material from the original calendar, goals and memory owners."""
 
 from datetime import date, datetime, time, timedelta
 import json
@@ -34,7 +34,9 @@ def _dialogue_fingerprint(dialogue):
                    for item in dialogue]) if dialogue else None
 
 
-def planning_calendar_context(at, end, zone, annual_calendars=()):
+def planning_calendar_context(at, end, zone, annual_calendars=(), *, holiday_enabled=True,
+                              holiday_country="CN", automatic_solar_terms_enabled=True,
+                              solar_term_port=None):
     local_start, local_end = at.astimezone(zone), end.astimezone(zone)
     last_day = local_end.date() - timedelta(days=1) if local_end.time() == time.min else local_end.date()
     holidays = []
@@ -65,7 +67,11 @@ def planning_calendar_context(at, end, zone, annual_calendars=()):
             break
         days.append(row)
         used_chars += size
-    return {"today": project_local_date(at, zone.key, annual_calendars),
+    return {"today": project_local_date(at, zone.key, annual_calendars,
+                                        holiday_enabled=holiday_enabled,
+                                        holiday_country=holiday_country,
+                                        automatic_solar_terms_enabled=automatic_solar_terms_enabled,
+                                        solar_term_port=solar_term_port),
             "fixed_gregorian_holidays_in_window": holidays,
             "configured_annual_calendar": {"basis": "operator_configured_annual_calendar",
              "years": sorted(item.year for item in annual_calendars), "days": days, "partial": partial}}
@@ -212,8 +218,17 @@ def capture(planner, context, instruction, mode, slot, occurrence=None, *, weath
     window_days = min(31, settings["planning_horizon_days"]) if mode == "intervention" else settings["planning_horizon_days"]
     end = (datetime.combine(at.astimezone(zone).date() + timedelta(days=1), time(), zone)
            if mode == "daily" else at + timedelta(days=window_days))
-    calendar_context = planning_calendar_context(at, end, zone,
-                                                 configured_annual_calendars(settings["planning_annual_calendars"]))
+    from companion_v2.conversation.perception_settings import read_perception_values
+    perception = read_perception_values(app, context, at, role_only=role_global)
+    solar_term_port = getattr(getattr(app, "messages", None), "solar_term_port", None)
+    calendar_context = planning_calendar_context(
+        at, end, zone,
+        configured_annual_calendars(settings["planning_annual_calendars"]),
+        holiday_enabled=perception["holiday_enabled"],
+        holiday_country=perception["holiday_country"],
+        automatic_solar_terms_enabled=perception["automatic_solar_terms_enabled"],
+        solar_term_port=solar_term_port,
+    )
     inventory, calendar_snapshot = calendar_inventory(app, context, role_global=role_global)
     sources, calendar, goals, memories, inputs = [], [], [], [], []
     intervention_dialogue = (_intervention_dialogue(app, context, at)

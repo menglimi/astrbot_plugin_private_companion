@@ -743,7 +743,7 @@ class LocalReplyGenerator:
                 else:
                     speech = ("",) * len(parts)
                     candidate_reasons = ("voice_disabled",) * len(parts)
-                    if voice is not None:
+                    if voice is not None and prepared is not None:
                         if eligible(voice, input_text=input_text, kind=run.task.spec.context.scope.kind.value,
                                     batch_id=run.task.spec.request_ref):
                             decisions = prepared.speech(voice)

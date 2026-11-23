@@ -83,6 +83,7 @@ def _field_definitions_by_group():
         mgmt.REFERENCE_GROUP: mgmt.reference_fields(),
         mgmt.PARTICIPATION_GROUP: mgmt.participation_fields(),
         mgmt.CONTACT_GROUP: mgmt.contact_fields(),
+        mgmt.PHONE_GROUP: mgmt.phone_fields(),
     }
 
 

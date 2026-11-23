@@ -24,7 +24,8 @@ def read_works(path, *, installation_id: str, bot_id: str, role_id: str, limit: 
         return {"available": False, "count": 0, "works": []}
     limit = max(1, min(int(limit), LIMIT))
     try:
-        connection = sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True, timeout=5)
+        from companion_v2.storage.sqlite_path import readonly_uri
+        connection = sqlite3.connect(readonly_uri(database), uri=True, timeout=5)
     except (sqlite3.Error, ValueError):
         return {"available": False, "count": 0, "works": []}
     connection.row_factory = sqlite3.Row

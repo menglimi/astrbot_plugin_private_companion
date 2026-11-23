@@ -11,6 +11,7 @@ import unicodedata
 from uuid import uuid4
 
 from companion_v2.execution.models import TaskError, digest, encode
+from companion_v2.storage.sqlite_path import file_uri
 from companion_v2.storage.sqlite_tuning import apply_sidecar_pragmas, tuning_profile
 
 
@@ -42,9 +43,6 @@ class SearchIndex:
     """
 
     FORMAT = 3  # Disposable cache layout; unrelated to the authoritative schema.
-    # Short busy tolerance absorbs transient write overlap without holding the
-    # synchronous host loop or an enclosing authoritative transaction for seconds.
-    BUSY_TIMEOUT_SECONDS = 0.05
 
     def __init__(self, data_root):
         self.path = data_root / "memory-search.sqlite3"
@@ -111,9 +109,13 @@ class SearchIndex:
             db.execute(f"PRAGMA user_version = {self.FORMAT}")
 
     def _connect(self):
-        # This cache is optional recall. Use a short timeout so transient bursts
-        # settle cleanly without stalling the host loop or authoritative writes.
-        db = sqlite3.connect(str(self.path), timeout=self.BUSY_TIMEOUT_SECONDS, uri=True)
+        # This cache is optional recall. Waiting here would hold the synchronous
+        # host loop (and the caller's authoritative transaction) for seconds.
+        target = str(self.path)
+        if target == ":memory:":
+            db = sqlite3.connect(target, timeout=0)
+        else:
+            db = sqlite3.connect(file_uri(self.path), timeout=0, uri=True)
         db.row_factory = sqlite3.Row
         apply_sidecar_pragmas(
             db,

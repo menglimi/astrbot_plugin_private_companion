@@ -69,7 +69,7 @@ class ConversationForwardTests(ForwardFixture, unittest.IsolatedAsyncioTestCase)
     async def test_forward_only_text_uses_normal_generation_and_confirmed_delivery(self):
         self.forward_raw = {"messages": [node_raw()]}
         async def respond(payload, _):
-            materials = json.loads(payload["messages"][2]["content"])["materials"]
+            materials = json.loads(next(m["content"] for m in payload["messages"] if m["role"] == "user"))["materials"]
             evidence = next(m["evidence"] for m in materials if m["owner"] == NODE_OWNER)
             return completion(final_text("转发记录里有一句话。", evidence=evidence))
         self.native.provider.client.state.behavior = respond
@@ -203,7 +203,7 @@ class ConversationForwardTests(ForwardFixture, unittest.IsolatedAsyncioTestCase)
         self.forward_raw = {"messages": [node_raw(images=(animation_bytes(),))]}
         frames = []
         async def respond(payload, _):
-            content = payload["messages"][2]["content"]
+            content = next(m["content"] for m in payload["messages"] if m["role"] == "user")
             frames.append(content[1:])
             if not any(m["role"] == "tool" for m in payload["messages"]):
                 return completion(tools=[NS(id="forward-memo", type="function", function=NS(name=tool_alias("memo.list"), arguments='{}'))])

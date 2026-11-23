@@ -1,4 +1,4 @@
-﻿"""Local, optional V2 background for AstrBot-owned conversation turns.
+"""Local, optional V2 background for AstrBot-owned conversation turns.
 
 The host keeps its own current conversation history, media and model pipeline.
 This bridge only reads the domain owners' authorized background. It never

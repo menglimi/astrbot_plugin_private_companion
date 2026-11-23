@@ -55,7 +55,8 @@ class AstrBotImageHostTests(unittest.IsolatedAsyncioTestCase):
         preview = (await self.controller.preview(batch)).unwrap()
         self.assertFalse(preview["sent"])
         self.assertEqual(preview["parts"][0]["text"], "我在这里。")
-        content = self.native.provider.client.state.calls[0][0]["messages"][2]["content"]
+        content = next(m["content"] for m in self.native.provider.client.state.calls[0][0]["messages"]
+                       if m["role"] == "user")
         self.assertEqual(content[-1]["type"], "image_url")
         self.assertEqual(self.native.platform.client._api._wsr_api.calls, [])
         (await self.controller.stop()).unwrap()

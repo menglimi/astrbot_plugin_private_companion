@@ -19,7 +19,14 @@ with tempfile.TemporaryDirectory(prefix="v2-native-recall-entry-") as temporary:
 
     from aiocqhttp import Event
     from astrbot.core import sp as astrbot_preferences
-    from astrbot.core.pipeline.waking_check.stage import build_unique_session_id
+    try:
+        from astrbot.core.pipeline.waking_check.stage import build_unique_session_id
+    except ImportError:
+        from astrbot.core.event_bus import UNIQUE_SESSION_ID_BUILDERS
+
+        def build_unique_session_id(event):
+            builder = UNIQUE_SESSION_ID_BUILDERS.get(event.get_platform_name())
+            return builder(event) if builder else event.session_id
     from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
     from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import AiocqhttpAdapter
     from astrbot.core.utils.astrbot_path import get_astrbot_data_path

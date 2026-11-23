@@ -229,7 +229,9 @@ class ScreenInterpretationTests(ScreenChainFixture, unittest.IsolatedAsyncioTest
                 row = self.runtime.read_one("SELECT record_json FROM execution_tasks WHERE task_id = ?", (task_id,))
                 self.assertEqual((task.effect, json.loads(row["record_json"])["receipt_ref"]),
                                  ("not_committed", "model:not-started"))
-                self.assertEqual(app.screen_interpretation.pending[task_id]["error_code"], "model_not_started")
+                self.assertEqual(app.screen_interpretation.error_codes[task_id], "model_not_started")
+                app.screen_interpretation.advance()
+                self.assertNotIn(task_id, app.screen_interpretation.pending)
             self.assertIsNone(app.screen_interpretation.submit(context, capture.reference, purpose="reply"))
         self.assertEqual(self._anchors(), 0)
 

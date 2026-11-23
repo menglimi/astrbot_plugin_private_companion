@@ -60,7 +60,8 @@ class AstrBotAudioHostTests(unittest.IsolatedAsyncioTestCase):
         preview = (await self.controller.preview(batch)).unwrap()
         self.assertFalse(preview["sent"])
         self.assertEqual(preview["parts"][0]["text"], "我在这里。")
-        content = self.native.provider.client.state.calls[0][0]["messages"][2]["content"]
+        content = next(m["content"] for m in self.native.provider.client.state.calls[0][0]["messages"]
+                       if m["role"] == "user")
         self.assertEqual(content[-1]["type"], "input_audio")
         self.assertNotIn("不可信宿主转写", json.dumps(content, ensure_ascii=False))
         self.assertEqual(base64.b64decode(content[-1]["input_audio"]["data"]), audio_bytes())

@@ -1,4 +1,4 @@
-﻿"""Validated voice presentation policy and model-authored spoken spans."""
+"""Validated voice presentation policy and model-authored spoken spans."""
 
 from dataclasses import dataclass, replace
 from datetime import timedelta
