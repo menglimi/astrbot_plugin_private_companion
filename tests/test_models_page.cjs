@@ -3640,4 +3640,9 @@ test('models-page.css pins narrow-screen routing row edit button to top-right an
   const mediaBlock = css.match(/@media\(max-width:960px\)\s*\{\s*\.model-img-workbench[\s\S]*?\n\}/);
   assert.ok(mediaBlock, 'missing trailing @media(max-width:960px) block');
   assert.match(mediaBlock[0], /\.model-rrow-edit\s*\{[^}]*grid-column:\s*3;\s*grid-row:\s*1/);
+  assert.match(css, /\.model-insp-body\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column/);
+  assert.match(css, /\.model-insp-body\s*>\s*\*\s*\{\s*flex:\s*0\s+0\s+auto\s*\}/);
+  const advRule = css.match(/\.model-adv\s*\{[^}]*\}/);
+  assert.ok(advRule, 'missing .model-adv rule');
+  assert.doesNotMatch(advRule[0], /overflow:\s*hidden/, '.model-adv must not clip expanded textarea');
 });

@@ -108,6 +108,7 @@ window.CompanionModelsPage = (() => {
       localStorage.setItem(expandStorageKey(scopeKey), JSON.stringify(state.expOpen || {})); } catch { }
   }
   let root = null, path = null, taskPath = null, key = null, state = null, version = 0, windowAvailable = true, onTabChange = null;
+  let deferChangeRender = false, deferredRenderPending = false, pointerResetTimer = null;
   const current = (ticket, s) => ticket === version && state === s && root?.isConnected;
   const taskOf = (s, kind) => s.status?.tasks.find(task => task.kind === kind) || null;
   const configSource = source => ({ default: "插件默认", host_conversation: "AstrBot 会话", installation: "全局默认", role: "角色默认", window: "会话设置" }[source] || "上级配置");
@@ -814,7 +815,7 @@ window.CompanionModelsPage = (() => {
           ${stepText ? `<span class="model-insp-pos">${stepText}</span>` : ""}
           <button type="button" class="model-insp-step" data-inspector-step="1" ${nextDisabled ? "disabled" : ""} title="下一个任务 (↓)" aria-label="下一个任务">›</button>
         </div>
-        <button type="button" class="x" data-inspector-close aria-label="关闭任务配置抽屉">×</button>
+        <button type="button" class="x" data-inspector-close title="${dirty(task, draft) && !draft.pending ? "收起抽屉（未保存草稿会保留）" : "关闭抽屉 (Esc)"}" aria-label="关闭任务配置抽屉">×</button>
       </div>
       <div class="model-insp-title">${icon(coreReply(task) ? ICONS.reply : groupIcon(info.group))}<h3>${esc(info.label)}</h3><span class="model-tag ${task.lane === "foreground" ? "g" : "n"}">${task.lane === "foreground" ? "前台" : "后台"}</span></div>
       <p class="model-insp-desc">${esc(coreReply(task) ? (task.routing_note || "普通回复采用 AstrBot 当前会话模型。") : info.description)}</p>
@@ -1258,7 +1259,14 @@ window.CompanionModelsPage = (() => {
     const adjusted = (name === "provider" || name === "fallback") && fitLimit(s, task, draft);
     if (adjusted) { s.notice = limitNotice(task, draft, adjusted); s.bad = false; }
     draft.touched = true;
-    if (event.type === "change") render(); else syncInput(kind); }
+    if (event.type === "change") {
+      if (deferChangeRender && ["prompt", "timeout_seconds", "max_output_tokens"].includes(name)) {
+        deferredRenderPending = true;
+        syncInput(kind);
+      } else {
+        render();
+      }
+    } else syncInput(kind); }
   function fnClick(event) { const s = state; if (!s) return;
     if (event.target.closest("[data-drawer-close]")) { s.drawer = null; render(); return; }
     if (event.target.closest("[data-inspector-close]")) { s.expanded = null; render(); return; }
@@ -1296,7 +1304,21 @@ window.CompanionModelsPage = (() => {
     const groupToggle = event.target.closest("[data-model-group-toggle]");
     if (groupToggle) { const gk = groupToggle.dataset.modelGroupToggle; s.groupCollapsed[gk] = !s.groupCollapsed[gk]; render(); return; }
     const advToggle = event.target.closest("[data-adv-toggle]");
-    if (advToggle) { event.preventDefault?.(); const k = advToggle.dataset.advToggle; s.advOpen[k] = !s.advOpen[k]; render(); return; }
+    if (advToggle) {
+      event.preventDefault?.();
+      const k = advToggle.dataset.advToggle;
+      const opening = !s.advOpen[k];
+      s.advOpen[k] = opening;
+      render();
+      if (opening) {
+        try {
+          const advEl = root.querySelector?.(".model-adv");
+          const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+          advEl?.scrollIntoView?.({ block: "nearest", behavior: reduced ? "auto" : "smooth" });
+        } catch { }
+      }
+      return;
+    }
     const resetInherit = event.target.closest("[data-model-inherit-reset]");
     if (resetInherit) { setFieldInherit(s, resetInherit.dataset.modelKind, resetInherit.dataset.modelInheritReset, true); return; }
     const exp = event.target.closest("[data-model-exp]");
@@ -3327,7 +3349,29 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     }
     return true;
   }
-  function click(event) { if (window.CompanionWorkbench.scopeHintClick(event)) return; const s = state; if (!s || !root?.isConnected) return;
+  function handlePointerDown(event) {
+    if (event.target?.closest?.("button, [data-inspector-close], [data-drawer-close], [data-adv-toggle], .model-mask")) {
+      if (pointerResetTimer) { clearTimeout(pointerResetTimer); pointerResetTimer = null; }
+      deferChangeRender = true;
+    }
+  }
+  function handlePointerUp() {
+    if (!deferChangeRender) return;
+    if (pointerResetTimer) clearTimeout(pointerResetTimer);
+    pointerResetTimer = setTimeout(() => {
+      pointerResetTimer = null;
+      deferChangeRender = false;
+      if (deferredRenderPending) {
+        deferredRenderPending = false;
+        render();
+      }
+    }, 0);
+  }
+  function click(event) {
+    if (pointerResetTimer) { clearTimeout(pointerResetTimer); pointerResetTimer = null; }
+    deferChangeRender = false;
+    deferredRenderPending = false;
+    if (window.CompanionWorkbench.scopeHintClick(event)) return; const s = state; if (!s || !root?.isConnected) return;
     const tab = event.target.closest("[data-model-tab]");
     if (tab) { selectTab(tab.dataset.modelTab); return; }
     if (s.tab === "voice") { voiceClick(s, event); return; }
@@ -3353,8 +3397,11 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       item.classList.toggle("is-hovered", !!s.hoverProvider && item.dataset.providerPill === s.hoverProvider));
   }
   /* ---------- lifecycle ---------- */
-  function unmount() { version++; if (root) { window.CompanionWorkbench.dismissScopeHints(root); root.removeEventListener("input", input); root.removeEventListener("change", input); root.removeEventListener("click", click); root.removeEventListener("pointerover", providerHover); root.removeEventListener("pointerout", providerHover); root.removeEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.removeEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.removeEventListener("focusout", window.CompanionWorkbench.scopeHintReset); }
-    if (typeof document !== "undefined" && typeof document.removeEventListener === "function") document.removeEventListener("keydown", handleKeydown);
+  function unmount() { version++;
+    if (pointerResetTimer) { clearTimeout(pointerResetTimer); pointerResetTimer = null; }
+    deferChangeRender = false; deferredRenderPending = false;
+    if (root) { window.CompanionWorkbench.dismissScopeHints(root); root.removeEventListener("input", input); root.removeEventListener("change", input); root.removeEventListener("click", click); root.removeEventListener("pointerdown", handlePointerDown); root.removeEventListener("pointerover", providerHover); root.removeEventListener("pointerout", providerHover); root.removeEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.removeEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.removeEventListener("focusout", window.CompanionWorkbench.scopeHintReset); }
+    if (typeof document !== "undefined" && typeof document.removeEventListener === "function") { document.removeEventListener("keydown", handleKeydown); document.removeEventListener("pointerup", handlePointerUp); document.removeEventListener("pointercancel", handlePointerUp); }
     if (state) { state.loading = false; state.busy = false; state.globalBusy = false; }
     root = null; state = null; path = taskPath = key = null; onTabChange = null; }
   function mount(element, options = {}) { unmount(); root = element; if (!root) return; onTabChange = typeof options.onTabChange === "function" ? options.onTabChange : null; const product = window.CompanionProduct;
@@ -3409,8 +3456,8 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     }
     states.set(key, state);
     state.sub = options.sub === "pol" ? "pol" : "cfg";
-    root.addEventListener("input", input); root.addEventListener("change", input); root.addEventListener("click", click); root.addEventListener("pointerover", providerHover); root.addEventListener("pointerout", providerHover); root.addEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.addEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.addEventListener("focusout", window.CompanionWorkbench.scopeHintReset);
-    if (typeof document !== "undefined" && typeof document.addEventListener === "function") document.addEventListener("keydown", handleKeydown);
+    root.addEventListener("input", input); root.addEventListener("change", input); root.addEventListener("click", click); root.addEventListener("pointerdown", handlePointerDown); root.addEventListener("pointerover", providerHover); root.addEventListener("pointerout", providerHover); root.addEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.addEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.addEventListener("focusout", window.CompanionWorkbench.scopeHintReset);
+    if (typeof document !== "undefined" && typeof document.addEventListener === "function") { document.addEventListener("keydown", handleKeydown); document.addEventListener("pointerup", handlePointerUp); document.addEventListener("pointercancel", handlePointerUp); }
     render();
     loadTabData(state, state.tab); }
   /* Only the mounted scope can block navigation. Retained drafts belonging to
