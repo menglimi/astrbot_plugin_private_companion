@@ -260,7 +260,7 @@
   background:var(--t-surface);color:var(--t-text);box-shadow:0 24px 80px color-mix(in srgb,var(--t-text-strong) 24%,transparent);
 }
 .role-profile-draft-dialog::backdrop{background:color-mix(in srgb,var(--t-text-strong) 46%,transparent);backdrop-filter:blur(5px)}
-.role-profile-draft-dialog[open]{display:block;animation:role-profile-dialog-in .24s cubic-bezier(.2,.8,.2,1) both}
+.role-profile-draft-dialog[open]{display:block}
 .role-profile-draft-shell{display:grid;grid-template-rows:auto auto auto minmax(0,1fr) auto;max-height:min(92dvh,980px);min-height:0}
 .role-profile-draft-head{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-4);padding:var(--sp-4) var(--sp-5);
   border-bottom:1px solid var(--t-line);background:var(--t-surface)}
@@ -355,7 +355,6 @@
 .role-profile-draft-actions>span[data-over="true"]{color:var(--t-risk-ink)}
 .role-profile-draft-actions>div{display:flex;justify-content:flex-end;gap:var(--sp-2);flex-wrap:wrap}
 .role-profile-draft-spinner{width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:role-profile-spin .7s linear infinite}
-@keyframes role-profile-dialog-in{from{opacity:0;transform:translateY(10px) scale(.99)}to{opacity:1;transform:translateY(0) scale(1)}}
 @keyframes role-profile-spin{to{transform:rotate(360deg)}}
 
 .role-profile-migration-dialog .role-profile-draft-shell{grid-template-rows:auto auto minmax(0,1fr) auto;max-height:min(88dvh,860px)}

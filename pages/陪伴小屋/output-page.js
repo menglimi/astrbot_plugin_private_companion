@@ -500,16 +500,55 @@ window.CompanionOutputPage=(()=>{
       downloadDataUrl(item.thumbnail,item.filename||fallbackAlbumFilename(item));
     }
   }
+  let albumLightboxCloseTimer=null;
+  function canAnimateLightbox(node){
+    return Boolean(
+      node
+      &&typeof requestAnimationFrame==="function"
+      &&typeof window.getComputedStyle==="function"
+      &&!document.body?.classList?.contains("reduce-motion")
+      &&document.documentElement?.dataset?.motion!=="off"
+      &&!window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+    );
+  }
   function closeAlbumLightbox(){
+    if(albumLightboxCloseTimer)return;
     albumStandaloneItem=null;albumSelectedId="";albumSelected=-1;albumZoomed=false;albumCopyFeedback="";
     clearTimeout(albumCopyTimer);
-    renderAlbumLightbox();
+    const host=ensureLightboxHost();
+    if(!host)return;
+    if(!canAnimateLightbox(host)||host.hidden){
+      host.classList?.remove?.("is-open","is-closing");
+      host.hidden=true;host.innerHTML="";
+      return;
+    }
+    if(host.contains?.(document.activeElement))document.activeElement?.blur?.();
+    host.setAttribute?.("inert","");
+    host.classList.remove("is-open");
+    host.classList.add("is-closing");
+    const myTicket=ticket;
+    const delay=document.documentElement?.dataset?.motion==="low"?110:185;
+    albumLightboxCloseTimer=setTimeout(()=>{
+      albumLightboxCloseTimer=null;
+      if(live(myTicket)&&!currentLightboxItem()){
+        host.removeAttribute?.("inert");
+        host.classList?.remove?.("is-open","is-closing");
+        host.hidden=true;host.innerHTML="";
+      }
+    },delay);
   }
   function renderAlbumLightbox(){
     const host=ensureLightboxHost();
     if(!host)return;
     const item=currentLightboxItem();
-    if(!item){host.hidden=true;host.innerHTML="";return;}
+    if(!item){
+      clearTimeout(albumLightboxCloseTimer);albumLightboxCloseTimer=null;
+      host.classList?.remove?.("is-open","is-closing");
+      host.hidden=true;host.innerHTML="";
+      return;
+    }
+    clearTimeout(albumLightboxCloseTimer);albumLightboxCloseTimer=null;
+    const wasClosed=host.hidden||!host.classList?.contains?.("is-open");
     const standalone=!!(albumStandaloneItem&&item===albumStandaloneItem);
     const visible=filteredAlbumItems();
     const list=standalone?[item]:(visible.some(candidate=>candidate.image_id===item.image_id)?visible:albumItems);
@@ -548,6 +587,8 @@ window.CompanionOutputPage=(()=>{
     const posChip=showNav?`<span class="output-album-lightbox-pos">${position+1} / ${list.length}</span>`
       :(localDate?`<span class="output-album-lightbox-pos">${esc(localDate)}</span>`:`<span class="output-album-lightbox-pos">1 / 1</span>`);
     host.hidden=false;
+    host.removeAttribute?.("inert");
+    host.classList?.remove?.("is-closing");
     host.innerHTML=`<button type="button" class="output-album-lightbox-mask" data-output-native-action="album-close" aria-label="关闭"></button>
       <section class="output-album-lightbox-card" role="dialog" aria-modal="true" aria-label="${isOutfit?"每日穿搭原图预览":"产出原图预览"}">
         <header>
@@ -581,6 +622,12 @@ window.CompanionOutputPage=(()=>{
           <div class="output-album-lightbox-foot-actions">${downloadControl}</div>
         </footer>
       </section>`;
+    if(wasClosed&&canAnimateLightbox(host)){
+      host.classList?.remove?.("is-open");
+      requestAnimationFrame(()=>{if(!host.hidden&&currentLightboxItem())host.classList?.add?.("is-open");});
+    }else{
+      host.classList?.add?.("is-open");
+    }
     window.lucide?.createIcons?.({attrs:{"aria-hidden":"true"}});
   }
   function openAlbum(index){
@@ -937,8 +984,8 @@ window.CompanionOutputPage=(()=>{
       <div class="output-endpoint-list">${draft.endpoints.map((item,index)=>{
         const open=expanded.has(item.id),path=`endpoints.${index}`;
         const test=tests.get(item.id);
-        return `<article class="output-endpoint-card"><header><button type="button" class="output-endpoint-toggle" data-output-native-action="expand" data-output-endpoint="${esc(item.id)}" aria-expanded="${open}">${icon(open?"chevron-down":"chevron-right")}<strong>${esc(endpointLabel(item))}</strong></button><div class="output-endpoint-tools"><label class="output-native-check"><input type="checkbox" data-output-native-field="${path}.enabled"${item.enabled?" checked":""}${busy?" disabled":""}>${item.enabled?"已启用":"已停用"}</label><button type="button" class="button small" title="${test?.status==="unknown"?"核对同一次测试，不会再次提交生成请求":"真实生成一张图片，可能产生费用"}" data-output-native-action="test" data-output-endpoint="${esc(item.id)}"${busy||dirty()||!item.enabled?" disabled":""}>${busy===`test:${item.id}`?"生成中…":test?.status==="unknown"?"核对测试结果":"生成测试图"}</button><button type="button" class="output-icon-button" aria-label="删除图片模型" title="删除图片模型" data-output-native-action="remove" data-output-endpoint="${esc(item.id)}"${busy?" disabled":""}>${icon("x")}</button></div></header>
-        <div class="output-endpoint-edit"${open?"":" hidden"}><div class="output-endpoint-grid"><label class="output-native-field"><span>平台协议</span><select data-output-native-field="${path}.platform"${busy?" disabled":""}>${options(PLATFORMS,item.platform)}</select><small class="output-native-help">${platformGuide(item.platform)}</small></label>${field("图片模型 ID",path+".model",item.model,"text",'placeholder="如 image-01"',"填写服务商提供的模型标识。")}${field("宽度（像素）",path+".width",item.width,"number",'min="64" max="8192" step="64"')}${field("高度（像素）",path+".height",item.height,"number",'min="64" max="8192" step="64"')}</div><div class="output-endpoint-address">${field("API 根地址",path+".base_url",item.base_url,"url",'placeholder="https://api.example.com/v1"',"可填写服务根地址或完整生图地址；查询参数会保留，路径按所选协议补全。")}${keyField(path,item)}</div><div class="output-endpoint-extra">${field("自定义名称",path+".name",item.name,"text",'placeholder="例如：主力生图"',"留空则显示模型 ID。")}${field("超时秒数",path+".timeout_seconds",item.timeout_seconds,"number",'min="1" max="1800" step="1"',"保存后下一次生图任务生效；正在执行的任务保持原时限。")}</div></div>
+        return `<article class="output-endpoint-card"><header><button type="button" class="output-endpoint-toggle" data-output-native-action="expand" data-output-endpoint="${esc(item.id)}" aria-expanded="${open}">${icon("chevron-right")}<strong>${esc(endpointLabel(item))}</strong></button><div class="output-endpoint-tools"><label class="output-native-check"><input type="checkbox" data-output-native-field="${path}.enabled"${item.enabled?" checked":""}${busy?" disabled":""}>${item.enabled?"已启用":"已停用"}</label><button type="button" class="button small" title="${test?.status==="unknown"?"核对同一次测试，不会再次提交生成请求":"真实生成一张图片，可能产生费用"}" data-output-native-action="test" data-output-endpoint="${esc(item.id)}"${busy||dirty()||!item.enabled?" disabled":""}>${busy===`test:${item.id}`?"生成中…":test?.status==="unknown"?"核对测试结果":"生成测试图"}</button><button type="button" class="output-icon-button" aria-label="删除图片模型" title="删除图片模型" data-output-native-action="remove" data-output-endpoint="${esc(item.id)}"${busy?" disabled":""}>${icon("x")}</button></div></header>
+        <div class="output-endpoint-collapse${open?" is-open":""}" data-output-endpoint-collapse><div class="output-endpoint-edit"${open?"":" inert"}><div class="output-endpoint-grid"><label class="output-native-field"><span>平台协议</span><select data-output-native-field="${path}.platform"${busy?" disabled":""}>${options(PLATFORMS,item.platform)}</select><small class="output-native-help">${platformGuide(item.platform)}</small></label>${field("图片模型 ID",path+".model",item.model,"text",'placeholder="如 image-01"',"填写服务商提供的模型标识。")}${field("宽度（像素）",path+".width",item.width,"number",'min="64" max="8192" step="64"')}${field("高度（像素）",path+".height",item.height,"number",'min="64" max="8192" step="64"')}</div><div class="output-endpoint-address">${field("API 根地址",path+".base_url",item.base_url,"url",'placeholder="https://api.example.com/v1"',"可填写服务根地址或完整生图地址；查询参数会保留，路径按所选协议补全。")}${keyField(path,item)}</div><div class="output-endpoint-extra">${field("自定义名称",path+".name",item.name,"text",'placeholder="例如：主力生图"',"留空则显示模型 ID。")}${field("超时秒数",path+".timeout_seconds",item.timeout_seconds,"number",'min="1" max="1800" step="1"',"保存后下一次生图任务生效；正在执行的任务保持原时限。")}</div></div></div>
         ${test?`<div class="output-endpoint-result${test.status==="succeeded"?" is-ready":""}" role="status">${test.status==="succeeded"?"最近测试通过":test.status==="unknown"?"测试结果尚未确认":"测试未通过"} · ${Math.round(test.elapsed_ms||0)/1000} 秒${test.status!=="succeeded"?` · ${esc(test.error||"请核对接口配置")}`:""}</div>`:""}</article>`;
       }).join("")||'<div class="output-endpoint-empty">尚未添加在线生图端点</div>'}</div>${actions()}</section>`;
   }
@@ -1195,7 +1242,19 @@ window.CompanionOutputPage=(()=>{
     }
     if(!draft)return;
     const index=draft.endpoints.findIndex(item=>item.id===identifier);
-    if(action==="expand"){expanded.has(identifier)?expanded.delete(identifier):expanded.add(identifier);}
+    if(action==="expand"){
+      const nextOpen=!expanded.has(identifier);
+      if(nextOpen)expanded.add(identifier);else expanded.delete(identifier);
+      const card=target.closest?.(".output-endpoint-card");
+      const collapse=card?.querySelector?.("[data-output-endpoint-collapse]");
+      if(collapse){
+        target.setAttribute?.("aria-expanded",String(nextOpen));
+        collapse.classList?.toggle?.("is-open",nextOpen);
+        const edit=collapse.querySelector?.(".output-endpoint-edit");
+        if(edit&&typeof edit.toggleAttribute==="function")edit.toggleAttribute("inert",!nextOpen);
+        return;
+      }
+    }
     if(action==="add"){
       const item={id:crypto.randomUUID(),name:"",enabled:false,
         platform:"auto",base_url:"",api_key:"",model:"",width:1024,height:1024,timeout_seconds:180,
@@ -1216,7 +1275,7 @@ window.CompanionOutputPage=(()=>{
     if(event.key==="ArrowRight"){event.preventDefault?.();stepAlbum(1);}
   }
   function unmount(){
-    ticket++;abort?.abort();abort=null;disconnectAlbumObserver();clearFullImageCache();clearTimeout(albumCopyTimer);albumCopyTimer=null;
+    ticket++;abort?.abort();abort=null;disconnectAlbumObserver();clearFullImageCache();clearTimeout(albumCopyTimer);albumCopyTimer=null;clearTimeout(albumLightboxCloseTimer);albumLightboxCloseTimer=null;
     root=null;draft=base=null;naiStatus=null;busy="";scope="";observation=null;observationBusy=false;observationSeq++;observationRefreshedAt="";sceneEditorOpen=false;sceneDraft=null;sceneSaving=false;
     albumSources=[];albumItems=[];albumCursor=null;albumTotal=null;albumLoaded=false;albumLoading=false;albumBatchLoading=false;albumBatchStep=0;albumBatchTotal=0;albumError="";albumStandaloneItem=null;albumSelected=-1;albumSelectedId="";albumSelectedIds=new Set();albumNotice="";albumBusy="";albumFilter="all";albumZoomed=false;albumCopyFeedback="";
     albumReferenceOpen=false;albumReferenceImageId="";albumReferenceLabel="";albumReferenceRoles=new Set(["identity"]);albumReferenceError="";

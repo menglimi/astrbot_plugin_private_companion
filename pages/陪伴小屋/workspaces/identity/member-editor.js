@@ -486,18 +486,59 @@
     row.append(element("p", message), button);
     return row;
   }
-  function closeDialog({restoreFocus = true} = {}) {
+  function canAnimateOverlay(node) {
+    return Boolean(
+      node
+      && typeof requestAnimationFrame === "function"
+      && typeof window !== "undefined"
+      && typeof window.getComputedStyle === "function"
+      && !document.body?.classList?.contains("reduce-motion")
+      && document.documentElement?.dataset?.motion !== "off"
+      && !window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+    );
+  }
+  function mountAnimatedOverlay(parent, host) {
+    parent.append(host);
+    if (canAnimateOverlay(host)) {
+      requestAnimationFrame(() => { if (!host.classList.contains("is-closing")) host.classList.add("is-open"); });
+    } else {
+      host.classList.add("is-open");
+    }
+  }
+  function dismissAnimatedOverlay(host, {immediate = false, onDone = null} = {}) {
+    if (!host) { onDone?.(); return; }
+    if (host._closeTimer) { clearTimeout(host._closeTimer); host._closeTimer = null; }
+    if (immediate || !canAnimateOverlay(host)) {
+      host.remove();
+      onDone?.();
+      return;
+    }
+    if (host.classList.contains("is-closing")) return;
+    if (host.contains?.(document.activeElement)) document.activeElement?.blur?.();
+    host.setAttribute?.("inert", "");
+    host.classList.remove("is-open");
+    host.classList.add("is-closing");
+    const delay = document.documentElement?.dataset?.motion === "low" ? 110 : 185;
+    host._closeTimer = setTimeout(() => {
+      host._closeTimer = null;
+      host.remove();
+      onDone?.();
+    }, delay);
+  }
+  function closeDialog({restoreFocus = true, immediate = false} = {}) {
     const open = current?.panel.querySelector(".member-dialog-host");
     if (!open) return;
-    open.remove();
     if (current) current.card = false;
     const trigger = current?.panel.querySelector('[data-card-trigger="true"]');
     if (trigger) trigger.setAttribute("aria-expanded", "false");
-    if (restoreFocus) trigger?.focus({preventScroll: true});
+    dismissAnimatedOverlay(open, {
+      immediate: immediate || !restoreFocus,
+      onDone: () => { if (restoreFocus && !current?.card && trigger?.isConnected) trigger.focus({preventScroll: true}); },
+    });
   }
   // 熟人卡只管理自动积累的互动记忆，不承载人工关系设定。
   function openCard(state, person) {
-    closeDialog({restoreFocus: false});
+    closeDialog({restoreFocus: false, immediate: true});
     if (!current || !matchesSelection(activeRoute()) || !current.route) return;
     current.card = true;
     const trigger = current.panel.querySelector('[data-card-trigger="true"]');
@@ -545,7 +586,7 @@
         event.preventDefault(); first.focus();
       }
     });
-    current.panel.append(host);
+    mountAnimatedOverlay(current.panel, host);
     window.lucide?.createIcons();
     close.focus?.();
   }
@@ -1923,7 +1964,11 @@
       const panel = element("article", undefined, "member-dialog member-leave-dialog");
       panel.append(element("h3", "有未保存的修改"), element("p", `${personaLabel(person)} · ${nameOf(person)}`));
       const actions = element("footer", undefined, "member-card-actions");
-      const finish = value => { host.remove(); leavePromise = null; resolve(value); };
+      const finish = value => {
+        dismissAnimatedOverlay(host, {
+          onDone: () => { leavePromise = null; resolve(value); },
+        });
+      };
       const cancel = element("button", "取消", "secondary"); cancel.type = "button";
       cancel.addEventListener("click", () => finish(false));
       const discard = element("button", "放弃修改", "secondary"); discard.type = "button";
@@ -1942,7 +1987,7 @@
           else if (!event.shiftKey && document.activeElement === save) { event.preventDefault(); cancel.focus(); }
         }
       });
-      actions.append(cancel, discard, save); panel.append(actions); host.append(panel); document.body.append(host); cancel.focus();
+      actions.append(cancel, discard, save); panel.append(actions); host.append(panel); mountAnimatedOverlay(document.body, host); cancel.focus();
     });
     return leavePromise;
   }

@@ -1106,3 +1106,56 @@ test("主动与联系节律盘排版精修：桌面三卡等高配平、移除 1
   assert.match(js, /data-ring-jump="\$\{ring\}"/);
   assert.match(js, /class="ct-global-summary"/);
 });
+
+test("公共工作区统一动效令牌与弹窗/覆层/折叠卡双向平滑开合（不含模型页与全局搜索）", () => {
+  const motionCss = read("pages", "陪伴小屋", "page-motion.css");
+  const wsThemeCss = read("pages", "陪伴小屋", "workspace-theme.css");
+  for (const token of [
+    "--motion-ease-out",
+    "--motion-ease-in",
+    "--motion-dur-enter",
+    "--motion-dur-exit",
+    "--motion-dur-expand",
+    "--motion-dur-collapse",
+  ]) {
+    assert.ok(motionCss.includes(`${token}:`), `page-motion.css 应声明 ${token}`);
+    assert.ok(wsThemeCss.includes(`${token}:`), `workspace-theme.css 应声明 ${token}`);
+  }
+
+  // 1. 通用模态 <dialog> 双向开合（排除右侧抽屉与独立全局搜索弹窗），旧单向 keyframes 不再覆写
+  assert.match(motionCss, /dialog:not\(#detailDialog\):not\(\.detail-dialog\):not\(#searchDialog\)\s*\{[^}]*allow-discrete/);
+  assert.match(motionCss, /dialog:not\(#detailDialog\):not\(\.detail-dialog\):not\(#searchDialog\)\[open\]\s*\{[^}]*scale\(1\)/);
+  assert.match(motionCss, /@starting-style\s*\{[\s\S]*?dialog:not\(#detailDialog\):not\(\.detail-dialog\):not\(#searchDialog\)\[open\]/);
+  assert.doesNotMatch(read("pages", "陪伴小屋", "confirmation-dialog.css"), /@keyframes\s+confirmation-enter/);
+  assert.doesNotMatch(read("pages", "陪伴小屋", "self-page.css"), /@keyframes\s+role-profile-dialog-in/);
+
+  // 2. 全部 <details> 折叠卡（含对话框内与语音页全局语音默认值）平滑双向展开，展开后 overflow:visible 不裁切
+  assert.match(motionCss, /:is\(#homeShell,\s*dialog\)\s+details:not\(\.mp-group\):not\(\.mp-legend\):not\(\.mp-drawer-advanced\)::details-content/);
+  assert.match(motionCss, /:is\(#homeShell,\s*dialog\)\s+details:not\(\.mp-group\):not\(\.mp-legend\):not\(\.mp-drawer-advanced\)\[open\]::details-content\s*\{[^}]*height:\s*auto;[^}]*overflow:\s*visible/);
+  const voiceCss = read("pages", "陪伴小屋", "voice-page.css");
+  assert.doesNotMatch(voiceCss, /\.expression-voice-workspace\s+\.voice-global\{[^}]*overflow:\s*clip/,
+    "全局语音默认值展开后不得因 overflow:clip 裁切控件或焦点环");
+  assert.match(voiceCss, /\.voice-global-summary::after\{[^}]*var\(--motion-ease-out/);
+
+  // 3. 非 <dialog> 覆层弹窗、popover、端点折叠卡与退场防竞态
+  assert.match(motionCss, /\.reply-preview-modal\.is-open[\s\S]*?\.output-album-lightbox\.is-open/);
+  assert.match(motionCss, /\.wb-context-tip:popover-open/);
+  assert.match(motionCss, /\.output-endpoint-collapse\.is-open\s*\{[^}]*grid-template-rows:\s*1fr/);
+  assert.match(read("pages", "陪伴小屋", "reply-page.js"), /previewModalCloseTimer/);
+  assert.match(read("pages", "陪伴小屋", "output-page.js"), /albumLightboxCloseTimer/);
+  assert.match(read("pages", "陪伴小屋", "output-page.js"), /data-output-endpoint-collapse/);
+  assert.match(read("pages", "陪伴小屋", "state-page.js"), /settingsCloseTimer/);
+  assert.match(read("pages", "陪伴小屋", "contact-page.js"), /testDialogCloseTimer/);
+  assert.match(read("pages", "关系与权限", "member-editor.js"), /dismissAnimatedOverlay/);
+  assert.match(read("pages", "关系与权限", "style.css"), /\.member-dialog-host\.is-open\s+\.member-dialog/);
+
+  // 4. 嵌入式工作区统一双向 <dialog> 与 <details> 过渡
+  assert.match(wsThemeCss, /dialog\[open\]\{animation:none;opacity:1/);
+  assert.match(wsThemeCss, /@starting-style\{dialog\[open\]/);
+  assert.match(wsThemeCss, /details\[open\]::details-content\{height:auto;overflow:visible/);
+
+  // 5. 减弱动效与系统减少动效下：不误清展开箭头旋转与 #toast 水平居中
+  assert.match(motionCss, /:root\[data-motion="off"\]\s+\.output-endpoint-toggle\s+svg/);
+  assert.match(motionCss, /:root\[data-motion="off"\]\s+#toast[\s\S]*?translate\(-50%,\s*0\)/);
+  assert.match(motionCss, /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?#toast\s*\{\s*transform:\s*translate\(-50%,\s*0\);?\s*\}/);
+});

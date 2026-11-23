@@ -2492,6 +2492,40 @@ window.CompanionContactPage = (() => {
     }
     if (next === "tests") void loadRecipients();
   }
+  let testDialogCloseTimer = null;
+  function canAnimateTestDialog(dialog) {
+    return Boolean(
+      dialog
+      && typeof requestAnimationFrame === "function"
+      && typeof window.getComputedStyle === "function"
+      && !document.body?.classList?.contains("reduce-motion")
+      && document.documentElement?.dataset?.motion !== "off"
+      && !window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+    );
+  }
+  function closeTestDialog(afterClose) {
+    if (testDialogCloseTimer && !afterClose) return;
+    clearTimeout(testDialogCloseTimer);
+    testDialogCloseTimer = null;
+    const myTicket = version;
+    const finish = () => {
+      testDialogCloseTimer = null;
+      if (!live(myTicket)) return;
+      if (data) data.confirmTest = "";
+      if (typeof afterClose === "function") afterClose();
+      render();
+    };
+    const dialog = root?.querySelector?.("[data-test-confirm-dialog]");
+    if (dialog && typeof dialog.close === "function" && dialog.open) {
+      dialog.close();
+      if (canAnimateTestDialog(dialog)) {
+        const delay = document.documentElement?.dataset?.motion === "low" ? 110 : 185;
+        testDialogCloseTimer = setTimeout(finish, delay);
+        return;
+      }
+    }
+    finish();
+  }
   function render() {
     if (!root) return;
     /* 取这一帧要闪的盘面部分并立刻清空：动效是「刚刚改了什么」的一次确认，
@@ -2516,7 +2550,15 @@ window.CompanionContactPage = (() => {
     if (screenObservationHost) window.CompanionScreenObservation?.mount(screenObservationHost);
     else window.CompanionScreenObservation?.unmount();
     const testDialog = root.querySelector?.("[data-test-confirm-dialog]");
-    if (testDialog && typeof testDialog.showModal === "function" && !testDialog.open) testDialog.showModal();
+    if (testDialog && typeof testDialog.showModal === "function" && !testDialog.open) {
+      testDialog.addEventListener("cancel", event => { event.preventDefault(); closeTestDialog(); });
+      testDialog.addEventListener("click", event => {
+        if (event.target !== testDialog) return;
+        const box = testDialog.getBoundingClientRect();
+        if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) closeTestDialog();
+      });
+      testDialog.showModal();
+    }
     if (data.scanning && data.ready) {
       data.scanning = false;
       const dial = root.querySelector(".ct-dial");
@@ -2721,22 +2763,25 @@ window.CompanionContactPage = (() => {
     if (event.target.closest("[data-test-recipient-save]")) { void saveRecipient(); return; }
     if (event.target.closest("[data-test-recipient-refresh]")) { void loadRecipients(); return; }
     const testAction = event.target.closest("[data-test-action]")?.dataset.testAction;
-    if (testAction === "cancel") { data.confirmTest = ""; render(); return; }
-    if (testAction === "confirm") { void runProactiveTest(data.confirmTest); return; }
+    if (testAction === "cancel") { closeTestDialog(); return; }
+    if (testAction === "confirm") { clearTimeout(testDialogCloseTimer); testDialogCloseTimer = null; void runProactiveTest(data.confirmTest); return; }
     if (testAction === "unlock") {
-      if (data.testUncertain) { data.confirmTest = TEST_GUARD_RESET; render(); }
+      if (data.testUncertain) { clearTimeout(testDialogCloseTimer); testDialogCloseTimer = null; data.confirmTest = TEST_GUARD_RESET; render(); }
       return;
     }
     if (testAction === "confirm-unlock") {
-      storeProactiveTestGuard(null);
-      data.confirmTest = ""; data.testGuard = null; data.testUncertain = false;
-      data.testResults = {};
-      notice("已解除测试锁。下一轮测试仍可能真实投递到核心管理员私聊。");
-      render(); return;
+      closeTestDialog(() => {
+        storeProactiveTestGuard(null);
+        data.testGuard = null; data.testUncertain = false;
+        data.testResults = {};
+        notice("已解除测试锁。下一轮测试仍可能真实投递到核心管理员私聊。");
+      });
+      return;
     }
     const testRun = event.target.closest("[data-test-run]")?.dataset.testRun;
     if (testRun) {
       if (data.testBusy || data.testUncertain || !recipientReady()) return;
+      clearTimeout(testDialogCloseTimer); testDialogCloseTimer = null;
       data.confirmTest = testRun;
       render(); return;
     }
@@ -3121,6 +3166,8 @@ window.CompanionContactPage = (() => {
     window.CompanionScreenObservation?.unmount();
     ++version;
     pendingFocus = null;
+    clearTimeout(testDialogCloseTimer);
+    testDialogCloseTimer = null;
     if (autoRecoveryTimer !== null) clearTimeout(autoRecoveryTimer);
     autoRecoveryTimer = null;
     autoRecoveryKey = "";

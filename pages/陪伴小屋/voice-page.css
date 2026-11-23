@@ -171,12 +171,17 @@
 
 /* 全局语音默认值：折叠成一条状态摘要，避免和窗口设置混在一起。 */
 .expression-voice-workspace .voice-global{margin-top:var(--sp-3);padding:0!important;
-  border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface);overflow:clip}
+  border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface);
+  transition:border-color var(--motion-dur-enter,var(--dur)) var(--motion-ease-out,ease)}
+.expression-voice-workspace .voice-global[open]{border-color:var(--t-line-firm)}
 .voice-global-summary{display:flex;align-items:center;justify-content:space-between;
-  gap:var(--sp-3);padding:var(--sp-3) var(--sp-4);cursor:pointer;list-style:none}
+  gap:var(--sp-3);padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);cursor:pointer;list-style:none}
+.voice-global-summary:hover{background:var(--t-surface-soft)}
+.voice-global[open]>.voice-global-summary{border-radius:var(--r-md) var(--r-md) 0 0}
 .voice-global-summary::-webkit-details-marker{display:none}
 .voice-global-summary::after{content:"›";flex:none;color:var(--t-text-faint);
-  font-size:var(--fs-title);line-height:1;transform:rotate(90deg);transition:transform .16s ease}
+  font-size:var(--fs-title);line-height:1;transform:rotate(90deg);
+  transition:transform var(--motion-dur-expand,var(--dur)) var(--motion-ease-out,ease)}
 .voice-global[open]>.voice-global-summary::after{transform:rotate(-90deg)}
 .voice-global-title{display:grid;gap:2px;min-width:0}
 .voice-global-title strong{color:var(--t-text-strong);font-size:var(--fs-body);font-weight:650}
