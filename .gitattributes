@@ -19,3 +19,7 @@
 docs/V1_CONFIG_BY_SEGMENT_20260925.csv binary
 pages/陪伴小屋/assets/voxel-room.js -whitespace
 *.py whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
+
+# Keep these development files out of the source ZIP used by AstrBot Market.
+/docs/design-previews export-ignore
+/tests export-ignore
