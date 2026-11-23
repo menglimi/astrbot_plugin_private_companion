@@ -53,6 +53,7 @@ CONFIG_OWNER = "conversation.group_participation"
 # leave adjustable windows in code.
 CONFIG_DEFAULTS = {
     "enable_group_social_context": False,
+    "mention_force_reply_enabled": False,
     "enable_group_topic_threads": True,
     "group_topic_thread_max": 12,
     "enable_group_mood_detection": False,

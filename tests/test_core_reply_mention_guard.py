@@ -34,9 +34,12 @@ class CoreReplyMentionGuardTests(CoreReplyToolFixture, unittest.IsolatedAsyncioT
         from astrbot_host.core_reply import CORE_REPLY_CONTEXT_EXTRA, prepare_core_reply_event
         prepare_core_reply_event(event, prepared, authorize=authorize)
         state = event.get_extra(CORE_REPLY_CONTEXT_EXTRA)
+        from dataclasses import replace as _replace
+        group_scope = _replace(self.context.scope, kind=ScopeKind.GROUP, native_scope_id="group-guard",
+                               conversation_id="conversation-guard", session_id="session-guard")
         session = CoreReplyToolSession.__new__(CoreReplyToolSession)
         session.event, session.state, session.prepared = event, state, prepared
-        session.context = NS(scope=NS(kind=ScopeKind.GROUP))
+        session.context = NS(scope=group_scope, role_binding=self.context.role_binding)
         session.application = self.app
         session.native_run_context, session.native_calls = None, []
         return session
@@ -100,6 +103,78 @@ class CoreReplyMentionGuardTests(CoreReplyToolFixture, unittest.IsolatedAsyncioT
                                 event=event)
         self.assertEqual(decision["payload"]["mode"], "skip")
         self.assertEqual(session.state.get("_mention_skip_rejections"), 1)
+
+    # -- PR-B: mention_force_reply_enabled (opt-in hard rule) ----------------
+
+    def _set_force_reply(self, value):
+        from companion_v2.conversation.participation import (CONFIG_GROUP,
+                                                             GroupParticipationConfigurationOwner,
+                                                             configuration_fields)
+        from companion_v2.configuration.models import ConfigLayer, ConfigTarget
+        from dataclasses import replace as _replace
+        owner = GroupParticipationConfigurationOwner(self.app.runtime)
+        fields = configuration_fields()
+        group_scope = _replace(self.context.scope, kind=ScopeKind.GROUP, native_scope_id="group-guard",
+                               conversation_id="conversation-guard", session_id="session-guard")
+        target = ConfigTarget(self.context.scope.installation_id, ConfigLayer.WINDOW,
+                              self.context.role_binding.role, group_scope)
+        owner.write(target, fields, changes={CONFIG_GROUP + ".mention_force_reply_enabled": value},
+                    reset=(), expected_revision=owner.read(target, fields).revision,
+                    observed_at=self.app.tasks.now())
+
+    async def test_force_reply_rejects_all_mention_skips(self):
+        # Switch on: even an explicit opt-out reason and repeated attempts are
+        # always rejected; the bounded bypass never applies.
+        event, _ = self.prepare("force-reply-hard")
+        session = self._group_session(event, {"group_trigger": dict(WAKE_FACTS)})
+        self._set_force_reply(True)
+        for reason in ("@我但明说不用理我", "他们在讨论运维，与我无关"):
+            with self.assertRaises(TaskError) as captured:
+                self._choose(session, {"mode": "skip", "reason": reason}, event=event)
+            self.assertEqual(captured.exception.code, "group_participation_mention_skip_rejected")
+            self.assertNotIn("group_participation", session.state)
+        with self.assertRaises(TaskError) as captured:
+            self._choose(session, {"mode": "skip", "reason": "@我但明说不用理我"}, event=event)
+        self.assertEqual(captured.exception.code, "group_participation_mention_skip_rejected")
+
+    async def test_force_reply_off_keeps_pr_a_behaviour(self):
+        # Switch off (explicit False): opt-out reasons pass and the bounded
+        # degradation still allows the second skip.
+        event, _ = self.prepare("force-reply-off")
+        session = self._group_session(event, {"group_trigger": dict(WAKE_FACTS)})
+        self._set_force_reply(False)
+        decision = self._choose(session, {"mode": "skip", "reason": "@我但明说不用理我"}, event=event)
+        self.assertEqual(decision["payload"]["mode"], "skip")
+        event2, _ = self.prepare("force-reply-off-bounded")
+        session2 = self._group_session(event2, {"group_trigger": dict(WAKE_FACTS)})
+        with self.assertRaises(TaskError) as captured:
+            self._choose(session2, {"mode": "skip", "reason": "与我无关"}, event=event2)
+        self.assertEqual(captured.exception.code, "group_participation_mention_skip_rejected")
+        decision2 = self._choose(session2, {"mode": "skip", "reason": "与我无关"}, event=event2)
+        self.assertEqual(decision2["payload"]["mode"], "skip")
+
+    async def test_force_reply_defaults_to_off(self):
+        # No window value written: the guard behaves exactly like PR-A.
+        event, _ = self.prepare("force-reply-default")
+        session = self._group_session(event, {"group_trigger": dict(WAKE_FACTS)})
+        self.assertFalse(session._mention_force_reply_enabled())
+        decision = self._choose(session, {"mode": "skip", "reason": "@我但明说不用理我"}, event=event)
+        self.assertEqual(decision["payload"]["mode"], "skip")
+
+    def test_rendered_policy_omits_mention_force_reply_when_disabled(self):
+        # Issue #836: the policy dict only carries mention_force_reply_enabled
+        # when the window opted in, so the off (default) rendering stays
+        # byte-identical to the pre-switch model state.
+        from companion_v2.decision.prompt import build_state, render_model_state
+        base = {"scope_kind": "group", "user_text": "x",
+                "group_participation_policy": {"question_enabled": True, "interjection_enabled": True}}
+        off = json.loads(render_model_state(build_state(dict(base))))
+        self.assertNotIn("mention_force_reply_enabled", off["facts"]["group_participation_policy"])
+        on = json.loads(render_model_state(build_state({**base, "mentioned": True,
+                "group_participation_policy": {**base["group_participation_policy"],
+                                               "mention_force_reply_enabled": True}})))
+        self.assertIs(on["facts"]["group_participation_policy"]["mention_force_reply_enabled"], True)
+        self.assertIn("被@强制应答", on["facts"]["address_context"])
 
 
 if __name__ == "__main__":

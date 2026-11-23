@@ -51,6 +51,7 @@
 ### 群聊参与
 
 - 修复群聊合并批次中 @提及/唤醒词消息被整批 skip 判定静默吞掉的问题（#836）：`choose_participation` 对 mention 批拒绝无 opt-out 的 skip 并强制重判（有界降级，避免无限 TaskError 中断整轮）、`_latch_group_skip` 不再锁存 mention 批、`air_guard` 节流豁免 mention/wakeup 候选。
+- 新增 `conversation.group_participation.mention_force_reply_enabled` 开关（默认关闭，#836）。开启后，直接 @ 机器人或命中唤醒词时进入应答流程。
 
 ## 7.2.9 - 2026-11-21
 
