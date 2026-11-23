@@ -269,7 +269,8 @@ def render_model_state(state: str) -> str:
                 address += "本群不开启未点名答疑和自主插话。"
             elif policy.get("question_enabled") is False:
                 address += "本群未点名答疑关闭。"
-        if policy.get("mention_force_reply_enabled") is True and (facts.get("mentioned") or called_directly):
+        if policy.get("mention_force_reply_enabled") is True and (
+                facts.get("mentioned") or facts.get("native_wakeup") or facts.get("candidate_reason") == "direct_word"):
             address = "本群已开启被@强制应答。被明确 @ 或命中唤醒词时，直接回应点名的消息。"
         model["address_context"] = address
         if reason:

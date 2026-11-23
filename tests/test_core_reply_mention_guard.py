@@ -161,6 +161,30 @@ class CoreReplyMentionGuardTests(CoreReplyToolFixture, unittest.IsolatedAsyncioT
         decision = self._choose(session, {"mode": "skip", "reason": "@我但明说不用理我"}, event=event)
         self.assertEqual(decision["payload"]["mode"], "skip")
 
+    async def test_force_reply_bypasses_laya_and_rejects_skip_for_direct_word(self):
+        from astrbot_host.core_reply_decision import prepare_core_reply_decision
+        from unittest.mock import Mock
+
+        event, _ = self.prepare("direct-word")
+        session = self._group_session(event, {
+            "channel": "group",
+            "group_admission": {
+                "reason": "direct_word",
+                "participation_policy": {"mention_force_reply_enabled": True},
+            },
+            "group_trigger": dict(WAKE_FACTS, mentioned=False),
+        })
+        self._set_force_reply(True)
+        classifier = Mock()
+        decision = await prepare_core_reply_decision(
+            event, session.prepared, application=NS(laya_decision_resolver=classifier))
+        classifier.assert_not_called()
+        self.assertFalse(decision["suppress_reply"])
+        self.assertIn("直接回应点名或唤醒词所在的消息", session.prepared["prompt_instruction"])
+        with self.assertRaises(TaskError) as captured:
+            self._choose(session, {"mode": "skip", "reason": "与我无关"}, event=event)
+        self.assertEqual(captured.exception.code, "group_participation_mention_skip_rejected")
+
     def test_rendered_policy_omits_mention_force_reply_when_disabled(self):
         # Issue #836: the policy dict only carries mention_force_reply_enabled
         # when the window opted in, so the off (default) rendering stays

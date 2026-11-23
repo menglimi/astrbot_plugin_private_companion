@@ -1242,6 +1242,7 @@ window.CompanionConfigEditors = (() => {
       title: "群聊参与",
       note: "决定角色在群里怎么旁听、何时接话，以及复读跟读的尺度。话题线只为当前群聊回复提供参考，不会单独唤醒或主动发言。",
       labels: {
+        mention_force_reply_enabled: "被 @ 或命中唤醒词时直接应答",
         enable_group_social_context: "启用群聊氛围参考",
         enable_group_topic_threads: "跟踪群聊话题线",
         group_topic_thread_max: "最多保留的话题线",
@@ -1300,7 +1301,7 @@ window.CompanionConfigEditors = (() => {
         enable_group_behavior_imitation: "允许在群聊真实回复中选择已学互动习惯与群内认证对象自然参与互动；只辅助本轮表达，不单独发起发言。",
         enable_group_behavior_feedback: "依据群成员在实际发送后的真实回应评估互动效果，用于修正后续互动习惯；没有回应不会记作欢迎。",
       },
-      order: ["enable_group_topic_threads", "group_topic_thread_max",
+      order: ["mention_force_reply_enabled", "enable_group_topic_threads", "group_topic_thread_max",
               "enable_group_social_context", "enable_group_mood_detection",
               "enable_group_roleplay_strength", "enable_group_moments",
               "enable_group_moment_portrait", "enable_group_joke_guard",
@@ -1317,6 +1318,7 @@ window.CompanionConfigEditors = (() => {
       /* 三条链各自独立：氛围参考有一层总闸，插话与跟读各有自己的总闸与预算。
          不分组的话，关掉总闸后调下面的数字会毫无反应，看着像坏了。 */
       sections: [
+        {id: "direct_address", title: "明确点名", fields: ["mention_force_reply_enabled"]},
         {id: "behavior", title: "行为模仿", help: "",
          fields: ["enable_group_behavior_learning", "enable_group_behavior_imitation",
                   "enable_group_behavior_feedback", "group_behavior_guidance"]},

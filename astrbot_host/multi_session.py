@@ -1081,7 +1081,7 @@ class MultiHostSession:
                         context, captured.instruction, at=captured.at, settings=settings)
                     # Issue #836: mention/wakeup candidates are direct addresses;
                     # the high-intensity closeout cooldown must not swallow them.
-                    addressed = facts["mentioned"] or facts["native_wakeup"] or reason in ("mention", "native_wakeup", "mention_all")
+                    addressed = facts["mentioned"] or facts["native_wakeup"] or reason == "direct_word"
                     if reason and not addressed and not group_high_intensity.allows(reason, closeout):
                         reason = ""
                     if reason:
@@ -1090,7 +1090,6 @@ class MultiHostSession:
                         # member addressing the bot directly; the air-guard
                         # budget exists to damp autonomous chatter, so never let
                         # its window cap or budget silently drop these.
-                        addressed = facts["mentioned"] or facts["native_wakeup"] or reason in ("mention", "native_wakeup", "mention_all")
                         if gate_air["group_high_intensity_enabled"] and not addressed:
                             from companion_v2.conversation import group_topic_gate
                             allowed, gate = group_topic_gate.decide(
