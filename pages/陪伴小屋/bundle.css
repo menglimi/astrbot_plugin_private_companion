@@ -21628,12 +21628,12 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
 .deck-tab.is-active{border-color:var(--t-line);background:var(--t-surface-raised);color:var(--t-accent-ink);box-shadow:var(--t-shadow)}
 .deck-panels{--self-sticky-clearance:76px;display:grid;min-height:520px;min-width:0}
 .self-workspace-panel{min-width:0}
-.section-chips{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:var(--sp-2);min-width:0;overflow-x:auto;
+.section-chips{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:calc(var(--sp-1) * 1.5);min-width:0;overflow-x:auto;
   padding:var(--sp-2) var(--sp-3);margin:0 0 var(--sp-4);border:1px solid var(--t-line-firm);border-radius:var(--r-md);
-  background:color-mix(in srgb,var(--t-surface) 95%,var(--t-canvas));backdrop-filter:blur(12px);box-shadow:var(--t-shadow);
+  background:color-mix(in srgb,var(--t-surface) 96%,var(--t-canvas));backdrop-filter:blur(14px);box-shadow:var(--t-shadow);
   scrollbar-width:thin;scrollbar-color:var(--t-line-firm) transparent}
 @container self-journal (min-width:651px){.section-chips{flex-wrap:wrap;overflow-x:visible}}
-.section-chip{flex:none;display:inline-flex;align-items:center;gap:calc(var(--sp-1) * 1.5);min-height:34px;padding:var(--sp-1) var(--sp-3);
+.section-chip{flex:none;display:inline-flex;align-items:center;gap:var(--sp-1);min-height:32px;padding:var(--sp-1) var(--sp-2);
   border:1px solid var(--t-line);border-radius:var(--r-pill);background:var(--t-surface-raised);color:var(--t-text-soft);
   font:inherit;font-size:var(--fs-tiny);font-weight:500;cursor:pointer;white-space:nowrap;
   transition:border-color var(--dur-fast) ease,background var(--dur-fast) ease,color var(--dur-fast) ease}
@@ -21645,32 +21645,25 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
 .section-chip[data-complete="true"] .section-chip-dot{background:var(--t-ok);box-shadow:0 0 0 2px var(--t-ok-quiet)}
 :is(.sticker,.deck-tab,.section-chip):hover{border-color:var(--t-line-firm);color:var(--t-accent-ink)}
 :is(.sticker,.deck-tab,.section-chip):focus-visible{outline:2px solid var(--t-accent);outline-offset:2px}
-.self-chapter-deck{min-height:480px;min-width:0}
+.self-chapter-deck{min-height:0;min-width:0}
 .self-page .wb{gap:var(--sp-4)}
 .self-page .wb-journal{overflow:visible;min-width:0}
 .self-page .wb-journal .wb-card-body{padding:0;min-width:0}
 .self-page .wb-journal .wb-section-panel,
 .self-page .wb-journal .wb-card-body>.wb-group{min-width:0;padding:var(--sp-5);border:1px solid var(--t-line);
   border-radius:var(--r-md);background:var(--t-surface);box-shadow:var(--t-shadow)}
-.self-page .wb-journal .wb-section-panel{min-height:480px}
+.self-page .wb-journal .wb-section-panel{min-height:0}
 .self-page .wb-journal .wb-card-body>.wb-group+.wb-group{margin-top:var(--sp-4)}
 .self-page .wb-journal .wb-group-head{margin:0 0 var(--sp-4);padding-bottom:var(--sp-3);border-bottom:1px dashed var(--t-line-firm);
   color:var(--t-text-strong);font-size:var(--fs-title);font-weight:650;letter-spacing:.01em}
-#roleProfileConfigWorkspace .wb-section-panel::before{display:block;margin:0 0 var(--sp-1);color:var(--t-accent-ink);
-  font-family:var(--numeric-font);font-size:var(--fs-micro);font-weight:700;line-height:1.4;letter-spacing:.12em}
-#roleProfileConfigWorkspace [data-wb-section-panel="identity"]::before{content:"01 / IDENTITY"}
-#roleProfileConfigWorkspace [data-wb-section-panel="appearance"]::before{content:"02 / APPEARANCE"}
-#roleProfileConfigWorkspace [data-wb-section-panel="personality"]::before{content:"03 / PERSONALITY"}
-#roleProfileConfigWorkspace [data-wb-section-panel="voice"]::before{content:"04 / VOICE"}
-#roleProfileConfigWorkspace [data-wb-section-panel="motivations"]::before{content:"05 / MOTIVATION"}
-#roleProfileConfigWorkspace [data-wb-section-panel="boundaries"]::before{content:"06 / BOUNDARY"}
-#roleProfileConfigWorkspace [data-wb-section-panel="world"]::before{content:"07 / WORLD"}
-#roleProfileConfigWorkspace [data-wb-section-panel="expression_learning"]::before{content:"08 / EXPRESSION"}
+/* 单章节由上方统一的 #selfChapterIntro 承载章节编号、标题与说明，避免与卡片内抬头双重复现。 */
+#roleProfileConfigWorkspace .wb-section-panel::before{display:none;content:none}
+#roleProfileConfigWorkspace .wb-section-panel>.wb-group:only-child>.wb-group-head{display:none}
 .self-page .wb-journal .wb-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-4)}
 .self-page .wb-journal .wb-field{display:grid;grid-template-columns:minmax(0,1fr);align-content:start;grid-column:auto;gap:var(--sp-2);
   min-width:0;padding:var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-soft)}
-.self-page .wb-journal .wb-field-main{grid-template-columns:minmax(0,1fr);gap:var(--sp-2);min-width:0}
-.self-page .wb-journal .wb-field-main>.wb-label{grid-column:1;grid-row:auto;display:inline-flex;align-items:center;gap:var(--sp-1);min-width:0}
+.self-page .wb-journal .wb-field-main{grid-template-columns:minmax(0,1fr);align-items:start;justify-items:stretch;gap:var(--sp-2);min-width:0}
+.self-page .wb-journal .wb-field-main>.wb-label{grid-column:1;grid-row:auto;display:inline-flex;align-items:center;justify-content:flex-start;gap:var(--sp-1);min-width:0;text-align:left}
 .self-page .wb-journal .wb-field-main>.wb-control{grid-column:1;grid-row:auto;justify-self:stretch;justify-content:flex-start;width:100%;max-width:none;min-width:0;margin-top:0}
 .self-page .wb-journal .wb-field-main>.wb-control>.wb-number{justify-content:flex-start}
 .self-page .wb-journal .wb-label{color:var(--t-text-strong);font-size:var(--fs-tiny);font-weight:650;line-height:1.45}
@@ -21693,7 +21686,9 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
   [data-wb-row="social_distance"],[data-wb-row="reaction_patterns"],[data-wb-row="hobbies"],[data-wb-row="motivations"],
   [data-wb-row="boundaries"],[data-wb-row="taboos"],[data-wb-row="tone"],[data-wb-row="network"],[data-wb-row="world_extra"],[data-wb-row="world"],
   [data-wb-row="main_companion_subject"],[data-wb-row="interaction"],[data-wb-row="extra"],[data-wb-row="import_paths"],[data-wb-row="source_ids"]){grid-column:1/-1}
-.self-page [data-wb-row="main_companion_subject"] .wb-control select{max-width:min(100%,420px)}
+.self-page .wb-journal [data-wb-row="main_companion_subject"] .wb-field-main{grid-template-columns:minmax(0,1fr) minmax(240px,380px);align-items:center;column-gap:var(--sp-4)}
+.self-page .wb-journal [data-wb-row="main_companion_subject"] .wb-field-main>.wb-control{grid-column:2;grid-row:1;justify-self:end;width:100%;max-width:380px}
+.self-page .wb-journal [data-wb-row="main_companion_subject"] .wb-control select{width:100%;max-width:380px}
 .wb-identity-card{grid-column:1/-1;display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-4);align-items:start;
   min-width:0;padding:var(--sp-4) var(--sp-5);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-soft)}
 .self-page .wb-journal .wb-identity-card::before{content:"基础资料";display:block;padding-bottom:var(--sp-2);border-bottom:1px solid var(--t-line);
@@ -21722,7 +21717,12 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
 .self-page .wb-journal .wb-date-error{order:3}
 .self-page .wb-journal .wb-date-error:empty{display:none}
 .self-page .wb-journal .wb-segmented{background:var(--t-surface);border-color:var(--t-line)}
-.self-page .wb-journal .wb-identity-picker{padding:var(--sp-2);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised)}
+.self-page .wb-journal [data-wb-section-panel="expression_learning"] .wb-field{padding:var(--sp-3) var(--sp-4)}
+.self-page .wb-journal [data-wb-section-panel="expression_learning"] .wb-segmented{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));width:100%;gap:var(--sp-1);padding:var(--sp-1);border-radius:var(--r-sm);background:var(--t-surface-raised)}
+.self-page .wb-journal [data-wb-section-panel="expression_learning"] .wb-segmented-option span{width:100%;min-height:36px;justify-content:center;text-align:center}
+.self-page .wb-journal .wb-identity-picker{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2);min-height:44px;padding:var(--sp-2) var(--sp-3);border:1px solid var(--t-line);border-radius:var(--r-sm);background:var(--t-surface-raised)}
+.self-page .wb-journal .wb-identity-picker .wb-source-option{margin:0;padding:var(--sp-1) var(--sp-2);border-radius:var(--r-xs)}
+.self-page .wb-journal .wb-identity-picker .wb-source-count{margin-left:auto;padding:2px var(--sp-2);border-radius:var(--r-pill);background:var(--t-accent-quiet);color:var(--t-accent-ink);font-size:var(--fs-micro);font-weight:600;white-space:nowrap}
 .self-page .wb-journal .wb-tag>span:first-child{min-width:0;white-space:normal;overflow-wrap:anywhere}
 .self-page .wb-journal .wb-tag-form input[type=text]{flex:1 1 120px;min-width:0;min-height:38px}
 .self-page .wb-journal .wb-quote{grid-template-columns:auto minmax(0,1fr) auto}
@@ -21730,13 +21730,13 @@ body:not(.room-editing) #homeShell[data-away="true"] .stage-region[data-role-car
 .self-page .wb-journal .wb-quote-remove{grid-column:auto;margin-top:var(--sp-1)}
 .self-page .wb-journal .wb-quote-tools{flex-wrap:wrap}
 .self-page .wb-journal .wb-segmented-option span{white-space:normal;overflow-wrap:anywhere}
-.self-page .wb-journal .wb-actions{position:static;bottom:auto;flex-wrap:wrap;gap:var(--sp-2);margin-top:var(--sp-4);padding-top:var(--sp-4);min-width:0}
+.self-page .wb-journal .wb-actions{position:static;bottom:auto;align-items:center;flex-wrap:wrap;gap:var(--sp-2);margin-top:var(--sp-4);padding:var(--sp-3) var(--sp-4);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface);box-shadow:var(--t-shadow);min-width:0}
 .self-page .wb-journal .wb-actions .wb-scope{margin-left:auto;max-width:100%;white-space:normal;overflow-wrap:anywhere}
 .self-page .wb-journal .wb-scope{display:none}
-.self-page .wb-journal .wb-actions-note{flex-basis:auto;margin-left:0;font-size:var(--fs-micro)}
+.self-page .wb-journal .wb-actions-note{flex-basis:auto;margin-left:0;font-size:var(--fs-micro);color:var(--t-text-faint)}
 .self-page .wb-journal .wb-actions :is(.button,.wb-save){min-width:0;white-space:normal}
-.self-organizer{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);min-width:0;margin-top:var(--sp-5);
-  padding:var(--sp-4) 0;border-top:1px solid var(--t-line)}
+.self-organizer{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--sp-3);min-width:0;margin:var(--sp-4) 0 var(--sp-4);
+  padding:var(--sp-4) var(--sp-5);border:1px solid var(--t-line);border-radius:var(--r-md);background:var(--t-surface-soft)}
 .self-organizer-head{min-width:0}
 .self-organizer-head h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-body);font-weight:650;overflow-wrap:anywhere}
 .self-organizer-actions{display:flex;flex:none;gap:var(--sp-2);flex-wrap:wrap}
@@ -22086,16 +22086,18 @@ body.large-text .self-page .deck-panels{--self-sticky-clearance:128px}
 #knowledgeConfigWorkspace .wb-group{scroll-margin-top:var(--self-sticky-clearance,84px)}
 
 /* ===== 自我页 · 章节页眉与经历分段 ===== */
-.self-chapter-intro{display:grid;grid-template-columns:minmax(120px,160px) minmax(0,1fr);align-items:start;
-  gap:var(--sp-4);margin:0 0 var(--sp-4);padding:var(--sp-3) var(--sp-4);
-  border:1px solid var(--t-line);border-radius:var(--r-sm);
-  background:linear-gradient(120deg,color-mix(in srgb,var(--t-accent-quiet) 46%,transparent),transparent 62%),
-    var(--t-surface-soft);min-width:0}
-.self-chapter-kicker{flex:none;margin:0;color:var(--t-accent-ink);
-  font-family:var(--numeric-font);font-size:var(--fs-micro);font-weight:700;line-height:1.4;letter-spacing:.12em}
+.self-chapter-intro{display:flex;align-items:flex-start;gap:var(--sp-3);
+  margin:0 0 var(--sp-3);padding:var(--sp-3) var(--sp-5);
+  border:1px solid var(--t-line);border-radius:var(--r-md);
+  background:linear-gradient(125deg,color-mix(in srgb,var(--t-accent-quiet) 54%,transparent),transparent 58%),
+    var(--t-surface);box-shadow:var(--t-shadow);min-width:0}
+.self-chapter-kicker{flex:none;display:inline-flex;align-items:center;margin:2px 0 0;padding:var(--sp-1) var(--sp-2);
+  border:1px solid color-mix(in srgb,var(--t-accent) 28%,var(--t-line));border-radius:var(--r-pill);
+  background:var(--t-accent-quiet);color:var(--t-accent-ink);
+  font-family:var(--numeric-font);font-size:var(--fs-micro);font-weight:650;line-height:1.3;letter-spacing:.04em;white-space:nowrap}
 .self-chapter-copy{display:grid;gap:var(--sp-1);min-width:0}
-.self-chapter-copy h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-title);line-height:1.3}
-.self-chapter-copy p{margin:0;max-width:72ch;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.7}
+.self-chapter-copy h3{margin:0;color:var(--t-text-strong);font-size:var(--fs-title);font-weight:650;line-height:1.3}
+.self-chapter-copy p{margin:0;max-width:74ch;color:var(--t-text-soft);font-size:var(--fs-tiny);line-height:1.65}
 
 /* 设定与经历的分段标题：复用 wb-field 的 ::before 前必须完整复位，
    否则会继承「改动竖线」的绝对定位和 2px 宽度。 */
@@ -22109,16 +22111,16 @@ body.large-text .self-page .deck-panels{--self-sticky-clearance:128px}
 
 @media (min-width:761px){
   #homeShell[data-away="true"] .self-organizer,
-  #homeShell[data-away="true"] .self-relationship-actions{padding-right:calc(var(--shell-pip-w,176px) + var(--sp-4))}
+  #homeShell[data-away="true"] .self-relationship-actions{padding-right:calc(var(--shell-pip-w,176px) + var(--sp-5))}
 }
-@container self-journal (max-width:1080px){
+@container self-journal (max-width:840px){
   .deck-panels{--self-sticky-clearance:118px}
 }
 @container self-journal (max-width:900px){
   .journal-side{flex-direction:column;gap:2px}
 }
 @media (max-width:760px){
-  .self-chapter-intro{grid-template-columns:minmax(0,1fr);gap:var(--sp-1)}
+  .self-chapter-intro{flex-direction:column;gap:var(--sp-2);padding:var(--sp-3) var(--sp-4)}
 }
 @media (max-width:720px){
   .journal-cover{padding:var(--sp-3);grid-template-columns:auto minmax(0,1fr)}
@@ -22129,7 +22131,7 @@ body.large-text .self-page .deck-panels{--self-sticky-clearance:128px}
 }
 @container self-journal (max-width:740px){
   .self-page .wb-journal .wb-identity-rows{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}
-  .self-chapter-intro{grid-template-columns:minmax(0,1fr);gap:var(--sp-1)}
+  .self-chapter-intro{flex-direction:column;gap:var(--sp-2);padding:var(--sp-3) var(--sp-4)}
 }
 @container self-journal (max-width:650px){
   .deck-panels{--self-sticky-clearance:72px}
@@ -22141,13 +22143,17 @@ body.large-text .self-page .deck-panels{--self-sticky-clearance:128px}
   .deck-tab{min-height:38px}
   .section-chips{padding:var(--sp-2)}
   .self-page .wb-journal .wb-fields,.self-page [data-wb-section-panel="expression_learning"] .wb-fields{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}
+  .self-page .wb-journal [data-wb-row="main_companion_subject"] .wb-field-main{grid-template-columns:minmax(0,1fr);row-gap:var(--sp-2)}
+  .self-page .wb-journal [data-wb-row="main_companion_subject"] .wb-field-main>.wb-control{grid-column:1;grid-row:auto;justify-self:stretch;max-width:none}
+  .self-page .wb-journal [data-wb-row="main_companion_subject"] .wb-control select{max-width:100%}
+  .self-page .wb-journal [data-wb-section-panel="expression_learning"] .wb-segmented{grid-template-columns:minmax(0,1fr)}
   .self-page .wb-journal .wb-section-panel,.self-page .wb-journal .wb-card-body>.wb-group{padding:var(--sp-3)}
   .self-page .wb-journal .wb-field{padding:var(--sp-3)}
   .wb-identity-card{grid-template-columns:minmax(0,1fr);padding:var(--sp-3);gap:var(--sp-3)}
   .self-page .wb-journal .wb-identity-rows{grid-template-columns:minmax(0,1fr)}
   .self-page .wb-journal .wb-date-solar{flex:1 1 100%}
   .self-page .wb-journal .wb-actions .wb-scope{flex-basis:100%;margin-left:0}
-  .self-organizer{align-items:flex-start;flex-direction:column}
+  .self-organizer{align-items:flex-start;flex-direction:column;padding:var(--sp-3)}
   .self-organizer-actions{width:100%}
   .self-organizer-actions .button{max-width:100%;white-space:normal}
   .self-relationship-workspace{padding:var(--sp-3);gap:var(--sp-4)}

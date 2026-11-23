@@ -4251,14 +4251,14 @@ const SELF_PROFILE_SECTIONS=[
 ];
 /* 档案章节的页眉说明：章节切换时由 selectSelfProfileSection 就地更新。 */
 const SELF_CHAPTER_COPY={
-  identity:['01 / IDENTITY','身份','姓名、种族、生日、年龄感、职业与关键经历。写在这里的设定会进入新对话，并在同角色的窗口共享。'],
-  appearance:['02 / APPEARANCE','外貌','发型、瞳色、服饰与能稳定辨认角色的识别点；图像识别线索用于头像、截图和水印。'],
-  personality:['03 / PERSONALITY','性格','性格描述、日常习惯与稳定反应；写得越具体，角色在陌生场景里越不容易走样。'],
-  voice:['04 / VOICE','口吻','自称、说话方式、情绪表达与口吻示例；这些是表达参考，不会覆盖原人格和边界。'],
-  motivations:['05 / MOTIVATION','动机','重视的事、核心欲望、长期目标与爱好；用来解释角色为什么做选择。'],
-  boundaries:['06 / BOUNDARY','边界','互动边界与禁忌。它们优先于习惯和表达偏好，不被群聊里的临时要求覆盖。'],
-  world:['07 / WORLD','世界','角色所在的世界、时代、基调与场景；世界知识用于理解设定，不替代现实事实。'],
-  expression_learning:['08 / EXPRESSION','表达学习范围','限定从哪些私聊/群聊与对象学习表达；只影响表达样本，不改变身份、关系和授权。'],
+  identity:['第 01 章','基础身份','姓名、种族、生日、年龄感、职业与关键经历。写在这里的设定会进入新对话，并在同角色的窗口共享。'],
+  appearance:['第 02 章','外貌与识别','发型、瞳色、服饰与能稳定辨认角色的识别点；图像识别线索用于头像、截图和水印。'],
+  personality:['第 03 章','性格与习惯','性格描述、日常习惯与稳定反应；写得越具体，角色在陌生场景里越不容易走样。'],
+  voice:['第 04 章','表达口吻','自称、说话方式、情绪表达与口吻示例；这些是表达参考，不会覆盖原人格和边界。'],
+  motivations:['第 05 章','内在动机','重视的事、核心欲望、长期目标与爱好；用来解释角色为什么做选择。'],
+  boundaries:['第 06 章','互动边界','互动边界与禁忌。它们优先于习惯和表达偏好，不被群聊里的临时要求覆盖。'],
+  world:['第 07 章','世界与场景','角色所在的世界、时代、基调与场景；世界知识用于理解设定，不替代现实事实。'],
+  expression_learning:['第 08 章','表达学习范围','限定从哪些私聊或群聊对象学习表达；只影响表达样本，不改变身份、关系和授权。'],
 };
 function selfChapterIntroMarkup(section){
   const [kicker,title,detail]=SELF_CHAPTER_COPY[section]||SELF_CHAPTER_COPY.identity;
@@ -6481,7 +6481,9 @@ document.addEventListener('click',event=>{
     navigate('manage','governance','profile');
     requestAnimationFrame(()=>{
       selectSelfProfileSection(section);
-      document.getElementById('roleProfileConfigWorkspace')?.scrollIntoView({block:'start',behavior:'smooth'});
+      const target=document.getElementById('selfChapterIntro')||document.getElementById('roleProfileConfigWorkspace');
+      const reduced=state.reduceMotion||matchMedia('(prefers-reduced-motion: reduce)').matches||document.documentElement?.dataset?.motion==='off';
+      target?.scrollIntoView({block:'start',behavior:reduced?'instant':'smooth'});
     });
     return;
   }
