@@ -94,6 +94,7 @@ def _sync_batch(batch, runtime, guards=None):
             state.guarded.clear()
     if guards is not None and guards != batch.guards:
         batch.checked_unguarded.clear()
+        batch.extras.clear()
         batch.guards = guards
 
 

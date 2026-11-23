@@ -735,6 +735,7 @@ def has_active_read_snapshot(runtime) -> bool:
 _CORE_OBS_TABLES = frozenset((
     "astrbot_core_reply_observations",
     "core_reply_daily_rollups",
+    "conversation_contexts",
 ))
 _LEGACY_MODEL_TABLES = frozenset((
     "model_calls",
@@ -840,7 +841,9 @@ def _same_aux_domain(
     re = right.main.domain_epochs
     if le is None or re is None or len(le) < 5 or len(re) < 5:
         return False, False
-    return (le[2] == re[2] and le[4] == re[4]), (le[3] == re[3])
+    # read_aux_maintenance_watermark() also digests model_requests/model_calls/failures/diagnostics
+    # for recent batches, so aux reuse requires legacy_model (index 1) unchanged as well.
+    return (le[1] == re[1] and le[2] == re[2] and le[4] == re[4]), (le[3] == re[3])
 
 
 def _read_runtime_meta_maintenance_mark(runtime, context, soft_fallback) -> tuple[object, tuple[bool, int]]:

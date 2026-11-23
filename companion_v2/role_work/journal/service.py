@@ -6,6 +6,7 @@ never published as a factual SourceRecord or written to a relationship account.
 
 from datetime import datetime, timezone
 import json
+from threading import get_ident
 from zoneinfo import ZoneInfo
 
 from companion_v2.execution.models import TaskError, digest, encode, require, stamp
@@ -42,8 +43,11 @@ class RoleJournalService:
         return digest(owner)
 
     def _read_only_batch(self, at):
-        if int(getattr(self.runtime, "_write_depth", 0) or 0) > 0:
-            return None
+        depth = int(getattr(self.runtime, "_write_depth", 0) or 0)
+        if depth > 0:
+            owner_tid = getattr(self.runtime, "_write_owner_thread_id", None)
+            if owner_tid is None or owner_tid == get_ident():
+                return None
         return active_validation_batch(self.runtime, at)
 
     def _row(self, key, *, batch=None):
@@ -81,7 +85,7 @@ class RoleJournalService:
         batch = self._read_only_batch(at) if forbidden is None else None
         validated_cache = (
             batch.extras.setdefault("role_journal.validated", {})
-            if (batch is not None and scope is None)
+            if (batch is not None and scope is None and recipient is None)
             else None
         )
         entry_cache = batch.extras.setdefault("role_journal.entries", {}) if batch is not None else None
@@ -164,7 +168,13 @@ class RoleJournalService:
                     if validated_cache is not None and not is_unguarded_checked(self.runtime, source, at):
                         all_unguarded = False
             pending.extend((ref.key, ref.revision) for ref in entry.draft.journals)
-        if validated_cache is not None and all_unguarded and batch is not None and batch.active:
+        if (
+            validated_cache is not None
+            and all_unguarded
+            and batch is not None
+            and batch.active
+            and batch.extras.get("role_journal.validated") is validated_cache
+        ):
             for validated_key, validated_entry in visited_entries.items():
                 validated_cache[validated_key] = validated_entry
         return result

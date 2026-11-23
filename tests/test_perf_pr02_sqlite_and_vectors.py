@@ -932,19 +932,30 @@ class MaintenanceDomainEpochAndJournalBatchTests(HostFixture, unittest.IsolatedA
             updated = manager.maintenance(operator).unwrap()
         self.assertEqual(updated["usage_sources"]["astrbot_core"]["totals"]["calls"], 3)
 
-        # In-process write to a legacy table MUST invalidate legacy watermark immediately.
+        # In-process write to a legacy table MUST invalidate BOTH legacy AND aux watermarks
+        # (read_aux_maintenance_watermark digests model_calls/model_requests/failures/diagnostics).
         with app.runtime.transaction() as conn:
-            conn.execute("DELETE FROM model_call_cache_signatures WHERE 1 = 0")
+            conn.execute("DELETE FROM model_call_diagnostics WHERE 1 = 0")
         seen_legacy_calls = []
+        seen_aux_calls = []
         orig_read_legacy = mc_mod.read_legacy_watermark
+        orig_read_aux = mc_mod.read_aux_maintenance_watermark
 
         def _spy_legacy(rt):
             seen_legacy_calls.append(1)
             return orig_read_legacy(rt)
 
-        with patch.object(mc_mod, "read_legacy_watermark", side_effect=_spy_legacy):
+        def _spy_aux(*args, **kwargs):
+            seen_aux_calls.append(1)
+            return orig_read_aux(*args, **kwargs)
+
+        with (
+            patch.object(mc_mod, "read_legacy_watermark", side_effect=_spy_legacy),
+            patch.object(mc_mod, "read_aux_maintenance_watermark", side_effect=_spy_aux),
+        ):
             manager.maintenance(operator).unwrap()
         self.assertGreaterEqual(len(seen_legacy_calls), 1)
+        self.assertGreaterEqual(len(seen_aux_calls), 1)
 
     async def test_journal_chain_validation_deduplicates_queries_and_still_observes_revocation(self):
         from companion_v2.foundation.refs import RoleOwnerRef, SourceRef, VersionRef
@@ -1020,6 +1031,92 @@ class MaintenanceDomainEpochAndJournalBatchTests(HostFixture, unittest.IsolatedA
         self.assertTrue(revoked.is_success)
         status_after = manager.status(operator)
         self.assertTrue(all(j["unavailable_reason"] == "source_revoked" for j in status_after["journals"]))
+
+    async def test_validation_batch_clears_cached_validations_on_owner_guard_change_and_bg_write(self):
+        from companion_v2.execution.models import TaskError
+        from companion_v2.foundation.refs import RoleOwnerRef, SourceRef, VersionRef
+        from companion_v2.role_work.journal.models import (
+            JournalContext,
+            JournalDraft,
+            JournalKey,
+            JournalKind,
+            JournalOrigin,
+        )
+        from companion_v2.sources.dependencies import validation_batch
+        from companion_v2.sources.governance import bind
+        from companion_v2.sources.models import SourceRecord
+
+        app = self.app
+        ctx = self.role_context
+        now = app.now()
+        owner = RoleOwnerRef(ctx.scope.installation_id, ctx.scope.bot_id, ctx.role_binding.role.subject_id)
+
+        ref = SourceRef("guard-mid-src", "dynamic.guarded.owner", ctx.scope, VersionRef("guard-mid-src", 1), now)
+        rec = SourceRecord(ref, ctx.audience, digest("guard-body"), "guard-body")
+        app.role_journal.sources.publish(rec, observed_at=now).unwrap()
+
+        jkey = JournalKey(owner, JournalKind.DIARY, "2026-03-20")
+        jctx = JournalContext(jkey, ctx.scope, "Asia/Shanghai")
+        app.role_journal.save(
+            JournalDraft(context=jctx, origin=JournalOrigin.GENERATED, body="Guarded", sources=(ref,), journals=()),
+            expected_revision=0,
+            operation_id="op-guard-mid",
+            observed_at=now,
+        )
+
+        # 1. Within a single validation_batch, registering a rejecting owner guard MUST invalidate
+        #    sources.validated_refs, sources.validated_audience, and role_journal.validated immediately.
+        recipient = ctx.audience.recipients[0]
+        with app.runtime.read_snapshot(), validation_batch(app.runtime, now):
+            app.role_journal.sources.validate_reference(ref, observed_at=now).unwrap()
+            app.role_journal.sources.validate_reference_for_audience(
+                ref, recipient=recipient, observed_at=now
+            ).unwrap()
+            self.assertEqual(app.role_journal.get(jkey, observed_at=now).draft.body, "Guarded")
+
+            def _deny(record, at):
+                raise TaskError("owner_denied_mid_batch", "newly bound guard rejects source")
+
+            guard = bind(app.runtime, "dynamic.guarded.owner", _deny)
+            try:
+                res_ref = app.role_journal.sources.validate_reference(ref, observed_at=now)
+                self.assertFalse(res_ref.is_success)
+                self.assertEqual(res_ref.failure.code, "owner_denied_mid_batch")
+
+                res_aud = app.role_journal.sources.validate_reference_for_audience(
+                    ref, recipient=recipient, observed_at=now
+                )
+                self.assertFalse(res_aud.is_success)
+                self.assertEqual(res_aud.failure.code, "owner_denied_mid_batch")
+
+                with self.assertRaises(TaskError) as j_err:
+                    app.role_journal.get(jkey, observed_at=now)
+                self.assertEqual(j_err.exception.code, "owner_denied_mid_batch")
+            finally:
+                guard.close()
+
+        # 2. RoleJournalService._read_only_batch() must stay active on a reader thread while a
+        #    background thread holds runtime.transaction(), and still disable itself on the writer thread.
+        tx_entered = threading.Event()
+        tx_release = threading.Event()
+
+        def _bg_writer():
+            with app.runtime.transaction():
+                tx_entered.set()
+                tx_release.wait(timeout=3.0)
+
+        writer_thread = threading.Thread(target=_bg_writer)
+        writer_thread.start()
+        try:
+            self.assertTrue(tx_entered.wait(timeout=2.0))
+            with app.runtime.read_snapshot(), validation_batch(app.runtime, now):
+                self.assertIsNotNone(app.role_journal._read_only_batch(now))
+        finally:
+            tx_release.set()
+            writer_thread.join(timeout=3.0)
+
+        with app.runtime.transaction(), validation_batch(app.runtime, now):
+            self.assertIsNone(app.role_journal._read_only_batch(now))
 
 
 if __name__ == "__main__":
