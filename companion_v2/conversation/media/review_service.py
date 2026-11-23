@@ -26,7 +26,8 @@ from companion_v2.model_gateway.models import ModelTaskProfile
 from companion_v2.storage.image_payloads import load_image
 
 from .models import CapturedImage, ImageDescriptor, PromptImage
-from .review import GroupImageReview, check_verdict, decide, merge_answers, parse_answer, review_prompt, verdict_document
+from .review import (DEFAULTS, MODES, SENSITIVITIES, GroupImageReview, check_verdict, decide, merge_answers,
+                     parse_answer, review_prompt, verdict_document)
 
 
 KIND = "conversation.image_review"
@@ -37,6 +38,8 @@ PROFILE_KIND = KIND
 TIMEOUT_SECONDS = 75
 MAX_OUTPUT_TOKENS = 80
 CONCURRENCY = 1
+MAX_ADVANCE_SKIPS = 64
+_PERMANENT_SUBMIT_ERRORS = frozenset({"image_review_unavailable", "image_review_context"})
 
 
 def image_review_profile(provider, *, max_output_tokens=MAX_OUTPUT_TOKENS, timeout_seconds=70):
@@ -58,6 +61,7 @@ class GroupImageReviewService:
         self.notify = notify or (lambda: None)
         self.pending: dict[str, dict] = {}
         self._workers = {}
+        self._blocked: set[str] = set()
         self.results: dict[str, dict] = {}
         self.closed = False
         self.app = None
@@ -81,6 +85,35 @@ class GroupImageReviewService:
 
     # -- planner -------------------------------------------------------
 
+    def _mark_submit_unavailable(self, review_key, code):
+        """Finalize an unrecoverable pending review as unavailable (fail-closed)."""
+        row = self.review.row(review_key)
+        if row is None or row["state"] != "pending":
+            return
+        try:
+            saved = json.loads(row["review_json"])
+            mode = saved.get("mode") if saved.get("mode") in MODES else DEFAULTS["group_nsfw_image_review_mode"]
+            sensitivity = (
+                saved.get("sensitivity")
+                if saved.get("sensitivity") in SENSITIVITIES
+                else DEFAULTS["group_nsfw_image_review_sensitivity"]
+            )
+            document = verdict_document(
+                "unavailable", mode, sensitivity,
+                reason="审核任务无法启动：" + code,
+                revision=(saved.get("revision") or 0) + 1,
+            )
+            for name in ("origin_key", "role_key", "group_key", "created_at", "target"):
+                if name in saved:
+                    document[name] = saved[name]
+            document["updated_at"] = stamp(self.tasks.now())
+            check_verdict(document)
+            self.review.store(review_key, document)
+        except (TaskError, ValueError, TypeError, KeyError):
+            self._blocked.add(review_key)
+        else:
+            self.notify()
+
     @outcome
     def advance(self):
         """Submit due pending reviews; bounded and never blocking the caller."""
@@ -95,15 +128,34 @@ class GroupImageReviewService:
         capacity = max(0, CONCURRENCY - len(self._workers))
         if not capacity:
             return False
-        rows = self.review.pending_requests(limit=capacity)
         submitted = 0
-        for row in rows:
-            try:
-                self.submit(row["review_key"])
-            except TaskError as error:
-                self.results[row["review_key"]] = {"state": "blocked", "code": error.code}
-                continue
-            submitted += 1
+        skips = 0
+        skipped = set(self._blocked)
+        while submitted < capacity and skips < MAX_ADVANCE_SKIPS:
+            rows = self.review.pending_requests(limit=capacity - submitted, exclude=skipped)
+            if not rows:
+                break
+            progressed = False
+            for row in rows:
+                review_key = row["review_key"]
+                try:
+                    self.submit(review_key)
+                except TaskError as error:
+                    self.results[review_key] = {"state": "blocked", "code": error.code}
+                    skipped.add(review_key)
+                    skips += 1
+                    if error.code in _PERMANENT_SUBMIT_ERRORS:
+                        self._mark_submit_unavailable(review_key, error.code)
+                    progressed = True
+                    if skips >= MAX_ADVANCE_SKIPS:
+                        break
+                    continue
+                submitted += 1
+                progressed = True
+                if submitted >= capacity:
+                    break
+            if not progressed:
+                break
         return submitted == capacity
 
     def submit(self, review_key):
@@ -319,6 +371,7 @@ class GroupImageReviewService:
         if self._workers:
             await asyncio.gather(*tuple(self._workers.values()), return_exceptions=True)
         self._workers.clear()
+        self._blocked.clear()
         self.pending.clear()
 
 

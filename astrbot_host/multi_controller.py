@@ -8,6 +8,7 @@ import json
 import logging
 from pathlib import Path
 import sqlite3
+import time
 import traceback
 from uuid import uuid4
 
@@ -1917,6 +1918,15 @@ class AstrBotMultiController:
     def unregister_routes(self):
         self.web_api.unregister()
 
+    TERMINATION_DRAIN_TIMEOUT_SECONDS = 30.0
+
+    async def _close_native_extensions(self):
+        async with self._control_lock:
+            extensions = self.native_extensions
+            self.native_extensions = None
+        if extensions is not None:
+            await extensions.aclose()
+
     async def terminate(self):
         self._terminated, self._accepting = True, False
         if self._termination_task is not None:
@@ -1929,6 +1939,10 @@ class AstrBotMultiController:
                 state = report.get("state") if isinstance(report, dict) else report.state
             else:
                 state = None
+            try:
+                await self._close_native_extensions()
+            except Exception as error:
+                logger.warning("[CompanionV2] 停机关闭原生扩展失败 error_type=%s", type(error).__name__)
             if state != "stopped" and self.session is not None:
                 logger.warning("[CompanionV2] 工作任务仍在退出，保留存储直到停止证明写入完成")
                 self._termination_task = asyncio.create_task(self._finish_termination(),
@@ -1936,31 +1950,61 @@ class AstrBotMultiController:
             else:
                 await self._release_runtime()
         finally:
+            try:
+                await self._close_native_extensions()
+            except Exception as error:
+                logger.warning("[CompanionV2] 停机兜底关闭原生扩展失败 error_type=%s", type(error).__name__)
+            setup_api = getattr(self, "_setup_api", None) or getattr(self.web_api, "setup", None)
+            if setup_api is not None and callable(getattr(setup_api, "aclose", None)):
+                try:
+                    await setup_api.aclose()
+                except Exception as error:
+                    logger.warning("[CompanionV2] 停机取消设置测试任务失败 error_type=%s", type(error).__name__)
             from .exchange_rate import close_exchange_rate_services
             from .pricing_sources import close_pricing_catalog_services
-            await close_exchange_rate_services(self)
-            await close_pricing_catalog_services(self)
+            try:
+                await close_exchange_rate_services(self)
+            except Exception as error:
+                logger.warning("[CompanionV2] 汇率服务停机清理失败 error_type=%s", type(error).__name__)
+            try:
+                await close_pricing_catalog_services(self)
+            except Exception as error:
+                logger.warning("[CompanionV2] 计价服务停机清理失败 error_type=%s", type(error).__name__)
             self.unregister_routes()
 
     async def _release_runtime(self):
         async with self._control_lock:
-            if self.runtime is not None:
-                self.runtime.close()
-                self.runtime = self.authority = None
-            if self.native_extensions is not None:
-                await self.native_extensions.aclose()
-                self.native_extensions = None
+            runtime = self.runtime
+            self.runtime = self.authority = None
+            extensions = self.native_extensions
+            self.native_extensions = None
+        try:
+            if runtime is not None:
+                runtime.close()
+        finally:
+            if extensions is not None:
+                await extensions.aclose()
 
     async def _finish_termination(self):
+        deadline = time.monotonic() + self.TERMINATION_DRAIN_TIMEOUT_SECONDS
         try:
-            while True:
+            while self.session is not None:
                 report = await self.session.close(grace_seconds=0)
                 if report.state == "stopped":
                     self.last_session, self.session = self.session, None
-                    await self._release_runtime()
                     logger.info("[CompanionV2] 延迟停机完成，工作任务停止证明已保存")
-                    return
+                    break
+                if time.monotonic() >= deadline:
+                    logger.warning("[CompanionV2] 延迟停机排空超时（%.1fs），强制释放存储与扩展资源",
+                                   self.TERMINATION_DRAIN_TIMEOUT_SECONDS)
+                    self.last_session, self.session = self.session, None
+                    break
                 await asyncio.sleep(0.25)
         except Exception as error:
             self._failure(error, operation="terminate_drain")
+        finally:
+            try:
+                await self._release_runtime()
+            except Exception as error:
+                self._failure(error, operation="terminate_release")
             self._termination_task = None

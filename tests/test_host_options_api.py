@@ -101,7 +101,7 @@ class HostOptionsWebAPITests(unittest.IsolatedAsyncioTestCase):
         payload = json.dumps(body or {}, ensure_ascii=False).encode("utf-8")
         request = NS(username=username, query=query or {}, body=AsyncMock(return_value=payload))
         with patch("astrbot_host.host_options_api.request", request), \
-             patch("astrbot_host.host_options_api.dashboard_operator", return_value=object()):
+             patch("astrbot_host.host_options_api.require_management_operator", return_value=object()):
             return await getattr(self.api, name)()
 
     async def snapshot(self):

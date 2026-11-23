@@ -108,6 +108,7 @@ class HuaweiHealthService:
             self._latest = None
         self._refresh_task: asyncio.Task | None = None
         self._initialized = False
+        self._closed = False
 
     @property
     def auth(self) -> HuaweiAuth:
@@ -724,13 +725,87 @@ class HuaweiHealthService:
             return False
 
     def schedule_refresh(self) -> None:
-        if self._refresh_task is not None and not self._refresh_task.done():
+        if self._closed or (self._refresh_task is not None and not self._refresh_task.done()):
             return
         try:
-            self._refresh_task = asyncio.create_task(
+            task = asyncio.create_task(
                 self.refresh_summary(force=True), name="companion-v2:huawei-health-refresh")
         except RuntimeError:
             self._refresh_task = None
+            return
+        self._refresh_task = task
+
+        def _done(finished: asyncio.Task) -> None:
+            if self._refresh_task is finished:
+                self._refresh_task = None
+            if finished.cancelled():
+                return
+            try:
+                exc = finished.exception()
+            except BaseException:
+                return
+            if exc is not None:
+                try:
+                    self.logger.warning("[HuaweiHealth] 后台刷新失败 error_type=%s", type(exc).__name__)
+                except Exception:
+                    pass
+
+        task.add_done_callback(_done)
+
+    def _stop_login_sync(self) -> None:
+        manager = getattr(self, "login_manager", None)
+        if manager is None:
+            return
+        session = None
+        try:
+            session = manager.current_session()
+        except Exception:
+            session = None
+        try:
+            stop = getattr(manager, "stop", None)
+            if callable(stop):
+                stop()
+            else:
+                cancel = getattr(manager, "cancel", None)
+                if callable(cancel):
+                    cancel()
+        except Exception as error:
+            try:
+                self.logger.warning("[HuaweiHealth] 停机关闭登录会话失败 error_type=%s", type(error).__name__)
+            except Exception:
+                pass
+        if session is not None:
+            close_browser = getattr(session, "_close_browser", None)
+            if callable(close_browser) and (
+                getattr(session, "_proc", None) is not None
+                or getattr(session, "_ws", None) is not None
+            ):
+                try:
+                    close_browser(sweep_profile=True)
+                except Exception:
+                    pass
+
+    async def aclose(self) -> None:
+        """Cancel background refresh/cache tasks and shut down any login browser."""
+        self._closed = True
+        refresh_task = self._refresh_task
+        self._refresh_task = None
+        inflight = list(self._cache_inflight.values())
+        self._cache_inflight.clear()
+        tasks = [task for task in (refresh_task, *inflight) if task is not None and not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.to_thread(self._stop_login_sync)
+        except Exception as error:
+            try:
+                self.logger.warning("[HuaweiHealth] 登录线程关闭失败 error_type=%s", type(error).__name__)
+            except Exception:
+                pass
+        if _SERVICES.get(self.data_dir) is self:
+            _SERVICES.pop(self.data_dir, None)
 
     def cached_context(self, *, max_age_seconds: int = 3600) -> dict | None:
         latest = self._latest
@@ -856,5 +931,20 @@ async def ensure_huawei_health_service(controller, *, logger) -> HuaweiHealthSer
     return service
 
 
-__all__ = ["DEFAULT_CONFIG", "HuaweiHealthService", "ensure_huawei_health_service",
-           "get_huawei_health_service", "get_huawei_health_service_for_root"]
+async def close_all_huawei_health_services() -> None:
+    """Shut down all cached Huawei Health services and clear the process registry."""
+    services = list(_SERVICES.values())
+    _SERVICES.clear()
+    for service in services:
+        try:
+            await service.aclose()
+        except Exception as error:
+            try:
+                service.logger.warning("[HuaweiHealth] 服务停机清理失败 error_type=%s", type(error).__name__)
+            except Exception:
+                pass
+
+
+__all__ = ["DEFAULT_CONFIG", "HuaweiHealthService", "close_all_huawei_health_services",
+           "ensure_huawei_health_service", "get_huawei_health_service",
+           "get_huawei_health_service_for_root"]

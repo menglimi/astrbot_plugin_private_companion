@@ -1,6 +1,7 @@
 """V2 live model services."""
 from __future__ import annotations
 from .common import *
+from .activity_methods import _spawn_managed_task
 from .native_context import live_private_persona_prompt
 from ..usage import tracked_text_chat
 
@@ -273,7 +274,11 @@ class LiveModelMethods:
             await self._push_subtitle(reply_text, source='bili_live')
         self._record_bili_auto_reply_sent(selected, reply_text)
         if force_voice and (not synced_tts):
-            asyncio.create_task(self._send_bili_live_tts_followup(session_id, reply_text, push_subtitle=False))
+            _spawn_managed_task(
+                self,
+                self._send_bili_live_tts_followup(session_id, reply_text, push_subtitle=False),
+                name='companion-v2:live-tts-followup',
+            )
         logger.info('[B站直播] 已发送预置自动回应%s -> %s: %s', f'({log_reason})' if log_reason else '', session_id, reply_text)
 
     async def _reply_to_bili_live_events(self, events: list[LiveDanmakuEvent]) -> None:
@@ -346,7 +351,11 @@ class LiveModelMethods:
             await self._push_subtitle(reply_text, source='bili_live')
         self._record_bili_auto_reply_sent(selected, reply_text)
         if force_voice and (not synced_tts):
-            asyncio.create_task(self._send_bili_live_tts_followup(session_id, reply_text, push_subtitle=False))
+            _spawn_managed_task(
+                self,
+                self._send_bili_live_tts_followup(session_id, reply_text, push_subtitle=False),
+                name='companion-v2:live-tts-followup',
+            )
         logger.info(f'[B站直播] 已自动回应弹幕 -> {session_id}: {reply_text}')
 
     async def _reply_to_bili_live_events_via_framework(self, events: list[LiveDanmakuEvent], session_id: str) -> bool:
@@ -435,7 +444,11 @@ class LiveModelMethods:
             send_elapsed = time.perf_counter() - t_send
             self._record_bili_auto_reply_sent(selected, reply_text)
             if force_voice and (not synced_tts):
-                asyncio.create_task(self._send_bili_live_tts_followup(session_id, reply_text, push_subtitle=False))
+                _spawn_managed_task(
+                    self,
+                    self._send_bili_live_tts_followup(session_id, reply_text, push_subtitle=False),
+                    name='companion-v2:live-tts-followup',
+                )
             total_elapsed = time.perf_counter() - started_at
             logger.info('[B站直播] 自动回应耗时: total=%.2fs conv=%.2fs build=%.2fs llm=%.2fs decorate_tts=%.2fs send=%.2fs session=%s', total_elapsed, conv_elapsed, build_elapsed, llm_elapsed, decorate_elapsed, send_elapsed, session_id)
             logger.info(f'[B站直播] 已通过完整框架链路自动回应弹幕 -> {session_id}: {reply_text}')

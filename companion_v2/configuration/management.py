@@ -503,7 +503,7 @@ class PrivateAcquaintanceSettingsMixin:
 
     @outcome
     def configure(self, operator, data):
-        with self.app.configuration.store.transaction():
+        with self.runtime.transaction(), self.app.configuration.store.transaction():
             status = require(self.status(operator))
             if type(data) is not dict or data.get("edit_token") != status["edit_token"]:
                 raise TaskError("configuration_revision_conflict",

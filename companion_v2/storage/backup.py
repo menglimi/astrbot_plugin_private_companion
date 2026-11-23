@@ -115,19 +115,23 @@ SCOPE_MAIN_DATABASE = "main_database_only"
 LEGACY_WARNINGS = ("legacy_main_database_only", "side_stores_not_restored", "mixed_generation_risk")
 # The paths a main-database-only restore leaves exactly as they are today.
 LEGACY_PRESERVES = ("semantic-catalog.sqlite3", "legacy-memory-materials.sqlite3", "configuration/",
-                    "content_v2/", "decision/", "extensions/", "legacy-v1-archives/", "screen/", "search/")
+                    "content_v2/", "decision/", "extensions/", "legacy-v1-archives/", "media/", "pricing/",
+                    "screen/", "search/")
 # Files at the root of the runtime data directory that are part of the installation.
 OWNED_ROOT_FILES = (MAIN_DATABASE, "semantic-catalog.sqlite3", "legacy-memory-materials.sqlite3")
 # Root directories the installation fully owns. Adding a new top-level data store
 # means adding it here in the same change, otherwise snapshots would omit it.
-OWNED_ROOT_DIRECTORIES = ("configuration", "content_v2", "decision", "extensions", "legacy-v1-archives", "screen", "search")
+OWNED_ROOT_DIRECTORIES = ("configuration", "content_v2", "decision", "extensions", "legacy-v1-archives",
+                          "media", "pricing", "screen", "search")
 # Derived state that is rebuilt from authoritative rows; never packaged, always
 # dropped by a restore so a stale index cannot answer for rows that no longer exist.
 DERIVED_ROOT_FILES = ("memory-search.sqlite3",)
 # The immutable V1 archive is a byte-for-byte contract (see companion_v2.legacy.archive);
 # it is copied verbatim, never re-snapshotted through SQLite.
 VERBATIM_PREFIXES = ("legacy-v1-archives/",)
-EXCLUDED_DIRECTORY_NAMES = frozenset({"temp", "cache", ".cache", "endpoint_tests", "__pycache__", ".git"})
+EXCLUDED_DIRECTORY_NAMES = frozenset({
+    "temp", "cache", ".cache", "album-thumbnails", "endpoint_tests", "__pycache__", ".git",
+})
 CREDENTIAL_FILES = frozenset({
     "extensions/game/trusted_browsers.json",
     "extensions/reality/mihome/auth.json",

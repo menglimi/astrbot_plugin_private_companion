@@ -60,7 +60,7 @@ class PhysicalSettingsOwner(SparseConfigurationOwner):
             tuple(dict.fromkeys((*local.dependencies, *role.dependencies))), values)
 
     def write(self, target, fields, *, changes, reset, expected_revision, observed_at):
-        with self.runtime.transaction():
+        with self.store.transaction():
             if target.layer is ConfigLayer.ROLE:
                 role_fields = self.role_fields(fields)
                 role_ids = {field.field_id for field in role_fields}

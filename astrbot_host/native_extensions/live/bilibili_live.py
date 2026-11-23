@@ -298,16 +298,26 @@ class BilibiliBlivedmClient:
                 if network_task:
                     wait_tasks.add(network_task)
 
-                done, pending = await asyncio.wait(
-                    wait_tasks,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-
-                if network_task and network_task in done:
-                    message_task.cancel()
+                try:
+                    done, pending = await asyncio.wait(
+                        wait_tasks,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                except BaseException:
+                    if not message_task.done():
+                        message_task.cancel()
                     try:
                         await message_task
-                    except asyncio.CancelledError:
+                    except BaseException:
+                        pass
+                    raise
+
+                if network_task and network_task in done:
+                    if not message_task.done():
+                        message_task.cancel()
+                    try:
+                        await message_task
+                    except BaseException:
                         pass
                     if self._stop_event.is_set():
                         break
@@ -319,9 +329,13 @@ class BilibiliBlivedmClient:
                         raise BilibiliLiveError(f"blivedm 网络协程已结束: {exc}")
                     raise BilibiliLiveError("blivedm 网络协程已结束")
 
+                cancelled_pending = []
                 for task in pending:
                     if task is not network_task:
                         task.cancel()
+                        cancelled_pending.append(task)
+                if cancelled_pending:
+                    await asyncio.gather(*cancelled_pending, return_exceptions=True)
 
                 message = message_task.result()
                 if self._stop_event.is_set():
@@ -526,26 +540,33 @@ class BilibiliLiveClient:
 
     async def stop(self) -> None:
         self._stop_event.set()
-        if self._heartbeat_task:
-            self._heartbeat_task.cancel()
-            try:
-                await self._heartbeat_task
-            except asyncio.CancelledError:
-                pass
-            self._heartbeat_task = None
-        if self._history_task:
-            self._history_task.cancel()
-            try:
-                await self._history_task
-            except asyncio.CancelledError:
-                pass
-            self._history_task = None
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        self._ws = None
-        if self._session and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        try:
+            if self._heartbeat_task:
+                self._heartbeat_task.cancel()
+                try:
+                    await self._heartbeat_task
+                except BaseException:
+                    pass
+                self._heartbeat_task = None
+            if self._history_task:
+                self._history_task.cancel()
+                try:
+                    await self._history_task
+                except BaseException:
+                    pass
+                self._history_task = None
+            ws = self._ws
+            self._ws = None
+            if ws and not ws.closed:
+                try:
+                    await ws.close()
+                except Exception as exc:
+                    logger.debug(f"[B站直播] 关闭 WebSocket 异常: {exc}")
+        finally:
+            session = self._session
+            self._session = None
+            if session and not session.closed:
+                await session.close()
 
     async def _resolve_room_id(self) -> int:
         data = await self._get_json(
@@ -980,12 +1001,19 @@ class BilibiliLaplaceClient:
 
     async def stop(self) -> None:
         self._stop_event.set()
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        self._ws = None
-        if self._session and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        try:
+            ws = self._ws
+            self._ws = None
+            if ws and not ws.closed:
+                try:
+                    await ws.close()
+                except Exception as exc:
+                    logger.debug(f"[Laplace直播] 关闭 WebSocket 异常: {exc}")
+        finally:
+            session = self._session
+            self._session = None
+            if session and not session.closed:
+                await session.close()
 
     def _build_url(self) -> str:
         url = self.bridge_url
@@ -1298,12 +1326,24 @@ class BilibiliOpenLiveClient:
 
     async def stop(self) -> None:
         self._stop_event.set()
-        await self._cancel_runtime_tasks()
-        await self._close_ws()
-        await self._end_game()
-        if self._session and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        try:
+            try:
+                await self._cancel_runtime_tasks()
+            except Exception as exc:
+                logger.debug(f"[B站开放平台] 取消运行任务异常: {exc}")
+            try:
+                await self._close_ws()
+            except Exception as exc:
+                logger.debug(f"[B站开放平台] 关闭 WebSocket 异常: {exc}")
+            try:
+                await self._end_game()
+            except Exception as exc:
+                logger.debug(f"[B站开放平台] 结束场次异常: {exc}")
+        finally:
+            session = self._session
+            self._session = None
+            if session and not session.closed:
+                await session.close()
 
     async def _cancel_runtime_tasks(self) -> None:
         for task in (self._ws_heartbeat_task, self._game_heartbeat_task):

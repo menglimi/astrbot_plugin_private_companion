@@ -27,7 +27,7 @@ from companion_v2.storage.management import (auto_backup_policy, cleanup_backups
                                              inventory, retention_policy, valid_auto_backup_interval)
 
 from .backup_api import MAX_REQUEST_BYTES, backup_operation_lock
-from .management_identity import dashboard_operator
+from .management_identity import current_request_username, require_controller_management_operator
 from .storage_location import (finish_backup_relocation, relocate_backup_storage,
                                selected_backup_directory, selected_backup_root, selected_root)
 
@@ -73,13 +73,8 @@ class StorageWebAPI:
                 (f"{PREFIX}/compact", self.compact, ["POST"], "Run lossless V2 SQLite slimming and compaction")]
 
     def _operator(self):
-        username = request.username
-        if (type(username) is not str or not username.strip() or username != username.strip()
-                or username.startswith("api_key:") or len(username) > 128):
-            raise TaskError("dashboard_identity_required", "sign in to the AstrBot Dashboard as an administrator")
-        runtime = getattr(self.controller, "runtime", None)
-        if runtime is not None:
-            dashboard_operator(runtime, username, at=self.controller.now())
+        username = current_request_username(request)
+        return require_controller_management_operator(self.controller, username)
 
     def _backup_context(self, selected_path):
         controller = self.controller

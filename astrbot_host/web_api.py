@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import fields, is_dataclass
 from datetime import datetime
 from enum import Enum
+import functools
 import inspect
 import json
 import logging
@@ -12,7 +13,9 @@ from typing import Any, TYPE_CHECKING
 
 from astrbot.api.web import request
 
+from companion_v2.execution.models import TaskError
 from companion_v2.foundation.outcome import Outcome
+from .management_identity import current_request_username, require_controller_management_operator
 from .settings import HostControlError
 from .relationships_api import RelationshipWebAPI
 from .backup_api import BackupWebAPI
@@ -92,7 +95,10 @@ def http_handler(handler):
     error response. Serialization itself stays with the host: the plugin never
     writes ``Content-Length`` for these JSON bodies.
     """
+    if getattr(handler, "_companion_http_wrapped", False):
+        return handler
 
+    @functools.wraps(handler)
     async def respond(*args, **kwargs):
         try:
             value = handler(*args, **kwargs)
@@ -105,6 +111,10 @@ def http_handler(handler):
                     "reason": "the panel request failed", "data": {"code": "plugin_web_internal_error"}}
         return value
 
+    respond._companion_http_wrapped = True
+    owner = getattr(handler, "__self__", None)
+    if owner is not None:
+        respond.__self__ = owner
     return respond
 
 
@@ -124,6 +134,7 @@ class StagingWebAPI:
         self.model = ModelWebAPI(controller)
         self.logs = LogWebAPI(controller)
         self.integration = IntegrationWebAPI(controller)
+        self.setup: SetupWebAPI | None = None
 
     def register(self) -> None:
         register = getattr(self.controller.context, "register_web_api", None)
@@ -153,7 +164,13 @@ class StagingWebAPI:
             all_routes += NativePerceptionWebAPI(self.controller).routes()
             all_routes += HuaweiHealthWebAPI(self.controller).routes()
             all_routes += ConfigurationWebAPI(self.controller).routes()
-            all_routes += SetupWebAPI(self.controller).routes()
+            if self.setup is None:
+                self.setup = SetupWebAPI(self.controller)
+            try:
+                setattr(self.controller, "_setup_api", self.setup)
+            except AttributeError:
+                pass
+            all_routes += self.setup.routes()
             all_routes += LegacyMigrationWebAPI(self.controller).routes()
             # Persona text stays host-owned; the workshop keeps editable text versions
             # and can produce an uncommitted structured role-profile draft.
@@ -185,6 +202,14 @@ class StagingWebAPI:
             logger.warning("[CompanionV2] 新的她未加载 error_type=%s", type(error).__name__)
 
     def unregister(self) -> None:
+        if getattr(self.controller, "_terminated", False):
+            setup = getattr(self, "setup", None) or getattr(self.controller, "_setup_api", None)
+            cancel = getattr(setup, "cancel_background_tasks", None) if setup is not None else None
+            if callable(cancel):
+                try:
+                    cancel()
+                except Exception:
+                    logger.warning("[CompanionV2] 设置测试任务清理未完成")
         designer = getattr(self, "_persona_designer", None)
         if designer is not None:
             try:
@@ -207,37 +232,54 @@ class StagingWebAPI:
         ]
         self._registered_routes.clear()
 
+    def _admin(self) -> str:
+        username = current_request_username(request)
+        require_controller_management_operator(self.controller, username)
+        return username
+
     async def api_status(self) -> dict[str, Any]:
-        status = self.controller.status()
         try:
-            username = request.username
-        except RuntimeError:
-            username = None
-        if type(username) is str and username.strip() and not username.startswith("api_key:"):
+            self._admin()
+            status = self.controller.status()
             status["targets"] = await display_names(self.controller).targets(status.get("targets", []))
-            if self.controller._terminated:
-                status = self.controller.status()
-        return {"status": "ok", "data": status}
+            self._admin()
+            return {"status": "ok", "data": status}
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
 
     async def api_probe(self) -> dict[str, Any]:
-        return outcome_response(await self.controller.probe())
+        try:
+            self._admin()
+            return outcome_response(await self.controller.probe())
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
 
     async def api_initialize(self) -> dict[str, Any]:
-        return outcome_response(await self.controller.initialize_profile())
+        try:
+            self._admin()
+            return outcome_response(await self.controller.initialize_profile())
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
 
     async def api_authorize_delivery(self) -> dict[str, Any]:
-        return outcome_response(await self.controller.authorize_delivery())
+        try:
+            self._admin()
+            return outcome_response(await self.controller.authorize_delivery())
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
 
     async def api_prepare_screen(self) -> dict[str, Any]:
-        return outcome_response(await self.controller.prepare_screen())
+        try:
+            self._admin()
+            return outcome_response(await self.controller.prepare_screen())
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
 
     async def api_upgrade_screen(self) -> dict[str, Any]:
         try:
+            username = self._admin()
             if request.query:
                 raise ValueError("query fields are not allowed")
-            username = request.username
-            if type(username) is not str or not username.strip() or username.startswith("api_key:"):
-                return outcome_response(Outcome.failed("dashboard_identity_required", "sign in to the AstrBot Dashboard"))
             raw = await request.body()
             if len(raw) > 4096:
                 raise ValueError("request is too large")
@@ -253,17 +295,31 @@ class StagingWebAPI:
                     {"previous_version", "previous_hash", "expected_revision"}):
                 raise ValueError("provide the exact previous package and revision")
             return outcome_response(await self.controller.upgrade_screen(username=username, **data))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
         except (ValueError, TypeError, UnicodeError, KeyError):
             return outcome_response(Outcome.failed("staging_screen_upgrade_invalid", "invalid Screen upgrade request"))
 
     async def api_revoke_delivery(self) -> dict[str, Any]:
-        return outcome_response(await self.controller.revoke_delivery())
+        try:
+            self._admin()
+            return outcome_response(await self.controller.revoke_delivery())
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
 
     async def api_start(self) -> dict[str, Any]:
-        return outcome_response(await self.controller.start())
+        try:
+            self._admin()
+            return outcome_response(await self.controller.start())
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
 
     async def api_stop(self) -> dict[str, Any]:
-        return outcome_response(await self.controller.stop())
+        try:
+            self._admin()
+            return outcome_response(await self.controller.stop())
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
 
     @staticmethod
     def _batch_query() -> str | None:
@@ -271,7 +327,15 @@ class StagingWebAPI:
         return str(value).strip() if value is not None else None
 
     async def api_inspect(self) -> dict[str, Any]:
-        return outcome_response(await self.controller.inspect(self._batch_query()))
+        try:
+            self._admin()
+            return outcome_response(await self.controller.inspect(self._batch_query()))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
 
     async def api_preview(self) -> dict[str, Any]:
-        return outcome_response(await self.controller.preview(self._batch_query() or ""))
+        try:
+            self._admin()
+            return outcome_response(await self.controller.preview(self._batch_query() or ""))
+        except TaskError as error:
+            return outcome_response(Outcome.failed(error.code, str(error)))
