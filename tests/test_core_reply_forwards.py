@@ -13,18 +13,23 @@ from astrbot_host.core_reply_closing import _has_heavy_content
 from astrbot_host.core_reply_forwards import (
     COMPANION_FORWARD_INJECTED_EXTRA,
     COMPANION_FORWARD_OWNED_EXTRA,
+    FORWARD_DISABLED_SUMMARY,
     FORWARD_FALLBACK_SUMMARY,
+    FORWARD_OMITTED_LIMIT_SUMMARY,
     FORWARD_ONLY_SENTINEL_PROMPT,
     FORWARD_REQUEST_BLOCK_PREFIX,
     MAX_CORE_FORWARD_IMAGES,
     PARSED_FORWARDS_EXTRA,
     apply_debounced_private_merge,
+    await_event_forwards_parsed,
     claim_core_reply_forward_injection,
     coalesce_debounced_forwards,
+    ensure_event_forwards_parsed,
     event_will_enter_astrbot_llm,
     forward_burst_debounce_policy,
     get_parsed_forwards,
     inject_core_reply_forwards,
+    merge_parsed_forward_payloads,
     parse_event_forwards,
     prepare_forward_only_request,
     private_debounce_input,
@@ -764,6 +769,390 @@ class CoreReplyForwardPersistenceAndGroupTests(GroupFixture, unittest.IsolatedAs
         )
         self.assertEqual(len(turn_rows), 1)
         self.assertIsNotNone(turn_rows[0]["input_observation_id"])
+
+    def _disable_forward_adaptation(self, context, *, key):
+        from companion_v2.conversation.reply_settings import GROUP, target_for
+
+        cfg = self.app.configuration
+        target = target_for(context)
+        definitions = cfg.registry.group(GROUP)
+        owner = cfg._owners[definitions[0].owner_id]
+        state = owner.read(target, definitions)
+        owner.write(
+            target, definitions,
+            changes={GROUP + ".forward_message_adaptation_enabled": False},
+            reset=(), expected_revision=state.revision, observed_at=self.clock.now(),
+        )
+
+    async def test_group_forward_adaptation_disabled_prevents_early_observation_and_db_leak(self):
+        secret = "绝密内容-不应该泄露"
+
+        async def call_action(action, **params):
+            return {"messages": [_node("群友乙", [{"type": "text", "data": {"text": secret}}])]}
+
+        # Seed context and disable forward_message_adaptation_enabled for this group target.
+        seed_event = self.group_event(identifier="seed-group-1", text="先初始化群设置")
+        seed_cand = await self.controller.group_reply_candidate(seed_event)
+        self.assertTrue(seed_cand.is_success, seed_cand.failure)
+        seed_prep = await self.controller.prepare_core_reply(seed_event)
+        self.assertTrue(seed_prep.is_success, seed_prep.failure)
+        self._disable_forward_adaptation(seed_prep.unwrap()["context"], key="disable-group-forward")
+
+        event = self.group_event(identifier="forward-group-secret-1", text="")
+        event.message_obj.message = [
+            NS(type="At", qq="100"),
+            NS(type="Forward", id="fwd-group-secret"),
+        ]
+        event.message_obj.raw_message = {
+            "post_type": "message",
+            "message_type": "group",
+            "group_id": 300,
+            "self_id": 100,
+            "user_id": 200,
+            "sender": {"user_id": 200},
+            "message_id": "forward-group-secret-1",
+            "message": [
+                {"type": "at", "data": {"qq": "100"}},
+                {"type": "forward", "data": {"id": "fwd-group-secret"}},
+            ],
+        }
+        event.message_obj.message_str = ""
+        event.message_str = ""
+        event.bot.api = NS(call_action=call_action)
+
+        await parse_event_forwards(event, policy=self.controller.session.bridge.forward_intake)
+        candidate = await self.controller.group_reply_candidate(event)
+        self.assertTrue(candidate.is_success, candidate.failure)
+        admission = candidate.unwrap()
+        self.assertTrue(admission["admitted"])
+
+        result = await self.controller.prepare_core_reply(event, group_admission=admission)
+        self.assertTrue(result.is_success, result.failure)
+        prepared = result.unwrap()
+        self.assertFalse(prepared["forward_adaptation_enabled"])
+        self.assertNotIn(secret, prepared["text"])
+        self.assertEqual(prepared["text"], FORWARD_DISABLED_SUMMARY)
+        await prepared["native_source_future"]
+
+        for table, column in (("runtime_metadata", "value"), ("sources", "payload_json")):
+            rows = self.app.runtime.read_all(f"SELECT {column} FROM {table}", ())
+            joined = " ".join(str(row[column]) for row in rows)
+            self.assertNotIn(secret, joined, f"secret leaked into {table}")
+
+    async def test_private_forward_adaptation_disabled_preserves_face_sticker_and_stt(self):
+        secret = "私聊绝密转发正文"
+
+        async def call_action(action, **params):
+            return {"messages": [_node("外部好友", [{"type": "text", "data": {"text": secret}}])]}
+
+        seed_event = self.event(identifier="seed-private-1", text="先初始化私聊设置")
+        seed_prep = await self.controller.prepare_core_reply(seed_event)
+        self.assertTrue(seed_prep.is_success, seed_prep.failure)
+        self._disable_forward_adaptation(seed_prep.unwrap()["context"], key="disable-private-forward")
+
+        event = self.event(identifier="forward-private-face-1", text="")
+        event.message_obj.message = [
+            NS(type="Face", id="13"),
+            NS(type="Record", file="voice.amr"),
+            NS(type="Forward", id="fwd-private-secret"),
+        ]
+        event.message_obj.raw_message = {
+            "post_type": "message",
+            "message": [
+                {"type": "face", "data": {"id": "13"}},
+                {"type": "image", "data": {"sub_type": 1, "file": "sticker.gif"}},
+                {"type": "record", "data": {"file": "voice.amr"}},
+                {"type": "forward", "data": {"id": "fwd-private-secret"}},
+            ],
+        }
+        event.message_obj.message_str = ""
+        event.message_str = ""
+        event.set_extra("astrbot_stt_transcripts", [{"transcript": "听语音这段"}])
+        event.bot.api = NS(call_action=call_action)
+
+        await parse_event_forwards(event, policy=self.controller.session.bridge.forward_intake)
+        result = await self.controller.prepare_core_reply(event)
+        self.assertTrue(result.is_success, result.failure)
+        prepared = result.unwrap()
+        self.assertFalse(prepared["forward_adaptation_enabled"])
+        self.assertIn("[表情]", prepared["text"])
+        self.assertIn("[表情包]", prepared["text"])
+        self.assertIn("听语音这段", prepared["text"])
+        self.assertNotIn(secret, prepared["text"])
+
+
+class CoreReplyForwardHardeningRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_image_ref_sanitizer_rejects_local_paths_file_uris_and_bare_filenames(self):
+        async def call_action(action, **params):
+            return {
+                "messages": [
+                    _node("恶意节点", [
+                        {"type": "image", "data": {"file": r"C:\Users\example\.astrbot\data\cmd_config.json"}},
+                        {"type": "image", "data": {"url": "file:///etc/passwd"}},
+                        {"type": "image", "data": {"file": "/etc/shadow"}},
+                        {"type": "image", "data": {"file": "AABBCC112233.jpg"}},
+                        {"type": "image", "data": {"url": "data:text/plain;base64,aGVsbG8="}},
+                        {"type": "image", "data": {"url": "https://img.example.com/safe.png", "file": "HASH.jpg"}},
+                        {"type": "image", "data": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+                        {"type": "image", "data": {"file": "base64://iVBORw0KGgo="}},
+                    ]),
+                    _node("CQ恶意节点", "[CQ:image,file=file:///C:/secret.txt][CQ:image,url=https://img.example.com/cq_ok.jpg]"),
+                ]
+            }
+
+        event = _make_event([NS(type="Forward", id="fwd-lfi")], call_action=call_action)
+        parsed = await parse_event_forwards(event)
+        self.assertEqual(
+            parsed["image_urls"],
+            [
+                "https://img.example.com/safe.png",
+                "data:image/png;base64,iVBORw0KGgo=",
+                "base64://iVBORw0KGgo=",
+                "https://img.example.com/cq_ok.jpg",
+            ],
+        )
+        # Even if an external cache put unsafe URLs in _astrbot_parsed_forwards, injection filters them.
+        parsed["image_urls"].insert(0, "file:///etc/passwd")
+        parsed["image_urls"].insert(0, r"C:\Windows\win.ini")
+        req = NS(prompt=" ", extra_user_content_parts=[], image_urls=[])
+        inject_core_reply_forwards(event, req)
+        self.assertEqual(
+            req.image_urls,
+            [
+                "https://img.example.com/safe.png",
+                "data:image/png;base64,iVBORw0KGgo=",
+                "base64://iVBORw0KGgo=",
+                "https://img.example.com/cq_ok.jpg",
+            ],
+        )
+
+    async def test_node_budget_exhaustion_skips_subsequent_card_rpc_and_marks_omitted(self):
+        rpc_calls = []
+
+        async def call_action(action, **params):
+            fid = str(params.get("message_id") or params.get("id"))
+            rpc_calls.append(fid)
+            return {
+                "messages": [
+                    _node("甲", [{"type": "text", "data": {"text": f"{fid}-1"}}]),
+                    _node("乙", [{"type": "text", "data": {"text": f"{fid}-2"}}]),
+                ]
+            }
+
+        event = _make_event(
+            [NS(type="Forward", id="f1"), NS(type="Forward", id="f2")],
+            call_action=call_action,
+        )
+        parsed = await parse_event_forwards(event, policy=ForwardIntakePolicy(max_forwards=4, max_nodes=2))
+        self.assertEqual(rpc_calls, ["f1"])
+        self.assertTrue(parsed["truncated"])
+        self.assertEqual(len(parsed["cards"]), 2)
+        self.assertEqual(parsed["cards"][0]["node_count"], 2)
+        self.assertEqual(parsed["cards"][1]["node_count"], 0)
+        self.assertTrue(parsed["cards"][1]["truncated"])
+        self.assertFalse(parsed["cards"][1]["failed"])
+        self.assertEqual(parsed["cards"][1]["summary_text"], FORWARD_OMITTED_LIMIT_SUMMARY)
+
+    async def test_empty_cards_rejected_no_aliasing_and_cross_payload_dedup_with_fallback(self):
+        empty_event = _make_event([NS(type="Plain", text="hi")], message_str="hi")
+        empty_event.set_extra(PARSED_FORWARDS_EXTRA, {
+            "version": 1, "source": "external", "cards": [],
+            "combined_text": "", "total_nodes": 0, "image_urls": [], "truncated": False,
+        })
+        self.assertIsNone(get_parsed_forwards(empty_event))
+        self.assertFalse(_has_heavy_content(empty_event))
+
+        # Single-card coalesce must NOT alias mutable dict or bypass max_nodes/max_images caps.
+        big_lines = "\n".join(f"人{i}: 内容{i}" for i in range(50))
+        big_payload = {
+            "version": 1,
+            "source": "astrbot_core",
+            "cards": [{
+                "forward_id": "fwd-big",
+                "message_id": "msg-big",
+                "node_count": 50,
+                "truncated": False,
+                "summary_text": f"[合并转发聊天记录 · 共50条]\n{big_lines}",
+                "image_urls": [f"https://img.example.com/{i}.png" for i in range(10)],
+                "failed": False,
+            }],
+            "combined_text": f"[合并转发聊天记录 · 共50条]\n{big_lines}",
+            "total_nodes": 50,
+            "image_urls": [f"https://img.example.com/{i}.png" for i in range(10)],
+            "truncated": False,
+        }
+        ev1_fwd = _make_event([NS(type="Forward", id="fwd-big")], message_id="msg-big")
+        ev1_fwd.set_extra(PARSED_FORWARDS_EXTRA, big_payload)
+        ev2_plain = _make_event([NS(type="Plain", text="看看")], message_str="看看", message_id="msg-plain")
+
+        merged = await coalesce_debounced_forwards(
+            ev2_plain,
+            ((ev1_fwd, "", 1.0), (ev2_plain, "看看", 2.0)),
+            policy=ForwardIntakePolicy(max_nodes=5),
+        )
+        self.assertIsNot(merged, big_payload)
+        self.assertEqual(merged["total_nodes"], 5)
+        self.assertEqual(len(merged["image_urls"]), MAX_CORE_FORWARD_IMAGES)
+        self.assertTrue(merged["truncated"])
+
+        # Cross-payload dedup by per-payload occurrence index + NapCat same-id multi-card + shared-cache fallback compat.
+        p1 = {
+            "version": 1,
+            "cards": [
+                {"message_id": "m1", "forward_id": "f1", "node_count": 1, "summary_text": "[合并转发聊天记录 · 共1条]\nA: 卡1", "image_urls": []},
+                {"message_id": "m2", "forward_id": "f2", "node_count": 1, "summary_text": "[合并转发聊天记录 · 共1条]\nB: 卡2", "image_urls": []},
+            ],
+        }
+        p2 = {
+            "version": 1,
+            "cards": [
+                {"message_id": "m2", "forward_id": "f2", "node_count": 1, "summary_text": "[合并转发聊天记录 · 共1条]\nB: 卡2", "image_urls": []},
+                {"message_id": "m3", "forward_id": "f3", "node_count": 0, "summary_text": FORWARD_FALLBACK_SUMMARY, "image_urls": [], "fallback": True},
+            ],
+        }
+        deduped = merge_parsed_forward_payloads([p1, p2])
+        self.assertEqual([(c["message_id"], c["forward_id"]) for c in deduped["cards"]], [("m1", "f1"), ("m2", "f2"), ("m3", "f3")])
+        self.assertTrue(deduped["cards"][2]["failed"])
+
+        # Two distinct cards inside one outer NapCat message sharing (m9, f9) stay both preserved.
+        same_outer = {
+            "version": 1,
+            "cards": [
+                {"message_id": "m9", "forward_id": "f9", "node_count": 1, "summary_text": "[合并转发聊天记录 · 共1条]\nA: 第一份", "image_urls": []},
+                {"message_id": "m9", "forward_id": "f9", "node_count": 1, "summary_text": "[合并转发聊天记录 · 共1条]\nB: 第二份", "image_urls": []},
+            ],
+        }
+        kept_both = merge_parsed_forward_payloads([same_outer])
+        self.assertEqual(len(kept_both["cards"]), 2)
+
+    async def test_finished_status_and_external_task_cancellation_never_crash_winner(self):
+        # Case A: external cancellation of ev1's background parse task recovers cleanly in ev2!
+        rpc_count = [0]
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def call_action(action, **params):
+            rpc_count[0] += 1
+            if rpc_count[0] == 1:
+                started.set()
+                await release.wait()
+            return {"messages": [_node("甲", [{"type": "text", "data": {"text": "恢复后的内容"}}])]}
+
+        ev1 = _make_event([NS(type="Forward", id="fwd-race")], message_id="m-race", call_action=call_action)
+        task = ensure_event_forwards_parsed(ev1)
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        waiter = asyncio.create_task(await_event_forwards_parsed(ev1))
+        await asyncio.sleep(0)
+        task.cancel()
+        result = await waiter
+        self.assertIsNotNone(result)
+        self.assertIn("恢复后的内容", result["combined_text"])
+
+        # Case B: status == "finished" in receive_companion_message does NOT cancel ev1's parse task!
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        plugin._private_debounce = PrivateDebounce(log_enabled=False)
+        target = NS(key="target", target_id="target-race")
+        policy = Policy(enabled=True, min_seconds=0.02, max_seconds=0.04, total_seconds=0.10)
+
+        ev1_ctx_release = asyncio.Event()
+        ev1_rpc_release = asyncio.Event()
+
+        async def slow_forward_rpc(action, **params):
+            await ev1_rpc_release.wait()
+            return {"messages": [_node("甲", [{"type": "text", "data": {"text": "竞态安全内容"}}])]}
+
+        async def prepare_context(event, _target, group_admission=None):
+            if event.message_obj.message_id == "race-1":
+                await ev1_ctx_release.wait()
+            return Outcome.success(NS(captured=NS(text=event.message_str or ""), context=NS(key="ctx-race"), debounce=policy))
+
+        prepared_wins = []
+
+        async def prepare_core_reply(event, _target, group_admission=None, plan=None):
+            prepared_wins.append(event)
+            return Outcome.success({
+                "context": NS(key="ctx-race"), "instruction": "Persona.", "prompt_instruction": "",
+                "stable_prompt_instruction": "", "target_id": target.target_id, "channel": "private",
+                "event_id": event.message_obj.message_id, "text": plan.captured.text if plan else "",
+                "native_input": NS(text=plan.captured.text if plan else "", event_id=event.message_obj.message_id),
+                "forward_adaptation_enabled": True,
+            })
+
+        plugin.staging = NS(
+            runtime=None, now=lambda: datetime.now(timezone.utc), claims=lambda _e: True,
+            target_for_event=lambda _e: target,
+            settings=NS(enabled=True, forward_intake=ForwardIntakePolicy()),
+            context=_fake_native_context(),
+            session=NS(profile=NS(target=target), bridge=NS(forward_intake=ForwardIntakePolicy()),
+                       core_reply_observations=NS(phase=Mock())),
+            session_topology=NS(reply_enabled=AsyncMock(return_value=True), schedule_observe=Mock()),
+            prepare_core_reply_context=AsyncMock(side_effect=prepare_context),
+            prepare_core_reply=AsyncMock(side_effect=prepare_core_reply),
+            authorize_core_reply=AsyncMock(return_value=Outcome.success(True)),
+        )
+
+        ev_f = _make_event([NS(type="Forward", id="f-race-2")], message_str="", message_id="race-1", call_action=slow_forward_rpc)
+        ev_t = _make_event([NS(type="Plain", text="好了")], message_str="好了", message_id="race-2")
+        t_f = asyncio.create_task(plugin.receive_companion_message(ev_f))
+        await asyncio.sleep(0.01)
+        t_t = asyncio.create_task(plugin.receive_companion_message(ev_t))
+        await asyncio.sleep(0.08)  # ev_t finishes debounce while ev_f is still blocked before configure()
+        ev1_ctx_release.set()      # ev_f now hits configure -> "finished" while ev_t awaits ev_f's parse task!
+        await asyncio.sleep(0.02)
+        ev1_rpc_release.set()
+        await asyncio.gather(t_f, t_t)
+
+        self.assertEqual(len(prepared_wins), 1)
+        self.assertIs(prepared_wins[0], ev_t)
+        self.assertIsNotNone(get_parsed_forwards(ev_f))
+        self.assertIsNotNone(get_parsed_forwards(ev_t))
+        self.assertIn("竞态安全内容", get_parsed_forwards(ev_t)["combined_text"])
+
+    async def test_pure_forward_followup_updates_prepared_metadata_and_respects_adaptation(self):
+        plugin = ENTRY.PrivateCompanionV2StagingPlugin.__new__(ENTRY.PrivateCompanionV2StagingPlugin)
+        target = NS(key="target", target_id="target-fu")
+        plugin.staging = NS(
+            runtime=None, now=lambda: datetime.now(timezone.utc),
+            settings=NS(enabled=True, forward_intake=ForwardIntakePolicy()),
+            session=NS(bridge=NS(forward_intake=ForwardIntakePolicy())),
+        )
+
+        for adaptation_enabled in (True, False):
+            with self.subTest(adaptation_enabled=adaptation_enabled):
+                plugin._private_reply_followups().close()
+                ev1 = _make_event([NS(type="Plain", text="帮我看看")], message_str="帮我看看", message_id="fu-1", created_at=1_700_000_001.0)
+                ev2 = _make_event([NS(type="Forward", id="f-fu")], message_str="", message_id="fu-2", created_at=1_700_000_002.0)
+                ev2.set_extra(PARSED_FORWARDS_EXTRA, {
+                    "version": 1, "source": "private_companion",
+                    "cards": [{
+                        "forward_id": "f-fu", "message_id": "fu-2", "node_count": 1,
+                        "truncated": False, "summary_text": "[合并转发聊天记录 · 共1条]\n甲: 追发正文",
+                        "image_urls": [], "failed": False,
+                    }],
+                    "combined_text": "[合并转发聊天记录 · 共1条]\n甲: 追发正文",
+                    "total_nodes": 1, "image_urls": [], "truncated": False,
+                })
+                prepared = {
+                    "event_ref": "ref-fu",
+                    "text": "帮我看看",
+                    "forward_adaptation_enabled": adaptation_enabled,
+                }
+                ev1.set_extra(ENTRY.CORE_REPLY_CONTEXT_EXTRA, {"prepared": prepared})
+                plugin._private_reply_followups().start(
+                    target.target_id, ev1, "ref-fu", ((ev1, "帮我看看", ev1.created_at),),
+                )
+                self.assertTrue(plugin._fold_private_follow_up(ev2, target, "ref-fu-2", "", allow_empty=True))
+
+                req = NS(prompt="帮我看看", extra_user_content_parts=[], image_urls=[])
+                plugin._apply_private_follow_ups_to_request(ev1, req)
+                self.assertEqual(req.prompt, "帮我看看")
+                self.assertEqual(prepared["debounced_message_count"], 2)
+                self.assertIn("debounced_inputs", prepared)
+                if adaptation_enabled:
+                    self.assertIn("追发正文", prepared["text"])
+                else:
+                    self.assertNotIn("追发正文", prepared["text"])
+                    self.assertEqual(prepared["text"], "帮我看看")
 
 
 if __name__ == "__main__":

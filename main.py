@@ -70,6 +70,7 @@ from .astrbot_host.core_reply_forwards import (
     event_has_media_or_reply,
     event_has_top_level_forwards,
     event_will_enter_astrbot_llm,
+    format_forwards_for_observation,
     forward_burst_debounce_policy,
     get_parsed_forwards,
     inject_core_reply_forwards,
@@ -576,32 +577,47 @@ class PrivateCompanionV2StagingPlugin(Star):
         pending, entries = resolved
         if not pending:
             return
-        merge_followup_forwards(
+        existing_forwards = get_parsed_forwards(event)
+        merged_forwards = merge_followup_forwards(
             event, pending, policy=resolve_forward_intake_policy(self.staging))
+        forwards_updated = (merged_forwards is not None and merged_forwards is not existing_forwards)
         extra_text = "\n".join(str(item[1]).strip() for item in pending if str(item[1]).strip())
-        if not extra_text:
+        if not extra_text and not forwards_updated:
             return
-        prompt = getattr(request, "prompt", None)
-        if isinstance(prompt, str) and prompt.strip():
-            request.prompt = prompt.rstrip() + "\n" + extra_text
-        else:
-            request.prompt = extra_text
-        if hasattr(request, "retrieval_query"):
-            current_query = getattr(request, "retrieval_query", None)
-            if isinstance(current_query, str) and current_query.strip():
-                request.retrieval_query = current_query.rstrip() + "\n" + extra_text
+        if extra_text:
+            prompt = getattr(request, "prompt", None)
+            if isinstance(prompt, str) and prompt.strip():
+                request.prompt = prompt.rstrip() + "\n" + extra_text
             else:
-                request.retrieval_query = request.prompt
+                request.prompt = extra_text
+            if hasattr(request, "retrieval_query"):
+                current_query = getattr(request, "retrieval_query", None)
+                if isinstance(current_query, str) and current_query.strip():
+                    request.retrieval_query = current_query.rstrip() + "\n" + extra_text
+                else:
+                    request.retrieval_query = request.prompt
         prepared = prepared_state.get("prepared") if isinstance(prepared_state, dict) else None
         if isinstance(prepared, dict):
             base = str(prepared.get("text") or "").rstrip()
-            prepared["text"] = (base + "\n" + extra_text).strip() if base else extra_text
+            if forwards_updated:
+                old_summary = format_forwards_for_observation(existing_forwards)
+                if old_summary and base.endswith(old_summary):
+                    base = base[: -len(old_summary)].rstrip()
+                elif old_summary and base == old_summary:
+                    base = ""
+                if extra_text:
+                    base = (base + "\n" + extra_text).strip() if base else extra_text
+                adaptation_enabled = prepared.get("forward_adaptation_enabled", True) is not False
+                prepared["text"] = combine_text_and_forward_summary(
+                    base, merged_forwards, adaptation_enabled=adaptation_enabled)
+            elif extra_text:
+                prepared["text"] = (base + "\n" + extra_text).strip() if base else extra_text
             prepared["debounced_inputs"] = merged_input_sequence(entries)
             prepared["debounced_message_count"] = len(entries)
         logger.info(
             "[CompanionV2] 首轮模型请求前合并私聊后续消息 event_ref=%s count=%d message=%s",
             (prepared or {}).get("event_ref") if isinstance(prepared, dict) else None,
-            len(pending), extra_text[:120])
+            len(pending), (extra_text or "[合并转发聊天记录]")[:120])
 
     def _suppress_merged_private_event(self, event, target, event_ref, *, reason="private_debounce_merged"):
         suppress_default_reply(event)
@@ -1309,12 +1325,13 @@ class PrivateCompanionV2StagingPlugin(Star):
             logger.warning("[CompanionV2] 会话回复开关暂不可读，继续核心授权检查 event_ref=%s error_type=%s",
                            event_ref, type(error).__name__)
         if not reply_enabled:
-            if forward_parse_task is not None and not forward_parse_task.done():
-                forward_parse_task.cancel()
+            aborted = True
             if debounce_pending is not None:
-                await debounce_manager.abort(debounce_pending, event=event)
+                aborted = await debounce_manager.abort(debounce_pending, event=event)
                 if debounce_manager.superseded_by_same_event(debounce_pending, event):
                     return
+            if aborted and forward_parse_task is not None and not forward_parse_task.done():
+                forward_parse_task.cancel()
             suppress_default_reply(event)
             self._record_no_reply(event, "session_reply_disabled", origin_key=origin_key,
                                   channel=channel, event_ref=event_ref, turn=event_ref)
@@ -1415,7 +1432,17 @@ class PrivateCompanionV2StagingPlugin(Star):
                 self._suppress_debounced_private_event(
                     event, target, event_ref, debounce_manager, debounce_pending)
                 return
-            if status in {"closed", "aborted", "finished"}:
+            if status == "finished":
+                if forward_parse_task is not None:
+                    await await_event_forwards_parsed(
+                        event, policy=forward_policy,
+                        native_context=getattr(self.staging, "context", None),
+                    )
+                self._suppress_debounced_private_event(
+                    event, target, event_ref, debounce_manager, debounce_pending,
+                    reason="private_debounce_cancelled")
+                return
+            if status in {"closed", "aborted"}:
                 if forward_parse_task is not None and not forward_parse_task.done():
                     forward_parse_task.cancel()
                 self._suppress_debounced_private_event(

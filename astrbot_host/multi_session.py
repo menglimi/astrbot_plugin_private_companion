@@ -152,6 +152,40 @@ class MultiPrivateBridge(NativePrivateBridge):
         self.target_for_scope(scope)
         return super().client(scope)
 
+    @staticmethod
+    def _core_reply_non_forward_text(event) -> str:
+        """Extract private baseline text (Plain, stickers, Face/Mface, trusted STT) without forwards."""
+        from companion_v2.adapters.astrbot.voice_stt import VOICE_TRANSCRIPT_PREFIX, trusted_stt_transcript
+
+        message = getattr(event, "message_obj", None)
+        stt_text = trusted_stt_transcript(event)
+        stt_used = False
+        pieces = []
+        for part in getattr(message, "message", ()):
+            kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
+            if kind == "Plain" and isinstance(getattr(part, "text", None), str):
+                if stt_text and part.text.strip() == "[语音消息]" and not stt_used:
+                    pieces.append(VOICE_TRANSCRIPT_PREFIX + stt_text)
+                    stt_used = True
+                else:
+                    if stt_text and stt_text in part.text:
+                        stt_used = True
+                    pieces.append(part.text)
+            elif kind in ("Face", "Mface"):
+                # A sticker is an emotional expression, not an empty message:
+                # keep a bounded marker so the model can answer the feeling
+                # instead of seeing nothing (or refusing the whole turn).
+                pieces.append("[表情]")
+        if stt_text and not stt_used:
+            pieces.append(VOICE_TRANSCRIPT_PREFIX + stt_text)
+        raw_message = getattr(message, "raw_message", None)
+        raw_segments = raw_message.get("message") if isinstance(raw_message, Mapping) else None
+        if isinstance(raw_segments, list):
+            for segment in raw_segments:
+                if _is_sticker_segment(segment):
+                    pieces.append("[表情包]")
+        return "".join(pieces)
+
     async def capture_core_reply(self, event):
         """Authenticate a private route for AstrBot's reply path without reading attachments."""
         try:
@@ -194,36 +228,9 @@ class MultiPrivateBridge(NativePrivateBridge):
                 raise TaskError("host_client_mismatch", "private host account changed during persona lookup")
             self.client(scope)
             recipients = AudienceRef(scope, (actor.subject,))
-            from companion_v2.adapters.astrbot.voice_stt import VOICE_TRANSCRIPT_PREFIX, trusted_stt_transcript
-
-            stt_text = trusted_stt_transcript(event)
-            stt_used = False
-            pieces = []
-            for part in getattr(message, "message", ()):
-                kind = getattr(getattr(part, "type", None), "value", getattr(part, "type", None))
-                if kind == "Plain" and isinstance(getattr(part, "text", None), str):
-                    if stt_text and part.text.strip() == "[语音消息]" and not stt_used:
-                        pieces.append(VOICE_TRANSCRIPT_PREFIX + stt_text)
-                        stt_used = True
-                    else:
-                        if stt_text and stt_text in part.text:
-                            stt_used = True
-                        pieces.append(part.text)
-                elif kind in ("Face", "Mface"):
-                    # A sticker is an emotional expression, not an empty message:
-                    # keep a bounded marker so the model can answer the feeling
-                    # instead of seeing nothing (or refusing the whole turn).
-                    pieces.append("[表情]")
-            if stt_text and not stt_used:
-                pieces.append(VOICE_TRANSCRIPT_PREFIX + stt_text)
-            raw_message = getattr(message, "raw_message", None)
-            raw_segments = raw_message.get("message") if isinstance(raw_message, Mapping) else None
-            if isinstance(raw_segments, list):
-                for segment in raw_segments:
-                    if _is_sticker_segment(segment):
-                        pieces.append("[表情包]")
             from .core_reply_forwards import combine_text_and_forward_summary, get_parsed_forwards
-            text = combine_text_and_forward_summary("".join(pieces), get_parsed_forwards(event))
+            text = combine_text_and_forward_summary(
+                self._core_reply_non_forward_text(event), get_parsed_forwards(event))
             return Outcome.success(NativeConversationInput(
                 event_id, principal, ConversationRoute(scope, user=actor.subject), recipients,
                 text, at, role, instruction,
@@ -304,7 +311,7 @@ class MultiPrivateBridge(NativePrivateBridge):
                        recipients=AudienceRef(scope, (actor.subject,)),
                        role=role, instruction=instruction)
 
-    async def capture_text_only(self, event):
+    async def capture_text_only(self, event, *, include_parsed_forwards=True):
         """Keep authenticated group text when optional native media is unavailable."""
         if getattr(getattr(event.message_obj, "type", None), "value", None) != "GroupMessage":
             return Outcome.failed("host_scene_unsupported", "text-only fallback requires a native group event")
@@ -314,7 +321,8 @@ class MultiPrivateBridge(NativePrivateBridge):
         from .core_reply_video_sources import remember_capture, video_positions
         positions = video_positions(event, video_type=self.groups.video_type,
                                     component_reader=self.groups.component_reader)
-        captured = await self.groups.capture_text_only(event)
+        captured = await self.groups.capture_text_only(
+            event, include_parsed_forwards=include_parsed_forwards)
         if positions and captured.is_success:
             remember_capture(captured.unwrap(), positions)
         return captured
@@ -990,7 +998,15 @@ class MultiHostSession:
             try:
                 self.application.require_running()
                 connection_lease = self.bridge.connections.acquire((target.platform_id, target.account_id))
-                captured = require(await self.bridge.capture_text_only(event))
+                from .core_reply_forwards import (
+                    FORWARD_DISABLED_SUMMARY,
+                    combine_text_and_forward_summary,
+                    format_forwards_for_observation,
+                    get_parsed_forwards,
+                )
+                parsed_forwards = get_parsed_forwards(event)
+                captured = require(await self.bridge.capture_text_only(
+                    event, include_parsed_forwards=False if parsed_forwards is not None else True))
                 if reply_candidate:
                     captured = await self._materialize_core_conversation(event, target, captured)
                 self.bridge.connections.assert_current(connection_lease)
@@ -1002,6 +1018,31 @@ class MultiHostSession:
                 # when AstrBotInboundAdapter resolves the persona a second time.
                 with self.runtime.transaction():
                     context = self.authority.groups.select(target, captured)
+                reply_snapshot = None
+                if parsed_forwards is not None:
+                    from companion_v2.conversation.reply_settings import GROUP
+                    try:
+                        reply_snapshot = self.application.reply_settings.snapshot(
+                            context.actor, context, self.now())
+                        forward_adaptation_enabled = (
+                            reply_snapshot.values.get(GROUP + ".forward_message_adaptation_enabled", True)
+                            is not False
+                        )
+                    except Exception:
+                        forward_adaptation_enabled = True
+                    if forward_adaptation_enabled:
+                        summary = format_forwards_for_observation(parsed_forwards)
+                        if summary:
+                            if FORWARD_DISABLED_SUMMARY in captured.text:
+                                captured = replace(
+                                    captured,
+                                    text=captured.text.replace(FORWARD_DISABLED_SUMMARY, summary, 1),
+                                )
+                            else:
+                                captured = replace(
+                                    captured,
+                                    text=combine_text_and_forward_summary(captured.text, parsed_forwards),
+                                )
                 # V1 records the bounded group observation before its reply
                 # handlers run.  Do the same after the authenticated binding is
                 # committed, so a later media/model failure cannot erase this
@@ -1018,7 +1059,8 @@ class MultiHostSession:
                 self._record_group_standing(event, context)
                 if reply_candidate:
                     from companion_v2.conversation.reply_settings import GROUP
-                    snapshot = self.application.reply_settings.snapshot(context.actor, context, self.now())
+                    snapshot = (reply_snapshot if reply_snapshot is not None
+                                else self.application.reply_settings.snapshot(context.actor, context, self.now()))
                     settings = {key.removeprefix(GROUP + "."): value for key, value in snapshot.values.items()}
                     values = group_participation_settings(self.runtime, context)
                     projection = next((persona for persona in self.bridge.groups.personas.values()
@@ -1189,11 +1231,12 @@ class MultiHostSession:
                                     else self.bridge.connections.acquire((target.platform_id, target.account_id)))
                 self.bridge.connections.assert_current(connection_lease)
                 if plan is None:
-                    captured = require(await (
-                        self.bridge.capture_text_only(event)
-                        if isinstance(target, GroupTarget)
-                        else self.bridge.capture_core_reply(event)
-                    ))
+                    if isinstance(target, GroupTarget):
+                        from .core_reply_forwards import get_parsed_forwards as _get_parsed_forwards
+                        captured = require(await self.bridge.capture_text_only(
+                            event, include_parsed_forwards=_get_parsed_forwards(event) is None))
+                    else:
+                        captured = require(await self.bridge.capture_core_reply(event))
                     captured = await self._materialize_core_conversation(event, target, captured)
                     self._require_core_reply_target(target, captured)
                     context = self._select_core_reply_context(target, captured)
@@ -1297,7 +1340,6 @@ class MultiHostSession:
                         logger.warning("[CompanionV2] 核心回复文字设置暂不可读，保留宿主发送 error_type=%s", type(error).__name__)
                 from .core_reply_forwards import (
                     combine_text_and_forward_summary,
-                    component_kind,
                     get_parsed_forwards,
                 )
                 parsed_forwards = get_parsed_forwards(event)
@@ -1311,14 +1353,11 @@ class MultiHostSession:
                             ),
                         )
                     elif not forward_adaptation_enabled:
-                        plain_only = "".join(
-                            part.text for part in getattr(getattr(event, "message_obj", None), "message", ())
-                            if component_kind(part) == "Plain" and isinstance(getattr(part, "text", None), str)
-                        )
+                        base_text = self.bridge._core_reply_non_forward_text(event)
                         captured = replace(
                             captured,
                             text=combine_text_and_forward_summary(
-                                plain_only, parsed_forwards, adaptation_enabled=False,
+                                base_text, parsed_forwards, adaptation_enabled=False,
                             ),
                         )
                 prompt_instruction, stable_prompt_instruction = "", ""

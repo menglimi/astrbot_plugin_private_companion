@@ -30,6 +30,7 @@ import re
 import time
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlsplit
 
 from companion_v2.conversation.forwards.models import ForwardIntakePolicy
 
@@ -52,6 +53,7 @@ FORWARD_ATTRIBUTION_HEADER = (
 )
 FORWARD_FALLBACK_SUMMARY = "[合并转发聊天记录（未能拉取详情）]"
 FORWARD_DISABLED_SUMMARY = "[合并转发消息]"
+FORWARD_OMITTED_LIMIT_SUMMARY = "[合并转发聊天记录（已达单次节点上限，已省略）]"
 
 DEFAULT_FETCH_TIMEOUT_SECONDS = 5.0
 DEFAULT_TOTAL_TIMEOUT_SECONDS = 12.0
@@ -61,10 +63,14 @@ MAX_OBSERVATION_FORWARD_CHARS = 2400
 MAX_CORE_FORWARD_IMAGES = 6
 MAX_COALESCED_CARDS = 16
 MAX_NESTED_RPC_FETCHES = 8
+MAX_HTTP_IMAGE_URL_CHARS = 2048
+MAX_INLINE_IMAGE_DATA_CHARS = 2 * 1024 * 1024
 
 _TOP_LEVEL_FORWARD_KINDS = frozenset({"Forward", "Node", "Nodes"})
 _MEDIA_OR_REPLY_KINDS = frozenset({"Image", "File", "Record", "Video", "Reply"})
 _CQ_TAG_RE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)((?:,[^\]]*)?)\]")
+_DATA_IMAGE_BASE64_RE = re.compile(r"^data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+$")
+_BASE64_SCHEME_RE = re.compile(r"^base64://[A-Za-z0-9+/=]+$")
 
 
 def component_kind(part: Any) -> str:
@@ -197,7 +203,7 @@ def get_parsed_forwards(event: Any) -> dict[str, Any] | None:
     except Exception:
         return None
     if (isinstance(payload, dict) and payload.get("version") == 1
-            and isinstance(payload.get("cards"), list)):
+            and isinstance(payload.get("cards"), list) and payload["cards"]):
         return payload
     return None
 
@@ -240,12 +246,45 @@ def _sanitize_inline(value: Any, limit: int = 80) -> str:
 
 
 def _normalize_image_ref(value: Any) -> str:
+    """Allow only safe remote HTTP(S) URLs or bounded inline base64 image refs.
+
+    Strictly rejects local filesystem paths, ``file://`` URIs, bare filenames,
+    and non-image schemes so untrusted third-party forward nodes can never
+    trigger local file reads or waste image budget.
+    """
     if not isinstance(value, str):
         return ""
     cleaned = value.strip()
-    if not cleaned or len(cleaned) > 4096:
+    if not cleaned or any(ord(ch) < 32 or ch.isspace() for ch in cleaned):
         return ""
-    return cleaned
+    lower = cleaned.lower()
+    if lower.startswith(("http://", "https://")):
+        if len(cleaned) > MAX_HTTP_IMAGE_URL_CHARS:
+            return ""
+        try:
+            parsed = urlsplit(cleaned)
+        except ValueError:
+            return ""
+        if parsed.scheme.lower() in ("http", "https") and parsed.netloc:
+            return cleaned
+        return ""
+    if lower.startswith("base64://"):
+        if len(cleaned) <= MAX_INLINE_IMAGE_DATA_CHARS and _BASE64_SCHEME_RE.match(cleaned):
+            return cleaned
+        return ""
+    if lower.startswith("data:image/"):
+        if len(cleaned) <= MAX_INLINE_IMAGE_DATA_CHARS and _DATA_IMAGE_BASE64_RE.match(cleaned):
+            return cleaned
+        return ""
+    return ""
+
+
+def _pick_safe_image_ref(*candidates: Any) -> str:
+    for candidate in candidates:
+        normalized = _normalize_image_ref(candidate)
+        if normalized:
+            return normalized
+    return ""
 
 
 def _format_node_time(raw_time: Any) -> str:
@@ -571,7 +610,7 @@ def _render_cq_text(
         cq_type = match.group(1).lower()
         params = _parse_cq_params(match.group(2))
         if cq_type == "image":
-            ref = params.get("url") or params.get("file") or ""
+            ref = _pick_safe_image_ref(params.get("url"), params.get("file"))
             is_sticker = str(params.get("sub_type", params.get("subType", ""))) == "1"
             if ref and not is_sticker:
                 state.record_image(ref, card_images)
@@ -707,11 +746,11 @@ async def _parse_node_list(
                         if isinstance(txt, str) and txt:
                             body_parts.append(txt)
                     elif seg_type == "image":
-                        ref = seg_data.get("url") or seg_data.get("file") or ""
+                        ref = _pick_safe_image_ref(seg_data.get("url"), seg_data.get("file"))
                         sub_type = seg_data.get("sub_type", seg_data.get("subType"))
                         is_sticker = str(sub_type) == "1"
                         if ref and not is_sticker:
-                            state.record_image(str(ref), card_images)
+                            state.record_image(ref, card_images)
                         body_parts.append("[表情包]" if is_sticker else "[图片]")
                     elif seg_type == "face":
                         raw_face = seg_data.get("raw") if isinstance(seg_data.get("raw"), Mapping) else {}
@@ -773,9 +812,11 @@ async def _parse_node_list(
                         if isinstance(txt, str) and txt:
                             body_parts.append(txt)
                     elif seg_kind == "Image":
-                        ref = getattr(seg, "url", None) or getattr(seg, "file", None) or getattr(seg, "path", None) or ""
+                        ref = _pick_safe_image_ref(
+                            getattr(seg, "url", None), getattr(seg, "file", None),
+                        )
                         if ref:
-                            state.record_image(str(ref), card_images)
+                            state.record_image(ref, card_images)
                         body_parts.append("[图片]")
                     elif seg_kind == "Face":
                         body_parts.append("[表情]")
@@ -881,7 +922,11 @@ async def _parse_node_list(
 
 
 def _format_card_summary(lines: list[str], *, node_count: int, truncated: bool, failed: bool) -> tuple[str, bool]:
-    if failed or not lines:
+    if failed:
+        return FORWARD_FALLBACK_SUMMARY, False
+    if not lines:
+        if truncated:
+            return FORWARD_OMITTED_LIMIT_SUMMARY, True
         return FORWARD_FALLBACK_SUMMARY, False
     if truncated:
         header = f"[合并转发聊天记录 · 展示{node_count}条，部分已截断]"
@@ -971,16 +1016,36 @@ async def parse_event_forwards(
 
     for idx, comp in enumerate(limited_comps):
         kind = component_kind(comp)
+        if kind == "Nodes":
+            forward_id = f"inline-nodes:{idx}"
+        elif kind == "Node":
+            forward_id = f"inline-node:{idx}"
+        else:
+            forward_id = str(getattr(comp, "id", "") or "").strip() or f"forward:{idx}"
+
+        if state.remaining_nodes <= 0:
+            state.truncated = True
+            card_item: dict[str, Any] = {
+                "forward_id": forward_id,
+                "message_id": message_id,
+                "node_count": 0,
+                "truncated": True,
+                "summary_text": FORWARD_OMITTED_LIMIT_SUMMARY,
+                "image_urls": [],
+                "failed": False,
+            }
+            if event_ts is not None:
+                card_item["timestamp"] = event_ts
+            cards.append(card_item)
+            continue
+
         card_images: list[str] = []
         raw_nodes: list[Any] | None = None
         if kind == "Nodes":
-            forward_id = f"inline-nodes:{idx}"
             raw_nodes = list(getattr(comp, "nodes", ()) or ())
         elif kind == "Node":
-            forward_id = f"inline-node:{idx}"
             raw_nodes = [comp]
         else:
-            forward_id = str(getattr(comp, "id", "") or "").strip() or f"forward:{idx}"
             raw_nodes = _node_inline_children(comp)
             if raw_nodes is None:
                 if prefetched_multi is not None and multi_cursor < len(prefetched_multi):
@@ -1099,10 +1164,26 @@ async def await_event_forwards_parsed(
     if isinstance(task, asyncio.Task):
         try:
             result = await asyncio.shield(task)
-            if isinstance(result, dict):
+            if isinstance(result, dict) and result.get("cards"):
                 return result
         except asyncio.CancelledError:
-            raise
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+            setter = getattr(event, "set_extra", None)
+            if callable(setter):
+                try:
+                    setter(_PARSE_TASK_EXTRA, None)
+                except Exception:
+                    pass
+            cached = get_parsed_forwards(event)
+            if cached is not None:
+                return cached
+            if event_has_top_level_forwards(event):
+                return await parse_event_forwards(
+                    event, policy=policy, native_context=native_context,
+                )
+            return None
         except Exception as error:
             logger.warning("[CompanionV2] 合并转发解析任务降级 error_type=%s", type(error).__name__)
         return get_parsed_forwards(event)
@@ -1117,7 +1198,7 @@ def _trim_card_to_node_budget(card: dict[str, Any], allowed_nodes: int) -> dict[
     updated["truncated"] = True
     if allowed_nodes <= 0:
         updated["node_count"] = 0
-        updated["summary_text"] = "[合并转发聊天记录（已达单次节点上限，已省略）]"
+        updated["summary_text"] = FORWARD_OMITTED_LIMIT_SUMMARY
         updated["image_urls"] = []
         return updated
     raw = str(card.get("summary_text") or "")
@@ -1159,12 +1240,15 @@ def merge_parsed_forward_payloads(
     for payload in valid:
         if payload.get("truncated"):
             truncated = True
-        for slot, raw_card in enumerate(payload["cards"]):
+        payload_occurrences: dict[tuple[str, str], int] = {}
+        for raw_card in payload["cards"]:
             if not isinstance(raw_card, Mapping):
                 continue
             mid = str(raw_card.get("message_id") or "").strip()
             fid = str(raw_card.get("forward_id") or "").strip()
-            dedup_key = (mid, fid, slot)
+            occurrence = payload_occurrences.get((mid, fid), 0)
+            payload_occurrences[(mid, fid)] = occurrence + 1
+            dedup_key = (mid, fid, occurrence)
             if mid and fid and dedup_key in seen_card_keys:
                 continue
             if mid and fid:
@@ -1181,7 +1265,7 @@ def merge_parsed_forward_payloads(
                 "truncated": bool(raw_card.get("truncated")),
                 "summary_text": str(raw_card.get("summary_text") or FORWARD_FALLBACK_SUMMARY),
                 "image_urls": list(raw_card.get("image_urls") or ()),
-                "failed": bool(raw_card.get("failed")),
+                "failed": bool(raw_card.get("failed") or raw_card.get("fallback")),
             }
             if raw_card.get("timestamp") is not None:
                 card["timestamp"] = raw_card["timestamp"]
@@ -1244,10 +1328,7 @@ async def coalesce_debounced_forwards(
             payloads.append(parsed)
     if not payloads:
         return None
-    if len(payloads) == 1 and entries and entries[-1][0] is winning_event:
-        merged = payloads[0]
-    else:
-        merged = merge_parsed_forward_payloads(payloads, policy=policy)
+    merged = merge_parsed_forward_payloads(payloads, policy=policy)
     if merged is not None:
         set_parsed_forwards(winning_event, merged)
     return merged

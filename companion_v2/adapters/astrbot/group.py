@@ -141,7 +141,7 @@ class NativeGroupBridge(NativePrivateBridge):
                 and self._connection(client, account.self_id) is connection)
 
     @staticmethod
-    def _text_only_parts(event, route, *, require_text=False):
+    def _text_only_parts(event, route, *, require_text=False, include_parsed_forwards=True):
         """Read the authenticated text skeleton without requiring attachments.
 
         AstrBot may hand the plugin a message whose quote/image/forward lookup
@@ -201,10 +201,13 @@ class NativeGroupBridge(NativePrivateBridge):
                 parsed_forwards = None
             if (isinstance(parsed_forwards, Mapping) and parsed_forwards.get("version") == 1
                     and isinstance(parsed_forwards.get("cards"), list) and parsed_forwards["cards"]):
-                raw_summary = str(parsed_forwards.get("combined_text") or "").strip()
-                if len(raw_summary) > 2400:
-                    raw_summary = raw_summary[:2394].rstrip() + "…（已截断）"
-                forward_summary = raw_summary
+                if include_parsed_forwards:
+                    raw_summary = str(parsed_forwards.get("combined_text") or "").strip()
+                    if len(raw_summary) > 2400:
+                        raw_summary = raw_summary[:2394].rstrip() + "…（已截断）"
+                    forward_summary = raw_summary
+                else:
+                    forward_summary = "[合并转发消息]"
         forward_summary_used = False
         text, has_text, stt_used = [], False, False
         for part in parts:
@@ -317,7 +320,7 @@ class NativeGroupBridge(NativePrivateBridge):
             raise TaskError("host_text_invalid", "group input must be bounded nonempty text")
         return value
 
-    async def capture_text_only(self, event):
+    async def capture_text_only(self, event, *, include_parsed_forwards=True):
         """Capture a group turn when optional native media is unavailable."""
         try:
             if not isinstance(event, self.event_type):
@@ -331,7 +334,7 @@ class NativeGroupBridge(NativePrivateBridge):
             raw = getattr(event.message_obj, "raw_message", None)
             original_parts = raw.get("message") if isinstance(raw, Mapping) else None
             self._validate_quote_components(original_parts, parts)
-            text = self._text_only_parts(event, route)
+            text = self._text_only_parts(event, route, include_parsed_forwards=include_parsed_forwards)
             message_text = group_message_text(event, route.account_id)
             lease = self.connections.acquire(account)
             at, event_client = datetime.fromtimestamp(event.created_at, timezone.utc), event_native_client(
