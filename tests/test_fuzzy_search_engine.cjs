@@ -464,13 +464,124 @@ test("CSS polish contracts: hides native search cancel buttons, enlarges 3-tier 
   assert.match(stylesCss, /#globalSearch::-webkit-search-cancel-button/);
   assert.match(stylesCss, /\[data-all-feature-filter\]::-webkit-search-cancel-button/);
   assert.match(stylesCss, /\.search-dialog\{[^}]*width:min\(860px,90vw\)/);
-  assert.match(stylesCss, /\.search-dialog\[open\]\{display:flex;flex-direction:column\}/);
+  assert.match(stylesCss, /#searchDialog\.search-dialog\[open\]\{display:flex;flex-direction:column;[^}]*animation:search-dialog-in \.22s cubic-bezier\(\.22,1,\.36,1\)/);
+  assert.match(stylesCss, /#searchDialog\.search-dialog\.is-closing\{pointer-events:none;animation:search-dialog-out \.16s/);
+  assert.match(stylesCss, /#searchDialog\.search-dialog\[open\]::backdrop\{[^}]*animation:search-backdrop-in/);
+  assert.match(stylesCss, /#searchDialog\.search-dialog\.is-closing::backdrop\{pointer-events:none;animation:search-backdrop-out/);
+  assert.match(stylesCss, /@media\(prefers-reduced-motion:reduce\)\{[^}]*#searchDialog\.search-dialog\[open\]/);
   assert.match(stylesCss, /\.search-results\{[^}]*flex:1 1 auto;min-height:360px/);
   assert.match(stylesCss, /\.search-result-help\{[^}]*-webkit-line-clamp:2/);
   assert.match(stylesCss, /\.search-result-icon\{/);
   assert.match(stylesCss, /\.search-result-arrow\{/);
   assert.match(workspaceCss, /\[data-motion="off"\].*\.is-search-target/);
   assert.match(workspaceCss, /\[data-motion="low"\].*\.is-search-target/);
+});
+
+test("Global search dialog bidirectional open/close animation handles rapid toggle, focus restore and reduced motion", () => {
+  const appSrc = fs.readFileSync(path.join(PAGE_DIR, "app.js"), "utf8");
+  const startIdx = appSrc.indexOf("let searchDialogAnimToken=0;");
+  const endIdx = appSrc.indexOf("document.addEventListener('click',event=>{");
+  assert.ok(startIdx > 0 && endIdx > startIdx, "Could not locate openSearch/closeSearch slice in app.js");
+  const slice = appSrc.slice(startIdx, endIdx);
+
+  let reducedPref = false;
+  let focusCalls = [];
+  const triggerBtn = {
+    isConnected: true,
+    focus(opts) { focusCalls.push({ el: "trigger", opts }); sandbox.document.activeElement = triggerBtn; },
+  };
+  const searchBtn = {
+    isConnected: true,
+    focus(opts) { focusCalls.push({ el: "searchButton", opts }); sandbox.document.activeElement = searchBtn; },
+  };
+  const inputEl = {
+    value: "",
+    focus() { focusCalls.push({ el: "globalSearch" }); sandbox.document.activeElement = inputEl; },
+    setSelectionRange() {},
+  };
+  const animListeners = [];
+  const classSet = new Set();
+  const dlg = {
+    open: false,
+    offsetWidth: 860,
+    classList: {
+      add: c => classSet.add(c),
+      remove: c => classSet.delete(c),
+      contains: c => classSet.has(c),
+    },
+    contains: node => node === inputEl,
+    showModal() { this.open = true; },
+    close() { this.open = false; },
+    addEventListener(type, fn) { if (type === "animationend") animListeners.push(fn); },
+    removeEventListener(type, fn) {
+      const idx = animListeners.indexOf(fn);
+      if (idx >= 0) animListeners.splice(idx, 1);
+    },
+  };
+
+  const sandbox = {
+    state: { reduceMotion: false },
+    searchScope: "all",
+    searchRenderTimer: 0,
+    $: sel => ({ "#searchDialog": dlg, "#globalSearch": inputEl, "#searchButton": searchBtn, "#detailDialog": { open: false } }[sel] || null),
+    document: { activeElement: triggerBtn, body: { classList: { contains: () => false } }, documentElement: { dataset: {} } },
+    window: { matchMedia: () => ({ matches: reducedPref }) },
+    closeDetail() {},
+    invalidateSearchCache() {},
+    renderSearch() {},
+    ensureSearchCatalog() { return Promise.resolve(null); },
+    setTimeout,
+    clearTimeout,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(`${slice}\nglobalThis.__sd = { openSearch, closeSearch };`, sandbox);
+
+  /* 1. Open records trigger focus and opens modal */
+  sandbox.__sd.openSearch("通用");
+  assert.equal(dlg.open, true);
+  assert.equal(inputEl.value, "通用");
+  assert.equal(classSet.has("is-closing"), false);
+  assert.equal(focusCalls.at(-1).el, "globalSearch");
+
+  /* 2. Close adds is-closing and waits for animationend before closing + restoring focus */
+  sandbox.__sd.closeSearch({ restoreFocus: true });
+  assert.equal(dlg.open, true, "Dialog stays open during 160ms exit animation");
+  assert.equal(classSet.has("is-closing"), true);
+
+  /* 3. Rapid reopen mid-close cancels pending exit with zero race */
+  const staleListener = animListeners[0];
+  sandbox.__sd.openSearch("备用");
+  assert.equal(dlg.open, true);
+  assert.equal(classSet.has("is-closing"), false);
+  assert.equal(inputEl.value, "备用");
+  staleListener?.({ target: dlg });
+  assert.equal(dlg.open, true, "Stale animationend from cancelled close must not close reopened dialog");
+
+  /* 4. Normal close finishes on animationend and restores focus to original trigger */
+  animListeners.length = 0;
+  sandbox.__sd.closeSearch({ restoreFocus: true });
+  assert.equal(classSet.has("is-closing"), true);
+  animListeners[0]?.({ target: dlg });
+  assert.equal(dlg.open, false);
+  assert.equal(classSet.has("is-closing"), false);
+  assert.equal(focusCalls.at(-1).el, "trigger");
+
+  /* 5. Reduced motion closes immediately and synchronously restores focus */
+  reducedPref = true;
+  sandbox.document.activeElement = triggerBtn;
+  sandbox.__sd.openSearch();
+  assert.equal(dlg.open, true);
+  sandbox.__sd.closeSearch({ restoreFocus: true });
+  assert.equal(dlg.open, false, "Reduced motion closes synchronously without exit delay");
+  assert.equal(classSet.has("is-closing"), false);
+  assert.equal(focusCalls.at(-1).el, "trigger");
+
+  /* 6. Result jump closeSearch({restoreFocus:false}) does not hijack focus back to trigger */
+  focusCalls = [];
+  sandbox.__sd.openSearch();
+  sandbox.__sd.closeSearch({ restoreFocus: false });
+  assert.equal(dlg.open, false);
+  assert.equal(focusCalls.some(c => c.el === "trigger" || c.el === "searchButton"), false);
 });
 
 test("Direct alias substring hit keeps alias reason instead of misleading typo badge", () => {

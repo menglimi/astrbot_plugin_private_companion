@@ -6450,7 +6450,10 @@ function handleGlobalSearchKeydown(event){
   if(event.isComposing||event.keyCode===229)return;
   if(event.key==='Escape'){
     if(searchRenderTimer){clearTimeout(searchRenderTimer);searchRenderTimer=null;}
-    event.preventDefault();$('#searchDialog')?.close?.();return;
+    event.preventDefault();
+    if(typeof closeSearch==='function')closeSearch({restoreFocus:true});
+    else $('#searchDialog')?.close?.();
+    return;
   }
   if(event.key==='ArrowDown'||event.key==='ArrowUp'){
     event.preventDefault();flushSearchRender();moveSearchSelection(event.key==='ArrowDown'?1:-1);return;
@@ -6843,8 +6846,71 @@ function ensureSearchCatalog(){
     .finally(()=>{searchCatalogPromise=null;});
   return searchCatalogPromise;
 }
+let searchDialogAnimToken=0;
+let searchCloseTimer=0;
+let searchReturnFocus=null;
+function isSearchMotionReduced(){
+  return Boolean(state?.reduceMotion
+    ||document.body?.classList?.contains?.('reduce-motion')
+    ||document.documentElement?.dataset?.motion==='off'
+    ||window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches);
+}
+function closeSearch({restoreFocus=true,immediate=false}={}){
+  const dlg=$('#searchDialog');
+  if(!dlg)return false;
+  if(searchRenderTimer){clearTimeout(searchRenderTimer);searchRenderTimer=0;}
+  if(!immediate&&dlg.open&&dlg.classList?.contains?.('is-closing'))return true;
+  const token=++searchDialogAnimToken;
+  if(searchCloseTimer){clearTimeout(searchCloseTimer);searchCloseTimer=0;}
+  const targetFocus=restoreFocus?(searchReturnFocus?.isConnected?searchReturnFocus:$('#searchButton')):null;
+  if(!dlg.open){
+    dlg.classList?.remove?.('is-closing');
+    if(restoreFocus)searchReturnFocus=null;
+    return false;
+  }
+  const finalize=()=>{
+    if(token!==searchDialogAnimToken)return;
+    if(searchCloseTimer){clearTimeout(searchCloseTimer);searchCloseTimer=0;}
+    dlg.classList?.remove?.('is-closing');
+    if(dlg.open)dlg.close?.();
+    searchReturnFocus=null;
+    if(restoreFocus&&targetFocus?.isConnected&&typeof targetFocus.focus==='function'){
+      try{targetFocus.focus({preventScroll:true});}catch{targetFocus.focus();}
+    }
+  };
+  if(immediate||isSearchMotionReduced()||typeof dlg.classList?.add!=='function'){
+    finalize();
+    return true;
+  }
+  dlg.classList.add('is-closing');
+  const onEnd=event=>{
+    if(event&&event.target!==dlg)return;
+    finalize();
+  };
+  dlg.addEventListener?.('animationend',onEnd,{once:true});
+  searchCloseTimer=setTimeout(()=>{
+    dlg.removeEventListener?.('animationend',onEnd);
+    finalize();
+  },190);
+  searchCloseTimer?.unref?.();
+  return true;
+}
 function openSearch(initialQuery=''){
   if($('#detailDialog')?.open)closeDetail();
+  const dlg=$('#searchDialog');
+  const token=++searchDialogAnimToken;
+  if(searchCloseTimer){clearTimeout(searchCloseTimer);searchCloseTimer=0;}
+  if(dlg){
+    const wasClosing=Boolean(dlg.classList?.contains?.('is-closing'));
+    dlg.classList?.remove?.('is-closing');
+    if(wasClosing)void dlg.offsetWidth;
+  }
+  const active=document.activeElement;
+  if(active&&active!==document.body&&(!dlg||!dlg.contains?.(active))){
+    searchReturnFocus=active;
+  }else if(!searchReturnFocus||!searchReturnFocus.isConnected){
+    searchReturnFocus=$('#searchButton')||null;
+  }
   const preset=typeof initialQuery==='string'?initialQuery:'';
   searchScope='all';
   invalidateSearchCache();
@@ -6852,9 +6918,11 @@ function openSearch(initialQuery=''){
   const input=$('#globalSearch');
   if(input)input.value=preset;
   renderSearch();
-  $('#searchDialog')?.showModal?.();
-  input?.focus?.();
-  if(preset)input?.setSelectionRange?.(preset.length,preset.length);
+  if(dlg&&!dlg.open)dlg.showModal?.();
+  if(token===searchDialogAnimToken){
+    input?.focus?.();
+    if(preset)input?.setSelectionRange?.(preset.length,preset.length);
+  }
   void ensureSearchCatalog();
 }
 document.addEventListener('click',event=>{
@@ -7008,7 +7076,7 @@ document.addEventListener('click',event=>{
   if(el.dataset.closeDetail!==undefined){closeDetail();return;}
   if(el.dataset.searchFilter){setSearchScope(el.dataset.searchFilter);return;}
   if(el.dataset.clearSearch!==undefined){$('#globalSearch').value='';renderSearch();$('#globalSearch').focus();return;}
-  if(el.dataset.closeSearch!==undefined){$('#searchDialog').close();return;}
+  if(el.dataset.closeSearch!==undefined){closeSearch({restoreFocus:true});return;}
   if(el.dataset.homeSection){goHomeSection(el.dataset.homeSection);return;}
   if(el.dataset.furniture){openFurniture(el.dataset.furniture);return;}
   if(el.dataset.locateFurniture){
@@ -7083,7 +7151,7 @@ document.addEventListener('click',event=>{
   if(el.dataset.albumPage!==undefined){showDetail('album');return;}
   if(el.dataset.capAction){const [key,action]=el.dataset.capAction.split(':');if(!capabilities.some(c=>c[0]===key)||state.modules[key]==='planned')return;state.modules[key]=({pause:'paused',enable:initial.modules[key],restore:initial.modules[key],remove:'removed'})[action]||state.modules[key];saved('本地预览状态已更新，真实插件配置未改变');refreshHomeCapabilities();showDetail('cap-'+key);return;}
   if(el.dataset.toggleActivity!==undefined){state.activityPaused=!state.activityPaused;saved(state.activityPaused?'示例活动已暂停，阅读位置保留':'示例活动已继续');render();showDetail('activity-reading');return;}
-  if(el.dataset.searchResult!==undefined){const result=visibleSearchResults[Number(el.dataset.searchResult)];$('#searchDialog').close();if(result?.kind==='setting')void openSearchSetting(result);else if(result?.kind==='page')void openSearchPage(result.data);return;}
+  if(el.dataset.searchResult!==undefined){const result=visibleSearchResults[Number(el.dataset.searchResult)];const opensDetail=Boolean((result?.kind==='page'&&!result.data?.[3])||(result?.kind==='setting'&&result.location?.nativeExtension&&!result.location.nativeExtension.inline));closeSearch({restoreFocus:false,immediate:opensDetail});if(result?.kind==='setting')void openSearchSetting(result);else if(result?.kind==='page')void openSearchPage(result.data);return;}
   if(el.dataset.confirmReset!==undefined){state=structuredClone(initial);persist();libraryFilter='all';memoryView='list';observationFilter='records';furnitureFilter='all';furnitureQuery='';navigate('life');toast('已恢复初始预览');return;}
   if(el.dataset.export!==undefined){const blob=new Blob([JSON.stringify({kind:'ui-preview-only',version:2,configSnapshotVersion:configSnapshot.version,configSource:configSnapshot.source,settings:state},null,2)],{type:'application/json;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='陪伴拓展页V2-脱敏设置.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('已导出预览设置');}
 });
@@ -7190,7 +7258,8 @@ document.addEventListener('submit',event=>{
 });
 $('#detailDialog').addEventListener('close',()=>{identityDialogMount?.unmount?.();identityDialogMount=null;allFeatureDialogMount?.unmount?.();allFeatureDialogMount=null;window.CompanionGameAccess?.unmount();const nativeHost=$('#dialogContent').querySelector('[data-native-extension-host]');if(nativeHost)window.CompanionNativeExtensionPanel?.unmount(nativeHost);$('#detailDialog').classList.remove('detail-dialog-settings','detail-dialog-native-extension');if(dialogReturnFocus?.isConnected)dialogReturnFocus.focus({preventScroll:true});else if(dialogReturnFurniture)document.querySelector('[data-furniture="'+dialogReturnFurniture+'"]')?.focus({preventScroll:true});else document.querySelector('[data-detail="'+lastDetail+'"]')?.focus({preventScroll:true});});
 $('#detailDialog').addEventListener('click',event=>{if(event.target!==event.currentTarget)return;const r=event.currentTarget.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)closeDetail();});
-$('#searchDialog').addEventListener('click',event=>{if(event.target===event.currentTarget){const r=event.currentTarget.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)event.currentTarget.close();}});
+$('#searchDialog')?.addEventListener?.('cancel',event=>{event.preventDefault();closeSearch({restoreFocus:true});});
+$('#searchDialog')?.addEventListener?.('click',event=>{if(event.target===event.currentTarget){const r=event.currentTarget.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)closeSearch({restoreFocus:true});}});
 $('#searchButton').addEventListener('click',openSearch);
 /* 缩略态下点小屋 = 回到首页。单独绑一个监听而不是靠 document 上的委托：
    委托那层开头会 closest('button,a') 过滤，而小屋区里没有按钮，
@@ -7299,7 +7368,7 @@ document.addEventListener('keydown',event=>{
      &&!$('#searchDialog')?.open&&!$('#detailDialog')?.open&&!$('#navigationDialog')?.open){
     event.preventDefault();backHome();return;
   }
-  if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();if(!$('#searchDialog').open)openSearch();}
+  if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();const dlg=$('#searchDialog');if(!dlg?.open||dlg.classList?.contains?.('is-closing'))openSearch();else closeSearch({restoreFocus:true});}
 });
 window.addEventListener('hashchange',syncFromHash);
 window.addEventListener('popstate',syncFromHash);
