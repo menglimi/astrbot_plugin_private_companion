@@ -1141,6 +1141,10 @@ test("公共工作区统一动效令牌与弹窗/覆层/折叠卡双向平滑开
   assert.match(motionCss, /\.reply-preview-modal\.is-open[\s\S]*?\.output-album-lightbox\.is-open/);
   assert.match(motionCss, /\.wb-context-tip:popover-open/);
   assert.match(motionCss, /\.output-endpoint-collapse\.is-open\s*\{[^}]*grid-template-rows:\s*1fr/);
+  assert.match(motionCss, /\.output-endpoint-collapse\s*>\s*\.output-endpoint-edit\s*\{[^}]*overflow:\s*hidden;[^}]*transition:\s*overflow\s+0s\s+allow-discrete\s+0s/);
+  assert.match(motionCss, /\.output-endpoint-collapse\.is-open\s*>\s*\.output-endpoint-edit\s*\{[^}]*overflow:\s*visible;[^}]*transition:\s*overflow\s+0s\s+allow-discrete\s+var\(--motion-dur-expand\)/);
+  assert.match(motionCss, /details:not\(\.mp-group\):not\(\.mp-legend\):not\(\.mp-drawer-advanced\)\[open\]::details-content\s*\{[^}]*overflow\s+0s\s+allow-discrete\s+var\(--motion-dur-expand\)/);
+  assert.match(wsThemeCss, /details\[open\]::details-content\{[^}]*overflow 0s allow-discrete var\(--motion-dur-expand\)/);
   assert.match(read("pages", "陪伴小屋", "reply-page.js"), /previewModalCloseTimer/);
   assert.match(read("pages", "陪伴小屋", "output-page.js"), /albumLightboxCloseTimer/);
   assert.match(read("pages", "陪伴小屋", "output-page.js"), /data-output-endpoint-collapse/);

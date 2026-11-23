@@ -116,9 +116,9 @@ body.reduce-motion {
     content-visibility: hidden;
     transition: height var(--motion-dur-collapse) var(--motion-ease-in),
       opacity var(--motion-dur-collapse) var(--motion-ease-in),
-      overflow var(--motion-dur-collapse) allow-discrete,
+      overflow 0s allow-discrete 0s,
       content-visibility var(--motion-dur-collapse) allow-discrete;
-    transition-duration: var(--motion-dur-collapse) !important;
+    transition-duration: var(--motion-dur-collapse), var(--motion-dur-collapse), 0s, var(--motion-dur-collapse) !important;
   }
   :is(#homeShell, dialog) details:not(.mp-group):not(.mp-legend):not(.mp-drawer-advanced)[open]::details-content {
     height: auto;
@@ -127,9 +127,9 @@ body.reduce-motion {
     content-visibility: visible;
     transition: height var(--motion-dur-expand) var(--motion-ease-out),
       opacity var(--motion-dur-enter) var(--motion-ease-out),
-      overflow var(--motion-dur-expand) allow-discrete,
+      overflow 0s allow-discrete var(--motion-dur-expand),
       content-visibility var(--motion-dur-expand) allow-discrete;
-    transition-duration: var(--motion-dur-expand) !important;
+    transition-duration: var(--motion-dur-expand), var(--motion-dur-enter), 0s, var(--motion-dur-expand) !important;
   }
 }
 
@@ -317,9 +317,13 @@ dialog:not([open])::backdrop { pointer-events: none; }
 .output-endpoint-collapse > .output-endpoint-edit {
   min-height: 0;
   overflow: hidden;
+  transition: overflow 0s allow-discrete 0s;
+  transition-duration: 0s !important;
 }
 .output-endpoint-collapse.is-open > .output-endpoint-edit {
   overflow: visible;
+  transition: overflow 0s allow-discrete var(--motion-dur-expand);
+  transition-duration: 0s !important;
 }
 
 #toast {
