@@ -1222,6 +1222,7 @@ class StorageRuntime:
                 if self._schema_indexes_changed or self._wal_file_size() > wal_threshold:
                     self._truncate_wal_best_effort(connection)
             self._install_write_tracker(connection)
+            self._initial_data_version = int(connection.execute("PRAGMA data_version").fetchone()[0])
         except sqlite3.Error as error:
             self.close()
             raise StorageOpenError("V2 schema validation or migration failed") from error

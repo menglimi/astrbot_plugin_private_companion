@@ -1118,6 +1118,110 @@ class MaintenanceDomainEpochAndJournalBatchTests(HostFixture, unittest.IsolatedA
         with app.runtime.transaction(), validation_batch(app.runtime, now):
             self.assertIsNone(app.role_journal._read_only_batch(now))
 
+    async def test_cold_start_persistent_core_history_disk_cache_rollover_and_signature_validation(self):
+        from companion_v2.model_gateway import maintenance_cache as mc_mod
+        from companion_v2.model_gateway.core_observations import record_observation
+        from companion_v2.model_gateway.management import ModelManagement
+        from companion_v2.model_gateway.models import CacheSignature
+        from tests.test_maintenance_perf_cache import _make_observation
+
+        # 1. Verify C-level CacheSignature validation retains 100% strict rejection semantics.
+        good_hex = "a" * 64
+        class _StrSub(str):
+            pass
+
+        valid_sig = CacheSignature(
+            model_hash=good_hex,
+            system_hash=good_hex,
+            system_parts=(good_hex,),
+            tools_hash=good_hex,
+            tool_parts=(good_hex,),
+            context_hashes=(good_hex,),
+            context_bytes=128,
+            context_observed=True,
+        )
+        self.assertEqual(valid_sig.context_bytes, 128)
+        for bad_kwargs in (
+            {"model_hash": "A" * 64},
+            {"model_hash": "g" * 64},
+            {"model_hash": "a" * 63},
+            {"model_hash": "\u00e9" * 64},
+            {"model_hash": _StrSub(good_hex)},
+            {"context_bytes": True},
+            {"context_bytes": -1},
+            {"context_bytes": 2**31},
+        ):
+            params = {
+                "model_hash": good_hex,
+                "system_hash": good_hex,
+                "system_parts": (good_hex,),
+                "tools_hash": good_hex,
+                "tool_parts": (good_hex,),
+                "context_hashes": (good_hex,),
+                "context_bytes": 128,
+                "context_observed": True,
+                **bad_kwargs,
+            }
+            with self.assertRaises(ValueError, msg=f"expected rejection for {bad_kwargs!r}"):
+                CacheSignature(**params)
+
+        # 2. Seed multi-day core observations and verify persistent disk cache survives RAM clear
+        #    (simulated process restart) with zero historical SQL scan & exact parity!
+        app = self.app
+        ctx = self.role_context
+        operator = self.core
+        manager = ModelManagement(app, ctx)
+        mc_mod.clear_maintenance_cache(app.runtime)
+
+        now = app.now()
+        record_observation(app.runtime, ctx, _make_observation("disk-h-1", now - timedelta(days=3)))
+        record_observation(app.runtime, ctx, _make_observation("disk-h-2", now - timedelta(days=2)))
+        record_observation(app.runtime, ctx, _make_observation("disk-h-3", now - timedelta(days=1)))
+        record_observation(app.runtime, ctx, _make_observation("disk-t-1", now - timedelta(minutes=5)))
+
+        first = manager.maintenance(operator).unwrap()
+        self.assertEqual(first["usage_sources"]["astrbot_core"]["totals"]["calls"], 4)
+        cache_dir = Path(app.runtime.data_root) / mc_mod.DISK_CORE_HISTORY_DIRNAME
+        disk_files = list(cache_dir.glob("core-hist-v*.zlib"))
+        self.assertEqual(len(disk_files), 1)
+
+        # Simulate process restart: wipe ONLY in-memory cache (keep disk file intact!).
+        mc_mod.runtime_maintenance_cache(app.runtime).clear()
+        with patch.object(
+            mc_mod,
+            "_query_core_partition_rows_chunked",
+            side_effect=AssertionError("restart cold boot must hit disk cache without scanning historical rows"),
+        ):
+            restarted = manager.maintenance(operator).unwrap()
+        self.assertEqual(restarted["usage_sources"]["astrbot_core"]["totals"], first["usage_sources"]["astrbot_core"]["totals"])
+        self.assertEqual(restarted["usage_sources"]["astrbot_core"]["coverage"], first["usage_sources"]["astrbot_core"]["coverage"])
+        self.assertEqual(mc_mod.maintenance_cache_stats(app.runtime)["disk_day_cache_hits"], 1)
+
+        # 3. Cross-restart midnight rollover: advance clock +1 day, wipe RAM, verify disk_advance
+        #    only scans the 1-day gap [prev_cutoff, next_cutoff) and reaches exact parity!
+        self.clock.advance(timedelta(days=1))
+        record_observation(app.runtime, ctx, _make_observation("disk-t-next", app.now() - timedelta(minutes=2)))
+        mc_mod.runtime_maintenance_cache(app.runtime).clear()
+        gap_bounds = []
+        orig_chunked = mc_mod._query_core_partition_rows_chunked
+
+        def _spy_chunked(*args, **kwargs):
+            gap_bounds.append((kwargs.get("received_ge"), kwargs.get("received_lt")))
+            return orig_chunked(*args, **kwargs)
+
+        with patch.object(mc_mod, "_query_core_partition_rows_chunked", side_effect=_spy_chunked):
+            rolled = manager.maintenance(operator).unwrap()
+        self.assertEqual(rolled["usage_sources"]["astrbot_core"]["totals"]["calls"], 5)
+        self.assertEqual(len(gap_bounds), 1)
+        self.assertIsNotNone(gap_bounds[0][0], "cross-restart rollover must query bounded 1-day gap, not full history")
+        self.assertEqual(mc_mod.maintenance_cache_stats(app.runtime)["day_cache_advances"], 1)
+
+        # Verify exact parity with uncached full computation.
+        with patch("companion_v2.model_gateway.management.runtime_maintenance_cache", return_value=None):
+            uncached = manager.maintenance(operator).unwrap()
+        self.assertEqual(rolled["usage_sources"]["astrbot_core"]["totals"], uncached["usage_sources"]["astrbot_core"]["totals"])
+        self.assertEqual(rolled["usage_sources"]["astrbot_core"]["cache_diagnostics"], uncached["usage_sources"]["astrbot_core"]["cache_diagnostics"])
+
 
 if __name__ == "__main__":
     unittest.main()

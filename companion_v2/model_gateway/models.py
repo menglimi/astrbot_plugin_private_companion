@@ -20,6 +20,10 @@ from .response_diagnostics import ResponseDiagnostics
 MAX_TOOL_CATALOG = 64
 MAX_MODEL_OUTPUT_TOKENS = 65_536
 _HEX64 = re.compile(r"\A[0-9a-f]{64}\Z")
+_HEX_BYTES = b"0123456789abcdef"
+_STR_TYPE_SET = {str}
+_INT_TYPE_SET = {int}
+_LEN64_SET = {64}
 _EMPTY_AVAILABILITY_HASH = digest({"deferred": [], "unavailable": []})
 
 # A model call whose provider never returned a usage receipt would otherwise keep
@@ -359,8 +363,14 @@ class CacheSignature:
                   self.message_count, self.system_message_count, self.system_chars,
                   self.system_bytes, self.tool_count, self.tool_bytes, self.image_count,
                   self.audio_count, self.video_count)
-        if (any(type(value) is not str or _HEX64.match(value) is None for value in hashes)
-                or any(type(value) is not int or not 0 <= value <= 2**31 - 1 for value in counts)
+        if (set(map(type, hashes)) != _STR_TYPE_SET
+                or set(map(len, hashes)) != _LEN64_SET):
+            raise ValueError("cache signature must contain bounded hashes and context metadata")
+        joined = "".join(hashes)
+        if (not joined.isascii()
+                or bool(joined.encode("ascii").translate(None, _HEX_BYTES))
+                or set(map(type, counts)) != _INT_TYPE_SET
+                or min(counts) < 0 or max(counts) > 2147483647
                 or type(self.context_observed) is not bool
                 or type(self.estimates_observed) is not bool
                 or type(self.message_estimates_observed) is not bool
