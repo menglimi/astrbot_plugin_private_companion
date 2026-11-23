@@ -67,6 +67,15 @@ class QuickTunnel:
         candidate = Path(self.configured_path).expanduser()
         return candidate.resolve() if candidate.is_file() else None
 
+    def _search_roots(self) -> list[Path]:
+        roots: list[Path] = []
+        if self.download_dir is not None:
+            roots.append(self.download_dir)
+        for root in self.search_paths:
+            if root not in roots:
+                roots.append(root)
+        return roots
+
     def binary_path(self) -> Path | None:
         """Find cloudflared without downloading or modifying the host."""
         configured = self._configured_candidate()
@@ -78,7 +87,7 @@ class QuickTunnel:
         names = (
             ("cloudflared.exe", "cloudflared") if os.name == "nt" else ("cloudflared",)
         )
-        for root in self.search_paths:
+        for root in self._search_roots():
             for name in names:
                 candidate = root / name
                 if candidate.is_file():
@@ -92,31 +101,43 @@ class QuickTunnel:
         configured = self._configured_candidate()
         if configured == binary:
             return "configured"
-        if shutil.which("cloudflared"):
+        command = shutil.which("cloudflared")
+        if command:
             try:
-                if Path(shutil.which("cloudflared") or "").resolve() == binary:
+                if Path(command).resolve() == binary:
                     return "system"
             except OSError:
                 pass
-        if self.download_dir and self.download_dir in binary.parents:
-            return "managed"
+        if self.download_dir is not None:
+            try:
+                resolved_download = self.download_dir.resolve()
+            except OSError:
+                resolved_download = self.download_dir
+            if resolved_download in binary.parents or self.download_dir in binary.parents:
+                return "managed"
         return "bundled"
 
     def status(self) -> dict[str, object]:
         """Return a dashboard-safe tunnel status."""
         binary = self.binary_path()
+        configured_missing = bool(self.configured_path and self._configured_candidate() is None)
+        status_error = self.error
+        if configured_missing and not status_error:
+            status_error = f"配置的 cloudflared 路径不存在：{self.configured_path}"
         return {
             "installed": binary is not None,
             "path": str(binary) if binary else "",
             "source": self.binary_source(),
+            "download_dir": str(self.download_dir) if self.download_dir else "",
             "configured_path": self.configured_path,
+            "configured_missing": configured_missing,
             "running": self.running,
             "ready": self.ready,
             "url": self.url if self.running else "",
             "started_at": self.started_at if self.running else 0.0,
             "allow_download": self.allow_download,
             "platform": self._platform_label(),
-            "error": self.error,
+            "error": status_error,
         }
 
     async def install_latest(self) -> dict[str, object]:

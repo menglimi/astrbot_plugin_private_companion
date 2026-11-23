@@ -981,6 +981,8 @@ def inject_core_reply_tools(event, req, *, application):
     if private_chat and (profile == "full" or "extensions" in custom_groups):
         from .content_access import ensure_content_access
         ensure_content_access(application.runtime, session.context, observed_at=application.tasks.now())
+        from .game_access import ensure_game_access
+        ensure_game_access(application.runtime, session.context, observed_at=application.tasks.now())
     media_enabled = (
         not private_chat or profile == "full" or "media" in custom_groups
     )

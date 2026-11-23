@@ -274,6 +274,8 @@ class NativeExtensionRegistry(AstrBotToolPort):
             raise TaskError("native_settings_catalog_changed", "the capability catalog changed; reload the V2 host")
         self._entries.update({entry.host_tool_id: (entry, replacement) for entry in replacement.declarations()})
         self._bundled_extensions = tuple(replacement if item is lease else item for item in self._bundled_extensions)
+        if replacement.manifest.package.extension_id == "game" and self.application is not None:
+            self._attach_game_memory_hook(replacement.port)
         return replacement
 
     async def reconcile_service(self, extension_id):
@@ -432,7 +434,28 @@ class NativeExtensionRegistry(AstrBotToolPort):
             self.content = ContentConsumer(self, application)
             from .scheduled_authoring import ScheduledAuthoring
             application.scheduled_authoring = ScheduledAuthoring(self.content)
+        for lease in self._bundled_extensions:
+            if lease.manifest.package.extension_id == "game":
+                self._attach_game_memory_hook(lease.port)
+        for _declaration, lease in self._entries.values():
+            if _declaration.descriptor.package.extension_id == "game":
+                self._attach_game_memory_hook(lease.port)
+                break
         return self
+
+    def _attach_game_memory_hook(self, port):
+        attacher = getattr(port, "attach_web_terminal_callback", None)
+        if not callable(attacher):
+            return
+
+        def record_web_terminal(context, game_view):
+            application = self.application
+            memory_game = getattr(getattr(application, "memory", None), "game", None)
+            if memory_game is None or getattr(memory_game, "closed", False):
+                return None
+            return memory_game.record_web_terminal(context, game_view)
+
+        attacher(record_web_terminal)
 
     def bind_role_guard(self, guard, persona_guard=None):
         if (self._closed or not inspect.iscoroutinefunction(guard)
@@ -683,6 +706,13 @@ class NativeExtensionRegistry(AstrBotToolPort):
         native = parse_result(raw, request=request, side_effect=invocation.descriptor.side_effect)
         if native.state != "succeeded":
             return self._source_response(invocation, native)
+        if action.startswith("game.") and isinstance(native.result, dict):
+            game_doc = native.result.get("game")
+            binder = getattr(port, "bind_game_context", None)
+            if isinstance(game_doc, dict) and game_doc.get("game_id") and callable(binder):
+                from companion_v2.games.native.provider import _context as _game_ctx, _hash as _game_hash
+                scope_hash = _game_hash(_game_ctx(request["context"]))
+                binder(str(game_doc["game_id"]), invocation.context, scope=scope_hash)
         try:
             if not guarded:
                 raise TaskError("native_guard_unused", "the native provider omitted its dispatch check")

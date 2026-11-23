@@ -2340,47 +2340,8 @@ class RoomManager:
 
     @staticmethod
     def _normalize_strokes(value: Any) -> list[dict[str, Any]]:
-        if not isinstance(value, list):
-            raise ValueError("画布笔迹格式无效")
-        if len(value) > 400:
-            raise ValueError("画布笔画过多，请先清理部分内容")
-        normalized: list[dict[str, Any]] = []
-        total_points = 0
-        for raw in value:
-            if not isinstance(raw, dict):
-                raise ValueError("画布笔迹格式无效")
-            color = str(raw.get("color") or "#202522").lower()
-            if not re.fullmatch(r"#[0-9a-f]{6}", color):
-                raise ValueError("画笔颜色无效")
-            try:
-                width = float(raw.get("width") or 4)
-            except (TypeError, ValueError):
-                raise ValueError("画笔粗细无效") from None
-            if not math.isfinite(width) or not 1 <= width <= 32:
-                raise ValueError("画笔粗细超出范围")
-            raw_points = raw.get("points")
-            if not isinstance(raw_points, list) or not raw_points:
-                raise ValueError("笔画没有有效坐标")
-            points: list[list[float]] = []
-            for point in raw_points:
-                if not isinstance(point, list) or len(point) != 2:
-                    raise ValueError("笔画坐标格式无效")
-                try:
-                    x, y = float(point[0]), float(point[1])
-                except (TypeError, ValueError):
-                    raise ValueError("笔画坐标格式无效") from None
-                if not math.isfinite(x) or not math.isfinite(y) or not (
-                    0 <= x <= 1 and 0 <= y <= 1
-                ):
-                    raise ValueError("笔画坐标超出画布")
-                points.append([round(x, 5), round(y, 5)])
-            total_points += len(points)
-            if total_points > 12000:
-                raise ValueError("画布坐标过多，请先清理部分内容")
-            normalized.append(
-                {"color": color, "width": round(width, 2), "points": points}
-            )
-        return normalized
+        from .draw_guess import normalize_strokes
+        return normalize_strokes(value)
 
     def _confirm_visitor_identity(
         self,

@@ -240,7 +240,7 @@ window.CompanionNativeExtensionPanel = (() => {
         : `<header class="native-extension-head"><div><span class="native-extension-kicker">V2 内置能力</span><h3>${escape(names[this.name])}</h3><p>${escape(descriptions[this.name])}</p></div><div data-native-runtime></div></header><div class="native-extension-lifecycle" data-native-lifecycle></div>`;
       const mobileLink = this.name === "reality" && !mobileOnly && this.record.schema.mobile
         ? '<button class="button small native-extension-device-link" type="button" data-go="manage" data-manage="mobile"><i data-lucide="link-2" aria-hidden="true"></i>手机端连接</button>' : "";
-      const management = !mobileOnly && ["reality", "live"].includes(this.name)
+      const management = !mobileOnly && ["reality", "live", "game"].includes(this.name)
         ? '<div data-native-management></div>' : "";
       const searchLabel = mobileOnly ? "查找手机端连接设置项" : `查找${names[this.name]}设置项`;
       const search = mobileOnly
@@ -475,9 +475,14 @@ window.CompanionNativeExtensionPanel = (() => {
             const record = result?.extensions?.[this.name];
             if (!validRecord(record)) return;
             this.record.runtime = record.runtime;
+            if (record.management) this.record.management = record.management;
             if (record.runtime?.state === "failed") this.notice("模块启动失败，请检查连接设置。", true);
             if (record.runtime?.state !== "starting") {
               try { await window.CompanionProduct.refreshIntegrations?.(); } catch (_) {}
+              if (this.name === "game" && this.current(ticket)) {
+                window.CompanionGameAccess?.refresh?.();
+                if (record.management) this.management?.update?.(this.record);
+              }
             }
             if (this.current(ticket)) this.updateStatus();
           } catch (_) {
@@ -573,6 +578,7 @@ window.CompanionNativeExtensionPanel = (() => {
         this.notice(record.runtime?.state === "failed" ? "设置已保存，模块启动失败，请检查连接设置。" : "设置已保存并应用。", record.runtime?.state === "failed");
         this.options.onApplied?.(this.name);
         try { await window.CompanionProduct.refreshIntegrations?.(); } catch (_) {}
+        if (this.name === "game" && this.current(ticket)) window.CompanionGameAccess?.refresh?.();
         if (this.current(ticket)) this.updateStatus();
       } catch (error) { if (this.current(ticket)) this.notice(errorText(error), true); }
       finally { if (this.current(ticket)) this.setBusy(false); }
@@ -594,8 +600,16 @@ window.CompanionNativeExtensionPanel = (() => {
         operations.delete(signature);
         const result = await product.request("GET", "extensions");
         if (!this.current(ticket)) return;
-        if (validRecord(result?.extensions?.[this.name])) this.record.runtime = result.extensions[this.name].runtime;
+        const latest = result?.extensions?.[this.name];
+        if (validRecord(latest)) {
+          this.record.runtime = latest.runtime;
+          if (latest.management) {
+            this.record.management = latest.management;
+            this.management?.update?.(this.record);
+          }
+        }
         this.updateStatus();
+        if (this.name === "game") window.CompanionGameAccess?.refresh?.();
         this.notice(this.record.runtime?.state === "failed" ? "模块启动失败，请检查连接设置后重试。" : action === "pause" ? "模块已暂停。" : "模块已启用。", this.record.runtime?.state === "failed");
       } catch (error) {
         if (error?.code === "capability_revision_conflict") operations.delete(signature);
@@ -763,6 +777,15 @@ window.CompanionNativeExtensionPanel = (() => {
     for (const [root, panel] of sessions) if (root.isConnected === false) { panel.stop(); sessions.delete(root); }
   }
   function refreshStatus() { prune(); for (const panel of sessions.values()) if (panel.record) panel.updateStatus(); }
+  function syncRuntime(name, runtime) {
+    prune();
+    for (const panel of sessions.values()) {
+      if (panel.name !== name || !panel.record) continue;
+      if (runtime && typeof runtime === "object") panel.record.runtime = clone(runtime);
+      panel.updateStatus();
+      if (!panel.busy && !panel.actionBusy) panel.management?.read?.({quiet:true});
+    }
+  }
   function mount(root, {extensionId, ...options} = {}) {
     prune();
     if (!root || !names[extensionId]) return null;
@@ -775,7 +798,7 @@ window.CompanionNativeExtensionPanel = (() => {
     for (const panel of sessions.values()) panel.stop();
     sessions.clear();
   }
-  return {mount, unmount, prune, refreshStatus, conditionMet,
+  return {mount, unmount, prune, refreshStatus, syncRuntime, conditionMet,
     /* 打开「现实触及」设置时把「本机语音与叫醒」展开并滚到视线内。 */
     focusAudio: () => { audioFocusPending = true; }};
 })();

@@ -7,7 +7,10 @@ window.CompanionNativeExtensionManagement = (() => {
   const actionNames = {mihome_start_login:"扫码登录", mihome_login_status:"检查登录状态", mihome_sync_devices:"同步设备", mihome_logout:"退出米家账号", mihome_device_status:"读取设备状态", mihome_save_mappings:"保存设备映射", mihome_device_profile:"读取设备能力", mihome_device_action:"设置设备属性",
     scan_camera:"扫描摄像头", consent_camera:"更新摄像头确认", update_camera_policy:"保存摄像头策略", connect:"连接 VTube Studio", request_auth:"请求 VTS 授权", list_hotkeys:"读取热键",
     scan_audio:"扫描音频设备", select_audio:"保存音频输出", test_audio:"播放设备测试音", request_audio_consent:"准备本人音频授权", revoke_audio_consent:"撤销音频授权",
-    update_audio_policy:"保存语音策略", save:"保存早晨照料", disable:"关闭早晨照料", stop_session:"停止本次叫醒", test:"试听一次", cancel_reminder:"取消提醒"};
+    update_audio_policy:"保存语音策略", save:"保存早晨照料", disable:"关闭早晨照料", stop_session:"停止本次叫醒", test:"试听一次", cancel_reminder:"取消提醒",
+    xiangqi_install:"下载 Pikafish 引擎", xiangqi_check:"检测象棋引擎",
+    cloudflared_install:"下载 cloudflared", cloudflared_check:"检测 cloudflared",
+    tunnel_start:"启动临时公网", tunnel_stop:"停止临时公网"};
   actionNames.test_camera = "测试摄像头调用";
   const errors = {
     native_extension_inactive:"模块已暂停，请先启用模块再操作。",
@@ -30,6 +33,16 @@ window.CompanionNativeExtensionManagement = (() => {
     native_vts_authorization_required:"请在 VTube Studio 开启 API，并点击请求 VTS 授权。",
     native_vts_action_timeout:"操作超时，请核对 VTube Studio 连接，并在授权弹窗中点允许后重新连接。",
     native_vts_action_failed:"VTube Studio 操作未完成，请检查连接和设备状态。",
+    native_game_download_disabled:"当前配置已禁止自动下载，请先在下方设置中开启允许下载或填写本地路径。",
+    native_game_configured_path_active:"已配置自定义象棋引擎路径，请先清空自定义路径再执行托管下载，或直接核对本地文件。",
+    native_game_xiangqi_install_failed:"Pikafish 象棋引擎下载或解压失败，请检查网络、py7zr 依赖或改填本地引擎路径。",
+    native_game_xiangqi_check_failed:"Pikafish 象棋引擎自检未通过，请确认可执行文件与 pikafish.nnue 在同一目录且可执行。",
+    native_game_cloudflared_install_failed:"cloudflared 下载失败，请检查网络，或改用局域网 / 固定 HTTPS 地址。",
+    native_game_tunnel_failed:"临时公网通道启动失败，请确认 cloudflared 可用且网络可访问 Cloudflare。",
+    native_game_server_disabled:"游戏网页服务尚未启用，请先在下方设置中启用网页服务并保存。",
+    native_game_external_url_configured:"已配置固定外部访问地址，无需启动临时公网通道。",
+    native_game_active_games_exist:"当前仍有进行中的对局，请等待对局结束后再停止公网通道。",
+    native_game_action_failed:"游戏管理操作未完成，请刷新状态核对配置后再试。",
   };
   class Management {
     constructor(root, options) {
@@ -67,10 +80,11 @@ window.CompanionNativeExtensionManagement = (() => {
       if (node) { node.textContent = message; node.classList.toggle("is-error", failed); }
     }
     render() {
-      if (!["reality", "live"].includes(this.name)) { this.root.innerHTML = ""; return; }
+      if (!["reality", "live", "game"].includes(this.name)) { this.root.innerHTML = ""; return; }
       if (!this.record.management) {
-        this.root.innerHTML = `<section class="native-management"><h4>连接与设备管理</h4><p>管理状态尚未读取。</p><button class="button small" type="button" data-native-management-refresh>重新读取管理状态</button><p data-native-action-notice role="status" aria-live="polite"></p></section>`;
-      } else this.root.innerHTML = this.name === "reality" ? this.reality() : this.live();
+        const heading = this.name === "game" ? "游戏引擎与公网访问管理" : "连接与设备管理";
+        this.root.innerHTML = `<section class="native-management"><h4>${heading}</h4><p>管理状态尚未读取。</p><button class="button small" type="button" data-native-management-refresh>重新读取管理状态</button><p data-native-action-notice role="status" aria-live="polite"></p></section>`;
+      } else this.root.innerHTML = this.name === "reality" ? this.reality() : this.name === "game" ? this.game() : this.live();
       const icons = this.root.querySelectorAll?.("[data-lucide]");
       if (icons?.length && window.lucide?.createIcons) {
         window.lucide.createIcons({ nodes: [...icons], attrs: { "aria-hidden": "true" } });
@@ -389,12 +403,61 @@ window.CompanionNativeExtensionManagement = (() => {
       const table = hotkeys.length ? `<div class="native-management-table"><table><thead><tr><th>热键</th><th>ID</th><th>表情配置</th></tr></thead><tbody>${hotkeys.map((hotkey, index) => `<tr><td>${escape(hotkey.name || "未命名热键")}</td><td><code>${escape(hotkey.hotkeyID || hotkey.hotkey_id || hotkey.id || "")}</code></td><td><button class="button small" type="button" data-native-use-hotkey="${index}">添加到表情</button></td></tr>`).join("")}</tbody></table></div>` : `<p class="native-management-muted">连接并授权后，点击读取热键查看当前模型的可用表情。</p>`;
       return `<section class="native-management"><header><h4>VTube Studio</h4><span>${label}</span></header><p class="native-management-muted">先在 VTube Studio 开启 API。请求授权后，在 VTS 弹窗中点“允许”，再读取当前模型的热键。</p>${data.error_code ? `<p class="native-management-muted">${escape(errors[data.error_code] || "连接尚未就绪，请核对设备状态。")}</p>` : ""}<div class="native-management-actions">${this.button("connect", connected ? "重新连接" : "连接 VTube Studio")}${this.button("request_auth", "请求 VTS 授权")}${this.button("list_hotkeys", "读取热键", authenticated ? "" : "data-native-requires-auth")}</div>${table}<div class="native-management-bottom"><button class="button small" type="button" data-native-management-refresh>刷新管理状态</button><p data-native-action-notice role="status" aria-live="polite"></p></div></section>`;
     }
+    game() {
+      const data = this.record.management || {};
+      const server = data.server || {}, engine = data.xiangqi_engine || {}, tunnel = data.tunnel || {};
+      const engineState = engine.available
+        ? (engine.version ? `已就绪 · ${engine.version}` : "已就绪")
+        : engine.configured_missing ? "自定义路径不存在"
+          : engine.path ? "缺少神经网络文件" : "未安装";
+      const engineSource = engine.configured ? "自定义路径" : engine.managed ? "托管安装" : "未检测到";
+      const enginePath = engine.path || engine.configured_path || engine.install_root || "未配置";
+      const engineInstallDisabled = engine.allow_download === false ? "data-native-disabled" : "";
+      const configuredBase = String(server.public_base_url || server.external_base_url || "").trim();
+      const tunnelSourceLabels = {configured:"自定义路径", managed:"托管目录", system:"系统 PATH", bundled:"插件目录"};
+      const tunnelState = configuredBase ? "已配固定地址"
+        : tunnel.ready && tunnel.url ? "公网通道运行中"
+          : tunnel.installed ? "cloudflared 已就绪"
+            : tunnel.configured_missing ? "自定义路径不存在" : "未安装 cloudflared";
+      const serverLine = server.running
+        ? `网页服务运行中（${server.local_base_url || `${server.host || "0.0.0.0"}:${server.port || 8765}`}）`
+        : server.enabled ? "网页服务已启用，等待模块就绪" : "网页服务未启用";
+      const externalLine = configuredBase ? `固定外部地址：${configuredBase}`
+        : tunnel.url ? `当前公网地址：${tunnel.url}`
+          : server.access_host ? `局域网访问主机：${server.access_host}` : "";
+      const tunnelPath = tunnel.path || tunnel.binary_path || tunnel.configured_path || tunnel.download_dir || "未检测到";
+      const tunnelSource = tunnelSourceLabels[tunnel.source] || (tunnel.installed ? "已检测到" : "未检测到");
+      const tunnelInstallDisabled = tunnel.allow_download === false ? "data-native-disabled" : "";
+      const tunnelStartDisabled = configuredBase || server.enabled === false || tunnel.running === true ? "data-native-disabled" : "";
+      const tunnelStopDisabled = tunnel.running === true ? "" : "data-native-disabled";
+      const activeCount = (Array.isArray(data.native_games) ? data.native_games.length : 0)
+        + (Array.isArray(data.rooms) ? data.rooms.length : 0);
+      return `<div class="native-management">
+        <details open data-native-game-xiangqi><summary>中国象棋引擎（Pikafish）<span>${escape(engineState)}</span></summary><div class="native-management-body">
+          <p class="native-management-muted">来源：${escape(engineSource)} · 路径：<code>${escape(enginePath)}</code>${engine.nnue_path ? " · 神经网络文件已就绪" : ""}</p>
+          ${engine.guidance ? `<p class="native-management-muted">${escape(engine.guidance)}</p>` : ""}
+          ${engine.error ? `<p class="native-management-login-detail">${escape(engine.error)}</p>` : ""}
+          <div class="native-management-actions">${this.button("xiangqi_install", engine.managed && engine.available ? "重新下载 Pikafish 引擎" : "下载 Pikafish 引擎", engineInstallDisabled)}${this.button("xiangqi_check")}</div>
+        </div></details>
+        <details open data-native-game-tunnel><summary>网页房间与临时公网（cloudflared）<span>${escape(tunnelState)}</span></summary><div class="native-management-body">
+          <p class="native-management-muted">${escape(serverLine)}${externalLine ? ` · ${escape(externalLine)}` : ""}</p>
+          <p class="native-management-muted">cloudflared 来源：${escape(tunnelSource)} · 路径：<code>${escape(tunnelPath)}</code></p>
+          ${tunnel.guidance ? `<p class="native-management-muted">${escape(tunnel.guidance)}</p>` : ""}
+          ${tunnel.error ? `<p class="native-management-login-detail">${escape(tunnel.error)}</p>` : ""}
+          <div class="native-management-actions">${this.button("cloudflared_install", tunnel.installed && tunnel.source === "managed" ? "重新下载 cloudflared" : "下载 cloudflared", tunnelInstallDisabled)}${this.button("cloudflared_check")}${this.button("tunnel_start", undefined, tunnelStartDisabled)}${this.button("tunnel_stop", undefined, tunnelStopDisabled)}</div>
+        </div></details>
+        <p class="native-management-muted">当前活动对局：${activeCount} 局</p>
+        <div class="native-management-bottom"><button class="button small" type="button" data-native-management-refresh>刷新管理状态</button><p data-native-action-notice role="status" aria-live="polite"></p></div>
+      </div>`;
+    }
     updateButtons() {
       const mi = this.record.management?.mihome, logged = mi?.auth?.logged_in === true || mi?.login?.credential_present === true;
       const mihomeAvailable = mi?.available !== false && (mi?.available === true || !!mi?.auth || !!mi?.login);
       const consent = this.root.querySelector("[data-native-camera-consent]")?.checked === true;
       this.root.querySelectorAll("[data-native-action], [data-native-use-hotkey]").forEach(button => {
-        button.disabled = this.busy || this.blocked || button.hasAttribute("data-native-requires-login") && !logged
+        button.disabled = this.busy || this.blocked
+          || button.hasAttribute("data-native-disabled")
+          || button.hasAttribute("data-native-requires-login") && !logged
           || button.hasAttribute("data-native-requires-mihome") && !mihomeAvailable
           || button.hasAttribute("data-native-requires-auth") && this.record.management?.authenticated !== true
           || button.hasAttribute("data-native-requires-consent") && !consent;
@@ -489,7 +552,9 @@ window.CompanionNativeExtensionManagement = (() => {
       if (action.startsWith("mihome_")) this.mihomeFeedback = null;
       this.notice(waiting);
       try {
-        const record = await window.CompanionProduct.request("POST", "extensions/action", {extension_id:this.name, action, payload}, {timeoutMs:action === "test_camera" ? 130000 : 65000});
+        const timeoutMs = ["xiangqi_install", "cloudflared_install"].includes(action) ? 245000
+          : action === "test_camera" ? 130000 : 65000;
+        const record = await window.CompanionProduct.request("POST", "extensions/action", {extension_id:this.name, action, payload}, {timeoutMs});
         if (!this.current()) return;
         if (!record?.management) throw {code:"invalid_response"};
         this.record = record;
@@ -550,6 +615,16 @@ window.CompanionNativeExtensionManagement = (() => {
         else if (action === "test_camera") this.notice(this.cameraTestResult.message, this.cameraTestResult.status === "error");
         else if (action === "mihome_device_status" || action === "mihome_control_power" || action === "mihome_device_action") this.notice(this.mihomeFeedback?.message || "设备操作已完成。", this.mihomeFeedback?.failed === true);
         else if (action === "mihome_device_profile") { /* 卡片展开本身就是反馈 */ }
+        else if (action === "xiangqi_check") {
+          const engine = record.management?.xiangqi_engine || {};
+          this.notice(engine.available ? "Pikafish 象棋引擎自检通过，已就绪。" : (engine.guidance || "尚未检测到可用的 Pikafish 象棋引擎。"), !engine.available);
+        } else if (action === "cloudflared_check") {
+          const tunnel = record.management?.tunnel || {};
+          this.notice(tunnel.guidance || (tunnel.installed ? "已检测到 cloudflared。" : "尚未检测到 cloudflared。"), !tunnel.installed);
+        } else if (action === "xiangqi_install") this.notice("Pikafish 象棋引擎已安装并就绪。");
+        else if (action === "cloudflared_install") this.notice("cloudflared 已安装到托管目录。");
+        else if (action === "tunnel_start") this.notice(record.result?.url ? `临时公网已启动：${record.result.url}` : "临时公网已启动。");
+        else if (action === "tunnel_stop") this.notice("临时公网已停止。");
         else this.notice(`${actionNames[action] || "操作"}已完成。`);
       } catch (error) {
         if (this.current()) {
