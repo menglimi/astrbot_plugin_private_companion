@@ -109,7 +109,10 @@ window.CompanionModelsPage = (() => {
   }
   let root = null, path = null, taskPath = null, key = null, state = null, version = 0, windowAvailable = true, onTabChange = null;
   let deferChangeRender = false, deferredRenderPending = false, pointerResetTimer = null;
-  let wsShell = null, wsMain = null, wsMask = null, wsDrawer = null, overlayCloseTimer = null, overlayWasOpen = false;
+  let wsShell = null, wsMain = null, wsDock = null, wsMask = null, wsDrawer = null;
+  let overlayCloseTimer = null, overlayWasOpen = false;
+  let dockCloseTimer = null, dockWasOpen = false, dockHadReport = false, reportCloseTimer = null;
+  let quickCloseTimer = null, advAnimTimer = null;
   const current = (ticket, s) => ticket === version && state === s && root?.isConnected;
   const taskOf = (s, kind) => s.status?.tasks.find(task => task.kind === kind) || null;
   const configSource = source => ({ default: "插件默认", host_conversation: "AstrBot 会话", installation: "全局默认", role: "角色默认", window: "会话设置" }[source] || "上级配置");
@@ -783,18 +786,18 @@ window.CompanionModelsPage = (() => {
       const ownCount = shownTasks.filter(t => { const d = s.drafts.get(t.kind); return d && taskFields(t).some(nm => !d.inherited[nm]); }).length;
       const collapsed = !!s.groupCollapsed[gkey];
       const canBatch = s.av !== "lane" && selectable.length > 0;
-      return `<section class="model-rgroup${collapsed ? " is-collapsed" : ""}" data-route-group="${esc(gkey)}">
+      return `<section class="model-rgroup${collapsed ? " is-collapsed" : ""}${selCount ? " has-picked" : ""}" data-route-group="${esc(gkey)}">
         <header class="model-rgroup-head">
           <input type="checkbox" class="model-gck" data-model-gpick="${esc(gkey)}" ${allSel ? "checked" : ""} ${!selectable.length ? "disabled" : ""} aria-label="全选 ${esc(g)}">
           <button type="button" class="model-rgroup-toggle" data-model-group-toggle="${esc(gkey)}" aria-expanded="${!collapsed}">
-            <span class="model-rgroup-chev" aria-hidden="true">${collapsed ? "▸" : "▾"}</span>
+            <span class="model-rgroup-chev" aria-hidden="true">▾</span>
             ${icon(groupIcon(g))}
             <b>${esc(g)}</b>
-            <span class="model-rgroup-meta">${shownTasks.length} 项${ownCount ? ` · ${ownCount} 项已改` : ""}${selCount ? ` · 已选 ${selCount}` : ""}</span>
+            <span class="model-rgroup-meta" data-group-base="${shownTasks.length} 项${ownCount ? ` · ${ownCount} 项已改` : ""}">${shownTasks.length} 项${ownCount ? ` · ${ownCount} 项已改` : ""}${selCount ? ` · 已选 ${selCount}` : ""}</span>
           </button>
           ${canBatch ? `<button type="button" class="model-lk" data-quick-group="${esc(g)}">本组批改</button>` : ""}
         </header>
-        ${collapsed ? "" : `<ul class="model-rlist">${shownTasks.map(task => taskRow(s, task)).join("")}</ul>`}
+        <div class="model-rgroup-body"><div class="model-rgroup-inner"${collapsed ? ' aria-hidden="true" inert' : ""}><ul class="model-rlist">${shownTasks.map(task => taskRow(s, task)).join("")}</ul></div></div>
       </section>`;
     }).filter(Boolean);
     if (!matchedTotal) return '<p class="model-empty">没有匹配的任务。</p>';
@@ -917,8 +920,8 @@ window.CompanionModelsPage = (() => {
                 <button type="button" class="button small" data-provider-test="${esc(main)}" ${!main || testing ? "disabled" : ""}>测试连接</button>
               </div>
             </section>
-            <details class="model-adv" ${advOpen ? "open" : ""}>
-              <summary class="model-adv-sum" data-adv-toggle="${esc(task.kind)}">
+            <div class="model-adv${advOpen ? " is-open" : ""}"${advOpen ? " open" : ""}>
+              <button type="button" class="model-adv-sum" data-adv-toggle="${esc(task.kind)}" aria-expanded="${advOpen}">
                 <span class="model-adv-title"><span class="model-adv-chev" aria-hidden="true">▸</span><b>高级参数与附加提示词</b></span>
                 <span class="model-adv-chips">
                   <span>超时 ${esc(timeoutVal)}s</span>
@@ -926,20 +929,22 @@ window.CompanionModelsPage = (() => {
                   <span>${promptVal ? `提示词 ${promptVal.length} 字` : "提示词默认"}</span>
                   ${limitMessage ? '<span class="warn">上限提示</span>' : ""}
                 </span>
-              </summary>
-              <div class="model-adv-body">
-                <div class="model-duo">
-                  <div class="model-fd">${fieldHeader("请求超时", "", draft.inherited.timeout_seconds, "timeout_seconds", task.kind, fieldLocked)}
-                    <span class="model-unit"><input id="${esc(fieldDomId(task.kind, "timeout_seconds"))}" type="number" min="1" max="600" step="1" data-model-field="timeout_seconds" data-model-kind="${esc(task.kind)}" value="${esc(timeoutVal)}" ${fieldLocked ? "disabled" : ""}><i>秒</i></span></div>
-                  <div class="model-fd">${fieldHeader("单次输出上限", "", draft.inherited.max_output_tokens, "max_output_tokens", task.kind, fieldLocked)}
-                    <span class="model-unit"><input id="${esc(fieldDomId(task.kind, "max_output_tokens"))}" type="number" min="1" max="${limit}" step="1" data-model-field="max_output_tokens" data-model-kind="${esc(task.kind)}" value="${esc(maxTokensVal)}" ${fieldLocked ? "disabled" : ""}><i>令牌</i></span></div>
+              </button>
+              <div class="model-adv-shell"><div class="model-adv-inner"${advOpen ? "" : ' aria-hidden="true" inert'}>
+                <div class="model-adv-body">
+                  <div class="model-duo">
+                    <div class="model-fd">${fieldHeader("请求超时", "", draft.inherited.timeout_seconds, "timeout_seconds", task.kind, fieldLocked)}
+                      <span class="model-unit"><input id="${esc(fieldDomId(task.kind, "timeout_seconds"))}" type="number" min="1" max="600" step="1" data-model-field="timeout_seconds" data-model-kind="${esc(task.kind)}" value="${esc(timeoutVal)}" ${fieldLocked ? "disabled" : ""}><i>秒</i></span></div>
+                    <div class="model-fd">${fieldHeader("单次输出上限", "", draft.inherited.max_output_tokens, "max_output_tokens", task.kind, fieldLocked)}
+                      <span class="model-unit"><input id="${esc(fieldDomId(task.kind, "max_output_tokens"))}" type="number" min="1" max="${limit}" step="1" data-model-field="max_output_tokens" data-model-kind="${esc(task.kind)}" value="${esc(maxTokensVal)}" ${fieldLocked ? "disabled" : ""}><i>令牌</i></span></div>
+                  </div>
+                  ${limitMessage ? `<div class="model-alert" role="alert">${esc(limitMessage)}</div>` : ""}
+                  <div class="model-fd">${fieldHeader("任务附加提示词", `最多 8000 字`, draft.inherited.prompt, "prompt", task.kind, fieldLocked)}
+                    <textarea id="${esc(fieldDomId(task.kind, "prompt"))}" rows="6" maxlength="8000" data-model-field="prompt" data-model-kind="${esc(task.kind)}" ${fieldLocked ? "disabled" : ""}>${esc(promptVal || "")}</textarea>
+                    <span class="model-char-count" data-model-prompt-count="${esc(task.kind)}">${(promptVal || "").length} / 8000</span></div>
                 </div>
-                ${limitMessage ? `<div class="model-alert" role="alert">${esc(limitMessage)}</div>` : ""}
-                <div class="model-fd">${fieldHeader("任务附加提示词", `最多 8000 字`, draft.inherited.prompt, "prompt", task.kind, fieldLocked)}
-                  <textarea id="${esc(fieldDomId(task.kind, "prompt"))}" rows="6" maxlength="8000" data-model-field="prompt" data-model-kind="${esc(task.kind)}" ${fieldLocked ? "disabled" : ""}>${esc(promptVal || "")}</textarea>
-                  <span class="model-char-count" data-model-prompt-count="${esc(task.kind)}">${(promptVal || "").length} / 8000</span></div>
-              </div>
-            </details>
+              </div></div>
+            </div>
             <div class="model-policy-link">
               <div><b>替换与拒答策略</b><small>替换规则 ${rules} 条 · 拒答替代 ${refusalOn ? "已开启" : "未开启"} · ${esc(scopeLabelText(scopeVal))}</small></div>
               <button type="button" class="button small" data-open-policy="${esc(task.kind)}">前往替换策略 ↗</button>
@@ -977,7 +982,15 @@ window.CompanionModelsPage = (() => {
     if (!snapshot(s).length) return '<p class="model-empty">当前没有可用的模型任务。</p>';
     return s.view === "providers" ? providerView(s) : routingList(s); }
   function syncInput(kind) { const s = state; if (!root || !s) return;
-    const slot = root.querySelector(".model-queue-slot"); if (slot) slot.innerHTML = queue(s);
+    const slot = root.querySelector(".model-queue-slot");
+    if (slot) {
+      const hadQueue = Boolean(slot.querySelector?.(".model-queue"));
+      const nextQueue = queue(s);
+      slot.innerHTML = nextQueue;
+      if (!hadQueue && nextQueue && useLiveDom() && !isReducedMotion()) {
+        slot.querySelector?.(".model-queue")?.classList.add("is-entering");
+      }
+    }
     const task = taskOf(s, kind), draft = s.drafts.get(kind);
     const counter = root.querySelector(`[data-model-prompt-count="${kind}"]`);
     if (counter && task && draft) counter.textContent = `${String(effective(task, draft, "prompt") || "").length} / 8000`;
@@ -1307,34 +1320,57 @@ window.CompanionModelsPage = (() => {
     if (s.sub === "pol") { ruleClick(s, event); return; }
     if (event.target.closest("[data-global-default-save]")) { void saveGlobalDefaults(s); return; }
     if (event.target.closest("[data-global-default-reset]")) { syncGlobalDraft(s, true); s.globalNotice = ""; s.globalBad = false; render(); return; }
-    if (event.target.closest("[data-model-quick-toggle]")) { s.quickOpen = !s.quickOpen; render(); return; }
+    if (event.target.closest("[data-model-quick-toggle]")) {
+      const opening = !s.quickOpen;
+      s.quickOpen = opening;
+      if (!toggleQuickBoxLive(s, opening)) render();
+      return;
+    }
     const quickGroup = event.target.closest("[data-quick-group]");
-    if (quickGroup) { const g = quickGroup.dataset.quickGroup; s.quickOpen = true; s.expOpen[g] = true; render();
-      try { const card = root.querySelector(`[data-quick-card="${g}"]`);
-        card?.scrollIntoView?.({ block: "nearest", behavior: (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches) ? "auto" : "smooth" }); } catch { }
-      return; }
+    if (quickGroup) {
+      const g = quickGroup.dataset.quickGroup;
+      const wasOpen = s.quickOpen;
+      s.quickOpen = true;
+      s.expOpen[g] = true;
+      if (!wasOpen && toggleQuickBoxLive(s, true, g)) return;
+      render();
+      flashQuickCard(g);
+      return;
+    }
+    if (event.target.closest("[data-model-legend-toggle]")) {
+      s.legendOpen = !s.legendOpen;
+      if (!toggleLegendLive(s)) render();
+      return;
+    }
     const groupToggle = event.target.closest("[data-model-group-toggle]");
-    if (groupToggle) { const gk = groupToggle.dataset.modelGroupToggle; s.groupCollapsed[gk] = !s.groupCollapsed[gk]; render(); return; }
+    if (groupToggle) {
+      const gk = groupToggle.dataset.modelGroupToggle;
+      s.groupCollapsed[gk] = !s.groupCollapsed[gk];
+      if (!toggleRouteGroupLive(s, gk)) render();
+      return;
+    }
     const advToggle = event.target.closest("[data-adv-toggle]");
     if (advToggle) {
       event.preventDefault?.();
       const k = advToggle.dataset.advToggle;
       const opening = !s.advOpen[k];
       s.advOpen[k] = opening;
-      render();
-      if (opening) {
-        try {
-          const advEl = root.querySelector?.(".model-adv");
-          const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
-          advEl?.scrollIntoView?.({ block: "nearest", behavior: reduced ? "auto" : "smooth" });
-        } catch { }
+      if (!toggleAdvLive(s, k, opening)) {
+        render();
+        if (opening) scrollAdvIntoView();
       }
       return;
     }
     const resetInherit = event.target.closest("[data-model-inherit-reset]");
     if (resetInherit) { setFieldInherit(s, resetInherit.dataset.modelKind, resetInherit.dataset.modelInheritReset, true); return; }
     const exp = event.target.closest("[data-model-exp]");
-    if (exp) { const k = exp.dataset.modelExp; s.expOpen[k] = !s.expOpen[k]; rememberExpanded(s, k); render(); return; }
+    if (exp) {
+      const k = exp.dataset.modelExp;
+      s.expOpen[k] = !s.expOpen[k];
+      rememberExpanded(s, k);
+      if (!toggleQuickExpLive(s, k)) render();
+      return;
+    }
     const gpick = event.target.closest("[data-model-gpick]");
     if (gpick) { const k = gpick.dataset.modelGpick;
       const kinds = (k.startsWith("lane:") ? snapshot(s).filter(t => t.lane === k.slice(5))
@@ -1342,18 +1378,21 @@ window.CompanionModelsPage = (() => {
         .filter(t => !coreReply(t) && shown(s, t)).map(t => t.kind);
       if (kinds.length) { const all = kinds.every(kind => s.selection.includes(kind));
         s.selection = all ? s.selection.filter(kind => !kinds.includes(kind)) : Array.from(new Set(s.selection.concat(kinds)));
-        s.rule.report = null; render(); } return; }
+        s.rule.report = null;
+        if (!syncSelectionInPlace(s)) render(); } return; }
     const mapPick = event.target.closest("[data-map-pick]");
     if (mapPick) { const kind = mapPick.dataset.mapPick;
       s.selection = s.selection.includes(kind) ? s.selection.filter(item => item !== kind) : s.selection.concat(kind);
-      s.rule.report = null; render(); return; }
+      s.rule.report = null; if (!syncSelectionInPlace(s)) render(); return; }
     /* Clicking any task opens its right-side Inspector Drawer cleanly. */
     const openTask = event.target.closest("[data-model-open]");
     if (openTask) { const kind = openTask.dataset.modelOpen, wasTaskList = s.sub === "cfg" && s.view === "tasks";
       s.sub = "cfg"; s.view = "tasks"; s.drawer = null; s.expanded = wasTaskList && s.expanded === kind ? null : kind; render();
       return; }
-    const mapClear = event.target.closest("[data-map-clear]"); if (mapClear) { s.selection = []; s.rule.report = null; render(); return; }
-    const reportClose = event.target.closest("[data-map-report-close]"); if (reportClose) { s.rule.report = null; render(); return; }
+    const mapClear = event.target.closest("[data-map-clear]");
+    if (mapClear) { s.selection = []; s.rule.report = null; if (!syncSelectionInPlace(s)) render(); return; }
+    const reportClose = event.target.closest("[data-map-report-close]");
+    if (reportClose) { if (!closeReportLive(s)) { s.rule.report = null; render(); } return; }
     const mapTest = event.target.closest("[data-map-test]"); if (mapTest) { runMapTest(s); return; }
     const providerTest = event.target.closest("[data-provider-test]");
     if (providerTest) { probeProvider(s, providerTest.dataset.providerTest); return; }
@@ -1363,7 +1402,7 @@ window.CompanionModelsPage = (() => {
     if (af) { const id = af.dataset.modelAf; s.custom = id === "all" ? null : id === "own" ? "custom" : id; render(); return; }
     const slotApply = event.target.closest("[data-model-slot-apply]"); if (slotApply) { applySlot(s, slotApply.dataset.modelSlotApply); return; }
     const pick = event.target.closest("[data-model-pick]");
-    if (pick) { const kind = pick.dataset.modelPick; s.selection = s.selection.includes(kind) ? s.selection.filter(item => item !== kind) : s.selection.concat(kind); s.rule.report = null; render(); return; }
+    if (pick) { const kind = pick.dataset.modelPick; s.selection = s.selection.includes(kind) ? s.selection.filter(item => item !== kind) : s.selection.concat(kind); s.rule.report = null; if (!syncSelectionInPlace(s)) render(); return; }
     const custom = event.target.closest("[data-model-custom]");
     if (custom) { const id = custom.dataset.modelCustom; s.custom = id === "all" ? null : id; render(); return; }
     const lane = event.target.closest("[data-model-lane]");
@@ -1371,7 +1410,7 @@ window.CompanionModelsPage = (() => {
     const view = event.target.closest("[data-model-view]");
     if (view) { s.view = view.dataset.modelView; render(); return; }
     const action = topAction; if (!action || s.busy) return;
-    if (action === "clear-selection") { s.selection = []; s.rule.report = null; render(); return; }
+    if (action === "clear-selection") { s.selection = []; s.rule.report = null; if (!syncSelectionInPlace(s)) render(); return; }
     if (action === "inherit") { restoreInherit(s, selected(s)); return; }
     if (action === "discard-all") { discard(s, selected(s).length ? selected(s) : snapshot(s).map(task => task.kind)); return; }
     if (action === "save-all") { const kinds = snapshot(s).map(task => task.kind); saveTasks(s, kinds); return; }
@@ -2805,9 +2844,10 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     } catch (err) { if (!current(ticket, s)) return; s.providerTests[provider] = {status: "unknown", code: err.code || err.message}; }
     finally { s.testing.delete(provider); if (current(ticket, s)) render(); }
   }
-  function selectionDock(s) {
+  function selectionDockInner(s) {
+    if (!s || s.tab !== "fn" || s.sub === "pol") return { hasDock: false, hasReport: false, html: "" };
     const picked = selected(s);
-    if (!picked.length && !s.rule.report) return "";
+    if (!picked.length && !s.rule.report) return { hasDock: false, hasReport: false, html: "" };
     const providers = new Set();
     picked.forEach(kind => { const task = taskOf(s, kind), draft = s.drafts.get(kind);
       const primary = providerFor(task, draft); if (primary) providers.add(primary);
@@ -2825,7 +2865,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     const okCount = (s.rule.report || []).filter(line => s.providerTests[line.provider]?.status === "ok").length;
     const disabled = s.busy || s.loading || s.denied || s.rule.testing;
     const providerOpts = (s.status?.providers || []).map(provider => `<option value="${esc(provider.id)}">${esc(provider.id)}</option>`).join("");
-    return `<div class="model-dock" role="region" aria-label="已选任务批量操作">${picked.length ? `<div class="model-selbar" role="status">
+    const html = `${picked.length ? `<div class="model-selbar" role="status">
       <span class="model-sel-count">已选 <strong>${picked.length}</strong> 项任务 · 涉及 <b>${providers.size}</b> 个提供方</span>
       ${total ? `<span class="model-bar${done === total && okCount === total ? " full" : ""}"><i style="width:${Math.round(done / total * 100)}%"></i></span>` : ""}
       <select data-model-assign aria-label="批量指派主模型提供方" ${disabled ? "disabled" : ""}><option value="">批量指派主模型…</option>${providerOpts}</select>
@@ -2836,7 +2876,13 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       <button type="button" class="button small" data-model-action="clear-selection" data-map-clear ${s.rule.testing ? "disabled" : ""}>取消选择</button>
     </div>` : ""}
       ${s.rule.report ? `<div class="model-tres"><div class="th"><b>连通性测试</b><span class="s">${s.rule.testing ? `正在测试 ${picked.length} 项` : `${total} 项完成 · ${okCount} 通过${okCount < total ? " · " + (total - okCount) + " 失败" : ""}`}</span><span class="model-grow"></span><button type="button" class="model-lk" data-map-report-close ${s.rule.testing ? "disabled" : ""}>收起结果</button></div>
-        <div class="tbody">${rows}</div></div>` : ""}</div>`; }
+        <div class="tbody">${rows}</div></div>` : ""}`;
+    return { hasDock: true, hasReport: Boolean(s.rule.report), html };
+  }
+  function selectionDock(s) {
+    const info = selectionDockInner(s);
+    return info.hasDock ? `<div class="model-dock is-open" role="region" aria-label="已选任务批量操作">${info.html}</div>` : "";
+  }
   async function runMapTest(s) { if (s.rule.testing) return; const ticket = version, picked = selected(s);
     if (!picked.length) return;
     const report = [];
@@ -2851,7 +2897,14 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     s.rule.testing = false;
     s.bad = report.some(line => !line.provider || s.providerTests[line.provider]?.status !== "ok");
     s.notice = s.bad ? "部分模型提供方未通过测试，请核对结果。" : "所选任务涉及的模型提供方均已通过测试。"; render(); }
-  function quickConfig(s) {
+  function quickExpListHtml(s, kinds) {
+    return `<div class="model-exp"><ul>${kinds.map(k => { const t = taskOf(s, k), d = s.drafts.get(k);
+      const isOwn = d && fields.some(name => !d.inherited[name]);
+      const m = t ? providerFor(t, d) || "未设置" : "未注册";
+      const f = t ? rowFallback(t, d) : "";
+      return `<li><button type="button" class="model-lk" data-model-open="${esc(k)}">${esc(taskName(k)?.label || k)}</button><span>${esc(m)}${f ? " → " + esc(f) : " · 无备用"}${isOwn ? " · 已改" : ""}</span></li>`; }).join("")}</ul></div>`;
+  }
+  function quickBodyMarkup(s) {
     if (!s.status || !snapshot(s).length) return "";
     const providers = s.status.providers || [];
     const primaryOpts = val => [
@@ -2865,7 +2918,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       `<option value="__none__" ${val === "__none__" ? "selected" : ""}>不使用备用模型（清空备用）</option>`,
       ...providers.map(p => `<option value="${esc(p.id)}" ${val === p.id ? "selected" : ""}>${esc(providerLabel(p))}</option>`),
     ].join("");
-    const cards = s.quickOpen ? taskGroups(s).filter(([, entries]) => entries.some(([kind]) => !coreReply(taskOf(s, kind))))
+    const cards = taskGroups(s).filter(([, entries]) => entries.some(([kind]) => !coreReply(taskOf(s, kind))))
       .map(([g, entries]) => { const items = entries.filter(([kind]) => !coreReply(taskOf(s, kind))); const kinds = items.map(([kind]) => kind);
       const slot = slotDraftOf(s, g);
       const curMain = kinds.map(k => { const t = taskOf(s, k), d = s.drafts.get(k); return t && d ? providerFor(t, d) : ""; });
@@ -2903,21 +2956,21 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
           ${collide ? '<div class="model-alert" role="alert">主模型与备用模型不能相同，请调整其中一项。</div>' : ""}
         </div>
         <div class="model-sc-ft"><code>${esc(g)}</code><span class="model-grow"></span>
-          <button type="button" class="model-lk" data-model-exp="${esc(g)}">${open ? "收起" : "覆盖"} ${items.length} 项${own ? ` · ${own} 项单独设置` : ""} ▾</button>
+          <button type="button" class="model-lk" data-model-exp="${esc(g)}" aria-expanded="${open}"><span>${open ? "收起" : "覆盖"} ${items.length} 项${own ? ` · ${own} 项单独设置` : ""}</span><span class="model-exp-chev" aria-hidden="true">▾</span></button>
           <button type="button" class="button small primary" data-model-slot-apply="${esc(g)}" ${s.busy || s.loading || s.denied || (!mainChanged && !fbChanged) || collide ? "disabled" : ""}>${applyLabel}</button></div>
-        ${open ? `<div class="model-exp"><ul>${kinds.map(k => { const t = taskOf(s, k), d = s.drafts.get(k);
-          const isOwn = d && fields.some(name => !d.inherited[name]);
-          const m = t ? providerFor(t, d) || "未设置" : "未注册";
-          const f = t ? rowFallback(t, d) : "";
-          return `<li><button type="button" class="model-lk" data-model-open="${esc(k)}">${esc(taskName(k)?.label || k)}</button><span>${esc(m)}${f ? " → " + esc(f) : " · 无备用"}${isOwn ? " · 已改" : ""}</span></li>`; }).join("")}</ul></div>` : ""}
-      </article>`; }).join("") : "";
+        <div class="model-collapse-shell${open ? " is-open" : ""}" data-model-exp-shell="${esc(g)}"><div class="model-collapse-inner"${open ? "" : ' aria-hidden="true" inert'}>${open ? quickExpListHtml(s, kinds) : ""}</div></div>
+      </article>`; }).join("");
     const core = snapshot(s).find(coreReply);
+    return `<div class="model-quick-body">${core ? '<p class="model-note">普通对话由 AstrBot 当前会话管理；快速分组指派仅作用于插件任务，对话附加提示请点击「对话回复」在右侧抽屉编辑。</p>' : ""}<div class="model-qgrid">${cards}</div></div>`;
+  }
+  function quickConfig(s) {
+    if (!s.status || !snapshot(s).length) return "";
     return `<section class="model-quick-box${s.quickOpen ? " is-open" : ""}" aria-label="快速分组批量指派">
       <button type="button" class="model-quick-toggle" data-model-quick-toggle aria-expanded="${s.quickOpen}">
         <span class="model-quick-toggle-copy"><b>快速分组指派（批量主备路由）</b><small>按业务分组批量指定主模型或备用模型；备用默认「保持不变」，避免误覆盖已精调任务</small></span>
-        <span class="model-quick-toggle-state">${s.quickOpen ? "收起 ▴" : "展开批量指派 ▾"}</span>
+        <span class="model-quick-toggle-state"><span class="model-quick-state-txt">${s.quickOpen ? "收起" : "展开批量指派"}</span><span class="model-quick-chev" aria-hidden="true">▾</span></span>
       </button>
-      ${s.quickOpen ? `<div class="model-quick-body">${core ? '<p class="model-note">普通对话由 AstrBot 当前会话管理；快速分组指派仅作用于插件任务，对话附加提示请点击「对话回复」在右侧抽屉编辑。</p>' : ""}<div class="model-qgrid">${cards}</div></div>` : ""}
+      <div class="model-collapse-shell"><div class="model-collapse-inner"${s.quickOpen ? "" : ' aria-hidden="true" inert'}>${s.quickOpen ? quickBodyMarkup(s) : ""}</div></div>
     </section>`; }
   async function applySlot(s, slotId) {
     const gp = taskGroups(s).find(([g]) => g === slotId); if (!gp) return;
@@ -3178,9 +3231,10 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   function cfgPane(s) {
     const legend = (s.status?.providers || []).map(p => `<span><i style="background:${pillColor(p.id)}"></i><em>${esc(p.id)}</em></span>`).join("");
     const legendBox = (s.status?.providers || []).length
-      ? `<details class="model-mlgd-box"><summary><span>模型提供方图例</span><small>${s.status.providers.length} 个 · 点击展开</small></summary><div class="model-mlgd legend">${legend}</div></details>`
+      ? `<section class="model-mlgd-box${s.legendOpen ? " is-open" : ""}"${s.legendOpen ? " open" : ""}><button type="button" class="model-mlgd-toggle" data-model-legend-toggle aria-expanded="${!!s.legendOpen}"><span class="model-mlgd-chev" aria-hidden="true">▸</span><span>模型提供方图例</span><small>${s.status.providers.length} 个 · ${s.legendOpen ? "收起" : "点击展开"}</small></button><div class="model-collapse-shell"><div class="model-collapse-inner"${s.legendOpen ? "" : ' aria-hidden="true" inert'}><div class="model-mlgd legend">${legend}</div></div></div></section>`
       : "";
-    return `<div class="model-subpane">${globalDefaultsCard(s)}<div class="model-kpis">${fnKpis(s)}</div>${!(s.bad || s.denied) ? notice(s) : ""}<div class="model-queue-slot">${queue(s)}</div>${quickConfig(s)}${toolbar(s)}${legendBox}${body(s)}${selectionDock(s)}</div>`; }
+    const inlineDock = useLiveDom() ? "" : selectionDock(s);
+    return `<div class="model-subpane">${globalDefaultsCard(s)}<div class="model-kpis">${fnKpis(s)}</div>${!(s.bad || s.denied) ? notice(s) : ""}<div class="model-queue-slot">${queue(s)}</div>${quickConfig(s)}${toolbar(s)}${legendBox}${body(s)}${inlineDock}</div>`; }
   /* ---------- replacement policy: mutations ---------- */
   const ruleTarget = ref => { const [kind, index] = String(ref || "").split(":"); return { kind, index: Number(index) }; };
   /* Every rule edit funnels through here so the JSON the gateway reads stays canonical. */
@@ -3343,15 +3397,282 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       clearClosedDrawerContent();
     }
   }
+  function clearClosedDockContent() {
+    if (dockCloseTimer) { clearTimeout(dockCloseTimer); dockCloseTimer = null; }
+    if (!dockWasOpen && wsDock && !wsDock.classList.contains("is-open")) {
+      wsDock.innerHTML = "";
+    }
+  }
+  function handleDockTransitionEnd(event) {
+    if (event.target !== wsDock) return;
+    if (event.propertyName === "transform" || event.propertyName === "opacity") {
+      clearClosedDockContent();
+    }
+  }
+  function syncLiveDock(s) {
+    if (!wsDock) return;
+    const info = selectionDockInner(s);
+    if (info.hasDock) {
+      if (dockCloseTimer) { clearTimeout(dockCloseTimer); dockCloseTimer = null; }
+      if (reportCloseTimer) { clearTimeout(reportCloseTimer); reportCloseTimer = null; }
+      const wasOpen = dockWasOpen && wsDock.classList.contains("is-open");
+      const prevHadReport = dockHadReport;
+      if (!wasOpen) {
+        wsDock.className = "model-dock";
+        wsDock.innerHTML = info.html;
+        wsDock.setAttribute("aria-hidden", "false");
+        wsDock.inert = false;
+        void wsDock.offsetHeight;
+        wsDock.classList.add("is-open");
+      } else {
+        wsDock.innerHTML = info.html;
+        wsDock.classList.add("is-open");
+        wsDock.setAttribute("aria-hidden", "false");
+        wsDock.inert = false;
+        if (!prevHadReport && info.hasReport && !isReducedMotion()) {
+          wsDock.querySelector?.(".model-tres")?.classList.add("is-entering");
+        }
+      }
+      dockWasOpen = true;
+      dockHadReport = info.hasReport;
+      return;
+    }
+    dockHadReport = false;
+    if (dockWasOpen || wsDock.classList.contains("is-open")) {
+      dockWasOpen = false;
+      if (typeof document !== "undefined" && wsDock.contains(document.activeElement)) {
+        try { document.activeElement.blur(); } catch { }
+      }
+      wsDock.classList.remove("is-open");
+      wsDock.setAttribute("aria-hidden", "true");
+      wsDock.inert = true;
+      if (dockCloseTimer) clearTimeout(dockCloseTimer);
+      if (isReducedMotion()) {
+        clearClosedDockContent();
+      } else {
+        dockCloseTimer = setTimeout(clearClosedDockContent, 240);
+      }
+    }
+  }
+  function closeReportLive(s) {
+    if (!useLiveDom() || !wsDock) return false;
+    if (!selected(s).length || isReducedMotion()) {
+      s.rule.report = null;
+      syncLiveDock(s);
+      return true;
+    }
+    const tres = wsDock.querySelector?.(".model-tres");
+    if (!tres) {
+      s.rule.report = null;
+      syncLiveDock(s);
+      return true;
+    }
+    tres.classList.remove("is-entering");
+    tres.classList.add("is-leaving");
+    if (reportCloseTimer) clearTimeout(reportCloseTimer);
+    reportCloseTimer = setTimeout(() => {
+      reportCloseTimer = null;
+      if (state === s) {
+        s.rule.report = null;
+        syncLiveDock(s);
+      }
+    }, 180);
+    return true;
+  }
+  function syncSelectionInPlace(s) {
+    if (!useLiveDom() || !wsMain || s.tab !== "fn" || s.sub === "pol" || s.view !== "tasks") return false;
+    const pickedSet = new Set(s.selection);
+    wsMain.querySelectorAll("[data-task-row]").forEach(row => {
+      const kind = row.dataset.taskRow;
+      const picked = pickedSet.has(kind);
+      row.classList.toggle("is-picked", picked);
+      const ck = row.querySelector("[data-model-pick]");
+      if (ck) ck.checked = picked;
+    });
+    wsMain.querySelectorAll("[data-route-group]").forEach(sec => {
+      const cks = [...sec.querySelectorAll("[data-model-pick]:not(:disabled)")];
+      const selCount = cks.filter(ck => ck.checked).length;
+      const allSel = cks.length > 0 && selCount === cks.length;
+      sec.classList.toggle("has-picked", selCount > 0);
+      const gck = sec.querySelector("[data-model-gpick]");
+      if (gck) gck.checked = allSel;
+      const meta = sec.querySelector(".model-rgroup-meta");
+      if (meta && meta.dataset.groupBase) {
+        meta.textContent = selCount ? `${meta.dataset.groupBase} · 已选 ${selCount}` : meta.dataset.groupBase;
+      }
+    });
+    const openCard = wsDrawer?.querySelector?.("[data-fncard]");
+    if (openCard) openCard.classList.toggle("picked", pickedSet.has(openCard.dataset.fncard));
+    syncLiveDock(s);
+    return true;
+  }
+  function toggleRouteGroupLive(s, gk) {
+    if (!useLiveDom() || !wsMain) return false;
+    const sec = [...wsMain.querySelectorAll("[data-route-group]")].find(el => el.dataset.routeGroup === gk);
+    if (!sec) return false;
+    const collapsed = !!s.groupCollapsed[gk];
+    sec.classList.toggle("is-collapsed", collapsed);
+    sec.querySelector("[data-model-group-toggle]")?.setAttribute("aria-expanded", String(!collapsed));
+    const inner = sec.querySelector(".model-rgroup-inner");
+    if (inner) { inner.setAttribute("aria-hidden", String(collapsed)); inner.inert = collapsed; }
+    return true;
+  }
+  function toggleLegendLive(s) {
+    if (!useLiveDom() || !wsMain) return false;
+    const box = wsMain.querySelector(".model-mlgd-box");
+    if (!box) return false;
+    const open = !!s.legendOpen;
+    box.classList.toggle("is-open", open);
+    if (open) box.setAttribute("open", ""); else box.removeAttribute("open");
+    const btn = box.querySelector("[data-model-legend-toggle]");
+    btn?.setAttribute("aria-expanded", String(open));
+    const sm = btn?.querySelector("small");
+    if (sm) sm.textContent = `${(s.status?.providers || []).length} 个 · ${open ? "收起" : "点击展开"}`;
+    const inner = box.querySelector(".model-collapse-inner");
+    if (inner) { inner.setAttribute("aria-hidden", String(!open)); inner.inert = !open; }
+    return true;
+  }
+  function flashQuickCard(g) {
+    try {
+      const card = [...(root?.querySelectorAll?.("[data-quick-card]") || [])].find(el => el.dataset.quickCard === g);
+      if (!card) return;
+      card.scrollIntoView?.({ block: "nearest", behavior: isReducedMotion() ? "auto" : "smooth" });
+      if (!isReducedMotion()) {
+        card.classList.remove("is-flash");
+        void card.offsetWidth;
+        card.classList.add("is-flash");
+      }
+    } catch { }
+  }
+  function toggleQuickBoxLive(s, opening, flashGroup = "") {
+    if (!useLiveDom() || !wsMain) return false;
+    const box = wsMain.querySelector(".model-quick-box");
+    const inner = box?.querySelector(":scope > .model-collapse-shell > .model-collapse-inner");
+    if (!box || !inner) return false;
+    if (quickCloseTimer) { clearTimeout(quickCloseTimer); quickCloseTimer = null; }
+    const btn = box.querySelector("[data-model-quick-toggle]");
+    btn?.setAttribute("aria-expanded", String(opening));
+    const txt = btn?.querySelector(".model-quick-state-txt");
+    if (txt) txt.textContent = opening ? "收起" : "展开批量指派";
+    if (opening) {
+      inner.innerHTML = quickBodyMarkup(s);
+      inner.setAttribute("aria-hidden", "false");
+      inner.inert = false;
+      void box.offsetHeight;
+      box.classList.add("is-open");
+      window.lucide?.createIcons?.({attrs: {"aria-hidden": "true"}});
+      if (flashGroup) setTimeout(() => flashQuickCard(flashGroup), isReducedMotion() ? 0 : 120);
+    } else {
+      box.classList.remove("is-open");
+      inner.setAttribute("aria-hidden", "true");
+      inner.inert = true;
+      const cleanup = () => {
+        quickCloseTimer = null;
+        if (state === s && !s.quickOpen && !box.classList.contains("is-open")) inner.innerHTML = "";
+      };
+      if (isReducedMotion()) cleanup();
+      else quickCloseTimer = setTimeout(cleanup, 260);
+    }
+    return true;
+  }
+  function toggleQuickExpLive(s, g) {
+    if (!useLiveDom() || !wsMain) return false;
+    const card = [...wsMain.querySelectorAll("[data-quick-card]")].find(el => el.dataset.quickCard === g);
+    const shell = card?.querySelector("[data-model-exp-shell]");
+    const inner = shell?.querySelector(".model-collapse-inner");
+    const btn = card?.querySelector("[data-model-exp]");
+    if (!card || !shell || !inner || !btn) return false;
+    const open = !!s.expOpen[g];
+    const gp = taskGroups(s).find(([name]) => name === g);
+    const kinds = (gp?.[1] || []).map(([k]) => k).filter(k => !coreReply(taskOf(s, k)));
+    const own = kinds.filter(k => { const d = s.drafts.get(k); return d && fields.some(name => !d.inherited[name]); }).length;
+    btn.setAttribute("aria-expanded", String(open));
+    const lbl = btn.querySelector("span");
+    if (lbl) lbl.textContent = `${open ? "收起" : "覆盖"} ${kinds.length} 项${own ? ` · ${own} 项单独设置` : ""}`;
+    if (open) {
+      inner.innerHTML = quickExpListHtml(s, kinds);
+      inner.setAttribute("aria-hidden", "false");
+      inner.inert = false;
+      void shell.offsetHeight;
+      shell.classList.add("is-open");
+    } else {
+      shell.classList.remove("is-open");
+      inner.setAttribute("aria-hidden", "true");
+      inner.inert = true;
+      const finish = () => {
+        if (state === s && !s.expOpen[g] && !shell.classList.contains("is-open")) inner.innerHTML = "";
+      };
+      if (isReducedMotion()) finish();
+      else setTimeout(finish, 240);
+    }
+    return true;
+  }
+  function scrollAdvIntoView() {
+    try {
+      const advEl = (wsDrawer || root)?.querySelector?.(".model-adv");
+      advEl?.scrollIntoView?.({ block: "nearest", behavior: isReducedMotion() ? "auto" : "smooth" });
+    } catch { }
+  }
+  function toggleAdvLive(s, kind, opening) {
+    if (!useLiveDom() || !wsDrawer) return false;
+    const adv = wsDrawer.querySelector(".model-adv");
+    const btn = adv?.querySelector("[data-adv-toggle]");
+    const inner = adv?.querySelector(".model-adv-inner");
+    if (!adv || !btn || !inner) return false;
+    if (advAnimTimer) { clearTimeout(advAnimTimer); advAnimTimer = null; }
+    btn.setAttribute("aria-expanded", String(opening));
+    if (opening) {
+      inner.setAttribute("aria-hidden", "false");
+      inner.inert = false;
+      adv.setAttribute("open", "");
+      if (isReducedMotion()) {
+        adv.classList.remove("is-animating");
+        adv.classList.add("is-open");
+        scrollAdvIntoView();
+      } else {
+        adv.classList.add("is-animating");
+        void adv.offsetHeight;
+        adv.classList.add("is-open");
+        advAnimTimer = setTimeout(() => {
+          advAnimTimer = null;
+          adv.classList.remove("is-animating");
+          scrollAdvIntoView();
+        }, 270);
+      }
+    } else {
+      adv.classList.add("is-animating");
+      adv.classList.remove("is-open");
+      adv.removeAttribute("open");
+      inner.setAttribute("aria-hidden", "true");
+      inner.inert = true;
+      if (isReducedMotion()) {
+        adv.classList.remove("is-animating");
+      } else {
+        advAnimTimer = setTimeout(() => {
+          advAnimTimer = null;
+          adv.classList.remove("is-animating");
+        }, 220);
+      }
+    }
+    return true;
+  }
   const useLiveDom = () => Boolean(root && typeof document !== "undefined" && typeof document.createElement === "function" && typeof root.appendChild === "function");
   function ensureLiveShell() {
-    if (wsShell && wsShell.parentNode === root && wsMain && wsMask && wsDrawer) return;
+    if (wsShell && wsShell.parentNode === root && wsMain && wsDock && wsMask && wsDrawer) return;
     if (wsDrawer) wsDrawer.removeEventListener("transitionend", handleDrawerTransitionEnd);
+    if (wsDock) wsDock.removeEventListener("transitionend", handleDockTransitionEnd);
     root.innerHTML = "";
     wsShell = document.createElement("div");
     wsShell.className = "model-workspace";
     wsMain = document.createElement("div");
     wsMain.className = "model-workspace-main";
+    wsDock = document.createElement("div");
+    wsDock.className = "model-dock";
+    wsDock.setAttribute("role", "region");
+    wsDock.setAttribute("aria-label", "已选任务批量操作");
+    wsDock.setAttribute("aria-hidden", "true");
+    wsDock.inert = true;
+    wsDock.addEventListener("transitionend", handleDockTransitionEnd);
     wsMask = document.createElement("div");
     wsMask.className = "model-mask";
     wsMask.setAttribute("aria-hidden", "true");
@@ -3363,10 +3684,13 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     wsDrawer.inert = true;
     wsDrawer.addEventListener("transitionend", handleDrawerTransitionEnd);
     wsShell.appendChild(wsMain);
+    wsShell.appendChild(wsDock);
     wsShell.appendChild(wsMask);
     wsShell.appendChild(wsDrawer);
     root.appendChild(wsShell);
     overlayWasOpen = false;
+    dockWasOpen = false;
+    dockHadReport = false;
   }
   function syncLiveOverlay(spec) {
     if (!wsMask || !wsDrawer) return;
@@ -3434,6 +3758,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
     if (useLiveDom()) {
       ensureLiveShell();
       wsMain.innerHTML = mainHtml;
+      syncLiveDock(s);
       syncLiveOverlay(spec);
     } else {
       const prevCard = root.querySelector?.("[data-fncard]");
@@ -3543,8 +3868,13 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
   function unmount() { version++;
     if (pointerResetTimer) { clearTimeout(pointerResetTimer); pointerResetTimer = null; }
     if (overlayCloseTimer) { clearTimeout(overlayCloseTimer); overlayCloseTimer = null; }
+    if (dockCloseTimer) { clearTimeout(dockCloseTimer); dockCloseTimer = null; }
+    if (reportCloseTimer) { clearTimeout(reportCloseTimer); reportCloseTimer = null; }
+    if (quickCloseTimer) { clearTimeout(quickCloseTimer); quickCloseTimer = null; }
+    if (advAnimTimer) { clearTimeout(advAnimTimer); advAnimTimer = null; }
     if (wsDrawer) wsDrawer.removeEventListener("transitionend", handleDrawerTransitionEnd);
-    wsShell = wsMain = wsMask = wsDrawer = null; overlayWasOpen = false;
+    if (wsDock) wsDock.removeEventListener("transitionend", handleDockTransitionEnd);
+    wsShell = wsMain = wsDock = wsMask = wsDrawer = null; overlayWasOpen = false; dockWasOpen = false; dockHadReport = false;
     deferChangeRender = false; deferredRenderPending = false;
     if (root) { window.CompanionWorkbench.dismissScopeHints(root); root.removeEventListener("input", input); root.removeEventListener("change", input); root.removeEventListener("click", click); root.removeEventListener("pointerdown", handlePointerDown); root.removeEventListener("pointerover", providerHover); root.removeEventListener("pointerout", providerHover); root.removeEventListener("keydown", window.CompanionWorkbench.scopeHintKeydown); root.removeEventListener("focusin", window.CompanionWorkbench.scopeHintReset); root.removeEventListener("focusout", window.CompanionWorkbench.scopeHintReset); }
     if (typeof document !== "undefined" && typeof document.removeEventListener === "function") { document.removeEventListener("keydown", handleKeydown); document.removeEventListener("pointerup", handlePointerUp); document.removeEventListener("pointercancel", handlePointerUp); }
@@ -3571,7 +3901,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
         ? roleEndpoint.slice(PREFIX.length) : taskPath;
     windowAvailable=Object.hasOwn(options,"endpoint") || !product.selection || Boolean(product.selection()?.target_id);
     key = "companion-model-edit.v2:" + JSON.stringify([identity.installation_id, identity.operator_id, taskPath, windowAvailable]);
-    state = states.get(key) || { status: null, drafts: new Map(), selection: [], expanded: null, layer: "role", view: "tasks", custom: null, lane: "all", providerFilter: null, query: "", sub: "cfg", av: "slot", pm: "kw", slotDraft: {}, quickOpen: false, groupCollapsed: {}, advOpen: {}, providerTests: {}, testing: new Set(),
+    state = states.get(key) || { status: null, drafts: new Map(), selection: [], expanded: null, layer: "role", view: "tasks", custom: null, lane: "all", providerFilter: null, query: "", sub: "cfg", av: "slot", pm: "kw", slotDraft: {}, quickOpen: false, legendOpen: false, groupCollapsed: {}, advOpen: {}, providerTests: {}, testing: new Set(),
       globalDraft: null, globalBusy: false, globalNotice: "", globalBad: false, globalRestartRequired: false,
       drawer: null, expOpen: {}, pol: null, rule: { query: "", picked: [], report: null, testing: false }, peak: { on: true, provider: "", start: "09:00", end: "12:00", windows: "09:00-12:00\n14:00-18:00" },
       tab: "fn",
@@ -3586,7 +3916,7 @@ ${mode === "remote" && (l.draft.request_format || l.data.request_format) === "cl
       pricing: pricingWorkbench()?.createState?.() || { loaded: false, loading: false, busy: false, data: null, draft: null },
       loading: false, busy: false, bad: false, denied: false, notice: "" };
     state.layer ||= "role"; if(!windowAvailable)state.layer="role"; state.providerTests ||= {}; state.testing ||= new Set();
-    state.quickOpen = Boolean(state.quickOpen); state.groupCollapsed ||= {}; state.advOpen ||= {};
+    state.quickOpen = Boolean(state.quickOpen); state.legendOpen = Boolean(state.legendOpen); state.groupCollapsed ||= {}; state.advOpen ||= {};
     state.globalDraft ??= null; state.globalBusy = false; state.globalNotice ||= ""; state.globalBad = Boolean(state.globalBad); state.globalRestartRequired = Boolean(state.globalRestartRequired);
     /* 展开状态按对象保存：刷新、切任务、切页回来都保持上次展开的分组，
        不再每次回到“全收起”或“全展开”。 */

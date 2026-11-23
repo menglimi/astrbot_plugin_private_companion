@@ -3652,4 +3652,11 @@ test('models-page.css pins narrow-screen routing row edit button to top-right an
   assert.match(css, /\.model-cur-item\s+\.model-cur\s*\{[^}]*text-overflow:\s*ellipsis[^}]*white-space:\s*nowrap/);
   assert.match(css, /\.model-sc-rf\s+\.r\s+b\s*\{[^}]*white-space:\s*nowrap/);
   assert.match(css, /\.model-insp-top\s*\{[^}]*flex-wrap:\s*nowrap/);
+  assert.match(css, /\.model-dock\s*\{[^}]*pointer-events:\s*none[^}]*translate3d\(0,\s*16px,\s*0\)\s*scale\(0\.985\)/);
+  assert.match(css, /\.model-dock\.is-open\s*\{[^}]*translate3d\(0,\s*0,\s*0\)\s*scale\(1\)/);
+  assert.match(css, /\.model-rgroup-body\s*\{[^}]*grid-template-rows:\s*1fr/);
+  assert.match(css, /\.model-rgroup\.is-collapsed\s+\.model-rgroup-body\s*\{[^}]*grid-template-rows:\s*0fr/);
+  assert.match(css, /\.model-collapse-shell\s*\{[^}]*grid-template-rows:\s*0fr/);
+  assert.match(css, /\.model-adv-shell\s*\{[^}]*grid-template-rows:\s*0fr/);
+  assert.match(css, /\.model-adv\.is-open:not\(\.is-animating\)\s*>\s*\.model-adv-shell\s*>\s*\.model-adv-inner[^}]*overflow:\s*visible/);
 });

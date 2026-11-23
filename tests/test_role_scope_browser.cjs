@@ -214,6 +214,11 @@ test("完整小屋按当前 Bot 与角色切换工作区", {skip:chromium ? fals
     assert.equal(await page.locator("textarea[data-model-field='prompt'][data-model-kind='memory.reflect']").inputValue(),"测试草稿：切换取消后保留");
     assert.equal(await page.evaluate(()=>CompanionProduct.selection().target_id),"group-a");
     await closeModelConfig();
+    await page.locator('[data-model-gpick="主动与整理"]').click();
+    await page.locator(".model-dock.is-open").waitFor({state:"visible"});
+    assert.equal(await page.locator('[data-route-group="主动与整理"].has-picked').count(),1);
+    await page.locator("[data-map-clear]").click();
+    await page.locator(".model-dock").waitFor({state:"hidden"});
   });
 
   assert.deepEqual(errors,[]);
