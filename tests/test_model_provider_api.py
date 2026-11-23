@@ -798,6 +798,53 @@ class ProviderRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["status"], "error")
         self.assertEqual(response["data"]["code"], "model_image_output_unconfigured")
 
+    async def test_global_model_defaults_read_save_and_validation(self):
+        self.install_text_provider_catalog()
+        saved_configs = []
+
+        def fake_save_plugin_config(candidate):
+            saved_configs.append(deepcopy(candidate))
+            self.controller.config.clear()
+            self.controller.config.update(candidate)
+
+        self.controller.save_plugin_config = fake_save_plugin_config
+        (await self.controller.initialize_profile()).unwrap()
+
+        listed = await self.call(PREFIX)
+        self.assertEqual(listed["status"], "ok", listed)
+        defaults = listed["data"]["global_defaults"]
+        self.assertTrue(defaults["editable"])
+        self.assertEqual(defaults["provider_id"], "native-model")
+        self.assertEqual(defaults["fallback_provider_id"], "")
+
+        # Save valid primary + distinct fallback
+        payload = json.dumps({"provider_id": "native-model", "fallback_provider_id": "secondary-model"}).encode("utf-8")
+        saved = await self.call(PREFIX + "/defaults", payload=payload)
+        self.assertEqual(saved["status"], "ok", saved)
+        self.assertTrue(saved["data"]["saved"])
+        self.assertFalse(saved["data"]["fallback_cleared_duplicate"])
+        self.assertEqual(saved["data"]["global_defaults"]["provider_id"], "native-model")
+        self.assertEqual(saved["data"]["global_defaults"]["fallback_provider_id"], "secondary-model")
+        self.assertEqual(saved_configs[-1]["model"]["fallback_provider_id"], "secondary-model")
+
+        # Duplicate fallback is normalized to empty with explicit flag
+        dup_payload = json.dumps({"provider_id": "native-model", "fallback_provider_id": "native-model"}).encode("utf-8")
+        dup = await self.call(PREFIX + "/defaults", payload=dup_payload)
+        self.assertEqual(dup["status"], "ok", dup)
+        self.assertTrue(dup["data"]["fallback_cleared_duplicate"])
+        self.assertEqual(dup["data"]["global_defaults"]["fallback_provider_id"], "")
+
+        # Unloaded provider is rejected cleanly
+        bad_payload = json.dumps({"provider_id": "missing-provider", "fallback_provider_id": ""}).encode("utf-8")
+        rejected = await self.call(PREFIX + "/defaults", payload=bad_payload)
+        self.assertEqual(rejected["status"], "error")
+        self.assertEqual(rejected["data"]["code"], "host_provider_unavailable")
+
+        # Non-dashboard caller is rejected before touching config
+        unauth = await self.call(PREFIX + "/defaults", payload=payload, username="")
+        self.assertEqual(unauth["status"], "error")
+        self.assertEqual(unauth["data"]["code"], "dashboard_identity_required")
+
 
 class MultiCoreReplyConfigurationTests(MultiFixture, unittest.IsolatedAsyncioTestCase):
     call = ProviderRouteTests.call

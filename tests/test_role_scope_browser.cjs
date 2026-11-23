@@ -62,9 +62,20 @@ test("完整小屋按当前 Bot 与角色切换工作区", {skip:chromium ? fals
   const expectRole = async id => {
     assert.equal(await page.locator("[data-role-card-name]").textContent(),labels[id]);
   };
-  const openModelConfig = async () => {
+  const openModelConfig = async (kind = "memory.reflect") => {
     await page.locator("[data-model-sub='cfg']").click();
-    await page.locator("[data-model-cm='precise']").click();
+    const open = page.locator(`[data-fncard='${kind}']`);
+    if (await open.count() === 0) {
+      await page.locator(`[data-model-open='${kind}']`).first().click();
+      await open.waitFor();
+    }
+  };
+  const closeModelConfig = async () => {
+    const closeBtn = page.locator("button[data-inspector-close]");
+    if (await closeBtn.count() > 0) {
+      await closeBtn.click();
+      await page.locator(".model-inspector").waitFor({state:"detached"});
+    }
   };
 
   await t.test("表情库跟随小屋角色，并且切换不会暗选私聊窗口", async () => {
@@ -148,27 +159,49 @@ test("完整小屋按当前 Bot 与角色切换工作区", {skip:chromium ? fals
     await navigate("models");
     await openModelConfig();
     await page.waitForFunction(()=>document.querySelector("select[data-model-field='provider'] option:checked")?.textContent.includes("model-b"));
+    await closeModelConfig();
     await selectRole("a");
     await expectRole("a");
     await openModelConfig();
     await page.waitForFunction(()=>document.querySelector("select[data-model-field='provider'] option:checked")?.textContent.includes("model-a"));
+    await closeModelConfig();
     assert.equal(await page.locator("[data-model-layer='window']").isDisabled(),true);
     await page.locator("[data-role-window]").selectOption("group-a");
     await page.waitForFunction(()=>CompanionProduct.selection().target_id === "group-a");
-    await openModelConfig();
     await page.locator("[data-model-layer='window']").click();
     await page.waitForFunction(()=>document.querySelector("[data-model-layer='window']")?.getAttribute("aria-pressed")==="true");
     assert.ok(data.calls.some(call=>call.endpoint.endsWith("/group-a/roles/shared-role/model") && call.params.layer === "window"));
   });
 
   await t.test("有真实模型草稿时取消切换保留角色与输入", async () => {
+    await closeModelConfig();
     await page.locator("[data-model-layer='role']").click();
-    await page.locator("[data-model-sub='cfg']").click();
-    await page.locator("[data-model-cm='precise']").click();
-    await page.locator("[data-model-inherit='prompt'][data-model-kind='memory.reflect']").uncheck();
+    await openModelConfig("memory.reflect");
+    const adv = page.locator("[data-fncard='memory.reflect'] .model-adv");
+    if ((await adv.getAttribute("open")) === null) {
+      await page.locator("[data-adv-toggle='memory.reflect']").click();
+    }
     const prompt = page.locator("textarea[data-model-field='prompt'][data-model-kind='memory.reflect']");
-    await prompt.fill("测试草稿：切换取消后保留");
+    await prompt.waitFor({state:"visible"});
+    const metrics = await page.evaluate(() => {
+      const box = document.querySelector("[data-fncard='memory.reflect'] .model-adv");
+      const ta = document.querySelector("textarea[data-model-field='prompt'][data-model-kind='memory.reflect']");
+      const body = document.querySelector(".model-insp-body");
+      return {
+        advClientH: box.clientHeight,
+        advScrollH: box.scrollHeight,
+        taH: Math.round(ta.getBoundingClientRect().height),
+        bodyScrollH: body.scrollHeight,
+        bodyClientH: body.clientHeight,
+      };
+    });
+    assert.ok(metrics.advClientH >= metrics.advScrollH - 2, `高级参数面板不应被裁切: ${JSON.stringify(metrics)}`);
+    assert.ok(metrics.taH >= 160, `任务附加提示词文本框高度应充足: ${JSON.stringify(metrics)}`);
+    await prompt.click();
+    await prompt.pressSequentially("测试草稿：切换取消后保留");
     await page.waitForFunction(()=>CompanionModelsPage.isDirty());
+    await closeModelConfig();
+    assert.equal(await page.evaluate(()=>CompanionModelsPage.isDirty()),true,"收起抽屉后未保存草稿应保留");
     assert.equal(await page.locator("#roleCardMenu").isVisible(),false,"打开前菜单应关闭");
     await page.locator("#stageScene").hover();
     await page.locator("[data-role-card-switch]").click();
@@ -177,8 +210,15 @@ test("完整小屋按当前 Bot 与角色切换工作区", {skip:chromium ? fals
     await page.locator("#confirmationDialog[open]").waitFor();
     await page.locator("#confirmationCancel").click();
     await expectRole("a");
-    assert.equal(await prompt.inputValue(),"测试草稿：切换取消后保留");
+    await openModelConfig("memory.reflect");
+    assert.equal(await page.locator("textarea[data-model-field='prompt'][data-model-kind='memory.reflect']").inputValue(),"测试草稿：切换取消后保留");
     assert.equal(await page.evaluate(()=>CompanionProduct.selection().target_id),"group-a");
+    await closeModelConfig();
+    await page.locator('[data-model-gpick="主动与整理"]').click();
+    await page.locator(".model-dock.is-open").waitFor({state:"visible"});
+    assert.equal(await page.locator('[data-route-group="主动与整理"].has-picked').count(),1);
+    await page.locator("[data-map-clear]").click();
+    await page.locator(".model-dock").waitFor({state:"hidden"});
   });
 
   assert.deepEqual(errors,[]);
